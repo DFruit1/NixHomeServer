@@ -22,7 +22,6 @@ rec {
   ############################################################
   wgPort             = 51820;
   kanidmPort         = 8443;
-  nextcloudPort      = 8080;
   immichPort         = 2283;
   paperlessPort      = 8000;
   audiobookshelfPort = 13378;
@@ -67,7 +66,6 @@ rec {
   appArmorDefaults = {
     caddy            = [ "/var/lib/caddy/**" "/var/log/caddy/**" "/etc/caddy/**" ];
     kanidm           = [ "/var/lib/kanidm/**" "/var/log/kanidm/**" "/etc/kanidm/**" ];
-    nextcloud        = [ "${dataRoot}/nextcloud/**" "/var/log/nextcloud/**" "/etc/php/**" ];
     immich           = [ "${dataRoot}/immich/**" "/var/log/immich/**" ];
     paperless        = [ "${dataRoot}/paperless/**" "/var/log/paperless-ngx/**" ];
     audiobookshelf   = [ "${dataRoot}/audiobookshelf/**" "/var/log/audiobookshelf/**" ];

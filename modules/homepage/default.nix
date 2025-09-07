@@ -64,11 +64,6 @@
         };
       }
       { Storage = {
-          Nextcloud = {
-            icon        = "cloud";
-            href        = "https://nextcloud.${vars.domain}";
-            statusCheck = "http";
-          };
           Paperless = {
             icon        = "file-document";
             href        = "https://paperless.${vars.domain}";
@@ -131,7 +126,7 @@
       layout = {
         Infrastructure = { style = "row"; columns = 2; };
         Media          = { style = "row"; columns = 2; };
-        Storage        = { style = "row"; columns = 3; };
+        Storage        = { style = "row"; columns = 2; };
       };
     };
 

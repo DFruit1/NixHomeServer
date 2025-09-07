@@ -21,11 +21,9 @@ need agenix
 declare -A SPEC=(
 	[kanidmAdminPass]=24
 	[kanidmSysAdminPass]=24
-	[nextcloudAdminPass]=24
-	[nextcloudOIDCClientSecret]=32
-	[immichClientSecret]=32
-	[paperlessClientSecret]=32
-	[absClientSecret]=32
+        [immichClientSecret]=32
+        [paperlessClientSecret]=32
+        [absClientSecret]=32
 	[vaultwardenClientSecret]=32
 	[vaultwardenAdminToken]=48
 )
