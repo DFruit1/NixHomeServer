@@ -25,14 +25,10 @@
         href: https://audiobookshelf.sydneybasiniot.org
 
 - Storage:
-    - Nextcloud:
-        icon: cloud
-        href: https://nextcloud.sydneybasiniot.org
-        server: nextcloud.sydneybasiniot.org
-        statusCheck: http
     - Paperless:
         icon: file-document
         href: https://paperless.sydneybasiniot.org
     - Vaultwarden:
         icon: vault
         href: https://vault.sydneybasiniot.org
+

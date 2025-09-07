@@ -39,12 +39,6 @@ in
         '';
       };
 
-      "nextcloud.${vars.domain}" = {
-        extraConfig = ''
-          reverse_proxy http://127.0.0.1:${toString vars.nextcloudPort}
-        '';
-      };
-
       "immich.${vars.domain}" = {
         extraConfig = ''
           reverse_proxy http://127.0.0.1:${toString vars.immichPort}

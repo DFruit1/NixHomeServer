@@ -13,7 +13,6 @@ in
       local-data     = [
         "${vars.domain}                 A ${vars.lanIP}"
         "www.${vars.domain}             A ${vars.lanIP}"
-        "nextcloud.${vars.domain}       A ${vars.lanIP}"
         "immich.${vars.domain}          A ${vars.lanIP}"
         "paperless.${vars.domain}       A ${vars.lanIP}"
         "audiobookshelf.${vars.domain}  A ${vars.lanIP}"
