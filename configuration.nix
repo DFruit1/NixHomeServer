@@ -51,6 +51,7 @@ in
     ./modules/audiobookshelf
     ./modules/caddy
     ./modules/cloudflared
+    ./modules/copyparty
     ./modules/immich
     ./modules/kanidm
     ./modules/netbird
@@ -133,12 +134,23 @@ in
 
   age.secrets = {
     netbirdSetupKey = { file = ./secrets/netbirdSetupKey.age; owner = "netbird-main"; mode = "0400"; };
-    cfHomeCreds = { file = ./secrets/cfHomeCreds.age; owner = "cloudflared"; mode = "0400"; };
+    cfHomeCreds = {
+      file = ./secrets/cfHomeCreds.age;
+      owner = "cloudflared";
+      group = "cloudflared";
+      mode = "0400";
+    };
     kanidmAdminPass = { file = ./secrets/kanidmAdminPass.age; owner = "kanidm"; mode = "0400"; };
     kanidmSysAdminPass = { file = ./secrets/kanidmSysAdminPass.age; owner = "kanidm"; mode = "0400"; };
     immichClientSecret = { file = ./secrets/immichClientSecret.age; owner = "immich"; mode = "0400"; };
-    paperlessClientSecret = { file = ./secrets/paperlessClientSecret.age; owner = "paperless-ngx"; mode = "0400"; };
+    paperlessClientSecret = {
+      file = ./secrets/paperlessClientSecret.age;
+      owner = "paperless";
+      group = "paperless";
+      mode = "0400";
+    };
     absClientSecret = { file = ./secrets/absClientSecret.age; owner = "audiobookshelf"; mode = "0400"; };
+    copypartyClientSecret = { file = ./secrets/copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };
     vaultwardenClientSecret = { file = ./secrets/vaultwardenClientSecret.age; owner = "vaultwarden"; mode = "0400"; };
     vaultwardenAdminToken = { file = ./secrets/vaultwardenAdminToken.age; owner = "vaultwarden"; mode = "0400"; };
   };
@@ -153,6 +165,23 @@ in
   };
 
   users.users.kanidm.extraGroups = [ "caddy" ];
+
+  users.groups = {
+    cloudflared = { };
+    paperless = { };
+  };
+
+  users.users.cloudflared = {
+    isSystemUser = true;
+    group = "cloudflared";
+    home = "/var/lib/cloudflared";
+  };
+
+  users.users.paperless = {
+    isSystemUser = true;
+    group = "paperless";
+    home = "/var/lib/paperless";
+  };
 
   boot.loader.grub = {
     enable = true;

@@ -8,7 +8,7 @@ in
     enable = true;
 
     ## Caddy will register this e-mail with Let’s Encrypt
-    email  = "${vars.email}";
+    email = "${vars.email}";
 
     ## Optional: in case you later need a global block (rate limits, DNS-01, …)
     # globalConfig = ''
@@ -54,6 +54,12 @@ in
       "audiobookshelf.${vars.domain}" = {
         extraConfig = ''
           reverse_proxy http://127.0.0.1:${toString vars.audiobookshelfPort}
+        '';
+      };
+
+      "share.${vars.domain}" = {
+        extraConfig = ''
+          reverse_proxy http://127.0.0.1:${toString vars.copypartyPort}
         '';
       };
 

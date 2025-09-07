@@ -23,6 +23,8 @@
     - Audiobookshelf:
         icon: book
         href: https://audiobookshelf.sydneybasiniot.org
+        server: audiobookshelf.sydneybasiniot.org
+        statusCheck: http
 
 - Storage:
     - Paperless:
@@ -31,4 +33,8 @@
     - Vaultwarden:
         icon: vault
         href: https://vault.sydneybasiniot.org
-
+    - Copyparty:
+        icon: upload
+        href: https://share.sydneybasiniot.org
+        server: share.sydneybasiniot.org
+        statusCheck: http
