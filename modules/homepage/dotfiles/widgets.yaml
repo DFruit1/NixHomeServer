@@ -1,0 +1,23 @@
+- datetime:
+    format: "dddd, MMMM D — HH:mm"
+    locale: en-AU
+
+- weather:
+    label: Sydney
+    latitude: -33.87
+    longitude: 151.21
+    units: metric
+    provider: openweathermap
+    apikey: "{{HOMEPAGE_VAR_OWM}}" # stored in .env
+
+- system:
+    title: Server
+    show: cpu, mem, load, uptime
+    refresh: 30
+    hostname: server # matches vars.hostname
+
+- ping:
+    targets:
+      Cloudflare: 1.1.1.1
+      Router: 192.168.1.1
+      NetBird: 100.96.1.10

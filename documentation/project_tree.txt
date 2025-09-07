@@ -1,0 +1,55 @@
+home-server/
+├── flake.nix
+├── vars.nix
+├── configuration.nix
+├── disko.nix
+├── hardware-configuration.nix
+├── manual_steps.txt
+├── project_tree.txt
+├── age.pub
+├── modules/
+│   ├── apparmor/
+│   │   ├── default.nix
+│   │   └── dotfiles/
+│   │       ├── apparmor_violations.nu
+│   │       └── apparmor_violations.csv
+│   ├── audiobookshelf/
+│   │   └── default.nix
+│   ├── caddy/
+│   │   └── default.nix
+│   ├── cloudflared/
+│   │   └── default.nix
+│   ├── homepage/
+│   │   ├── default.nix
+│   │   └── dotfiles/
+│   │       ├── settings.yaml
+│   │       ├── services.yaml
+│   │       ├── widgets.yaml
+│   │       ├── bookmarks.yaml
+│   │       └── custom.css
+│   ├── immich/
+│   │   └── default.nix
+│   ├── kanidm/
+│   │   └── default.nix
+│   ├── netbird/
+│   │   └── default.nix
+│   ├── nextcloud/
+│   │   └── default.nix
+│   ├── paperless/
+│   │   └── default.nix
+│   ├── unbound/
+│   │   └── default.nix
+│   └── vaultwarden/
+│       └── default.nix
+└── secrets/
+    ├── abs_client_secret.age
+    ├── cfHomeCreds.age
+    ├── immich_kanidm_client_secret.age
+    ├── kanidm_admin_pass.age
+    ├── kanidm_unixd_token.age
+    ├── nc_admin_pass.age
+    ├── nc_kanidm_client_secret.age
+    ├── netbird-setup-key.age
+    ├── paperless_kanidm_client_secret.age
+    ├── vaultwarden_admin_token.age
+    └── vaultwarden_client_secret.age

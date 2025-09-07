@@ -1,0 +1,231 @@
+=====================================================================
+  Home-Server Install Guide
+  NixOS 24.05 · Kanidm · Nextcloud · SnapRAID · MergerFS · NetBird
+=====================================================================
+
+LEGEND
+  $  => run on your LAPTOP (any OS)
+  #  => run on the TARGET PC (Live ISO or installed system)
+
+─────────────────────────────────────────────────────────────────────
+0.  PREREQUISITES  (on laptop)
+─────────────────────────────────────────────────────────────────────
+$ git --version                # have git
+$ ssh -V                       # have OpenSSH client
+$ nix profile install github:ryantm/agenix   # installs age + agenix
+$ git clone https://github.com/<you>/home-server.git
+
+─────────────────────────────────────────────────────────────────────
+1.  FLASH & BOOT
+─────────────────────────────────────────────────────────────────────
+$ curl -LO \
+  https://channels.nixos.org/nixos-24.05/latest-nixos-minimal-x86_64-linux.iso
+$ sha256sum nixos-24.05*.iso   # compare with website
+
+☞ Linux flashing example:
+$ sudo dd if=nixos-24.05*.iso of=/dev/sdX bs=4M status=progress oflag=direct
+
+Reboot target PC → boot USB → pick “Boot NixOS”.
+
+Wi-Fi (if needed):
+# iwctl
+[iwd]# device list
+[iwd]# station wlan0 connect "<SSID>"
+exit
+
+─────────────────────────────────────────────────────────────────────
+2.  CLONE REPO ON LIVE SYSTEM
+─────────────────────────────────────────────────────────────────────
+# git clone https://github.com/<you>/home-server /mnt/src
+
+─────────────────────────────────────────────────────────────────────
+3.  COLLECT DISK UUIDs
+─────────────────────────────────────────────────────────────────────
+# lsblk -f -o NAME,UUID,SIZE,MODEL
+Copy the table to your laptop.  Identify:
+  • 1× SSD (system)
+  • N× HDD (data)
+  • 1× HDD (parity, >= biggest data disk)
+
+─────────────────────────────────────────────────────────────────────
+4.  EDIT vars.nix  (on laptop)
+─────────────────────────────────────────────────────────────────────
+mainDisk   = "<SSD-UUID>";
+dataDisks  = [ "<HDD1-UUID>" "<HDD2-UUID>" … ];
+parityDisk = "<PARITY-UUID>";
+
+git commit -am "add UUIDs" && git push
+
+─────────────────────────────────────────────────────────────────────
+5.  OPTIONAL: DISK WIPE
+─────────────────────────────────────────────────────────────────────
+# for u in <uuid1> <uuid2> … ; do
+    wipefs -a /dev/disk/by-uuid/$u
+    sgdisk --zap-all /dev/disk/by-uuid/$u
+  done
+
+─────────────────────────────────────────────────────────────────────
+6.  RUN DISKO  (auto-partition, format, mount)
+─────────────────────────────────────────────────────────────────────
+# nix run github:nix-community/disko -- \
+      --mode zap_create_mount /mnt/src/disko.nix
+
+Verify:
+# findmnt -R /mnt           # shows /, /boot, /nix, /persist, /mnt/data …
+
+─────────────────────────────────────────────────────────────────────
+7.  COPY FLAKE & GENERATE HARDWARE CONFIG
+─────────────────────────────────────────────────────────────────────
+# cp -r /mnt/src/* /mnt/etc/nixos
+# nixos-generate-config --root /mnt
+Edit /mnt/etc/nixos/hardware-configuration.nix  
+ → keep the fileSystems from disko, keep HW modules.
+
+─────────────────────────────────────────────────────────────────────
+8.  (OPTIONAL) ADD LAPTOP SSH KEY
+─────────────────────────────────────────────────────────────────────
+Laptop:
+$ ssh-keygen -t ed25519 -C laptop
+$ cat ~/.ssh/id_ed25519.pub
+Add to users.users.dave.openssh.authorizedKeys in configuration.nix.
+
+─────────────────────────────────────────────────────────────────────
+9.  AGE / AGENIX – SET UP SECRETS
+─────────────────────────────────────────────────────────────────────
+Laptop commands
+---------------
+$ mkdir -p ~/.config/age
+$ age-keygen -o ~/.config/age/id_age
+$ cat ~/.config/age/id_age.pub > age.pub
+$ git add age.pub && git commit -m "add Age pubkey"
+$ nix run github:ryantm/agenix -- --generate -i age.pub
+
+Create & encrypt each secret
+----------------------------
+Example (NetBird setup key):
+$ echo 'wbx1k……' > plain.txt
+$ agenix -e secrets/netbird-setup-key.age plain.txt
+$ rm plain.txt
+
+Required secret files
+---------------------
+  netbird-setup-key.age
+  cfHomeCreds.age
+  kanidm_admin_pass.age
+  kanidm_unixd_token.age
+  nc_admin_pass.age
+  nc_kanidm_client_secret.age
+  immich_kanidm_client_secret.age
+  paperless_kanidm_client_secret.age
+  abs_client_secret.age
+  vaultwarden_client_secret.age
+  vaultwarden_admin_token.age
+
+Tip:  random secret  ➜  pwgen -s 48 1 | agenix -e secrets/file.age
+
+git add secrets/*.age && git commit -m "encrypt secrets" && git push
+
+─────────────────────────────────────────────────────────────────────
+10.  CLOUDFLARE TUNNEL
+─────────────────────────────────────────────────────────────────────
+Laptop:
+$ cloudflared tunnel login
+$ cloudflared tunnel create home
+Copy the JSON creds → encrypt as cfHomeCreds.age
+$ cloudflared tunnel route dns home nextcloud.<domain>
+$ cloudflared tunnel route dns home id.<domain>
+
+Only *nextcloud* and *id* are tunneled; dashboard stays LAN/NetBird.
+
+─────────────────────────────────────────────────────────────────────
+11.  NETBIRD CLOUD
+─────────────────────────────────────────────────────────────────────
+• Org dashboard → Setup Keys → “One-off” → copy → netbird-setup-key.age
+• Nameservers → Host Records:
+    sydneybasiniot.org        → 100.96.1.10
+    immich / paperless / vault → 100.96.1.10
+
+─────────────────────────────────────────────────────────────────────
+12.  INSTALL NixOS
+─────────────────────────────────────────────────────────────────────
+# nixos-install --flake /etc/nixos#sydney-home
+# reboot
+
+First boot:
+# nixos-rebuild switch --flake /etc/nixos#sydney-home
+
+─────────────────────────────────────────────────────────────────────
+13.  KANIDM INITIALISATION
+─────────────────────────────────────────────────────────────────────
+# systemctl start kanidm
+# sudo -u kanidm kanidm admin init \
+      --domain sydneybasiniot.org \
+      --admin-pass-file /run/secrets/kanidm_admin_pass
+
+Create OIDC clients (one per app):
+# sudo -u kanidm kanidm client create nextcloud-web \
+      --redirect-uri https://nextcloud.sydneybasiniot.org/*
+
+(repeat for immich-web, paperless-web, abs-web, vaultwarden-web)
+Encrypt each printed client_secret into the matching .age.
+
+Unix token:
+# sudo -u kanidm kanidm unix create -f /run/secrets/kanidm_unixd_token
+
+─────────────────────────────────────────────────────────────────────
+14.  FIRST SNAPRAID SYNC
+─────────────────────────────────────────────────────────────────────
+# snapraid sync
+# snapraid status        # should show “All good”.
+
+Timers auto-installed:
+# systemctl list-timers snapraid*
+
+─────────────────────────────────────────────────────────────────────
+15.  VERIFICATION (LAN or NetBird peer)
+─────────────────────────────────────────────────────────────────────
+✓  https://id.sydneybasiniot.org            (login page)
+✓  https://sydneybasiniot.org               (Homepage dashboard)
+✓  https://vault.sydneybasiniot.org         (Kanidm SSO)
+Public LTE   ✓ nextcloud  ✗ root domain (should refuse)
+
+─────────────────────────────────────────────────────────────────────
+16.  DAILY ROUTINE
+─────────────────────────────────────────────────────────────────────
+• SnapRAID sync nightly, scrub weekly.
+• Nextcloud apps sync offline files.
+• Use Vaultwarden browser extension → “Login with SSO”.
+• NetBird mesh gives 100.96.x.x addresses.
+
+─────────────────────────────────────────────────────────────────────
+17.  APPARMOR HARDENING
+─────────────────────────────────────────────────────────────────────
+1.  Add to configuration.nix:
+      security.apparmor.complainProfiles = [ "generated-*" ];
+2.  # nixos-rebuild switch
+3.  Use server for a week.
+4.  # sudo apparmor-violations
+    → CSV at modules/apparmor/dotfiles/
+5.  Add missing paths to vars.appArmorDefaults.
+6.  Remove complainProfiles; rebuild → now in enforce mode.
+
+─────────────────────────────────────────────────────────────────────
+18.  EXPANDING STORAGE  (add new HDD)
+─────────────────────────────────────────────────────────────────────
+A.  Get new UUID:
+    # lsblk -f
+B.  Add to vars.dataDisks list.
+C.  git commit & push.
+D.  On server:
+    # nixos-rebuild switch --flake /etc/nixos#sydney-home
+E.  # snapraid -a
+F.  # snapraid sync
+
+─────────────────────────────────────────────────────────────────────
+19.  BACKUPS
+─────────────────────────────────────────────────────────────────────
+• Use Borg or Restic to push /mnt/data and /persist to another host
+  or cloud bucket.  SnapRAID is **not** a backup.
+
+════════════════════════════════ END ═══════════════════════════════
+

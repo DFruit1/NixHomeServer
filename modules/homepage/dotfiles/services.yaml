@@ -1,0 +1,38 @@
+- Infrastructure:
+    - Caddy:
+        icon: caddy
+        href: https://caddyserver.com
+        server: id.sydneybasiniot.org
+        statusCheck: http # simple HTTP ping
+    - Kanidm:
+        icon: shield
+        href: https://id.sydneybasiniot.org
+        server: id.sydneybasiniot.org
+        statusCheck: http
+    - NetBird:
+        icon: vpn
+        href: https://app.netbird.io
+        statusCheck: disabled
+
+- Media:
+    - Immich:
+        icon: image
+        href: https://immich.sydneybasiniot.org
+        server: immich.sydneybasiniot.org
+        statusCheck: http
+    - Audiobookshelf:
+        icon: book
+        href: https://audiobookshelf.sydneybasiniot.org
+
+- Storage:
+    - Nextcloud:
+        icon: cloud
+        href: https://nextcloud.sydneybasiniot.org
+        server: nextcloud.sydneybasiniot.org
+        statusCheck: http
+    - Paperless:
+        icon: file-document
+        href: https://paperless.sydneybasiniot.org
+    - Vaultwarden:
+        icon: vault
+        href: https://vault.sydneybasiniot.org

@@ -1,0 +1,10 @@
+title: "Sydney Basin Home Server"
+theme: dark
+color: indigo
+layout:
+  infrastructure:
+    style: row
+  media:
+    style: row
+  storage:
+    style: row

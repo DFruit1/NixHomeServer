@@ -1,0 +1,281 @@
+nix run github:serokell/deploy-rs -- .#home-server
+🚀 ℹ️ [deploy] [INFO] Running checks for flake in .
+warning: unknown flake output 'deploy'
+warning: The check omitted these incompatible systems: aarch64-darwin, aarch64-linux, x86_64-darwin
+Use '--all-systems' to check all.
+🚀 ℹ️ [deploy] [INFO] Evaluating flake in .
+🚀 ℹ️ [deploy] [INFO] The following profiles are going to be deployed:
+[home-server.system]
+user = "root"
+ssh_user = "root"
+path = "/nix/store/wy0jkkip20qpky6kxphb30hw0gcncvn9-activatable-nixos-system-server-25.05.20250613.5f4f306"
+hostname = "192.168.0.144"
+ssh_opts = ["-o", "IdentitiesOnly=yes"]
+
+🚀 ℹ️ [deploy] [INFO] Building profile `system` for node `home-server`
+🚀 ℹ️ [deploy] [INFO] Copying profile `system` to node `home-server`
+warning: error: unable to download 'https://cache.nixos.org/nix-cache-info': Could not resolve hostname (6) Could not resolve host: cache.nixos.org; retrying in 319 ms
+warning: error: unable to download 'https://cache.nixos.org/nix-cache-info': Could not resolve hostname (6) Could not resolve host: cache.nixos.org; retrying in 559 ms
+warning: error: unable to download 'https://cache.nixos.org/nix-cache-info': Could not resolve hostname (6) Could not resolve host: cache.nixos.org; retrying in 1234 ms
+warning: error: unable to download 'https://cache.nixos.org/nix-cache-info': Could not resolve hostname (6) Could not resolve host: cache.nixos.org; retrying in 2020 ms
+warning: unable to download 'https://cache.nixos.org/nix-cache-info': Could not resolve hostname (6) Could not resolve host: cache.nixos.org
+🚀 ℹ️ [deploy] [INFO] Activating profile `system` for node `home-server`
+🚀 ℹ️ [deploy] [INFO] Creating activation waiter
+⭐ ℹ️ [activate] [INFO] Activating profile
+👀 ℹ️ [wait] [INFO] Waiting for confirmation event...
+updating GRUB 2 menu...
+stopping the following units: network-setup.service
+activating the configuration...
+[agenix] creating new generation in /run/agenix.d/2
+[agenix] decrypting secrets...
+decrypting '/nix/store/89g28kdypb4k93dv9abhs42r3l54m8bv-absClientSecret.age' to '/run/agenix.d/2/absClientSecret'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/absClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/absClientSecret.tmp': No such file or directory
+decrypting '/nix/store/1v6hd4lshwnayn48sil53lsbijkshwv8-cfHomeCreds.age' to '/run/agenix.d/2/cfHomeCreds'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/cfHomeCreds.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/cfHomeCreds.tmp': No such file or directory
+decrypting '/nix/store/f1pimh02i0hh4yylyrczw0kg7141bvy1-immichClientSecret.age' to '/run/agenix.d/2/immichClientSecret'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/immichClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/immichClientSecret.tmp': No such file or directory
+decrypting '/nix/store/90bxymag435qxj2kl5a751mgns1qnc30-kanidmAdminPass.age' to '/run/agenix.d/2/kanidmAdminPass'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/kanidmAdminPass.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/kanidmAdminPass.tmp': No such file or directory
+decrypting '/nix/store/334qg2l2zbavjn5m0q5c5wd0npmyv6jk-kanidmSysAdminPass.age' to '/run/agenix.d/2/kanidmSysAdminPass'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/kanidmSysAdminPass.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/kanidmSysAdminPass.tmp': No such file or directory
+decrypting '/nix/store/7fw6r3976rjwxnvpfj0wl79w3i8y32l1-netbirdSetupKey.age' to '/run/agenix.d/2/netbirdSetupKey'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/netbirdSetupKey.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/netbirdSetupKey.tmp': No such file or directory
+decrypting '/nix/store/4ydylddw0bxslkrifvsdf5qb2rj7qa8d-nextcloudAdminPass.age' to '/run/agenix.d/2/nextcloudAdminPass'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/nextcloudAdminPass.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/nextcloudAdminPass.tmp': No such file or directory
+decrypting '/nix/store/gyirvd1ag68bqmd2p3i10zkqrn47a6lm-nextcloudOIDCClientSecret.age' to '/run/agenix.d/2/nextcloudOIDCClientSecret'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/nextcloudOIDCClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/nextcloudOIDCClientSecret.tmp': No such file or directory
+decrypting '/nix/store/6brnx52aj04l5pizsfcd8dbx9w6v5dd0-paperlessClientSecret.age' to '/run/agenix.d/2/paperlessClientSecret'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/paperlessClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/paperlessClientSecret.tmp': No such file or directory
+decrypting '/nix/store/f9mi4i1ri01lamwpx5vqzp6kmnnggg7w-vaultwardenAdminToken.age' to '/run/agenix.d/2/vaultwardenAdminToken'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/vaultwardenAdminToken.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/vaultwardenAdminToken.tmp': No such file or directory
+decrypting '/nix/store/illlz0waf9qd2hm7hxjrv04lwwvc2f44-vaultwardenClientSecret.age' to '/run/agenix.d/2/vaultwardenClientSecret'...
+age: error: no identity matched any of the recipients
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/2/vaultwardenClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/2/vaultwardenClientSecret.tmp': No such file or directory
+[agenix] symlinking new secrets to /run/agenix (generation 2)...
+[agenix] removing old secrets (generation 1)...
+Activation script snippet 'agenixInstall' failed (1)
+[agenix] chowning...
+chown: cannot access '/run/agenix.d/2/absClientSecret': No such file or directory
+chown: invalid user: ‘cloudflared:0’
+chown: cannot access '/run/agenix.d/2/immichClientSecret': No such file or directory
+chown: cannot access '/run/agenix.d/2/kanidmAdminPass': No such file or directory
+chown: cannot access '/run/agenix.d/2/kanidmSysAdminPass': No such file or directory
+chown: cannot access '/run/agenix.d/2/netbirdSetupKey': No such file or directory
+chown: cannot access '/run/agenix.d/2/nextcloudAdminPass': No such file or directory
+chown: cannot access '/run/agenix.d/2/nextcloudOIDCClientSecret': No such file or directory
+chown: invalid user: ‘paperless-ngx:0’
+chown: cannot access '/run/agenix.d/2/vaultwardenAdminToken': No such file or directory
+chown: cannot access '/run/agenix.d/2/vaultwardenClientSecret': No such file or directory
+Activation script snippet 'agenixChown' failed (1)
+setting up /etc...
+Failed to run activate script
+reloading user units for root...
+reloading user units for dsaw...
+restarting sysinit-reactivation.target
+starting the following units: network-setup.service
+the following new units were started: sysinit-reactivation.target, systemd-tmpfiles-resetup.service
+warning: the following units failed: apparmor.service, audiobookshelf.service, cloudflared-tunnel-metro.service, kanidm.service, nextcloud-cron.service, nextcloud-setup.service, nextcloud-update-db.service, nginx.service, unbound.service, vaultwarden.service
+× apparmor.service - Load AppArmor policies
+     Loaded: loaded (/etc/systemd/system/apparmor.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:26 AEST; 1min 30s ago
+ Invocation: 84d76dc8120f450985de97c07c9629ed
+    Process: 41195 ExecStartPre=/nix/store/by54jak0cczb2ihkz5x3d8qvgxvsccja-apparmor-utils-4.1.0/bin/aa-teardown (code=exited, status=0/SUCCESS)
+    Process: 41221 ExecStart=/nix/store/vnc7wyhxw9bx00dn7aps4rkhmrh97i4h-apparmor-parser-4.1.0/bin/apparmor_parser --add --verbose --show-cache --complain /nix/store/bf0vpjzz8fkh6y9i3f2s27iq4miv6046-generated-audiobookshelf (code=exited, status=1/FAILURE)
+   Main PID: 41221 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 2.3M
+        CPU: 28ms
+
+Jun 23 23:24:26 server systemd[1]: Starting Load AppArmor policies...
+Jun 23 23:24:26 server apparmor_parser[41231]: AppArmor parser error for /nix/store/bf0vpjzz8fkh6y9i3f2s27iq4miv6046-generated-audiobookshelf in profile /nix/store/p9g1ban2cjw3783j85sbyd7v6aykbilx-apparmor-profiles-4.1.0/etc/apparmor.d/tunables/home at line 15: syntax error, unexpected TOK_EQUALS, expecting TOK_MODE
+Jun 23 23:24:26 server systemd[1]: apparmor.service: Main process exited, code=exited, status=1/FAILURE
+Jun 23 23:24:26 server systemd[1]: apparmor.service: Failed with result 'exit-code'.
+Jun 23 23:24:26 server systemd[1]: Failed to start Load AppArmor policies.
+
+× audiobookshelf.service - Audiobookshelf is a self-hosted audiobook and podcast server
+     Loaded: loaded (/etc/systemd/system/audiobookshelf.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:27 AEST; 1min 29s ago
+   Duration: 19ms
+ Invocation: f6bfff34f2b4426dab7718c568e6b11e
+    Process: 41379 ExecStart=/nix/store/gz20bk9wcyk5pyizzpmyvjkmsan6ad7c-audiobookshelf-2.24.0/bin/audiobookshelf --host 127.0.0.1 --port 13378 (code=exited, status=200/CHDIR)
+   Main PID: 41379 (code=exited, status=200/CHDIR)
+
+Jun 23 23:24:27 server systemd[1]: audiobookshelf.service: Scheduled restart job, restart counter is at 5.
+Jun 23 23:24:27 server systemd[1]: audiobookshelf.service: Start request repeated too quickly.
+Jun 23 23:24:27 server systemd[1]: audiobookshelf.service: Failed with result 'exit-code'.
+Jun 23 23:24:27 server systemd[1]: Failed to start Audiobookshelf is a self-hosted audiobook and podcast server.
+
+× cloudflared-tunnel-metro.service
+     Loaded: loaded (/etc/systemd/system/cloudflared-tunnel-metro.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:27 AEST; 1min 29s ago
+ Invocation: 76fb7b26432a4764900b1a50c4b0c3a0
+    Process: 41380 ExecStart=/nix/store/ii1dwcwwyrppkz61wv3xbrwnzb9x8v34-cloudflared-2025.5.0/bin/cloudflared tunnel --config=/nix/store/3ld74waj74i6biqr4ncjb4y5s1rl185i-cloudflared.yml --no-autoupdate run (code=exited, status=243/CREDENTIALS)
+   Main PID: 41380 (code=exited, status=243/CREDENTIALS)
+
+Jun 23 23:24:27 server systemd[1]: cloudflared-tunnel-metro.service: Scheduled restart job, restart counter is at 5.
+Jun 23 23:24:27 server systemd[1]: cloudflared-tunnel-metro.service: Start request repeated too quickly.
+Jun 23 23:24:27 server systemd[1]: cloudflared-tunnel-metro.service: Failed with result 'exit-code'.
+Jun 23 23:24:27 server systemd[1]: Failed to start cloudflared-tunnel-metro.service.
+
+× kanidm.service - kanidm identity management daemon
+     Loaded: loaded (/etc/systemd/system/kanidm.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:26 AEST; 1min 30s ago
+ Invocation: acaa3144a8cc4053bbf4f03a3b5aa91d
+    Process: 41200 ExecStart=/nix/store/yjnlqcdrqqfjdkygsp08hxlibpzkvz0v-kanidm-with-secret-provisioning-1.6.3/bin/kanidmd server -c /nix/store/d623m9lb16gxm7fzjn1kpcq22jz6bq5b-server.toml (code=exited, status=226/NAMESPACE)
+   Main PID: 41200 (code=exited, status=226/NAMESPACE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 1.7M
+        CPU: 18ms
+
+Jun 23 23:24:26 server systemd[1]: Starting kanidm identity management daemon...
+Jun 23 23:24:26 server (kanidmd)[41200]: kanidm.service: Failed to set up mount namespacing: /run/secrets: No such file or directory
+Jun 23 23:24:26 server (kanidmd)[41200]: kanidm.service: Failed at step NAMESPACE spawning /nix/store/yjnlqcdrqqfjdkygsp08hxlibpzkvz0v-kanidm-with-secret-provisioning-1.6.3/bin/kanidmd: No such file or directory
+Jun 23 23:24:26 server systemd[1]: kanidm.service: Main process exited, code=exited, status=226/NAMESPACE
+Jun 23 23:24:26 server systemd[1]: kanidm.service: Failed with result 'exit-code'.
+Jun 23 23:24:26 server systemd[1]: Failed to start kanidm identity management daemon.
+
+× nextcloud-cron.service
+     Loaded: loaded (/etc/systemd/system/nextcloud-cron.service; linked; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:50 AEST; 1min 6s ago
+   Duration: 201ms
+ Invocation: 8619929208e94e449ab4a89db4a31c62
+TriggeredBy: ● nextcloud-cron.timer
+    Process: 41555 ExecStart=/nix/store/792vl8967phlwl4nnaipfn5vl25m3j1f-unit-script-nextcloud-cron-start/bin/nextcloud-cron-start (code=exited, status=1/FAILURE)
+   Main PID: 41555 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 21.4M
+        CPU: 204ms
+
+Jun 23 23:24:50 server nextcloud-cron-start[41557]: Nextcloud is not installed - only a limited number of commands are available
+Jun 23 23:24:50 server Nextcloud[41561]: {"reqId":"7UK6YgM5VerXBo8onlpK","level":3,"time":"2025-06-23T13:24:50+00:00","remoteAddr":"","user":"--","app":"cron","method":"","url":"--","message":"{\"Exception\":\"Exception\",\"Message\":\"Not installed\",\"Code\":0,\"Trace\":[{\"file\":\"/nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/lib/base.php\",\"line\":691,\"function\":\"checkInstalled\",\"class\":\"OC\",\"type\":\"::\",\"args\":[{\"__class__\":\"OC\\\\SystemConfig\"}]},{\"file\":\"/nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/lib/base.php\",\"line\":1171,\"function\":\"init\",\"class\":\"OC\",\"type\":\"::\",\"args\":[]},{\"file\":\"/nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/cron.php\",\"line\":24,\"args\":[\"/nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/lib/base.php\"],\"function\":\"require_once\"}],\"File\":\"/nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/lib/base.php\",\"Line\":228,\"message\":\"Not installed\",\"exception\":{},\"CustomMessage\":\"Not installed\"}","userAgent":"--","version":""}
+Jun 23 23:24:50 server nextcloud-cron-start[41561]: Exception: Not installed in /nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/lib/base.php:228
+Jun 23 23:24:50 server nextcloud-cron-start[41561]: Stack trace:
+Jun 23 23:24:50 server nextcloud-cron-start[41561]: #0 /nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/lib/base.php(691): OC::checkInstalled(Object(OC\SystemConfig))
+Jun 23 23:24:50 server nextcloud-cron-start[41561]: #1 /nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/lib/base.php(1171): OC::init()
+Jun 23 23:24:50 server nextcloud-cron-start[41561]: #2 /nix/store/h8kx1d3cgbgifcbhav47s41x75rnw63v-nextcloud-31.0.6/cron.php(24): require_once('/nix/store/h8kx...')
+Jun 23 23:24:50 server nextcloud-cron-start[41561]: #3 {main}
+Jun 23 23:24:50 server systemd[1]: nextcloud-cron.service: Main process exited, code=exited, status=1/FAILURE
+Jun 23 23:24:50 server systemd[1]: nextcloud-cron.service: Failed with result 'exit-code'.
+
+× nextcloud-setup.service
+     Loaded: loaded (/etc/systemd/system/nextcloud-setup.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:26 AEST; 1min 30s ago
+ Invocation: 448dcd1b86ca49f5b7573739c4c3ae7e
+    Process: 41201 ExecStart=/nix/store/2fzzn633h4m60qr9am9p5anp2h2385b5-unit-script-nextcloud-setup-start/bin/nextcloud-setup-start (code=exited, status=243/CREDENTIALS)
+   Main PID: 41201 (code=exited, status=243/CREDENTIALS)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 1.8M
+        CPU: 5ms
+
+Jun 23 23:24:26 server systemd[1]: Starting nextcloud-setup.service...
+Jun 23 23:24:26 server (up-start)[41201]: nextcloud-setup.service: Failed to set up credentials: Protocol error
+Jun 23 23:24:26 server (up-start)[41201]: nextcloud-setup.service: Failed at step CREDENTIALS spawning /nix/store/2fzzn633h4m60qr9am9p5anp2h2385b5-unit-script-nextcloud-setup-start/bin/nextcloud-setup-start: Protocol error
+Jun 23 23:24:26 server systemd[1]: nextcloud-setup.service: Main process exited, code=exited, status=243/CREDENTIALS
+Jun 23 23:24:26 server systemd[1]: nextcloud-setup.service: Failed with result 'exit-code'.
+Jun 23 23:24:26 server systemd[1]: Failed to start nextcloud-setup.service.
+
+× nextcloud-update-db.service
+     Loaded: loaded (/etc/systemd/system/nextcloud-update-db.service; linked; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:27 AEST; 1min 29s ago
+   Duration: 242ms
+ Invocation: f955dceba9334c2f98633983362c363a
+    Process: 41323 ExecStart=/nix/store/in5n3fk1k3n1nl5mxw22hgczzhqa5x0f-unit-script-nextcloud-update-db-start/bin/nextcloud-update-db-start (code=exited, status=1/FAILURE)
+   Main PID: 41323 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 21.1M
+        CPU: 239ms
+
+Jun 23 23:24:26 server systemd[1]: Starting nextcloud-update-db.service...
+Jun 23 23:24:26 server systemd[1]: Started nextcloud-update-db.service.
+Jun 23 23:24:26 server nextcloud-update-db-start[41328]: Nextcloud is not installed - only a limited number of commands are available
+Jun 23 23:24:27 server nextcloud-update-db-start[41343]: Nextcloud is not installed - only a limited number of commands are available
+Jun 23 23:24:27 server nextcloud-update-db-start[41343]:                                                         
+Jun 23 23:24:27 server nextcloud-update-db-start[41343]:   There are no commands defined in the "db" namespace.
+Jun 23 23:24:27 server nextcloud-update-db-start[41343]:                                                         
+Jun 23 23:24:27 server systemd[1]: nextcloud-update-db.service: Main process exited, code=exited, status=1/FAILURE
+Jun 23 23:24:27 server systemd[1]: nextcloud-update-db.service: Failed with result 'exit-code'.
+
+● nginx.service - Nginx Web Server
+     Loaded: loaded (/etc/systemd/system/nginx.service; enabled; preset: ignored)
+     Active: activating (auto-restart) (Result: exit-code) since Mon 2025-06-23 23:25:56 AEST; 970ms ago
+ Invocation: 2700ae21b239411db952f3a107f14d03
+    Process: 42016 ExecStartPre=/nix/store/b499giy475qxrapnv9k5wdkwqlk47yr5-unit-script-nginx-pre-start/bin/nginx-pre-start (code=exited, status=0/SUCCESS)
+    Process: 42030 ExecStart=/nix/store/3qk4g71ciq7hf06nmy252qf4ng36g0s7-nginx-1.28.0/bin/nginx -c /nix/store/1qxc0hy1rqsaavy71ai8kq35h7rzsd1v-nginx.conf (code=exited, status=1/FAILURE)
+   Main PID: 42030 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 4.1M
+        CPU: 99ms
+
+● unbound.service - Unbound recursive Domain Name Server
+     Loaded: loaded (/etc/systemd/system/unbound.service; enabled; preset: ignored)
+     Active: activating (auto-restart) (Result: exit-code) since Mon 2025-06-23 23:25:56 AEST; 1s ago
+ Invocation: ea44a78814494e7e8a716849d536fefc
+    Process: 42043 ExecStartPre=/nix/store/18b3hrkdzxzynwjh2xng6lmrq829l3jl-unit-script-unbound-pre-start/bin/unbound-pre-start (code=exited, status=0/SUCCESS)
+    Process: 42048 ExecStart=/nix/store/r0wlr0yf0xa85lsa7yprdkirbi0l59l6-unbound-1.23.0/bin/unbound -p -d -c /etc/unbound/unbound.conf (code=exited, status=1/FAILURE)
+   Main PID: 42048 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 3.9M
+        CPU: 69ms
+
+× vaultwarden.service
+     Loaded: loaded (/etc/systemd/system/vaultwarden.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Mon 2025-06-23 23:24:27 AEST; 1min 29s ago
+   Duration: 45ms
+ Invocation: 2c0ea86cf8a0447a924006b027a76688
+    Process: 41381 ExecStart=/nix/store/x8d65w8njvdjvb01gf5alq7nyj821ycx-vaultwarden-1.33.2/bin/vaultwarden (code=exited, status=101)
+   Main PID: 41381 (code=exited, status=101)
+
+Jun 23 23:24:27 server systemd[1]: vaultwarden.service: Scheduled restart job, restart counter is at 5.
+Jun 23 23:24:27 server systemd[1]: vaultwarden.service: Start request repeated too quickly.
+Jun 23 23:24:27 server systemd[1]: vaultwarden.service: Failed with result 'exit-code'.
+Jun 23 23:24:27 server systemd[1]: Failed to start vaultwarden.service.
+⭐ ⚠️ [activate] [WARN] De-activating due to error
+switching profile from version 2 to 1
+⭐ ⚠️ [activate] [WARN] Removing generation by ID 2
+removing profile version 2
+⭐ ℹ️ [activate] [INFO] Attempting to re-activate the last generation
+⭐ ❌ [activate] [ERROR] There was an error de-activating after an error was encountered: Failed to run command for re-activating the last generation: No such file or directory (os error 2)
+🚀 ❌ [deploy] [ERROR] Activating over SSH resulted in a bad exit code: Some(1)
+🚀 ℹ️ [deploy] [INFO] Revoking previous deploys
+🚀 ❌ [deploy] [ERROR] Deployment to node home-server failed, rolled back to previous generation
+
+

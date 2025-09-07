@@ -1,0 +1,73 @@
+============================================================
+Disko + SnapRAID + MergerFS bootstrap (UUID edition)
+============================================================
+
+1.  Collect disk UUIDs
+    -------------------
+    Boot the NixOS installer ISO (runs from RAM) and list:
+        lsblk -f -o NAME,UUID,SIZE,MODEL
+    Note the UUIDs for:
+      • Main system SSD (root / EFI / Btrfs)
+      • Each media/data HDD
+      • One parity HDD  (must be >= biggest data drive)
+
+2.  Fill in vars.nix
+    -----------------
+        {
+          mainDisk   = "1111-2222-3333-4444";         # system SSD UUID
+          dataDisks  = [
+            "aaaa-bbbb-cccc-dddd-0001"
+            "aaaa-bbbb-cccc-dddd-0002"
+            "aaaa-bbbb-cccc-dddd-0003"
+          ];
+          parityDisk = "ffff-eeee-dddd-cccc-9999";
+        }
+
+3.  OPTIONAL: wipe target disks
+    ---------------------------
+    (Skip if they’re already empty.)
+        for d in /dev/disk/by-uuid/<uuid> … ; do
+          sudo wipefs -a "$d"
+          sudo sgdisk --zap-all "$d"
+        done
+
+4.  Run disko
+    ---------
+    Inside your flake repo:
+        nix run github:nix-community/disko -- \
+            --mode zap_create_mount ./disko.nix
+    - zap_create_mount destroys existing partitions
+    - create_mount is a safer non-destructive alternative
+
+5.  Install NixOS
+    --------------
+        nixos-install --flake .#<hostname>
+
+6.  First boot checks
+    -----------------
+    • /mnt/data       – MergerFS pool should be visible
+    • snapraid status – shows “Not initialized” (run sync)
+    • systemctl list-timers snapraid*  – daily/weekly timers scheduled
+    • smartctl -a /dev/disk/by-uuid/<uuid>  – SMART works
+
+7.  Daily routine
+    -------------
+    - Timers will call `snapraid sync` every day and `scrub` weekly.
+    - If a drive fails, replace it, keep same mountpoint, then:
+          snapraid -d <failed-disk> fix
+      Follow SnapRAID manual for details.
+
+8.  Expanding the array
+    -------------------
+    • Add new drive → get its UUID
+    • Append UUID to vars.dataDisks (and move old parity to data if needed)
+    • If you add an extra drive and want two-disk fault tolerance, assign
+      the new (largest) drive as another parityDisk and set `parity` lines
+      accordingly.
+    • Re-run disko in create_mount mode, then sync.
+
+9.  Backups
+    -------
+    This setup *does not* include off-site backups.  Consider restic
+    or borgbackup for critical data.
+
