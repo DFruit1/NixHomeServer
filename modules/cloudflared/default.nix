@@ -4,6 +4,14 @@ let
   vars = import ../../vars.nix { inherit lib; };
 in
 {
+  users.users.cloudflared = {
+    isSystemUser = true;
+    group = "cloudflared";
+    home = "/var/lib/cloudflared";
+  };
+
+  users.groups.cloudflared = { };
+
   services.cloudflared = {
     enable = true;
 

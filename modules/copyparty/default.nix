@@ -22,7 +22,7 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     serviceConfig = {
-      ExecStart = "${pkgs.python3}/bin/python ${copyparty} --address 127.0.0.1 --port ${toString vars.copypartyPort} --root ${vars.dataRoot}/copyparty";
+      ExecStart = "${pkgs.python3}/bin/python ${copyparty} -a 127.0.0.1:${toString vars.copypartyPort} ${vars.dataRoot}/copyparty";
       User = "copyparty";
       Group = "copyparty";
       Restart = "on-failure";
