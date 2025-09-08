@@ -2,27 +2,30 @@
 
 {
   services.homepage-dashboard = {
-    enable        = true;
-    listenPort    = vars.homepagePort;    # 3005
-    openFirewall  = true;                 # open TCP 3005
+    enable = true;
+    listenPort = vars.homepagePort; # 3005
+    openFirewall = true; # open TCP 3005
 
     ## ────────────────────────────────────────────────────────
     ## 1.  Bookmarks (grouped lists of name→URL)
     ## ────────────────────────────────────────────────────────
     bookmarks = [
-      { Developer = {
-          GitHub         = "https://github.com";
+      {
+        Developer = {
+          GitHub = "https://github.com";
           "NixOS Manual" = "https://nixos.org/manual/nixos/stable/";
-          "Kanidm Docs"  = "https://kanidm.github.io/kanidm/";
+          "Kanidm Docs" = "https://kanidm.github.io/kanidm/";
         };
       }
-      { Infrastructure = {
+      {
+        Infrastructure = {
           "Cloudflare Dash" = "https://dash.cloudflare.com";
-          Router            = "http://192.168.1.1";
-          "NetBird Admin"   = "https://app.netbird.io";
+          Router = "http://192.168.1.1";
+          "NetBird Admin" = "https://app.netbird.io";
         };
       }
-      { Learning = {
+      {
+        Learning = {
           "Rust Book" = "https://doc.rust-lang.org/book/";
           "QGIS Docs" = "https://docs.qgis.org/";
         };
@@ -33,50 +36,56 @@
     ## 2.  Services (grouped panels with icons, health-checks, etc.)
     ## ────────────────────────────────────────────────────────
     services = [
-      { Infrastructure = {
+      {
+        Infrastructure = {
           Caddy = {
-            icon        = "caddy";
-            href        = "https://${vars.domain}";
-            server      = vars.domain;
+            icon = "caddy";
+            href = "https://${vars.domain}";
+            server = vars.domain;
             statusCheck = "http";
             description = "Public reverse-proxy & ACME endpoint";
           };
           Kanidm = {
-            icon        = "shield";
-            href        = "https://${vars.kanidmDomain}";
-            server      = vars.kanidmDomain;
+            icon = "shield";
+            href = "https://${vars.kanidmDomain}";
+            server = vars.kanidmDomain;
             statusCheck = "http";
             description = "Identity (OIDC/LDAP) server";
           };
         };
       }
-      { Media = {
+      {
+        Media = {
           Immich = {
-            icon        = "image";
-            href        = "https://immich.${vars.domain}";
+            icon = "image";
+            href = "https://immich.${vars.domain}";
+            server = "immich.${vars.domain}";
             statusCheck = "http";
           };
           Audiobookshelf = {
-            icon        = "book";
-            href        = "https://audiobookshelf.${vars.domain}";
+            icon = "book";
+            href = "https://audiobookshelf.${vars.domain}";
+            server = "audiobookshelf.${vars.domain}";
             statusCheck = "http";
           };
         };
       }
-      { Storage = {
-          Nextcloud = {
-            icon        = "cloud";
-            href        = "https://nextcloud.${vars.domain}";
-            statusCheck = "http";
-          };
+      {
+        Storage = {
           Paperless = {
-            icon        = "file-document";
-            href        = "https://paperless.${vars.domain}";
+            icon = "file-document";
+            href = "https://paperless.${vars.domain}";
             statusCheck = "http";
           };
           Vaultwarden = {
-            icon        = "vault";
-            href        = "https://vault.${vars.domain}";
+            icon = "vault";
+            href = "https://vault.${vars.domain}";
+            statusCheck = "http";
+          };
+          Copyparty = {
+            icon = "upload";
+            href = "https://share.${vars.domain}";
+            server = "share.${vars.domain}";
             statusCheck = "http";
           };
         };
@@ -87,32 +96,36 @@
     ## 3.  Widgets (info, metrics, pings)
     ## ────────────────────────────────────────────────────────
     widgets = [
-      { datetime = {
+      {
+        datetime = {
           format = "dddd, MMMM D — HH:mm";
           locale = "en-AU";
         };
       }
-      { weather = {
-          label    = "Sydney";
+      {
+        weather = {
+          label = "Sydney";
           provider = "openweathermap";
-          latitude  = -33.87;
+          latitude = -33.87;
           longitude = 151.21;
-          units     = "metric";
-          apikey    = "{{HOMEPAGE_VAR_OWM}}";  # put in .env if you like
+          units = "metric";
+          apikey = "{{HOMEPAGE_VAR_OWM}}"; # put in .env if you like
         };
       }
-      { system = {
-          title    = "Server";
-          show     = [ "cpu" "mem" "load" "uptime" ];
-          refresh  = 30;
+      {
+        system = {
+          title = "Server";
+          show = [ "cpu" "mem" "load" "uptime" ];
+          refresh = 30;
           hostname = vars.hostname;
         };
       }
-      { ping = {
+      {
+        ping = {
           targets = {
-            Router     = "192.168.1.1";
+            Router = "192.168.1.1";
             Cloudflare = "1.1.1.1";
-            NetBird    = vars.nbIP;
+            NetBird = vars.nbIP;
           };
         };
       }
@@ -122,16 +135,16 @@
     ## 4.  Layout & theme settings
     ## ────────────────────────────────────────────────────────
     settings = {
-      title                    = "Sydney Basin Home Server";
-      theme                    = "dark";      # or "light"
-      color                    = "indigo";    # primary accent
-      fullWidth                = true;        # stretch to browser width
-      maxGroupColumns          = 3;           # bookmarks & services
-      groupsInitiallyCollapsed = false;       # start expanded
+      title = "Sydney Basin Home Server";
+      theme = "dark"; # or "light"
+      color = "indigo"; # primary accent
+      fullWidth = true; # stretch to browser width
+      maxGroupColumns = 3; # bookmarks & services
+      groupsInitiallyCollapsed = false; # start expanded
       layout = {
         Infrastructure = { style = "row"; columns = 2; };
-        Media          = { style = "row"; columns = 2; };
-        Storage        = { style = "row"; columns = 3; };
+        Media = { style = "row"; columns = 2; };
+        Storage = { style = "row"; columns = 2; };
       };
     };
 

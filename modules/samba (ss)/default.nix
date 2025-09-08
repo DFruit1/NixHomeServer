@@ -55,7 +55,7 @@ in
   # Firewall – LAN only
   ########################
   networking.firewall = {
-    interfaces.enp3s0.allowedTCPPorts = [ 139 445 ];
-    interfaces.enp3s0.allowedUDPPorts = [ 137 138 ];
+    interfaces.enp34s0.allowedTCPPorts = [ 139 445 ];
+    interfaces.enp34s0.allowedUDPPorts = [ 137 138 ];
   };
 }
