@@ -18,21 +18,15 @@ Ensure `age` and `openssl` are installed, then run:
 ```bash
 ./scripts/gen-all-secrets.sh
 ```
-The script generates and encrypts the Kanidm passwords plus OIDC client secrets for Immich, Paperless, Audiobookshelf, Copyparty and Vaultwarden.  Clear-text copies are written to `secrets/top/` for you to store securely.
+The script generates and encrypts the Kanidm passwords plus OIDC client secrets for Immich, Paperless, Audiobookshelf, Copyparty and Vaultwarden.  Clear‑text copies are written to `secrets/top/`, which is automatically added to `.gitignore` to keep them out of version control.
 
 ### Manual secrets
-Some credentials must be supplied manually.  If the script reports them missing:
+`cfHomeCreds` and `netbirdSetupKey` must be provided manually. Place the raw values in `secrets/top/` and rerun the script; it verifies their format and encrypts them to `.age` files. The script exits with an error if either secret is missing or malformed.
 
-- **netbirdSetupKey** – obtain a setup key from your NetBird admin UI and save it to `secrets/top/netbirdSetupKey`, then encrypt:
-```bash
-age -r "$(cat secrets/pubkeys/age.pub)" -o secrets/netbirdSetupKey.age secrets/top/netbirdSetupKey
-```
-- **cfHomeCreds** – after running `cloudflared tunnel login` and `cloudflared tunnel create metro`, copy the resulting credentials JSON to `secrets/top/cfHomeCreds` and encrypt:
-```bash
-age -r "$(cat secrets/pubkeys/age.pub)" -o secrets/cfHomeCreds.age secrets/top/cfHomeCreds
-```
+- **netbirdSetupKey** – retrieve a setup key from the NetBird admin UI and save it to `secrets/top/netbirdSetupKey` (single line, at least 20 URL‑safe characters).
+- **cfHomeCreds** – after running `cloudflared tunnel login` and `cloudflared tunnel create metro`, copy the resulting credentials JSON to `secrets/top/cfHomeCreds`.
 
-Remove `secrets/top` once the values are backed up somewhere safe.
+Once encrypted, move or delete the contents of `secrets/top` to keep clear‑text copies out of the repository.
 
 ## 3. Deploy to the server
 
