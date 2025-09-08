@@ -169,7 +169,6 @@ in
 
   users.users.kanidm.extraGroups = [ "caddy" ];
 
-
   boot.loader.grub = {
     enable = true;
     efiSupport = true;
