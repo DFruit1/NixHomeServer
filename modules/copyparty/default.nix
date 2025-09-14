@@ -1,4 +1,4 @@
-{ lib, pkgs, config, ... }:
+{ lib, pkgs, ... }:
 
 let
   vars = import ../../vars.nix { inherit lib; };
@@ -22,17 +22,10 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
     serviceConfig = {
-      ExecStart = "${pkgs.python3}/bin/python ${copyparty} -a 127.0.0.1:${toString vars.copypartyPort} ${vars.dataRoot}/copyparty";
+      ExecStart = "${pkgs.python3}/bin/python ${copyparty} -a 127.0.0.1:${toString vars.copypartyPort} --idp-h-usr X-Forwarded-User --idp-h-grp X-Forwarded-Groups --xff-src=lan ${vars.dataRoot}/copyparty";
       User = "copyparty";
       Group = "copyparty";
       Restart = "on-failure";
-    };
-    environment = {
-      CPP_AUTH_STRATEGY = "oidc";
-      CPP_OIDC_ISSUER = vars.kanidmIssuer;
-      CPP_OIDC_CLIENT_ID = "copyparty-web";
-      CPP_OIDC_CLIENT_SECRET_FILE = config.age.secrets.copypartyClientSecret.path;
-      CPP_OIDC_SCOPE = "openid profile email";
     };
   };
 
