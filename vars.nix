@@ -14,9 +14,14 @@ rec {
   lanIP = "192.168.0.144";
   nbIP = "100.96.1.10";
   defaultGateway = "192.168.0.1";
-  nameservers = [ "127.0.0.1" ];
+  dnscryptListenAddress = "127.0.0.1";
+  dnscryptListenPort = 5053;
+  dnscryptForwardAddress = "127.0.0.1";
+  primaryNameServers = [ dnscryptForwardAddress ];
+  fallbackNameServers = [ "9.9.9.9" "1.1.1.1" ];
   netIface = "enp34s0";
   netbirdIface = "nb0";
+  netbirdCidr = "100.64.0.0/10";
 
   ############################################################
   # PORTS – Edit here to avoid conflicts

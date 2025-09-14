@@ -43,6 +43,7 @@ declare -A SPEC=(
   [vaultwardenAdminToken]=48
   [oauth2ProxyClientSecret]=32
   [oauth2ProxyCookieSecret]=32
+  [copypartyClientSecret]=32
 )
 
 gen_secret() {
@@ -55,7 +56,7 @@ for name in "${!SPEC[@]}"; do
 clear_file="${top_dir}/${name}"
 age_file="${age_dir}/${name}.age"
 
-if [[ -f "$age_file" ]]; then
+if [[ -s "$age_file" ]]; then
 echo "⏭  $name already encrypted – skipping"
 continue
 fi
@@ -87,10 +88,10 @@ echo -n "🔐  Generating $name … "
   esac
 chmod 0440 "$clear_file"
 
-age --encrypt \
--r "$(cat secrets/pubkeys/age.pub)" \
---output "$age_file" \
-"$clear_file"
+age --encrypt --armor \
+  -r "$(cat secrets/pubkeys/age.pub)" \
+  --output "$age_file" \
+  "$clear_file"
 
 echo "done (→ $age_file)"
 done
@@ -102,7 +103,7 @@ key=$(tr -d '\r\n' <"$1")
 }
 
 validate_cf() {
-jq -e '.AccountTag|strings and .TunnelID|strings and .TunnelSecret|strings' "$1" >/dev/null 2>&1
+  jq -e '(.AccountTag|strings) and (.TunnelID|strings) and (.TunnelSecret|strings)' "$1" >/dev/null 2>&1
 }
 
 validate_cf_api_token() {
@@ -123,13 +124,13 @@ echo "❌ $name has invalid format." >&2
 exit 1
 fi
 chmod 0440 "$clear_file"
-age --encrypt -r "$(cat secrets/pubkeys/age.pub)" --output "$age_file" "$clear_file"
+ age --encrypt --armor -r "$(cat secrets/pubkeys/age.pub)" --output "$age_file" "$clear_file"
 echo "🔐  Encrypted $name → $age_file"
 }
 
 encrypt_manual netbirdSetupKey validate_netbird
 encrypt_manual cfHomeCreds validate_cf
-encrypt_manual cfApiToken validate_cf_api_token
+encrypt_manual cfAPIToken validate_cf_api_token
 
 echo -e "\n✅ All secrets generated or verified."
 echo "🔏 Clear-text copies are in $top_dir — delete or move them to a secure vault when you're done."

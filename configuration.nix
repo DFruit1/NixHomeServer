@@ -33,7 +33,7 @@ in
   networking = {
     hostName = vars.hostname;
     defaultGateway = vars.defaultGateway;
-    nameservers = vars.nameservers;
+    nameservers = vars.primaryNameServers;
     interfaces.enp34s0 = {
       ipv4.addresses = [
         { address = vars.lanIP; prefixLength = 24; }
@@ -145,7 +145,7 @@ in
     defaults = {
       email = vars.email;
       dnsProvider = "cloudflare";
-      credentialsFile = config.age.secrets.cfApiToken.path;
+      credentialsFile = config.age.secrets.cfAPIToken.path;
     };
     certs."${vars.kanidmDomain}" = {
       group = "caddy";

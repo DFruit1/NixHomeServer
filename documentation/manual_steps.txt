@@ -104,22 +104,24 @@ Create & encrypt each secret
 ----------------------------
 Example (NetBird setup key):
 $ echo 'wbx1k……' > plain.txt
-$ agenix -e secrets/netbird-setup-key.age plain.txt
+$ agenix -e secrets/netbirdSetupKey.age plain.txt
 $ rm plain.txt
 
 Required secret files
 ---------------------
-  netbird-setup-key.age
+  netbirdSetupKey.age
   cfHomeCreds.age
-  kanidm_admin_pass.age
-  kanidm_unixd_token.age
-  nc_admin_pass.age
-  nc_kanidm_client_secret.age
-  immich_kanidm_client_secret.age
-  paperless_kanidm_client_secret.age
-  abs_client_secret.age
-  vaultwarden_client_secret.age
-  vaultwarden_admin_token.age
+  cfAPIToken.age
+  kanidmAdminPass.age
+  kanidmSysAdminPass.age
+  immichClientSecret.age
+  paperlessClientSecret.age
+  absClientSecret.age
+  copypartyClientSecret.age
+  oauth2ProxyClientSecret.age
+  oauth2ProxyCookieSecret.age
+  vaultwardenClientSecret.age
+  vaultwardenAdminToken.age
 
 Tip:  random secret  ➜  pwgen -s 48 1 | agenix -e secrets/file.age
 
@@ -132,10 +134,10 @@ Laptop:
 $ cloudflared tunnel login
 $ cloudflared tunnel create home
 Copy the JSON creds → encrypt as cfHomeCreds.age
-$ cloudflared tunnel route dns home nextcloud.<domain>
+$ cloudflared tunnel route dns home fileshare.<domain>
 $ cloudflared tunnel route dns home id.<domain>
 
-Only *nextcloud* and *id* are tunneled; dashboard stays LAN/NetBird.
+Only *fileshare* and *id* are tunneled; dashboard stays LAN/NetBird.
 
 ─────────────────────────────────────────────────────────────────────
 11.  NETBIRD CLOUD
@@ -187,13 +189,13 @@ Timers auto-installed:
 ✓  https://id.sydneybasiniot.org            (login page)
 ✓  https://sydneybasiniot.org               (Homepage dashboard)
 ✓  https://vault.sydneybasiniot.org         (Kanidm SSO)
-Public LTE   ✓ nextcloud  ✗ root domain (should refuse)
+✓  https://fileshare.sydneybasiniot.org     (Copyparty)
+Public LTE   ✓ fileshare  ✗ root domain (should refuse)
 
 ─────────────────────────────────────────────────────────────────────
 16.  DAILY ROUTINE
 ─────────────────────────────────────────────────────────────────────
 • SnapRAID sync nightly, scrub weekly.
-• Nextcloud apps sync offline files.
 • Use Vaultwarden browser extension → “Login with SSO”.
 • NetBird mesh gives 100.96.x.x addresses.
 
@@ -205,7 +207,7 @@ Public LTE   ✓ nextcloud  ✗ root domain (should refuse)
 2.  # nixos-rebuild switch
 3.  Use server for a week.
 4.  # sudo apparmor-violations
-    → CSV at modules/apparmor/dotfiles/
+    → CSV at superceded/modules/apparmor/dotfiles/
 5.  Add missing paths to vars.appArmorDefaults.
 6.  Remove complainProfiles; rebuild → now in enforce mode.
 

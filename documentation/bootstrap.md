@@ -18,14 +18,14 @@ Ensure `age` and `openssl` are installed, then run:
 ```bash
 ./scripts/gen-all-secrets.sh
 ```
-The script generates and encrypts the Kanidm passwords plus OIDC client secrets for Immich, Paperless, Audiobookshelf, Vaultwarden and the OAuth2 Proxy.  Clear‑text copies are written to `secrets/top/`, and the entire `secrets/` directory is ignored to keep secrets out of version control.
+The script generates and encrypts the Kanidm passwords, the Vaultwarden admin token, and OIDC client secrets for Immich, Paperless, Audiobookshelf, Vaultwarden, Copyparty and the OAuth2 Proxy.  Clear‑text copies are written to `secrets/top/`, and the entire `secrets/` directory is ignored to keep secrets out of version control.
 
 ### Manual secrets
-`cfHomeCreds`, `cfApiToken` and `netbirdSetupKey` must be provided manually. Place the raw values in `secrets/top/` and rerun the script; it verifies their format and encrypts them to `.age` files. The script exits with an error if any secret is missing or malformed.
+`cfHomeCreds`, `cfAPIToken` and `netbirdSetupKey` must be provided manually. Place the raw values in `secrets/top/` and rerun the script; it verifies their format and encrypts them to `.age` files. The script exits with an error if any secret is missing or malformed.
 
 - **netbirdSetupKey** – retrieve a setup key from the NetBird admin UI and save it to `secrets/top/netbirdSetupKey` (single line, at least 20 URL‑safe characters).
 - **cfHomeCreds** – after running `cloudflared tunnel login` and `cloudflared tunnel create metro`, copy the resulting credentials JSON to `secrets/top/cfHomeCreds`.
-- **cfApiToken** – create a Cloudflare API token with DNS edit rights and save it as `secrets/top/cfApiToken` in the form `CF_API_TOKEN=…`.
+- **cfAPIToken** – create a Cloudflare API token with DNS edit rights and save it as `secrets/top/cfAPIToken` in the form `CF_API_TOKEN=…`.
 
 Once encrypted, move or delete the contents of `secrets/top` to keep clear‑text copies out of the repository.
 
