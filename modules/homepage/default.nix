@@ -84,8 +84,8 @@
           };
           Copyparty = {
             icon = "upload";
-            href = "https://share.${vars.domain}";
-            server = "share.${vars.domain}";
+            href = "https://fileshare.${vars.domain}";
+            server = "fileshare.${vars.domain}";
             statusCheck = "http";
           };
         };

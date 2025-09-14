@@ -1,8 +1,6 @@
-{ lib, pkgs, ... }:
+{ lib, pkgs, vars, ... }:
 
 let
-  vars = import ../../vars.nix { inherit lib; };
-
   genProfile = name: paths:
     let
       allowLines = lib.concatStringsSep "\n"

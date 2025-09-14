@@ -16,6 +16,7 @@ rec {
   defaultGateway = "192.168.0.1";
   nameservers = [ "127.0.0.1" ];
   netIface = "enp34s0";
+  netbirdIface = "nb0";
 
   ############################################################
   # PORTS – Edit here to avoid conflicts

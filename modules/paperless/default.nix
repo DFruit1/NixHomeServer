@@ -1,8 +1,5 @@
-{ lib, config, ... }:
+{ lib, config, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   users.users.paperless = {
     isSystemUser = true;

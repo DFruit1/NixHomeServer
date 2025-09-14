@@ -1,19 +1,18 @@
-{ lib, pkgs, config, ... }:
+{ lib, pkgs, vars, config, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   services.caddy = {
     enable = true;
 
+
     ## Caddy will register this e-mail with Let’s Encrypt
     email = "${vars.email}";
 
-    ## Enable DNS-01 challenges with Cloudflare
+    ## Use Cloudflare DNS-01 challenge for all certificates
     globalConfig = ''
       {
         acme_dns cloudflare {env.CF_API_TOKEN}
+        email ${vars.email}
       }
     '';
 
@@ -58,9 +57,15 @@ in
         '';
       };
 
-      "share.${vars.domain}" = {
+      "fileshare.${vars.domain}" = {
         extraConfig = ''
           reverse_proxy http://127.0.0.1:${toString vars.oauth2ProxyPort}
+        '';
+      };
+
+      "photoshare.${vars.domain}" = {
+        extraConfig = ''
+          reverse_proxy http://127.0.0.1:${toString vars.immichPort}
         '';
       };
 
@@ -72,12 +77,8 @@ in
     };
   };
 
-  systemd.services.caddy = {
-    wants = [ "acme-${vars.kanidmDomain}.service" ];
-    after = [ "acme-${vars.kanidmDomain}.service" ];
-    serviceConfig.EnvironmentFile = config.age.secrets.cfApiToken.path;
-  };
+  systemd.services.caddy.serviceConfig.EnvironmentFile = config.age.secrets.cfAPIToken.path;
 
-  ## HTTPS traffic
+  ## HTTP-01 challenge & HTTPS traffic
   networking.firewall.allowedTCPPorts = [ 80 443 ];
 }

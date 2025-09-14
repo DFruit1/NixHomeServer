@@ -1,8 +1,5 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   ######################################################################
   ## 1 — Core instance

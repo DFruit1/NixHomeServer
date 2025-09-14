@@ -1,17 +1,16 @@
-{ lib, config, ... }:
+{ lib, config, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   # NetBird client
   services.netbird.clients.main = {
     autoStart = true;
     openFirewall = true;
 
-    # WireGuard interface
-    interface = "nb0";
-    port = vars.wgPort;
+    ##################################################################
+    ## 2.  WireGuard interface
+    ##################################################################
+    interface = vars.netbirdIface;        # any name you like; default would be “nb-main” :contentReference[oaicite:2]{index=2}
+    port      = vars.wgPort;              # 16-bit UDP port seen by other peers :contentReference[oaicite:3]{index=3}
 
     # Path to the Age-decrypted setup key
     environment.NB_SETUP_KEY_FILE = config.age.secrets.netbirdSetupKey.path;

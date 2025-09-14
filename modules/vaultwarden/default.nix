@@ -1,8 +1,5 @@
-{ lib, config, ... }:
+{ lib, config, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   users.users.vaultwarden = {
     isSystemUser = true;
@@ -36,7 +33,6 @@ in
   };
 
   ## pass admin token and client secret without leaking to the Nix store
-
   systemd.services.vaultwarden.serviceConfig.EnvironmentFile = lib.mkAfter [
     config.age.secrets.vaultwardenAdminToken.path
     config.age.secrets.vaultwardenClientSecret.path

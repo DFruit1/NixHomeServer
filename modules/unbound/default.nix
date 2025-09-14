@@ -1,8 +1,7 @@
-{ pkgs, lib, config, ... }:
+{ pkgs, lib, vars, ... }:
 
 let
-  vars = import ../../vars.nix { inherit lib; };
-  netbirdIface = config.services.netbird.clients.main.interface or "nb0";
+  netbirdIface = vars.netbirdIface;
   netbirdCidr = "100.64.0.0/10";
 in
 {
@@ -63,7 +62,8 @@ in
           "immich.${vars.domain}          A ${vars.lanIP}"
           "paperless.${vars.domain}       A ${vars.lanIP}"
           "audiobookshelf.${vars.domain}  A ${vars.lanIP}"
-          "share.${vars.domain}           A ${vars.lanIP}"
+          "fileshare.${vars.domain}       A ${vars.lanIP}"
+          "photoshare.${vars.domain}      A ${vars.lanIP}"
           "id.${vars.domain}              A ${vars.lanIP}"
         ];
       };
