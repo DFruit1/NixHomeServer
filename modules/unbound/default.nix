@@ -1,14 +1,10 @@
 { pkgs, lib, vars, ... }:
 
-let
-  netbirdIface = vars.netbirdIface;
-  netbirdCidr = "100.64.0.0/10";
-in
 {
   services.dnscrypt-proxy2 = {
     enable = true;
     settings = {
-      listen_addresses = [ "127.0.0.1:5053" ];
+      listen_addresses = [ "${vars.dnscryptListenAddress}:${toString vars.dnscryptListenPort}" ];
       require_nolog = true;
       require_nofilter = true;
       require_dnssec = true;
@@ -45,7 +41,7 @@ in
         interface = [ "0.0.0.0" "::" ];
         access-control = [
           "192.168.0.0/16 allow"
-          "${netbirdCidr} allow"
+          "${vars.netbirdCidr} allow"
           "127.0.0.0/8 allow"
         ];
         verbosity = 1;
@@ -65,11 +61,14 @@ in
           "fileshare.${vars.domain}       A ${vars.lanIP}"
           "photoshare.${vars.domain}      A ${vars.lanIP}"
           "id.${vars.domain}              A ${vars.lanIP}"
+          "vault.${vars.domain}           A ${vars.lanIP}"
         ];
       };
       forward-zone = [{
         name = ".";
-        forward-addr = "127.0.0.1@5053";
+        forward-addr =
+          (map (ns: "${ns}@${toString vars.dnscryptListenPort}") vars.primaryNameServers)
+          ++ vars.fallbackNameServers;
       }];
     };
   };
@@ -79,8 +78,9 @@ in
 
   networking.firewall.allowedTCPPorts = [ 53 ];
   networking.firewall.allowedUDPPorts = [ 53 ];
-  networking.firewall.interfaces.${netbirdIface} = {
+  networking.firewall.interfaces.${vars.netbirdIface} = {
     allowedTCPPorts = [ 53 ];
     allowedUDPPorts = [ 53 ];
   };
 }
+

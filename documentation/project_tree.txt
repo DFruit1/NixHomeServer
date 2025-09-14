@@ -6,18 +6,14 @@ home-server/
 ├── hardware-configuration.nix
 ├── manual_steps.txt
 ├── project_tree.txt
-├── age.pub
 ├── modules/
-│   ├── apparmor/
-│   │   ├── default.nix
-│   │   └── dotfiles/
-│   │       ├── apparmor_violations.nu
-│   │       └── apparmor_violations.csv
 │   ├── audiobookshelf/
 │   │   └── default.nix
 │   ├── caddy/
 │   │   └── default.nix
 │   ├── cloudflared/
+│   │   └── default.nix
+│   ├── copyparty/
 │   │   └── default.nix
 │   ├── homepage/
 │   │   ├── default.nix
@@ -33,7 +29,7 @@ home-server/
 │   │   └── default.nix
 │   ├── netbird/
 │   │   └── default.nix
-│   ├── nextcloud/
+│   ├── oauth2-proxy/
 │   │   └── default.nix
 │   ├── paperless/
 │   │   └── default.nix
@@ -41,15 +37,34 @@ home-server/
 │   │   └── default.nix
 │   └── vaultwarden/
 │       └── default.nix
+├── superceded/
+│   └── modules/
+│       ├── apparmor/
+│       │   ├── default.nix
+│       │   └── dotfiles/
+│       │       ├── apparmor_violations.nu
+│       │       └── apparmor_violations.csv
+│       ├── keycloak/
+│       │   └── default.nix
+│       ├── nextcloud/
+│       │   └── default.nix
+│       └── samba/
+│           └── default.nix
 └── secrets/
-    ├── abs_client_secret.age
+    ├── absClientSecret.age
+    ├── agenix.nix
+    ├── cfAPIToken.age
     ├── cfHomeCreds.age
-    ├── immich_kanidm_client_secret.age
-    ├── kanidm_admin_pass.age
-    ├── kanidm_unixd_token.age
-    ├── nc_admin_pass.age
-    ├── nc_kanidm_client_secret.age
-    ├── netbird-setup-key.age
-    ├── paperless_kanidm_client_secret.age
-    ├── vaultwarden_admin_token.age
-    └── vaultwarden_client_secret.age
+    ├── copypartyClientSecret.age
+    ├── immichClientSecret.age
+    ├── kanidmAdminPass.age
+    ├── kanidmSysAdminPass.age
+    ├── netbirdSetupKey.age
+    ├── oauth2ProxyClientSecret.age
+    ├── oauth2ProxyCookieSecret.age
+    ├── paperlessClientSecret.age
+    ├── vaultwardenAdminToken.age
+    ├── vaultwardenClientSecret.age
+    ├── pubkeys/
+    │   └── age.pub
+    └── top/
