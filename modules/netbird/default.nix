@@ -1,8 +1,5 @@
-{ lib, config, ... }:
+{ lib, config, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   ############################################################
   # NetBird client ― primary instance called “main”
@@ -17,7 +14,7 @@ in
     ##################################################################
     ## 2.  WireGuard interface
     ##################################################################
-    interface = "nb0";                    # any name you like; default would be “nb-main” :contentReference[oaicite:2]{index=2}
+    interface = vars.netbirdIface;        # any name you like; default would be “nb-main” :contentReference[oaicite:2]{index=2}
     port      = vars.wgPort;              # 16-bit UDP port seen by other peers :contentReference[oaicite:3]{index=3}
 
     ##################################################################

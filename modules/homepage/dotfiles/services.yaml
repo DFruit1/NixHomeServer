@@ -9,6 +9,7 @@
         href: https://id.sydneybasiniot.org
         server: id.sydneybasiniot.org
         statusCheck: http
+
     - NetBird:
         icon: vpn
         href: https://app.netbird.io
@@ -35,6 +36,6 @@
         href: https://vault.sydneybasiniot.org
     - Copyparty:
         icon: upload
-        href: https://share.sydneybasiniot.org
-        server: share.sydneybasiniot.org
+        href: https://fileshare.sydneybasiniot.org
+        server: fileshare.sydneybasiniot.org
         statusCheck: http

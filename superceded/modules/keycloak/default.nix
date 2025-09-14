@@ -1,7 +1,5 @@
-{ pkgs, lib, ... }:
+{ pkgs, lib, vars, ... }:
 
-let vars = import ../../vars.nix { inherit lib; };
-in
 {
   services.keycloak = {
     enable   = true;

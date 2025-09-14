@@ -1,8 +1,5 @@
-{ lib, pkgs }:
+{ lib, pkgs, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   #############################################
   # Samba – per-user "homes" share (Kanidm ADS)

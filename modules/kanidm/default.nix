@@ -1,8 +1,5 @@
-{ lib, config, pkgs, ... }:
+{ lib, config, pkgs, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   services.kanidm = {
     enableServer = true;
@@ -12,8 +9,7 @@ in
       origin = "https://${vars.kanidmDomain}";
       domain = vars.domain;
       bindaddress = "127.0.0.1:${toString vars.kanidmPort}";
-
-      # ← NEW: reuse Caddy’s ACME files
+      # reuse certificates obtained by Caddy
       tls_chain =
         "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${vars.kanidmDomain}/${vars.kanidmDomain}.crt";
       tls_key =

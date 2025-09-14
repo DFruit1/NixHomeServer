@@ -6,9 +6,11 @@
     agenix.url = "github:ryantm/agenix";
     disko.url = "github:nix-community/disko";
     deploy-rs.url = "github:serokell/deploy-rs";
+    copyparty.url = "github:9001/copyparty";
+    copyparty.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, agenix, disko, deploy-rs, ... }:
+  outputs = { self, nixpkgs, agenix, disko, deploy-rs, copyparty, ... }:
     let
       system = "x86_64-linux";
       lib = nixpkgs.lib;
@@ -25,7 +27,7 @@
           agenix.nixosModules.default
           disko.nixosModules.disko
         ];
-        specialArgs = { inherit vars disko; };
+        specialArgs = { inherit vars disko copyparty; };
       };
 
       ################ deploy-rs spec  ################################

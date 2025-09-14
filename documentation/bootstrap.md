@@ -56,5 +56,5 @@ Users can now log in to services via OIDC.
 
 ## 5. Copyparty file sharing
 
-Copyparty is exposed at `https://share.${vars.domain}` behind the Cloudflare tunnel.  Users authenticate via Kanidm and can upload or share files through the web interface.
+Copyparty is exposed at `https://fileshare.${vars.domain}` behind the Cloudflare tunnel. Users authenticate via Kanidm and can upload or share files through the web interface.
 

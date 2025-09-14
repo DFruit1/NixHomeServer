@@ -1,8 +1,5 @@
-{ lib, config, ... }:
+{ lib, config, vars, ... }:
 
-let
-  vars = import ../../vars.nix { inherit lib; };
-in
 {
   users.users.cloudflared = {
     isSystemUser = true;
@@ -22,8 +19,12 @@ in
       ingress = {
         "${vars.domain}" = "https://localhost";
         "www.${vars.domain}" = "https://localhost";
-        "share.${vars.domain}" = "https://localhost";
-        "${vars.kanidmDomain}" = "https://localhost:${toString vars.kanidmPort}";
+        "${vars.kanidmDomain}" = "https://localhost";
+        "paperless.${vars.domain}" = "https://localhost";
+        "audiobookshelf.${vars.domain}" = "https://localhost";
+        "fileshare.${vars.domain}" = "https://localhost";
+        "photoshare.${vars.domain}" = "https://localhost";
+        "vault.${vars.domain}" = "https://localhost";
       };
       default = "http_status:404";
     };
