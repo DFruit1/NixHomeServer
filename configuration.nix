@@ -52,6 +52,7 @@ in
     ./modules/caddy
     ./modules/cloudflared
     ./modules/copyparty
+    ./modules/oauth2-proxy
     ./modules/immich
     ./modules/kanidm
     ./modules/netbird
@@ -140,7 +141,22 @@ in
   };
 
   ###############################################################################
-  #  Secrets, users, bootstrap-SSH, etc.  (unchanged)
+  #  ACME certificates
+  ###############################################################################
+  security.acme = {
+    acceptTerms = true;
+    defaults = {
+      email = vars.email;
+      dnsProvider = "cloudflare";
+      credentialsFile = config.age.secrets.cfApiToken.path;
+    };
+    certs."${vars.kanidmDomain}" = {
+      group = "caddy";
+    };
+  };
+
+  ###############################################################################
+#  Secrets, users, bootstrap-SSH, etc.  (unchanged)
   ###############################################################################
   #Manually copy the private key to this location, with 0400 permissions
   age.identityPaths = [ "/etc/agenix/age.key" ];
@@ -148,11 +164,16 @@ in
   age.secrets = {
     netbirdSetupKey = { file = ./secrets/netbirdSetupKey.age; owner = "netbird-main"; mode = "0400"; };
     cfHomeCreds = { file = ./secrets/cfHomeCreds.age; owner = "cloudflared"; group = "cloudflared"; mode = "0400"; };
+    cfApiToken = { file = ./secrets/cfApiToken.age; owner = "root"; group = "caddy"; mode = "0440"; };
     kanidmAdminPass = { file = ./secrets/kanidmAdminPass.age; owner = "kanidm"; mode = "0400"; };
     kanidmSysAdminPass = { file = ./secrets/kanidmSysAdminPass.age; owner = "kanidm"; mode = "0400"; };
     immichClientSecret = { file = ./secrets/immichClientSecret.age; owner = "immich"; mode = "0400"; };
     paperlessClientSecret = { file = ./secrets/paperlessClientSecret.age; owner = "paperless"; group = "paperless"; mode = "0400"; };
     absClientSecret = { file = ./secrets/absClientSecret.age; owner = "audiobookshelf"; mode = "0400"; };
+    vaultwardenClientSecret = { file = ./secrets/vaultwardenClientSecret.age; owner = "vaultwarden"; mode = "0400"; };
+    vaultwardenAdminToken = { file = ./secrets/vaultwardenAdminToken.age; owner = "vaultwarden"; mode = "0400"; };
+    oauth2ProxyClientSecret = { file = ./secrets/oauth2ProxyClientSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
+    oauth2ProxyCookieSecret = { file = ./secrets/oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     copypartyClientSecret = { file = ./secrets/copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };
     vaultwardenClientSecret = { file = ./secrets/vaultwardenClientSecret.age; owner = "vaultwarden"; mode = "0400"; };
     vaultwardenAdminToken = { file = ./secrets/vaultwardenAdminToken.age; owner = "vaultwarden"; mode = "0400"; };

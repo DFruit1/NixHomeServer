@@ -35,12 +35,12 @@ in
     backupDir = "${vars.dataRoot}/vaultwarden/backups";
 
     ## pass admin token and client secret without leaking to Nix store
-    serviceConfig.EnvironmentFile = lib.mkAfter [
-      config.age.secrets.vaultwardenAdminToken.path
-      config.age.secrets.vaultwardenClientSecret.path
-    ];
   };
 
+  systemd.services.vaultwarden.serviceConfig.EnvironmentFile = lib.mkAfter [
+    config.age.secrets.vaultwardenAdminToken.path
+    config.age.secrets.vaultwardenClientSecret.path
+  ];
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/vaultwarden 0700 vaultwarden vaultwarden -"
     "d ${vars.dataRoot}/vaultwarden/backups 0700 vaultwarden vaultwarden -"
