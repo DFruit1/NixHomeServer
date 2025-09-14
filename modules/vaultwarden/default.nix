@@ -41,7 +41,6 @@ in
     config.age.secrets.vaultwardenAdminToken.path
     config.age.secrets.vaultwardenClientSecret.path
   ];
-
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/vaultwarden 0700 vaultwarden vaultwarden -"
     "d ${vars.dataRoot}/vaultwarden/backups 0700 vaultwarden vaultwarden -"

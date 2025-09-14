@@ -156,7 +156,7 @@ in
   };
 
   ###############################################################################
-  #  Secrets, users, bootstrap-SSH, etc.  (unchanged)
+#  Secrets, users, bootstrap-SSH, etc.  (unchanged)
   ###############################################################################
   #Manually copy the private key to this location, with 0400 permissions
   age.identityPaths = [ "/etc/agenix/age.key" ];
@@ -174,6 +174,9 @@ in
     vaultwardenAdminToken = { file = ./secrets/vaultwardenAdminToken.age; owner = "vaultwarden"; mode = "0400"; };
     oauth2ProxyClientSecret = { file = ./secrets/oauth2ProxyClientSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     oauth2ProxyCookieSecret = { file = ./secrets/oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
+    copypartyClientSecret = { file = ./secrets/copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };
+    vaultwardenClientSecret = { file = ./secrets/vaultwardenClientSecret.age; owner = "vaultwarden"; mode = "0400"; };
+    vaultwardenAdminToken = { file = ./secrets/vaultwardenAdminToken.age; owner = "vaultwarden"; mode = "0400"; };
   };
 
   # bootstrap users & SSH   (your original block kept verbatim)
@@ -185,6 +188,7 @@ in
     ];
   };
 
+  users.users.kanidm.extraGroups = [ "caddy" ];
 
   boot.loader.grub = {
     enable = true;
