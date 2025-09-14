@@ -39,7 +39,12 @@ in
         { address = vars.lanIP; prefixLength = 24; }
       ];
     };
+    networkmanager = {
+      enable = true;
+      dns = "none";
+    };
   };
+  services.resolved.enable = false;
   time.timeZone = "Australia/Sydney";
 
   ###############################################################################

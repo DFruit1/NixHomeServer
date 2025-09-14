@@ -33,13 +33,13 @@ in
 
     ## optional: where nightly JSON + attachment backups go
     backupDir = "${vars.dataRoot}/vaultwarden/backups";
-
-    ## pass admin token and client secret without leaking to Nix store
-    serviceConfig.EnvironmentFile = lib.mkAfter [
-      config.age.secrets.vaultwardenAdminToken.path
-      config.age.secrets.vaultwardenClientSecret.path
-    ];
   };
+
+  ## pass admin token and client secret without leaking to the Nix store
+  systemd.services.vaultwarden.serviceConfig.EnvironmentFile = lib.mkAfter [
+    config.age.secrets.vaultwardenAdminToken.path
+    config.age.secrets.vaultwardenClientSecret.path
+  ];
 
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/vaultwarden 0700 vaultwarden vaultwarden -"
