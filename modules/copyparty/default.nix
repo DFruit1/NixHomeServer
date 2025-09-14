@@ -1,4 +1,5 @@
 { lib, config, vars, copyparty, ... }:
+
 {
   imports = [ copyparty.nixosModules.default ];
 

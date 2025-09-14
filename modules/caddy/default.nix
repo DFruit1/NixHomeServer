@@ -31,6 +31,7 @@
 
       "${vars.kanidmDomain}" = {
         extraConfig = ''
+          tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem
           reverse_proxy http://127.0.0.1:${toString vars.kanidmPort} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host  {host}
@@ -58,7 +59,7 @@
 
       "fileshare.${vars.domain}" = {
         extraConfig = ''
-          reverse_proxy http://127.0.0.1:${toString vars.copypartyPort}
+          reverse_proxy http://127.0.0.1:${toString vars.oauth2ProxyPort}
         '';
       };
 

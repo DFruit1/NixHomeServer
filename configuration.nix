@@ -138,7 +138,22 @@ in
   };
 
   ###############################################################################
-  #  Secrets, users, bootstrap-SSH, etc.  (unchanged)
+  #  ACME certificates
+  ###############################################################################
+  security.acme = {
+    acceptTerms = true;
+    defaults = {
+      email = vars.email;
+      dnsProvider = "cloudflare";
+      credentialsFile = config.age.secrets.cfApiToken.path;
+    };
+    certs."${vars.kanidmDomain}" = {
+      group = "caddy";
+    };
+  };
+
+  ###############################################################################
+#  Secrets, users, bootstrap-SSH, etc.  (unchanged)
   ###############################################################################
 
   # bootstrap users & SSH   (your original block kept verbatim)

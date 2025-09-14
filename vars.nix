@@ -29,6 +29,7 @@ rec {
   copypartyPort = 3923;
   vaultwardenPort = 8222;
   homepagePort = 3005;
+  oauth2ProxyPort = 4180;
 
   ############################################################
   # Disk UUIDs (examples – REPLACE)
