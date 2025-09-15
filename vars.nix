@@ -71,14 +71,31 @@ rec {
   ############################################################
   # AppArmor allow‑paths
   ############################################################
+  appArmorCommonPaths = [
+    "/nix/store/**"
+    "/usr/**"
+    "/run/**"
+    "/etc/ssl/**"
+    "/etc/machine-id"
+    "/dev/null"
+    "/dev/urandom"
+    "/proc/**"
+    "/sys/**"
+  ];
+
   appArmorDefaults = {
     caddy = [ "/var/lib/caddy/**" "/var/log/caddy/**" "/etc/caddy/**" ];
     kanidm = [ "/var/lib/kanidm/**" "/var/log/kanidm/**" "/etc/kanidm/**" ];
-    immich = [ "${dataRoot}/immich/**" "/var/log/immich/**" ];
-    paperless = [ "${dataRoot}/paperless/**" "/var/log/paperless-ngx/**" ];
+    "immich-server" = [ "${dataRoot}/immich/**" "/var/log/immich/**" ];
+    "paperless-ngx" = [ "${dataRoot}/paperless/**" "/var/log/paperless-ngx/**" ];
     audiobookshelf = [ "${dataRoot}/audiobookshelf/**" "/var/log/audiobookshelf/**" ];
-    copyparty = [ "${dataRoot}/copyparty/**" "/var/log/copyparty/**" ];
+    copypartyd = [ "${dataRoot}/copyparty/**" "/var/log/copyparty/**" ];
     vaultwarden = [ "${dataRoot}/vaultwarden/**" "/var/log/vaultwarden/**" "/etc/vaultwarden/**" ];
     homepage = [ "${dataRoot}/homepage/**" "/var/log/homepage-dashboard/**" ];
+    cloudflared = [ "/var/lib/cloudflared/**" "/var/log/cloudflared/**" "/etc/cloudflared/**" ];
+    netbird = [ "/var/lib/netbird/**" "/var/log/netbird/**" "/etc/netbird/**" ];
+    "oauth2-proxy" = [ "/var/lib/oauth2-proxy/**" "/var/log/oauth2-proxy/**" "/etc/oauth2-proxy/**" ];
+    unbound = [ "/var/lib/unbound/**" "/var/log/unbound/**" "/etc/unbound/**" ];
+    "dnscrypt-proxy2" = [ "/var/lib/dnscrypt-proxy/**" "/var/log/dnscrypt-proxy/**" "/etc/dnscrypt-proxy/**" ];
   };
 }
