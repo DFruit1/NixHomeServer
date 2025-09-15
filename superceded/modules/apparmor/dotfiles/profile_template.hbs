@@ -1,0 +1,44 @@
+#include <tunables/global>
+
+profile {{name}} flags=(attach_disconnected,mediate_deleted) {
+  # ——— Tunables
+  {{#if policy.read_env}}
+  /etc/environment r,
+  /etc/default/** r,
+  {{/if}}
+
+  # ——— ALWAYS NEEDED
+  capability chown,
+  capability fowner,
+  capability dac_override,
+  capability setgid,
+  capability setuid,
+  signal (receive) peer=unconfined,
+
+  # Logging noise reductions
+  deny @{PROC}/{,**} w,
+  deny @{PROC}/sys/kernel/** rwklx,
+
+  {{#if policy.allow_network}}
+  network inet stream,
+  network inet6 stream,
+  {{/if}}
+
+  {{#if policy.allow_tmp}}
+  /tmp/** rwk,
+  owner /run/** rwk,
+  {{/if}}
+
+  {{#if policy.allow_sysfs_ro}}
+  @{sys}/** r,
+  {{/if}}
+
+  # ——— File atoms (generated from denials)
+  {{#each atoms}}
+  {{this}}
+  {{/each}}
+
+  # ——— Confinement
+  /usr/bin/** mr,
+  /** rm,
+}

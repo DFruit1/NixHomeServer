@@ -1,0 +1,37 @@
+# config/map.toml
+
+[[profiles]]
+name = "copypartyd"
+unit = "copyparty.service"
+match.comm_regex = "^copyparty$"
+# optional hardening extras
+policy.allow_network = true
+policy.allow_tmp = true
+policy.read_env = true
+
+[[profiles]]
+name = "audiobookshelf"
+unit = "audiobookshelf.service"
+match.exe_regex = "/nix/store/.*/bin/node$"
+match.hint_contains_path = "/var/lib/audiobookshelf"
+policy.allow_network = true
+
+[[profiles]]
+name = "immich-server"
+unit = "immich-server.service"
+match.comm_regex = "^(node|immich|immich-server)$"
+policy.allow_network = true
+policy.allow_sysfs_ro = true
+
+[[profiles]]
+name = "paperless-ngx"
+unit = "paperless-ngx.service"
+match.comm_regex = "^gunicorn$"
+policy.allow_network = true
+
+# Fallback catch-all (optional)
+[[profiles]]
+name = "generic-sandbox"
+unit = ""
+match.comm_regex = ".*"
+policy.allow_network = false
