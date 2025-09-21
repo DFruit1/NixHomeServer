@@ -4,7 +4,12 @@
   age.identityPaths = [ "/etc/agenix/age.key" ];
 
   age.secrets = {
-    netbirdSetupKey = { file = ./netbirdSetupKey.age; owner = "netbird-main"; mode = "0400"; };
+    netbirdSetupKey = {
+      file = ./netbirdSetupKey.age;
+      owner = "netbird-main";
+      group = "netbird-main";
+      mode = "0400";
+    };
     cfHomeCreds = { file = ./cfHomeCreds.age; owner = "cloudflared"; group = "cloudflared"; mode = "0400"; };
     cfAPIToken = { file = ./cfAPIToken.age; owner = "caddy"; group = "caddy"; mode = "0400"; };
     kanidmAdminPass = { file = ./kanidmAdminPass.age; owner = "kanidm"; mode = "0400"; };

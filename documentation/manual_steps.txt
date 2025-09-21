@@ -1,6 +1,6 @@
 =====================================================================
   Home-Server Install Guide
-  NixOS 24.05 · Kanidm · Nextcloud · SnapRAID · MergerFS · NetBird
+  NixOS 25.05 · Kanidm · Immich · SnapRAID · MergerFS · NetBird
 =====================================================================
 
 LEGEND
@@ -134,10 +134,18 @@ Laptop:
 $ cloudflared tunnel login
 $ cloudflared tunnel create home
 Copy the JSON creds → encrypt as cfHomeCreds.age
-$ cloudflared tunnel route dns home fileshare.<domain>
+$ cloudflared tunnel route dns home <domain>
+$ cloudflared tunnel route dns home www.<domain>
 $ cloudflared tunnel route dns home id.<domain>
+$ cloudflared tunnel route dns home paperless.<domain>
+$ cloudflared tunnel route dns home immich.<domain>
+$ cloudflared tunnel route dns home audiobookshelf.<domain>
+$ cloudflared tunnel route dns home fileshare.<domain>
+$ cloudflared tunnel route dns home photoshare.<domain>
+$ cloudflared tunnel route dns home vault.<domain>
 
-Only *fileshare* and *id* are tunneled; dashboard stays LAN/NetBird.
+Each hostname now maps directly to the local service that Caddy or the OAuth
+proxy exposes on 127.0.0.1.
 
 ─────────────────────────────────────────────────────────────────────
 11.  NETBIRD CLOUD
@@ -164,12 +172,10 @@ First boot:
       --domain sydneybasiniot.org \
       --admin-pass-file /run/secrets/kanidm_admin_pass
 
-Create OIDC clients (one per app):
-# sudo -u kanidm kanidm client create nextcloud-web \
-      --redirect-uri https://nextcloud.sydneybasiniot.org/*
-
-(repeat for immich-web, paperless-web, abs-web, vaultwarden-web)
-Encrypt each printed client_secret into the matching .age.
+Create OIDC clients (one per app): immich-web, paperless-web, abs-web,
+vaultwarden-web, copyparty-web and oauth2-proxy. Use the redirect URIs noted in
+the module definitions under `modules/` so each service matches its upstream
+callback. Encrypt every printed client_secret into the matching .age file.
 
 Unix token:
 # sudo -u kanidm kanidm unix create -f /run/secrets/kanidm_unixd_token
@@ -188,8 +194,11 @@ Timers auto-installed:
 ─────────────────────────────────────────────────────────────────────
 ✓  https://id.sydneybasiniot.org            (login page)
 ✓  https://sydneybasiniot.org               (Homepage dashboard)
+✓  https://paperless.sydneybasiniot.org     (Paperless-ngx)
+✓  https://audiobookshelf.sydneybasiniot.org (Audiobookshelf)
+✓  https://photoshare.sydneybasiniot.org    (Immich)
 ✓  https://vault.sydneybasiniot.org         (Kanidm SSO)
-✓  https://fileshare.sydneybasiniot.org     (Copyparty)
+✓  https://fileshare.sydneybasiniot.org     (Copyparty via OAuth2 Proxy)
 Public LTE   ✓ fileshare  ✗ root domain (should refuse)
 
 ─────────────────────────────────────────────────────────────────────

@@ -1,7 +1,17 @@
-{ lib, config, vars, ... }:
+{ config, vars, ... }:
 
 {
+  users.groups."netbird-main" = { };
+
+  users.users."netbird-main" = {
+    isSystemUser = true;
+    group = "netbird-main";
+    home = "/var/lib/netbird-main";
+  };
+
   services.netbird.clients.myNetbirdClient = {
+    name = "main";
+    hardened = true;
     autoStart = true;
     openFirewall = true;
     interface = vars.netbirdIface;
@@ -10,4 +20,6 @@
   };
 
   networking.firewall.allowedUDPPorts = [ vars.wgPort ];
+
+  systemd.services."netbird-main".serviceConfig.AppArmorProfile = "generated-netbird-main";
 }

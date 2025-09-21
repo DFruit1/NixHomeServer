@@ -17,17 +17,21 @@
       credentialsFile = config.age.secrets.cfHomeCreds.path;
 
       ingress = {
-        "${vars.domain}" = "https://localhost";
-        "www.${vars.domain}" = "https://localhost";
-        "${vars.kanidmDomain}" = "https://localhost";
-        "paperless.${vars.domain}" = "https://localhost";
-        "audiobookshelf.${vars.domain}" = "https://localhost";
-        "fileshare.${vars.domain}" = "https://localhost";
-        "photoshare.${vars.domain}" = "https://localhost";
-        "vault.${vars.domain}" = "https://localhost";
+        "${vars.domain}" = "http://127.0.0.1:${toString vars.homepagePort}";
+        "www.${vars.domain}" = "http://127.0.0.1:${toString vars.homepagePort}";
+        "${vars.kanidmDomain}" = "https://127.0.0.1:${toString vars.kanidmPort}";
+        "paperless.${vars.domain}" = "http://127.0.0.1:${toString vars.paperlessPort}";
+        "immich.${vars.domain}" = "http://127.0.0.1:${toString vars.immichPort}";
+        "audiobookshelf.${vars.domain}" = "http://127.0.0.1:${toString vars.audiobookshelfPort}";
+        "fileshare.${vars.domain}" = "http://127.0.0.1:${toString vars.oauth2ProxyPort}";
+        "photoshare.${vars.domain}" = "http://127.0.0.1:${toString vars.immichPort}";
+        "vault.${vars.domain}" = "http://127.0.0.1:${toString vars.vaultwardenPort}";
       };
       default = "http_status:404";
     };
   };
   # Cloudflared only makes outbound connections → no firewall ports needed
+
+  systemd.services."cloudflared-tunnel-${vars.cloudflareTunnelName}".serviceConfig.AppArmorProfile =
+    "generated-cloudflared-tunnel-${vars.cloudflareTunnelName}";
 }

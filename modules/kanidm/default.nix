@@ -39,6 +39,7 @@
   systemd.services.kanidm = {
     after = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
     wants = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
+    serviceConfig.AppArmorProfile = "generated-kanidm";
   };
 
   users.users.kanidm.extraGroups = [ "caddy" ];
@@ -46,6 +47,4 @@
   systemd.tmpfiles.rules = [
     "d /var/lib/kanidm 0700 kanidm kanidm -"
   ];
-
-  networking.firewall.allowedTCPPorts = [ vars.kanidmPort ];
 }

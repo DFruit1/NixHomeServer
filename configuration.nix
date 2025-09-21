@@ -90,6 +90,7 @@ in
 
   systemd.tmpfiles.rules = [
     "d ${mergerfsMountPoint} 0755 root root -"
+    "d /run/secrets 0750 root root -"
   ];
 
   environment.etc."snapraid.conf".text = ''

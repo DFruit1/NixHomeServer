@@ -4,7 +4,6 @@
   services.audiobookshelf = {
     enable = true;
     dataDir = "${vars.dataRoot}/audiobookshelf";
-    openFirewall = true; # if you want 8080 exposed
     port = vars.audiobookshelfPort;
   };
 
@@ -28,4 +27,6 @@
     ABS_OIDC_LOGOUT_URL = "${vars.kanidmIssuer}/protocol/openid-connect/logout";
     ABS_OIDC_USERNAME_CLAIM = "preferred_username";
   };
+
+  systemd.services.audiobookshelf.serviceConfig.AppArmorProfile = "generated-audiobookshelf";
 }

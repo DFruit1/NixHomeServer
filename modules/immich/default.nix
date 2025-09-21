@@ -1,12 +1,9 @@
 { vars, config, ... }:
 
-let
-  netbirdIface = vars.netbirdIface;
-in
 {
   services.immich = {
     enable = true;
-    host = "0.0.0.0";
+    host = "127.0.0.1";
     port = vars.immichPort;
     mediaLocation = "${vars.dataRoot}/immich";
     user = "immich";
@@ -30,6 +27,5 @@ in
     IMMICH_OIDC_SCOPE = "openid profile email";
   };
 
-  networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts = [ vars.immichPort ];
-  networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts = [ vars.immichPort ];
+  systemd.services.immich-server.serviceConfig.AppArmorProfile = "generated-immich-server";
 }

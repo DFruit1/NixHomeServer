@@ -29,5 +29,5 @@
     CPP_OIDC_SCOPE = "openid profile email";
   };
 
-  networking.firewall.allowedTCPPorts = [ vars.copypartyPort ];
+  systemd.services.copyparty.serviceConfig.AppArmorProfile = "generated-copyparty";
 }
