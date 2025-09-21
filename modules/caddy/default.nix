@@ -78,6 +78,7 @@
   };
 
   systemd.services.caddy.serviceConfig.EnvironmentFile = config.age.secrets.cfAPIToken.path;
+  systemd.services.caddy.serviceConfig.AppArmorProfile = "generated-caddy";
 
   ## HTTP-01 challenge & HTTPS traffic
   networking.firewall.allowedTCPPorts = [ 80 443 ];

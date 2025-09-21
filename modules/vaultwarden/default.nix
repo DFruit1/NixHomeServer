@@ -19,6 +19,7 @@
     config = {
       DATA_FOLDER = "${vars.dataRoot}/vaultwarden";
       DOMAIN = "https://vault.${vars.domain}";
+      ROCKET_ADDRESS = "127.0.0.1";
       ROCKET_PORT = toString vars.vaultwardenPort;
 
       ## ── SSO / Kanidm wiring (OIDC) ──────────────────────────────────
@@ -38,6 +39,8 @@
     config.age.secrets.vaultwardenClientSecret.path
   ];
 
+  systemd.services.vaultwarden.serviceConfig.AppArmorProfile = "generated-vaultwarden";
+
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/vaultwarden 0700 vaultwarden vaultwarden -"
     "d ${vars.dataRoot}/vaultwarden/backups 0700 vaultwarden vaultwarden -"
@@ -46,7 +49,4 @@
   ## ensure built-in backup uses the custom data directory
   systemd.services.backup-vaultwarden.environment.DATA_FOLDER =
     lib.mkForce "${vars.dataRoot}/vaultwarden";
-
-  ## open the chosen Rocket port in the firewall
-  networking.firewall.allowedTCPPorts = [ vars.vaultwardenPort ];
 }

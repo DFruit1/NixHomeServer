@@ -15,6 +15,7 @@
   services.paperless = {
     enable = true;
     dataDir = "${vars.dataRoot}/paperless";
+    address = "127.0.0.1";
 
     # extra package pin is optional; defaults to pkgs.paperless
     # package = pkgs.paperless;
@@ -43,4 +44,6 @@
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/paperless 0750 paperless paperless -"
   ];
+
+  systemd.services."paperless-web".serviceConfig.AppArmorProfile = "generated-paperless-web";
 }
