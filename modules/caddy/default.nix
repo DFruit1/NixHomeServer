@@ -3,7 +3,10 @@
 {
   services.caddy = {
     enable = true;
-
+    package = pkgs.caddy.withPlugins {
+      plugins = [ "github.com/caddy-dns/cloudflare@v0.2.1" ];
+      hash = "sha256-RZ+I7356mEnNAaIZTnRwSl+EeWmVAMC9FBzw9xYcah8=";
+    };
 
     ## Caddy will register this e-mail with Let’s Encrypt
     email = "${vars.email}";
@@ -32,7 +35,11 @@
       "${vars.kanidmDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem
-          reverse_proxy http://127.0.0.1:${toString vars.kanidmPort} {
+          reverse_proxy https://127.0.0.1:${toString vars.kanidmPort} {
+            transport http {
+              tls
+              tls_server_name ${vars.kanidmDomain}
+            }
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host  {host}
           }
@@ -78,6 +85,7 @@
   };
 
   systemd.services.caddy.serviceConfig.EnvironmentFile = config.age.secrets.cfAPIToken.path;
+  systemd.services.caddy.serviceConfig.AppArmorProfile = "generated-caddy";
 
   ## HTTP-01 challenge & HTTPS traffic
   networking.firewall.allowedTCPPorts = [ 80 443 ];

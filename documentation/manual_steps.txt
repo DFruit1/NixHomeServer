@@ -1,6 +1,6 @@
 =====================================================================
   Home-Server Install Guide
-  NixOS 24.05 · Kanidm · Nextcloud · SnapRAID · MergerFS · NetBird
+  NixOS 25.05 · Kanidm · Immich · SnapRAID · MergerFS · NetBird
 =====================================================================
 
 LEGEND
@@ -19,11 +19,11 @@ $ git clone https://github.com/<you>/home-server.git
 1.  FLASH & BOOT
 ─────────────────────────────────────────────────────────────────────
 $ curl -LO \
-  https://channels.nixos.org/nixos-24.05/latest-nixos-minimal-x86_64-linux.iso
-$ sha256sum nixos-24.05*.iso   # compare with website
+  https://channels.nixos.org/nixos-25.05/latest-nixos-minimal-x86_64-linux.iso
+$ sha256sum nixos-25.05*.iso   # compare with website
 
 ☞ Linux flashing example:
-$ sudo dd if=nixos-24.05*.iso of=/dev/sdX bs=4M status=progress oflag=direct
+$ sudo dd if=nixos-25.05*.iso of=/dev/sdX bs=4M status=progress oflag=direct
 
 Reboot target PC → boot USB → pick “Boot NixOS”.
 
@@ -132,12 +132,20 @@ git add secrets/*.age && git commit -m "encrypt secrets" && git push
 ─────────────────────────────────────────────────────────────────────
 Laptop:
 $ cloudflared tunnel login
-$ cloudflared tunnel create home
+$ cloudflared tunnel create metro
 Copy the JSON creds → encrypt as cfHomeCreds.age
-$ cloudflared tunnel route dns home fileshare.<domain>
-$ cloudflared tunnel route dns home id.<domain>
+$ cloudflared tunnel route dns metro <domain>
+$ cloudflared tunnel route dns metro www.<domain>
+$ cloudflared tunnel route dns metro id.<domain>
+$ cloudflared tunnel route dns metro paperless.<domain>
+$ cloudflared tunnel route dns metro immich.<domain>
+$ cloudflared tunnel route dns metro audiobookshelf.<domain>
+$ cloudflared tunnel route dns metro fileshare.<domain>
+$ cloudflared tunnel route dns metro photoshare.<domain>
+$ cloudflared tunnel route dns metro vault.<domain>
 
-Only *fileshare* and *id* are tunneled; dashboard stays LAN/NetBird.
+Each hostname now maps directly to the local service that Caddy or the OAuth
+proxy exposes on 127.0.0.1.
 
 ─────────────────────────────────────────────────────────────────────
 11.  NETBIRD CLOUD
@@ -150,29 +158,34 @@ Only *fileshare* and *id* are tunneled; dashboard stays LAN/NetBird.
 ─────────────────────────────────────────────────────────────────────
 12.  INSTALL NixOS
 ─────────────────────────────────────────────────────────────────────
-# nixos-install --flake /etc/nixos#sydney-home
+# nixos-install --flake /etc/nixos#server
 # reboot
 
 First boot:
-# nixos-rebuild switch --flake /etc/nixos#sydney-home
+# nixos-rebuild switch --flake /etc/nixos#server
 
 ─────────────────────────────────────────────────────────────────────
 13.  KANIDM INITIALISATION
 ─────────────────────────────────────────────────────────────────────
-# systemctl start kanidm
-# sudo -u kanidm kanidm admin init \
-      --domain sydneybasiniot.org \
-      --admin-pass-file /run/secrets/kanidm_admin_pass
+# systemctl enable --now kanidm
+# systemctl status kanidm
 
-Create OIDC clients (one per app):
-# sudo -u kanidm kanidm client create nextcloud-web \
-      --redirect-uri https://nextcloud.sydneybasiniot.org/*
+Kanidm automatically provisions the instance using the Age-encrypted passwords
+(`kanidmAdminPass.age` and `kanidmSysAdminPass.age`). Do **not** run
+`kanidm admin init`; instead, use the pre-generated credentials to log in and
+create your first accounts:
 
-(repeat for immich-web, paperless-web, abs-web, vaultwarden-web)
-Encrypt each printed client_secret into the matching .age.
+# nix shell nixpkgs#kanidm
+# kanidm login --name admin --password "$(sudo cat /run/agenix/kanidmSysAdminPass)"
+# kanidm person create <user> --display-name "<Name>"
+# kanidm person set-password <user>
+# kanidm group add-member users <user>
 
-Unix token:
-# sudo -u kanidm kanidm unix create -f /run/secrets/kanidm_unixd_token
+Create OIDC clients (immich-web, paperless-web, abs-web, vaultwarden-web,
+copyparty-web and oauth2-proxy) with the redirect URIs referenced in the
+`modules/` definitions so each service matches its upstream callback. Encrypt
+every printed client_secret into the matching .age file immediately after the
+CLI returns it.
 
 ─────────────────────────────────────────────────────────────────────
 14.  FIRST SNAPRAID SYNC
@@ -188,8 +201,11 @@ Timers auto-installed:
 ─────────────────────────────────────────────────────────────────────
 ✓  https://id.sydneybasiniot.org            (login page)
 ✓  https://sydneybasiniot.org               (Homepage dashboard)
+✓  https://paperless.sydneybasiniot.org     (Paperless-ngx)
+✓  https://audiobookshelf.sydneybasiniot.org (Audiobookshelf)
+✓  https://photoshare.sydneybasiniot.org    (Immich)
 ✓  https://vault.sydneybasiniot.org         (Kanidm SSO)
-✓  https://fileshare.sydneybasiniot.org     (Copyparty)
+✓  https://fileshare.sydneybasiniot.org     (Copyparty via OAuth2 Proxy)
 Public LTE   ✓ fileshare  ✗ root domain (should refuse)
 
 ─────────────────────────────────────────────────────────────────────
@@ -219,7 +235,7 @@ A.  Get new UUID:
 B.  Add to vars.dataDisks list.
 C.  git commit & push.
 D.  On server:
-    # nixos-rebuild switch --flake /etc/nixos#sydney-home
+    # nixos-rebuild switch --flake /etc/nixos#server
 E.  # snapraid -a
 F.  # snapraid sync
 

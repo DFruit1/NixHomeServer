@@ -1,12 +1,12 @@
 { vars, config, ... }:
 
 let
-  netbirdIface = vars.netbirdIface;
+  immichIssuer = "https://${vars.kanidmDomain}/oauth2/openid/immich-web";
 in
 {
   services.immich = {
     enable = true;
-    host = "0.0.0.0";
+    host = "127.0.0.1";
     port = vars.immichPort;
     mediaLocation = "${vars.dataRoot}/immich";
     user = "immich";
@@ -26,10 +26,10 @@ in
     IMMICH_OIDC_ENABLED = "true";
     IMMICH_OIDC_CLIENT_ID = "immich-web";
     IMMICH_OIDC_CLIENT_SECRET_FILE = config.age.secrets.immichClientSecret.path;
-    IMMICH_OIDC_ISSUER = vars.kanidmIssuer;
+    IMMICH_OIDC_ISSUER = immichIssuer;
     IMMICH_OIDC_SCOPE = "openid profile email";
   };
 
-  networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts = [ vars.immichPort ];
-  networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts = [ vars.immichPort ];
+  systemd.services.immich-server.serviceConfig.AppArmorProfile = "generated-immich-server";
+  systemd.services."immich-machine-learning".serviceConfig.AppArmorProfile = "generated-immich-machine-learning";
 }

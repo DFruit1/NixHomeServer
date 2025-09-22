@@ -4,7 +4,9 @@
   services.homepage-dashboard = {
     enable = true;
     listenPort = vars.homepagePort; # 3005
-    openFirewall = true; # open TCP 3005
+    openFirewall = false;
+    allowedHosts =
+      "${vars.domain},www.${vars.domain},localhost:${toString vars.homepagePort},127.0.0.1:${toString vars.homepagePort}";
 
     ## ────────────────────────────────────────────────────────
     ## 1.  Bookmarks (grouped lists of name→URL)
@@ -159,4 +161,7 @@
     ## ────────────────────────────────────────────────────────
     # environmentFile = ./dotfiles/.env;
   };
+
+  systemd.services.homepage-dashboard.environment.HOMEPAGE_BIND_ADDRESS = "127.0.0.1";
+  systemd.services.homepage-dashboard.serviceConfig.AppArmorProfile = "generated-homepage-dashboard";
 }

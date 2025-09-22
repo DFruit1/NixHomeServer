@@ -21,11 +21,9 @@
       domain = vars.domain;
       bindaddress = "127.0.0.1:${toString vars.kanidmPort}";
 
-      # reuse certificates obtained by Caddy
-      tls_chain =
-        "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${vars.kanidmDomain}/${vars.kanidmDomain}.crt";
-      tls_key =
-        "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${vars.kanidmDomain}/${vars.kanidmDomain}.key";
+      # reuse the ACME certificate issued by security.acme
+      tls_chain = "/var/lib/acme/${vars.kanidmDomain}/fullchain.pem";
+      tls_key = "/var/lib/acme/${vars.kanidmDomain}/key.pem";
     };
 
     provision = {
@@ -39,6 +37,7 @@
   systemd.services.kanidm = {
     after = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
     wants = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
+    serviceConfig.AppArmorProfile = "generated-kanidm";
   };
 
   users.users.kanidm.extraGroups = [ "caddy" ];
@@ -46,6 +45,4 @@
   systemd.tmpfiles.rules = [
     "d /var/lib/kanidm 0700 kanidm kanidm -"
   ];
-
-  networking.firewall.allowedTCPPorts = [ vars.kanidmPort ];
 }

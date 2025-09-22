@@ -1,6 +1,14 @@
 { pkgs, lib, vars, ... }:
 
 {
+  users.groups."dnscrypt-proxy" = { };
+
+  users.users."dnscrypt-proxy" = {
+    isSystemUser = true;
+    group = "dnscrypt-proxy";
+    home = "/var/lib/dnscrypt-proxy";
+  };
+
   services.dnscrypt-proxy2 = {
     enable = true;
     settings = {
@@ -75,6 +83,12 @@
 
   systemd.services.unbound.after = [ "dnscrypt-proxy2.service" ];
   systemd.services.unbound.requires = [ "dnscrypt-proxy2.service" ];
+
+  systemd.services.unbound.serviceConfig.AppArmorProfile = "generated-unbound";
+  systemd.services.dnscrypt-proxy2.serviceConfig = {
+    AppArmorProfile = "generated-dnscrypt-proxy2";
+    DynamicUser = lib.mkForce false;
+  };
 
   networking.firewall.allowedTCPPorts = [ 53 ];
   networking.firewall.allowedUDPPorts = [ 53 ];

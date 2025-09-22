@@ -1,5 +1,8 @@
 { lib, config, vars, ... }:
 
+let
+  paperlessIssuer = "https://${vars.kanidmDomain}/oauth2/openid/paperless-web";
+in
 {
   users.users.paperless = {
     isSystemUser = true;
@@ -15,6 +18,7 @@
   services.paperless = {
     enable = true;
     dataDir = "${vars.dataRoot}/paperless";
+    address = "127.0.0.1";
 
     # extra package pin is optional; defaults to pkgs.paperless
     # package = pkgs.paperless;
@@ -29,7 +33,7 @@
 
       PAPERLESS_OIDC_CLIENT_ID = "paperless-web";
       PAPERLESS_OIDC_CLIENT_SECRET_FILE = config.age.secrets.paperlessClientSecret.path;
-      PAPERLESS_OIDC_PROVIDER_URL = vars.kanidmIssuer;
+      PAPERLESS_OIDC_PROVIDER_URL = paperlessIssuer;
 
       ##################################################################
       # 2.  Misc instance tweaks
@@ -43,4 +47,6 @@
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/paperless 0750 paperless paperless -"
   ];
+
+  systemd.services."paperless-web".serviceConfig.AppArmorProfile = "generated-paperless-web";
 }
