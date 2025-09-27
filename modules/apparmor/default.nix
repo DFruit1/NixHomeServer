@@ -23,74 +23,94 @@ let
   readOnlyPaths = lib.unique (defaultCommonPaths ++ (vars.appArmorCommonPaths or [ ]));
 
   baseProfiles = {
+    caddy = [
+      "/var/lib/caddy/**"
+      "/var/log/caddy/**"
+      "/etc/caddy/**"
+      "/var/lib/acme/${vars.kanidmDomain}/**"
+      "/run/caddy/**"
+    ];
     "immich-server" = [
       "${vars.dataRoot}/immich/**"
       "/var/lib/immich/**"
       "/var/log/immich/**"
+      "/run/immich/**"
     ];
     "immich-machine-learning" = [
       "${vars.dataRoot}/immich/**"
       "/var/cache/immich/**"
       "/var/lib/immich/**"
       "/var/log/immich/**"
+      "/run/immich/**"
     ];
     "paperless-web" = [
       "${vars.dataRoot}/paperless/**"
       "/var/lib/paperless/**"
       "/var/log/paperless-ngx/**"
+      "/run/paperless/**"
     ];
     audiobookshelf = [
       "${vars.dataRoot}/audiobookshelf/**"
       "/var/lib/audiobookshelf/**"
       "/var/log/audiobookshelf/**"
+      "/run/audiobookshelf/**"
     ];
     copyparty = [
       "${vars.dataRoot}/copyparty/**"
       "/var/lib/copyparty/**"
       "/var/log/copyparty/**"
+      "/run/copyparty/**"
     ];
     vaultwarden = [
       "${vars.dataRoot}/vaultwarden/**"
       "/var/lib/vaultwarden/**"
       "/var/log/vaultwarden/**"
       "/etc/vaultwarden/**"
+      "/run/vaultwarden/**"
     ];
     "homepage-dashboard" = [
       "${vars.dataRoot}/homepage/**"
       "/var/lib/homepage-dashboard/**"
       "/var/cache/homepage-dashboard/**"
       "/var/log/homepage-dashboard/**"
+      "/run/homepage-dashboard/**"
     ];
     "cloudflared-tunnel-${vars.cloudflareTunnelName}" = [
       "/var/lib/cloudflared/**"
       "/var/log/cloudflared/**"
       "/etc/cloudflared/**"
+      "/run/cloudflared/**"
     ];
     "netbird-main" = [
       "/var/lib/netbird-main/**"
       "/var/log/netbird-main/**"
       "/etc/netbird-main/**"
+      "/run/netbird-main/**"
     ];
     "oauth2-proxy" = [
       "/var/lib/oauth2-proxy/**"
       "/var/log/oauth2-proxy/**"
       "/etc/oauth2-proxy/**"
+      "/run/oauth2-proxy/**"
     ];
     unbound = [
       "/var/lib/unbound/**"
       "/var/log/unbound/**"
       "/etc/unbound/**"
+      "/run/unbound/**"
     ];
     "dnscrypt-proxy2" = [
       "/var/lib/dnscrypt-proxy/**"
       "/var/log/dnscrypt-proxy/**"
       "/etc/dnscrypt-proxy/**"
+      "/run/dnscrypt-proxy/**"
     ];
     kanidm = [
       "/var/lib/kanidm/**"
       "/var/log/kanidm/**"
       "/etc/kanidm/**"
       "/var/lib/acme/${vars.kanidmDomain}/**"
+      "/run/kanidm/**"
     ];
   };
 
