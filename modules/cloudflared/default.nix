@@ -38,6 +38,13 @@
   };
   # Cloudflared only makes outbound connections → no firewall ports needed
 
-  systemd.services."cloudflared-tunnel-${vars.cloudflareTunnelName}".serviceConfig.AppArmorProfile =
-    "generated-cloudflared-tunnel-${vars.cloudflareTunnelName}";
+  systemd.services."cloudflared-tunnel-${vars.cloudflareTunnelName}".serviceConfig = {
+    AppArmorProfile = "generated-cloudflared-tunnel-${vars.cloudflareTunnelName}";
+    DynamicUser = lib.mkForce false;
+    User = "cloudflared";
+    Group = "cloudflared";
+    StateDirectory = lib.mkForce "cloudflared";
+    LogsDirectory = lib.mkForce "cloudflared";
+    RuntimeDirectory = lib.mkForce "cloudflared";
+  };
 }

@@ -1,6 +1,14 @@
-{ vars, ... }:
+{ lib, vars, ... }:
 
 {
+  users.groups."homepage-dashboard" = { };
+
+  users.users."homepage-dashboard" = {
+    isSystemUser = true;
+    group = "homepage-dashboard";
+    home = "/var/lib/homepage-dashboard";
+  };
+
   services.homepage-dashboard = {
     enable = true;
     listenPort = vars.homepagePort; # 3005
@@ -163,5 +171,13 @@
   };
 
   systemd.services.homepage-dashboard.environment.HOMEPAGE_BIND_ADDRESS = "127.0.0.1";
-  systemd.services.homepage-dashboard.serviceConfig.AppArmorProfile = "generated-homepage-dashboard";
+  systemd.services.homepage-dashboard.serviceConfig = {
+    AppArmorProfile = "generated-homepage-dashboard";
+    DynamicUser = lib.mkForce false;
+    User = "homepage-dashboard";
+    Group = "homepage-dashboard";
+    StateDirectory = lib.mkForce "homepage-dashboard";
+    CacheDirectory = lib.mkForce "homepage-dashboard";
+    LogsDirectory = lib.mkForce "homepage-dashboard";
+  };
 }
