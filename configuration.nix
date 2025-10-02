@@ -203,13 +203,21 @@ in
   ###############################################################################
 
   # bootstrap users & SSH   (your original block kept verbatim)
-  users.users.root = {
-    initialPassword = "root";
-    shell = pkgs.bashInteractive;
-    openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server"
-    ];
-  };
+  users.users.root = lib.mkMerge [
+    (lib.mkIf vars.initialRootUser {
+      initialPassword = lib.mkDefault "root";
+      shell = pkgs.bashInteractive;
+      openssh.authorizedKeys.keys = [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server"
+      ];
+    })
+    (lib.mkIf (!vars.initialRootUser) {
+      initialPassword = lib.mkForce null;
+      hashedPassword = lib.mkForce "!";
+      shell = lib.mkForce "/run/current-system/sw/bin/nologin";
+      openssh.authorizedKeys = lib.mkForce { keys = [ ]; };
+    })
+  ];
 
   users.users.kanidm.extraGroups = [ "caddy" ];
 
@@ -234,8 +242,8 @@ in
   services.openssh = {
     enable = true;
     settings = {
-      PasswordAuthentication = true; # bootstrap only
-      PermitRootLogin = "yes";
+      PasswordAuthentication = vars.initialRootUser; # bootstrap only when root login is enabled
+      PermitRootLogin = if vars.initialRootUser then "yes" else "no";
     };
     openFirewall = true;
   };

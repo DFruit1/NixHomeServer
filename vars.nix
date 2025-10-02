@@ -14,6 +14,7 @@ rec {
   lanIP = "192.168.0.144";
   nbIP = "100.96.1.10";
   defaultGateway = "192.168.0.1";
+  initialRootUser = true;
   dnscryptListenAddress = "127.0.0.1";
   dnscryptListenPort = 5053;
   dnscryptForwardAddress = "127.0.0.1";
