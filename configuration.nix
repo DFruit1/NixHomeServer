@@ -6,13 +6,15 @@
 let
   mergerfsMountPoint = "/mnt/data";
   snapraidContentDir = "/persist/snapraid";
+  parityMountPoint = "/mnt/parity";
+
+  parityEnabled = vars.parityDisk != null && vars.parityDisk != "";
+
+  dataMountPoints =
+    lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}") vars.dataDisks;
 
   # build "/mnt/disk1:/mnt/disk2:…"
-  mergerfsSourceList =
-    lib.concatStringsSep ":"
-      (lib.imap0
-        (idx: _: "/mnt/disk${toString (idx + 1)}")
-        vars.dataDisks);
+  mergerfsSourceList = lib.concatStringsSep ":" dataMountPoints;
 
   # build “data d1 /mnt/disk1” … for snapraid.conf
   mkSnapraidLine = idx: _:
@@ -21,10 +23,29 @@ let
 
   snapraidContentPaths =
     [ "${snapraidContentDir}/snapraid.content" ]
-    ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}/snapraid.content") vars.dataDisks)
-    ++ [ "/mnt/parity/snapraid.content" ];
+    ++ (builtins.map (path: "${path}/snapraid.content") dataMountPoints)
+    ++ (lib.optional parityEnabled "${parityMountPoint}/snapraid.content");
 
   snapraidContentLines = builtins.map (path: "content ${path}") snapraidContentPaths;
+
+  diskMountOptions =
+    lib.listToAttrs
+      (builtins.map
+        (mountPoint: {
+          name = mountPoint;
+          value = {
+            options = lib.mkAfter [ "nofail" "x-systemd.device-timeout=1s" ];
+            neededForBoot = lib.mkDefault false;
+          };
+        })
+        dataMountPoints);
+
+  parityMountOptions = lib.optionalAttrs parityEnabled {
+    "${parityMountPoint}" = {
+      options = lib.mkAfter [ "nofail" "x-systemd.device-timeout=1s" ];
+      neededForBoot = lib.mkDefault false;
+    };
+  };
 
 in
 
@@ -83,31 +104,39 @@ in
     smartmontools
   ];
 
-  fileSystems = {
-    "${mergerfsMountPoint}" = {
-      fsType = "fuse.mergerfs";
-      device = mergerfsSourceList;
-      options =
-        [
-          "defaults"
-          "allow_other"
-          "use_ino"
-          "minfreespace=10G"
-          "category.create=epmfs"
-        ]
-        ++ (lib.imap0 (idx: _: "x-systemd.requires=/mnt/disk${toString (idx + 1)}") vars.dataDisks)
-        ++ (lib.imap0 (idx: _: "x-systemd.after=/mnt/disk${toString (idx + 1)}") vars.dataDisks);
-    };
-  };
+  fileSystems = lib.mkMerge [
+    {
+      "${mergerfsMountPoint}" = {
+        fsType = "fuse.mergerfs";
+        device = mergerfsSourceList;
+        options =
+          [
+            "defaults"
+            "allow_other"
+            "use_ino"
+            "minfreespace=10G"
+            "category.create=epmfs"
+          ]
+          ++ (builtins.map (path: "x-systemd.after=${path}") dataMountPoints);
+        neededForBoot = lib.mkDefault false;
+      };
+    }
+    diskMountOptions
+    parityMountOptions
+  ];
 
   systemd.tmpfiles.rules = [
     "d ${mergerfsMountPoint} 0755 root root -"
+  ]
+  ++ (builtins.map (path: "d ${path} 0755 root root -") dataMountPoints)
+  ++ (lib.optional parityEnabled "d ${parityMountPoint} 0755 root root -")
+  ++ [
     "d /run/secrets 0750 root root -"
     "d ${snapraidContentDir} 0755 root root -"
   ];
 
   environment.etc."snapraid.conf".text = ''
-    parity /mnt/parity/snapraid.parity
+    ${lib.optionalString parityEnabled "parity ${parityMountPoint}/snapraid.parity"}
     ${builtins.concatStringsSep "\n" snapraidContentLines}
     ${builtins.concatStringsSep "\n" (lib.imap0 mkSnapraidLine vars.dataDisks)}
     exclude *.unrecoverable
@@ -130,7 +159,8 @@ in
     description = "Sync SnapRAID arrays";
     serviceConfig = {
       Type = "oneshot";
-      RequiresMountsFor = [ mergerfsMountPoint "/mnt/parity" ];
+      RequiresMountsFor = [ mergerfsMountPoint ]
+        ++ (lib.optional parityEnabled parityMountPoint);
     };
     path = [ pkgs.snapraid ];
     script = "snapraid sync";
@@ -140,7 +170,8 @@ in
     description = "Scrub SnapRAID arrays";
     serviceConfig = {
       Type = "oneshot";
-      RequiresMountsFor = [ mergerfsMountPoint "/mnt/parity" ];
+      RequiresMountsFor = [ mergerfsMountPoint ]
+        ++ (lib.optional parityEnabled parityMountPoint);
     };
     path = [ pkgs.snapraid ];
     script = "snapraid scrub -p 1 -o 10";
@@ -149,7 +180,7 @@ in
   services.smartd = {
     enable = true;
     devices = map (id: { device = "/dev/disk/by-id/${id}"; })
-      (vars.dataDisks ++ [ vars.parityDisk ]);
+      (vars.dataDisks ++ lib.optional parityEnabled vars.parityDisk);
   };
 
   ###############################################################################
