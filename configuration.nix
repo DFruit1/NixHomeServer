@@ -5,6 +5,7 @@
 ###############################################################################
 let
   mergerfsMountPoint = "/mnt/data";
+  snapraidContentDir = "/persist/snapraid";
 
   # build "/mnt/disk1:/mnt/disk2:…"
   mergerfsSourceList =
@@ -17,6 +18,13 @@ let
   mkSnapraidLine = idx: _:
     let n = toString (idx + 1); in
     "data d${n} /mnt/disk${n}";
+
+  snapraidContentPaths =
+    [ "${snapraidContentDir}/snapraid.content" ]
+    ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}/snapraid.content") vars.dataDisks)
+    ++ [ "/mnt/parity/snapraid.content" ];
+
+  snapraidContentLines = builtins.map (path: "content ${path}") snapraidContentPaths;
 
 in
 
@@ -56,7 +64,11 @@ in
       modulePaths = builtins.map (name: ./modules + "/${name}" )
         (builtins.attrNames (builtins.readDir ./modules));
     in
-      [ ./disko.nix ./secrets/agenix.nix ] ++ modulePaths;
+      [
+        ./hardware-configuration.nix
+        ./disko.nix
+        ./secrets/agenix.nix
+      ] ++ modulePaths;
 
   disko.enableConfig = true;
   services.dbus.enable = true;
@@ -91,10 +103,12 @@ in
   systemd.tmpfiles.rules = [
     "d ${mergerfsMountPoint} 0755 root root -"
     "d /run/secrets 0750 root root -"
+    "d ${snapraidContentDir} 0755 root root -"
   ];
 
   environment.etc."snapraid.conf".text = ''
     parity /mnt/parity/snapraid.parity
+    ${builtins.concatStringsSep "\n" snapraidContentLines}
     ${builtins.concatStringsSep "\n" (lib.imap0 mkSnapraidLine vars.dataDisks)}
     exclude *.unrecoverable
     exclude /tmp/
@@ -171,11 +185,11 @@ in
   boot.loader.grub = {
     enable = true;
     efiSupport = true;
-    efiInstallAsRemovable = true;
+    efiInstallAsRemovable = false;
     device = "nodev";
   };
   boot.loader.systemd-boot.enable = lib.mkForce false;
-  boot.loader.efi.canTouchEfiVariables = false;
+  boot.loader.efi.canTouchEfiVariables = true;
 
   #Use if you have issues with getting entropy
   # boot.kernelParams = [ "random.trust_cpu=on" ];
