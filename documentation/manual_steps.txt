@@ -13,17 +13,18 @@ LEGEND
 $ git --version                # have git
 $ ssh -V                       # have OpenSSH client
 $ nix profile install github:ryantm/agenix   # installs age + agenix
+$ # if nix is not installed: https://nixos.org/download.html
 $ git clone https://github.com/<you>/home-server.git
 
 ─────────────────────────────────────────────────────────────────────
 1.  FLASH & BOOT
 ─────────────────────────────────────────────────────────────────────
 $ curl -LO \
-  https://channels.nixos.org/nixos-24.05/latest-nixos-minimal-x86_64-linux.iso
-$ sha256sum nixos-24.05*.iso   # compare with website
+  https://channels.nixos.org/nixos-25.05/latest-nixos-minimal-x86_64-linux.iso
+$ sha256sum nixos-25.05*.iso   # compare with website
 
 ☞ Linux flashing example:
-$ sudo dd if=nixos-24.05*.iso of=/dev/sdX bs=4M status=progress oflag=direct
+$ sudo dd if=nixos-25.05*.iso of=/dev/sdX bs=4M status=progress oflag=direct
 
 Reboot target PC → boot USB → pick “Boot NixOS”.
 
@@ -50,6 +51,7 @@ Copy the table to your laptop.  Identify:
 ─────────────────────────────────────────────────────────────────────
 4.  EDIT vars.nix  (on laptop)
 ─────────────────────────────────────────────────────────────────────
+Set all site-specific values (hostname, domain, email, LAN/WG IPs, ports) and disk UUIDs:
 mainDisk   = "<SSD-UUID>";
 dataDisks  = [ "<HDD1-UUID>" "<HDD2-UUID>" … ];
 parityDisk = "<PARITY-UUID>";
@@ -71,15 +73,16 @@ git commit -am "add UUIDs" && git push
       --mode zap_create_mount /mnt/src/disko.nix
 
 Verify:
-# findmnt -R /mnt           # shows /, /boot, /nix, /persist, /mnt/data …
+# findmnt -R /mnt           # shows /, /boot, /nix, /mnt/data …
 
 ─────────────────────────────────────────────────────────────────────
 7.  COPY FLAKE & GENERATE HARDWARE CONFIG
 ─────────────────────────────────────────────────────────────────────
 # cp -r /mnt/src/* /mnt/etc/nixos
 # nixos-generate-config --root /mnt
-Edit /mnt/etc/nixos/hardware-configuration.nix  
- → keep the fileSystems from disko, keep HW modules.
+Edit /mnt/etc/nixos/hardware-configuration.nix:
+  • Keep the fileSystems that disko mounted (/, /boot, /nix, /mnt/data*, /mnt/parity).
+  • Keep any hardware-specific modules it detected.
 
 ─────────────────────────────────────────────────────────────────────
 8.  (OPTIONAL) ADD LAPTOP SSH KEY
@@ -94,91 +97,70 @@ Add to users.users.dave.openssh.authorizedKeys in configuration.nix.
 ─────────────────────────────────────────────────────────────────────
 Laptop commands
 ---------------
-$ mkdir -p ~/.config/age
-$ age-keygen -o ~/.config/age/id_age
-$ cat ~/.config/age/id_age.pub > age.pub
-$ git add age.pub && git commit -m "add Age pubkey"
-$ nix run github:ryantm/agenix -- --generate -i age.pub
+$ mkdir -p ~/.age
+$ age-keygen -o ~/.age/agenix.key
+$ mkdir -p secrets/pubkeys
+$ age-keygen -y ~/.age/agenix.key > secrets/pubkeys/age.pub
+$ git add secrets/pubkeys/age.pub && git commit -m "add Age pubkey"
+
+Generate and encrypt all required secrets:
+$ ./scripts/gen-all-secrets.sh
+
+Copy ~/.age/agenix.key to the server later as /etc/agenix/age.key (chmod 0400).
 
 Create & encrypt each secret
 ----------------------------
-Example (NetBird setup key):
-$ echo 'wbx1k……' > plain.txt
-$ agenix -e secrets/netbirdSetupKey.age plain.txt
-$ rm plain.txt
+The script above generates everything except the values you must supply manually:
+  • netbirdSetupKey – obtain from NetBird console; place in secrets/top/netbirdSetupKey, rerun the script.
+  • cfHomeCreds – JSON from `cloudflared tunnel create`; place in secrets/top/cfHomeCreds, rerun the script.
+  • cfAPIToken – token with DNS edit rights; format CF_API_TOKEN=<token> in secrets/top/cfAPIToken, rerun the script.
+The script validates and encrypts them to secrets/*.age.
 
-Required secret files
----------------------
-  netbirdSetupKey.age
-  cfHomeCreds.age
-  cfAPIToken.age
-  kanidmAdminPass.age
-  kanidmSysAdminPass.age
-  immichClientSecret.age
-  paperlessClientSecret.age
-  absClientSecret.age
-  copypartyClientSecret.age
-  oauth2ProxyClientSecret.age
-  oauth2ProxyCookieSecret.age
-  vaultwardenClientSecret.age
-  vaultwardenAdminToken.age
-
-Tip:  random secret  ➜  pwgen -s 48 1 | agenix -e secrets/file.age
+Tip: if you prefer a different entropy source, set the secret content manually in secrets/top/<name> and rerun the script to encrypt.
 
 git add secrets/*.age && git commit -m "encrypt secrets" && git push
 
 ─────────────────────────────────────────────────────────────────────
-10.  CLOUDFLARE TUNNEL
+10.  CLOUDFLARE TUNNEL (PUBLIC ONLY FOR FILESHARE)
 ─────────────────────────────────────────────────────────────────────
 Laptop:
 $ cloudflared tunnel login
-$ cloudflared tunnel create home
-Copy the JSON creds → encrypt as cfHomeCreds.age
-$ cloudflared tunnel route dns home <domain>
-$ cloudflared tunnel route dns home www.<domain>
-$ cloudflared tunnel route dns home id.<domain>
-$ cloudflared tunnel route dns home paperless.<domain>
-$ cloudflared tunnel route dns home immich.<domain>
-$ cloudflared tunnel route dns home audiobookshelf.<domain>
-$ cloudflared tunnel route dns home fileshare.<domain>
-$ cloudflared tunnel route dns home photoshare.<domain>
-$ cloudflared tunnel route dns home vault.<domain>
+$ cloudflared tunnel create metro   # name must match vars.cloudflareTunnelName
+Copy the JSON creds to secrets/top/cfHomeCreds and rerun ./scripts/gen-all-secrets.sh
+$ cloudflared tunnel route dns metro fileshare.<domain>
 
-Each hostname now maps directly to the local service that Caddy or the OAuth
-proxy exposes on 127.0.0.1.
+Only fileshare.<domain> is exposed publicly via the tunnel for Copyparty links.
+Do **not** route the other hostnames through Cloudflare; they should only be
+reachable on the LAN or via NetBird.
 
 ─────────────────────────────────────────────────────────────────────
 11.  NETBIRD CLOUD
 ─────────────────────────────────────────────────────────────────────
-• Org dashboard → Setup Keys → “One-off” → copy → netbird-setup-key.age
-• Nameservers → Host Records:
-    sydneybasiniot.org        → 100.96.1.10
-    immich / paperless / vault → 100.96.1.10
+• Org dashboard → Setup Keys → “One-off” → copy → secrets/top/netbirdSetupKey, rerun the secret script.
+• Nameservers → Host Records: point <domain> and each app hostname to vars.nbIP (default 100.96.1.10) so NetBird peers resolve them privately. Keep public DNS records limited to fileshare.<domain>.
 
 ─────────────────────────────────────────────────────────────────────
 12.  INSTALL NixOS
 ─────────────────────────────────────────────────────────────────────
-# nixos-install --flake /etc/nixos#sydney-home
+# nixos-install --flake /etc/nixos#<hostname-from-vars.nix>
 # reboot
 
-First boot:
-# nixos-rebuild switch --flake /etc/nixos#sydney-home
+First boot (on the installed system):
+# nixos-rebuild switch --flake /etc/nixos#<hostname-from-vars.nix>
 
 ─────────────────────────────────────────────────────────────────────
 13.  KANIDM INITIALISATION
 ─────────────────────────────────────────────────────────────────────
-# systemctl start kanidm
+# systemctl start kanidm caddy
 # sudo -u kanidm kanidm admin init \
-      --domain sydneybasiniot.org \
-      --admin-pass-file /run/secrets/kanidm_admin_pass
+      --domain <domain-from-vars.nix> \
+      --admin-pass-file /run/agenix/kanidmAdminPass
 
 Create OIDC clients (one per app): immich-web, paperless-web, abs-web,
 vaultwarden-web, copyparty-web and oauth2-proxy. Use the redirect URIs noted in
 the module definitions under `modules/` so each service matches its upstream
-callback. Encrypt every printed client_secret into the matching .age file.
-
-Unix token:
-# sudo -u kanidm kanidm unix create -f /run/secrets/kanidm_unixd_token
+callback. Encrypt every printed client_secret into the matching .age file and
+rerun ./scripts/gen-all-secrets.sh if any value changes.
 
 ─────────────────────────────────────────────────────────────────────
 14.  FIRST SNAPRAID SYNC
@@ -192,14 +174,17 @@ Timers auto-installed:
 ─────────────────────────────────────────────────────────────────────
 15.  VERIFICATION (LAN or NetBird peer)
 ─────────────────────────────────────────────────────────────────────
+LAN or NetBird:
 ✓  https://id.sydneybasiniot.org            (login page)
 ✓  https://sydneybasiniot.org               (Homepage dashboard)
 ✓  https://paperless.sydneybasiniot.org     (Paperless-ngx)
 ✓  https://audiobookshelf.sydneybasiniot.org (Audiobookshelf)
 ✓  https://photoshare.sydneybasiniot.org    (Immich)
 ✓  https://vault.sydneybasiniot.org         (Kanidm SSO)
+
+Public internet (no NetBird): only fileshare.<domain> via Cloudflare tunnel should respond.
 ✓  https://fileshare.sydneybasiniot.org     (Copyparty via OAuth2 Proxy)
-Public LTE   ✓ fileshare  ✗ root domain (should refuse)
+✗  All other hostnames should be unreachable without NetBird
 
 ─────────────────────────────────────────────────────────────────────
 16.  DAILY ROUTINE
@@ -228,15 +213,14 @@ A.  Get new UUID:
 B.  Add to vars.dataDisks list.
 C.  git commit & push.
 D.  On server:
-    # nixos-rebuild switch --flake /etc/nixos#sydney-home
+    # nixos-rebuild switch --flake /etc/nixos#<hostname-from-vars.nix>
 E.  # snapraid -a
 F.  # snapraid sync
 
 ─────────────────────────────────────────────────────────────────────
 19.  BACKUPS
 ─────────────────────────────────────────────────────────────────────
-• Use Borg or Restic to push /mnt/data and /persist to another host
-  or cloud bucket.  SnapRAID is **not** a backup.
+• Use Borg or Restic to push /mnt/data to another host or cloud bucket.
+  SnapRAID is **not** a backup.
 
 ════════════════════════════════ END ═══════════════════════════════
-

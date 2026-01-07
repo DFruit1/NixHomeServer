@@ -7,6 +7,8 @@ home-server/
 ├── manual_steps.txt
 ├── project_tree.txt
 ├── modules/
+│   ├── apparmor/
+│   │   └── default.nix
 │   ├── audiobookshelf/
 │   │   └── default.nix
 │   ├── caddy/
@@ -14,6 +16,8 @@ home-server/
 │   ├── cloudflared/
 │   │   └── default.nix
 │   ├── copyparty/
+│   │   └── default.nix
+│   ├── doas/
 │   │   └── default.nix
 │   ├── homepage/
 │   │   ├── default.nix
