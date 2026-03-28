@@ -1,7 +1,7 @@
 { pkgs, lib, vars, ... }:
 
 {
-  services.dnscrypt-proxy2 = {
+  services.dnscrypt-proxy = {
     enable = true;
     settings = {
       listen_addresses = [ "${vars.dnscryptListenAddress}:${toString vars.dnscryptListenPort}" ];
@@ -73,11 +73,11 @@
     };
   };
 
-  systemd.services.unbound.after = [ "dnscrypt-proxy2.service" ];
-  systemd.services.unbound.requires = [ "dnscrypt-proxy2.service" ];
+  systemd.services.unbound.after = [ "dnscrypt-proxy.service" ];
+  systemd.services.unbound.requires = [ "dnscrypt-proxy.service" ];
 
   systemd.services.unbound.serviceConfig.AppArmorProfile = "generated-unbound";
-  systemd.services.dnscrypt-proxy2.serviceConfig.AppArmorProfile = "generated-dnscrypt-proxy2";
+  systemd.services.dnscrypt-proxy.serviceConfig.AppArmorProfile = "generated-dnscrypt-proxy";
 
   networking.firewall.allowedTCPPorts = [ 53 ];
   networking.firewall.allowedUDPPorts = [ 53 ];

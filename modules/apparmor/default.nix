@@ -56,7 +56,7 @@ let
       "/var/log/unbound/**"
       "/etc/unbound/**"
     ];
-    "dnscrypt-proxy2" = [
+    "dnscrypt-proxy" = [
       "/var/lib/dnscrypt-proxy/**"
       "/var/log/dnscrypt-proxy/**"
       "/etc/dnscrypt-proxy/**"

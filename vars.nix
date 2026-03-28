@@ -96,6 +96,6 @@ rec {
     netbird = [ "/var/lib/netbird/**" "/var/log/netbird/**" "/etc/netbird/**" ];
     "oauth2-proxy" = [ "/var/lib/oauth2-proxy/**" "/var/log/oauth2-proxy/**" "/etc/oauth2-proxy/**" ];
     unbound = [ "/var/lib/unbound/**" "/var/log/unbound/**" "/etc/unbound/**" ];
-    "dnscrypt-proxy2" = [ "/var/lib/dnscrypt-proxy/**" "/var/log/dnscrypt-proxy/**" "/etc/dnscrypt-proxy/**" ];
+    "dnscrypt-proxy" = [ "/var/lib/dnscrypt-proxy/**" "/var/log/dnscrypt-proxy/**" "/etc/dnscrypt-proxy/**" ];
   };
 }
