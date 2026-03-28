@@ -23,9 +23,9 @@
 
       # reuse certificates obtained by Caddy
       tls_chain =
-        "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${vars.kanidmDomain}/${vars.kanidmDomain}.crt";
+        "/var/lib/acme/${vars.kanidmDomain}/fullchain.pem";
       tls_key =
-        "/var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${vars.kanidmDomain}/${vars.kanidmDomain}.key";
+        "/var/lib/acme/${vars.kanidmDomain}/key.pem";
     };
 
     provision = {
