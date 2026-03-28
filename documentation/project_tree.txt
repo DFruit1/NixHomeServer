@@ -1,12 +1,23 @@
-home-server/
+NixHomeServer/
+├── AGENTS.md
 ├── flake.nix
+├── flake.lock
 ├── vars.nix
 ├── configuration.nix
 ├── disko.nix
 ├── hardware-configuration.nix
-├── manual_steps.txt
-├── project_tree.txt
+├── scripts/
+│   ├── check-repo.sh
+│   └── gen-all-secrets.sh
+├── documentation/
+│   ├── bootstrap.md
+│   ├── manual_steps.txt
+│   ├── disko_instructions.txt
+│   ├── project_tree.txt
+│   └── Things to fix up
 ├── modules/
+│   ├── apparmor/
+│   │   └── default.nix
 │   ├── audiobookshelf/
 │   │   └── default.nix
 │   ├── caddy/
@@ -15,14 +26,6 @@ home-server/
 │   │   └── default.nix
 │   ├── copyparty/
 │   │   └── default.nix
-│   ├── homepage/
-│   │   ├── default.nix
-│   │   └── dotfiles/
-│   │       ├── settings.yaml
-│   │       ├── services.yaml
-│   │       ├── widgets.yaml
-│   │       ├── bookmarks.yaml
-│   │       └── custom.css
 │   ├── immich/
 │   │   └── default.nix
 │   ├── kanidm/
@@ -35,36 +38,16 @@ home-server/
 │   │   └── default.nix
 │   ├── unbound/
 │   │   └── default.nix
-│   └── vaultwarden/
-│       └── default.nix
-├── superceded/
-│   └── modules/
-│       ├── apparmor/
-│       │   ├── default.nix
-│       │   └── dotfiles/
-│       │       ├── apparmor_violations.nu
-│       │       └── apparmor_violations.csv
-│       ├── keycloak/
-│       │   └── default.nix
-│       ├── nextcloud/
-│       │   └── default.nix
-│       └── samba/
-│           └── default.nix
-└── secrets/
-    ├── absClientSecret.age
-    ├── agenix.nix
-    ├── cfAPIToken.age
-    ├── cfHomeCreds.age
-    ├── copypartyClientSecret.age
-    ├── immichClientSecret.age
-    ├── kanidmAdminPass.age
-    ├── kanidmSysAdminPass.age
-    ├── netbirdSetupKey.age
-    ├── oauth2ProxyClientSecret.age
-    ├── oauth2ProxyCookieSecret.age
-    ├── paperlessClientSecret.age
-    ├── vaultwardenAdminToken.age
-    ├── vaultwardenClientSecret.age
-    ├── pubkeys/
-    │   └── age.pub
-    └── top/
+├── secrets/
+│   ├── agenix.nix
+│   ├── *.age (generated/encrypted secrets)
+│   ├── pubkeys/
+│   │   └── age.pub
+│   └── top/ (cleartext staging; do not commit)
+└── superceded/
+    ├── modules/ (archived examples)
+    └── scripts/
+
+Notes
+-----
+- `superceded/` is archival/reference only and not part of active imports.

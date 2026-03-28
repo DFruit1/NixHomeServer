@@ -39,8 +39,6 @@ declare -A SPEC=(
   [immichClientSecret]=32
   [paperlessClientSecret]=32
   [absClientSecret]=32
-  [vaultwardenClientSecret]=32
-  [vaultwardenAdminToken]=48
   [oauth2ProxyClientSecret]=32
   [oauth2ProxyCookieSecret]=32
   [copypartyClientSecret]=32
@@ -69,12 +67,6 @@ echo -n "🔐  Generating $name … "
     secret=$(gen_secret "${SPEC[$name]}")
   fi
   case "$name" in
-    vaultwardenAdminToken)
-      printf 'ADMIN_TOKEN=%s\n' "$secret" >"$clear_file"
-      ;;
-    vaultwardenClientSecret)
-      printf 'SSO_CLIENT_SECRET=%s\n' "$secret" >"$clear_file"
-      ;;
     oauth2ProxyClientSecret)
       printf 'OAUTH2_PROXY_CLIENT_SECRET=%s\n' "$secret" >"$clear_file"
       ;;
