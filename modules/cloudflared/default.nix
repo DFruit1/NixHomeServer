@@ -25,7 +25,6 @@
         "audiobookshelf.${vars.domain}" = "http://127.0.0.1:${toString vars.audiobookshelfPort}";
         "fileshare.${vars.domain}" = "http://127.0.0.1:${toString vars.oauth2ProxyPort}";
         "photoshare.${vars.domain}" = "http://127.0.0.1:${toString vars.immichPort}";
-        "vault.${vars.domain}" = "http://127.0.0.1:${toString vars.vaultwardenPort}";
       };
       default = "http_status:404";
     };

@@ -68,12 +68,6 @@
           reverse_proxy http://127.0.0.1:${toString vars.immichPort}
         '';
       };
-
-      "vault.${vars.domain}" = {
-        extraConfig = ''
-          reverse_proxy http://127.0.0.1:${toString vars.vaultwardenPort}
-        '';
-      };
     };
   };
 

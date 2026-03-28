@@ -1,242 +1,152 @@
 =====================================================================
-  Home-Server Install Guide
-  NixOS 25.05 · Kanidm · Immich · SnapRAID · MergerFS · NetBird
+  Home-Server Manual Install Guide (Current)
+  NixOS 25.05 state version · flake input on release-25.11
 =====================================================================
 
 LEGEND
-  $  => run on your LAPTOP (any OS)
-  #  => run on the TARGET PC (Live ISO or installed system)
+  $  => run on admin workstation
+  #  => run on target host (installer or installed system)
 
 ─────────────────────────────────────────────────────────────────────
-0.  PREREQUISITES  (on laptop)
+0.  PREREQUISITES
 ─────────────────────────────────────────────────────────────────────
-$ git --version                # have git
-$ ssh -V                       # have OpenSSH client
-$ nix profile install github:ryantm/agenix   # installs age + agenix
-$ git clone https://github.com/<you>/home-server.git
+$ git --version
+$ ssh -V
+$ nix --version
+$ git clone <your-repo-url> NixHomeServer
+$ cd NixHomeServer
+
+If nix is missing, install it before continuing.
 
 ─────────────────────────────────────────────────────────────────────
-1.  FLASH & BOOT
+1.  BOOT INSTALLER + NETWORK
 ─────────────────────────────────────────────────────────────────────
-$ curl -LO \
-  https://channels.nixos.org/nixos-24.05/latest-nixos-minimal-x86_64-linux.iso
-$ sha256sum nixos-24.05*.iso   # compare with website
+Boot a recent NixOS installer ISO and get network connectivity.
 
-☞ Linux flashing example:
-$ sudo dd if=nixos-24.05*.iso of=/dev/sdX bs=4M status=progress oflag=direct
-
-Reboot target PC → boot USB → pick “Boot NixOS”.
-
-Wi-Fi (if needed):
+Wi-Fi example:
 # iwctl
 [iwd]# device list
 [iwd]# station wlan0 connect "<SSID>"
-exit
+[iwd]# exit
 
 ─────────────────────────────────────────────────────────────────────
-2.  CLONE REPO ON LIVE SYSTEM
+2.  CLONE REPO ON INSTALLER
 ─────────────────────────────────────────────────────────────────────
-# git clone https://github.com/<you>/home-server /mnt/src
+# mkdir -p /mnt/src
+# git clone <your-repo-url> /mnt/src
 
 ─────────────────────────────────────────────────────────────────────
-3.  COLLECT DISK UUIDs
+3.  IDENTIFY DISKS (BY-ID)
 ─────────────────────────────────────────────────────────────────────
-# lsblk -f -o NAME,UUID,SIZE,MODEL
-Copy the table to your laptop.  Identify:
-  • 1× SSD (system)
-  • N× HDD (data)
-  • 1× HDD (parity, >= biggest data disk)
+# ls -l /dev/disk/by-id/
+
+Copy values into `vars.nix`:
+  - mainDisk
+  - dataDisks
+  - parityDisk
+
+This repo uses stable disk IDs (not random UUID examples) in vars.
 
 ─────────────────────────────────────────────────────────────────────
-4.  EDIT vars.nix  (on laptop)
+4.  OPTIONAL: WIPE TARGET DISKS
 ─────────────────────────────────────────────────────────────────────
-mainDisk   = "<SSD-UUID>";
-dataDisks  = [ "<HDD1-UUID>" "<HDD2-UUID>" … ];
-parityDisk = "<PARITY-UUID>";
-
-git commit -am "add UUIDs" && git push
-
-─────────────────────────────────────────────────────────────────────
-5.  OPTIONAL: DISK WIPE
-─────────────────────────────────────────────────────────────────────
-# for u in <uuid1> <uuid2> … ; do
-    wipefs -a /dev/disk/by-uuid/$u
-    sgdisk --zap-all /dev/disk/by-uuid/$u
+# for d in /dev/disk/by-id/<disk-id-1> /dev/disk/by-id/<disk-id-2>; do
+    wipefs -a "$d"
+    sgdisk --zap-all "$d"
   done
 
 ─────────────────────────────────────────────────────────────────────
-6.  RUN DISKO  (auto-partition, format, mount)
+5.  APPLY DISKO LAYOUT
 ─────────────────────────────────────────────────────────────────────
 # nix run github:nix-community/disko -- \
-      --mode zap_create_mount /mnt/src/disko.nix
+    --mode zap_create_mount /mnt/src/disko.nix
 
-Verify:
-# findmnt -R /mnt           # shows /, /boot, /nix, /persist, /mnt/data …
+Verify mounts:
+# findmnt -R /mnt
 
 ─────────────────────────────────────────────────────────────────────
-7.  COPY FLAKE & GENERATE HARDWARE CONFIG
+6.  COPY CONFIG + GENERATE HARDWARE FILE
 ─────────────────────────────────────────────────────────────────────
 # cp -r /mnt/src/* /mnt/etc/nixos
 # nixos-generate-config --root /mnt
-Edit /mnt/etc/nixos/hardware-configuration.nix  
- → keep the fileSystems from disko, keep HW modules.
+
+Check `/mnt/etc/nixos/hardware-configuration.nix` and keep generated HW
+configuration aligned with the Disko-managed filesystems.
 
 ─────────────────────────────────────────────────────────────────────
-8.  (OPTIONAL) ADD LAPTOP SSH KEY
+7.  PREPARE AGENIX KEYS + SECRETS
 ─────────────────────────────────────────────────────────────────────
-Laptop:
-$ ssh-keygen -t ed25519 -C laptop
-$ cat ~/.ssh/id_ed25519.pub
-Add to users.users.dave.openssh.authorizedKeys in configuration.nix.
+On workstation:
+$ mkdir -p ~/.age
+$ age-keygen -o ~/.age/agenix.key
+$ mkdir -p secrets/pubkeys
+$ age-keygen -y ~/.age/agenix.key > secrets/pubkeys/age.pub
+$ ./scripts/gen-all-secrets.sh
+
+Manual files still required in `secrets/top/` before rerunning script:
+  - netbirdSetupKey
+  - cfHomeCreds
+  - cfAPIToken
+
+On server:
+# install -d -m 0700 /etc/agenix
+# install -m 0400 /path/to/agenix.key /etc/agenix/age.key
 
 ─────────────────────────────────────────────────────────────────────
-9.  AGE / AGENIX – SET UP SECRETS
+8.  VALIDATE CONFIG BEFORE FIRST BOOT
 ─────────────────────────────────────────────────────────────────────
-Laptop commands
----------------
-$ mkdir -p ~/.config/age
-$ age-keygen -o ~/.config/age/id_age
-$ cat ~/.config/age/id_age.pub > age.pub
-$ git add age.pub && git commit -m "add Age pubkey"
-$ nix run github:ryantm/agenix -- --generate -i age.pub
-
-Create & encrypt each secret
-----------------------------
-Example (NetBird setup key):
-$ echo 'wbx1k……' > plain.txt
-$ agenix -e secrets/netbirdSetupKey.age plain.txt
-$ rm plain.txt
-
-Required secret files
----------------------
-  netbirdSetupKey.age
-  cfHomeCreds.age
-  cfAPIToken.age
-  kanidmAdminPass.age
-  kanidmSysAdminPass.age
-  immichClientSecret.age
-  paperlessClientSecret.age
-  absClientSecret.age
-  copypartyClientSecret.age
-  oauth2ProxyClientSecret.age
-  oauth2ProxyCookieSecret.age
-  vaultwardenClientSecret.age
-  vaultwardenAdminToken.age
-
-Tip:  random secret  ➜  pwgen -s 48 1 | agenix -e secrets/file.age
-
-git add secrets/*.age && git commit -m "encrypt secrets" && git push
+$ nix flake check --no-build
+$ scripts/check-repo.sh
 
 ─────────────────────────────────────────────────────────────────────
-10.  CLOUDFLARE TUNNEL
+9.  INSTALL NIXOS
 ─────────────────────────────────────────────────────────────────────
-Laptop:
-$ cloudflared tunnel login
-$ cloudflared tunnel create home
-Copy the JSON creds → encrypt as cfHomeCreds.age
-$ cloudflared tunnel route dns home <domain>
-$ cloudflared tunnel route dns home www.<domain>
-$ cloudflared tunnel route dns home id.<domain>
-$ cloudflared tunnel route dns home paperless.<domain>
-$ cloudflared tunnel route dns home immich.<domain>
-$ cloudflared tunnel route dns home audiobookshelf.<domain>
-$ cloudflared tunnel route dns home fileshare.<domain>
-$ cloudflared tunnel route dns home photoshare.<domain>
-$ cloudflared tunnel route dns home vault.<domain>
-
-Each hostname now maps directly to the local service that Caddy or the OAuth
-proxy exposes on 127.0.0.1.
-
-─────────────────────────────────────────────────────────────────────
-11.  NETBIRD CLOUD
-─────────────────────────────────────────────────────────────────────
-• Org dashboard → Setup Keys → “One-off” → copy → netbird-setup-key.age
-• Nameservers → Host Records:
-    sydneybasiniot.org        → 100.96.1.10
-    immich / paperless / vault → 100.96.1.10
-
-─────────────────────────────────────────────────────────────────────
-12.  INSTALL NixOS
-─────────────────────────────────────────────────────────────────────
-# nixos-install --flake /etc/nixos#sydney-home
+# nixos-install --flake /etc/nixos#server
 # reboot
 
-First boot:
-# nixos-rebuild switch --flake /etc/nixos#sydney-home
+─────────────────────────────────────────────────────────────────────
+10. POST-INSTALL DEPLOY FLOW
+─────────────────────────────────────────────────────────────────────
+From workstation:
+$ nix --extra-experimental-features 'nix-command flakes' \
+    run github:serokell/deploy-rs -- .#home-server
 
 ─────────────────────────────────────────────────────────────────────
-13.  KANIDM INITIALISATION
+11. KANIDM INITIALIZATION
 ─────────────────────────────────────────────────────────────────────
-# systemctl start kanidm
-# sudo -u kanidm kanidm admin init \
-      --domain sydneybasiniot.org \
-      --admin-pass-file /run/secrets/kanidm_admin_pass
+$ nix shell nixpkgs#kanidm
+$ kanidm login --name admin --password "$(age --decrypt -i ~/.age/agenix.key secrets/kanidmSysAdminPass.age)"
 
-Create OIDC clients (one per app): immich-web, paperless-web, abs-web,
-vaultwarden-web, copyparty-web and oauth2-proxy. Use the redirect URIs noted in
-the module definitions under `modules/` so each service matches its upstream
-callback. Encrypt every printed client_secret into the matching .age file.
+Create first user:
+$ kanidm person create <user> --display-name "<Name>"
+$ kanidm person set-password <user>
+$ kanidm group add-member users <user>
 
-Unix token:
-# sudo -u kanidm kanidm unix create -f /run/secrets/kanidm_unixd_token
+Create OIDC clients used by modules:
+  - immich-web
+  - paperless-web
+  - abs-web
+  - copyparty-web
+  - oauth2-proxy
 
 ─────────────────────────────────────────────────────────────────────
-14.  FIRST SNAPRAID SYNC
+12. VERIFICATION CHECKLIST
 ─────────────────────────────────────────────────────────────────────
-# snapraid sync
-# snapraid status        # should show “All good”.
+- https://id.<domain>
+- https://paperless.<domain>
+- https://audiobookshelf.<domain>
+- https://photoshare.<domain>
+- https://fileshare.<domain>
 
-Timers auto-installed:
+Also verify:
+# systemctl --failed
 # systemctl list-timers snapraid*
+# snapraid status
 
 ─────────────────────────────────────────────────────────────────────
-15.  VERIFICATION (LAN or NetBird peer)
+13. OPERATIONS NOTES
 ─────────────────────────────────────────────────────────────────────
-✓  https://id.sydneybasiniot.org            (login page)
-✓  https://sydneybasiniot.org               (Homepage dashboard)
-✓  https://paperless.sydneybasiniot.org     (Paperless-ngx)
-✓  https://audiobookshelf.sydneybasiniot.org (Audiobookshelf)
-✓  https://photoshare.sydneybasiniot.org    (Immich)
-✓  https://vault.sydneybasiniot.org         (Kanidm SSO)
-✓  https://fileshare.sydneybasiniot.org     (Copyparty via OAuth2 Proxy)
-Public LTE   ✓ fileshare  ✗ root domain (should refuse)
-
-─────────────────────────────────────────────────────────────────────
-16.  DAILY ROUTINE
-─────────────────────────────────────────────────────────────────────
-• SnapRAID sync nightly, scrub weekly.
-• Use Vaultwarden browser extension → “Login with SSO”.
-• NetBird mesh gives 100.96.x.x addresses.
-
-─────────────────────────────────────────────────────────────────────
-17.  APPARMOR HARDENING
-─────────────────────────────────────────────────────────────────────
-1.  Add to configuration.nix:
-      security.apparmor.complainProfiles = [ "generated-*" ];
-2.  # nixos-rebuild switch
-3.  Use server for a week.
-4.  # sudo apparmor-violations
-    → CSV at superceded/modules/apparmor/dotfiles/
-5.  Add missing paths to vars.appArmorDefaults.
-6.  Remove complainProfiles; rebuild → now in enforce mode.
-
-─────────────────────────────────────────────────────────────────────
-18.  EXPANDING STORAGE  (add new HDD)
-─────────────────────────────────────────────────────────────────────
-A.  Get new UUID:
-    # lsblk -f
-B.  Add to vars.dataDisks list.
-C.  git commit & push.
-D.  On server:
-    # nixos-rebuild switch --flake /etc/nixos#sydney-home
-E.  # snapraid -a
-F.  # snapraid sync
-
-─────────────────────────────────────────────────────────────────────
-19.  BACKUPS
-─────────────────────────────────────────────────────────────────────
-• Use Borg or Restic to push /mnt/data and /persist to another host
-  or cloud bucket.  SnapRAID is **not** a backup.
-
-════════════════════════════════ END ═══════════════════════════════
-
+- Bootstrap SSH/password auth should be hardened after provisioning.
+- Keep `/run/secrets` and agenix ownership constraints in sync with unit users.
+- If adding/removing modules, rerun `scripts/check-repo.sh` to catch deprecated
+  module references that are no longer part of the active stack.

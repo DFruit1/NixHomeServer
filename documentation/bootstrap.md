@@ -1,60 +1,128 @@
-# Home Server Bootstrap Guide
+# Home Server Bootstrap Guide (Current)
 
-This guide walks through generating secrets, deploying the system and creating the first users.
+This runbook matches the current flake and module set in this repository (`NixOS 25.05` state version, `nixpkgs` release branch `25.11`).
 
-## 1. Generate an Age key pair
+## What this stack currently includes
+
+- Identity and SSO: **Kanidm** + **OAuth2 Proxy**
+- Applications: **Immich**, **Paperless-ngx**, **Audiobookshelf**, **Copyparty**
+- Edge/routing: **Caddy** + **Cloudflared tunnel**
+- Networking: **Unbound + dnscrypt-proxy**, optional **NetBird** mesh
+- Storage: **Disko + mergerfs + SnapRAID**
+- Hardening: generated **AppArmor** profiles
+
+---
+
+## 1) Prerequisites
+
+On your admin workstation:
 
 ```bash
+git --version
+ssh -V
+nix --version
+```
+
+If `nix` is missing, install it before continuing. All repository validation scripts require `nix` on `PATH`.
+
+Clone repo:
+
+```bash
+git clone <your-fork-or-origin-url> NixHomeServer
+cd NixHomeServer
+```
+
+---
+
+## 2) Prepare Age key material
+
+```bash
+mkdir -p ~/.age
 age-keygen -o ~/.age/agenix.key
 mkdir -p secrets/pubkeys
 age-keygen -y ~/.age/agenix.key > secrets/pubkeys/age.pub
 ```
-Copy the private key to the server later as `/etc/agenix/age.key` with `0400` permissions.
 
-## 2. Create application secrets
+Copy the private key to target host as `/etc/agenix/age.key` with mode `0400`.
 
-Ensure `age` and `openssl` are installed, then run:
+---
+
+## 3) Generate and encrypt secrets
 
 ```bash
 ./scripts/gen-all-secrets.sh
 ```
-The script generates and encrypts the Kanidm passwords, the Vaultwarden admin token, and OIDC client secrets for Immich, Paperless, Audiobookshelf, Vaultwarden, Copyparty and the OAuth2 Proxy.  Clear‑text copies are written to `secrets/top/`, and the entire `secrets/` directory is ignored to keep secrets out of version control.
 
-### Manual secrets
-`cfHomeCreds`, `cfAPIToken` and `netbirdSetupKey` must be provided manually. Place the raw values in `secrets/top/` and rerun the script; it verifies their format and encrypts them to `.age` files. The script exits with an error if any secret is missing or malformed.
+This creates encrypted secrets for Kanidm, app OIDC clients, and OAuth2 Proxy.
 
-- **netbirdSetupKey** – retrieve a setup key from the NetBird admin UI and save it to `secrets/top/netbirdSetupKey` (single line, at least 20 URL‑safe characters).
-- **cfHomeCreds** – after running `cloudflared tunnel login` and `cloudflared tunnel create metro`, copy the resulting credentials JSON to `secrets/top/cfHomeCreds`.
-- **cfAPIToken** – create a Cloudflare API token with DNS edit rights and save it as `secrets/top/cfAPIToken` in the form `CF_API_TOKEN=…`.
+Manual secrets still required in `secrets/top/` before rerunning script:
 
-Once encrypted, move or delete the contents of `secrets/top` to keep clear‑text copies out of the repository.
+- `netbirdSetupKey`
+- `cfHomeCreds`
+- `cfAPIToken`
 
-## 3. Deploy to the server
+After encryption, remove cleartext files from `secrets/top/`.
 
-From your workstation with SSH access to the server and Nix installed:
+---
+
+## 4) Validate repository before deployment
 
 ```bash
-nix --extra-experimental-features 'nix-command flakes' run github:serokell/deploy-rs -- .#home-server
+nix flake check --no-build
+scripts/check-repo.sh
 ```
-This builds the system and activates it on the machine at `vars.lanIP` (default `192.168.0.144`).
 
-## 4. Bootstrap Kanidm
+Both should pass locally before deploy.
 
-Install the Kanidm CLI and log in as the system administrator using the generated password:
+---
+
+## 5) Deploy
+
+```bash
+nix --extra-experimental-features 'nix-command flakes' \
+  run github:serokell/deploy-rs -- .#home-server
+```
+
+Target defaults to `vars.lanIP`.
+
+---
+
+## 6) Bootstrap Kanidm
 
 ```bash
 nix shell nixpkgs#kanidm
 kanidm login --name admin --password "$(age --decrypt -i ~/.age/agenix.key secrets/kanidmSysAdminPass.age)"
-```
-Create your first user and add them to the default group:
-
-```bash
 kanidm person create <user> --display-name "<Name>"
 kanidm person set-password <user>
 kanidm group add-member users <user>
 ```
-Users can now log in to services via OIDC.
 
-## 5. Copyparty file sharing
+Then configure OIDC clients in Kanidm for:
 
-Copyparty is exposed at `https://fileshare.${vars.domain}` behind the Cloudflare tunnel. Users authenticate via Kanidm and can upload or share files through the web interface.
+- `immich-web`
+- `paperless-web`
+- `abs-web`
+- `copyparty-web`
+- `oauth2-proxy`
+
+Use redirect/callback URLs expected by each module.
+
+---
+
+## 7) DNS and redundancy note (DietPi companion)
+
+You can run a separate Raspberry Pi (DietPi) for Home page, AdGuard Home, Unbound, DHCP, and power scripts **alongside** this server.
+
+Recommended pattern:
+
+- Keep this Nix server as app/identity/storage host.
+- Put DHCP + primary LAN DNS filtering (AdGuard Home) on DietPi.
+- Run Unbound on both hosts for resolver redundancy.
+- Configure clients/routers with **both DNS servers** in order of preference.
+
+Avoid split-brain by making one source authoritative for local overrides:
+
+- Either keep local DNS rewrites centrally in AdGuard (forward to one/both Unbound backends),
+- or keep authoritative local records on one resolver and replicate changes deliberately.
+
+If this server is periodically powered down, make DietPi the primary always-on resolver and keep the server resolver as secondary/failover.
