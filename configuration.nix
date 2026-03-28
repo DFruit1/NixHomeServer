@@ -66,6 +66,7 @@ in
   #  SnapRAID / mergerfs (formerly diskconf.nix)
   ###############################################################################
   environment.systemPackages = with pkgs; [
+    nix
     mergerfs
     snapraid
     smartmontools
@@ -206,5 +207,9 @@ in
 
   services.btrfs.autoScrub.enable = true;
 
+  nix = {
+    package = pkgs.nixVersions.latest;
+    settings.experimental-features = [ "nix-command" "flakes" ];
+  };
   nix.gc.automatic = true;
 }
