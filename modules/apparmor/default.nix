@@ -30,12 +30,6 @@ let
       "/var/log/vaultwarden/**"
       "/etc/vaultwarden/**"
     ];
-    "homepage-dashboard" = [
-      "${vars.dataRoot}/homepage/**"
-      "/var/lib/homepage-dashboard/**"
-      "/var/cache/homepage-dashboard/**"
-      "/var/log/homepage-dashboard/**"
-    ];
     "cloudflared-tunnel-${vars.cloudflareTunnelName}" = [
       "/var/lib/cloudflared/**"
       "/var/log/cloudflared/**"
@@ -56,7 +50,7 @@ let
       "/var/log/unbound/**"
       "/etc/unbound/**"
     ];
-    "dnscrypt-proxy2" = [
+    "dnscrypt-proxy" = [
       "/var/lib/dnscrypt-proxy/**"
       "/var/log/dnscrypt-proxy/**"
       "/etc/dnscrypt-proxy/**"

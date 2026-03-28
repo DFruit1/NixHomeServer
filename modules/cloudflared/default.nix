@@ -17,8 +17,8 @@
       credentialsFile = config.age.secrets.cfHomeCreds.path;
 
       ingress = {
-        "${vars.domain}" = "http://127.0.0.1:${toString vars.homepagePort}";
-        "www.${vars.domain}" = "http://127.0.0.1:${toString vars.homepagePort}";
+        "${vars.domain}" = "http://127.0.0.1:80";
+        "www.${vars.domain}" = "http://127.0.0.1:80";
         "${vars.kanidmDomain}" = "https://127.0.0.1:${toString vars.kanidmPort}";
         "paperless.${vars.domain}" = "http://127.0.0.1:${toString vars.paperlessPort}";
         "immich.${vars.domain}" = "http://127.0.0.1:${toString vars.immichPort}";
