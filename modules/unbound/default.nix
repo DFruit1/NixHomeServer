@@ -61,7 +61,6 @@
           "fileshare.${vars.domain}       A ${vars.lanIP}"
           "photoshare.${vars.domain}      A ${vars.lanIP}"
           "id.${vars.domain}              A ${vars.lanIP}"
-          "vault.${vars.domain}           A ${vars.lanIP}"
         ];
       };
       forward-zone = [{
@@ -86,4 +85,3 @@
     allowedUDPPorts = [ 53 ];
   };
 }
-

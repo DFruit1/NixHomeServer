@@ -32,8 +32,6 @@ rec {
   paperlessPort = 8000;
   audiobookshelfPort = 13378;
   copypartyPort = 3923;
-  vaultwardenPort = 8222;
-  homepagePort = 3005;
   oauth2ProxyPort = 4180;
 
   ############################################################
@@ -87,13 +85,11 @@ rec {
     caddy = [ "/var/lib/caddy/**" "/var/log/caddy/**" "/etc/caddy/**" ];
     kanidm = [ "/var/lib/kanidm/**" "/var/log/kanidm/**" "/etc/kanidm/**" ];
     "immich-server" = [ "${dataRoot}/immich/**" "/var/log/immich/**" ];
-    "paperless-ngx" = [ "${dataRoot}/paperless/**" "/var/log/paperless-ngx/**" ];
+    "paperless-web" = [ "${dataRoot}/paperless/**" "/var/lib/paperless/**" "/var/log/paperless-ngx/**" ];
     audiobookshelf = [ "${dataRoot}/audiobookshelf/**" "/var/log/audiobookshelf/**" ];
-    copypartyd = [ "${dataRoot}/copyparty/**" "/var/log/copyparty/**" ];
-    vaultwarden = [ "${dataRoot}/vaultwarden/**" "/var/log/vaultwarden/**" "/etc/vaultwarden/**" ];
-    homepage = [ "${dataRoot}/homepage/**" "/var/log/homepage-dashboard/**" ];
-    cloudflared = [ "/var/lib/cloudflared/**" "/var/log/cloudflared/**" "/etc/cloudflared/**" ];
-    netbird = [ "/var/lib/netbird/**" "/var/log/netbird/**" "/etc/netbird/**" ];
+    copyparty = [ "${dataRoot}/copyparty/**" "/var/log/copyparty/**" ];
+    "cloudflared-tunnel-${cloudflareTunnelName}" = [ "/var/lib/cloudflared/**" "/var/log/cloudflared/**" "/etc/cloudflared/**" ];
+    "netbird-main" = [ "/var/lib/netbird-main/**" "/var/log/netbird-main/**" "/etc/netbird-main/**" ];
     "oauth2-proxy" = [ "/var/lib/oauth2-proxy/**" "/var/log/oauth2-proxy/**" "/etc/oauth2-proxy/**" ];
     unbound = [ "/var/lib/unbound/**" "/var/log/unbound/**" "/etc/unbound/**" ];
     "dnscrypt-proxy" = [ "/var/lib/dnscrypt-proxy/**" "/var/log/dnscrypt-proxy/**" "/etc/dnscrypt-proxy/**" ];

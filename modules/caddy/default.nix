@@ -19,13 +19,13 @@
     virtualHosts = {
       "${vars.domain}" = {
         extraConfig = ''
-          reverse_proxy http://127.0.0.1:${toString vars.homepagePort}
+          redir https://${vars.kanidmDomain}{uri} 308
         '';
       };
 
       "www.${vars.domain}" = {
         extraConfig = ''
-          redir https://${vars.domain}{uri} 308
+          redir https://${vars.kanidmDomain}{uri} 308
         '';
       };
 
@@ -66,12 +66,6 @@
       "photoshare.${vars.domain}" = {
         extraConfig = ''
           reverse_proxy http://127.0.0.1:${toString vars.immichPort}
-        '';
-      };
-
-      "vault.${vars.domain}" = {
-        extraConfig = ''
-          reverse_proxy http://127.0.0.1:${toString vars.vaultwardenPort}
         '';
       };
     };

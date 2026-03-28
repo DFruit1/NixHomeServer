@@ -1,0 +1,47 @@
+# Codex CLI local command policy for this repository.
+#
+# Intended effect:
+# - Block clearly dangerous host-destructive commands.
+# - Require explicit approval for sensitive state-changing commands.
+# - Allow normal read/build/test workflows by default.
+
+version = 1
+
+[policy]
+default_action = "allow"
+
+[[rule]]
+name = "deny-destructive-root-delete"
+action = "deny"
+match = "^\\s*rm\\s+-rf\\s+/(\\s|$)"
+reason = "Refuse recursive deletion from filesystem root."
+
+[[rule]]
+name = "deny-disk-wipe"
+action = "deny"
+match = "^\\s*(wipefs|sgdisk|dd)\\b"
+reason = "Disk-destructive commands must never run from Codex CLI automation."
+
+[[rule]]
+name = "deny-force-power-ops"
+action = "deny"
+match = "^\\s*(reboot|shutdown|poweroff|halt)\\b"
+reason = "Prevent host availability impact from automation."
+
+[[rule]]
+name = "ask-before-package-manager-write"
+action = "ask"
+match = "^\\s*(apt(-get)?|dnf|yum|pacman|zypper)\\s+(install|remove|purge|upgrade)\\b"
+reason = "Package manager writes should be explicitly approved."
+
+[[rule]]
+name = "ask-before-network-side-effects"
+action = "ask"
+match = "^\\s*(git\\s+push|gh\\s+|curl\\s+.+\\|\\s*sh|wget\\s+.+\\|\\s*sh)"
+reason = "Outbound publish/remote execution requires explicit approval."
+
+[[rule]]
+name = "ask-before-firewall-or-network-reconfig"
+action = "ask"
+match = "^\\s*(iptables|nft|ufw|nmcli|ip\\s+route|ip\\s+link)\\b"
+reason = "Networking changes can break remote access."
