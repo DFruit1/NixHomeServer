@@ -20,7 +20,5 @@
     copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };
     oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     oauth2ProxyCookieSecret = { file = ./oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
-    vaultwardenClientSecret = { file = ./vaultwardenClientSecret.age; owner = "vaultwarden"; mode = "0400"; };
-    vaultwardenAdminToken = { file = ./vaultwardenAdminToken.age; owner = "vaultwarden"; mode = "0400"; };
   };
 }
