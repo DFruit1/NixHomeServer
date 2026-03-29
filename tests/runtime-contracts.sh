@@ -16,6 +16,13 @@ server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
 net_iface="$(nix_eval_var 'vars.netIface')"
 netbird_iface="$(nix_eval_var 'vars.netbirdIface')"
 wg_port="$(nix_eval_var 'builtins.toString vars.wgPort')"
+snapraid_mounts_json="$(NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}" nix eval --json --impure --expr "
+  let
+    flake = builtins.getFlake (toString ${TESTS_REPO_ROOT});
+    vars = import ${TESTS_REPO_ROOT}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
+  in
+    [ \"/mnt/data\" \"/mnt/parity\" ] ++ builtins.genList (idx: \"/mnt/disk\${toString (idx + 1)}\") (builtins.length vars.dataDisks)
+")"
 
 echo "ℹ️ Checking evaluated service enablement contracts…"
 require_json_equal "$(nix_eval_config_json 'services.caddy.enable')" "true" \
@@ -68,5 +75,24 @@ require_json_equal "$(nix_eval_config_json 'networking.hostName')" "\"${hostname
   "The evaluated system hostname must match vars.nix."
 require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.networking.interfaces.\"${net_iface}\".ipv4.addresses)" "[{\"address\":\"${server_lan_ip}\",\"prefixLength\":24}]" \
   "The evaluated LAN address must remain the configured server LAN IP."
+
+echo "ℹ️ Checking evaluated storage-service contracts…"
+snapraid_config="$(nix eval --raw .#nixosConfigurations.${hostname}.config.environment.etc.\"snapraid.conf\".text)"
+if ! grep -q '^content /var/lib/snapraid/snapraid.content$' <<<"$snapraid_config"; then
+  echo "❌ SnapRAID must keep a local content file in the evaluated config."
+  echo "   snapraid.conf:"
+  printf '%s\n' "$snapraid_config"
+  exit 1
+fi
+if ! grep -q '^content /mnt/parity/snapraid.content$' <<<"$snapraid_config"; then
+  echo "❌ SnapRAID must keep a parity-backed content file in the evaluated config."
+  echo "   snapraid.conf:"
+  printf '%s\n' "$snapraid_config"
+  exit 1
+fi
+require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.systemd.services.snapraid-sync.unitConfig.RequiresMountsFor)" "${snapraid_mounts_json}" \
+  "SnapRAID sync must wait for the mergerfs, parity, and data disk mountpoints."
+require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.systemd.services.snapraid-scrub.unitConfig.RequiresMountsFor)" "${snapraid_mounts_json}" \
+  "SnapRAID scrub must wait for the mergerfs, parity, and data disk mountpoints."
 
 echo "✅ Runtime contract tests passed."

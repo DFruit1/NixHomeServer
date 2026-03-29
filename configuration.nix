@@ -5,6 +5,10 @@
 ###############################################################################
 let
   mergerfsMountPoint = "/mnt/data";
+  snapraidContentFiles =
+    [ "/var/lib/snapraid/snapraid.content" ]
+    ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}/snapraid.content") vars.dataDisks)
+    ++ [ "/mnt/parity/snapraid.content" ];
 
   # build "/mnt/disk1:/mnt/disk2:…"
   mergerfsSourceList =
@@ -92,10 +96,12 @@ in
   systemd.tmpfiles.rules = [
     "d ${mergerfsMountPoint} 0755 root root -"
     "d /run/secrets 0750 root root -"
+    "d /var/lib/snapraid 0750 root root -"
   ];
 
   environment.etc."snapraid.conf".text = ''
     parity /mnt/parity/snapraid.parity
+    ${builtins.concatStringsSep "\n" (map (path: "content ${path}") snapraidContentFiles)}
     ${builtins.concatStringsSep "\n" (lib.imap0 mkSnapraidLine vars.dataDisks)}
     exclude *.unrecoverable
     exclude /tmp/
@@ -115,9 +121,11 @@ in
   # services
   systemd.services.snapraid-sync = {
     description = "Sync SnapRAID arrays";
+    unitConfig.RequiresMountsFor =
+      [ mergerfsMountPoint "/mnt/parity" ]
+      ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}") vars.dataDisks);
     serviceConfig = {
       Type = "oneshot";
-      RequiresMountsFor = [ mergerfsMountPoint "/mnt/parity" ];
     };
     path = [ pkgs.snapraid ];
     script = "snapraid sync";
@@ -125,9 +133,11 @@ in
 
   systemd.services.snapraid-scrub = {
     description = "Scrub SnapRAID arrays";
+    unitConfig.RequiresMountsFor =
+      [ mergerfsMountPoint "/mnt/parity" ]
+      ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}") vars.dataDisks);
     serviceConfig = {
       Type = "oneshot";
-      RequiresMountsFor = [ mergerfsMountPoint "/mnt/parity" ];
     };
     path = [ pkgs.snapraid ];
     script = "snapraid scrub -p 1 -o 10";
@@ -148,6 +158,10 @@ in
       email = vars.email;
       dnsProvider = "cloudflare";
       credentialsFile = config.age.secrets.cfAPIToken.path;
+    };
+    certs."${vars.domain}" = {
+      extraDomainNames = [ "*.${vars.domain}" ];
+      group = "caddy";
     };
     certs."${vars.kanidmDomain}" = {
       group = "caddy";

@@ -31,6 +31,13 @@ if [[ -n "$missing_refs" ]]; then
 fi
 
 echo "ℹ️ Checking secret ownership and consumer coverage…"
+while IFS= read -r age_file; do
+  if [[ ! -s "$age_file" ]]; then
+    echo "❌ Encrypted secret file is empty: $age_file"
+    exit 1
+  fi
+done < <(find secrets -maxdepth 1 -type f -name '*.age' | sort)
+
 require_fixed secrets/agenix.nix 'netbirdSetupKey = {' \
   "NetBird setup key must be defined in agenix."
 require_fixed secrets/agenix.nix 'owner = "netbird-main";' \
@@ -62,8 +69,6 @@ require_fixed modules/cloudflared/default.nix 'credentialsFile = config.age.secr
   "Cloudflared must consume the tunnel credentials from agenix."
 require_fixed configuration.nix 'credentialsFile = config.age.secrets.cfAPIToken.path;' \
   "ACME must consume the Cloudflare API token from agenix."
-require_fixed modules/caddy/default.nix 'systemd.services.caddy.serviceConfig.EnvironmentFile = config.age.secrets.cfAPIToken.path;' \
-  "Caddy must consume the Cloudflare API token from agenix."
 require_fixed modules/kanidm/default.nix 'idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;' \
   "Kanidm must consume the IDM admin secret from agenix."
 require_fixed modules/kanidm/default.nix 'adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;' \
@@ -78,9 +83,15 @@ require_fixed modules/audiobookshelf/default.nix 'ABS_OIDC_CLIENT_SECRET_FILE = 
   "Audiobookshelf must consume its OIDC client secret from agenix."
 require_fixed modules/copyparty/default.nix 'CPP_OIDC_CLIENT_SECRET_FILE = config.age.secrets.copypartyClientSecret.path;' \
   "Copyparty must consume its OIDC client secret from agenix."
-require_fixed modules/oauth2-proxy/default.nix '"client-secret-file" = config.age.secrets.oauth2ProxyClientSecret.path;' \
-  "OAuth2 Proxy must consume its client secret from agenix."
-require_fixed modules/oauth2-proxy/default.nix '"cookie-secret-file" = config.age.secrets.oauth2ProxyCookieSecret.path;' \
-  "OAuth2 Proxy must consume its cookie secret from agenix."
+require_fixed modules/oauth2-proxy/default.nix 'clientSecret = null;' \
+  "OAuth2 Proxy must not embed the client secret directly into the unit command line."
+require_fixed modules/oauth2-proxy/default.nix 'cookie.secret = null;' \
+  "OAuth2 Proxy must not embed the cookie secret directly into the unit command line."
+require_fixed modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyClientSecret.path' \
+  "OAuth2 Proxy must source its client secret env file from agenix."
+require_fixed modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyCookieSecret.path' \
+  "OAuth2 Proxy must source its cookie secret env file from agenix."
+require_match scripts/gen-all-secrets.sh 'OAUTH2_PROXY_(CLIENT|COOKIE)_SECRET=' \
+  "OAuth2 Proxy clear-text staging files must be generated as environment-file entries."
 
 echo "✅ Secret policy tests passed."

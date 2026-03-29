@@ -11,16 +11,22 @@
     redirectURL = "https://fileshare.${vars.domain}/oauth2/callback";
     httpAddress = "127.0.0.1:${toString vars.oauth2ProxyPort}";
     clientID = "oauth2-proxy";
-    clientSecret = "unused";
-    cookie.secret = "unused";
+    clientSecret = null;
+    cookie.secret = null;
     setXauthrequest = true;
     extraConfig = {
       "pass-user-headers" = true;
       "oidc-groups-claim" = "groups";
-      "client-secret-file" = config.age.secrets.oauth2ProxyClientSecret.path;
-      "cookie-secret-file" = config.age.secrets.oauth2ProxyCookieSecret.path;
     };
   };
 
-  systemd.services.oauth2-proxy.serviceConfig.AppArmorProfile = "generated-oauth2-proxy";
+  systemd.services.oauth2-proxy = {
+    serviceConfig = {
+      AppArmorProfile = "generated-oauth2-proxy";
+      EnvironmentFile = [
+        config.age.secrets.oauth2ProxyClientSecret.path
+        config.age.secrets.oauth2ProxyCookieSecret.path
+      ];
+    };
+  };
 }

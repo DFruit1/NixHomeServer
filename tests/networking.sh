@@ -31,12 +31,20 @@ require_fixed modules/caddy/default.nix '"${vars.kanidmDomain}" = {' \
   "Caddy must serve the Kanidm hostname."
 require_fixed modules/caddy/default.nix 'tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem' \
   "Caddy must use the shared ACME certificate for Kanidm."
+forbid_match modules/caddy/default.nix 'acme_dns cloudflare' \
+  "Caddy must not manage Cloudflare ACME directly; certificate issuance belongs in security.acme."
 require_fixed modules/caddy/default.nix '"fileshare.${vars.domain}" = {' \
   "Caddy must serve fileshare.<domain>."
+require_fixed modules/caddy/default.nix 'tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem' \
+  "Caddy must use the wildcard/shared site certificate for non-Kanidm hostnames."
 require_fixed modules/caddy/default.nix '"paperless.${vars.domain}" = {' \
   "Caddy must retain the internal paperless virtual host."
 require_fixed modules/caddy/default.nix '"photoshare.${vars.domain}" = {' \
   "Caddy must retain the internal photoshare virtual host."
+require_fixed configuration.nix 'certs."${vars.domain}" = {' \
+  "ACME must issue the shared site certificate."
+require_fixed configuration.nix 'extraDomainNames = [ "*.${vars.domain}" ];' \
+  "ACME must issue a wildcard certificate for the site domain."
 require_fixed configuration.nix 'certs."${vars.kanidmDomain}" = {' \
   "ACME must issue the Kanidm certificate."
 require_fixed configuration.nix 'group = "caddy";' \
@@ -51,13 +59,13 @@ require_fixed configuration.nix 'users.users.kanidm.extraGroups = [ "caddy" ];' 
 echo "ℹ️ Checking LAN DNS and resolver policy…"
 require_fixed modules/unbound/default.nix 'local-zone = [ "${vars.domain} static" ];' \
   "Unbound must remain authoritative for the local domain."
-require_match modules/unbound/default.nix '"fileshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}"' \
+require_match modules/unbound/default.nix '"\\"fileshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must resolve fileshare.<domain> to the server LAN IP."
-require_match modules/unbound/default.nix '"paperless\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}"' \
+require_match modules/unbound/default.nix '"\\"paperless\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must resolve paperless.<domain> to the server LAN IP."
-require_match modules/unbound/default.nix '"photoshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}"' \
+require_match modules/unbound/default.nix '"\\"photoshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must resolve photoshare.<domain> to the server LAN IP."
-require_match modules/unbound/default.nix '"id\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}"' \
+require_match modules/unbound/default.nix '"\\"id\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must resolve id.<domain> to the server LAN IP."
 require_match modules/unbound/default.nix '"\$\{vars\.netbirdCidr\} allow"' \
   "Unbound must allow NetBird clients."
