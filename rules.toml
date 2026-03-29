@@ -47,10 +47,10 @@ match = "^\\s*nix\\s+(flake\\s+(show|metadata|check)|eval|path-info|store\\s+pre
 reason = "Allow read-only Nix inspection without prompts."
 
 [[rule]]
-name = "allow-deploy-rs-via-nix-run"
+name = "allow-nix-run-nixos-rebuild-remote-switch"
 action = "allow"
-match = "^\\s*nix\\s+.*run\\s+github:serokell/deploy-rs\\s+--\\s+.+$"
-reason = "Allow the documented deploy-rs invocation used for host deployment."
+match = "^\\s*nix\\s+run\\s+nixpkgs#nixos-rebuild\\s+--\\s+switch\\b.*--target-host\\s+.+\\s+--build-host\\s+.+$"
+reason = "Allow the documented nix run nixos-rebuild workflow where the server builds and activates its own system over SSH."
 
 [[rule]]
 name = "allow-ssh-basic-probes"

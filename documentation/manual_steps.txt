@@ -28,6 +28,7 @@ $ git clone <your-repo-url> NixHomeServer
 $ cd NixHomeServer
 
 If nix is missing, install it before continuing.
+Repository validation also expects `rg` on PATH.
 
 ─────────────────────────────────────────────────────────────────────
 1.  BOOT INSTALLER + NETWORK
@@ -55,6 +56,8 @@ Copy values into `vars.nix`:
   - mainDisk
   - dataDisks
   - parityDisk
+  - enableDietPiCompanion
+  - piLanIP   (if the DietPi companion is enabled)
   - netIface
   - serverLanIP
   - serverSSHPubKey
@@ -111,6 +114,15 @@ On server:
 ─────────────────────────────────────────────────────────────────────
 $ nix flake check --no-build
 $ scripts/check-repo.sh
+$ tests/run-all.sh
+$ tests/run-all.sh --with-runtime
+
+`scripts/check-repo.sh` also runs the static repository policy suite
+automatically. `tests/run-all.sh --with-runtime` additionally checks the live
+DietPi companion over SSH for bootstrap/debugging once the Pi is reachable. If
+DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct
+login user before running the DietPi test. DietPi-specific checks are skipped
+unless `enableDietPiCompanion = true` in `vars.nix`.
 
 ─────────────────────────────────────────────────────────────────────
 9.  INSTALL NIXOS
@@ -122,8 +134,13 @@ $ scripts/check-repo.sh
 10. POST-INSTALL DEPLOY FLOW
 ─────────────────────────────────────────────────────────────────────
 From workstation:
-$ nix --extra-experimental-features 'nix-command flakes' \
-    run github:serokell/deploy-rs -- .#home-server
+$ nix run nixpkgs#nixos-rebuild -- switch \
+    --flake .#server \
+    --target-host root@192.168.0.144 \
+    --build-host root@192.168.0.144
+
+This is the recommended deploy path. It requires Nix on the workstation so you
+can invoke `nixos-rebuild`, but the build itself still happens on the server.
 
 ─────────────────────────────────────────────────────────────────────
 11. KANIDM INITIALIZATION

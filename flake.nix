@@ -5,12 +5,11 @@
     nixpkgs.url = "github:nixos/nixpkgs/release-25.11";
     agenix.url = "github:ryantm/agenix";
     disko.url = "github:nix-community/disko";
-    deploy-rs.url = "github:serokell/deploy-rs";
     copyparty.url = "github:9001/copyparty";
     copyparty.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, agenix, disko, deploy-rs, copyparty, ... }:
+  outputs = { self, nixpkgs, agenix, disko, copyparty, ... }:
     let
       system = "x86_64-linux";
       lib = nixpkgs.lib;
@@ -29,27 +28,6 @@
         ];
         specialArgs = { inherit vars disko copyparty; };
       };
-
-      ################ deploy-rs spec  ################################
-      deploy = {
-        nodes.home-server = {
-          hostname = vars.serverLanIP;
-          sshUser = "root";
-          sshOpts = [ "-o" "IdentitiesOnly=yes" ];
-          profiles.system = {
-            user = "root";
-            path = deploy-rs.lib.${system}.activate.nixos
-              self.nixosConfigurations.${vars.hostname};
-          };
-
-          remoteBuild = false;
-        };
-      };
-
-      ################ Optional sanity checks #########################
-      checks = builtins.mapAttrs
-        (sys: deployLib: deployLib.deployChecks self.deploy)
-        deploy-rs.lib;
 
       ################ Formatter ######################################
       formatter.${system} = pkgs.nixpkgs-fmt;

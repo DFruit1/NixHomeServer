@@ -35,6 +35,7 @@ nix --version
 ```
 
 If `nix` is missing, install it before continuing. All repository validation scripts require `nix` on `PATH`.
+Repository validation also expects `rg` on `PATH`.
 
 Clone repo:
 
@@ -81,24 +82,30 @@ After encryption, remove cleartext files from `secrets/top/`.
 ```bash
 nix flake check --no-build
 scripts/check-repo.sh
+tests/run-all.sh
+tests/run-all.sh --with-runtime
 ```
 
-Both should pass locally before deploy.
+`scripts/check-repo.sh` runs the static repository policy suite via `tests/run-all.sh`. `tests/run-all.sh --with-runtime` additionally runs the live DietPi companion check for bootstrap/debugging once SSH access to the Pi is available. If DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct login user.
 
 ---
 
 ## 5) Deploy
 
 ```bash
-nix --extra-experimental-features 'nix-command flakes' \
-  run github:serokell/deploy-rs -- .#home-server
+nix run nixpkgs#nixos-rebuild -- switch \
+  --flake .#server \
+  --target-host root@192.168.0.144 \
+  --build-host root@192.168.0.144
 ```
 
-Target defaults to `vars.serverLanIP`.
+This is the recommended deploy path. It requires Nix on the workstation so you can invoke `nixos-rebuild`, but the server still builds and activates the new system itself over SSH rather than building on the workstation.
 
 Before deploying to a different machine, update the following in `vars.nix`:
 
 - `serverLanIP`
+- `enableDietPiCompanion`
+- `piLanIP` if the DietPi companion is enabled
 - `netIface`
 - `serverSSHPubKey`
 - `mainDisk`
@@ -134,6 +141,8 @@ From a non-NetBird external network, only `https://id.<domain>` and `https://fil
 ---
 
 ## 7) DNS and redundancy note (DietPi companion)
+
+This companion setup is optional and should only be treated as active when `enableDietPiCompanion = true` in `vars.nix`.
 
 You can run a separate Raspberry Pi (DietPi) for Home page, AdGuard Home, Unbound, DHCP, and power scripts **alongside** this server.
 

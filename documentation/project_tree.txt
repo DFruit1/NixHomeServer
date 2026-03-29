@@ -9,6 +9,15 @@ NixHomeServer/
 ├── scripts/
 │   ├── check-repo.sh
 │   └── gen-all-secrets.sh
+├── tests/
+│   ├── README.md
+│   ├── apparmor.sh
+│   ├── auth-routing.sh
+│   ├── dietpi.sh
+│   ├── lib.sh
+│   ├── networking.sh
+│   ├── run-all.sh
+│   └── secrets.sh
 ├── documentation/
 │   ├── bootstrap.md
 │   ├── manual_steps.txt

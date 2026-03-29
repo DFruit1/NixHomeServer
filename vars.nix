@@ -12,6 +12,8 @@ rec {
 
   # LAN & NetBird addresses for server
   serverLanIP = "192.168.0.144";
+  enableDietPiCompanion = false;
+  piLanIP = "192.168.0.123";
   nbIP = "100.96.1.10";
   defaultGateway = "192.168.0.1";
   dnscryptListenAddress = "127.0.0.1";

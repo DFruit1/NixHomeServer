@@ -28,4 +28,7 @@ for removed in modules/doas modules/impermanence modules/homepage; do
   fi
 done
 
+echo "ℹ️ Running repository policy tests…"
+tests/run-all.sh
+
 echo "✅ Repository checks passed."

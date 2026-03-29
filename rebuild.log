@@ -1,0 +1,26 @@
+warning: Git tree '/home/dsaw/Projects/NixOS' is dirty
+building the system configuration...
+warning: Git tree '/home/dsaw/Projects/NixOS' is dirty
+copying 0 paths...
+these 21 derivations will be built:
+  /nix/store/ln71xdv4zh10f3xy3cf1jfwh67vccpzc-nodejs-20.20.2.drv
+  /nix/store/npinvxnigr2n5r2s4gvi6ni5xssq1k4a-pnpm-10.28.0.drv
+  /nix/store/22qa14m4g204g4dzkaqylwa0blhb58r0-paperless-ngx-frontend-2.19.6.drv
+  /nix/store/073sr6ha751fqblb5p4wpf323bnlp7l0-paperless-ngx-2.19.6.drv
+  /nix/store/sm0a3d28qbvb2vbc8fz3x7zcggmkihqh-paperless-manage.drv
+  /nix/store/zkasn27b7fp9ccjkfn164vrxd0x4r6v9-system-path.drv
+  /nix/store/3sqx15gmx9vq8119iyrbn6aw2jmr1skv-dbus-1.drv
+  /nix/store/qz6ijc9cq3mbaf9bfiyc5fq5kc7fckn1-X-Restart-Triggers-dbus.drv
+  /nix/store/05knxgvfa1fhp5fjqbj2n69qd3jwr7g7-unit-dbus.service.drv
+  /nix/store/4qs1sx1l4db3yqwd91bqw75hy64zrkrl-unit-dbus.service.drv
+  /nix/store/6knbm5w5va81mkrb3hlkyfracwxcw1kv-X-Restart-Triggers-polkit.drv
+  /nix/store/72cd81m3f9amg9vyblfv93shja1nihwc-unit-paperless-web.service.drv
+  /nix/store/9smn6ywhlf4g9aby3bv4xp9ib470z00a-user-units.drv
+  /nix/store/ynhhgqnirfqn5nzgrn54gqhji74k4pl4-unit-script-paperless-scheduler-pre-start.drv
+  /nix/store/af25kcfqng8b1r5jx4spzfa7k2cj7kw8-unit-paperless-scheduler.service.drv
+  /nix/store/cww697220h4qz317zkfc5b925vgxcbk8-unit-polkit.service.drv
+  /nix/store/fqnjwj6xkg916lylxcz15iy8yb7vzhbz-unit-paperless-task-queue.service.drv
+  /nix/store/g4ar7qn3g1ii22ldb44yhyh5w17qdnmq-unit-paperless-consumer.service.drv
+  /nix/store/j6l3jl0yjjrcklsna2637l2ps7a84qna-system-units.drv
+  /nix/store/y9zsf4pxg266gfwi40czmi04051vjbkg-etc.drv
+  /nix/store/l2ivncrr8snpdabs7h0a9qprl256y6b2-nixos-system-server-25.11.20260328.0a3d6d3.drv
