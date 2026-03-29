@@ -1,4 +1,12 @@
-{ lib, config, vars, ... }:
+{ lib, config, pkgs, vars, ... }:
+
+let
+  # Paperless' frontend build has been unstable on this server with nixpkgs'
+  # default Node 20 toolchain, so override only this package to use Node 22.
+  paperlessPackage = pkgs.callPackage "${pkgs.path}/pkgs/by-name/pa/paperless-ngx/package.nix" {
+    nodejs_20 = pkgs.nodejs_22;
+  };
+in
 
 {
   users.users.paperless = {
@@ -16,9 +24,7 @@
     enable = true;
     dataDir = "${vars.dataRoot}/paperless";
     address = "127.0.0.1";
-
-    # extra package pin is optional; defaults to pkgs.paperless
-    # package = pkgs.paperless;
+    package = paperlessPackage;
 
     settings = {
       ##################################################################

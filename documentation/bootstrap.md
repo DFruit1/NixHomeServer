@@ -35,7 +35,7 @@ nix --version
 ```
 
 If `nix` is missing, install it before continuing. All repository validation scripts require `nix` on `PATH`.
-Repository validation also expects `rg` on `PATH`.
+Repository validation also expects `rg` and `jq` on `PATH`.
 
 Clone repo:
 
@@ -87,6 +87,7 @@ tests/run-all.sh --with-runtime
 ```
 
 `scripts/check-repo.sh` runs the static repository policy suite via `tests/run-all.sh`. `tests/run-all.sh --with-runtime` additionally runs the live DietPi companion check for bootstrap/debugging once SSH access to the Pi is available. If DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct login user.
+The `tests/run-all.sh` suite covers bootstrap-readiness, AppArmor, auth-routing, firewall intent, networking policy, runtime contracts, and secrets; use individual scripts only for targeted debugging.
 
 ---
 

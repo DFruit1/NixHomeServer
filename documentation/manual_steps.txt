@@ -13,6 +13,7 @@ Access model (current):
     publishes the minimal public subset.
   - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare` and
     `id` unless you intentionally want broader internet access.
+  - Public Cloudflare exposure should stay limited to `id`.<domain> and `fileshare`.<domain>.
 
 LEGEND
   $  => run on admin workstation
@@ -28,7 +29,7 @@ $ git clone <your-repo-url> NixHomeServer
 $ cd NixHomeServer
 
 If nix is missing, install it before continuing.
-Repository validation also expects `rg` on PATH.
+Repository validation also expects `rg` and `jq` on PATH.
 
 ─────────────────────────────────────────────────────────────────────
 1.  BOOT INSTALLER + NETWORK
@@ -123,6 +124,9 @@ DietPi companion over SSH for bootstrap/debugging once the Pi is reachable. If
 DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct
 login user before running the DietPi test. DietPi-specific checks are skipped
 unless `enableDietPiCompanion = true` in `vars.nix`.
+The `tests/run-all.sh` suite covers bootstrap-readiness, AppArmor,
+auth-routing, firewall intent, networking policy, runtime contracts, and
+secrets; individual test scripts are best used only for targeted debugging.
 
 ─────────────────────────────────────────────────────────────────────
 9.  INSTALL NIXOS

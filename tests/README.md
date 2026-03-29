@@ -4,6 +4,7 @@ This directory holds repository-level validation that is more specific than a pl
 
 Current coverage:
 
+- `bootstrap-readiness.sh`: checks first-deploy prerequisites, required files, critical secrets, and operator documentation coverage.
 - `networking.sh`: checks the intended networking policy and service boundary assumptions:
   - Cloudflare Tunnel only exposes the public subset.
   - Caddy keeps the HTTP/TLS boundary in front of public entrypoints.
@@ -13,6 +14,8 @@ Current coverage:
 - `secrets.sh`: checks that agenix secret definitions, owners, and consumers remain aligned.
 - `auth-routing.sh`: checks OIDC client IDs, fileshare auth flow, reverse-proxy routing, and the documented public/private app boundary.
 - `apparmor.sh`: checks that every referenced generated AppArmor profile has a matching policy key and that critical unit names stay aligned.
+- `firewall.sh`: checks evaluated firewall exposure so only the intended global and NetBird interface ports stay open.
+- `runtime-contracts.sh`: checks evaluated NixOS service, hostname, tunnel, secret-path, and interface contracts directly from `config`.
 - `run-all.sh`: runs the repository policy suite together from one entrypoint.
 - `dietpi.sh`: runs live DietPi companion checks over SSH using `vars.piLanIP` and `DIETPI_SSH_TARGET` when needed.
 - `lib.sh`: shared helper functions used by the test scripts.
@@ -29,9 +32,10 @@ DIETPI_SSH_TARGET=dietpi@192.168.0.123 tests/dietpi.sh
 Prerequisites:
 
 - `nix`
+- `jq`
 - `rg`
 
-The test scripts use `nix eval` where host-specific values from `vars.nix` should remain authoritative, and `rg` for source assertions.
+The test scripts use `nix eval` where host-specific values from `vars.nix` and the evaluated NixOS configuration should remain authoritative, `jq` for JSON assertions, and `rg` for source assertions.
 
 `tests/run-all.sh` runs the static repository policy suite.
 `tests/run-all.sh --with-runtime` also runs the live DietPi companion check.

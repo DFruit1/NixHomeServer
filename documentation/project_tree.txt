@@ -13,10 +13,13 @@ NixHomeServer/
 │   ├── README.md
 │   ├── apparmor.sh
 │   ├── auth-routing.sh
+│   ├── bootstrap-readiness.sh
 │   ├── dietpi.sh
+│   ├── firewall.sh
 │   ├── lib.sh
 │   ├── networking.sh
 │   ├── run-all.sh
+│   ├── runtime-contracts.sh
 │   └── secrets.sh
 ├── documentation/
 │   ├── bootstrap.md
@@ -59,4 +62,6 @@ NixHomeServer/
 
 Notes
 -----
+- `tests/run-all.sh` is the aggregate repository test entrypoint.
+- `tests/lib.sh` provides the shared helper functions used by the test scripts.
 - `superceded/` is archival/reference only and not part of active imports.

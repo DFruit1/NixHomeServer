@@ -1,26 +1,364 @@
 warning: Git tree '/home/dsaw/Projects/NixOS' is dirty
 building the system configuration...
 warning: Git tree '/home/dsaw/Projects/NixOS' is dirty
+copying 20 paths...
+copying path '/nix/store/f9iaskg692qskdiz7g9b45gjrka7kh1d-paperless-ngx-frontend-pnpm-deps.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/8k7pzijyacybwpl69gxnqba97cffmr39-paperless-ngx-frontend-2.19.6.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/zw2jzdcy0irfxwjqi52p6sara4dxvcy6-paperless-ngx-2.19.6.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/5klpxjrcp5xzwqnryy4vbk9lkzhw6sq2-paperless-manage.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/5n5px1ixjaqwv30yc9qlpvms64b5rsdi-unit-script-paperless-scheduler-pre-start.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/lhp9i5dk5hqhff2726p7b9lwq8xhcikg-unit-paperless-consumer.service.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/98jqpnzc247l9qgd2pk4kcarrqr5cf24-unit-paperless-web.service.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/nqbjg4dg8id5fn63pqn27y47d1k3adjq-unit-paperless-task-queue.service.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/s50mxilra38rx2w1dgkgxvza2bvl5vbq-system-path.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/h166ki0fa979rw61f963bgsy5f52mkgj-unit-paperless-scheduler.service.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/ds4nr62s9qj76iqpywpjggjb3vx40iw4-dbus-1.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/wzkyn75jpg2jixh41qzp9554zlx7f5d0-X-Restart-Triggers-polkit.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/605f88yig811yf7xqjlkd9dbhbrxy86z-X-Restart-Triggers-dbus.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/38i4bxhwb0523rqliqh85xzpkiqsrya1-unit-polkit.service.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/4k5w8r8xbfh0kdni9wgiap84g9055h4a-unit-dbus.service.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/bihabg5ngvnb2y30q4gjwbbq52028x1a-unit-dbus.service.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/m9pilkbigrkyvy2q1xrbaflplmqzb6m5-system-units.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/hyd8xyjs22bfms6i8q2l3676cczsp0m6-user-units.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/z4z3gl3m02ka074ckzvlfi7361fsjnjk-etc.drv' to 'ssh://root@192.168.0.144'...
+copying path '/nix/store/wlsbfy63rc3i9zcwsfgjscxy5zch8ms5-nixos-system-server-25.11.20260328.0a3d6d3.drv' to 'ssh://root@192.168.0.144'...
+these 19 derivations will be built:
+  /nix/store/8k7pzijyacybwpl69gxnqba97cffmr39-paperless-ngx-frontend-2.19.6.drv
+  /nix/store/zw2jzdcy0irfxwjqi52p6sara4dxvcy6-paperless-ngx-2.19.6.drv
+  /nix/store/5klpxjrcp5xzwqnryy4vbk9lkzhw6sq2-paperless-manage.drv
+  /nix/store/s50mxilra38rx2w1dgkgxvza2bvl5vbq-system-path.drv
+  /nix/store/wzkyn75jpg2jixh41qzp9554zlx7f5d0-X-Restart-Triggers-polkit.drv
+  /nix/store/38i4bxhwb0523rqliqh85xzpkiqsrya1-unit-polkit.service.drv
+  /nix/store/ds4nr62s9qj76iqpywpjggjb3vx40iw4-dbus-1.drv
+  /nix/store/605f88yig811yf7xqjlkd9dbhbrxy86z-X-Restart-Triggers-dbus.drv
+  /nix/store/4k5w8r8xbfh0kdni9wgiap84g9055h4a-unit-dbus.service.drv
+  /nix/store/5n5px1ixjaqwv30yc9qlpvms64b5rsdi-unit-script-paperless-scheduler-pre-start.drv
+  /nix/store/98jqpnzc247l9qgd2pk4kcarrqr5cf24-unit-paperless-web.service.drv
+  /nix/store/bihabg5ngvnb2y30q4gjwbbq52028x1a-unit-dbus.service.drv
+  /nix/store/h166ki0fa979rw61f963bgsy5f52mkgj-unit-paperless-scheduler.service.drv
+  /nix/store/hyd8xyjs22bfms6i8q2l3676cczsp0m6-user-units.drv
+  /nix/store/lhp9i5dk5hqhff2726p7b9lwq8xhcikg-unit-paperless-consumer.service.drv
+  /nix/store/nqbjg4dg8id5fn63pqn27y47d1k3adjq-unit-paperless-task-queue.service.drv
+  /nix/store/m9pilkbigrkyvy2q1xrbaflplmqzb6m5-system-units.drv
+  /nix/store/z4z3gl3m02ka074ckzvlfi7361fsjnjk-etc.drv
+  /nix/store/wlsbfy63rc3i9zcwsfgjscxy5zch8ms5-nixos-system-server-25.11.20260328.0a3d6d3.drv
+building '/nix/store/8k7pzijyacybwpl69gxnqba97cffmr39-paperless-ngx-frontend-2.19.6.drv'...
+building '/nix/store/zw2jzdcy0irfxwjqi52p6sara4dxvcy6-paperless-ngx-2.19.6.drv'...
+building '/nix/store/5klpxjrcp5xzwqnryy4vbk9lkzhw6sq2-paperless-manage.drv'...
+building '/nix/store/lhp9i5dk5hqhff2726p7b9lwq8xhcikg-unit-paperless-consumer.service.drv'...
+building '/nix/store/nqbjg4dg8id5fn63pqn27y47d1k3adjq-unit-paperless-task-queue.service.drv'...
+building '/nix/store/98jqpnzc247l9qgd2pk4kcarrqr5cf24-unit-paperless-web.service.drv'...
+building '/nix/store/5n5px1ixjaqwv30yc9qlpvms64b5rsdi-unit-script-paperless-scheduler-pre-start.drv'...
+building '/nix/store/s50mxilra38rx2w1dgkgxvza2bvl5vbq-system-path.drv'...
+building '/nix/store/h166ki0fa979rw61f963bgsy5f52mkgj-unit-paperless-scheduler.service.drv'...
+building '/nix/store/wzkyn75jpg2jixh41qzp9554zlx7f5d0-X-Restart-Triggers-polkit.drv'...
+building '/nix/store/ds4nr62s9qj76iqpywpjggjb3vx40iw4-dbus-1.drv'...
+building '/nix/store/38i4bxhwb0523rqliqh85xzpkiqsrya1-unit-polkit.service.drv'...
+building '/nix/store/605f88yig811yf7xqjlkd9dbhbrxy86z-X-Restart-Triggers-dbus.drv'...
+building '/nix/store/4k5w8r8xbfh0kdni9wgiap84g9055h4a-unit-dbus.service.drv'...
+building '/nix/store/bihabg5ngvnb2y30q4gjwbbq52028x1a-unit-dbus.service.drv'...
+building '/nix/store/m9pilkbigrkyvy2q1xrbaflplmqzb6m5-system-units.drv'...
+building '/nix/store/hyd8xyjs22bfms6i8q2l3676cczsp0m6-user-units.drv'...
+building '/nix/store/z4z3gl3m02ka074ckzvlfi7361fsjnjk-etc.drv'...
+building '/nix/store/wlsbfy63rc3i9zcwsfgjscxy5zch8ms5-nixos-system-server-25.11.20260328.0a3d6d3.drv'...
 copying 0 paths...
-these 21 derivations will be built:
-  /nix/store/ln71xdv4zh10f3xy3cf1jfwh67vccpzc-nodejs-20.20.2.drv
-  /nix/store/npinvxnigr2n5r2s4gvi6ni5xssq1k4a-pnpm-10.28.0.drv
-  /nix/store/22qa14m4g204g4dzkaqylwa0blhb58r0-paperless-ngx-frontend-2.19.6.drv
-  /nix/store/073sr6ha751fqblb5p4wpf323bnlp7l0-paperless-ngx-2.19.6.drv
-  /nix/store/sm0a3d28qbvb2vbc8fz3x7zcggmkihqh-paperless-manage.drv
-  /nix/store/zkasn27b7fp9ccjkfn164vrxd0x4r6v9-system-path.drv
-  /nix/store/3sqx15gmx9vq8119iyrbn6aw2jmr1skv-dbus-1.drv
-  /nix/store/qz6ijc9cq3mbaf9bfiyc5fq5kc7fckn1-X-Restart-Triggers-dbus.drv
-  /nix/store/05knxgvfa1fhp5fjqbj2n69qd3jwr7g7-unit-dbus.service.drv
-  /nix/store/4qs1sx1l4db3yqwd91bqw75hy64zrkrl-unit-dbus.service.drv
-  /nix/store/6knbm5w5va81mkrb3hlkyfracwxcw1kv-X-Restart-Triggers-polkit.drv
-  /nix/store/72cd81m3f9amg9vyblfv93shja1nihwc-unit-paperless-web.service.drv
-  /nix/store/9smn6ywhlf4g9aby3bv4xp9ib470z00a-user-units.drv
-  /nix/store/ynhhgqnirfqn5nzgrn54gqhji74k4pl4-unit-script-paperless-scheduler-pre-start.drv
-  /nix/store/af25kcfqng8b1r5jx4spzfa7k2cj7kw8-unit-paperless-scheduler.service.drv
-  /nix/store/cww697220h4qz317zkfc5b925vgxcbk8-unit-polkit.service.drv
-  /nix/store/fqnjwj6xkg916lylxcz15iy8yb7vzhbz-unit-paperless-task-queue.service.drv
-  /nix/store/g4ar7qn3g1ii22ldb44yhyh5w17qdnmq-unit-paperless-consumer.service.drv
-  /nix/store/j6l3jl0yjjrcklsna2637l2ps7a84qna-system-units.drv
-  /nix/store/y9zsf4pxg266gfwi40czmi04051vjbkg-etc.drv
-  /nix/store/l2ivncrr8snpdabs7h0a9qprl256y6b2-nixos-system-server-25.11.20260328.0a3d6d3.drv
+updating GRUB 2 menu...
+stopping the following units: audit.service, dhcpcd.service, homepage-dashboard.service, kmod-static-nodes.service, logrotate-checkconf.service, mount-pstore.service, network-setup.service, nscd.service, resolvconf.service, systemd-modules-load.service, systemd-oomd.service, systemd-oomd.socket, systemd-sysctl.service, systemd-timesyncd.service, systemd-udev-trigger.service, systemd-vconsole-setup.service
+NOT restarting the following changed units: getty@tty1.service, systemd-fsck@dev-disk-by\x2dpartlabel-disk\x2ddata1\x2ddata.service, systemd-fsck@dev-disk-by\x2dpartlabel-disk\x2ddata2\x2ddata.service, systemd-fsck@dev-disk-by\x2dpartlabel-disk\x2ddata3\x2ddata.service, systemd-fsck@dev-disk-by\x2dpartlabel-disk\x2ddata4\x2ddata.service, systemd-fsck@dev-disk-by\x2dpartlabel-disk\x2ddata5\x2ddata.service, systemd-fsck@dev-disk-by\x2dpartlabel-disk\x2dparity\x2dparity.service, systemd-fsck@dev-disk-by\x2dpartlabel-disk\x2dsystem\x2dboot.service, systemd-journal-flush.service, systemd-logind.service, systemd-random-seed.service, systemd-remount-fs.service, systemd-tmpfiles-setup.service, systemd-update-utmp.service, systemd-user-sessions.service, user-runtime-dir@0.service, user@0.service
+activating the configuration...
+[agenix] creating new generation in /run/agenix.d/1
+[agenix] decrypting secrets...
+decrypting '/nix/store/vfb2z3im2frmdhpamkjpyr84c5ayi9c5-absClientSecret.age' to '/run/agenix.d/1/absClientSecret'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/absClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/absClientSecret.tmp': No such file or directory
+decrypting '/nix/store/ihyf3p57q24kb37fpzyvycp3mz65gjmy-cfAPIToken.age' to '/run/agenix.d/1/cfAPIToken'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/cfAPIToken.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/cfAPIToken.tmp': No such file or directory
+decrypting '/nix/store/7vdjrbx159f3clcaajkvls1fixxmljd5-cfHomeCreds.age' to '/run/agenix.d/1/cfHomeCreds'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/cfHomeCreds.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/cfHomeCreds.tmp': No such file or directory
+decrypting '/nix/store/dkx7xhrhf1mp5nfqn658mb55abhsl4gw-copypartyClientSecret.age' to '/run/agenix.d/1/copypartyClientSecret'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/copypartyClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/copypartyClientSecret.tmp': No such file or directory
+decrypting '/nix/store/p1gpsa4i1kw041kip3140500f0a5fj69-immichClientSecret.age' to '/run/agenix.d/1/immichClientSecret'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/immichClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/immichClientSecret.tmp': No such file or directory
+decrypting '/nix/store/asjlmy7yhkd5hzwblw27impcnk4dr0dm-kanidmAdminPass.age' to '/run/agenix.d/1/kanidmAdminPass'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/kanidmAdminPass.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/kanidmAdminPass.tmp': No such file or directory
+decrypting '/nix/store/y7mm6pqy9qzbzxzldx6n0f1hi4y6i54g-kanidmSysAdminPass.age' to '/run/agenix.d/1/kanidmSysAdminPass'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/kanidmSysAdminPass.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/kanidmSysAdminPass.tmp': No such file or directory
+decrypting '/nix/store/wqn0lb43ls1bliq0a271bvy6rpxbdsvn-netbirdSetupKey.age' to '/run/agenix.d/1/netbirdSetupKey'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/netbirdSetupKey.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/netbirdSetupKey.tmp': No such file or directory
+decrypting '/nix/store/7mc66ayir49qghdha9bnj9mvkchib22y-oauth2ProxyClientSecret.age' to '/run/agenix.d/1/oauth2ProxyClientSecret'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/oauth2ProxyClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/oauth2ProxyClientSecret.tmp': No such file or directory
+decrypting '/nix/store/k104db5dvam24gi0fxz1j9gm718fm49s-oauth2ProxyCookieSecret.age' to '/run/agenix.d/1/oauth2ProxyCookieSecret'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/oauth2ProxyCookieSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/oauth2ProxyCookieSecret.tmp': No such file or directory
+decrypting '/nix/store/29slw9z2v38lbgwwsf7v8857v6lxskql-paperlessClientSecret.age' to '/run/agenix.d/1/paperlessClientSecret'...
+age: error: failed to read header: parsing age header: file is empty
+age: report unexpected or unhelpful errors at https://filippo.io/age/report
+chmod: cannot access '/run/agenix.d/1/paperlessClientSecret.tmp': No such file or directory
+mv: cannot stat '/run/agenix.d/1/paperlessClientSecret.tmp': No such file or directory
+[agenix] symlinking new secrets to /run/agenix (generation 1)...
+Activation script snippet 'agenixInstall' failed (1)
+reviving group 'audiobookshelf' with GID 993
+reviving group 'cloudflared' with GID 984
+reviving group 'copyparty' with GID 983
+reviving group 'immich' with GID 992
+reviving group 'kanidm' with GID 991
+reviving group 'netbird-main' with GID 990
+reviving group 'redis-immich' with GID 988
+reviving group 'redis-paperless' with GID 987
+reviving group 'unbound' with GID 986
+removing group ‘dhcpcd’
+reviving user 'audiobookshelf' with UID 995
+reviving user 'cloudflared' with UID 986
+reviving user 'copyparty' with UID 985
+reviving user 'immich' with UID 994
+reviving user 'kanidm' with UID 993
+reviving user 'netbird-main' with UID 992
+reviving user 'redis-immich' with UID 990
+reviving user 'redis-paperless' with UID 989
+reviving user 'unbound' with UID 988
+removing user ‘dhcpcd’
+[agenix] chowning...
+chown: cannot access '/run/agenix.d/1/absClientSecret': No such file or directory
+chown: cannot access '/run/agenix.d/1/cfAPIToken': No such file or directory
+chown: cannot access '/run/agenix.d/1/cfHomeCreds': No such file or directory
+chown: cannot access '/run/agenix.d/1/copypartyClientSecret': No such file or directory
+chown: cannot access '/run/agenix.d/1/immichClientSecret': No such file or directory
+chown: cannot access '/run/agenix.d/1/kanidmAdminPass': No such file or directory
+chown: cannot access '/run/agenix.d/1/kanidmSysAdminPass': No such file or directory
+chown: cannot access '/run/agenix.d/1/netbirdSetupKey': No such file or directory
+chown: cannot access '/run/agenix.d/1/oauth2ProxyClientSecret': No such file or directory
+chown: cannot access '/run/agenix.d/1/oauth2ProxyCookieSecret': No such file or directory
+chown: cannot access '/run/agenix.d/1/paperlessClientSecret': No such file or directory
+Activation script snippet 'agenixChown' failed (1)
+setting up /etc...
+removing obsolete symlink ‘/etc/dhcpcd.exit-hook’...
+removing obsolete symlink ‘/etc/homepage-dashboard/bookmarks.yaml’...
+removing obsolete symlink ‘/etc/homepage-dashboard/custom.css’...
+removing obsolete symlink ‘/etc/homepage-dashboard/custom.js’...
+removing obsolete symlink ‘/etc/homepage-dashboard/docker.yaml’...
+removing obsolete symlink ‘/etc/homepage-dashboard/kubernetes.yaml’...
+removing obsolete symlink ‘/etc/homepage-dashboard/services.yaml’...
+removing obsolete symlink ‘/etc/homepage-dashboard/settings.yaml’...
+removing obsolete symlink ‘/etc/homepage-dashboard/widgets.yaml’...
+Failed to run activate script
+restarting systemd...
+reloading user units for root...
+restarting sysinit-reactivation.target
+reloading the following units: dbus.service, firewall.service, reload-systemd-vconsole-setup.service
+restarting the following units: network-addresses-enp34s0.service, sshd.service, systemd-journald.service, systemd-udevd.service
+starting the following units: kmod-static-nodes.service, logrotate-checkconf.service, network-setup.service, nscd.service, resolvconf.service, systemd-modules-load.service, systemd-oomd.socket, systemd-sysctl.service, systemd-timesyncd.service, systemd-udev-trigger.service, systemd-vconsole-setup.service
+the following new units were started: acme-id.sydneybasiniot.org.service, acme-renew-id.sydneybasiniot.org.timer, acme-setup.service, caddy.service, dnscrypt-proxy.service, immich-machine-learning.service, immich-server.service, lastlog2-import.service, mnt-data.mount, netbird-main.service, network-online.target, NetworkManager-dispatcher.service, NetworkManager-wait-online.service, NetworkManager.service, postgresql-setup.service, postgresql.service, postgresql.target, redis-immich.service, redis-paperless.service, run-agenix.d.mount, smartd.service, snapraid-scrub.timer, snapraid-sync.timer, sys-devices-LNXSYSTM:00-LNXSYBUS:00-MSFT0101:00-tpm-tpm0.device, sys-devices-pci0000:00-0000:00:08.1-0000:26:00.3-usb3-3\x2d2-3\x2d2:1.3-host40-target40:0:0-40:0:0:0-block-sr0.device, sysinit-reactivation.target, system-immich.slice, system-paperless.slice, systemd-hostnamed.service, systemd-tmpfiles-resetup.service
+warning: the following units failed: acme-order-renew-id.sydneybasiniot.org.service, audiobookshelf.service, cloudflared-tunnel-metro.service, copyparty.service, kanidm.service, oauth2-proxy.service, paperless-scheduler.service, paperless-task-queue.service, snapraid-scrub.service, snapraid-sync.service, unbound.service
+× acme-order-renew-id.sydneybasiniot.org.service - Order (and renew) ACME certificate for id.sydneybasiniot.org
+     Loaded: loaded (/etc/systemd/system/acme-order-renew-id.sydneybasiniot.org.service; linked; preset: ignored)
+     Active: failed (Result: resources)
+ Invocation: 314b87b8b77e48799bff229198068d0e
+TriggeredBy: ● acme-renew-id.sydneybasiniot.org.timer
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 0B
+        CPU: 0
+
+Mar 29 18:34:04 server systemd[1]: acme-order-renew-id.sydneybasiniot.org.service: Failed to load environment files: No such file or directory
+Mar 29 18:34:04 server systemd[1]: acme-order-renew-id.sydneybasiniot.org.service: Failed to spawn 'start' task: No such file or directory
+Mar 29 18:34:04 server systemd[1]: acme-order-renew-id.sydneybasiniot.org.service: Failed with result 'resources'.
+Mar 29 18:34:04 server systemd[1]: Failed to start Order (and renew) ACME certificate for id.sydneybasiniot.org.
+
+× audiobookshelf.service - Audiobookshelf is a self-hosted audiobook and podcast server
+     Loaded: loaded (/etc/systemd/system/audiobookshelf.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:05 AEDT; 590ms ago
+   Duration: 27ms
+ Invocation: 85a1e0a331fb4f8f9869421b42d4a945
+    Process: 192419 ExecStart=/nix/store/6bnlcq4ac52wqv8ppvbnqhdqqwjq27br-audiobookshelf-2.32.0/bin/audiobookshelf --host 127.0.0.1 --port 13378 (code=exited, status=200/CHDIR)
+   Main PID: 192419 (code=exited, status=200/CHDIR)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 1.8M
+        CPU: 4ms
+
+Mar 29 18:34:05 server systemd[1]: audiobookshelf.service: Scheduled restart job, restart counter is at 5.
+Mar 29 18:34:05 server systemd[1]: audiobookshelf.service: Start request repeated too quickly.
+Mar 29 18:34:05 server systemd[1]: audiobookshelf.service: Failed with result 'exit-code'.
+Mar 29 18:34:05 server systemd[1]: Failed to start Audiobookshelf is a self-hosted audiobook and podcast server.
+
+× cloudflared-tunnel-metro.service
+     Loaded: loaded (/etc/systemd/system/cloudflared-tunnel-metro.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:05 AEDT; 294ms ago
+ Invocation: 423d0178389e45768d8ffb3f9d02bdd1
+    Process: 192454 ExecStart=/nix/store/6nwgjxphc81qbmvnvgljam0l4ajjbp50-cloudflared-2025.11.1/bin/cloudflared tunnel --config=/nix/store/qrb9jsyflpyh975nq5a9s3hhk8xvmbcx-cloudflared.yml --no-autoupdate run (code=exited, status=243/CREDENTIALS)
+   Main PID: 192454 (code=exited, status=243/CREDENTIALS)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 1.9M
+        CPU: 6ms
+
+Mar 29 18:34:05 server systemd[1]: cloudflared-tunnel-metro.service: Scheduled restart job, restart counter is at 5.
+Mar 29 18:34:05 server systemd[1]: cloudflared-tunnel-metro.service: Start request repeated too quickly.
+Mar 29 18:34:05 server systemd[1]: cloudflared-tunnel-metro.service: Failed with result 'exit-code'.
+Mar 29 18:34:05 server systemd[1]: Failed to start cloudflared-tunnel-metro.service.
+
+× copyparty.service - http file sharing hub
+     Loaded: loaded (/etc/systemd/system/copyparty.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:03 AEDT; 1s ago
+ Invocation: a3d54ada074b4e5190d56ea4f751598e
+    Process: 191906 ExecStartPre=/nix/store/ww0axcgdvjp7l0v8xpg5mw56d9v4l6wk-unit-script-copyparty-pre-start/bin/copyparty-pre-start (code=exited, status=226/NAMESPACE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 1.9M
+        CPU: 14ms
+
+Mar 29 18:34:03 server systemd[1]: Starting http file sharing hub...
+Mar 29 18:34:03 server (re-start)[191906]: copyparty.service: Failed to set up mount namespacing: /mnt/data/copyparty: No such file or directory
+Mar 29 18:34:03 server (re-start)[191906]: copyparty.service: Failed at step NAMESPACE spawning /nix/store/ww0axcgdvjp7l0v8xpg5mw56d9v4l6wk-unit-script-copyparty-pre-start/bin/copyparty-pre-start: No such file or directory
+Mar 29 18:34:03 server systemd[1]: copyparty.service: Control process exited, code=exited, status=226/NAMESPACE
+Mar 29 18:34:03 server systemd[1]: copyparty.service: Failed with result 'exit-code'.
+Mar 29 18:34:03 server systemd[1]: Failed to start http file sharing hub.
+
+× kanidm.service - kanidm identity management daemon
+     Loaded: loaded (/etc/systemd/system/kanidm.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:04 AEDT; 1s ago
+ Invocation: df0e17db2973475f8e942c6b0f178d88
+    Process: 192350 ExecStartPre=/nix/store/nd63ycd67w84g52dzi43bxrhyiby1l79-kanidm-with-secret-provisioning-1.9.2/bin/kanidmd domain rename -c /nix/store/rabdg4wmp3j8d68n494nh6bbzkn8ap4y-server.toml (code=exited, status=226/NAMESPACE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 2M
+        CPU: 18ms
+
+Mar 29 18:34:04 server systemd[1]: Starting kanidm identity management daemon...
+Mar 29 18:34:04 server (kanidmd)[192350]: kanidm.service: Failed to set up mount namespacing: /run/agenix/kanidmAdminPass: No such file or directory
+Mar 29 18:34:04 server (kanidmd)[192350]: kanidm.service: Failed at step NAMESPACE spawning /nix/store/nd63ycd67w84g52dzi43bxrhyiby1l79-kanidm-with-secret-provisioning-1.9.2/bin/kanidmd: No such file or directory
+Mar 29 18:34:04 server systemd[1]: kanidm.service: Control process exited, code=exited, status=226/NAMESPACE
+Mar 29 18:34:04 server systemd[1]: kanidm.service: Failed with result 'exit-code'.
+Mar 29 18:34:04 server systemd[1]: Failed to start kanidm identity management daemon.
+
+× oauth2-proxy.service - OAuth2 Proxy
+     Loaded: loaded (/etc/systemd/system/oauth2-proxy.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:05 AEDT; 303ms ago
+   Duration: 26ms
+ Invocation: 4be2afbae86b4b4aa8a6656c869cd601
+    Process: 192455 ExecStart=/nix/store/dj048hb1n1sr7dbfqh56sy3kfpkcv38g-oauth2-proxy-7.13.0/bin/oauth2-proxy --approval-prompt=force --client-id=oauth2-proxy --client-secret=unused --client-secret-file=/run/agenix/oauth2ProxyClientSecret --cookie-expire=168h0m0s --cookie-httponly=true --cookie-name=_oauth2_proxy --cookie-secret=unused --cookie-secure=true --cookie-secret-file=/run/agenix/oauth2ProxyCookieSecret --email-domain=* --http-address=127.0.0.1:4180 --oidc-groups-claim=groups --oidc-issuer-url=https://id.sydneybasiniot.org --pass-access-token=false --pass-basic-auth=true --pass-host-header=true --pass-user-headers=true --provider=oidc --proxy-prefix=/oauth2 --redirect-url=https://fileshare.sydneybasiniot.org/oauth2/callback --request-logging=true --reverse-proxy=false --scope=openid profile email groups --set-xauthrequest=true --upstream=http://127.0.0.1:3923 (code=exited, status=1/FAILURE)
+   Main PID: 192455 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 3.2M
+        CPU: 12ms
+
+Mar 29 18:34:05 server systemd[1]: oauth2-proxy.service: Scheduled restart job, restart counter is at 5.
+Mar 29 18:34:05 server systemd[1]: oauth2-proxy.service: Start request repeated too quickly.
+Mar 29 18:34:05 server systemd[1]: oauth2-proxy.service: Failed with result 'exit-code'.
+Mar 29 18:34:05 server systemd[1]: Failed to start OAuth2 Proxy.
+
+× paperless-scheduler.service - Paperless Celery Beat
+     Loaded: loaded (/etc/systemd/system/paperless-scheduler.service; enabled; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:04 AEDT; 1s ago
+ Invocation: f02111fe7fb846c186b8a4970586089e
+    Process: 192299 ExecStartPre=/nix/store/g5zhgyijkbwkzamb54hbahr9kqlh9sbk-unit-script-paperless-scheduler-pre-start/bin/paperless-scheduler-pre-start (code=exited, status=226/NAMESPACE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 2M
+        CPU: 9ms
+
+Mar 29 18:34:04 server systemd[1]: paperless-scheduler.service: Failed with result 'exit-code'.
+Mar 29 18:34:04 server systemd[1]: Failed to start Paperless Celery Beat.
+Mar 29 18:34:04 server systemd[1]: paperless-scheduler.service: Start request repeated too quickly.
+Mar 29 18:34:04 server systemd[1]: paperless-scheduler.service: Failed with result 'exit-code'.
+Mar 29 18:34:04 server systemd[1]: Failed to start Paperless Celery Beat.
+
+× paperless-task-queue.service - Paperless Celery Workers
+     Loaded: loaded (/etc/systemd/system/paperless-task-queue.service; linked; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:05 AEDT; 449ms ago
+   Duration: 25ms
+ Invocation: 1502c8827d9c4dd7ab1e0cdd68a2dad3
+    Process: 192439 ExecStart=/nix/store/2qgvxvhv13lmgrci0d8d6zr1fgmi91k2-paperless-ngx-2.19.6/bin/celery --app paperless worker --loglevel INFO (code=exited, status=226/NAMESPACE)
+   Main PID: 192439 (code=exited, status=226/NAMESPACE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 2.1M
+        CPU: 10ms
+
+Mar 29 18:34:05 server systemd[1]: paperless-task-queue.service: Scheduled restart job, restart counter is at 5.
+Mar 29 18:34:05 server systemd[1]: paperless-task-queue.service: Start request repeated too quickly.
+Mar 29 18:34:05 server systemd[1]: paperless-task-queue.service: Failed with result 'exit-code'.
+Mar 29 18:34:05 server systemd[1]: Failed to start Paperless Celery Workers.
+
+× snapraid-scrub.service - Scrub SnapRAID arrays
+     Loaded: loaded (/etc/systemd/system/snapraid-scrub.service; linked; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:03 AEDT; 1s ago
+ Invocation: 93b0a43cb4cd48c9aee897df38afa0f8
+TriggeredBy: ● snapraid-scrub.timer
+    Process: 191853 ExecStart=/nix/store/qbjr3wp4sidsh0mbk10prlkbvznipmqi-unit-script-snapraid-scrub-start/bin/snapraid-scrub-start (code=exited, status=1/FAILURE)
+   Main PID: 191853 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 428K read, 0B written
+   Mem peak: 1.9M
+        CPU: 160ms
+
+Mar 29 18:34:03 server systemd[1]: Starting Scrub SnapRAID arrays...
+Mar 29 18:34:03 server snapraid-scrub-start[191878]: Self test...
+Mar 29 18:34:03 server snapraid-scrub-start[191878]: Missing 'content' specification in '/etc/snapraid.conf'
+Mar 29 18:34:03 server systemd[1]: snapraid-scrub.service: Main process exited, code=exited, status=1/FAILURE
+Mar 29 18:34:03 server systemd[1]: snapraid-scrub.service: Failed with result 'exit-code'.
+Mar 29 18:34:03 server systemd[1]: Failed to start Scrub SnapRAID arrays.
+
+× snapraid-sync.service - Sync SnapRAID arrays
+     Loaded: loaded (/etc/systemd/system/snapraid-sync.service; linked; preset: ignored)
+     Active: failed (Result: exit-code) since Sun 2026-03-29 18:34:03 AEDT; 1s ago
+ Invocation: 2792f1cfbb934d94a5973cac306a41f5
+TriggeredBy: ● snapraid-sync.timer
+    Process: 191854 ExecStart=/nix/store/s33rgjnxs7fs6aq15g570k3p7kplr3kg-unit-script-snapraid-sync-start/bin/snapraid-sync-start (code=exited, status=1/FAILURE)
+   Main PID: 191854 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 0B read, 0B written
+   Mem peak: 1.8M
+        CPU: 160ms
+
+Mar 29 18:34:03 server systemd[1]: Starting Sync SnapRAID arrays...
+Mar 29 18:34:03 server snapraid-sync-start[191877]: Self test...
+Mar 29 18:34:03 server snapraid-sync-start[191877]: Missing 'content' specification in '/etc/snapraid.conf'
+Mar 29 18:34:03 server systemd[1]: snapraid-sync.service: Main process exited, code=exited, status=1/FAILURE
+Mar 29 18:34:03 server systemd[1]: snapraid-sync.service: Failed with result 'exit-code'.
+Mar 29 18:34:03 server systemd[1]: Failed to start Sync SnapRAID arrays.
+
+● unbound.service - Unbound recursive Domain Name Server
+     Loaded: loaded (/etc/systemd/system/unbound.service; enabled; preset: ignored)
+     Active: activating (auto-restart) (Result: exit-code) since Sun 2026-03-29 18:34:03 AEDT; 1s ago
+ Invocation: a7e5a611d2f04226829073f8bce03bf6
+    Process: 191832 ExecStartPre=/nix/store/dj58n343c1vi6chbaswv5iyjk4d194ip-unit-script-unbound-pre-start/bin/unbound-pre-start (code=exited, status=0/SUCCESS)
+    Process: 191930 ExecStart=/nix/store/54ibfmfm1byclicf68f9pgpkj2zj64fl-unbound-1.24.2/bin/unbound -p -d -c /etc/unbound/unbound.conf (code=exited, status=1/FAILURE)
+   Main PID: 191930 (code=exited, status=1/FAILURE)
+         IP: 0B in, 0B out
+         IO: 188K read, 0B written
+   Mem peak: 4.2M
+        CPU: 71ms
+
+Mar 29 18:34:03 server systemd[1]: unbound.service: Failed with result 'exit-code'.
+Mar 29 18:34:03 server systemd[1]: Failed to start Unbound recursive Domain Name Server.
+Command 'ssh -o ControlMaster=auto -o ControlPath=/tmp/nixos-rebuild.1sunpffs/ssh-%n -o ControlPersist=60 root@192.168.0.144 -- env NIXOS_INSTALL_BOOTLOADER=0 systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER --collect --no-ask-password --pipe --quiet --service-type=exec --unit=nixos-rebuild-switch-to-configuration /nix/store/c1zvnhg3mxpahid7xsj2s6ihiqjg0qz3-nixos-system-server-25.11.20260328.0a3d6d3/bin/switch-to-configuration switch' returned non-zero exit status 4.

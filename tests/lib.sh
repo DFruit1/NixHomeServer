@@ -27,6 +27,20 @@ nix_eval_var() {
     "
 }
 
+nix_eval_config_json() {
+  local attr_path="$1"
+
+  NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}" \
+    nix eval --json ".#nixosConfigurations.$(nix_eval_var 'vars.hostname').config.${attr_path}"
+}
+
+nix_eval_config_raw() {
+  local attr_path="$1"
+
+  NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}" \
+    nix eval --raw ".#nixosConfigurations.$(nix_eval_var 'vars.hostname').config.${attr_path}"
+}
+
 require_match() {
   local file="$1"
   local pattern="$2"
@@ -59,6 +73,73 @@ forbid_match() {
   if rg -q --multiline -- "$pattern" "$file"; then
     echo "❌ ${description}"
     echo "   Unexpected pattern in ${file}: ${pattern}"
+    exit 1
+  fi
+}
+
+require_json_equal() {
+  local actual="$1"
+  local expected="$2"
+  local description="$3"
+
+  if [[ "$actual" != "$expected" ]]; then
+    echo "❌ ${description}"
+    echo "   Expected: ${expected}"
+    echo "   Actual:   ${actual}"
+    exit 1
+  fi
+}
+
+require_json_contains() {
+  local json="$1"
+  local needle="$2"
+  local description="$3"
+
+  local jq_mode="string"
+  local jq_expr='index($needle) != null'
+
+  if [[ "$needle" =~ ^-?[0-9]+$ ]]; then
+    jq_mode="number"
+    jq_expr='index($needle) != null'
+  fi
+
+  if ! {
+    if [[ "$jq_mode" == "number" ]]; then
+      jq -e --argjson needle "$needle" "$jq_expr" >/dev/null <<<"$json"
+    else
+      jq -e --arg needle "$needle" "$jq_expr" >/dev/null <<<"$json"
+    fi
+  }; then
+    echo "❌ ${description}"
+    echo "   Missing value: ${needle}"
+    echo "   JSON: ${json}"
+    exit 1
+  fi
+}
+
+forbid_json_contains() {
+  local json="$1"
+  local needle="$2"
+  local description="$3"
+
+  local jq_mode="string"
+  local jq_expr='index($needle) != null'
+
+  if [[ "$needle" =~ ^-?[0-9]+$ ]]; then
+    jq_mode="number"
+    jq_expr='index($needle) != null'
+  fi
+
+  if {
+    if [[ "$jq_mode" == "number" ]]; then
+      jq -e --argjson needle "$needle" "$jq_expr" >/dev/null <<<"$json"
+    else
+      jq -e --arg needle "$needle" "$jq_expr" >/dev/null <<<"$json"
+    fi
+  }; then
+    echo "❌ ${description}"
+    echo "   Unexpected value: ${needle}"
+    echo "   JSON: ${json}"
     exit 1
   fi
 }
