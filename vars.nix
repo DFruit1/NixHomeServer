@@ -63,10 +63,16 @@ rec {
   dataRoot = "/mnt/data";
 
   ############################################################
-  # Kanidm issuer URL
+  # Kanidm OAuth2 / OIDC URLs
+  # Kanidm uses client-specific issuer and discovery URLs.
   ############################################################
   kanidmDomain = "id.${domain}";
-  kanidmIssuer = "https://id.${domain}";
+  kanidmBaseUrl = "https://${kanidmDomain}";
+  kanidmAuthorizeUrl = "${kanidmBaseUrl}/ui/oauth2";
+  kanidmTokenUrl = "${kanidmBaseUrl}/oauth2/token";
+  kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
+  kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
+  kanidmUserInfoUrl = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}/userinfo";
 
   ############################################################
   # AppArmor allow‑paths

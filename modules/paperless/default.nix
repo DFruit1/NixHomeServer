@@ -36,7 +36,7 @@ in
 
       PAPERLESS_OIDC_CLIENT_ID = "paperless-web";
       PAPERLESS_OIDC_CLIENT_SECRET_FILE = config.age.secrets.paperlessClientSecret.path;
-      PAPERLESS_OIDC_PROVIDER_URL = vars.kanidmIssuer;
+      PAPERLESS_OIDC_PROVIDER_URL = vars.kanidmIssuer "paperless-web";
 
       ##################################################################
       # 2.  Misc instance tweaks

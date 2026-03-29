@@ -162,7 +162,19 @@ Create OIDC clients used by modules:
   - paperless-web
   - abs-web
   - copyparty-web
-  - oauth2-proxy
+  - oauth2-proxy is provisioned automatically from the active NixOS config
+Create or maintain access groups as needed:
+  - fileshare_users controls who can log into the public fileshare flow
+Manage fileshare access by `fileshare_users` membership rather than by manually
+editing the `oauth2-proxy` Kanidm client after deploy.
+
+Current bootstrap note:
+  - Kanidm provisioning intentionally accepts invalid certificates in its local
+    post-start flow because bootstrap currently relies on the local
+    Caddy-presented chain rather than a pre-trusted CA path.
+  - NetBird should auto-enroll from `netbirdSetupKey`; a short-lived
+    `Disconnected` state while `netbird-main-login` runs is expected during
+    startup.
 
 ─────────────────────────────────────────────────────────────────────
 12. VERIFICATION CHECKLIST

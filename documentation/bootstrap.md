@@ -131,13 +131,29 @@ Then configure OIDC clients in Kanidm for:
 - `paperless-web`
 - `abs-web`
 - `copyparty-web`
-- `oauth2-proxy`
+- `oauth2-proxy` is now provisioned automatically from the NixOS config and agenix secret.
+
+The config also provisions a `fileshare_users` Kanidm group for the public
+fileshare flow. Add users to that group if they should be allowed through
+`oauth2-proxy`. Treat `oauth2-proxy` as Nix-managed state; manage access by
+group membership rather than by manually editing that client in Kanidm after
+deploy.
+
+Current bootstrap note: Kanidm provisioning is set to accept invalid
+certificates during its local post-start flow. This is intentional because the
+bootstrap trust path currently uses the local Caddy-presented chain rather than
+an already-trusted system CA path.
 
 Use redirect/callback URLs expected by each module.
 
 For the current public routing model, `oauth2-proxy` and the public `fileshare` flow depend on `https://id.<domain>` remaining reachable from the internet.
 
 From a non-NetBird external network, only `https://id.<domain>` and `https://fileshare.<domain>` should resolve/respond publicly; internal app hostnames should not be publicly published.
+
+The NetBird peer should enroll automatically from `netbirdSetupKey` during
+startup. A brief `Disconnected` state while `netbird-main-login` runs is
+expected; the peer is healthy once `nb0` exists and the service reports a
+NetBird IP.
 
 ---
 

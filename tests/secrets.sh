@@ -60,8 +60,8 @@ require_fixed secrets/agenix.nix 'absClientSecret = { file = ./absClientSecret.a
   "Audiobookshelf client secret must remain owned by audiobookshelf."
 require_fixed secrets/agenix.nix 'copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };' \
   "Copyparty client secret must remain owned by copyparty."
-require_fixed secrets/agenix.nix 'oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "oauth2-proxy"; mode = "0400"; };' \
-  "OAuth2 Proxy client secret must remain owned by oauth2-proxy."
+require_fixed secrets/agenix.nix 'oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };' \
+  "OAuth2 Proxy client secret must remain readable by both kanidm provisioning and oauth2-proxy."
 require_fixed secrets/agenix.nix 'oauth2ProxyCookieSecret = { file = ./oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };' \
   "OAuth2 Proxy cookie secret must remain owned by oauth2-proxy."
 
@@ -73,7 +73,7 @@ require_fixed modules/kanidm/default.nix 'idmAdminPasswordFile = config.age.secr
   "Kanidm must consume the IDM admin secret from agenix."
 require_fixed modules/kanidm/default.nix 'adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;' \
   "Kanidm must consume the system admin secret from agenix."
-require_fixed modules/netbird/default.nix 'environment.NB_SETUP_KEY_FILE = config.age.secrets.netbirdSetupKey.path;' \
+require_fixed modules/netbird/default.nix 'login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;' \
   "NetBird must consume the setup key from agenix."
 require_fixed modules/immich/default.nix 'IMMICH_OIDC_CLIENT_SECRET_FILE = config.age.secrets.immichClientSecret.path;' \
   "Immich must consume its OIDC client secret from agenix."

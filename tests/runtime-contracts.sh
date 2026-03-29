@@ -11,7 +11,7 @@ ensure_tools nix jq
 hostname="$(nix_eval_var 'vars.hostname')"
 domain="$(nix_eval_var 'vars.domain')"
 kanidm_domain="$(nix_eval_var 'vars.kanidmDomain')"
-kanidm_issuer="$(nix_eval_var 'vars.kanidmIssuer')"
+paperless_issuer="$(nix_eval_var '(vars.kanidmIssuer "paperless-web")')"
 server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
 net_iface="$(nix_eval_var 'vars.netIface')"
 netbird_iface="$(nix_eval_var 'vars.netbirdIface')"
@@ -59,8 +59,10 @@ fi
 echo "ℹ️ Checking evaluated identity and secret path contracts…"
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_ALLOWED_HOSTS')" "\"paperless.${domain}\"" \
   "Paperless must keep the expected allowed host."
-require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_OIDC_PROVIDER_URL')" "\"${kanidm_issuer}\"" \
-  "Paperless must keep its OIDC provider URL aligned with Kanidm."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_OIDC_PROVIDER_URL')" "\"${paperless_issuer}\"" \
+  "Paperless must keep its client-specific OIDC provider URL aligned with Kanidm."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.oauth2-proxy.originUrl')" "\"https://fileshare.${domain}/oauth2/callback\"" \
+  "Kanidm provisioning must register the OAuth2 Proxy callback URL."
 require_json_equal "$(nix_eval_config_json 'age.secrets.netbirdSetupKey.path')" "\"/run/agenix/netbirdSetupKey\"" \
   "NetBird setup key must remain mounted from agenix."
 require_json_equal "$(nix_eval_config_json 'age.secrets.cfHomeCreds.path')" "\"/run/agenix/cfHomeCreds\"" \

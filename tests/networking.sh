@@ -85,7 +85,9 @@ require_fixed modules/netbird/default.nix 'interface = vars.netbirdIface;' \
   "NetBird client must use vars.netbirdIface."
 require_fixed modules/netbird/default.nix 'port = vars.wgPort;' \
   "NetBird client must use the configured WireGuard port."
-require_fixed modules/netbird/default.nix 'NB_SETUP_KEY_FILE = config.age.secrets.netbirdSetupKey.path;' \
+require_fixed modules/netbird/default.nix 'login.enable = true;' \
+  "NetBird must enable automated login."
+require_fixed modules/netbird/default.nix 'login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;' \
   "NetBird setup key must come from agenix."
 
 echo "ℹ️ Checking workstation deploy workflow documentation…"

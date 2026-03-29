@@ -18,7 +18,7 @@
     paperlessClientSecret = { file = ./paperlessClientSecret.age; owner = "paperless"; group = "paperless"; mode = "0400"; };
     absClientSecret = { file = ./absClientSecret.age; owner = "audiobookshelf"; mode = "0400"; };
     copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };
-    oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
+    oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     oauth2ProxyCookieSecret = { file = ./oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
   };
 }

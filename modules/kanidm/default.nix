@@ -33,6 +33,17 @@
       idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;
       adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;
       instanceUrl = "https://${vars.kanidmDomain}";
+      acceptInvalidCerts = true;
+
+      groups.fileshare_users = { };
+
+      systems.oauth2.oauth2-proxy = {
+        displayName = "OAuth2 Proxy";
+        originUrl = "https://fileshare.${vars.domain}/oauth2/callback";
+        originLanding = "https://fileshare.${vars.domain}";
+        basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;
+        scopeMaps.fileshare_users = [ "openid" "profile" "email" "groups" ];
+      };
     };
   };
 

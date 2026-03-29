@@ -4,7 +4,7 @@
   services.oauth2-proxy = {
     enable = true;
     provider = "oidc";
-    oidcIssuerUrl = vars.kanidmIssuer;
+    oidcIssuerUrl = vars.kanidmIssuer "oauth2-proxy";
     scope = "openid profile email groups";
     email.domains = [ "*" ];
     upstream = [ "http://127.0.0.1:${toString vars.copypartyPort}" ];
@@ -17,6 +17,7 @@
     extraConfig = {
       "pass-user-headers" = true;
       "oidc-groups-claim" = "groups";
+      "provider-ca-file" = "/var/lib/acme/${vars.kanidmDomain}/fullchain.pem";
     };
   };
 
@@ -29,4 +30,6 @@
       ];
     };
   };
+
+  users.users.oauth2-proxy.extraGroups = [ "caddy" ];
 }

@@ -25,7 +25,11 @@
       "${vars.kanidmDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem
-          reverse_proxy http://127.0.0.1:${toString vars.kanidmPort} {
+          reverse_proxy https://127.0.0.1:${toString vars.kanidmPort} {
+            transport http {
+              tls_server_name ${vars.kanidmDomain}
+              tls_insecure_skip_verify
+            }
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host  {host}
           }

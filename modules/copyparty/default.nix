@@ -23,7 +23,7 @@
 
   systemd.services.copyparty.environment = {
     CPP_AUTH_STRATEGY = "oidc";
-    CPP_OIDC_ISSUER = vars.kanidmIssuer;
+    CPP_OIDC_ISSUER = vars.kanidmIssuer "copyparty-web";
     CPP_OIDC_CLIENT_ID = "copyparty-web";
     CPP_OIDC_CLIENT_SECRET_FILE = config.age.secrets.copypartyClientSecret.path;
     CPP_OIDC_SCOPE = "openid profile email";
