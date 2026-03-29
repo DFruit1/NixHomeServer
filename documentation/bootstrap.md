@@ -83,7 +83,7 @@ nix --extra-experimental-features 'nix-command flakes' \
   run github:serokell/deploy-rs -- .#home-server
 ```
 
-Target defaults to `vars.lanIP`.
+Target defaults to `vars.serverLanIP`.
 
 ---
 

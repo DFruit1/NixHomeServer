@@ -11,10 +11,76 @@ version = 1
 default_action = "allow"
 
 [[rule]]
-name = "deny-destructive-root-delete"
+name = "allow-filesystem-inspection"
+action = "allow"
+match = "^\\s*(pwd|ls|tree|find|rg|cat|less|more|head|tail|wc|stat|file|realpath|readlink|printenv|which|type|tr)\\b"
+reason = "Allow local filesystem and shell inspection commands without prompts."
+
+[[rule]]
+name = "allow-process-inspection"
+action = "allow"
+match = "^\\s*(ps|pgrep|ss)\\b"
+reason = "Allow local process and socket inspection commands without prompts."
+
+[[rule]]
+name = "allow-network-inspection"
+action = "allow"
+match = "^\\s*ip\\s+(-br\\s+)?addr\\b"
+reason = "Allow local network address inspection without prompts."
+
+[[rule]]
+name = "allow-system-status-inspection"
+action = "allow"
+match = "^\\s*(journalctl|systemctl\\s+status|systemctl\\s+is-system-running)\\b"
+reason = "Allow local system status inspection without prompts."
+
+[[rule]]
+name = "allow-git-read-only"
+action = "allow"
+match = "^\\s*git\\s+(status|diff|show|log|branch|remote|rev-parse)\\b"
+reason = "Allow read-only Git inspection without prompts."
+
+[[rule]]
+name = "allow-nix-read-only"
+action = "allow"
+match = "^\\s*nix\\s+(flake\\s+(show|metadata|check)|eval|path-info|store\\s+prefetch-file)\\b"
+reason = "Allow read-only Nix inspection without prompts."
+
+[[rule]]
+name = "allow-deploy-rs-via-nix-run"
+action = "allow"
+match = "^\\s*nix\\s+.*run\\s+github:serokell/deploy-rs\\s+--\\s+.+$"
+reason = "Allow the documented deploy-rs invocation used for host deployment."
+
+[[rule]]
+name = "allow-ssh-basic-probes"
+action = "allow"
+match = "^\\s*ssh\\s+.+\\s+(\"|')?(true|uptime|hostname|id|whoami|pwd|uname\\s|nixos-rebuild\\s+--version)($|\\s.*)(\"|')?\\s*$"
+reason = "Allow basic read-only SSH probes used to verify remote access."
+
+[[rule]]
+name = "allow-ssh-remote-file-inspection"
+action = "allow"
+match = "^\\s*ssh\\s+.+\\s+(\"|')?(ls(\\s|$)|cat\\s|head\\s|tail\\s|readlink\\s+-f\\s+/run/current-system)($|\\s.*)(\"|')?\\s*$"
+reason = "Allow read-only remote file inspection over SSH."
+
+[[rule]]
+name = "allow-ssh-remote-system-status"
+action = "allow"
+match = "^\\s*ssh\\s+.+\\s+(\"|')?(free\\s+-h|df\\s+-h|ps\\s+-e|systemctl\\s+status|systemctl\\s+is-system-running|systemctl\\s+--failed|journalctl\\s+-u)($|\\s.*)(\"|')?\\s*$"
+reason = "Allow read-only remote system health checks over SSH."
+
+[[rule]]
+name = "allow-ssh-remote-nix-status"
+action = "allow"
+match = "^\\s*ssh\\s+.+\\s+(\"|')?nix-env\\s+-p\\s+/nix/var/nix/profiles/system\\s+--list-generations($|\\s.*)(\"|')?\\s*$"
+reason = "Allow read-only remote NixOS generation inspection over SSH."
+
+[[rule]]
+name = "deny-destructive-delete"
 action = "deny"
-match = "^\\s*rm\\s+-rf\\s+/(\\s|$)"
-reason = "Refuse recursive deletion from filesystem root."
+match = "^\\s*(sudo\\s+)?rm\\s+(-[A-Za-z]*[rf][A-Za-z]*\\s+)+((--no-preserve-root|--preserve-root=0)\\s+)?(/(\\s|$)|/\\*|~(/|\\s|$)|\\.\\.(\\s|/|$))"
+reason = "Refuse high-risk recursive deletion targets."
 
 [[rule]]
 name = "deny-disk-wipe"

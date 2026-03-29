@@ -11,7 +11,7 @@ rec {
   serverSSHPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
 
   # LAN & NetBird addresses for server
-  lanIP = "192.168.0.144";
+  serverLanIP = "192.168.0.144";
   nbIP = "100.96.1.10";
   defaultGateway = "192.168.0.1";
   dnscryptListenAddress = "127.0.0.1";

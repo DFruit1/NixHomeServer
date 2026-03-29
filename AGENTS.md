@@ -21,6 +21,9 @@ The primary objective is **reliability-first infrastructure** that can be rebuil
 - For security-sensitive defaults, avoid broad allowances and call out trade-offs.
 - Ensure options match current NixOS naming (avoid deprecated aliases).
 - If removing a service, remove all residual references (DNS, reverse-proxy, secrets, docs, and checks).
+- After the main thread completes any substantive change, call the documentation review subagent at `.codex/agents/doc-reviewer.md` to perform a read-only review of the diff before closing the task.
+- The subagent is review-only and must not edit files; it should pass all findings and documentation recommendations back to the parent agent.
+- If the subagent finds documentation drift or missing operator guidance, the main thread should update the relevant docs before finalizing the task.
 
 ## Tooling expectations
 Before running checks or scripts, ensure required tooling is present on PATH:

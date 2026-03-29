@@ -36,7 +36,7 @@ in
     nameservers = vars.primaryNameServers;
     interfaces.enp34s0 = {
       ipv4.addresses = [
-        { address = vars.lanIP; prefixLength = 24; }
+        { address = vars.serverLanIP; prefixLength = 24; }
       ];
     };
     networkmanager = {

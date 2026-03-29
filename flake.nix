@@ -33,7 +33,7 @@
       ################ deploy-rs spec  ################################
       deploy = {
         nodes.home-server = {
-          hostname = vars.lanIP;
+          hostname = vars.serverLanIP;
           sshUser = "root";
           sshOpts = [ "-o" "IdentitiesOnly=yes" ];
           profiles.system = {

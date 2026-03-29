@@ -53,14 +53,14 @@
         auto-trust-anchor-file = "/var/lib/unbound/root.key";
         local-zone = [ "${vars.domain} static" ];
         local-data = [
-          "${vars.domain}                 A ${vars.lanIP}"
-          "www.${vars.domain}             A ${vars.lanIP}"
-          "immich.${vars.domain}          A ${vars.lanIP}"
-          "paperless.${vars.domain}       A ${vars.lanIP}"
-          "audiobookshelf.${vars.domain}  A ${vars.lanIP}"
-          "fileshare.${vars.domain}       A ${vars.lanIP}"
-          "photoshare.${vars.domain}      A ${vars.lanIP}"
-          "id.${vars.domain}              A ${vars.lanIP}"
+          "${vars.domain}                 A ${vars.serverLanIP}"
+          "www.${vars.domain}             A ${vars.serverLanIP}"
+          "immich.${vars.domain}          A ${vars.serverLanIP}"
+          "paperless.${vars.domain}       A ${vars.serverLanIP}"
+          "audiobookshelf.${vars.domain}  A ${vars.serverLanIP}"
+          "fileshare.${vars.domain}       A ${vars.serverLanIP}"
+          "photoshare.${vars.domain}      A ${vars.serverLanIP}"
+          "id.${vars.domain}              A ${vars.serverLanIP}"
         ];
       };
       forward-zone = [{
