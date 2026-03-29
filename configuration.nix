@@ -34,7 +34,7 @@ in
     hostName = vars.hostname;
     defaultGateway = vars.defaultGateway;
     nameservers = vars.primaryNameServers;
-    interfaces.enp34s0 = {
+    interfaces.${vars.netIface} = {
       ipv4.addresses = [
         { address = vars.serverLanIP; prefixLength = 24; }
       ];
@@ -163,7 +163,7 @@ in
     initialPassword = "root";
     shell = pkgs.bashInteractive;
     openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server"
+      vars.serverSSHPubKey
     ];
   };
 
@@ -201,7 +201,7 @@ in
     extraGroups = [ "wheel" ];
     shell = pkgs.bashInteractive;
     openssh.authorizedKeys.keys = [
-      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server"
+      vars.serverSSHPubKey
     ];
   };
 

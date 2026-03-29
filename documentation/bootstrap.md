@@ -11,6 +11,17 @@ This runbook matches the current flake and module set in this repository (`NixOS
 - Storage: **Disko + mergerfs + SnapRAID**
 - Hardening: generated **AppArmor** profiles
 
+Public exposure policy:
+
+- **Cloudflare Tunnel** is intentionally limited to the public endpoints that must work from the internet.
+- The current public set is:
+  - `fileshare.<domain>`
+  - `id.<domain>` (to support the public auth flow used by `fileshare`)
+- Application hostnames such as `paperless`, `immich`, `photoshare`, and `audiobookshelf` are intended to stay **LAN/NetBird-only**.
+- Caddy still fronts the HTTP routing locally; the tunnel only publishes the small public subset.
+- In Cloudflare, only keep public tunnel/DNS exposure for `fileshare.<domain>` and `id.<domain>` unless you are intentionally expanding internet access.
+- Internal-only app hostnames should not retain public Cloudflare routes that would expose them to the internet or return tunnel 404s.
+
 ---
 
 ## 1) Prerequisites
@@ -85,6 +96,15 @@ nix --extra-experimental-features 'nix-command flakes' \
 
 Target defaults to `vars.serverLanIP`.
 
+Before deploying to a different machine, update the following in `vars.nix`:
+
+- `serverLanIP`
+- `netIface`
+- `serverSSHPubKey`
+- `mainDisk`
+- `dataDisks`
+- `parityDisk`
+
 ---
 
 ## 6) Bootstrap Kanidm
@@ -106,6 +126,10 @@ Then configure OIDC clients in Kanidm for:
 - `oauth2-proxy`
 
 Use redirect/callback URLs expected by each module.
+
+For the current public routing model, `oauth2-proxy` and the public `fileshare` flow depend on `https://id.<domain>` remaining reachable from the internet.
+
+From a non-NetBird external network, only `https://id.<domain>` and `https://fileshare.<domain>` should resolve/respond publicly; internal app hostnames should not be publicly published.
 
 ---
 

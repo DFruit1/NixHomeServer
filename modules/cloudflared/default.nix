@@ -1,6 +1,8 @@
 { lib, config, vars, ... }:
 
 {
+  # The Cloudflare tunnel is intentionally limited to the public endpoints.
+  # Internal apps stay on LAN/NetBird behind local DNS and Caddy.
   users.users.cloudflared = {
     isSystemUser = true;
     group = "cloudflared";
@@ -17,14 +19,8 @@
       credentialsFile = config.age.secrets.cfHomeCreds.path;
 
       ingress = {
-        "${vars.domain}" = "http://127.0.0.1:80";
-        "www.${vars.domain}" = "http://127.0.0.1:80";
-        "${vars.kanidmDomain}" = "https://127.0.0.1:${toString vars.kanidmPort}";
-        "paperless.${vars.domain}" = "http://127.0.0.1:${toString vars.paperlessPort}";
-        "immich.${vars.domain}" = "http://127.0.0.1:${toString vars.immichPort}";
-        "audiobookshelf.${vars.domain}" = "http://127.0.0.1:${toString vars.audiobookshelfPort}";
-        "fileshare.${vars.domain}" = "http://127.0.0.1:${toString vars.oauth2ProxyPort}";
-        "photoshare.${vars.domain}" = "http://127.0.0.1:${toString vars.immichPort}";
+        "${vars.kanidmDomain}" = "http://127.0.0.1:80";
+        "fileshare.${vars.domain}" = "http://127.0.0.1:80";
       };
       default = "http_status:404";
     };

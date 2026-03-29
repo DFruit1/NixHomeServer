@@ -3,6 +3,17 @@
   NixOS 25.05 state version · flake input on release-25.11
 =====================================================================
 
+Access model (current):
+  - Public internet access is intentionally limited to:
+      * fileshare.<domain>
+      * id.<domain>  (required for the public fileshare auth flow)
+  - App hostnames such as paperless, immich/photoshare, and audiobookshelf
+    are intended to remain LAN/NetBird-only.
+  - Caddy remains the local HTTP policy boundary; Cloudflare Tunnel only
+    publishes the minimal public subset.
+  - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare` and
+    `id` unless you intentionally want broader internet access.
+
 LEGEND
   $  => run on admin workstation
   #  => run on target host (installer or installed system)
@@ -44,6 +55,9 @@ Copy values into `vars.nix`:
   - mainDisk
   - dataDisks
   - parityDisk
+  - netIface
+  - serverLanIP
+  - serverSSHPubKey
 
 This repo uses stable disk IDs (not random UUID examples) in vars.
 
@@ -143,10 +157,27 @@ Also verify:
 # systemctl list-timers snapraid*
 # snapraid status
 
+Public endpoints expected from the internet:
+- https://id.<domain>
+- https://fileshare.<domain>
+
+Internal-only endpoints expected over LAN/NetBird:
+- https://paperless.<domain>
+- https://audiobookshelf.<domain>
+- https://photoshare.<domain>
+
+From a non-NetBird external network, only `id.<domain>` and
+`fileshare.<domain>` should resolve/respond publicly.
+
 ─────────────────────────────────────────────────────────────────────
 13. OPERATIONS NOTES
 ─────────────────────────────────────────────────────────────────────
 - Bootstrap SSH/password auth should be hardened after provisioning.
 - Keep `/run/secrets` and agenix ownership constraints in sync with unit users.
+- When moving to new hardware, update `vars.nix`; the active network interface,
+  SSH pubkey, and Disko device IDs are now sourced from there.
+- Remove or avoid public Cloudflare routes for internal-only app hostnames,
+  otherwise external users will see tunnel 404s instead of the intended
+  private-only access model.
 - If adding/removing modules, rerun `scripts/check-repo.sh` to catch deprecated
   module references that are no longer part of the active stack.

@@ -21,6 +21,7 @@ Set:
 - `parityDisk`
 
 Use `/dev/disk/by-id/*` names, not volatile `/dev/sdX` names.
+`disko.nix` consumes these values directly, so keep `vars.nix` authoritative.
 
 3) Optional destructive wipe
 ----------------------------
