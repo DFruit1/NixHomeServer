@@ -12,7 +12,8 @@ if ! command -v nix >/dev/null 2>&1; then
 fi
 
 echo "ℹ️ Running flake checks (no build)…"
-nix flake check --no-build
+NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}" \
+  nix flake check --no-build
 
 echo "ℹ️ Verifying deprecated dnscrypt-proxy2 references are gone…"
 if rg -n "dnscrypt-proxy2" modules vars.nix >/dev/null 2>&1; then

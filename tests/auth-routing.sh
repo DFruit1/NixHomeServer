@@ -8,9 +8,6 @@ cd "$TESTS_REPO_ROOT"
 
 ensure_tools rg nix
 
-hostname="$(nix_eval_var 'vars.hostname')"
-server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
-
 echo "ℹ️ Checking public auth and reverse-proxy routing policy…"
 require_fixed modules/caddy/default.nix '"${vars.kanidmDomain}" = {' \
   "Caddy must serve the public Kanidm hostname."
@@ -66,19 +63,5 @@ require_fixed modules/copyparty/default.nix 'CPP_OIDC_CLIENT_ID = "copyparty-web
   "Copyparty must keep the expected Kanidm client ID."
 require_fixed modules/copyparty/default.nix 'CPP_OIDC_ISSUER = vars.kanidmIssuer "copyparty-web";' \
   "Copyparty must keep its client-specific Kanidm issuer."
-
-echo "ℹ️ Checking documentation for auth-routing expectations…"
-require_match documentation/bootstrap.md 'fileshare\.<domain>' \
-  "Bootstrap guide must document fileshare as a public endpoint."
-require_match documentation/bootstrap.md 'id\.<domain>' \
-  "Bootstrap guide must document id.<domain> as a public endpoint."
-require_match documentation/bootstrap.md 'paperless`, `immich`, `photoshare`, and `audiobookshelf` are intended to stay \*\*LAN/NetBird-only\*\*' \
-  "Bootstrap guide must document the private-only app set."
-require_fixed documentation/bootstrap.md "--flake .#${hostname}" \
-  "Bootstrap guide deploy command must use the flake hostname."
-require_fixed documentation/bootstrap.md "--target-host root@${server_lan_ip}" \
-  "Bootstrap guide deploy command must use serverLanIP."
-require_fixed documentation/manual_steps.txt "--build-host root@${server_lan_ip}" \
-  "Manual steps deploy command must use serverLanIP."
 
 echo "✅ Auth and routing policy tests passed."

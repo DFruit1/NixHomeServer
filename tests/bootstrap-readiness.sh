@@ -20,6 +20,7 @@ for required_path in \
   disko.nix \
   scripts/check-repo.sh \
   documentation/bootstrap.md \
+  documentation/first_bootstrap_checklist.md \
   documentation/manual_steps.txt \
   secrets/agenix.nix
 do
@@ -52,6 +53,8 @@ require_match documentation/manual_steps.txt 'Public Cloudflare exposure should 
   "Manual steps must document the limited Cloudflare public exposure set."
 require_match documentation/bootstrap.md 'tests/run-all\.sh' \
   "Bootstrap guide must include the aggregate policy test entrypoint."
+require_match documentation/bootstrap.md 'first_bootstrap_checklist\.md' \
+  "Bootstrap guide must point operators to the first bootstrap checklist."
 
 echo "ℹ️ Checking required bootstrap secrets are declared…"
 for secret_name in \
