@@ -2,7 +2,7 @@
 
 This runbook matches the current flake and module set in this repository (`NixOS 25.05` state version, `nixpkgs` release branch `25.11`).
 
-## What this stack currently includes
+## What this stack includes
 
 - Identity and SSO: **Kanidm** + **OAuth2 Proxy**
 - Applications: **Immich**, **Paperless-ngx**, **Audiobookshelf**, **Copyparty**
@@ -13,14 +13,14 @@ This runbook matches the current flake and module set in this repository (`NixOS
 
 Public exposure policy:
 
-- **Cloudflare Tunnel** is intentionally limited to the public endpoints that must work from the internet.
+- **Cloudflare Tunnel** is intentionally limited to endpoints that must be reachable from the public internet.
 - The current public set is:
   - `fileshare.<domain>`
   - `id.<domain>` (to support the public auth flow used by `fileshare`)
 - Application hostnames such as `paperless`, `immich`, `photoshare`, and `audiobookshelf` are intended to stay **LAN/NetBird-only**.
-- Caddy still fronts the HTTP routing locally; the tunnel only publishes the small public subset.
+- Caddy still fronts local HTTP routing; the tunnel only publishes the small public subset.
 - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare.<domain>` and `id.<domain>` unless you are intentionally expanding internet access.
-- Internal-only app hostnames should not retain public Cloudflare routes that would expose them to the internet or return tunnel 404s.
+- Internal-only app hostnames should not keep public Cloudflare routes that expose them to the internet or create tunnel 404 noise.
 
 ---
 
@@ -37,7 +37,52 @@ nix --version
 If `nix` is missing, install it before continuing. All repository validation scripts require `nix` on `PATH`.
 Repository validation also expects `rg` and `jq` on `PATH`.
 
-Clone repo:
+Create the local secret staging folder now:
+
+```bash
+mkdir -p secrets/top
+chmod 700 secrets/top
+```
+
+### Cloudflare account + tunnel prep (web)
+
+1. Create a Cloudflare account (or sign in):  
+   https://dash.cloudflare.com/
+2. Make sure your domain is onboarded to Cloudflare DNS for the zone used by this repo.
+3. Open **Networking → Tunnels** in the dashboard and confirm you can access your tunnel settings:  
+   https://dash.cloudflare.com/?to=/:account/network/tunnels
+4. Create or retrieve the credentials/token material needed for this host.
+5. Save credentials into `secrets/top/cfHomeCreds` (plaintext temporary staging file).
+6. Create an API token with the minimum required permissions for this setup (at least Tunnel/DNS edit for the target zone/account), then save it to `secrets/top/cfAPIToken`.
+7. Protect these staged files locally until they are encrypted:
+
+```bash
+chmod 600 secrets/top/cfHomeCreds secrets/top/cfAPIToken
+```
+
+Reference docs:
+- Cloudflare Tunnel setup guide: https://developers.cloudflare.com/tunnel/setup/
+- Cloudflare Tunnel overview: https://developers.cloudflare.com/tunnel/
+
+### NetBird account + setup key prep (web)
+
+1. Create a NetBird account (or sign in):  
+   https://app.netbird.io/
+2. Open **Setup Keys**:  
+   https://app.netbird.io/setup-keys
+3. Select **Create Setup Key**.
+4. Give the key a clear name (for example, `homeserver-bootstrap`), choose a safe key type/expiration, and (recommended) assign only required auto-groups.
+5. Copy the generated setup key immediately (you may not be able to view it again depending on dashboard settings).
+6. Save it to `secrets/top/netbirdSetupKey`, then protect the file:
+
+```bash
+chmod 600 secrets/top/netbirdSetupKey
+```
+
+Reference docs:
+- NetBird setup keys: https://docs.netbird.io/manage/peers/register-machines-using-setup-keys
+
+Clone the repository:
 
 ```bash
 git clone <your-fork-or-origin-url> NixHomeServer
@@ -65,29 +110,37 @@ Copy the private key to target host as `/etc/agenix/age.key` with mode `0400`.
 ./scripts/gen-all-secrets.sh
 ```
 
-This creates encrypted secrets for Kanidm, app OIDC clients, and OAuth2 Proxy.
+This command creates encrypted secrets for Kanidm, app OIDC clients, and OAuth2 Proxy.
 
-Manual secrets still required in `secrets/top/` before rerunning script:
+Before rerunning the script, place these manual secrets in `secrets/top/`:
 
 - `netbirdSetupKey`
 - `cfHomeCreds`
 - `cfAPIToken`
 
-After encryption, remove cleartext files from `secrets/top/`.
+After encryption completes, remove cleartext files from `secrets/top/`.
 
 ---
 
 ## 4) Validate repository before deployment
 
 ```bash
-nix flake check --no-build
-scripts/check-repo.sh
+NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build
+NIX_CONFIG='experimental-features = nix-command flakes' scripts/check-repo.sh
 tests/run-all.sh
 tests/run-all.sh --with-runtime
+tests/bootstrap-audit.sh
 ```
 
-`scripts/check-repo.sh` runs the static repository policy suite via `tests/run-all.sh`. `tests/run-all.sh --with-runtime` additionally runs the live DietPi companion check for bootstrap/debugging once SSH access to the Pi is available. If DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct login user.
-The `tests/run-all.sh` suite covers bootstrap-readiness, AppArmor, auth-routing, firewall intent, networking policy, runtime contracts, and secrets; use individual scripts only for targeted debugging.
+Validation flow:
+
+- `scripts/check-repo.sh` runs the static repository policy suite through `tests/run-all.sh`.
+- `tests/run-all.sh --with-runtime` also runs the live DietPi companion check for bootstrap/debugging once SSH access to the Pi is available.
+- If DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct login user.
+
+`tests/run-all.sh` covers bootstrap readiness, AppArmor, auth/routing policy, firewall intent, networking policy, runtime contracts, and secret ownership/consumers. Run individual scripts only for targeted debugging.
+
+After the first successful deploy, use `documentation/first_bootstrap_checklist.md` for end-to-end operator validation (tunnel, auth, and mesh connectivity). For a single command that reports all failing runtime checks together, run `tests/bootstrap-audit.sh`.
 
 ---
 
@@ -100,7 +153,7 @@ nix run nixpkgs#nixos-rebuild -- switch \
   --build-host root@192.168.0.144
 ```
 
-This is the recommended deploy path. It requires Nix on the workstation so you can invoke `nixos-rebuild`, but the server still builds and activates the new system itself over SSH rather than building on the workstation.
+This is the recommended deploy path. You need Nix on the workstation to invoke `nixos-rebuild`, but the server still builds and activates the new system over SSH.
 
 Before deploying to a different machine, update the following in `vars.nix`:
 
@@ -131,29 +184,19 @@ Then configure OIDC clients in Kanidm for:
 - `paperless-web`
 - `abs-web`
 - `copyparty-web`
-- `oauth2-proxy` is now provisioned automatically from the NixOS config and agenix secret.
+- `oauth2-proxy` (now provisioned automatically from the NixOS config and agenix secret)
 
-The config also provisions a `fileshare_users` Kanidm group for the public
-fileshare flow. Add users to that group if they should be allowed through
-`oauth2-proxy`. Treat `oauth2-proxy` as Nix-managed state; manage access by
-group membership rather than by manually editing that client in Kanidm after
-deploy.
+The configuration also provisions a `fileshare_users` Kanidm group for the public fileshare flow. Add users to that group if they should be allowed through `oauth2-proxy`. Treat `oauth2-proxy` as Nix-managed state: manage access through group membership rather than manual client edits in Kanidm after deployment.
 
-Current bootstrap note: Kanidm provisioning is set to accept invalid
-certificates during its local post-start flow. This is intentional because the
-bootstrap trust path currently uses the local Caddy-presented chain rather than
-an already-trusted system CA path.
+Bootstrap note: Kanidm provisioning currently accepts invalid certificates during its local post-start flow. This is intentional because bootstrap trust currently depends on the local Caddy-presented chain rather than an already-trusted system CA path.
 
 Use redirect/callback URLs expected by each module.
 
 For the current public routing model, `oauth2-proxy` and the public `fileshare` flow depend on `https://id.<domain>` remaining reachable from the internet.
 
-From a non-NetBird external network, only `https://id.<domain>` and `https://fileshare.<domain>` should resolve/respond publicly; internal app hostnames should not be publicly published.
+From a non-NetBird external network, only `https://id.<domain>` and `https://fileshare.<domain>` should resolve publicly. Internal app hostnames should remain private.
 
-The NetBird peer should enroll automatically from `netbirdSetupKey` during
-startup. A brief `Disconnected` state while `netbird-main-login` runs is
-expected; the peer is healthy once `nb0` exists and the service reports a
-NetBird IP.
+The NetBird peer should enroll automatically from `netbirdSetupKey` during startup. A brief `Disconnected` state while `netbird-main-login` runs is expected. The peer is healthy once `nb0` exists and the service reports a NetBird IP.
 
 ---
 
@@ -161,7 +204,7 @@ NetBird IP.
 
 This companion setup is optional and should only be treated as active when `enableDietPiCompanion = true` in `vars.nix`.
 
-You can run a separate Raspberry Pi (DietPi) for Home page, AdGuard Home, Unbound, DHCP, and power scripts **alongside** this server.
+You can run a separate Raspberry Pi (DietPi) for homepage, AdGuard Home, Unbound, DHCP, and power scripts **alongside** this server.
 
 Recommended pattern:
 
@@ -170,7 +213,7 @@ Recommended pattern:
 - Run Unbound on both hosts for resolver redundancy.
 - Configure clients/routers with **both DNS servers** in order of preference.
 
-Avoid split-brain by making one source authoritative for local overrides:
+Avoid split-brain by keeping one source authoritative for local overrides:
 
 - Either keep local DNS rewrites centrally in AdGuard (forward to one/both Unbound backends),
 - or keep authoritative local records on one resolver and replicate changes deliberately.

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 TESTS_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
 
 ensure_tools() {
   local tool
