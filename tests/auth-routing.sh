@@ -18,6 +18,8 @@ require_fixed modules/caddy/default.nix 'reverse_proxy https://127.0.0.1:${toStr
   "Caddy must reverse proxy the Kanidm hostname to the Kanidm TLS listener."
 require_fixed modules/caddy/default.nix 'tls_server_name ${vars.kanidmDomain}' \
   "Caddy must present the Kanidm hostname when proxying to the TLS listener."
+forbid_match modules/caddy/default.nix 'tls_insecure_skip_verify' \
+  "Caddy must not disable TLS verification when proxying to Kanidm."
 require_fixed modules/caddy/default.nix '"fileshare.${vars.domain}" = {' \
   "Caddy must serve fileshare.<domain>."
 require_fixed modules/caddy/default.nix 'reverse_proxy http://127.0.0.1:${toString vars.oauth2ProxyPort}' \
@@ -44,10 +46,18 @@ require_fixed modules/kanidm/default.nix 'basicSecretFile = config.age.secrets.o
   "Kanidm provisioning must keep OAuth2 Proxy's client secret aligned with agenix."
 require_fixed modules/kanidm/default.nix 'scopeMaps.fileshare_users = [ "openid" "profile" "email" "groups" ];' \
   "Kanidm provisioning must scope OAuth2 Proxy access to the fileshare_users group."
+require_fixed modules/kanidm/default.nix 'instanceUrl = "https://localhost:${toString vars.kanidmPort}";' \
+  "Kanidm provisioning must target the local listener during activation."
+require_fixed modules/kanidm/default.nix 'acceptInvalidCerts = true;' \
+  "Kanidm provisioning must allow the local listener certificate mismatch only on localhost."
+forbid_match modules/kanidm/default.nix 'instanceUrl = "https://\$\{vars\.kanidmDomain\}"' \
+  "Kanidm provisioning must not depend on the public id.<domain> route during activation."
 
 echo "ℹ️ Checking internal app routing and OIDC alignment…"
 require_fixed modules/immich/default.nix 'settings.server.externalDomain = "https://photoshare.${vars.domain}";' \
   "Immich must publish the photoshare external domain."
+forbid_match modules/caddy/default.nix '"immich\.\$\{vars\.domain\}" = \{' \
+  "Caddy must not publish a second Immich hostname alongside photoshare."
 require_fixed modules/immich/default.nix 'IMMICH_OIDC_CLIENT_ID = "immich-web";' \
   "Immich must keep the expected Kanidm client ID."
 require_fixed modules/immich/default.nix 'IMMICH_OIDC_ISSUER = vars.kanidmIssuer "immich-web";' \
@@ -72,7 +82,7 @@ require_match documentation/bootstrap.md 'fileshare\.<domain>' \
   "Bootstrap guide must document fileshare as a public endpoint."
 require_match documentation/bootstrap.md 'id\.<domain>' \
   "Bootstrap guide must document id.<domain> as a public endpoint."
-require_match documentation/bootstrap.md 'paperless`, `immich`, `photoshare`, and `audiobookshelf` are intended to stay \*\*LAN/NetBird-only\*\*' \
+require_match documentation/bootstrap.md 'paperless`, `photoshare` \(Immich\), and `audiobookshelf` are intended to stay \*\*LAN/NetBird-only\*\*' \
   "Bootstrap guide must document the private-only app set."
 require_fixed documentation/bootstrap.md "--flake .#${hostname}" \
   "Bootstrap guide deploy command must use the flake hostname."

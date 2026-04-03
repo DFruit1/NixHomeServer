@@ -55,7 +55,6 @@
         local-data = [
           "\"${vars.domain}                 A ${vars.serverLanIP}\""
           "\"www.${vars.domain}             A ${vars.serverLanIP}\""
-          "\"immich.${vars.domain}          A ${vars.serverLanIP}\""
           "\"paperless.${vars.domain}       A ${vars.serverLanIP}\""
           "\"audiobookshelf.${vars.domain}  A ${vars.serverLanIP}\""
           "\"fileshare.${vars.domain}       A ${vars.serverLanIP}\""

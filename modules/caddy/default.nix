@@ -28,18 +28,10 @@
           reverse_proxy https://127.0.0.1:${toString vars.kanidmPort} {
             transport http {
               tls_server_name ${vars.kanidmDomain}
-              tls_insecure_skip_verify
             }
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host  {host}
           }
-        '';
-      };
-
-      "immich.${vars.domain}" = {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          reverse_proxy http://127.0.0.1:${toString vars.immichPort}
         '';
       };
 

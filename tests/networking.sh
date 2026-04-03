@@ -19,8 +19,6 @@ require_match modules/cloudflared/default.nix '"fileshare\.\$\{vars\.domain\}" =
   "Cloudflare tunnel must publish fileshare.<domain> via local Caddy."
 forbid_match modules/cloudflared/default.nix '"paperless\.\$\{vars\.domain\}"' \
   "Paperless must remain private and not be exposed through the Cloudflare tunnel."
-forbid_match modules/cloudflared/default.nix '"immich\.\$\{vars\.domain\}"' \
-  "Immich must remain private and not be exposed through the Cloudflare tunnel."
 forbid_match modules/cloudflared/default.nix '"photoshare\.\$\{vars\.domain\}" = "http://127\.0\.0\.1:' \
   "Photoshare must remain private and not be exposed through the Cloudflare tunnel."
 forbid_match modules/cloudflared/default.nix '"audiobookshelf\.\$\{vars\.domain\}"' \
@@ -41,6 +39,8 @@ require_fixed modules/caddy/default.nix '"paperless.${vars.domain}" = {' \
   "Caddy must retain the internal paperless virtual host."
 require_fixed modules/caddy/default.nix '"photoshare.${vars.domain}" = {' \
   "Caddy must retain the internal photoshare virtual host."
+forbid_match modules/caddy/default.nix '"immich\.\$\{vars\.domain\}" = \{' \
+  "Caddy must not retain a duplicate internal Immich hostname."
 require_fixed configuration.nix 'certs."${vars.domain}" = {' \
   "ACME must issue the shared site certificate."
 require_fixed configuration.nix 'extraDomainNames = [ "*.${vars.domain}" ];' \
@@ -65,6 +65,8 @@ require_match modules/unbound/default.nix '"\\"paperless\.\$\{vars\.domain\}\s+A
   "Unbound must resolve paperless.<domain> to the server LAN IP."
 require_match modules/unbound/default.nix '"\\"photoshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must resolve photoshare.<domain> to the server LAN IP."
+forbid_match modules/unbound/default.nix '"\\"immich\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
+  "Unbound must not retain a duplicate immich.<domain> record."
 require_match modules/unbound/default.nix '"\\"id\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must resolve id.<domain> to the server LAN IP."
 require_match modules/unbound/default.nix '"\$\{vars\.netbirdCidr\} allow"' \

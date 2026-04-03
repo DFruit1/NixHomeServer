@@ -50,5 +50,11 @@ require_fixed modules/unbound/default.nix 'allowedUDPPorts = [ 53 ];' \
   "NetBird-specific DNS over UDP must stay explicitly declared."
 require_fixed modules/netbird/default.nix 'port = vars.wgPort;' \
   "NetBird must keep using vars.wgPort for its listen port."
+forbid_match modules/netbird/default.nix 'openFirewall = true;' \
+  "NetBird must not manage firewall exposure implicitly."
+forbid_match configuration.nix 'openFirewall = true;' \
+  "SSH must not manage firewall exposure implicitly."
+require_fixed configuration.nix 'networking.firewall.allowedTCPPorts = [ 22 ];' \
+  "SSH reachability must stay explicit in the global firewall rules."
 
 echo "✅ Firewall intent tests passed."

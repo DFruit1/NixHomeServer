@@ -17,7 +17,7 @@ Public exposure policy:
 - The current public set is:
   - `fileshare.<domain>`
   - `id.<domain>` (to support the public auth flow used by `fileshare`)
-- Application hostnames such as `paperless`, `immich`, `photoshare`, and `audiobookshelf` are intended to stay **LAN/NetBird-only**.
+- Application hostnames such as `paperless`, `photoshare` (Immich), and `audiobookshelf` are intended to stay **LAN/NetBird-only**.
 - Caddy still fronts the HTTP routing locally; the tunnel only publishes the small public subset.
 - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare.<domain>` and `id.<domain>` unless you are intentionally expanding internet access.
 - Internal-only app hostnames should not retain public Cloudflare routes that would expose them to the internet or return tunnel 404s.
@@ -80,7 +80,7 @@ After encryption, remove cleartext files from `secrets/top/`.
 ## 4) Validate repository before deployment
 
 ```bash
-nix flake check --no-build
+NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build
 scripts/check-repo.sh
 tests/run-all.sh
 tests/run-all.sh --with-runtime
@@ -139,10 +139,10 @@ fileshare flow. Add users to that group if they should be allowed through
 group membership rather than by manually editing that client in Kanidm after
 deploy.
 
-Current bootstrap note: Kanidm provisioning is set to accept invalid
-certificates during its local post-start flow. This is intentional because the
-bootstrap trust path currently uses the local Caddy-presented chain rather than
-an already-trusted system CA path.
+Kanidm provisioning now targets the local `https://localhost:8443` listener
+during activation so it does not depend on the public `id.<domain>` route being
+up mid-switch. The public `https://id.<domain>` path still needs to be checked
+separately after deploy for browser-facing certificate and routing correctness.
 
 Use redirect/callback URLs expected by each module.
 
@@ -176,3 +176,51 @@ Avoid split-brain by making one source authoritative for local overrides:
 - or keep authoritative local records on one resolver and replicate changes deliberately.
 
 If this server is periodically powered down, make DietPi the primary always-on resolver and keep the server resolver as secondary/failover.
+
+---
+
+## 8) Post-switch verification checklist
+
+After `nixos-rebuild switch` completes on the target host, verify the runtime
+state before treating the deploy as complete.
+
+Access checks:
+
+- Confirm SSH login works for the seeded non-root admin user (`dsaw`) with the configured public key.
+- Confirm root SSH login is rejected.
+- Confirm password and keyboard-interactive SSH auth are rejected.
+
+Service health:
+
+```bash
+systemctl status caddy kanidm oauth2-proxy cloudflared unbound paperless-web paperless-scheduler paperless-task-queue netbird-main
+systemctl --failed
+journalctl -b -u caddy -u kanidm -u oauth2-proxy -u cloudflared -u unbound -u paperless-web -u netbird-main
+```
+
+Networking and exposure:
+
+- Confirm only the intended global ports are reachable: `22`, `80`, `443`, `53/tcp`, `53/udp`, and the configured NetBird/WireGuard UDP port.
+- Confirm `id.<domain>` and `fileshare.<domain>` are the only publicly exposed Cloudflare endpoints.
+- Confirm `paperless.<domain>`, `photoshare.<domain>`, and `audiobookshelf.<domain>` remain LAN/NetBird-only.
+
+Identity and app routing:
+
+- Open `https://id.<domain>` and confirm Kanidm loads with a valid certificate chain.
+- Test the public `fileshare.<domain>` OAuth2 Proxy flow end to end.
+- Test Paperless OIDC login at `https://paperless.<domain>`.
+- Confirm Immich is only served at `https://photoshare.<domain>`.
+- Confirm there are no lingering redirects or references to `immich.<domain>`.
+
+DNS, mesh, and secrets:
+
+```bash
+systemctl status netbird-main
+ip addr show nb0
+ls -l /run/agenix
+```
+
+- Confirm Unbound returns the expected local records on LAN and NetBird.
+- Confirm the NetBird peer enrolls and gets the expected mesh IP.
+- Confirm required agenix secrets are mounted under `/run/agenix`.
+- If you generated secrets locally, ensure `secrets/top/` is empty afterwards.

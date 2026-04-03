@@ -6,8 +6,10 @@ Use it as a concise operations TODO list.
 
 1) Hardening after bootstrap
 ----------------------------
-- Disable password SSH auth after key-based access is confirmed.
-- Set `PermitRootLogin = "no"` once non-root admin workflow is validated.
+- Password SSH auth is now disabled by default.
+- Root SSH login is now disabled by default.
+- Keep validating that the seeded non-root admin key remains sufficient for
+  first-boot access on new instances.
 
 2) Secret lifecycle
 -------------------
@@ -32,8 +34,8 @@ Recommended behavior:
 -------------------------------------------
 Always run after `.nix` or module wiring edits:
 
-  nix flake check --no-build
-  scripts/check-repo.sh
+  NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build
+  NIX_CONFIG='experimental-features = nix-command flakes' scripts/check-repo.sh
 
 5) Drift checks
 ---------------

@@ -7,7 +7,7 @@ Access model (current):
   - Public internet access is intentionally limited to:
       * fileshare.<domain>
       * id.<domain>  (required for the public fileshare auth flow)
-  - App hostnames such as paperless, immich/photoshare, and audiobookshelf
+  - App hostnames such as paperless, photoshare (Immich), and audiobookshelf
     are intended to remain LAN/NetBird-only.
   - Caddy remains the local HTTP policy boundary; Cloudflare Tunnel only
     publishes the minimal public subset.
@@ -113,7 +113,7 @@ On server:
 ─────────────────────────────────────────────────────────────────────
 8.  VALIDATE CONFIG BEFORE FIRST BOOT
 ─────────────────────────────────────────────────────────────────────
-$ nix flake check --no-build
+$ NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build
 $ scripts/check-repo.sh
 $ tests/run-all.sh
 $ tests/run-all.sh --with-runtime
@@ -169,9 +169,11 @@ Manage fileshare access by `fileshare_users` membership rather than by manually
 editing the `oauth2-proxy` Kanidm client after deploy.
 
 Current bootstrap note:
-  - Kanidm provisioning intentionally accepts invalid certificates in its local
-    post-start flow because bootstrap currently relies on the local
-    Caddy-presented chain rather than a pre-trusted CA path.
+  - Kanidm provisioning now targets the local `https://localhost:8443` listener
+    during activation so it does not depend on the public `id.<domain>` route
+    being up mid-switch.
+  - The public `https://id.<domain>` path still needs to be checked separately
+    after deploy for browser-facing certificate and routing correctness.
   - NetBird should auto-enroll from `netbirdSetupKey`; a short-lived
     `Disconnected` state while `netbird-main-login` runs is expected during
     startup.
@@ -190,6 +192,24 @@ Also verify:
 # systemctl list-timers snapraid*
 # snapraid status
 
+Post-switch access checks:
+- Confirm SSH login works for the seeded non-root admin user with the configured
+  key.
+- Confirm root SSH login is rejected.
+- Confirm password and keyboard-interactive SSH auth are rejected.
+
+Core service checks:
+# systemctl status caddy kanidm oauth2-proxy cloudflared unbound paperless-web paperless-scheduler paperless-task-queue netbird-main
+# journalctl -b -u caddy -u kanidm -u oauth2-proxy -u cloudflared -u unbound -u paperless-web -u netbird-main
+
+Networking and exposure checks:
+- Confirm only the intended global ports are reachable: 22, 80, 443, 53/tcp,
+  53/udp, and the configured NetBird/WireGuard UDP port.
+- Confirm `id.<domain>` and `fileshare.<domain>` are the only public
+  Cloudflare-exposed endpoints.
+- Confirm `paperless.<domain>`, `photoshare.<domain>`, and
+  `audiobookshelf.<domain>` remain LAN/NetBird-only.
+
 Public endpoints expected from the internet:
 - https://id.<domain>
 - https://fileshare.<domain>
@@ -201,6 +221,20 @@ Internal-only endpoints expected over LAN/NetBird:
 
 From a non-NetBird external network, only `id.<domain>` and
 `fileshare.<domain>` should resolve/respond publicly.
+
+Identity, routing, and secret checks:
+- Confirm Kanidm loads at `https://id.<domain>` with a valid certificate chain.
+- Test the public `fileshare.<domain>` OAuth2 Proxy flow end to end.
+- Test Paperless OIDC login at `https://paperless.<domain>`.
+- Confirm Immich is only served at `https://photoshare.<domain>`.
+- Confirm there are no lingering redirects or references to `immich.<domain>`.
+# systemctl status netbird-main
+# ip addr show nb0
+# ls -l /run/agenix
+- Confirm Unbound returns the expected local records on LAN and NetBird.
+- Confirm the NetBird peer enrolls and gets the expected mesh IP.
+- Confirm required agenix secrets are mounted under `/run/agenix`.
+- If you generated secrets locally, ensure `secrets/top/` is empty afterwards.
 
 ─────────────────────────────────────────────────────────────────────
 13. OPERATIONS NOTES

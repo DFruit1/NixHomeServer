@@ -33,6 +33,14 @@ require_json_equal "$(nix_eval_config_json 'services.paperless.enable')" "true" 
   "Paperless must remain enabled in the evaluated NixOS config."
 require_json_equal "$(nix_eval_config_json 'services.cloudflared.enable')" "true" \
   "Cloudflared must remain enabled in the evaluated NixOS config."
+require_json_equal "$(nix_eval_config_json 'services.openssh.settings.PasswordAuthentication')" "false" \
+  "OpenSSH password authentication must remain disabled."
+require_json_equal "$(nix_eval_config_json 'services.openssh.settings.KbdInteractiveAuthentication')" "false" \
+  "OpenSSH keyboard-interactive auth must remain disabled."
+require_json_equal "$(nix_eval_config_json 'services.openssh.settings.PermitRootLogin')" '"no"' \
+  "OpenSSH root login must remain disabled."
+require_json_equal "$(nix_eval_config_json 'users.users.root.initialPassword')" "null" \
+  "Root must not retain a deterministic bootstrap password in the evaluated config."
 
 echo "ℹ️ Checking evaluated reverse-proxy and tunnel host contracts…"
 caddy_hosts="$(nix_eval_config_json 'services.caddy.virtualHosts' | jq 'keys')"
@@ -42,8 +50,13 @@ require_json_contains "$caddy_hosts" "fileshare.${domain}" \
   "Caddy must serve fileshare.<domain> in the evaluated config."
 require_json_contains "$caddy_hosts" "paperless.${domain}" \
   "Caddy must retain the internal Paperless hostname."
-require_json_contains "$caddy_hosts" "immich.${domain}" \
-  "Caddy must retain the internal Immich hostname."
+require_json_contains "$caddy_hosts" "photoshare.${domain}" \
+  "Caddy must retain the internal Immich hostname at photoshare.<domain>."
+if jq -e --arg host "immich.${domain}" 'index($host) != null' >/dev/null <<<"$caddy_hosts"; then
+  echo "❌ Caddy must not retain a duplicate immich.<domain> host in the evaluated config."
+  echo "   Hosts: $caddy_hosts"
+  exit 1
+fi
 
 tunnel_ingress="$(nix eval --json .#nixosConfigurations.${hostname}.config.services.cloudflared.tunnels | jq '.[] | .ingress')"
 require_json_equal "$(jq -r --arg host "${kanidm_domain}" '.[$host]' <<<"$tunnel_ingress")" "http://127.0.0.1:80" \

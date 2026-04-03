@@ -38,6 +38,10 @@ require_fixed vars.nix 'enableDietPiCompanion = false;' \
   "vars.nix must declare whether the DietPi companion is enabled."
 
 echo "ℹ️ Checking deploy and validation guidance is bootstrap-ready…"
+require_fixed documentation/bootstrap.md "NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build" \
+  "Bootstrap guide must document the self-contained flake-check command."
+require_fixed documentation/manual_steps.txt "\$ NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build" \
+  "Manual steps must document the self-contained flake-check command."
 require_match documentation/bootstrap.md 'nix run nixpkgs#nixos-rebuild -- switch \\' \
   "Bootstrap guide must keep the documented workstation deploy flow."
 require_match documentation/manual_steps.txt 'nix run nixpkgs#nixos-rebuild -- switch \\' \
@@ -46,12 +50,22 @@ require_fixed documentation/bootstrap.md "--flake .#${hostname}" \
   "Bootstrap guide must deploy the hostname from vars.nix."
 require_fixed documentation/manual_steps.txt "--target-host root@${server_lan_ip}" \
   "Manual steps must target the server LAN IP from vars.nix."
-require_match documentation/bootstrap.md 'Application hostnames such as `paperless`, `immich`, `photoshare`, and `audiobookshelf` are intended to stay \*\*LAN/NetBird-only\*\*' \
+require_match documentation/bootstrap.md 'Application hostnames such as `paperless`, `photoshare` \(Immich\), and `audiobookshelf` are intended to stay \*\*LAN/NetBird-only\*\*' \
   "Bootstrap guide must document the internal-only app boundary."
 require_match documentation/manual_steps.txt 'Public Cloudflare exposure should stay limited to `id`\.<domain> and `fileshare`\.<domain>' \
   "Manual steps must document the limited Cloudflare public exposure set."
 require_match documentation/bootstrap.md 'tests/run-all\.sh' \
   "Bootstrap guide must include the aggregate policy test entrypoint."
+require_fixed scripts/check-repo.sh 'export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"' \
+  "Repository checks must default NIX_CONFIG for flake-enabled validation."
+require_fixed modules/paperless/default.nix 'nodejs_20 = pkgs.nodejs_22;' \
+  "Paperless must keep the Node 22 frontend override until upstream packaging is stable here."
+require_fixed modules/paperless/default.nix "jq 'del(.packageManager)'" \
+  "Paperless must strip the frontend packageManager pin to keep builds offline and reproducible."
+forbid_match documentation/bootstrap.md 'accept invalid\s+certificates' \
+  "Bootstrap guide must not document insecure Kanidm certificate bypasses."
+forbid_match documentation/manual_steps.txt 'accepts invalid certificates' \
+  "Manual steps must not document insecure Kanidm certificate bypasses."
 
 echo "ℹ️ Checking required bootstrap secrets are declared…"
 for secret_name in \

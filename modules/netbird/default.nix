@@ -13,7 +13,6 @@
     name = "main";
     hardened = true;
     autoStart = true;
-    openFirewall = true;
     interface = vars.netbirdIface;
     port = vars.wgPort;
     login.enable = true;

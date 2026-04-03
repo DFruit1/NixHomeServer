@@ -57,10 +57,10 @@ in
   # Import all modules found in the modules/ directory
   imports =
     let
-      modulePaths = builtins.map (name: ./modules + "/${name}" )
+      modulePaths = builtins.map (name: ./modules + "/${name}")
         (builtins.attrNames (builtins.readDir ./modules));
     in
-      [ ./disko.nix ./secrets/agenix.nix ] ++ modulePaths;
+    [ ./disko.nix ./secrets/agenix.nix ] ++ modulePaths;
 
   disko.enableConfig = true;
   services.dbus.enable = true;
@@ -169,12 +169,11 @@ in
   };
 
   ###############################################################################
-#  Secrets, users, bootstrap-SSH, etc.  (unchanged)
+  #  Secrets, users, bootstrap-SSH, etc.  (unchanged)
   ###############################################################################
 
   # bootstrap users & SSH   (your original block kept verbatim)
   users.users.root = {
-    initialPassword = "root";
     shell = pkgs.bashInteractive;
     openssh.authorizedKeys.keys = [
       vars.serverSSHPubKey
@@ -201,13 +200,15 @@ in
   hardware.enableAllFirmware = true;
   nixpkgs.config.allowUnfree = true;
 
+  networking.firewall.allowedTCPPorts = [ 22 ];
+
   services.openssh = {
     enable = true;
     settings = {
-      PasswordAuthentication = true; # bootstrap only
-      PermitRootLogin = "yes";
+      PasswordAuthentication = false;
+      KbdInteractiveAuthentication = false;
+      PermitRootLogin = "no";
     };
-    openFirewall = true;
   };
 
   users.users.dsaw = {

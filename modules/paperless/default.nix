@@ -1,9 +1,25 @@
 { lib, config, pkgs, vars, ... }:
 
 let
-  # Paperless' frontend build has been unstable on this server with nixpkgs'
-  # default Node 20 toolchain, so override only this package to use Node 22.
+  # Keep the Node 22 frontend workaround, but patch out the exact pnpm
+  # packageManager pin that causes corepack/pnpm to fetch from the network
+  # during builds.
+  patchedPaperlessFetchFromGitHub =
+    args:
+    pkgs.runCommand "${args.repo}-${lib.replaceStrings ["/"] ["-"] args.tag}-patched"
+      {
+        nativeBuildInputs = [ pkgs.jq ];
+        src = pkgs.fetchFromGitHub args;
+      }
+      ''
+        cp -a "$src" "$out"
+        chmod -R +w "$out"
+        jq 'del(.packageManager)' "$out/src-ui/package.json" > "$out/src-ui/package.json.tmp"
+        mv "$out/src-ui/package.json.tmp" "$out/src-ui/package.json"
+      '';
+
   paperlessPackage = pkgs.callPackage "${pkgs.path}/pkgs/by-name/pa/paperless-ngx/package.nix" {
+    fetchFromGitHub = patchedPaperlessFetchFromGitHub;
     nodejs_20 = pkgs.nodejs_22;
   };
 in

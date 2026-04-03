@@ -32,7 +32,9 @@
       enable = true;
       idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;
       adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;
-      instanceUrl = "https://${vars.kanidmDomain}";
+      # Provision directly against the local Kanidm listener so activation does
+      # not depend on Caddy/public DNS/certificate reachability.
+      instanceUrl = "https://localhost:${toString vars.kanidmPort}";
       acceptInvalidCerts = true;
 
       groups.fileshare_users = { };
