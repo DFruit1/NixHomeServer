@@ -86,9 +86,13 @@ require_match documentation/bootstrap.md 'paperless`, `photoshare` \(Immich\), a
   "Bootstrap guide must document the private-only app set."
 require_fixed documentation/bootstrap.md "--flake .#${hostname}" \
   "Bootstrap guide deploy command must use the flake hostname."
-require_fixed documentation/bootstrap.md "--target-host root@${server_lan_ip}" \
+require_fixed documentation/bootstrap.md "--target-host dsaw@${server_lan_ip}" \
   "Bootstrap guide deploy command must use serverLanIP."
-require_fixed documentation/manual_steps.txt "--build-host root@${server_lan_ip}" \
+require_fixed documentation/manual_steps.txt "--build-host dsaw@${server_lan_ip}" \
   "Manual steps deploy command must use serverLanIP."
+require_fixed documentation/bootstrap.md "--sudo" \
+  "Bootstrap guide deploy command must include sudo for non-root remote activation."
+require_fixed documentation/manual_steps.txt "--sudo" \
+  "Manual steps deploy command must include sudo for non-root remote activation."
 
 echo "✅ Auth and routing policy tests passed."

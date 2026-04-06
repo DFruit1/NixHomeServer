@@ -33,8 +33,8 @@ Before running checks or scripts, ensure required tooling is present on PATH:
 
 ## Mandatory validation for config changes
 When changing `.nix` files or module wiring:
-1. Run `NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build`.
-2. Run `NIX_CONFIG='experimental-features = nix-command flakes' scripts/check-repo.sh`.
+1. Run `nix flake check --no-build`.
+2. Run `scripts/check-repo.sh`.
 3. Include commands and outcomes in the final summary.
 
 ## Style conventions

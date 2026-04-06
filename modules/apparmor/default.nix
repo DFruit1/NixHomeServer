@@ -84,7 +84,7 @@ let
       )
     );
 
-  genProfile = name: paths:
+  genProfile = profileName: paths:
     let
       allowPaths = (vars.appArmorCommonPaths or [ ]) ++ paths;
       allowLines = lib.concatStringsSep "\n"
@@ -93,9 +93,8 @@ let
     ''
       #include <tunables/global>
 
-      profile ${name} flags=(attach_disconnected,mediate_deleted) {
+      profile ${profileName} flags=(attach_disconnected,mediate_deleted) {
 ${allowLines}
-        deny /** rwklx,
       }
     '';
 
@@ -103,7 +102,7 @@ ${allowLines}
     lib.mapAttrs'
       (n: p:
         lib.nameValuePair ("generated-" + n) {
-          profile = genProfile n p;
+          profile = genProfile ("generated-" + n) p;
           state = "complain";
         }
       )

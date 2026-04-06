@@ -25,11 +25,19 @@ LEGEND
 $ git --version
 $ ssh -V
 $ nix --version
+$ age --version
 $ git clone <your-repo-url> NixHomeServer
 $ cd NixHomeServer
 
 If nix is missing, install it before continuing.
 Repository validation also expects `rg` and `jq` on PATH.
+This flake declares the required Nix experimental features in `flake.nix`, so
+the commands below do not need a prefixed `NIX_CONFIG=...`. If Nix asks whether
+to trust the repository flake config, accept it. To avoid future prompts
+globally, add `accept-flake-config = true` to `~/.config/nix/nix.conf`.
+
+$ mkdir -p ~/.config/nix
+$ grep -qxF 'accept-flake-config = true' ~/.config/nix/nix.conf 2>/dev/null || echo 'accept-flake-config = true' >> ~/.config/nix/nix.conf
 
 ─────────────────────────────────────────────────────────────────────
 1.  BOOT INSTALLER + NETWORK
@@ -110,10 +118,15 @@ On server:
 # install -d -m 0700 /etc/agenix
 # install -m 0400 /path/to/agenix.key /etc/agenix/age.key
 
+If the repo already contains encrypted secrets, do not generate a fresh private
+key unless you also plan to re-encrypt those secrets for the new recipient set.
+In that case, first recover or import the existing private key that matches
+`secrets/pubkeys/age.pub`, then copy that key to the target host.
+
 ─────────────────────────────────────────────────────────────────────
 8.  VALIDATE CONFIG BEFORE FIRST BOOT
 ─────────────────────────────────────────────────────────────────────
-$ NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build
+$ nix flake check --no-build
 $ scripts/check-repo.sh
 $ tests/run-all.sh
 $ tests/run-all.sh --with-runtime
@@ -137,14 +150,41 @@ secrets; individual test scripts are best used only for targeted debugging.
 ─────────────────────────────────────────────────────────────────────
 10. POST-INSTALL DEPLOY FLOW
 ─────────────────────────────────────────────────────────────────────
-From workstation:
+Safest first activation on an existing installed server:
+# ssh dsaw@192.168.0.144
+# sudo -i
+# install -d -m 0700 /etc/agenix
+# install -m 0400 /path/to/agenix.key /etc/agenix/age.key
+# cd /etc/nixos   # or your checked-out repo path on the server
+# nix flake check --no-build
+# scripts/check-repo.sh
+# nixos-rebuild test --flake .#server
+# systemctl --failed
+# nixos-rebuild switch --flake .#server
+
+This is the safest bootstrap path for an already-installed host because `test`
+activates the new generation without making it the boot default.
+
+From workstation, once `dsaw` SSH + `sudo` access are confirmed:
+$ nix run nixpkgs#nixos-rebuild -- test \
+    --flake .#server \
+    --target-host dsaw@192.168.0.144 \
+    --build-host dsaw@192.168.0.144 \
+    --sudo \
+    --ask-sudo-password
+
 $ nix run nixpkgs#nixos-rebuild -- switch \
     --flake .#server \
-    --target-host root@192.168.0.144 \
-    --build-host root@192.168.0.144
+    --target-host dsaw@192.168.0.144 \
+    --build-host dsaw@192.168.0.144 \
+    --sudo \
+    --ask-sudo-password
 
-This is the recommended deploy path. It requires Nix on the workstation so you
-can invoke `nixos-rebuild`, but the build itself still happens on the server.
+The old `root@...` remote deploy flow is only suitable before SSH hardening;
+the active config sets `PermitRootLogin = "no"`.
+If you prefer not to use remote sudo prompting, SSH to the host with a TTY,
+become root interactively, and run `nixos-rebuild test` / `switch` locally
+there instead.
 
 ─────────────────────────────────────────────────────────────────────
 11. KANIDM INITIALIZATION

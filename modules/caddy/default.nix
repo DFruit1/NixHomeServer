@@ -28,6 +28,7 @@
           reverse_proxy https://127.0.0.1:${toString vars.kanidmPort} {
             transport http {
               tls_server_name ${vars.kanidmDomain}
+              tls_trust_pool file /var/lib/acme/${vars.kanidmDomain}/fullchain.pem
             }
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host  {host}

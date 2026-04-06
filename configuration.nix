@@ -224,7 +224,10 @@ in
 
   nix = {
     package = pkgs.nixVersions.latest;
-    settings.experimental-features = [ "nix-command" "flakes" ];
+    settings = {
+      experimental-features = [ "nix-command" "flakes" ];
+      trusted-users = [ "root" "dsaw" ];
+    };
   };
   nix.gc.automatic = true;
 }

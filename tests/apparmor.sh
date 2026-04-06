@@ -19,8 +19,12 @@ rg --no-filename -o -N 'AppArmorProfile = "generated-([^"]+)"' modules configura
 echo "ℹ️ Checking AppArmor profile coverage and naming…"
 require_fixed modules/apparmor/default.nix 'state = "complain";' \
   "Generated AppArmor policies must default to complain mode."
+forbid_match modules/apparmor/default.nix 'deny /\*\* rwklx,' \
+  "Generated AppArmor policies must not include a blanket deny while they are in complain mode."
 require_fixed modules/apparmor/default.nix 'lib.nameValuePair ("generated-" + n)' \
   "AppArmor module must generate profile names from the underlying service keys."
+require_fixed modules/apparmor/default.nix 'profile = genProfile ("generated-" + n) p;' \
+  "Generated AppArmor policy contents must use the same generated-* names systemd references."
 
 while IFS= read -r profile; do
   [[ -n "$profile" ]] || continue

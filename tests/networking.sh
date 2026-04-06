@@ -99,16 +99,20 @@ require_match documentation/manual_steps.txt 'nix run nixpkgs#nixos-rebuild -- s
   "Manual steps must document the nix run nixos-rebuild deploy command."
 require_fixed documentation/bootstrap.md "--flake .#${hostname}" \
   "Bootstrap guide must use the hostname from vars.nix in the deploy command."
-require_fixed documentation/bootstrap.md "--target-host root@${server_lan_ip}" \
+require_fixed documentation/bootstrap.md "--target-host dsaw@${server_lan_ip}" \
   "Bootstrap guide must use serverLanIP from vars.nix in the deploy command."
-require_fixed documentation/bootstrap.md "--build-host root@${server_lan_ip}" \
+require_fixed documentation/bootstrap.md "--build-host dsaw@${server_lan_ip}" \
   "Bootstrap guide must use serverLanIP from vars.nix for the remote build host."
 require_fixed documentation/manual_steps.txt "--flake .#${hostname}" \
   "Manual steps must use the hostname from vars.nix in the deploy command."
-require_fixed documentation/manual_steps.txt "--target-host root@${server_lan_ip}" \
+require_fixed documentation/manual_steps.txt "--target-host dsaw@${server_lan_ip}" \
   "Manual steps must use serverLanIP from vars.nix in the deploy command."
-require_fixed documentation/manual_steps.txt "--build-host root@${server_lan_ip}" \
+require_fixed documentation/manual_steps.txt "--build-host dsaw@${server_lan_ip}" \
   "Manual steps must use serverLanIP from vars.nix for the remote build host."
+require_fixed documentation/bootstrap.md "--sudo" \
+  "Bootstrap guide must document the non-root remote deploy sudo flow."
+require_fixed documentation/manual_steps.txt "--sudo" \
+  "Manual steps must document the non-root remote deploy sudo flow."
 
 echo "ℹ️ Checking DietPi companion guidance where present…"
 if [[ "$dietpi_enabled" == "true" ]]; then

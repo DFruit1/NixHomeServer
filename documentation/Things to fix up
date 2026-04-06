@@ -34,8 +34,8 @@ Recommended behavior:
 -------------------------------------------
 Always run after `.nix` or module wiring edits:
 
-  NIX_CONFIG='experimental-features = nix-command flakes' nix flake check --no-build
-  NIX_CONFIG='experimental-features = nix-command flakes' scripts/check-repo.sh
+  nix flake check --no-build
+  scripts/check-repo.sh
 
 5) Drift checks
 ---------------
