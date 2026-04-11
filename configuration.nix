@@ -158,6 +158,10 @@ in
       email = vars.email;
       dnsProvider = "cloudflare";
       credentialsFile = config.age.secrets.cfAPIToken.path;
+      # Use a public recursive resolver for DNS-01 zone discovery. The local
+      # split-horizon Unbound zone intentionally serves this domain without SOA
+      # records, which confuses lego's Cloudflare zone lookup.
+      dnsResolver = "${builtins.head vars.fallbackNameServers}:53";
     };
     certs."${vars.domain}" = {
       extraDomainNames = [ "*.${vars.domain}" ];
@@ -219,6 +223,7 @@ in
 
   services.openssh = {
     enable = true;
+    openFirewall = false;
     settings = {
       PasswordAuthentication = false;
       KbdInteractiveAuthentication = false;

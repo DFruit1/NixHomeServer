@@ -98,6 +98,6 @@
     ];
   };
 
-  ## HTTP-01 challenge & HTTPS traffic
-  networking.firewall.allowedTCPPorts = [ 80 443 ];
+  # Only NetBird peers should reach the private HTTPS entrypoints directly.
+  networking.firewall.interfaces.${vars.netbirdIface}.allowedTCPPorts = [ 443 ];
 }

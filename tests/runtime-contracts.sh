@@ -11,7 +11,6 @@ ensure_tools nix jq
 hostname="$(nix_eval_var 'vars.hostname')"
 domain="$(nix_eval_var 'vars.domain')"
 kanidm_domain="$(nix_eval_var 'vars.kanidmDomain')"
-paperless_issuer="$(nix_eval_var '(vars.kanidmIssuer "paperless-web")')"
 server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
 net_iface="$(nix_eval_var 'vars.netIface')"
 netbird_iface="$(nix_eval_var 'vars.netbirdIface')"
@@ -71,10 +70,14 @@ if jq -e --arg host "immich.${domain}" 'index($host) != null' >/dev/null <<<"$ca
 fi
 
 tunnel_ingress="$(nix eval --json .#nixosConfigurations.${hostname}.config.services.cloudflared.tunnels | jq '.[] | .ingress')"
-require_json_equal "$(jq -r --arg host "${kanidm_domain}" '.[$host]' <<<"$tunnel_ingress")" "http://127.0.0.1:80" \
+require_json_equal "$(jq -r --arg host "${kanidm_domain}" '.[$host].service' <<<"$tunnel_ingress")" "https://127.0.0.1:443" \
   "Cloudflare Tunnel must send the Kanidm hostname through local Caddy."
-require_json_equal "$(jq -r --arg host "fileshare.${domain}" '.[$host]' <<<"$tunnel_ingress")" "http://127.0.0.1:80" \
+require_json_equal "$(jq -r --arg host "${kanidm_domain}" '.[$host].originRequest.originServerName' <<<"$tunnel_ingress")" "${kanidm_domain}" \
+  "Cloudflare Tunnel must verify the Kanidm origin against the expected hostname."
+require_json_equal "$(jq -r --arg host "fileshare.${domain}" '.[$host].service' <<<"$tunnel_ingress")" "https://127.0.0.1:443" \
   "Cloudflare Tunnel must send fileshare.<domain> through local Caddy."
+require_json_equal "$(jq -r --arg host "fileshare.${domain}" '.[$host].originRequest.originServerName' <<<"$tunnel_ingress")" "fileshare.${domain}" \
+  "Cloudflare Tunnel must verify the fileshare origin against the expected hostname."
 if [[ "$(jq -r --arg host "paperless.${domain}" 'has($host)' <<<"$tunnel_ingress")" != "false" ]]; then
   echo "❌ Cloudflare Tunnel must not expose paperless.<domain> in the evaluated config."
   echo "   Tunnel ingress: $tunnel_ingress"
@@ -91,12 +94,20 @@ done
 echo "ℹ️ Checking evaluated identity and secret path contracts…"
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_ALLOWED_HOSTS')" "\"paperless.${domain}\"" \
   "Paperless must keep the expected allowed host."
-require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_OIDC_PROVIDER_URL')" "\"${paperless_issuer}\"" \
-  "Paperless must keep its client-specific OIDC provider URL aligned with Kanidm."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_APPS')" '"allauth.socialaccount.providers.openid_connect"' \
+  "Paperless must enable the django-allauth OpenID Connect provider in the evaluated config."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_URL')" "\"https://paperless.${domain}\"" \
+  "Paperless must keep its external URL aligned with the routed hostname."
 require_json_equal "$(nix_eval_config_json 'services.kavita.settings.Port')" "$(nix_eval_var 'builtins.toString vars.kavitaPort')" \
   "Kavita must keep its configured internal port."
 require_json_equal "$(nix_eval_config_json 'services.jellyseerr.port')" "$(nix_eval_var 'builtins.toString vars.jellyseerrPort')" \
   "Jellyseerr must keep its configured internal port."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.originUrl')" "\"https://photoshare.${domain}/auth/login\"" \
+  "Kanidm provisioning must register the Immich callback URL."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.paperless-web.originUrl')" "\"https://paperless.${domain}/accounts/oidc/kanidm/login/callback/\"" \
+  "Kanidm provisioning must register the Paperless callback URL."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.abs-web.originUrl')" "[\"https://audiobookshelf.${domain}/audiobookshelf/auth/openid/callback\",\"https://audiobookshelf.${domain}/audiobookshelf/auth/openid/mobile-redirect\"]" \
+  "Kanidm provisioning must register both Audiobookshelf callback URLs."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.oauth2-proxy.originUrl')" "\"https://fileshare.${domain}/oauth2/callback\"" \
   "Kanidm provisioning must register the OAuth2 Proxy callback URL."
 require_json_equal "$(nix_eval_config_json 'age.secrets.netbirdSetupKey.path')" "\"/run/agenix/netbirdSetupKey\"" \

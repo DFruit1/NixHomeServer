@@ -25,6 +25,8 @@ let
 in
 
 {
+  services.paperless.environmentFile = "/run/paperless-oidc.env";
+
   users.users.paperless = {
     isSystemUser = true;
     group = "paperless";
@@ -50,10 +52,8 @@ in
       PAPERLESS_SOCIAL_LOGIN_ENABLED = "true";
       PAPERLESS_SOCIAL_AUTO_SIGNUP = "true";
       PAPERLESS_SOCIAL_DEFAULT_GROUPS = "Users";
-
-      PAPERLESS_OIDC_CLIENT_ID = "paperless-web";
-      PAPERLESS_OIDC_CLIENT_SECRET_FILE = config.age.secrets.paperlessClientSecret.path;
-      PAPERLESS_OIDC_PROVIDER_URL = vars.kanidmIssuer "paperless-web";
+      PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
+      PAPERLESS_URL = "https://paperless.${vars.domain}";
 
       ##################################################################
       # 2.  Misc instance tweaks
@@ -63,6 +63,55 @@ in
       # PAPERLESS_LOGLEVEL               = "INFO";
     };
   };
+
+  systemd.services =
+    {
+      paperless-oidc-env = {
+        description = "Generate Paperless OIDC environment";
+        path = [ pkgs.jq ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+
+          secret="$(< ${config.age.secrets.paperlessClientSecret.path})"
+          providers_json="$(${pkgs.jq}/bin/jq -cn \
+            --arg clientId "paperless-web" \
+            --arg secret "$secret" \
+            --arg discoveryUrl "${vars.kanidmDiscoveryUrl "paperless-web"}" \
+            '{
+              openid_connect: {
+                APPS: [
+                  {
+                    provider_id: "kanidm",
+                    name: "Kanidm",
+                    client_id: $clientId,
+                    secret: $secret,
+                    settings: {
+                      server_url: $discoveryUrl,
+                      scope: ["openid", "profile", "email"]
+                    }
+                  }
+                ]
+              }
+            }')"
+
+          umask 0077
+          printf 'PAPERLESS_SOCIALACCOUNT_PROVIDERS=%s\n' "$providers_json" > /run/paperless-oidc.env
+        '';
+      };
+    }
+    // lib.genAttrs [
+      "paperless-consumer"
+      "paperless-scheduler"
+      "paperless-task-queue"
+      "paperless-web"
+    ] (_: {
+      requires = [ "paperless-oidc-env.service" ];
+      after = [ "paperless-oidc-env.service" ];
+    });
 
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/paperless 0750 paperless paperless -"

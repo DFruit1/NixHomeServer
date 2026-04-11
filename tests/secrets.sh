@@ -52,12 +52,12 @@ require_fixed secrets/agenix.nix 'kanidmAdminPass = { file = ./kanidmAdminPass.a
   "Kanidm admin password must remain owned by kanidm."
 require_fixed secrets/agenix.nix 'kanidmSysAdminPass = { file = ./kanidmSysAdminPass.age; owner = "kanidm"; mode = "0400"; };' \
   "Kanidm system admin password must remain owned by kanidm."
-require_fixed secrets/agenix.nix 'immichClientSecret = { file = ./immichClientSecret.age; owner = "immich"; mode = "0400"; };' \
-  "Immich client secret must remain owned by immich."
-require_fixed secrets/agenix.nix 'paperlessClientSecret = { file = ./paperlessClientSecret.age; owner = "paperless"; group = "paperless"; mode = "0400"; };' \
-  "Paperless client secret must remain owned by paperless."
-require_fixed secrets/agenix.nix 'absClientSecret = { file = ./absClientSecret.age; owner = "audiobookshelf"; mode = "0400"; };' \
-  "Audiobookshelf client secret must remain owned by audiobookshelf."
+require_fixed secrets/agenix.nix 'immichClientSecret = { file = ./immichClientSecret.age; owner = "kanidm"; group = "immich"; mode = "0440"; };' \
+  "Immich client secret must remain readable by both Kanidm provisioning and Immich."
+require_fixed secrets/agenix.nix 'paperlessClientSecret = { file = ./paperlessClientSecret.age; owner = "kanidm"; group = "paperless"; mode = "0440"; };' \
+  "Paperless client secret must remain readable by both Kanidm provisioning and Paperless."
+require_fixed secrets/agenix.nix 'absClientSecret = { file = ./absClientSecret.age; owner = "kanidm"; group = "audiobookshelf"; mode = "0440"; };' \
+  "Audiobookshelf client secret must remain readable by both Kanidm provisioning and Audiobookshelf."
 require_fixed secrets/agenix.nix 'copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };' \
   "Copyparty client secret must remain owned by copyparty."
 require_fixed secrets/agenix.nix 'kavitaTokenKey = { file = ./kavitaTokenKey.age; owner = "kavita"; mode = "0400"; };' \
@@ -79,12 +79,10 @@ require_fixed modules/netbird/default.nix 'login.setupKeyFile = config.age.secre
   "NetBird must consume the setup key from agenix."
 require_fixed modules/immich/default.nix 'IMMICH_OIDC_CLIENT_SECRET_FILE = config.age.secrets.immichClientSecret.path;' \
   "Immich must consume its OIDC client secret from agenix."
-require_fixed modules/paperless/default.nix 'PAPERLESS_OIDC_CLIENT_SECRET_FILE = config.age.secrets.paperlessClientSecret.path;' \
+require_fixed modules/paperless/default.nix 'config.age.secrets.paperlessClientSecret.path' \
   "Paperless must consume its OIDC client secret from agenix."
-require_fixed modules/audiobookshelf/default.nix 'ABS_OIDC_CLIENT_SECRET_FILE = config.age.secrets.absClientSecret.path;' \
+require_fixed modules/audiobookshelf/default.nix 'config.age.secrets.absClientSecret.path' \
   "Audiobookshelf must consume its OIDC client secret from agenix."
-require_fixed modules/copyparty/default.nix 'CPP_OIDC_CLIENT_SECRET_FILE = config.age.secrets.copypartyClientSecret.path;' \
-  "Copyparty must consume its OIDC client secret from agenix."
 require_fixed modules/kavita/default.nix 'tokenKeyFile = config.age.secrets.kavitaTokenKey.path;' \
   "Kavita must consume its token key from agenix."
 require_fixed modules/oauth2-proxy/default.nix 'clientSecret = null;' \

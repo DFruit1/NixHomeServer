@@ -32,20 +32,44 @@ require_fixed modules/oauth2-proxy/default.nix 'oidcIssuerUrl = vars.kanidmIssue
   "OAuth2 Proxy must use its client-specific Kanidm issuer."
 require_fixed modules/oauth2-proxy/default.nix 'clientID = "oauth2-proxy";' \
   "OAuth2 Proxy must keep its Kanidm client ID."
-require_fixed modules/oauth2-proxy/default.nix '"provider-ca-file" = "/var/lib/acme/${vars.kanidmDomain}/fullchain.pem";' \
-  "OAuth2 Proxy must trust the Kanidm certificate chain presented on id.<domain>."
+require_fixed modules/oauth2-proxy/default.nix '"provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";' \
+  "OAuth2 Proxy must trust the public CA bundle when reaching id.<domain> through Cloudflare."
+require_fixed modules/oauth2-proxy/default.nix '"cloudflared-tunnel-${vars.cloudflareTunnelName}.service"' \
+  "OAuth2 Proxy startup must wait for the Cloudflare tunnel because its issuer URL is public."
 require_fixed modules/oauth2-proxy/default.nix 'users.users.oauth2-proxy.extraGroups = [ "caddy" ];' \
   "OAuth2 Proxy must remain in the caddy group to read the Kanidm certificate chain."
 require_fixed modules/kanidm/default.nix 'systems.oauth2.oauth2-proxy = {' \
   "Kanidm provisioning must create the OAuth2 Proxy resource server."
-require_fixed modules/kanidm/default.nix 'groups.fileshare_users = { };' \
+require_fixed modules/kanidm/default.nix 'groups.fileshare_users = {' \
   "Kanidm provisioning must create the fileshare_users access group."
+require_fixed modules/kanidm/default.nix 'overwriteMembers = false;' \
+  "Kanidm provisioning must preserve manual fileshare_users membership changes."
 require_fixed modules/kanidm/default.nix 'originUrl = "https://fileshare.${vars.domain}/oauth2/callback";' \
   "Kanidm provisioning must register the OAuth2 Proxy callback URL."
 require_fixed modules/kanidm/default.nix 'basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;' \
   "Kanidm provisioning must keep OAuth2 Proxy's client secret aligned with agenix."
 require_fixed modules/kanidm/default.nix 'scopeMaps.fileshare_users = [ "openid" "profile" "email" "groups" ];' \
   "Kanidm provisioning must scope OAuth2 Proxy access to the fileshare_users group."
+require_fixed modules/kanidm/default.nix 'systems.oauth2.immich-web = {' \
+  "Kanidm provisioning must create the Immich client."
+require_fixed modules/kanidm/default.nix 'originUrl = "https://photoshare.${vars.domain}/auth/login";' \
+  "Kanidm provisioning must register the Immich callback URL."
+require_fixed modules/kanidm/default.nix 'basicSecretFile = config.age.secrets.immichClientSecret.path;' \
+  "Kanidm provisioning must keep the Immich client secret aligned with agenix."
+require_fixed modules/kanidm/default.nix 'systems.oauth2.paperless-web = {' \
+  "Kanidm provisioning must create the Paperless client."
+require_fixed modules/kanidm/default.nix 'originUrl = "https://paperless.${vars.domain}/accounts/oidc/kanidm/login/callback/";' \
+  "Kanidm provisioning must register the Paperless callback URL."
+require_fixed modules/kanidm/default.nix 'basicSecretFile = config.age.secrets.paperlessClientSecret.path;' \
+  "Kanidm provisioning must keep the Paperless client secret aligned with agenix."
+require_fixed modules/kanidm/default.nix 'systems.oauth2.abs-web = {' \
+  "Kanidm provisioning must create the Audiobookshelf client."
+require_fixed modules/kanidm/default.nix 'https://audiobookshelf.${vars.domain}/audiobookshelf/auth/openid/callback' \
+  "Kanidm provisioning must register the Audiobookshelf web callback URL."
+require_fixed modules/kanidm/default.nix 'https://audiobookshelf.${vars.domain}/audiobookshelf/auth/openid/mobile-redirect' \
+  "Kanidm provisioning must register the Audiobookshelf mobile callback URL."
+require_fixed modules/kanidm/default.nix 'basicSecretFile = config.age.secrets.absClientSecret.path;' \
+  "Kanidm provisioning must keep the Audiobookshelf client secret aligned with agenix."
 require_fixed modules/kanidm/default.nix 'instanceUrl = "https://localhost:${toString vars.kanidmPort}";' \
   "Kanidm provisioning must target the local listener during activation."
 require_fixed modules/kanidm/default.nix 'acceptInvalidCerts = true;' \
@@ -62,27 +86,31 @@ require_fixed modules/immich/default.nix 'IMMICH_OIDC_CLIENT_ID = "immich-web";'
   "Immich must keep the expected Kanidm client ID."
 require_fixed modules/immich/default.nix 'IMMICH_OIDC_ISSUER = vars.kanidmIssuer "immich-web";' \
   "Immich must keep its client-specific Kanidm issuer."
-require_fixed modules/paperless/default.nix 'PAPERLESS_OIDC_CLIENT_ID = "paperless-web";' \
-  "Paperless must keep the expected Kanidm client ID."
-require_fixed modules/paperless/default.nix 'PAPERLESS_OIDC_PROVIDER_URL = vars.kanidmIssuer "paperless-web";' \
-  "Paperless must keep its client-specific Kanidm provider URL."
-require_fixed modules/audiobookshelf/default.nix 'ABS_OIDC_CLIENT_ID = "abs-web";' \
-  "Audiobookshelf must keep the expected Kanidm client ID."
-require_fixed modules/audiobookshelf/default.nix 'ABS_OIDC_AUTH_URL = vars.kanidmAuthorizeUrl;' \
-  "Audiobookshelf must keep the expected Kanidm auth URL."
-require_fixed modules/audiobookshelf/default.nix 'ABS_OIDC_TOKEN_URL = vars.kanidmTokenUrl;' \
-  "Audiobookshelf must keep the expected Kanidm token URL."
-require_fixed modules/copyparty/default.nix 'CPP_OIDC_CLIENT_ID = "copyparty-web";' \
-  "Copyparty must keep the expected Kanidm client ID."
-require_fixed modules/copyparty/default.nix 'CPP_OIDC_ISSUER = vars.kanidmIssuer "copyparty-web";' \
-  "Copyparty must keep its client-specific Kanidm issuer."
+require_fixed modules/paperless/default.nix 'PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";' \
+  "Paperless must enable the django-allauth OpenID Connect provider."
+require_fixed modules/paperless/default.nix 'PAPERLESS_URL = "https://paperless.${vars.domain}";' \
+  "Paperless must keep its external URL aligned with the routed hostname."
+require_fixed modules/paperless/default.nix 'provider_id: "kanidm"' \
+  "Paperless must register the Kanidm provider id expected by its callback path."
+require_fixed modules/paperless/default.nix 'client_id: $clientId,' \
+  "Paperless must generate the OIDC client id in its runtime provider JSON."
+require_fixed modules/audiobookshelf/default.nix 'audiobookshelf-oidc-bootstrap' \
+  "Audiobookshelf must bootstrap its OIDC settings from the active Kanidm metadata."
+require_fixed modules/audiobookshelf/default.nix '${vars.kanidmDiscoveryUrl "abs-web"}' \
+  "Audiobookshelf must fetch the abs-web client discovery document."
+require_fixed modules/audiobookshelf/default.nix '.authOpenIDClientID = $clientId' \
+  "Audiobookshelf must write the expected client id into its runtime auth settings."
+require_fixed modules/audiobookshelf/default.nix '.authOpenIDSubfolderForRedirectURLs = $subfolder' \
+  "Audiobookshelf must keep redirect handling aligned with the /audiobookshelf subpath."
+forbid_match modules/copyparty/default.nix 'CPP_OIDC_' \
+  "Copyparty must not carry dead direct-OIDC environment settings while fileshare auth is handled by OAuth2 Proxy."
 
 echo "ℹ️ Checking documentation for auth-routing expectations…"
 require_match documentation/bootstrap.md 'fileshare\.<domain>' \
   "Bootstrap guide must document fileshare as a public endpoint."
 require_match documentation/bootstrap.md 'id\.<domain>' \
   "Bootstrap guide must document id.<domain> as a public endpoint."
-require_match documentation/bootstrap.md 'paperless`, `photoshare` \(Immich\), and `audiobookshelf` are intended to stay \*\*LAN/NetBird-only\*\*' \
+require_match documentation/bootstrap.md 'paperless`, `photoshare` \(Immich\), and `audiobookshelf` are intended to stay \*\*NetBird-only\*\*' \
   "Bootstrap guide must document the private-only app set."
 require_fixed documentation/bootstrap.md "--flake .#${hostname}" \
   "Bootstrap guide deploy command must use the flake hostname."

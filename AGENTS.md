@@ -52,3 +52,14 @@ When changing `.nix` files or module wiring:
 - Repository command policy is defined in `rules.toml`.
 - Keep destructive/system-wide commands blocked or approval-gated.
 - Prefer read-only inspection commands before mutation.
+
+## Rebuilding config
+Rebuild the config using the below command along with sudo password 'changeme'
+nix run nixpkgs#nixos-rebuild -- test \
+  --flake .#server \
+  --target-host dsaw@192.168.0.144 \
+  --build-host dsaw@192.168.0.144 \
+  --sudo \
+  --ask-sudo-password \
+  --no-reexec
+

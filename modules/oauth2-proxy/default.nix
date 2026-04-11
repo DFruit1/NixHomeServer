@@ -17,11 +17,25 @@
     extraConfig = {
       "pass-user-headers" = true;
       "oidc-groups-claim" = "groups";
-      "provider-ca-file" = "/var/lib/acme/${vars.kanidmDomain}/fullchain.pem";
+      "provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";
     };
   };
 
   systemd.services.oauth2-proxy = {
+    wants = [
+      "network-online.target"
+      "unbound.service"
+      "caddy.service"
+      "kanidm.service"
+      "cloudflared-tunnel-${vars.cloudflareTunnelName}.service"
+    ];
+    after = [
+      "network-online.target"
+      "unbound.service"
+      "caddy.service"
+      "kanidm.service"
+      "cloudflared-tunnel-${vars.cloudflareTunnelName}.service"
+    ];
     serviceConfig = {
       EnvironmentFile = [
         config.age.secrets.oauth2ProxyClientSecret.path

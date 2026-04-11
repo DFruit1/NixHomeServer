@@ -51,18 +51,19 @@
         prefetch = "yes";
         rrset-roundrobin = "yes";
         auto-trust-anchor-file = "/var/lib/unbound/root.key";
-        local-zone = [ "${vars.domain} static" ];
+        # Private app names resolve to the NetBird address. Public tunnel names
+        # like id.<domain> and fileshare.<domain> are intentionally omitted so
+        # Unbound recurses to Cloudflare for those names.
+        local-zone = [ "${vars.domain} transparent" ];
         local-data = [
-          "\"${vars.domain}                 A ${vars.serverLanIP}\""
-          "\"www.${vars.domain}             A ${vars.serverLanIP}\""
-          "\"paperless.${vars.domain}       A ${vars.serverLanIP}\""
-          "\"audiobookshelf.${vars.domain}  A ${vars.serverLanIP}\""
-          "\"fileshare.${vars.domain}       A ${vars.serverLanIP}\""
-          "\"photoshare.${vars.domain}      A ${vars.serverLanIP}\""
-          "\"${vars.kavitaDomain}           A ${vars.serverLanIP}\""
-          "\"${vars.jellyfinDomain}         A ${vars.serverLanIP}\""
-          "\"${vars.jellyseerrDomain}       A ${vars.serverLanIP}\""
-          "\"id.${vars.domain}              A ${vars.serverLanIP}\""
+          "\"${vars.domain}                 A ${vars.nbIP}\""
+          "\"www.${vars.domain}             A ${vars.nbIP}\""
+          "\"paperless.${vars.domain}       A ${vars.nbIP}\""
+          "\"audiobookshelf.${vars.domain}  A ${vars.nbIP}\""
+          "\"photoshare.${vars.domain}      A ${vars.nbIP}\""
+          "\"${vars.kavitaDomain}           A ${vars.nbIP}\""
+          "\"${vars.jellyfinDomain}         A ${vars.nbIP}\""
+          "\"${vars.jellyseerrDomain}       A ${vars.nbIP}\""
         ];
       };
       forward-zone = [{
@@ -77,8 +78,6 @@
   systemd.services.unbound.after = [ "dnscrypt-proxy.service" ];
   systemd.services.unbound.requires = [ "dnscrypt-proxy.service" ];
 
-  networking.firewall.allowedTCPPorts = [ 53 ];
-  networking.firewall.allowedUDPPorts = [ 53 ];
   networking.firewall.interfaces.${vars.netbirdIface} = {
     allowedTCPPorts = [ 53 ];
     allowedUDPPorts = [ 53 ];

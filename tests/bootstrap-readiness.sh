@@ -52,7 +52,7 @@ require_fixed documentation/manual_steps.txt "--target-host dsaw@${server_lan_ip
   "Manual steps must target the server LAN IP from vars.nix."
 require_fixed documentation/manual_steps.txt "--sudo" \
   "Manual steps must document the non-root remote deploy sudo flow."
-require_match documentation/bootstrap.md 'Application hostnames such as `paperless`, `photoshare` \(Immich\), and `audiobookshelf` are intended to stay \*\*LAN/NetBird-only\*\*' \
+require_match documentation/bootstrap.md 'Application hostnames such as `paperless`, `photoshare` \(Immich\), and `audiobookshelf` are intended to stay \*\*NetBird-only\*\*' \
   "Bootstrap guide must document the internal-only app boundary."
 require_match documentation/manual_steps.txt 'Public Cloudflare exposure should stay limited to `id`\.<domain> and `fileshare`\.<domain>' \
   "Manual steps must document the limited Cloudflare public exposure set."

@@ -8,13 +8,17 @@ Access model (current):
       * fileshare.<domain>
       * id.<domain>  (required for the public fileshare auth flow)
   - App hostnames such as paperless, photoshare (Immich), and audiobookshelf
-    are intended to remain LAN/NetBird-only.
-  - kavita, jellyfin, and jellyseerr follow the same LAN/NetBird-only policy.
+    are intended to remain NetBird-only.
+  - kavita, jellyfin, and jellyseerr follow the same NetBird-only policy.
   - Caddy remains the local HTTP policy boundary; Cloudflare Tunnel only
     publishes the minimal public subset.
   - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare` and
     `id` unless you intentionally want broader internet access.
   - Public Cloudflare exposure should stay limited to `id`.<domain> and `fileshare`.<domain>.
+  - Private app DNS answers should point at the server NetBird address so the
+    same hostnames behave the same way on and off the home LAN.
+  - ACME uses DNS-01, so public `80`/`443` ingress is not required.
+  - SSH remains exposed on public `22/tcp` for direct server administration.
 
 LEGEND
   $  => run on admin workstation
@@ -205,16 +209,20 @@ $ kanidm person create <user> --display-name "<Name>"
 $ kanidm person set-password <user>
 $ kanidm group add-member users <user>
 
-Create OIDC clients used by modules:
+OIDC clients used by modules:
   - immich-web
   - paperless-web
   - abs-web
-  - copyparty-web
-  - oauth2-proxy is provisioned automatically from the active NixOS config
+  - oauth2-proxy
+These four clients are provisioned automatically from the active NixOS config
+and their agenix-managed secrets. Treat them as Nix-managed state rather than
+editing them manually in the Kanidm UI after deploy.
 Create or maintain access groups as needed:
   - fileshare_users controls who can log into the public fileshare flow
 Manage fileshare access by `fileshare_users` membership rather than by manually
 editing the `oauth2-proxy` Kanidm client after deploy.
+Copyparty itself is not a direct OIDC client in the current design; the public
+`fileshare.<domain>` login flow authenticates at `oauth2-proxy`.
 
 Current bootstrap note:
   - Kanidm provisioning now targets the local `https://localhost:8443` listener
@@ -254,20 +262,22 @@ Core service checks:
 # journalctl -b -u caddy -u kanidm -u oauth2-proxy -u cloudflared -u unbound -u paperless-web -u netbird-main
 
 Networking and exposure checks:
-- Confirm only the intended global ports are reachable: 22, 80, 443, 53/tcp,
-  53/udp, and the configured NetBird/WireGuard UDP port.
+- Confirm the intended globally reachable service ports are `22/tcp` for SSH
+  and the configured NetBird/WireGuard UDP port.
+- Confirm DNS (53) and private HTTPS (443) are reachable only over the NetBird
+  interface.
 - Confirm `id.<domain>` and `fileshare.<domain>` are the only public
   Cloudflare-exposed endpoints.
 - Confirm `paperless.<domain>`, `photoshare.<domain>`, and
-  `audiobookshelf.<domain>` remain LAN/NetBird-only.
+  `audiobookshelf.<domain>` remain NetBird-only.
 - Confirm `kavita.<domain>`, `jellyfin.<domain>`, and
-  `jellyseerr.<domain>` remain LAN/NetBird-only.
+  `jellyseerr.<domain>` remain NetBird-only.
 
 Public endpoints expected from the internet:
 - https://id.<domain>
 - https://fileshare.<domain>
 
-Internal-only endpoints expected over LAN/NetBird:
+Internal-only endpoints expected over NetBird:
 - https://paperless.<domain>
 - https://audiobookshelf.<domain>
 - https://photoshare.<domain>
@@ -290,32 +300,34 @@ Identity, routing, and secret checks:
 # systemctl status netbird-main
 # ip addr show nb0
 # ls -l /run/agenix
-- Confirm Unbound returns the expected local records on LAN and NetBird.
+- Confirm Unbound returns the expected local records over NetBird.
 - Confirm the NetBird peer enrolls and gets the expected mesh IP.
 - Confirm required agenix secrets are mounted under `/run/agenix`.
 - If you generated secrets locally, ensure `secrets/top/` is empty afterwards.
 
 DNS distribution note:
-- If DietPi is disabled, set router/DHCP LAN DNS to `192.168.0.144`.
-- Do not use a public secondary DNS server if you want
-  `paperless.sydneybasiniot.org`, `photoshare.sydneybasiniot.org`, and
-  `audiobookshelf.sydneybasiniot.org` to resolve consistently.
-- Apply the same rule to `kavita.sydneybasiniot.org`,
-  `jellyfin.sydneybasiniot.org`, and `jellyseerr.sydneybasiniot.org`.
-- The server already serves the private zone from Unbound on port `53`.
+- The server Unbound instance serves the private app records on the NetBird
+  interface, and those private names resolve to the server `nb0` address.
+- `id.<domain>` and `fileshare.<domain>` are intentionally left to recurse to
+  the public Cloudflare Tunnel records.
+- The router does not need split-DNS awareness for the home-server domain if
+  NetBird distributes the server `nb0` address as the client DNS resolver.
+- Devices that are not enrolled in NetBird will only be able to use the public
+  tunnel hostnames.
 - Useful workstation checks:
   `nmcli dev show | sed -n '/IP4.DNS/p;/IP4.DOMAIN/p'`
-  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 paperless.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 photoshare.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 audiobookshelf.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 kavita.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 jellyfin.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 jellyseerr.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 paperless.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 photoshare.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 audiobookshelf.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 kavita.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 jellyfin.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 jellyseerr.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 id.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 fileshare.sydneybasiniot.org`
 - For NetBird peers, configure DNS in the NetBird admin plane:
   add a nameserver using the server `nb0` address from
-  `ip -brief addr show nb0`, assign it to the relevant peer groups, and either
-  make it the primary resolver or use a match domain of
-  `sydneybasiniot.org`.
+  `ip -brief addr show nb0`, assign it to the relevant peer groups, and make
+  it the primary resolver so `<domain>` lookups stay consistent everywhere.
 - If `netbird-main status` shows `Nameservers: 0/0 Available`, mesh DNS is not
   configured yet.
 

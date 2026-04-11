@@ -19,11 +19,23 @@
       credentialsFile = config.age.secrets.cfHomeCreds.path;
 
       ingress = {
-        "${vars.kanidmDomain}" = "http://127.0.0.1:80";
-        "fileshare.${vars.domain}" = "http://127.0.0.1:80";
+        "${vars.kanidmDomain}" = {
+          service = "https://127.0.0.1:443";
+          originRequest.originServerName = vars.kanidmDomain;
+        };
+        "fileshare.${vars.domain}" = {
+          service = "https://127.0.0.1:443";
+          originRequest.originServerName = "fileshare.${vars.domain}";
+        };
       };
       default = "http_status:404";
     };
   };
+
+  systemd.services."cloudflared-tunnel-${vars.cloudflareTunnelName}" = {
+    wants = [ "network-online.target" "unbound.service" ];
+    after = [ "network-online.target" "unbound.service" ];
+  };
+
   # Cloudflared only makes outbound connections → no firewall ports needed
 }

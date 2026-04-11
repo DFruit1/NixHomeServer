@@ -14,9 +14,9 @@
     cfAPIToken = { file = ./cfAPIToken.age; owner = "caddy"; group = "caddy"; mode = "0400"; };
     kanidmAdminPass = { file = ./kanidmAdminPass.age; owner = "kanidm"; mode = "0400"; };
     kanidmSysAdminPass = { file = ./kanidmSysAdminPass.age; owner = "kanidm"; mode = "0400"; };
-    immichClientSecret = { file = ./immichClientSecret.age; owner = "immich"; mode = "0400"; };
-    paperlessClientSecret = { file = ./paperlessClientSecret.age; owner = "paperless"; group = "paperless"; mode = "0400"; };
-    absClientSecret = { file = ./absClientSecret.age; owner = "audiobookshelf"; mode = "0400"; };
+    immichClientSecret = { file = ./immichClientSecret.age; owner = "kanidm"; group = "immich"; mode = "0440"; };
+    paperlessClientSecret = { file = ./paperlessClientSecret.age; owner = "kanidm"; group = "paperless"; mode = "0440"; };
+    absClientSecret = { file = ./absClientSecret.age; owner = "kanidm"; group = "audiobookshelf"; mode = "0440"; };
     copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };
     kavitaTokenKey = { file = ./kavitaTokenKey.age; owner = "kavita"; mode = "0400"; };
     oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };

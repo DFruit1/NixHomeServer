@@ -15,6 +15,7 @@
     autoStart = true;
     interface = vars.netbirdIface;
     port = vars.wgPort;
+    openFirewall = false;
     login.enable = true;
     login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;
   };

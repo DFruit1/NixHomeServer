@@ -10,13 +10,20 @@ ensure_tools rg nix
 
 hostname="$(nix_eval_var 'vars.hostname')"
 server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
+netbird_ip="$(nix_eval_var 'vars.nbIP')"
 dietpi_enabled="$(nix_eval_var 'if vars.enableDietPiCompanion then "true" else "false"')"
 
 echo "ℹ️ Checking Cloudflare tunnel exposure policy…"
-require_match modules/cloudflared/default.nix '\$\{vars\.kanidmDomain\}" = "http://127\.0\.0\.1:80"' \
+require_match modules/cloudflared/default.nix '\$\{vars\.kanidmDomain\}" = \{' \
   "Cloudflare tunnel must publish id.<domain> via local Caddy."
-require_match modules/cloudflared/default.nix '"fileshare\.\$\{vars\.domain\}" = "http://127\.0\.0\.1:80"' \
+require_match modules/cloudflared/default.nix 'service = "https://127\.0\.0\.1:443";' \
+  "Cloudflare tunnel must target local HTTPS to avoid looping on Caddy's HTTP-to-HTTPS redirect."
+require_match modules/cloudflared/default.nix 'originRequest\.originServerName = vars\.kanidmDomain;' \
+  "Cloudflare tunnel must verify the Kanidm hostname against the local TLS certificate."
+require_match modules/cloudflared/default.nix '"fileshare\.\$\{vars\.domain\}" = \{' \
   "Cloudflare tunnel must publish fileshare.<domain> via local Caddy."
+require_match modules/cloudflared/default.nix 'originRequest\.originServerName = "fileshare\.\$\{vars\.domain\}";' \
+  "Cloudflare tunnel must verify the fileshare hostname against the local TLS certificate."
 forbid_match modules/cloudflared/default.nix '"paperless\.\$\{vars\.domain\}"' \
   "Paperless must remain private and not be exposed through the Cloudflare tunnel."
 forbid_match modules/cloudflared/default.nix '"photoshare\.\$\{vars\.domain\}" = "http://127\.0\.0\.1:' \
@@ -69,24 +76,30 @@ require_fixed configuration.nix 'users.users.kanidm.extraGroups = [ "caddy" ];' 
   "Kanidm must remain in the caddy group to read shared certificates."
 
 echo "ℹ️ Checking LAN DNS and resolver policy…"
-require_fixed modules/unbound/default.nix 'local-zone = [ "${vars.domain} static" ];' \
-  "Unbound must remain authoritative for the local domain."
-require_match modules/unbound/default.nix '"\\"fileshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
-  "Unbound must resolve fileshare.<domain> to the server LAN IP."
-require_match modules/unbound/default.nix '"\\"paperless\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
-  "Unbound must resolve paperless.<domain> to the server LAN IP."
-require_match modules/unbound/default.nix '"\\"photoshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
-  "Unbound must resolve photoshare.<domain> to the server LAN IP."
-require_match modules/unbound/default.nix '"\\"\$\{vars\.kavitaDomain\}\s+A \$\{vars\.serverLanIP\}\\""' \
-  "Unbound must resolve the Kavita hostname to the server LAN IP."
-require_match modules/unbound/default.nix '"\\"\$\{vars\.jellyfinDomain\}\s+A \$\{vars\.serverLanIP\}\\""' \
-  "Unbound must resolve the Jellyfin hostname to the server LAN IP."
-require_match modules/unbound/default.nix '"\\"\$\{vars\.jellyseerrDomain\}\s+A \$\{vars\.serverLanIP\}\\""' \
-  "Unbound must resolve the Jellyseerr hostname to the server LAN IP."
-forbid_match modules/unbound/default.nix '"\\"immich\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
+require_fixed modules/unbound/default.nix 'local-zone = [ "${vars.domain} transparent" ];' \
+  "Unbound must override only the private records and recurse for public tunnel names."
+require_match modules/unbound/default.nix '"\\"paperless\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve paperless.<domain> to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"photoshare\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve photoshare.<domain> to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"audiobookshelf\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve audiobookshelf.<domain> to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.kavitaDomain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve the Kavita hostname to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.jellyfinDomain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve the Jellyfin hostname to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.jellyseerrDomain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve the Jellyseerr hostname to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve the apex domain to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"www\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve www.<domain> to the server NetBird IP."
+forbid_match modules/unbound/default.nix '"\\"immich\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
   "Unbound must not retain a duplicate immich.<domain> record."
-require_match modules/unbound/default.nix '"\\"id\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
-  "Unbound must resolve id.<domain> to the server LAN IP."
+forbid_match modules/unbound/default.nix '"\\"id\.\$\{vars\.domain\}\s+A ' \
+  "Unbound must not override id.<domain>; that hostname should recurse to the public Cloudflare tunnel record."
+forbid_match modules/unbound/default.nix '"\\"fileshare\.\$\{vars\.domain\}\s+A ' \
+  "Unbound must not override fileshare.<domain>; that hostname should recurse to the public Cloudflare tunnel record."
 require_match modules/unbound/default.nix '"\$\{vars\.netbirdCidr\} allow"' \
   "Unbound must allow NetBird clients."
 require_match modules/unbound/default.nix 'map \(ns: "\$\{ns\}@\$\{toString vars\.dnscryptListenPort\}"\) vars\.primaryNameServers' \
@@ -97,6 +110,8 @@ require_fixed modules/unbound/default.nix 'allowedTCPPorts = [ 53 ];' \
   "DNS over TCP must stay open where configured."
 require_fixed modules/unbound/default.nix 'allowedUDPPorts = [ 53 ];' \
   "DNS over UDP must stay open where configured."
+require_fixed vars.nix 'nbIP = "'${netbird_ip}'";' \
+  "vars.nbIP must remain the authoritative target for private service DNS names."
 
 echo "ℹ️ Checking NetBird client wiring…"
 require_fixed modules/netbird/default.nix 'services.netbird.clients.myNetbirdClient = {' \
