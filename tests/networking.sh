@@ -23,6 +23,12 @@ forbid_match modules/cloudflared/default.nix '"photoshare\.\$\{vars\.domain\}" =
   "Photoshare must remain private and not be exposed through the Cloudflare tunnel."
 forbid_match modules/cloudflared/default.nix '"audiobookshelf\.\$\{vars\.domain\}"' \
   "Audiobookshelf must remain private and not be exposed through the Cloudflare tunnel."
+forbid_match modules/cloudflared/default.nix '\$\{vars\.kavitaDomain\}" = "http://127\.0\.0\.1:' \
+  "Kavita must remain private and not be exposed through the Cloudflare tunnel."
+forbid_match modules/cloudflared/default.nix '\$\{vars\.jellyfinDomain\}" = "http://127\.0\.0\.1:' \
+  "Jellyfin must remain private and not be exposed through the Cloudflare tunnel."
+forbid_match modules/cloudflared/default.nix '\$\{vars\.jellyseerrDomain\}" = "http://127\.0\.0\.1:' \
+  "Jellyseerr must remain private and not be exposed through the Cloudflare tunnel."
 
 echo "ℹ️ Checking Caddy host routing and TLS wiring…"
 require_fixed modules/caddy/default.nix '"${vars.kanidmDomain}" = {' \
@@ -39,6 +45,12 @@ require_fixed modules/caddy/default.nix '"paperless.${vars.domain}" = {' \
   "Caddy must retain the internal paperless virtual host."
 require_fixed modules/caddy/default.nix '"photoshare.${vars.domain}" = {' \
   "Caddy must retain the internal photoshare virtual host."
+require_fixed modules/caddy/default.nix '"${vars.kavitaDomain}" = {' \
+  "Caddy must serve the internal Kavita hostname."
+require_fixed modules/caddy/default.nix '"${vars.jellyfinDomain}" = {' \
+  "Caddy must serve the internal Jellyfin hostname."
+require_fixed modules/caddy/default.nix '"${vars.jellyseerrDomain}" = {' \
+  "Caddy must serve the internal Jellyseerr hostname."
 forbid_match modules/caddy/default.nix '"immich\.\$\{vars\.domain\}" = \{' \
   "Caddy must not retain a duplicate internal Immich hostname."
 require_fixed configuration.nix 'certs."${vars.domain}" = {' \
@@ -65,6 +77,12 @@ require_match modules/unbound/default.nix '"\\"paperless\.\$\{vars\.domain\}\s+A
   "Unbound must resolve paperless.<domain> to the server LAN IP."
 require_match modules/unbound/default.nix '"\\"photoshare\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must resolve photoshare.<domain> to the server LAN IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.kavitaDomain\}\s+A \$\{vars\.serverLanIP\}\\""' \
+  "Unbound must resolve the Kavita hostname to the server LAN IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.jellyfinDomain\}\s+A \$\{vars\.serverLanIP\}\\""' \
+  "Unbound must resolve the Jellyfin hostname to the server LAN IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.jellyseerrDomain\}\s+A \$\{vars\.serverLanIP\}\\""' \
+  "Unbound must resolve the Jellyseerr hostname to the server LAN IP."
 forbid_match modules/unbound/default.nix '"\\"immich\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \
   "Unbound must not retain a duplicate immich.<domain> record."
 require_match modules/unbound/default.nix '"\\"id\.\$\{vars\.domain\}\s+A \$\{vars\.serverLanIP\}\\""' \

@@ -11,7 +11,6 @@ NixHomeServer/
 │   └── gen-all-secrets.sh
 ├── tests/
 │   ├── README.md
-│   ├── apparmor.sh
 │   ├── auth-routing.sh
 │   ├── bootstrap-readiness.sh
 │   ├── dietpi.sh
@@ -40,7 +39,12 @@ NixHomeServer/
 │   │   └── default.nix
 │   ├── immich/
 │   │   └── default.nix
+│   ├── jellyfin/
+│   │   ├── default.nix
+│   │   └── jellyseerr.nix
 │   ├── kanidm/
+│   │   └── default.nix
+│   ├── kavita/
 │   │   └── default.nix
 │   ├── netbird/
 │   │   └── default.nix

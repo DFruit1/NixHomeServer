@@ -5,11 +5,10 @@ This runbook matches the current flake and module set in this repository (`NixOS
 ## What this stack currently includes
 
 - Identity and SSO: **Kanidm** + **OAuth2 Proxy**
-- Applications: **Immich**, **Paperless-ngx**, **Audiobookshelf**, **Copyparty**
+- Applications: **Immich**, **Paperless-ngx**, **Audiobookshelf**, **Copyparty**, **Kavita**, **Jellyfin**, **Jellyseerr**
 - Edge/routing: **Caddy** + **Cloudflared tunnel**
 - Networking: **Unbound + dnscrypt-proxy**, optional **NetBird** mesh
 - Storage: **Disko + mergerfs + SnapRAID**
-- Hardening: generated **AppArmor** profiles
 
 Public exposure policy:
 
@@ -18,6 +17,7 @@ Public exposure policy:
   - `fileshare.<domain>`
   - `id.<domain>` (to support the public auth flow used by `fileshare`)
 - Application hostnames such as `paperless`, `photoshare` (Immich), and `audiobookshelf` are intended to stay **LAN/NetBird-only**.
+- `kavita`, `jellyfin`, and `jellyseerr` follow the same **LAN/NetBird-only** policy and are routed locally through Caddy plus Unbound only.
 - Caddy still fronts the HTTP routing locally; the tunnel only publishes the small public subset.
 - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare.<domain>` and `id.<domain>` unless you are intentionally expanding internet access.
 - Internal-only app hostnames should not retain public Cloudflare routes that would expose them to the internet or return tunnel 404s.
@@ -75,7 +75,7 @@ If the repository already contains encrypted secrets, do not generate a fresh pr
 ./scripts/gen-all-secrets.sh
 ```
 
-This creates encrypted secrets for Kanidm, app OIDC clients, and OAuth2 Proxy.
+This creates encrypted secrets for Kanidm, app OIDC clients, OAuth2 Proxy, and the Kavita token key.
 
 Manual secrets still required in `secrets/top/` before rerunning script:
 
@@ -90,6 +90,8 @@ You can stage it as:
 
 After encryption, remove cleartext files from `secrets/top/`.
 
+`kavitaTokenKey.age` is generated automatically, encrypted with agenix, and mounted for `services.kavita.tokenKeyFile`.
+
 ---
 
 ## 4) Validate repository before deployment
@@ -102,7 +104,7 @@ tests/run-all.sh --with-runtime
 ```
 
 `scripts/check-repo.sh` runs the static repository policy suite via `tests/run-all.sh`. `tests/run-all.sh --with-runtime` additionally runs the live DietPi companion check for bootstrap/debugging once SSH access to the Pi is available. If DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct login user.
-The `tests/run-all.sh` suite covers bootstrap-readiness, AppArmor, auth-routing, firewall intent, networking policy, runtime contracts, and secrets; use individual scripts only for targeted debugging.
+The `tests/run-all.sh` suite covers bootstrap-readiness, auth-routing, firewall intent, networking policy, runtime contracts, and secrets; use individual scripts only for targeted debugging.
 
 ---
 
@@ -225,6 +227,7 @@ If DietPi is disabled, this Nix server must be the DNS server that LAN clients u
 
 - Set router/DHCP LAN DNS to `192.168.0.144`
 - Do not use a public secondary DNS server if you want deterministic resolution for `paperless`, `photoshare`, and `audiobookshelf`; public resolvers do not know those private records
+- Apply the same rule to `kavita`, `jellyfin`, and `jellyseerr`; they are private hostnames served only by local Unbound.
 - The server already serves the private zone from Unbound on port `53`
 
 Quick checks:
@@ -234,6 +237,9 @@ nmcli dev show | sed -n '/IP4.DNS/p;/IP4.DOMAIN/p'
 nix shell nixpkgs#bind --command dig +short @192.168.0.144 paperless.sydneybasiniot.org
 nix shell nixpkgs#bind --command dig +short @192.168.0.144 photoshare.sydneybasiniot.org
 nix shell nixpkgs#bind --command dig +short @192.168.0.144 audiobookshelf.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @192.168.0.144 kavita.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @192.168.0.144 jellyfin.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @192.168.0.144 jellyseerr.sydneybasiniot.org
 ```
 
 For NetBird peers, DNS still has to be distributed from the NetBird management plane. The local server config already permits DNS on `nb0`, but peers will not use it until a nameserver is configured in NetBird. If `netbird-main status` shows `Nameservers: 0/0 Available`, mesh DNS is not configured yet.
@@ -284,6 +290,7 @@ Networking and exposure:
 - Confirm only the intended global ports are reachable: `22`, `80`, `443`, `53/tcp`, `53/udp`, and the configured NetBird/WireGuard UDP port.
 - Confirm `id.<domain>` and `fileshare.<domain>` are the only publicly exposed Cloudflare endpoints.
 - Confirm `paperless.<domain>`, `photoshare.<domain>`, and `audiobookshelf.<domain>` remain LAN/NetBird-only.
+- Confirm `kavita.<domain>`, `jellyfin.<domain>`, and `jellyseerr.<domain>` also remain LAN/NetBird-only.
 
 Identity and app routing:
 
@@ -291,6 +298,9 @@ Identity and app routing:
 - Test the public `fileshare.<domain>` OAuth2 Proxy flow end to end.
 - Test Paperless OIDC login at `https://paperless.<domain>`.
 - Confirm Immich is only served at `https://photoshare.<domain>`.
+- Confirm Kavita is only served at `https://kavita.<domain>`.
+- Confirm Jellyfin is only served at `https://jellyfin.<domain>`.
+- Confirm Jellyseerr is only served at `https://jellyseerr.<domain>`.
 - Confirm there are no lingering redirects or references to `immich.<domain>`.
 
 DNS, mesh, and secrets:

@@ -30,6 +30,4 @@
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/immich 0750 immich immich -"
   ];
-
-  systemd.services.immich-server.serviceConfig.AppArmorProfile = "generated-immich-server";
 }

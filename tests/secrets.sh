@@ -60,6 +60,8 @@ require_fixed secrets/agenix.nix 'absClientSecret = { file = ./absClientSecret.a
   "Audiobookshelf client secret must remain owned by audiobookshelf."
 require_fixed secrets/agenix.nix 'copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };' \
   "Copyparty client secret must remain owned by copyparty."
+require_fixed secrets/agenix.nix 'kavitaTokenKey = { file = ./kavitaTokenKey.age; owner = "kavita"; mode = "0400"; };' \
+  "Kavita token key must remain owned by kavita."
 require_fixed secrets/agenix.nix 'oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };' \
   "OAuth2 Proxy client secret must remain readable by both kanidm provisioning and oauth2-proxy."
 require_fixed secrets/agenix.nix 'oauth2ProxyCookieSecret = { file = ./oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };' \
@@ -83,6 +85,8 @@ require_fixed modules/audiobookshelf/default.nix 'ABS_OIDC_CLIENT_SECRET_FILE = 
   "Audiobookshelf must consume its OIDC client secret from agenix."
 require_fixed modules/copyparty/default.nix 'CPP_OIDC_CLIENT_SECRET_FILE = config.age.secrets.copypartyClientSecret.path;' \
   "Copyparty must consume its OIDC client secret from agenix."
+require_fixed modules/kavita/default.nix 'tokenKeyFile = config.age.secrets.kavitaTokenKey.path;' \
+  "Kavita must consume its token key from agenix."
 require_fixed modules/oauth2-proxy/default.nix 'clientSecret = null;' \
   "OAuth2 Proxy must not embed the client secret directly into the unit command line."
 require_fixed modules/oauth2-proxy/default.nix 'cookie.secret = null;' \

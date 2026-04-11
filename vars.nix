@@ -35,6 +35,9 @@ rec {
   paperlessPort = 8000;
   audiobookshelfPort = 13378;
   copypartyPort = 3923;
+  kavitaPort = 5000;
+  jellyfinPort = 8096;
+  jellyseerrPort = 5055;
   oauth2ProxyPort = 4180;
 
   ############################################################
@@ -74,33 +77,8 @@ rec {
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
   kanidmUserInfoUrl = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}/userinfo";
+  kavitaDomain = "kavita.${domain}";
+  jellyfinDomain = "jellyfin.${domain}";
+  jellyseerrDomain = "jellyseerr.${domain}";
 
-  ############################################################
-  # AppArmor allow‑paths
-  ############################################################
-  appArmorCommonPaths = [
-    "/nix/store/**"
-    "/usr/**"
-    "/run/**"
-    "/etc/ssl/**"
-    "/etc/machine-id"
-    "/dev/null"
-    "/dev/urandom"
-    "/proc/**"
-    "/sys/**"
-  ];
-
-  appArmorDefaults = {
-    caddy = [ "/var/lib/caddy/**" "/var/log/caddy/**" "/etc/caddy/**" ];
-    kanidm = [ "/var/lib/kanidm/**" "/var/log/kanidm/**" "/etc/kanidm/**" ];
-    "immich-server" = [ "${dataRoot}/immich/**" "/var/log/immich/**" ];
-    "paperless-web" = [ "${dataRoot}/paperless/**" "/var/lib/paperless/**" "/var/log/paperless-ngx/**" ];
-    audiobookshelf = [ "${dataRoot}/audiobookshelf/**" "/var/log/audiobookshelf/**" ];
-    copyparty = [ "${dataRoot}/copyparty/**" "/var/log/copyparty/**" ];
-    "cloudflared-tunnel-${cloudflareTunnelName}" = [ "/var/lib/cloudflared/**" "/var/log/cloudflared/**" "/etc/cloudflared/**" ];
-    "netbird-main" = [ "/var/lib/netbird-main/**" "/var/log/netbird-main/**" "/etc/netbird-main/**" ];
-    "oauth2-proxy" = [ "/var/lib/oauth2-proxy/**" "/var/log/oauth2-proxy/**" "/etc/oauth2-proxy/**" ];
-    unbound = [ "/var/lib/unbound/**" "/var/log/unbound/**" "/etc/unbound/**" ];
-    "dnscrypt-proxy" = [ "/var/lib/dnscrypt-proxy/**" "/var/log/dnscrypt-proxy/**" "/etc/dnscrypt-proxy/**" ];
-  };
 }

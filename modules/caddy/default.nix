@@ -63,6 +63,27 @@
           reverse_proxy http://127.0.0.1:${toString vars.immichPort}
         '';
       };
+
+      "${vars.kavitaDomain}" = {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          reverse_proxy http://127.0.0.1:${toString vars.kavitaPort}
+        '';
+      };
+
+      "${vars.jellyfinDomain}" = {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          reverse_proxy http://127.0.0.1:${toString vars.jellyfinPort}
+        '';
+      };
+
+      "${vars.jellyseerrDomain}" = {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          reverse_proxy http://127.0.0.1:${toString vars.jellyseerrPort}
+        '';
+      };
     };
   };
 
@@ -75,7 +96,6 @@
       "acme-${vars.domain}.service"
       "acme-${vars.kanidmDomain}.service"
     ];
-    serviceConfig.AppArmorProfile = "generated-caddy";
   };
 
   ## HTTP-01 challenge & HTTPS traffic

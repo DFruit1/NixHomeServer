@@ -26,6 +26,4 @@
     ABS_OIDC_SCOPE = "openid profile email";
     ABS_OIDC_USERNAME_CLAIM = "preferred_username";
   };
-
-  systemd.services.audiobookshelf.serviceConfig.AppArmorProfile = "generated-audiobookshelf";
 }

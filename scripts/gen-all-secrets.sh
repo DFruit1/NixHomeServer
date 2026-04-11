@@ -43,6 +43,7 @@ declare -A SPEC=(
   [oauth2ProxyClientSecret]=32
   [oauth2ProxyCookieSecret]=32
   [copypartyClientSecret]=32
+  [kavitaTokenKey]=64
 )
 
 gen_secret() {

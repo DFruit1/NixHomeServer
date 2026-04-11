@@ -41,8 +41,6 @@ When changing `.nix` files or module wiring:
 - Keep module files focused: one service/domain concern per file.
 - Reuse `vars.nix` for host/domain/port constants; avoid hardcoded duplicates.
 - Prefer minimal, explicit systemd and firewall settings.
-- Keep AppArmor profile names aligned with actual systemd unit names.
-- Use `complain` mode first for newly generated AppArmor profiles; move to `enforce` only after observed policy coverage.
 
 ## Safety notes for contributors
 - Bootstrap settings (e.g., permissive SSH auth) must be clearly marked and later hardened.

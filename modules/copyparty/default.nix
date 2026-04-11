@@ -28,6 +28,4 @@
     CPP_OIDC_CLIENT_SECRET_FILE = config.age.secrets.copypartyClientSecret.path;
     CPP_OIDC_SCOPE = "openid profile email";
   };
-
-  systemd.services.copyparty.serviceConfig.AppArmorProfile = "generated-copyparty";
 }

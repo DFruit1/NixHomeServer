@@ -26,7 +26,4 @@
     };
   };
   # Cloudflared only makes outbound connections → no firewall ports needed
-
-  systemd.services."cloudflared-tunnel-${vars.cloudflareTunnelName}".serviceConfig.AppArmorProfile =
-    "generated-cloudflared-tunnel-${vars.cloudflareTunnelName}";
 }

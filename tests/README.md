@@ -13,7 +13,6 @@ Current coverage:
   - DietPi companion networking guidance stays present when that architecture is documented.
 - `secrets.sh`: checks that agenix secret definitions, owners, and consumers remain aligned.
 - `auth-routing.sh`: checks OIDC client IDs, fileshare auth flow, reverse-proxy routing, and the documented public/private app boundary.
-- `apparmor.sh`: checks that every referenced generated AppArmor profile has a matching policy key and that critical unit names stay aligned.
 - `firewall.sh`: checks evaluated firewall exposure so only the intended global and NetBird interface ports stay open.
 - `runtime-contracts.sh`: checks evaluated NixOS service, hostname, tunnel, secret-path, and interface contracts directly from `config`.
 - `run-all.sh`: runs the repository policy suite together from one entrypoint.

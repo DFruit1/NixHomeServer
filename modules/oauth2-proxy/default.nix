@@ -23,7 +23,6 @@
 
   systemd.services.oauth2-proxy = {
     serviceConfig = {
-      AppArmorProfile = "generated-oauth2-proxy";
       EnvironmentFile = [
         config.age.secrets.oauth2ProxyClientSecret.path
         config.age.secrets.oauth2ProxyCookieSecret.path

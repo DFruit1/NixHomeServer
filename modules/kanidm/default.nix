@@ -52,7 +52,6 @@
   systemd.services.kanidm = {
     after = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
     wants = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
-    serviceConfig.AppArmorProfile = "generated-kanidm";
   };
 
   users.users.kanidm.extraGroups = [ "caddy" ];

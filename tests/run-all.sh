@@ -22,7 +22,6 @@ done
 
 for test_script in \
   tests/bootstrap-readiness.sh \
-  tests/apparmor.sh \
   tests/auth-routing.sh \
   tests/firewall.sh \
   tests/networking.sh \

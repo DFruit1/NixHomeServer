@@ -59,6 +59,9 @@
           "\"audiobookshelf.${vars.domain}  A ${vars.serverLanIP}\""
           "\"fileshare.${vars.domain}       A ${vars.serverLanIP}\""
           "\"photoshare.${vars.domain}      A ${vars.serverLanIP}\""
+          "\"${vars.kavitaDomain}           A ${vars.serverLanIP}\""
+          "\"${vars.jellyfinDomain}         A ${vars.serverLanIP}\""
+          "\"${vars.jellyseerrDomain}       A ${vars.serverLanIP}\""
           "\"id.${vars.domain}              A ${vars.serverLanIP}\""
         ];
       };
@@ -73,9 +76,6 @@
 
   systemd.services.unbound.after = [ "dnscrypt-proxy.service" ];
   systemd.services.unbound.requires = [ "dnscrypt-proxy.service" ];
-
-  systemd.services.unbound.serviceConfig.AppArmorProfile = "generated-unbound";
-  systemd.services.dnscrypt-proxy.serviceConfig.AppArmorProfile = "generated-dnscrypt-proxy";
 
   networking.firewall.allowedTCPPorts = [ 53 ];
   networking.firewall.allowedUDPPorts = [ 53 ];

@@ -67,6 +67,4 @@ in
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/paperless 0750 paperless paperless -"
   ];
-
-  systemd.services."paperless-web".serviceConfig.AppArmorProfile = "generated-paperless-web";
 }

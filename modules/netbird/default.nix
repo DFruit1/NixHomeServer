@@ -20,9 +20,6 @@
   };
 
   networking.firewall.allowedUDPPorts = [ vars.wgPort ];
-
-  systemd.services."netbird-main".serviceConfig.AppArmorProfile = "generated-netbird-main";
-
   # The upstream login helper matches "Disconnected" as if it were "Connected"
   # and exits before it ever runs `netbird up --setup-key-file=...`.
   systemd.services."netbird-main-login".script = lib.mkForce ''

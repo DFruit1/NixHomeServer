@@ -31,6 +31,12 @@ require_json_equal "$(nix_eval_config_json 'services.unbound.enable')" "true" \
   "Unbound must remain enabled in the evaluated NixOS config."
 require_json_equal "$(nix_eval_config_json 'services.paperless.enable')" "true" \
   "Paperless must remain enabled in the evaluated NixOS config."
+require_json_equal "$(nix_eval_config_json 'services.kavita.enable')" "true" \
+  "Kavita must be enabled in the evaluated NixOS config."
+require_json_equal "$(nix_eval_config_json 'services.jellyfin.enable')" "true" \
+  "Jellyfin must be enabled in the evaluated NixOS config."
+require_json_equal "$(nix_eval_config_json 'services.jellyseerr.enable')" "true" \
+  "Jellyseerr must be enabled in the evaluated NixOS config."
 require_json_equal "$(nix_eval_config_json 'services.cloudflared.enable')" "true" \
   "Cloudflared must remain enabled in the evaluated NixOS config."
 require_json_equal "$(nix_eval_config_json 'services.openssh.settings.PasswordAuthentication')" "false" \
@@ -52,6 +58,12 @@ require_json_contains "$caddy_hosts" "paperless.${domain}" \
   "Caddy must retain the internal Paperless hostname."
 require_json_contains "$caddy_hosts" "photoshare.${domain}" \
   "Caddy must retain the internal Immich hostname at photoshare.<domain>."
+require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.kavitaDomain')" \
+  "Caddy must serve the internal Kavita hostname."
+require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.jellyfinDomain')" \
+  "Caddy must serve the internal Jellyfin hostname."
+require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.jellyseerrDomain')" \
+  "Caddy must serve the internal Jellyseerr hostname."
 if jq -e --arg host "immich.${domain}" 'index($host) != null' >/dev/null <<<"$caddy_hosts"; then
   echo "❌ Caddy must not retain a duplicate immich.<domain> host in the evaluated config."
   echo "   Hosts: $caddy_hosts"
@@ -68,18 +80,31 @@ if [[ "$(jq -r --arg host "paperless.${domain}" 'has($host)' <<<"$tunnel_ingress
   echo "   Tunnel ingress: $tunnel_ingress"
   exit 1
 fi
+for private_host in "$(nix_eval_var 'vars.kavitaDomain')" "$(nix_eval_var 'vars.jellyfinDomain')" "$(nix_eval_var 'vars.jellyseerrDomain')"; do
+  if [[ "$(jq -r --arg host "$private_host" 'has($host)' <<<"$tunnel_ingress")" != "false" ]]; then
+    echo "❌ Cloudflare Tunnel must not expose ${private_host} in the evaluated config."
+    echo "   Tunnel ingress: $tunnel_ingress"
+    exit 1
+  fi
+done
 
 echo "ℹ️ Checking evaluated identity and secret path contracts…"
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_ALLOWED_HOSTS')" "\"paperless.${domain}\"" \
   "Paperless must keep the expected allowed host."
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_OIDC_PROVIDER_URL')" "\"${paperless_issuer}\"" \
   "Paperless must keep its client-specific OIDC provider URL aligned with Kanidm."
+require_json_equal "$(nix_eval_config_json 'services.kavita.settings.Port')" "$(nix_eval_var 'builtins.toString vars.kavitaPort')" \
+  "Kavita must keep its configured internal port."
+require_json_equal "$(nix_eval_config_json 'services.jellyseerr.port')" "$(nix_eval_var 'builtins.toString vars.jellyseerrPort')" \
+  "Jellyseerr must keep its configured internal port."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.oauth2-proxy.originUrl')" "\"https://fileshare.${domain}/oauth2/callback\"" \
   "Kanidm provisioning must register the OAuth2 Proxy callback URL."
 require_json_equal "$(nix_eval_config_json 'age.secrets.netbirdSetupKey.path')" "\"/run/agenix/netbirdSetupKey\"" \
   "NetBird setup key must remain mounted from agenix."
 require_json_equal "$(nix_eval_config_json 'age.secrets.cfHomeCreds.path')" "\"/run/agenix/cfHomeCreds\"" \
   "Cloudflare tunnel credentials must remain mounted from agenix."
+require_json_equal "$(nix_eval_config_json 'age.secrets.kavitaTokenKey.path')" "\"/run/agenix/kavitaTokenKey\"" \
+  "Kavita token key must remain mounted from agenix."
 
 echo "ℹ️ Checking evaluated DNS and network contracts…"
 require_json_equal "$(nix_eval_config_json 'services.netbird.clients.myNetbirdClient.interface')" "\"${netbird_iface}\"" \

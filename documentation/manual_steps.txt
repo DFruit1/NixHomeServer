@@ -9,6 +9,7 @@ Access model (current):
       * id.<domain>  (required for the public fileshare auth flow)
   - App hostnames such as paperless, photoshare (Immich), and audiobookshelf
     are intended to remain LAN/NetBird-only.
+  - kavita, jellyfin, and jellyseerr follow the same LAN/NetBird-only policy.
   - Caddy remains the local HTTP policy boundary; Cloudflare Tunnel only
     publishes the minimal public subset.
   - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare` and
@@ -118,6 +119,9 @@ Manual files still required in `secrets/top/` before rerunning script:
 normalize it for ACME so both Cloudflare lego token variables are exported.
 You can stage it as `CLOUDFLARE_DNS_API_TOKEN=<token>`.
 
+`kavitaTokenKey.age` is generated automatically, encrypted with agenix, and
+mounted for `services.kavita.tokenKeyFile`.
+
 On server:
 # install -d -m 0700 /etc/agenix
 # install -m 0400 /path/to/agenix.key /etc/agenix/age.key
@@ -141,8 +145,8 @@ DietPi companion over SSH for bootstrap/debugging once the Pi is reachable. If
 DietPi does not allow `root` SSH login, set `DIETPI_SSH_TARGET` to the correct
 login user before running the DietPi test. DietPi-specific checks are skipped
 unless `enableDietPiCompanion = true` in `vars.nix`.
-The `tests/run-all.sh` suite covers bootstrap-readiness, AppArmor,
-auth-routing, firewall intent, networking policy, runtime contracts, and
+The `tests/run-all.sh` suite covers bootstrap-readiness, auth-routing,
+firewall intent, networking policy, runtime contracts, and
 secrets; individual test scripts are best used only for targeted debugging.
 
 ─────────────────────────────────────────────────────────────────────
@@ -229,6 +233,9 @@ Current bootstrap note:
 - https://paperless.<domain>
 - https://audiobookshelf.<domain>
 - https://photoshare.<domain>
+- https://kavita.<domain>
+- https://jellyfin.<domain>
+- https://jellyseerr.<domain>
 - https://fileshare.<domain>
 
 Also verify:
@@ -253,6 +260,8 @@ Networking and exposure checks:
   Cloudflare-exposed endpoints.
 - Confirm `paperless.<domain>`, `photoshare.<domain>`, and
   `audiobookshelf.<domain>` remain LAN/NetBird-only.
+- Confirm `kavita.<domain>`, `jellyfin.<domain>`, and
+  `jellyseerr.<domain>` remain LAN/NetBird-only.
 
 Public endpoints expected from the internet:
 - https://id.<domain>
@@ -262,6 +271,9 @@ Internal-only endpoints expected over LAN/NetBird:
 - https://paperless.<domain>
 - https://audiobookshelf.<domain>
 - https://photoshare.<domain>
+- https://kavita.<domain>
+- https://jellyfin.<domain>
+- https://jellyseerr.<domain>
 
 From a non-NetBird external network, only `id.<domain>` and
 `fileshare.<domain>` should resolve/respond publicly.
@@ -271,6 +283,9 @@ Identity, routing, and secret checks:
 - Test the public `fileshare.<domain>` OAuth2 Proxy flow end to end.
 - Test Paperless OIDC login at `https://paperless.<domain>`.
 - Confirm Immich is only served at `https://photoshare.<domain>`.
+- Confirm Kavita is only served at `https://kavita.<domain>`.
+- Confirm Jellyfin is only served at `https://jellyfin.<domain>`.
+- Confirm Jellyseerr is only served at `https://jellyseerr.<domain>`.
 - Confirm there are no lingering redirects or references to `immich.<domain>`.
 # systemctl status netbird-main
 # ip addr show nb0
@@ -285,12 +300,17 @@ DNS distribution note:
 - Do not use a public secondary DNS server if you want
   `paperless.sydneybasiniot.org`, `photoshare.sydneybasiniot.org`, and
   `audiobookshelf.sydneybasiniot.org` to resolve consistently.
+- Apply the same rule to `kavita.sydneybasiniot.org`,
+  `jellyfin.sydneybasiniot.org`, and `jellyseerr.sydneybasiniot.org`.
 - The server already serves the private zone from Unbound on port `53`.
 - Useful workstation checks:
   `nmcli dev show | sed -n '/IP4.DNS/p;/IP4.DOMAIN/p'`
   `nix shell nixpkgs#bind --command dig +short @192.168.0.144 paperless.sydneybasiniot.org`
   `nix shell nixpkgs#bind --command dig +short @192.168.0.144 photoshare.sydneybasiniot.org`
   `nix shell nixpkgs#bind --command dig +short @192.168.0.144 audiobookshelf.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 kavita.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 jellyfin.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 jellyseerr.sydneybasiniot.org`
 - For NetBird peers, configure DNS in the NetBird admin plane:
   add a nameserver using the server `nb0` address from
   `ip -brief addr show nb0`, assign it to the relevant peer groups, and either
