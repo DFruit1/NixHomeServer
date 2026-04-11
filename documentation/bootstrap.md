@@ -83,6 +83,11 @@ Manual secrets still required in `secrets/top/` before rerunning script:
 - `cfHomeCreds`
 - `cfAPIToken`
 
+`cfAPIToken` must contain a real Cloudflare DNS token. The generator will
+normalize it for ACME so both Cloudflare lego token variables are exported.
+You can stage it as:
+`CLOUDFLARE_DNS_API_TOKEN=<token>`.
+
 After encryption, remove cleartext files from `secrets/top/`.
 
 ---
@@ -215,6 +220,43 @@ Avoid split-brain by making one source authoritative for local overrides:
 - or keep authoritative local records on one resolver and replicate changes deliberately.
 
 If this server is periodically powered down, make DietPi the primary always-on resolver and keep the server resolver as secondary/failover.
+
+If DietPi is disabled, this Nix server must be the DNS server that LAN clients use if you want private app hostnames to resolve:
+
+- Set router/DHCP LAN DNS to `192.168.0.144`
+- Do not use a public secondary DNS server if you want deterministic resolution for `paperless`, `photoshare`, and `audiobookshelf`; public resolvers do not know those private records
+- The server already serves the private zone from Unbound on port `53`
+
+Quick checks:
+
+```bash
+nmcli dev show | sed -n '/IP4.DNS/p;/IP4.DOMAIN/p'
+nix shell nixpkgs#bind --command dig +short @192.168.0.144 paperless.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @192.168.0.144 photoshare.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @192.168.0.144 audiobookshelf.sydneybasiniot.org
+```
+
+For NetBird peers, DNS still has to be distributed from the NetBird management plane. The local server config already permits DNS on `nb0`, but peers will not use it until a nameserver is configured in NetBird. If `netbird-main status` shows `Nameservers: 0/0 Available`, mesh DNS is not configured yet.
+
+Recommended NetBird setup:
+
+- Find the server NetBird IP:
+
+```bash
+ip -brief addr show nb0
+```
+
+- In NetBird admin:
+  - add a nameserver using the server NetBird IP
+  - assign it to the peer group(s) that should resolve private app names
+  - either make it the primary resolver for those peers, or use a match domain of `sydneybasiniot.org` if that fits your client support expectations better
+- Reconnect or restart NetBird on affected clients after applying the DNS change
+
+The simplest stable model is:
+
+- LAN clients: router DHCP hands out `192.168.0.144`
+- NetBird clients: NetBird hands out the server `nb0` address as DNS
+- Public internet: only `id.<domain>` and `fileshare.<domain>` remain publicly reachable through Cloudflare Tunnel
 
 ---
 

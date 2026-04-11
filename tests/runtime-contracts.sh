@@ -90,6 +90,14 @@ require_json_equal "$(nix_eval_config_json 'networking.hostName')" "\"${hostname
   "The evaluated system hostname must match vars.nix."
 require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.networking.interfaces.\"${net_iface}\".ipv4.addresses)" "[{\"address\":\"${server_lan_ip}\",\"prefixLength\":24}]" \
   "The evaluated LAN address must remain the configured server LAN IP."
+require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.systemd.services.\"acme-order-renew-${domain}\".after | jq 'index("unbound.service") != null')" "true" \
+  "ACME ordering for the wildcard site cert must wait for Unbound because the host resolves through localhost DNS."
+require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.systemd.services.\"acme-order-renew-${kanidm_domain}\".after | jq 'index("unbound.service") != null')" "true" \
+  "ACME ordering for the Kanidm cert must wait for Unbound because the host resolves through localhost DNS."
+require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.security.acme.certs.\"${domain}\".reloadServices)" "[\"caddy.service\"]" \
+  "Wildcard ACME renewal must reload Caddy so the public cert replaces the bootstrap self-signed cert."
+require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.security.acme.certs.\"${kanidm_domain}\".reloadServices)" "[\"caddy.service\",\"kanidm.service\"]" \
+  "Kanidm ACME renewal must reload both Caddy and Kanidm so the shared TLS chain rotates in place."
 
 echo "ℹ️ Checking evaluated storage-service contracts…"
 snapraid_config="$(nix eval --raw .#nixosConfigurations.${hostname}.config.environment.etc.\"snapraid.conf\".text)"

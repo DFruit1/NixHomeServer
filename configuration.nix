@@ -162,9 +162,24 @@ in
     certs."${vars.domain}" = {
       extraDomainNames = [ "*.${vars.domain}" ];
       group = "caddy";
+      reloadServices = [ "caddy.service" ];
     };
     certs."${vars.kanidmDomain}" = {
       group = "caddy";
+      reloadServices = [ "caddy.service" "kanidm.service" ];
+    };
+  };
+
+  # The host resolves via its own localhost Unbound instance, so ACME ordering
+  # must wait for that resolver to be available before lego contacts Let's Encrypt.
+  systemd.services = {
+    "acme-order-renew-${vars.domain}" = {
+      wants = [ "unbound.service" ];
+      after = [ "unbound.service" ];
+    };
+    "acme-order-renew-${vars.kanidmDomain}" = {
+      wants = [ "unbound.service" ];
+      after = [ "unbound.service" ];
     };
   };
 

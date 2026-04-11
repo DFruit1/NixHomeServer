@@ -135,13 +135,32 @@ validate_cf() {
 }
 
 validate_cf_api_token() {
-grep -Eq '^CLOUDFLARE_DNS_API_TOKEN=[A-Za-z0-9_-]{20,}$' "$1"
+local token
+token="$(extract_cf_api_token "$1")" || return 1
+[[ "$token" =~ ^[A-Za-z0-9_-]{20,}$ ]] && [[ "$token" != REPLACE_ME* ]]
+}
+
+extract_cf_api_token() {
+local file="$1"
+sed -n \
+  -e 's/^CLOUDFLARE_DNS_API_TOKEN=//p' \
+  -e 's/^CLOUDFLARE_ZONE_API_TOKEN=//p' \
+  "$file" \
+| head -n1
+}
+
+normalize_cf_api_token() {
+local src="$1" dst="$2" token
+token="$(extract_cf_api_token "$src")" || return 1
+printf 'CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n' "$token" "$token" >"$dst"
 }
 
 encrypt_manual() {
 local name="$1" validator="$2"
 local clear_file="${top_dir}/${name}"
 local age_file="${age_dir}/${name}.age"
+local source_file="$clear_file"
+local temp_file=""
 [[ -f "$age_file" ]] && return
 [[ -f "$clear_file" ]] || {
 echo "❌ $name missing. Place it at $clear_file and rerun." >&2
@@ -151,8 +170,14 @@ if ! "$validator" "$clear_file"; then
 echo "❌ $name has invalid format." >&2
 exit 1
 fi
+if [[ "$name" == "cfAPIToken" ]]; then
+temp_file="$(mktemp)"
+normalize_cf_api_token "$clear_file" "$temp_file"
+source_file="$temp_file"
+fi
 chmod 0440 "$clear_file"
- age --encrypt --armor -r "$(recipient)" --output "$age_file" "$clear_file"
+ age --encrypt --armor -r "$(recipient)" --output "$age_file" "$source_file"
+[[ -n "$temp_file" ]] && rm -f "$temp_file"
 echo "🔐  Encrypted $name → $age_file"
 }
 

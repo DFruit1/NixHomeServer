@@ -93,5 +93,9 @@ require_fixed modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyCo
   "OAuth2 Proxy must source its cookie secret env file from agenix."
 require_match scripts/gen-all-secrets.sh 'OAUTH2_PROXY_(CLIENT|COOKIE)_SECRET=' \
   "OAuth2 Proxy clear-text staging files must be generated as environment-file entries."
+require_fixed scripts/gen-all-secrets.sh '[[ "$token" != REPLACE_ME* ]]' \
+  "Cloudflare API token validation must reject placeholder values before secrets are encrypted."
+require_fixed scripts/gen-all-secrets.sh 'printf '\''CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n'\''' \
+  "Cloudflare API token secrets must be normalized so both lego token variables are exported."
 
 echo "✅ Secret policy tests passed."

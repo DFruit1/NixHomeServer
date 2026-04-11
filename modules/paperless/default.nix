@@ -40,6 +40,7 @@ in
     enable = true;
     dataDir = "${vars.dataRoot}/paperless";
     address = "127.0.0.1";
+    port = vars.paperlessPort;
     package = paperlessPackage;
 
     settings = {

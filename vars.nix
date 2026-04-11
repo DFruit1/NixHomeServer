@@ -14,7 +14,8 @@ rec {
   serverLanIP = "192.168.0.144";
   enableDietPiCompanion = false;
   piLanIP = "192.168.0.123";
-  nbIP = "100.96.1.10";
+  # Informational only; refresh with `ip -brief addr show nb0` if NetBird reassigns it.
+  nbIP = "100.72.113.237";
   defaultGateway = "192.168.0.1";
   dnscryptListenAddress = "127.0.0.1";
   dnscryptListenPort = 5053;

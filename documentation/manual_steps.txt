@@ -114,6 +114,10 @@ Manual files still required in `secrets/top/` before rerunning script:
   - cfHomeCreds
   - cfAPIToken
 
+`cfAPIToken` must contain a real Cloudflare DNS API token. The generator will
+normalize it for ACME so both Cloudflare lego token variables are exported.
+You can stage it as `CLOUDFLARE_DNS_API_TOKEN=<token>`.
+
 On server:
 # install -d -m 0700 /etc/agenix
 # install -m 0400 /path/to/agenix.key /etc/agenix/age.key
@@ -275,6 +279,25 @@ Identity, routing, and secret checks:
 - Confirm the NetBird peer enrolls and gets the expected mesh IP.
 - Confirm required agenix secrets are mounted under `/run/agenix`.
 - If you generated secrets locally, ensure `secrets/top/` is empty afterwards.
+
+DNS distribution note:
+- If DietPi is disabled, set router/DHCP LAN DNS to `192.168.0.144`.
+- Do not use a public secondary DNS server if you want
+  `paperless.sydneybasiniot.org`, `photoshare.sydneybasiniot.org`, and
+  `audiobookshelf.sydneybasiniot.org` to resolve consistently.
+- The server already serves the private zone from Unbound on port `53`.
+- Useful workstation checks:
+  `nmcli dev show | sed -n '/IP4.DNS/p;/IP4.DOMAIN/p'`
+  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 paperless.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 photoshare.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @192.168.0.144 audiobookshelf.sydneybasiniot.org`
+- For NetBird peers, configure DNS in the NetBird admin plane:
+  add a nameserver using the server `nb0` address from
+  `ip -brief addr show nb0`, assign it to the relevant peer groups, and either
+  make it the primary resolver or use a match domain of
+  `sydneybasiniot.org`.
+- If `netbird-main status` shows `Nameservers: 0/0 Available`, mesh DNS is not
+  configured yet.
 
 ─────────────────────────────────────────────────────────────────────
 13. OPERATIONS NOTES
