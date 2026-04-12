@@ -134,4 +134,8 @@ Recommended onboarding model:
 - Public should work: `https://id.<domain>`, `https://files.<domain>`
 - Private should require NetBird: `paperless`, `photos`, `audiobooks`, `books`, `video`, `jellyseerr`
 
-Full checks: [Operations](./operations.md).
+After the first successful deploy, continue with:
+
+1. [First Admin Session](./first-admin-session.md)
+2. [Kanidm Guide](./kanidm.md)
+3. [Operations](./operations.md)

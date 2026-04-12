@@ -63,18 +63,53 @@ If `netbird-main status` shows `Nameservers: 0/0 Available`, DNS distribution is
 ## Quick checks
 ```bash
 # server-side
-systemctl status cloudflared netbird-main unbound caddy
+systemctl status cloudflared-tunnel-metro netbird-main unbound caddy
 
 # from a NetBird client
-dig +short paperless.<domain>
-dig +short photos.<domain>
-dig +short id.<domain>
-dig +short files.<domain>
+host paperless.<domain> 127.0.0.1
+host photos.<domain> 127.0.0.1
+host id.<domain> 127.0.0.1
+host files.<domain> 127.0.0.1
 ```
 
 Expected:
 - `paperless/photos/audiobooks/books/video/jellyseerr` -> NetBird IP
 - `id/files` -> public Cloudflare path
+
+## Failure entrypoints
+
+### Public endpoint fails
+
+Check:
+
+```bash
+systemctl status caddy cloudflared-tunnel-metro
+journalctl -u caddy -u cloudflared-tunnel-metro -n 100 --no-pager
+```
+
+Likely causes:
+
+- the current tunnel unit name changed and you are checking the wrong unit
+- tunnel unit down
+- Caddy upstream mismatch
+- Cloudflare DNS or tunnel ingress drift
+
+### Private hostname resolves wrongly
+
+Check:
+
+```bash
+systemctl status unbound netbird-main
+host paperless.<domain> 127.0.0.1
+host photos.<domain> 127.0.0.1
+resolvectl query paperless.<domain>
+```
+
+Likely causes:
+
+- NetBird DNS distribution not active on the client
+- Unbound not serving the expected private records
+- client bypassing NetBird DNS and using public recursion instead
 
 ## Optional DietPi companion
 Only applies when `enableDietPiCompanion = true` in [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix).

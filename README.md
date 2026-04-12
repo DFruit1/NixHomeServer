@@ -22,12 +22,12 @@ Declarative NixOS home server designed for reliable self-hosting with clear secu
   day-to-day identity.
 
 ## Start here
-1. [Quickstart](./documentation/quickstart.md) for the shortest copy-paste deployment path.
-2. [Install From Scratch](./documentation/install-from-scratch.md) if you are provisioning blank disks.
-3. [Secrets and Prerequisites](./documentation/secrets-and-prereqs.md) before first deploy.
-4. [Networking and Access](./documentation/networking-and-access.md) to understand public vs private endpoints.
+1. [First Admin Session](./documentation/first-admin-session.md) if the server already exists and you need to understand how to operate it.
+2. [Quickstart](./documentation/quickstart.md) for the shortest copy-paste deployment path.
+3. [Install From Scratch](./documentation/install-from-scratch.md) if you are provisioning blank disks.
+4. [Secrets and Prerequisites](./documentation/secrets-and-prereqs.md) before first deploy.
 5. [Operations](./documentation/operations.md) for validation, deploy, checks, and troubleshooting.
 6. [Kanidm Guide](./documentation/kanidm.md) for user/group setup.
-7. [Documentation Index](./documentation/README.md) for deeper reference material.
+7. [Documentation Index](./documentation/README.md) for the task-oriented doc map.
 
 Legacy runbooks have been moved to `superceded/documentation/`.

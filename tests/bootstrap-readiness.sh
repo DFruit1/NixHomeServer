@@ -20,13 +20,18 @@ for required_path in \
   vars.nix \
   disko.nix \
   scripts/check-repo.sh \
+  scripts/runtime-readiness.sh \
+  scripts/runtime-validation-report.sh \
   documentation/README.md \
+  documentation/first-admin-session.md \
   documentation/quickstart.md \
   documentation/install-from-scratch.md \
   documentation/secrets-and-prereqs.md \
   documentation/networking-and-access.md \
   documentation/operations.md \
   documentation/kanidm.md \
+  documentation/runtime-validation.md \
+  documentation/runtime-validation-report-template.md \
   secrets/agenix.nix
 do
   if [[ ! -e "$required_path" ]]; then
@@ -64,8 +69,16 @@ require_match documentation/quickstart.md 'tests/run-all\.sh' \
   "Quickstart must include the aggregate policy test entrypoint."
 require_match documentation/quickstart.md 'accept-flake-config = true' \
   "Quickstart must explain the one-time flake-config trust option."
+require_match documentation/quickstart.md 'First Admin Session' \
+  "Quickstart must hand off to the first-admin operator guide after deploy."
 require_fixed scripts/check-repo.sh 'export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"' \
   "Repository checks must default NIX_CONFIG for flake-enabled validation."
+require_match scripts/runtime-readiness.sh 'cloudflared-tunnel-' \
+  "Runtime readiness checks must inspect the concrete cloudflared tunnel unit."
+require_match scripts/runtime-readiness.sh 'snapraid diff' \
+  "Runtime readiness checks must include SnapRAID drift reporting."
+require_match scripts/runtime-validation-report.sh 'Runtime Validation Report' \
+  "Runtime validation report helper must emit the report scaffold."
 require_fixed modules/paperless/default.nix 'nodejs_20 = pkgs.nodejs_22;' \
   "Paperless must keep the Node 22 frontend override until upstream packaging is stable here."
 require_fixed modules/paperless/default.nix "jq 'del(.packageManager)'" \
@@ -96,6 +109,12 @@ require_match documentation/networking-and-access.md '<domain>' \
   "Networking guide must retain operator-facing domain placeholders."
 require_match documentation/operations.md 'paperless-web' \
   "Operations guide must retain Paperless operator guidance."
+require_match documentation/operations.md 'cloudflared-tunnel-metro' \
+  "Operations guide must document the actual cloudflared tunnel unit."
+require_match documentation/operations.md 'host paperless\.<domain> 127\.0\.0\.1' \
+  "Operations guide must use host-based DNS checks that work on this server."
+require_match documentation/operations.md 'snapraid diff' \
+  "Operations guide must document SnapRAID drift checks."
 require_match documentation/kanidm.md 'Kanidm' \
   "Kanidm guide must retain identity operator guidance."
 require_match documentation/kanidm.md 'immich-users' \
@@ -104,5 +123,13 @@ require_match documentation/kanidm.md 'admindsaw' \
   "Kanidm guide must document the intended operator identity."
 require_match documentation/operations.md 'users` is baseline identity only' \
   "Operations guide must document that users alone does not grant app access."
+require_match documentation/first-admin-session.md 'Access Matrix' \
+  "First Admin Session must include the operator access matrix."
+require_match documentation/runtime-validation.md 'Expected Behavior Matrix' \
+  "Runtime Validation must include the app validation matrix."
+require_match documentation/runtime-validation.md 'Validation order' \
+  "Runtime Validation must document the ordered validation pass."
+require_match documentation/runtime-validation-report-template.md 'Access-control regression summary' \
+  "Runtime validation report template must capture regression outcomes."
 
 echo "✅ Bootstrap readiness tests passed."

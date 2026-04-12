@@ -18,7 +18,7 @@ let
 
   kanidmUserTui = pkgs.writeShellApplication {
     name = "kanidm-user-tui";
-    runtimeInputs = [ pkgs.kanidm_1_9 pkgs.newt pkgs.nix ];
+    runtimeInputs = [ pkgs.kanidm_1_9 pkgs.dialog pkgs.jq pkgs.newt pkgs.nix ];
     text = ''
       export KANIDM_TUI_REPO_ROOT=${lib.escapeShellArg (toString kanidmUserTuiData)}
       exec ${lib.escapeShellArg "${toString kanidmUserTuiData}/scripts/kanidm-create-user.sh"} "$@"

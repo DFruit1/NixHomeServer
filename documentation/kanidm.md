@@ -2,6 +2,9 @@
 
 Use this guide to bootstrap people, groups, and app access for this stack.
 
+If you are new to the system, read [First Admin Session](./first-admin-session.md)
+first and come back here for the identity details.
+
 ## Operator identities
 
 This repository now assumes two human operator identities:
@@ -76,6 +79,14 @@ Use your delegated admin identity for this workflow, normally `admindsaw`.
 5. have them sign into the target app
 6. let the app create or link the local user row on first successful OIDC login
 
+The important distinction is:
+
+- person exists in Kanidm: they are in `users`
+- person may log into an app: they are in that app's login group
+- person should administer an app: they are in that app's admin group
+
+Do not collapse those three layers together.
+
 ## Create a new user (copy/paste)
 
 ```bash
@@ -127,6 +138,17 @@ application.
   admin or one-time admin promotion step even when Kanidm handles login.
 - OIDC clients are provisioned by Nix config; avoid manual drift in the Kanidm
   UI.
+- the Kanidm web UI is not the full admin experience; use `kanidm-user-tui`
+  or the CLI for reliable user and group management
+
+## Validation and app follow-up
+
+Use [Runtime Validation](./runtime-validation.md) to verify:
+
+- denial for users outside app groups
+- first-login behavior for each app
+- which apps still require a local recovery admin or a one-time app-local
+  promotion
 
 ## Easier interactive admin
 

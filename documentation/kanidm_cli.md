@@ -10,16 +10,29 @@ kanidm-user-tui
 ```
 
 That wrapper launches [`scripts/kanidm-create-user.sh`](/home/dsaw/Projects/NixOS/scripts/kanidm-create-user.sh),
-which now provides a `whiptail`-based menu UI for:
+which now provides a `whiptail`-based guided UI with:
 
-- logging in and reauthenticating
+- a main menu ordered around the normal workflow
+- an automatic prompt to authenticate when an action needs a Kanidm CLI session
+- an automatic prompt to reauthenticate when a privileged admin action needs it
+- a group membership editor that loads the user's current access groups and lets you toggle the final desired state before applying
+- inline help for the currently highlighted group in the membership editor
+- an explicit typed confirmation before a user is created
+- automatic clearing of validity restrictions so new users do not expire by default
+
+It also supports:
+
+- authenticating the Kanidm CLI session
+- checking whether the current admin CLI session is still valid
 - creating users
-- inspecting users
-- updating usernames, display names, and email addresses
-- adding or removing group membership
-- changing validity windows
-- creating reset tokens
-- deleting users
+- listing users in a readable table
+- inspecting users, including validity dates and managed access groups
+- toggling group membership
+- creating a password reset token for a selected user
+
+Use the password reset action when an account exists but cannot log in because it
+has no credential yet. The generated token can be given to the user so they can
+set or replace their password.
 
 The TUI reads these defaults from `vars.nix`:
 
