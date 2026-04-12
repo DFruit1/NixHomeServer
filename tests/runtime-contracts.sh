@@ -11,6 +11,9 @@ ensure_tools nix jq
 hostname="$(nix_eval_var 'vars.hostname')"
 domain="$(nix_eval_var 'vars.domain')"
 kanidm_domain="$(nix_eval_var 'vars.kanidmDomain')"
+files_domain="$(nix_eval_var 'vars.filesDomain')"
+photos_domain="$(nix_eval_var 'vars.photosDomain')"
+audiobooks_domain="$(nix_eval_var 'vars.audiobooksDomain')"
 server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
 net_iface="$(nix_eval_var 'vars.netIface')"
 netbird_iface="$(nix_eval_var 'vars.netbirdIface')"
@@ -51,12 +54,12 @@ echo "ℹ️ Checking evaluated reverse-proxy and tunnel host contracts…"
 caddy_hosts="$(nix_eval_config_json 'services.caddy.virtualHosts' | jq 'keys')"
 require_json_contains "$caddy_hosts" "${kanidm_domain}" \
   "Caddy must serve the Kanidm hostname in the evaluated config."
-require_json_contains "$caddy_hosts" "fileshare.${domain}" \
-  "Caddy must serve fileshare.<domain> in the evaluated config."
+require_json_contains "$caddy_hosts" "${files_domain}" \
+  "Caddy must serve files.<domain> in the evaluated config."
 require_json_contains "$caddy_hosts" "paperless.${domain}" \
   "Caddy must retain the internal Paperless hostname."
-require_json_contains "$caddy_hosts" "photoshare.${domain}" \
-  "Caddy must retain the internal Immich hostname at photoshare.<domain>."
+require_json_contains "$caddy_hosts" "${photos_domain}" \
+  "Caddy must retain the internal Immich hostname at photos.<domain>."
 require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.kavitaDomain')" \
   "Caddy must serve the internal Kavita hostname."
 require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.jellyfinDomain')" \
@@ -74,10 +77,10 @@ require_json_equal "$(jq -r --arg host "${kanidm_domain}" '.[$host].service' <<<
   "Cloudflare Tunnel must send the Kanidm hostname through local Caddy."
 require_json_equal "$(jq -r --arg host "${kanidm_domain}" '.[$host].originRequest.originServerName' <<<"$tunnel_ingress")" "${kanidm_domain}" \
   "Cloudflare Tunnel must verify the Kanidm origin against the expected hostname."
-require_json_equal "$(jq -r --arg host "fileshare.${domain}" '.[$host].service' <<<"$tunnel_ingress")" "https://127.0.0.1:443" \
-  "Cloudflare Tunnel must send fileshare.<domain> through local Caddy."
-require_json_equal "$(jq -r --arg host "fileshare.${domain}" '.[$host].originRequest.originServerName' <<<"$tunnel_ingress")" "fileshare.${domain}" \
-  "Cloudflare Tunnel must verify the fileshare origin against the expected hostname."
+require_json_equal "$(jq -r --arg host "${files_domain}" '.[$host].service' <<<"$tunnel_ingress")" "https://127.0.0.1:443" \
+  "Cloudflare Tunnel must send files.<domain> through local Caddy."
+require_json_equal "$(jq -r --arg host "${files_domain}" '.[$host].originRequest.originServerName' <<<"$tunnel_ingress")" "${files_domain}" \
+  "Cloudflare Tunnel must verify the files origin against the expected hostname."
 if [[ "$(jq -r --arg host "paperless.${domain}" 'has($host)' <<<"$tunnel_ingress")" != "false" ]]; then
   echo "❌ Cloudflare Tunnel must not expose paperless.<domain> in the evaluated config."
   echo "   Tunnel ingress: $tunnel_ingress"
@@ -110,22 +113,88 @@ require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.signi
   "Immich must accept ES256-signed ID tokens from Kanidm."
 require_json_equal "$(nix_eval_config_json 'services.kavita.settings.Port')" "$(nix_eval_var 'builtins.toString vars.kavitaPort')" \
   "Kavita must keep its configured internal port."
+require_json_equal "$(nix_eval_config_json 'services.kavita.settings.OpenIdConnectSettings.Authority')" "\"https://id.${domain}/oauth2/openid/kavita-web\"" \
+  "Kavita must keep its client-specific Kanidm issuer in the evaluated JSON config."
+require_json_equal "$(nix_eval_config_json 'services.kavita.settings.OpenIdConnectSettings.ClientId')" '"kavita-web"' \
+  "Kavita must keep the expected Kanidm client ID in the evaluated JSON config."
 require_json_equal "$(nix_eval_config_json 'services.jellyseerr.port')" "$(nix_eval_var 'builtins.toString vars.jellyseerrPort')" \
   "Jellyseerr must keep its configured internal port."
-require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.originUrl')" "\"https://photoshare.${domain}/auth/login\"" \
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.originUrl')" "\"https://${photos_domain}/auth/login\"" \
   "Kanidm provisioning must register the Immich callback URL."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.scopeMaps' | jq -c '.["immich-users"]')" '["openid","profile","email"]' \
+  "Kanidm provisioning must restrict Immich login to the immich-users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.scopeMaps' | jq -c '.["immich-admin"]')" '["openid","profile","email"]' \
+  "Kanidm provisioning must allow Immich admins through the immich-admin group."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.paperless-web.originUrl')" "\"https://paperless.${domain}/accounts/oidc/kanidm/login/callback/\"" \
   "Kanidm provisioning must register the Paperless callback URL."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.paperless-web.allowInsecureClientDisablePkce')" "true" \
   "Kanidm provisioning must disable PKCE enforcement for Paperless until the client supports it."
-require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.abs-web.originUrl')" "[\"https://audiobookshelf.${domain}/audiobookshelf/auth/openid/callback\",\"https://audiobookshelf.${domain}/audiobookshelf/auth/openid/mobile-redirect\"]" \
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.paperless-web.scopeMaps' | jq -c '.["paperless-users"]')" '["openid","profile","email"]' \
+  "Kanidm provisioning must restrict Paperless login to the paperless-users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.paperless-web.scopeMaps' | jq -c '.["paperless-admin"]')" '["openid","profile","email"]' \
+  "Kanidm provisioning must allow Paperless admins through the paperless-admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.abs-web.originUrl')" "[\"https://${audiobooks_domain}/audiobookshelf/auth/openid/callback\",\"https://${audiobooks_domain}/audiobookshelf/auth/openid/mobile-redirect\"]" \
   "Kanidm provisioning must register both Audiobookshelf callback URLs."
-require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.oauth2-proxy.originUrl')" "\"https://fileshare.${domain}/oauth2/callback\"" \
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.abs-web.scopeMaps' | jq -c '.["audiobookshelf-users"]')" '["openid","profile","email"]' \
+  "Kanidm provisioning must restrict Audiobookshelf login to the audiobookshelf-users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.abs-web.scopeMaps' | jq -c '.["audiobookshelf-admin"]')" '["openid","profile","email"]' \
+  "Kanidm provisioning must allow Audiobookshelf admins through the audiobookshelf-admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.kavita-web.originUrl')" "[\"https://books.${domain}/signin-oidc\",\"https://books.${domain}/signout-callback-oidc\"]" \
+  "Kanidm provisioning must register both Kavita callback URLs."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.kavita-web.scopeMaps' | jq -c '.["kavita-login"]')" '["openid","profile","email","groups"]' \
+  "Kanidm provisioning must restrict Kavita login to the kavita-login group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.kavita-web.scopeMaps' | jq -c '.["kavita-admin"]')" '["openid","profile","email","groups"]' \
+  "Kanidm provisioning must allow Kavita admins through the kavita-admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.oauth2-proxy.originUrl')" "\"https://${files_domain}/oauth2/callback\"" \
   "Kanidm provisioning must register the OAuth2 Proxy callback URL."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups.users.overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the baseline users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups.users.members')" '["admindsaw"]' \
+  "Kanidm provisioning must seed the operator identity into the baseline users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups.fileshare_users.overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the fileshare_users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups.fileshare_users.members')" '["admindsaw"]' \
+  "Kanidm provisioning must seed the operator identity into the fileshare_users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["immich-users"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the immich-users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["immich-users"].members')" '[]' \
+  "Kanidm provisioning must not grant Immich login broadly by default."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["immich-admin"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the immich-admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["immich-admin"].members')" '["admindsaw"]' \
+  "Kanidm provisioning must seed the operator identity into the Immich admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["paperless-users"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the paperless-users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["paperless-users"].members')" '[]' \
+  "Kanidm provisioning must not grant Paperless login broadly by default."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["paperless-admin"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the paperless-admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["paperless-admin"].members')" '["admindsaw"]' \
+  "Kanidm provisioning must seed the operator identity into the Paperless admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["audiobookshelf-users"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the audiobookshelf-users group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["audiobookshelf-users"].members')" '[]' \
+  "Kanidm provisioning must not grant Audiobookshelf login broadly by default."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["audiobookshelf-admin"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the audiobookshelf-admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["audiobookshelf-admin"].members')" '["admindsaw"]' \
+  "Kanidm provisioning must seed the operator identity into the Audiobookshelf admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["kavita-login"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the kavita-login group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["kavita-login"].members')" '[]' \
+  "Kanidm provisioning must not grant Kavita login broadly by default."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -r '.["kavita-admin"].overwriteMembers')" "false" \
+  "Kanidm provisioning must preserve manual membership for the kavita-admin group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c '.["kavita-admin"].members')" '["admindsaw"]' \
+  "Kanidm provisioning must seed the operator identity into the Kavita admin group."
 require_json_equal "$(nix_eval_config_json 'age.secrets.netbirdSetupKey.path')" "\"/run/agenix/netbirdSetupKey\"" \
   "NetBird setup key must remain mounted from agenix."
 require_json_equal "$(nix_eval_config_json 'age.secrets.cfHomeCreds.path')" "\"/run/agenix/cfHomeCreds\"" \
   "Cloudflare tunnel credentials must remain mounted from agenix."
+require_json_equal "$(nix_eval_config_json 'age.secrets.absBootstrapPass.path')" "\"/run/agenix/absBootstrapPass\"" \
+  "Audiobookshelf bootstrap password must remain mounted from agenix."
+require_json_equal "$(nix_eval_config_json 'age.secrets.kavitaClientSecret.path')" "\"/run/agenix/kavitaClientSecret\"" \
+  "Kavita client secret must remain mounted from agenix."
 require_json_equal "$(nix_eval_config_json 'age.secrets.kavitaTokenKey.path')" "\"/run/agenix/kavitaTokenKey\"" \
   "Kavita token key must remain mounted from agenix."
 

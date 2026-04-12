@@ -3,6 +3,30 @@
 This file is a practical command reference for day-to-day Kanidm user
 administration on this server.
 
+For an interactive terminal workflow on the server itself, you can also run:
+
+```bash
+kanidm-user-tui
+```
+
+That wrapper launches [`scripts/kanidm-create-user.sh`](/home/dsaw/Projects/NixOS/scripts/kanidm-create-user.sh),
+which now provides a `whiptail`-based menu UI for:
+
+- logging in and reauthenticating
+- creating users
+- inspecting users
+- updating usernames, display names, and email addresses
+- adding or removing group membership
+- changing validity windows
+- creating reset tokens
+- deleting users
+
+The TUI reads these defaults from `vars.nix`:
+
+- `kanidmAdminUser`
+- `kanidmAdminEmail`
+- `kanidmBaseUrl`
+
 It is written to be safe to copy and edit:
 
 - every mutating command uses placeholder values such as `__SET_ACCOUNT_ID__`
@@ -11,8 +35,8 @@ It is written to be safe to copy and edit:
 
 These examples assume:
 
-- the Kanidm server is `https://id.sydneybasiniot.org`
-- you are using your normal delegated admin person account, currently `admindsaw`
+- the Kanidm server is `https://id.<domain>`
+- you are using your delegated admin person account, normally `admindsaw`
 - you have already added that person to `idm_admins`
 - you are running Kanidm CLI `1.9`
 
@@ -21,7 +45,7 @@ These examples assume:
 ```bash
 nix shell nixpkgs#kanidm_1_9 --impure
 
-SERVER_URL='https://id.sydneybasiniot.org'
+SERVER_URL='https://id.<domain>'
 ADMIN_NAME='__SET_ADMIN_ACCOUNT__'
 ACCOUNT_ID='__SET_ACCOUNT_ID__'
 DISPLAY_NAME='__SET_DISPLAY_NAME__'
@@ -41,13 +65,14 @@ require_replaced() {
 
 What each placeholder means:
 
-- `ADMIN_NAME`: the Kanidm person you log in as, for example `admindsaw`
+- `ADMIN_NAME`: the Kanidm person you log in as
 - `ACCOUNT_ID`: the Kanidm username for the person you are managing, for example
   `alice`
 - `DISPLAY_NAME`: the human-readable name shown in the UI, for example
   `Alice Example`
 - `PRIMARY_EMAIL`: the primary email address for that person
-- `GROUP_NAME`: a Kanidm group such as `users`, `fileshare_users`, or
+- `GROUP_NAME`: a Kanidm group such as `users`, `immich-users`,
+  `paperless-users`, `audiobookshelf-users`, `fileshare_users`, or
   `idm_admins`
 - `RFC3339_TIME`: a timestamp like `2026-04-12T17:30:00+10:00`
 
@@ -119,7 +144,7 @@ kanidm person update "$ACCOUNT_ID" \
   --name "$ADMIN_NAME"
 ```
 
-Typical follow-up group assignments:
+Typical baseline follow-up group assignment:
 
 ```bash
 require_replaced "$ACCOUNT_ID" &&
@@ -128,7 +153,7 @@ kanidm group add-members users "$ACCOUNT_ID" \
   --name "$ADMIN_NAME"
 ```
 
-Optional private fileshare access:
+Optional private files access:
 
 ```bash
 require_replaced "$ACCOUNT_ID" &&
@@ -146,15 +171,50 @@ kanidm group add-members idm_admins "$ACCOUNT_ID" \
   --name "$ADMIN_NAME"
 ```
 
+Per-app access grants:
+
+```bash
+require_replaced "$ACCOUNT_ID" &&
+for group in \
+  immich-users \
+  paperless-users \
+  audiobookshelf-users \
+  kavita-login
+do
+  kanidm group add-members "$group" "$ACCOUNT_ID" \
+    --url "$SERVER_URL" \
+    --name "$ADMIN_NAME"
+done
+```
+
+Per-app admin grants:
+
+```bash
+require_replaced "$ACCOUNT_ID" &&
+for group in \
+  immich-admin \
+  paperless-admin \
+  audiobookshelf-admin \
+  kavita-admin
+do
+  kanidm group add-members "$group" "$ACCOUNT_ID" \
+    --url "$SERVER_URL" \
+    --name "$ADMIN_NAME"
+done
+```
+
 What to expect:
 
 - creating a Kanidm person does not pre-create users inside Immich, Paperless,
   or other apps
 - app-side user rows are usually created or linked on first successful OIDC
   login
-- `users` is the private-app access group in this stack
+- `users` is only the baseline identity group in this stack
+- app access is granted by app-specific groups such as `immich-users`,
+  `paperless-users`, `audiobookshelf-users`, `kavita-login`, and
+  `fileshare_users`
 - `fileshare_users` controls access through `oauth2-proxy` on
-  `fileshare.sydneybasiniot.org`
+  `files.<domain>`
 
 ## 5. Update an existing user
 
@@ -223,8 +283,12 @@ kanidm group remove-members "$GROUP_NAME" "$ACCOUNT_ID" \
 
 Useful groups in this repo:
 
-- `users`: access to NetBird-only apps
-- `fileshare_users`: access through public fileshare OAuth2 Proxy
+- `users`: baseline identity only
+- `immich-users` / `immich-admin`: Immich login and intended admin access
+- `paperless-users` / `paperless-admin`: Paperless login and intended admin access
+- `audiobookshelf-users` / `audiobookshelf-admin`: Audiobookshelf login and intended admin access
+- `kavita-login` / `kavita-admin`: Kavita login and admin role mapping
+- `fileshare_users`: access through public files OAuth2 Proxy
 - `idm_admins`: delegated people/group admin
 
 ## 7. Let a user set or reset their own password
@@ -333,7 +397,7 @@ Be careful:
 Create a normal user for private apps only:
 
 ```bash
-ADMIN_NAME='admindsaw'
+ADMIN_NAME='__SET_ADMIN_ACCOUNT__'
 ACCOUNT_ID='alice'
 DISPLAY_NAME='Alice Example'
 PRIMARY_EMAIL='alice@example.com'
@@ -347,10 +411,10 @@ kanidm person update "$ACCOUNT_ID" --mail "$PRIMARY_EMAIL" --url "$SERVER_URL" -
 kanidm group add-members users "$ACCOUNT_ID" --url "$SERVER_URL" --name "$ADMIN_NAME"
 ```
 
-Create a user who should also access fileshare:
+Create a user who should also access files:
 
 ```bash
-ADMIN_NAME='admindsaw'
+ADMIN_NAME='__SET_ADMIN_ACCOUNT__'
 ACCOUNT_ID='bob'
 DISPLAY_NAME='Bob Example'
 PRIMARY_EMAIL='bob@example.com'

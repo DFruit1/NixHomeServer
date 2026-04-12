@@ -58,8 +58,12 @@ require_fixed secrets/agenix.nix 'paperlessClientSecret = { file = ./paperlessCl
   "Paperless client secret must remain readable by both Kanidm provisioning and Paperless."
 require_fixed secrets/agenix.nix 'absClientSecret = { file = ./absClientSecret.age; owner = "kanidm"; group = "audiobookshelf"; mode = "0440"; };' \
   "Audiobookshelf client secret must remain readable by both Kanidm provisioning and Audiobookshelf."
+require_fixed secrets/agenix.nix 'absBootstrapPass = { file = ./absBootstrapPass.age; owner = "root"; mode = "0400"; };' \
+  "Audiobookshelf bootstrap password must remain mounted as a root-only break-glass secret."
 require_fixed secrets/agenix.nix 'copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };' \
   "Copyparty client secret must remain owned by copyparty."
+require_fixed secrets/agenix.nix 'kavitaClientSecret = { file = ./kavitaClientSecret.age; owner = "kanidm"; group = "kavita"; mode = "0440"; };' \
+  "Kavita client secret must remain readable by both Kanidm provisioning and Kavita."
 require_fixed secrets/agenix.nix 'kavitaTokenKey = { file = ./kavitaTokenKey.age; owner = "kavita"; mode = "0400"; };' \
   "Kavita token key must remain owned by kavita."
 require_fixed secrets/agenix.nix 'oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };' \
@@ -83,6 +87,10 @@ require_fixed modules/paperless/default.nix 'config.age.secrets.paperlessClientS
   "Paperless must consume its OIDC client secret from agenix."
 require_fixed modules/audiobookshelf/default.nix 'config.age.secrets.absClientSecret.path' \
   "Audiobookshelf must consume its OIDC client secret from agenix."
+require_fixed modules/audiobookshelf/default.nix 'config.age.secrets.absBootstrapPass.path' \
+  "Audiobookshelf root bootstrap must consume its local break-glass password from agenix."
+require_fixed modules/kavita/default.nix 'config.age.secrets.kavitaClientSecret.path' \
+  "Kavita must consume its OIDC client secret from agenix."
 require_fixed modules/kavita/default.nix 'tokenKeyFile = config.age.secrets.kavitaTokenKey.path;' \
   "Kavita must consume its token key from agenix."
 require_fixed modules/oauth2-proxy/default.nix 'clientSecret = null;' \

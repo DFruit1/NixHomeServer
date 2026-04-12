@@ -5,16 +5,16 @@
 
 Access model (current):
   - Public internet access is intentionally limited to:
-      * fileshare.<domain>
-      * id.<domain>  (required for the public fileshare auth flow)
-  - App hostnames such as paperless, photoshare (Immich), and audiobookshelf
+      * files.<domain>
+      * id.<domain>  (required for the public files auth flow)
+  - App hostnames such as paperless, photos (Immich), and audiobooks
     are intended to remain NetBird-only.
-  - kavita, jellyfin, and jellyseerr follow the same NetBird-only policy.
+  - books, video, and jellyseerr follow the same NetBird-only policy.
   - Caddy remains the local HTTP policy boundary; Cloudflare Tunnel only
     publishes the minimal public subset.
-  - In Cloudflare, only keep public tunnel/DNS exposure for `fileshare` and
+  - In Cloudflare, only keep public tunnel/DNS exposure for `files` and
     `id` unless you intentionally want broader internet access.
-  - Public Cloudflare exposure should stay limited to `id`.<domain> and `fileshare`.<domain>.
+  - Public Cloudflare exposure should stay limited to `id`.<domain> and `files`.<domain>.
   - Private app DNS answers should point at the server NetBird address so the
     same hostnames behave the same way on and off the home LAN.
   - ACME uses DNS-01, so public `80`/`443` ingress is not required.
@@ -125,6 +125,10 @@ You can stage it as `CLOUDFLARE_DNS_API_TOKEN=<token>`.
 
 `kavitaTokenKey.age` is generated automatically, encrypted with agenix, and
 mounted for `services.kavita.tokenKeyFile`.
+`kavitaClientSecret.age` is also generated automatically and shared between
+Kanidm provisioning and Kavita's OIDC bootstrap.
+`absBootstrapPass.age` is generated automatically and used only to bootstrap a
+local Audiobookshelf root record for `vars.kanidmAdminUser`.
 
 On server:
 # install -d -m 0700 /etc/agenix
@@ -216,7 +220,7 @@ Important:
   - After bootstrap, create a real person account for yourself.
   - Add that person to `idm_admins` if it should manage people and groups.
   - Add that person to `users` for private app access.
-  - Add that person to `fileshare_users` for fileshare access.
+  - Add that person to `fileshare_users` for files access.
   - In Kanidm 1.9, use the `kanidm` CLI for user creation and membership
     changes; the browser admin pages are not a reliable write workflow yet.
   - See `documentation/kanidm_cli.md` for a command reference with guarded
@@ -226,16 +230,19 @@ OIDC clients used by modules:
   - immich-web
   - paperless-web
   - abs-web
+  - kavita-web
   - oauth2-proxy
-These four clients are provisioned automatically from the active NixOS config
+These five clients are provisioned automatically from the active NixOS config
 and their agenix-managed secrets. Treat them as Nix-managed state rather than
 editing them manually in the Kanidm UI after deploy.
 Create or maintain access groups as needed:
-  - fileshare_users controls who can log into the public fileshare flow
-Manage fileshare access by `fileshare_users` membership rather than by manually
+  - fileshare_users controls who can log into the public files flow
+  - kavita-login grants Kavita sign-in via OIDC role sync
+  - kavita-admin grants Kavita admin via OIDC role sync
+Manage files access by `fileshare_users` membership rather than by manually
 editing the `oauth2-proxy` Kanidm client after deploy.
 Copyparty itself is not a direct OIDC client in the current design; the public
-`fileshare.<domain>` login flow authenticates at `oauth2-proxy`.
+`files.<domain>` login flow authenticates at `oauth2-proxy`.
 Application admin/bootstrap note:
   - Kanidm authenticates users but does not assign each app's internal
     admin/superuser role.
@@ -246,9 +253,17 @@ Application admin/bootstrap note:
   - This repo patches Paperless-ngx so the Kanidm button stays visible on the
     first-run signup page, and the first social-login user is promoted to
     Paperless superuser.
+  - Audiobookshelf is bootstrapped with a local root record for
+    `vars.kanidmAdminUser`; use that same Kanidm username on first sign-in so
+    the app links to the existing root account instead of creating a regular
+    user.
+  - Kavita now has a native Kanidm OIDC client. Sign-in is granted by
+    `kavita-login`; admin is granted by `kavita-admin`.
   - Paperless' current OIDC client does not send PKCE, so this repo disables
     PKCE enforcement only for the `paperless-web` confidential client.
-  - For fileshare, always start at `https://fileshare.<domain>`, not plain
+  - Jellyfin remains a shared local-account application in the current setup;
+    it is not wired into the same native OIDC flow as the other apps.
+  - For files, always start at `https://files.<domain>`, not plain
     `http://`, because OAuth2 Proxy uses an HTTPS-only state cookie.
 
 Current bootstrap note:
@@ -266,12 +281,12 @@ Current bootstrap note:
 ─────────────────────────────────────────────────────────────────────
 - https://id.<domain>
 - https://paperless.<domain>
-- https://audiobookshelf.<domain>
-- https://photoshare.<domain>
-- https://kavita.<domain>
-- https://jellyfin.<domain>
+- https://audiobooks.<domain>
+- https://photos.<domain>
+- https://books.<domain>
+- https://video.<domain>
 - https://jellyseerr.<domain>
-- https://fileshare.<domain>
+- https://files.<domain>
 
 Also verify:
 # systemctl --failed
@@ -293,35 +308,35 @@ Networking and exposure checks:
   and the configured NetBird/WireGuard UDP port.
 - Confirm DNS (53) and private HTTPS (443) are reachable only over the NetBird
   interface.
-- Confirm `id.<domain>` and `fileshare.<domain>` are the only public
+- Confirm `id.<domain>` and `files.<domain>` are the only public
   Cloudflare-exposed endpoints.
-- Confirm `paperless.<domain>`, `photoshare.<domain>`, and
-  `audiobookshelf.<domain>` remain NetBird-only.
-- Confirm `kavita.<domain>`, `jellyfin.<domain>`, and
+- Confirm `paperless.<domain>`, `photos.<domain>`, and
+  `audiobooks.<domain>` remain NetBird-only.
+- Confirm `books.<domain>`, `video.<domain>`, and
   `jellyseerr.<domain>` remain NetBird-only.
 
 Public endpoints expected from the internet:
 - https://id.<domain>
-- https://fileshare.<domain>
+- https://files.<domain>
 
 Internal-only endpoints expected over NetBird:
 - https://paperless.<domain>
-- https://audiobookshelf.<domain>
-- https://photoshare.<domain>
-- https://kavita.<domain>
-- https://jellyfin.<domain>
+- https://audiobooks.<domain>
+- https://photos.<domain>
+- https://books.<domain>
+- https://video.<domain>
 - https://jellyseerr.<domain>
 
 From a non-NetBird external network, only `id.<domain>` and
-`fileshare.<domain>` should resolve/respond publicly.
+`files.<domain>` should resolve/respond publicly.
 
 Identity, routing, and secret checks:
 - Confirm Kanidm loads at `https://id.<domain>` with a valid certificate chain.
-- Test the public `fileshare.<domain>` OAuth2 Proxy flow end to end.
+- Test the public `files.<domain>` OAuth2 Proxy flow end to end.
 - Test Paperless OIDC login at `https://paperless.<domain>`.
-- Confirm Immich is only served at `https://photoshare.<domain>`.
-- Confirm Kavita is only served at `https://kavita.<domain>`.
-- Confirm Jellyfin is only served at `https://jellyfin.<domain>`.
+- Confirm Immich is only served at `https://photos.<domain>`.
+- Confirm Kavita is only served at `https://books.<domain>`.
+- Confirm Jellyfin is only served at `https://video.<domain>`.
 - Confirm Jellyseerr is only served at `https://jellyseerr.<domain>`.
 - Confirm there are no lingering redirects or references to `immich.<domain>`.
 # systemctl status netbird-main
@@ -335,7 +350,7 @@ Identity, routing, and secret checks:
 DNS distribution note:
 - The server Unbound instance serves the private app records on the NetBird
   interface, and those private names resolve to the server `nb0` address.
-- `id.<domain>` and `fileshare.<domain>` are intentionally left to recurse to
+- `id.<domain>` and `files.<domain>` are intentionally left to recurse to
   the public Cloudflare Tunnel records.
 - The router does not need split-DNS awareness for the home-server domain if
   NetBird distributes the server `nb0` address as the client DNS resolver.
@@ -344,13 +359,13 @@ DNS distribution note:
 - Useful workstation checks:
   `nmcli dev show | sed -n '/IP4.DNS/p;/IP4.DOMAIN/p'`
   `nix shell nixpkgs#bind --command dig +short @100.72.113.237 paperless.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 photoshare.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 audiobookshelf.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 kavita.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 jellyfin.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 photos.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 audiobooks.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 books.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 video.sydneybasiniot.org`
   `nix shell nixpkgs#bind --command dig +short @100.72.113.237 jellyseerr.sydneybasiniot.org`
   `nix shell nixpkgs#bind --command dig +short @100.72.113.237 id.sydneybasiniot.org`
-  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 fileshare.sydneybasiniot.org`
+  `nix shell nixpkgs#bind --command dig +short @100.72.113.237 files.sydneybasiniot.org`
 - For NetBird peers, configure DNS in the NetBird admin plane:
   add a nameserver using the server `nb0` address from
   `ip -brief addr show nb0`, assign it to the relevant peer groups, and make

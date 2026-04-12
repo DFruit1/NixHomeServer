@@ -8,7 +8,7 @@
     scope = "openid profile email groups";
     email.domains = [ "*" ];
     upstream = [ "http://127.0.0.1:${toString vars.copypartyPort}" ];
-    redirectURL = "https://fileshare.${vars.domain}/oauth2/callback";
+    redirectURL = "https://${vars.filesDomain}/oauth2/callback";
     httpAddress = "127.0.0.1:${toString vars.oauth2ProxyPort}";
     clientID = "oauth2-proxy";
     clientSecret = null;

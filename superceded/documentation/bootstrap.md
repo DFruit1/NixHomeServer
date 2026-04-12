@@ -14,12 +14,12 @@ Public exposure policy:
 
 - **Cloudflare Tunnel** is intentionally limited to the public endpoints that must work from the internet.
 - The current public set is:
-  - `fileshare.<domain>`
-  - `id.<domain>` (to support the public auth flow used by `fileshare`)
-- Application hostnames such as `paperless`, `photoshare` (Immich), and `audiobookshelf` are intended to stay **NetBird-only**.
-- `kavita`, `jellyfin`, and `jellyseerr` follow the same **NetBird-only** policy and are routed locally through Caddy plus Unbound only.
+  - `files.<domain>`
+  - `id.<domain>` (to support the public auth flow used by `files`)
+- Application hostnames such as `paperless`, `photos` (Immich), and `audiobooks` are intended to stay **NetBird-only**.
+- `books`, `video`, and `jellyseerr` follow the same **NetBird-only** policy and are routed locally through Caddy plus Unbound only.
 - Caddy still fronts the HTTP routing locally; the tunnel only publishes the small public subset.
-- In Cloudflare, only keep public tunnel/DNS exposure for `fileshare.<domain>` and `id.<domain>` unless you are intentionally expanding internet access.
+- In Cloudflare, only keep public tunnel/DNS exposure for `files.<domain>` and `id.<domain>` unless you are intentionally expanding internet access.
 - Internal-only app hostnames should not retain public Cloudflare routes that would expose them to the internet or return tunnel 404s.
 - Private app DNS answers intentionally point at the server NetBird address, so the same FQDNs work the same way on and off the home LAN as long as the client is enrolled in NetBird.
 - ACME uses DNS-01, so no public `80`/`443` exposure is required for certificate issuance.
@@ -78,7 +78,8 @@ If the repository already contains encrypted secrets, do not generate a fresh pr
 ./scripts/gen-all-secrets.sh
 ```
 
-This creates encrypted secrets for Kanidm, app OIDC clients, OAuth2 Proxy, and the Kavita token key.
+This creates encrypted secrets for Kanidm, app OIDC clients, OAuth2 Proxy, the
+Audiobookshelf bootstrap password, and the Kavita token and OIDC keys.
 
 Manual secrets still required in `secrets/top/` before rerunning script:
 
@@ -94,6 +95,9 @@ You can stage it as:
 After encryption, remove cleartext files from `secrets/top/`.
 
 `kavitaTokenKey.age` is generated automatically, encrypted with agenix, and mounted for `services.kavita.tokenKeyFile`.
+`kavitaClientSecret.age` is generated automatically, encrypted with agenix, and shared between Kanidm provisioning and Kavita's OIDC bootstrap.
+`absBootstrapPass.age` is generated automatically and used only to bootstrap a
+local Audiobookshelf root record for `vars.kanidmAdminUser`.
 
 ---
 
@@ -172,7 +176,7 @@ kanidm login --url https://id.<domain> --name admindsaw
 kanidm person create <user> "<Display Name>" --url https://id.<domain>
 kanidm person update <user> --mail <user@example.com> --url https://id.<domain>
 kanidm group add-members users <user> --url https://id.<domain>
-# optional, for fileshare access
+# optional, for files access
 kanidm group add-members fileshare_users <user> --url https://id.<domain>
 # optional, for delegated user/group administration
 kanidm group add-members idm_admins <user> --url https://id.<domain>
@@ -189,7 +193,7 @@ Important:
 - If you want that person to manage other people and groups, add it to
   `idm_admins`.
 - If you want that person to access private apps, add it to `users`.
-- If you want that person to access fileshare through OAuth2 Proxy, add it to
+- If you want that person to access files through OAuth2 Proxy, add it to
   `fileshare_users`.
 - In Kanidm 1.9, the browser admin pages are still effectively read-only for
   day-to-day user creation. Treat `kanidm` CLI as the supported path for
@@ -202,20 +206,37 @@ The stack provisions these OIDC clients in Kanidm:
 - `immich-web`
 - `paperless-web`
 - `abs-web`
+- `kavita-web`
 - `oauth2-proxy`
 
-All four clients above are provisioned automatically from the NixOS config and
+All five clients above are provisioned automatically from the NixOS config and
 their agenix-managed secrets. Treat them as Nix-managed state rather than
 editing them manually in the Kanidm UI after deploy.
 
 The config also provisions a `fileshare_users` Kanidm group for the public
-fileshare flow. Add users to that group if they should be allowed through
+files flow. Add users to that group if they should be allowed through
 `oauth2-proxy`. Membership is intentionally not overwritten by provisioning, so
 day-to-day access control stays a group-management task.
 
+The config also provisions `kavita-login` and `kavita-admin` Kanidm groups for
+Kavita's OIDC role sync. Add a user to `kavita-login` to allow sign-in and to
+`kavita-admin` if that user should administer Kavita.
+
+Audiobookshelf needs one extra bootstrap step in config. The app only treats
+itself as initialized when a local `root` user exists, and its OIDC
+auto-provision flow creates normal users rather than a root account. This repo
+therefore creates a local Audiobookshelf root record for
+`vars.kanidmAdminUser` with a random agenix-managed password, then relies on
+username matching so the first Kanidm login for that same username links to the
+existing root record.
+
 Copyparty itself is not a direct OIDC client in the current design. The public
-`fileshare.<domain>` flow authenticates at `oauth2-proxy`, which then forwards
+`files.<domain>` flow authenticates at `oauth2-proxy`, which then forwards
 the authenticated request to Copyparty.
+
+Jellyfin remains the exception in this stack. It does not have the same clean
+native OIDC path here, so treat it as a shared local-account app unless you
+intentionally move it to a separate auth plugin workflow later.
 
 Application admin/bootstrap note:
 
@@ -235,7 +256,10 @@ Application admin/bootstrap note:
   Paperless superuser.
   Paperless' current OIDC client does not send PKCE, so this repo explicitly
   disables PKCE enforcement only for the `paperless-web` confidential client.
-- For fileshare, use `https://fileshare.<domain>`, not plain `http://`.
+- In Audiobookshelf, this repo pre-creates a local root record for
+  `vars.kanidmAdminUser` so the first Kanidm login with that username can link
+  to the existing root account instead of creating a new regular user.
+- For files, use `https://files.<domain>`, not plain `http://`.
   OAuth2 Proxy uses an HTTPS-only state cookie, so starting the flow on HTTP
   will break the login.
 
@@ -249,9 +273,9 @@ local Caddy/Kanidm path directly instead of going out through Cloudflare.
 
 Use redirect/callback URLs expected by each module.
 
-For the current public routing model, `oauth2-proxy` and the public `fileshare` flow depend on `https://id.<domain>` remaining reachable from the internet.
+For the current public routing model, `oauth2-proxy` and the public `files` flow depend on `https://id.<domain>` remaining reachable from the internet.
 
-From a non-NetBird external network, only `https://id.<domain>` and `https://fileshare.<domain>` should resolve/respond publicly; internal app hostnames should not be publicly published.
+From a non-NetBird external network, only `https://id.<domain>` and `https://files.<domain>` should resolve/respond publicly; internal app hostnames should not be publicly published.
 
 The NetBird peer should enroll automatically from `netbirdSetupKey` during
 startup. A brief `Disconnected` state while `netbird-main-login` runs is
@@ -283,7 +307,7 @@ Current private-DNS model:
 
 - The server Unbound instance is authoritative for the private app records under `<domain>`.
 - Those private records resolve to the server NetBird address from `vars.nbIP`, not the LAN address.
-- `id.<domain>` and `fileshare.<domain>` are intentionally not overridden in Unbound, so they recurse to the public Cloudflare Tunnel records.
+- `id.<domain>` and `files.<domain>` are intentionally not overridden in Unbound, so they recurse to the public Cloudflare Tunnel records.
 - The firewall only exposes DNS on `nb0`, so private name resolution is expected to happen through NetBird rather than by pointing the LAN router directly at the server.
 - Devices that are not enrolled in NetBird will only be able to use the public tunnel hostnames.
 
@@ -292,13 +316,13 @@ Quick checks:
 ```bash
 nmcli dev show | sed -n '/IP4.DNS/p;/IP4.DOMAIN/p'
 nix shell nixpkgs#bind --command dig +short @100.72.113.237 paperless.sydneybasiniot.org
-nix shell nixpkgs#bind --command dig +short @100.72.113.237 photoshare.sydneybasiniot.org
-nix shell nixpkgs#bind --command dig +short @100.72.113.237 audiobookshelf.sydneybasiniot.org
-nix shell nixpkgs#bind --command dig +short @100.72.113.237 kavita.sydneybasiniot.org
-nix shell nixpkgs#bind --command dig +short @100.72.113.237 jellyfin.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @100.72.113.237 photos.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @100.72.113.237 audiobooks.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @100.72.113.237 books.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @100.72.113.237 video.sydneybasiniot.org
 nix shell nixpkgs#bind --command dig +short @100.72.113.237 jellyseerr.sydneybasiniot.org
 nix shell nixpkgs#bind --command dig +short @100.72.113.237 id.sydneybasiniot.org
-nix shell nixpkgs#bind --command dig +short @100.72.113.237 fileshare.sydneybasiniot.org
+nix shell nixpkgs#bind --command dig +short @100.72.113.237 files.sydneybasiniot.org
 ```
 
 For NetBird peers, DNS still has to be distributed from the NetBird management plane. The local server config already permits DNS on `nb0`, but peers will not use it until a nameserver is configured in NetBird. If `netbird-main status` shows `Nameservers: 0/0 Available`, mesh DNS is not configured yet.
@@ -321,7 +345,7 @@ The simplest stable model is:
 
 - Enrolled clients: NetBird hands out the server `nb0` address as DNS
 - The home LAN router does not need split-DNS awareness for the private app names
-- Public internet: only `id.<domain>` and `fileshare.<domain>` remain publicly reachable through Cloudflare Tunnel
+- Public internet: only `id.<domain>` and `files.<domain>` remain publicly reachable through Cloudflare Tunnel
 
 ---
 
@@ -348,18 +372,18 @@ Networking and exposure:
 
 - Confirm the intended globally reachable service ports are `22/tcp` for SSH and the configured NetBird/WireGuard UDP port.
 - Confirm DNS (`53`) and private HTTPS (`443`) are reachable only over the NetBird interface.
-- Confirm `id.<domain>` and `fileshare.<domain>` are the only publicly exposed Cloudflare endpoints.
-- Confirm `paperless.<domain>`, `photoshare.<domain>`, and `audiobookshelf.<domain>` remain NetBird-only.
-- Confirm `kavita.<domain>`, `jellyfin.<domain>`, and `jellyseerr.<domain>` also remain NetBird-only.
+- Confirm `id.<domain>` and `files.<domain>` are the only publicly exposed Cloudflare endpoints.
+- Confirm `paperless.<domain>`, `photos.<domain>`, and `audiobooks.<domain>` remain NetBird-only.
+- Confirm `books.<domain>`, `video.<domain>`, and `jellyseerr.<domain>` also remain NetBird-only.
 
 Identity and app routing:
 
 - Open `https://id.<domain>` and confirm Kanidm loads with a valid certificate chain.
-- Test the public `fileshare.<domain>` OAuth2 Proxy flow end to end.
+- Test the public `files.<domain>` OAuth2 Proxy flow end to end.
 - Test Paperless OIDC login at `https://paperless.<domain>`.
-- Confirm Immich is only served at `https://photoshare.<domain>`.
-- Confirm Kavita is only served at `https://kavita.<domain>`.
-- Confirm Jellyfin is only served at `https://jellyfin.<domain>`.
+- Confirm Immich is only served at `https://photos.<domain>`.
+- Confirm Kavita is only served at `https://books.<domain>`.
+- Confirm Jellyfin is only served at `https://video.<domain>`.
 - Confirm Jellyseerr is only served at `https://jellyseerr.<domain>`.
 - Confirm there are no lingering redirects or references to `immich.<domain>`.
 
@@ -372,7 +396,7 @@ ls -l /run/agenix
 ```
 
 - Confirm Unbound returns the expected local records over NetBird.
-- Confirm private hostnames resolve to the server NetBird IP and `id.<domain>` / `fileshare.<domain>` recurse to Cloudflare.
+- Confirm private hostnames resolve to the server NetBird IP and `id.<domain>` / `files.<domain>` recurse to Cloudflare.
 - Confirm the NetBird peer enrolls and gets the expected mesh IP.
 - Confirm required agenix secrets are mounted under `/run/agenix`.
 - If you generated secrets locally, ensure `secrets/top/` is empty afterwards.

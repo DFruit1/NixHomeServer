@@ -7,7 +7,8 @@ rec {
   ############################################################
   hostname = "server";
   domain = "sydneybasiniot.org";
-  email = "dsaw@tuta.io";
+  kanidmAdminUser = "admindsaw";
+  kanidmAdminEmail = "dsaw@tuta.io";
   serverSSHPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
 
   # LAN & NetBird addresses for server
@@ -78,8 +79,11 @@ rec {
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
   kanidmUserInfoUrl = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}/userinfo";
-  kavitaDomain = "kavita.${domain}";
-  jellyfinDomain = "jellyfin.${domain}";
+  photosDomain = "photos.${domain}";
+  audiobooksDomain = "audiobooks.${domain}";
+  filesDomain = "files.${domain}";
+  kavitaDomain = "books.${domain}";
+  jellyfinDomain = "video.${domain}";
   jellyseerrDomain = "jellyseerr.${domain}";
 
 }

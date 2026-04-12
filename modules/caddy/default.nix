@@ -5,7 +5,7 @@
     enable = true;
 
     ## Caddy will register this e-mail with Let’s Encrypt
-    email = "${vars.email}";
+    email = vars.kanidmAdminEmail;
 
     virtualHosts = {
       "${vars.domain}" = {
@@ -45,14 +45,14 @@
         '';
       };
 
-      "audiobookshelf.${vars.domain}" = {
+      "${vars.audiobooksDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           reverse_proxy http://127.0.0.1:${toString vars.audiobookshelfPort}
         '';
       };
 
-      "fileshare.${vars.domain}" = {
+      "${vars.filesDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           @edge_http header X-Forwarded-Proto http
@@ -61,7 +61,7 @@
         '';
       };
 
-      "photoshare.${vars.domain}" = {
+      "${vars.photosDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           reverse_proxy http://127.0.0.1:${toString vars.immichPort}

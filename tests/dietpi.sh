@@ -23,12 +23,12 @@ require_fixed vars.nix 'enableDietPiCompanion = true;' \
   "DietPi runtime checks require enableDietPiCompanion = true in vars.nix."
 require_fixed vars.nix "piLanIP = \"${pi_lan_ip}\";" \
   "vars.nix must define piLanIP for the DietPi companion."
-require_match documentation/bootstrap.md 'DietPi' \
-  "Bootstrap guide must document the DietPi companion role."
-require_match documentation/bootstrap.md 'Put DHCP \+ primary LAN DNS filtering \(AdGuard Home\) on DietPi\.' \
-  "Bootstrap guide must keep DietPi as the primary DHCP/LAN DNS host."
-require_match documentation/bootstrap.md 'Run Unbound on both hosts for resolver redundancy\.' \
-  "Bootstrap guide must keep the dual-resolver DietPi guidance."
+require_match documentation/networking-and-access.md 'DietPi' \
+  "Networking guide must document the DietPi companion role."
+require_match documentation/networking-and-access.md 'DietPi: DHCP \+ primary LAN DNS filtering \(AdGuard Home\)\.' \
+  "Networking guide must keep DietPi as the primary DHCP/LAN DNS host."
+require_match documentation/networking-and-access.md 'NixHomeServer: app/identity/storage \+ resolver role\.' \
+  "Networking guide must keep the dual-resolver DietPi guidance."
 
 ssh_opts=(
   -o BatchMode=yes

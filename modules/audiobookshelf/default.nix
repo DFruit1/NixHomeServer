@@ -92,6 +92,66 @@
     '';
   };
 
+  systemd.services.audiobookshelf-root-bootstrap = {
+    description = "Bootstrap Audiobookshelf root account for OIDC linking";
+    wantedBy = [ "multi-user.target" ];
+    after = [
+      "audiobookshelf.service"
+      "audiobookshelf-oidc-bootstrap.service"
+    ];
+    wants = [
+      "audiobookshelf.service"
+      "audiobookshelf-oidc-bootstrap.service"
+    ];
+    path = with pkgs; [
+      curl
+      jq
+    ];
+    script = ''
+      set -euo pipefail
+
+      status_json=""
+      for _ in $(seq 1 30); do
+        if status_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
+          "http://127.0.0.1:${toString vars.audiobookshelfPort}/status")"; then
+          break
+        fi
+        sleep 1
+      done
+
+      [[ -n "$status_json" ]] || {
+        echo "Audiobookshelf status endpoint did not become ready" >&2
+        exit 1
+      }
+
+      if printf '%s' "$status_json" | ${pkgs.jq}/bin/jq -e '.isInit == true' >/dev/null; then
+        exit 0
+      fi
+
+      bootstrap_password="$(< ${config.age.secrets.absBootstrapPass.path})"
+
+      ${pkgs.curl}/bin/curl \
+        --silent \
+        --show-error \
+        --fail \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        --data "$(${pkgs.jq}/bin/jq -cn \
+          --arg username '${vars.kanidmAdminUser}' \
+          --arg password "$bootstrap_password" \
+          '{ newRoot: { username: $username, password: $password } }')" \
+        "http://127.0.0.1:${toString vars.audiobookshelfPort}/init"
+
+      status_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
+        "http://127.0.0.1:${toString vars.audiobookshelfPort}/status")"
+
+      printf '%s' "$status_json" | ${pkgs.jq}/bin/jq -e '.isInit == true' >/dev/null || {
+        echo "Audiobookshelf root bootstrap did not complete successfully" >&2
+        exit 1
+      }
+    '';
+  };
+
   systemd.tmpfiles.rules = [
     "d ${vars.dataRoot}/audiobookshelf 0755 audiobookshelf audiobookshelf -"
   ];

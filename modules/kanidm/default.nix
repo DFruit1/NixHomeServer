@@ -1,5 +1,31 @@
 { lib, config, pkgs, vars, ... }:
 
+let
+  mkManualGroup =
+    members:
+    {
+      inherit members;
+      overwriteMembers = false;
+    };
+
+  kanidmUserTuiData = pkgs.runCommandLocal "kanidm-user-tui-data" { } ''
+    mkdir -p "$out/scripts"
+    cp ${../../scripts/kanidm-create-user.sh} "$out/scripts/kanidm-create-user.sh"
+    chmod 0555 "$out/scripts/kanidm-create-user.sh"
+    cp ${../../vars.nix} "$out/vars.nix"
+    chmod 0444 "$out/vars.nix"
+  '';
+
+  kanidmUserTui = pkgs.writeShellApplication {
+    name = "kanidm-user-tui";
+    runtimeInputs = [ pkgs.kanidm_1_9 pkgs.newt pkgs.nix ];
+    text = ''
+      export KANIDM_TUI_REPO_ROOT=${lib.escapeShellArg (toString kanidmUserTuiData)}
+      exec ${lib.escapeShellArg "${toString kanidmUserTuiData}/scripts/kanidm-create-user.sh"} "$@"
+    '';
+  };
+in
+
 {
   assertions = [
     {
@@ -37,21 +63,30 @@
       instanceUrl = "https://localhost:${toString vars.kanidmPort}";
       acceptInvalidCerts = true;
 
-      groups.fileshare_users = {
-        overwriteMembers = false;
+      persons.${vars.kanidmAdminUser} = {
+        displayName = vars.kanidmAdminUser;
+        mailAddresses = [ vars.kanidmAdminEmail ];
       };
 
-      groups.users = {
-        overwriteMembers = false;
-      };
+      groups.fileshare_users = mkManualGroup [ vars.kanidmAdminUser ];
+      groups."immich-users" = mkManualGroup [ ];
+      groups."immich-admin" = mkManualGroup [ vars.kanidmAdminUser ];
+      groups."paperless-users" = mkManualGroup [ ];
+      groups."paperless-admin" = mkManualGroup [ vars.kanidmAdminUser ];
+      groups."audiobookshelf-users" = mkManualGroup [ ];
+      groups."audiobookshelf-admin" = mkManualGroup [ vars.kanidmAdminUser ];
+      groups."kavita-admin" = mkManualGroup [ vars.kanidmAdminUser ];
+      groups."kavita-login" = mkManualGroup [ ];
+      groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
       systems.oauth2.immich-web = {
         displayName = "Immich";
-        originUrl = "https://photoshare.${vars.domain}/auth/login";
-        originLanding = "https://photoshare.${vars.domain}";
+        originUrl = "https://${vars.photosDomain}/auth/login";
+        originLanding = "https://${vars.photosDomain}";
         basicSecretFile = config.age.secrets.immichClientSecret.path;
         preferShortUsername = true;
-        scopeMaps.users = [ "openid" "profile" "email" ];
+        scopeMaps."immich-users" = [ "openid" "profile" "email" ];
+        scopeMaps."immich-admin" = [ "openid" "profile" "email" ];
       };
 
       systems.oauth2.paperless-web = {
@@ -61,25 +96,40 @@
         basicSecretFile = config.age.secrets.paperlessClientSecret.path;
         allowInsecureClientDisablePkce = true;
         preferShortUsername = true;
-        scopeMaps.users = [ "openid" "profile" "email" ];
+        scopeMaps."paperless-users" = [ "openid" "profile" "email" ];
+        scopeMaps."paperless-admin" = [ "openid" "profile" "email" ];
       };
 
       systems.oauth2.abs-web = {
         displayName = "Audiobookshelf";
         originUrl = [
-          "https://audiobookshelf.${vars.domain}/audiobookshelf/auth/openid/callback"
-          "https://audiobookshelf.${vars.domain}/audiobookshelf/auth/openid/mobile-redirect"
+          "https://${vars.audiobooksDomain}/audiobookshelf/auth/openid/callback"
+          "https://${vars.audiobooksDomain}/audiobookshelf/auth/openid/mobile-redirect"
         ];
-        originLanding = "https://audiobookshelf.${vars.domain}/audiobookshelf/";
+        originLanding = "https://${vars.audiobooksDomain}/audiobookshelf/";
         basicSecretFile = config.age.secrets.absClientSecret.path;
         preferShortUsername = true;
-        scopeMaps.users = [ "openid" "profile" "email" ];
+        scopeMaps."audiobookshelf-users" = [ "openid" "profile" "email" ];
+        scopeMaps."audiobookshelf-admin" = [ "openid" "profile" "email" ];
+      };
+
+      systems.oauth2.kavita-web = {
+        displayName = "Kavita";
+        originUrl = [
+          "https://${vars.kavitaDomain}/signin-oidc"
+          "https://${vars.kavitaDomain}/signout-callback-oidc"
+        ];
+        originLanding = "https://${vars.kavitaDomain}/";
+        basicSecretFile = config.age.secrets.kavitaClientSecret.path;
+        preferShortUsername = true;
+        scopeMaps."kavita-login" = [ "openid" "profile" "email" "groups" ];
+        scopeMaps."kavita-admin" = [ "openid" "profile" "email" "groups" ];
       };
 
       systems.oauth2.oauth2-proxy = {
         displayName = "OAuth2 Proxy";
-        originUrl = "https://fileshare.${vars.domain}/oauth2/callback";
-        originLanding = "https://fileshare.${vars.domain}";
+        originUrl = "https://${vars.filesDomain}/oauth2/callback";
+        originLanding = "https://${vars.filesDomain}";
         basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;
         preferShortUsername = true;
         scopeMaps.fileshare_users = [ "openid" "profile" "email" "groups" ];
@@ -93,6 +143,11 @@
   };
 
   users.users.kanidm.extraGroups = [ "caddy" ];
+
+  environment.systemPackages = [
+    pkgs.kanidm_1_9
+    kanidmUserTui
+  ];
 
   systemd.tmpfiles.rules = [
     "d /var/lib/kanidm 0700 kanidm kanidm -"

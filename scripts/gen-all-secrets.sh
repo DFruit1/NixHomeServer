@@ -40,9 +40,11 @@ declare -A SPEC=(
   [immichClientSecret]=32
   [paperlessClientSecret]=32
   [absClientSecret]=32
+  [absBootstrapPass]=32
   [oauth2ProxyClientSecret]=32
   [oauth2ProxyCookieSecret]=32
   [copypartyClientSecret]=32
+  [kavitaClientSecret]=32
   [kavitaTokenKey]=64
 )
 

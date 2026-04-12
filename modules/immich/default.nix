@@ -8,7 +8,7 @@
     mediaLocation = "${vars.dataRoot}/immich";
     user = "immich";
     group = "immich";
-    settings.server.externalDomain = "https://photoshare.${vars.domain}";
+    settings.server.externalDomain = "https://${vars.photosDomain}";
     settings.oauth = {
       enabled = true;
       clientId = "immich-web";

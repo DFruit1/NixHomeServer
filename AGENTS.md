@@ -1,60 +1,86 @@
-# NixHomeServer – Agent Guidance
+# NixHomeServer – Agent Guidelines
 
-## Project goal
-This repository defines a reproducible NixOS home-server stack focused on:
-- secure identity and SSO (Kanidm + OAuth2 Proxy),
-- self-hosted apps (Immich, Paperless, Audiobookshelf, Copyparty),
-- reverse proxy and edge routing (Caddy + Cloudflared),
-- deterministic provisioning via flakes and module composition.
+## Purpose
 
-The primary objective is **reliability-first infrastructure** that can be rebuilt consistently from source control.
+This repository defines a reproducible NixOS home-server focused on:
 
-## Scope and architecture constraints
-- Keep service boundaries explicit (`modules/<service>/default.nix`).
-- Keep public traffic routed through the intended policy boundary (normally Caddy).
-- Keep identity and auth paths auditable; avoid implicit trust chains.
-- Prefer explicit hostnames/ports in `vars.nix` and reuse constants from there.
+* Identity & SSO (Kanidm, OAuth2 Proxy)
+* Self-hosted apps (Immich, Paperless, Audiobookshelf, Copyparty)
+* Edge routing (Caddy, Cloudflared)
 
-## Review and change expectations
-- Prefer correctness and operational safety over cleverness.
-- Keep networking and auth changes explicit and easy to audit.
-- For security-sensitive defaults, avoid broad allowances and call out trade-offs.
-- Ensure options match current NixOS naming (avoid deprecated aliases).
-- If removing a service, remove all residual references (DNS, reverse-proxy, secrets, docs, and checks).
-- After the main thread completes any substantive change, call the documentation review subagent at `.codex/agents/doc-reviewer.md` to perform a read-only review of the diff before closing the task.
-- The subagent is review-only and must not edit files; it should pass all findings and documentation recommendations back to the parent agent.
-- If the subagent finds documentation drift or missing operator guidance, the main thread should update the relevant docs before finalizing the task.
+Priority: **reliability, security, and reproducibility**
 
-## Tooling expectations
-Before running checks or scripts, ensure required tooling is present on PATH:
-- `nix` (with flakes/nix-command enabled),
-- `age`, `openssl`, `jq` (for secret workflows),
-- `rg` (for repository checks).
+---
 
-## Mandatory validation for config changes
-When changing `.nix` files or module wiring:
-1. Run `nix flake check --no-build`.
-2. Run `scripts/check-repo.sh`.
-3. Include commands and outcomes in the final summary.
+## Core Principles
 
-## Style conventions
-- Keep module files focused: one service/domain concern per file.
-- Reuse `vars.nix` for host/domain/port constants; avoid hardcoded duplicates.
-- Prefer minimal, explicit systemd and firewall settings.
+* Prefer **clarity over cleverness**
+* Keep **service boundaries explicit** (`modules/<service>/`)
+* Keep **auth and networking paths auditable**
+* Use **vars.nix for all shared constants** (domains, ports, hostnames)
 
-## Safety notes for contributors
-- Bootstrap settings (e.g., permissive SSH auth) must be clearly marked and later hardened.
-- TLS paths must be consistent across services that share certificates.
-- Never commit clear-text secrets from `secrets/top/`.
-- Treat tracked `secrets/*.age` as sensitive artifacts; avoid accidental regeneration in unrelated changes.
+---
 
-## Codex command safety
-- Repository command policy is defined in `rules.toml`.
-- Keep destructive/system-wide commands blocked or approval-gated.
-- Prefer read-only inspection commands before mutation.
+## Architecture Rules
 
-## Rebuilding config
-Rebuild the config using the below command along with sudo password 'changeme'
+* Public traffic must flow through **Caddy (policy boundary)**
+* Do not introduce implicit trust between services
+* Avoid hardcoded values — reuse `vars.nix`
+* Remove all references when deleting a service (DNS, proxy, secrets, docs)
+
+---
+
+## Security Rules
+
+* Never commit plaintext secrets
+* Treat `secrets/*.age` as sensitive
+* Keep TLS configuration consistent across services
+* Clearly mark any temporary or bootstrap-level insecure settings
+
+---
+
+## Config Change Requirements
+
+For any `.nix` change:
+
+1. Run:
+
+   ```sh
+   nix flake check --no-build
+   ```
+
+2. Run:
+
+   ```sh
+   scripts/check-repo.sh
+   ```
+
+3. Include results in summary
+
+---
+
+## Documentation Review
+
+After significant changes:
+
+* Run doc reviewer: `.codex/agents/doc-reviewer.md`
+* Apply any required documentation updates before finalizing
+
+---
+
+## Operational Notes
+
+* Keep modules focused (one concern per file)
+* Prefer minimal systemd + firewall config
+* Avoid deprecated NixOS options
+
+---
+
+## Rebuild Command
+
+Use this command, password for sudo is 'changeme'
+
+```sh
 nix run nixpkgs#nixos-rebuild -- test \
   --flake .#server \
   --target-host dsaw@192.168.0.144 \
@@ -62,4 +88,4 @@ nix run nixpkgs#nixos-rebuild -- test \
   --sudo \
   --ask-sudo-password \
   --no-reexec
-
+```

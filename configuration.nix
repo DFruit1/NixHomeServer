@@ -161,7 +161,7 @@ in
   security.acme = {
     acceptTerms = true;
     defaults = {
-      email = vars.email;
+      email = vars.kanidmAdminEmail;
       dnsProvider = "cloudflare";
       credentialsFile = config.age.secrets.cfAPIToken.path;
       # Use a public recursive resolver for DNS-01 zone discovery. The local

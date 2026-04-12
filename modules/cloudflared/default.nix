@@ -23,9 +23,9 @@
           service = "https://127.0.0.1:443";
           originRequest.originServerName = vars.kanidmDomain;
         };
-        "fileshare.${vars.domain}" = {
+        "${vars.filesDomain}" = {
           service = "https://127.0.0.1:443";
-          originRequest.originServerName = "fileshare.${vars.domain}";
+          originRequest.originServerName = vars.filesDomain;
         };
       };
       default = "http_status:404";

@@ -20,16 +20,16 @@ require_match modules/cloudflared/default.nix 'service = "https://127\.0\.0\.1:4
   "Cloudflare tunnel must target local HTTPS to avoid looping on Caddy's HTTP-to-HTTPS redirect."
 require_match modules/cloudflared/default.nix 'originRequest\.originServerName = vars\.kanidmDomain;' \
   "Cloudflare tunnel must verify the Kanidm hostname against the local TLS certificate."
-require_match modules/cloudflared/default.nix '"fileshare\.\$\{vars\.domain\}" = \{' \
-  "Cloudflare tunnel must publish fileshare.<domain> via local Caddy."
-require_match modules/cloudflared/default.nix 'originRequest\.originServerName = "fileshare\.\$\{vars\.domain\}";' \
-  "Cloudflare tunnel must verify the fileshare hostname against the local TLS certificate."
+require_match modules/cloudflared/default.nix '"\$\{vars\.filesDomain\}" = \{' \
+  "Cloudflare tunnel must publish files.<domain> via local Caddy."
+require_match modules/cloudflared/default.nix 'originRequest\.originServerName = vars\.filesDomain;' \
+  "Cloudflare tunnel must verify the files hostname against the local TLS certificate."
 forbid_match modules/cloudflared/default.nix '"paperless\.\$\{vars\.domain\}"' \
   "Paperless must remain private and not be exposed through the Cloudflare tunnel."
-forbid_match modules/cloudflared/default.nix '"photoshare\.\$\{vars\.domain\}" = "http://127\.0\.0\.1:' \
-  "Photoshare must remain private and not be exposed through the Cloudflare tunnel."
-forbid_match modules/cloudflared/default.nix '"audiobookshelf\.\$\{vars\.domain\}"' \
-  "Audiobookshelf must remain private and not be exposed through the Cloudflare tunnel."
+forbid_match modules/cloudflared/default.nix '"\$\{vars\.photosDomain\}" = "http://127\.0\.0\.1:' \
+  "Photos must remain private and not be exposed through the Cloudflare tunnel."
+forbid_match modules/cloudflared/default.nix '"\$\{vars\.audiobooksDomain\}"' \
+  "Audiobooks must remain private and not be exposed through the Cloudflare tunnel."
 forbid_match modules/cloudflared/default.nix '\$\{vars\.kavitaDomain\}" = "http://127\.0\.0\.1:' \
   "Kavita must remain private and not be exposed through the Cloudflare tunnel."
 forbid_match modules/cloudflared/default.nix '\$\{vars\.jellyfinDomain\}" = "http://127\.0\.0\.1:' \
@@ -44,14 +44,14 @@ require_fixed modules/caddy/default.nix 'tls /var/lib/acme/${vars.kanidmDomain}/
   "Caddy must use the shared ACME certificate for Kanidm."
 forbid_match modules/caddy/default.nix 'acme_dns cloudflare' \
   "Caddy must not manage Cloudflare ACME directly; certificate issuance belongs in security.acme."
-require_fixed modules/caddy/default.nix '"fileshare.${vars.domain}" = {' \
-  "Caddy must serve fileshare.<domain>."
+require_fixed modules/caddy/default.nix '"${vars.filesDomain}" = {' \
+  "Caddy must serve files.<domain>."
 require_fixed modules/caddy/default.nix 'tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem' \
   "Caddy must use the wildcard/shared site certificate for non-Kanidm hostnames."
 require_fixed modules/caddy/default.nix '"paperless.${vars.domain}" = {' \
   "Caddy must retain the internal paperless virtual host."
-require_fixed modules/caddy/default.nix '"photoshare.${vars.domain}" = {' \
-  "Caddy must retain the internal photoshare virtual host."
+require_fixed modules/caddy/default.nix '"${vars.photosDomain}" = {' \
+  "Caddy must retain the internal photos virtual host."
 require_fixed modules/caddy/default.nix '"${vars.kavitaDomain}" = {' \
   "Caddy must serve the internal Kavita hostname."
 require_fixed modules/caddy/default.nix '"${vars.jellyfinDomain}" = {' \
@@ -80,10 +80,10 @@ require_fixed modules/unbound/default.nix 'local-zone = [ "${vars.domain} transp
   "Unbound must override only the private records and recurse for public tunnel names."
 require_match modules/unbound/default.nix '"\\"paperless\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
   "Unbound must resolve paperless.<domain> to the server NetBird IP."
-require_match modules/unbound/default.nix '"\\"photoshare\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
-  "Unbound must resolve photoshare.<domain> to the server NetBird IP."
-require_match modules/unbound/default.nix '"\\"audiobookshelf\.\$\{vars\.domain\}\s+A \$\{vars\.nbIP\}\\""' \
-  "Unbound must resolve audiobookshelf.<domain> to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.photosDomain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve photos.<domain> to the server NetBird IP."
+require_match modules/unbound/default.nix '"\\"\$\{vars\.audiobooksDomain\}\s+A \$\{vars\.nbIP\}\\""' \
+  "Unbound must resolve audiobooks.<domain> to the server NetBird IP."
 require_match modules/unbound/default.nix '"\\"\$\{vars\.kavitaDomain\}\s+A \$\{vars\.nbIP\}\\""' \
   "Unbound must resolve the Kavita hostname to the server NetBird IP."
 require_match modules/unbound/default.nix '"\\"\$\{vars\.jellyfinDomain\}\s+A \$\{vars\.nbIP\}\\""' \
@@ -98,8 +98,8 @@ forbid_match modules/unbound/default.nix '"\\"immich\.\$\{vars\.domain\}\s+A \$\
   "Unbound must not retain a duplicate immich.<domain> record."
 forbid_match modules/unbound/default.nix '"\\"id\.\$\{vars\.domain\}\s+A ' \
   "Unbound must not override id.<domain>; that hostname should recurse to the public Cloudflare tunnel record."
-forbid_match modules/unbound/default.nix '"\\"fileshare\.\$\{vars\.domain\}\s+A ' \
-  "Unbound must not override fileshare.<domain>; that hostname should recurse to the public Cloudflare tunnel record."
+forbid_match modules/unbound/default.nix '"\\"files\.\$\{vars\.domain\}\s+A ' \
+  "Unbound must not override files.<domain>; that hostname should recurse to the public Cloudflare tunnel record."
 require_match modules/unbound/default.nix '"\$\{vars\.netbirdCidr\} allow"' \
   "Unbound must allow NetBird clients."
 require_match modules/unbound/default.nix 'map \(ns: "\$\{ns\}@\$\{toString vars\.dnscryptListenPort\}"\) vars\.primaryNameServers' \
@@ -126,37 +126,25 @@ require_fixed modules/netbird/default.nix 'login.setupKeyFile = config.age.secre
   "NetBird setup key must come from agenix."
 
 echo "ℹ️ Checking workstation deploy workflow documentation…"
-require_match documentation/bootstrap.md 'nix run nixpkgs#nixos-rebuild -- switch \\' \
-  "Bootstrap guide must document the nix run nixos-rebuild deploy command."
-require_match documentation/manual_steps.txt 'nix run nixpkgs#nixos-rebuild -- switch \\' \
-  "Manual steps must document the nix run nixos-rebuild deploy command."
-require_fixed documentation/bootstrap.md "--flake .#${hostname}" \
-  "Bootstrap guide must use the hostname from vars.nix in the deploy command."
-require_fixed documentation/bootstrap.md "--target-host dsaw@${server_lan_ip}" \
-  "Bootstrap guide must use serverLanIP from vars.nix in the deploy command."
-require_fixed documentation/bootstrap.md "--build-host dsaw@${server_lan_ip}" \
-  "Bootstrap guide must use serverLanIP from vars.nix for the remote build host."
-require_fixed documentation/manual_steps.txt "--flake .#${hostname}" \
-  "Manual steps must use the hostname from vars.nix in the deploy command."
-require_fixed documentation/manual_steps.txt "--target-host dsaw@${server_lan_ip}" \
-  "Manual steps must use serverLanIP from vars.nix in the deploy command."
-require_fixed documentation/manual_steps.txt "--build-host dsaw@${server_lan_ip}" \
-  "Manual steps must use serverLanIP from vars.nix for the remote build host."
-require_fixed documentation/bootstrap.md "--sudo" \
-  "Bootstrap guide must document the non-root remote deploy sudo flow."
-require_fixed documentation/manual_steps.txt "--sudo" \
-  "Manual steps must document the non-root remote deploy sudo flow."
+require_match documentation/quickstart.md 'nix run nixpkgs#nixos-rebuild -- switch \\' \
+  "Quickstart must document the nix run nixos-rebuild deploy command."
+require_fixed documentation/quickstart.md "--flake .#${hostname}" \
+  "Quickstart must use the hostname from vars.nix in the deploy command."
+require_fixed documentation/operations.md "--target-host <admin-user>@<server-lan-ip>" \
+  "Operations guide must use portable target-host placeholders."
+require_fixed documentation/operations.md "--build-host <admin-user>@<server-lan-ip>" \
+  "Operations guide must use portable build-host placeholders."
+require_fixed documentation/operations.md "--sudo" \
+  "Operations guide must document the non-root remote deploy sudo flow."
 
 echo "ℹ️ Checking DietPi companion guidance where present…"
 if [[ "$dietpi_enabled" == "true" ]]; then
   require_fixed vars.nix 'enableDietPiCompanion = true;' \
     "DietPi-specific networking checks require enableDietPiCompanion = true in vars.nix."
-  require_match documentation/bootstrap.md 'Put DHCP \+ primary LAN DNS filtering \(AdGuard Home\) on DietPi\.' \
+  require_match documentation/networking-and-access.md 'DietPi: DHCP \+ primary LAN DNS filtering \(AdGuard Home\)\.' \
     "Bootstrap guide must keep DietPi as the primary DHCP/LAN DNS host when documented."
-  require_match documentation/bootstrap.md 'Run Unbound on both hosts for resolver redundancy\.' \
-    "Bootstrap guide must describe dual-Unbound redundancy with DietPi."
-  require_match documentation/bootstrap.md 'make DietPi the primary always-on resolver and keep the server resolver as secondary/failover\.' \
-    "Bootstrap guide must keep DietPi as the always-on primary resolver when that companion setup is documented."
+  require_match documentation/networking-and-access.md 'NixHomeServer: app/identity/storage \+ resolver role\.' \
+    "Networking guide must keep NixHomeServer resolver-role guidance with DietPi."
 else
   echo "ℹ️ DietPi companion is disabled in vars.nix; skipping DietPi guidance assertions."
 fi
