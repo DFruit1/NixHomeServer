@@ -1,8 +1,9 @@
-{ config, vars, ... }:
+{ config, vars, pkgsUnstable, ... }:
 
 {
   services.kavita = {
     enable = true;
+    package = pkgsUnstable.kavita;
     dataDir = "${vars.dataRoot}/kavita";
     tokenKeyFile = config.age.secrets.kavitaTokenKey.path;
     settings = {

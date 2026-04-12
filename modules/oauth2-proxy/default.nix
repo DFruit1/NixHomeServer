@@ -13,8 +13,10 @@
     clientID = "oauth2-proxy";
     clientSecret = null;
     cookie.secret = null;
+    reverseProxy = true;
     setXauthrequest = true;
     extraConfig = {
+      "code-challenge-method" = "S256";
       "pass-user-headers" = true;
       "oidc-groups-claim" = "groups";
       "provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";

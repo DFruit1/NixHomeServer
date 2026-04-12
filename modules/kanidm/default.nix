@@ -59,6 +59,7 @@
         originUrl = "https://paperless.${vars.domain}/accounts/oidc/kanidm/login/callback/";
         originLanding = "https://paperless.${vars.domain}";
         basicSecretFile = config.age.secrets.paperlessClientSecret.path;
+        allowInsecureClientDisablePkce = true;
         preferShortUsername = true;
         scopeMaps.users = [ "openid" "profile" "email" ];
       };

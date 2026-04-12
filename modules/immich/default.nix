@@ -9,6 +9,16 @@
     user = "immich";
     group = "immich";
     settings.server.externalDomain = "https://photoshare.${vars.domain}";
+    settings.oauth = {
+      enabled = true;
+      clientId = "immich-web";
+      clientSecret._secret = config.age.secrets.immichClientSecret.path;
+      issuerUrl = vars.kanidmIssuer "immich-web";
+      signingAlgorithm = "ES256";
+      scope = "openid profile email";
+      buttonText = "Login with Kanidm";
+      autoRegister = true;
+    };
     database = {
       enable = true;
       createDB = true;
@@ -17,14 +27,6 @@
     };
     redis.enable = true;
     machine-learning.enable = true;
-  };
-
-  systemd.services.immich-server.environment = {
-    IMMICH_OIDC_ENABLED = "true";
-    IMMICH_OIDC_CLIENT_ID = "immich-web";
-    IMMICH_OIDC_CLIENT_SECRET_FILE = config.age.secrets.immichClientSecret.path;
-    IMMICH_OIDC_ISSUER = vars.kanidmIssuer "immich-web";
-    IMMICH_OIDC_SCOPE = "openid profile email";
   };
 
   systemd.tmpfiles.rules = [

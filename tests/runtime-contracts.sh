@@ -96,8 +96,18 @@ require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLES
   "Paperless must keep the expected allowed host."
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_APPS')" '"allauth.socialaccount.providers.openid_connect"' \
   "Paperless must enable the django-allauth OpenID Connect provider in the evaluated config."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS')" '"true"' \
+  "Paperless must allow social-account signups in the evaluated config."
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_URL')" "\"https://paperless.${domain}\"" \
   "Paperless must keep its external URL aligned with the routed hostname."
+require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.enabled')" "true" \
+  "Immich must enable OAuth in the evaluated JSON config."
+require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.clientId')" '"immich-web"' \
+  "Immich must keep the expected Kanidm client ID in the evaluated JSON config."
+require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.issuerUrl')" "\"https://id.${domain}/oauth2/openid/immich-web\"" \
+  "Immich must keep its client-specific Kanidm issuer in the evaluated JSON config."
+require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.signingAlgorithm')" '"ES256"' \
+  "Immich must accept ES256-signed ID tokens from Kanidm."
 require_json_equal "$(nix_eval_config_json 'services.kavita.settings.Port')" "$(nix_eval_var 'builtins.toString vars.kavitaPort')" \
   "Kavita must keep its configured internal port."
 require_json_equal "$(nix_eval_config_json 'services.jellyseerr.port')" "$(nix_eval_var 'builtins.toString vars.jellyseerrPort')" \
@@ -106,6 +116,8 @@ require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oa
   "Kanidm provisioning must register the Immich callback URL."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.paperless-web.originUrl')" "\"https://paperless.${domain}/accounts/oidc/kanidm/login/callback/\"" \
   "Kanidm provisioning must register the Paperless callback URL."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.paperless-web.allowInsecureClientDisablePkce')" "true" \
+  "Kanidm provisioning must disable PKCE enforcement for Paperless until the client supports it."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.abs-web.originUrl')" "[\"https://audiobookshelf.${domain}/audiobookshelf/auth/openid/callback\",\"https://audiobookshelf.${domain}/audiobookshelf/auth/openid/mobile-redirect\"]" \
   "Kanidm provisioning must register both Audiobookshelf callback URLs."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.oauth2-proxy.originUrl')" "\"https://fileshare.${domain}/oauth2/callback\"" \
@@ -126,6 +138,8 @@ require_json_equal "$(nix_eval_config_json 'networking.hostName')" "\"${hostname
   "The evaluated system hostname must match vars.nix."
 require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.networking.interfaces.\"${net_iface}\".ipv4.addresses)" "[{\"address\":\"${server_lan_ip}\",\"prefixLength\":24}]" \
   "The evaluated LAN address must remain the configured server LAN IP."
+require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.networking.hosts | jq -c '."127.0.0.1"')" "[\"id.${domain}\"]" \
+  "The server must resolve id.<domain> to localhost for internal OIDC clients."
 require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.systemd.services.\"acme-order-renew-${domain}\".after | jq 'index("unbound.service") != null')" "true" \
   "ACME ordering for the wildcard site cert must wait for Unbound because the host resolves through localhost DNS."
 require_json_equal "$(nix eval --json .#nixosConfigurations.${hostname}.config.systemd.services.\"acme-order-renew-${kanidm_domain}\".after | jq 'index("unbound.service") != null')" "true" \

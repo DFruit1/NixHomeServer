@@ -38,6 +38,12 @@ in
     hostName = vars.hostname;
     defaultGateway = vars.defaultGateway;
     nameservers = vars.primaryNameServers;
+    hosts = {
+      # Resolve the public Kanidm hostname locally on the server so internal
+      # OIDC clients talk to Caddy directly instead of traversing Cloudflare.
+      "127.0.0.1" = [ vars.kanidmDomain ];
+      "::1" = [ vars.kanidmDomain ];
+    };
     interfaces.${vars.netIface} = {
       ipv4.addresses = [
         { address = vars.serverLanIP; prefixLength = 24; }

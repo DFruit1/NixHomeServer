@@ -18,6 +18,10 @@ require_fixed modules/caddy/default.nix 'reverse_proxy https://127.0.0.1:${toStr
   "Caddy must reverse proxy the Kanidm hostname to the Kanidm TLS listener."
 require_fixed modules/caddy/default.nix 'tls_server_name ${vars.kanidmDomain}' \
   "Caddy must present the Kanidm hostname when proxying to the TLS listener."
+require_fixed modules/caddy/default.nix '@edge_http header X-Forwarded-Proto http' \
+  "Caddy must detect plain-HTTP requests forwarded from the edge."
+require_fixed modules/caddy/default.nix 'redir @edge_http https://{host}{uri} 308' \
+  "Caddy must redirect edge-forwarded plain-HTTP requests back to HTTPS before auth starts."
 forbid_match modules/caddy/default.nix 'tls_insecure_skip_verify' \
   "Caddy must not disable TLS verification when proxying to Kanidm."
 require_fixed modules/caddy/default.nix '"fileshare.${vars.domain}" = {' \
@@ -32,6 +36,10 @@ require_fixed modules/oauth2-proxy/default.nix 'oidcIssuerUrl = vars.kanidmIssue
   "OAuth2 Proxy must use its client-specific Kanidm issuer."
 require_fixed modules/oauth2-proxy/default.nix 'clientID = "oauth2-proxy";' \
   "OAuth2 Proxy must keep its Kanidm client ID."
+require_fixed modules/oauth2-proxy/default.nix 'reverseProxy = true;' \
+  "OAuth2 Proxy must trust forwarded headers from Caddy and Cloudflare."
+require_fixed modules/oauth2-proxy/default.nix '"code-challenge-method" = "S256";' \
+  "OAuth2 Proxy must send PKCE to satisfy Kanidm's enforced PKCE mode."
 require_fixed modules/oauth2-proxy/default.nix '"provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";' \
   "OAuth2 Proxy must trust the public CA bundle when reaching id.<domain> through Cloudflare."
 require_fixed modules/oauth2-proxy/default.nix '"cloudflared-tunnel-${vars.cloudflareTunnelName}.service"' \
@@ -62,6 +70,8 @@ require_fixed modules/kanidm/default.nix 'originUrl = "https://paperless.${vars.
   "Kanidm provisioning must register the Paperless callback URL."
 require_fixed modules/kanidm/default.nix 'basicSecretFile = config.age.secrets.paperlessClientSecret.path;' \
   "Kanidm provisioning must keep the Paperless client secret aligned with agenix."
+require_fixed modules/kanidm/default.nix 'allowInsecureClientDisablePkce = true;' \
+  "Kanidm provisioning must explicitly disable PKCE only for Paperless until django-allauth sends PKCE."
 require_fixed modules/kanidm/default.nix 'systems.oauth2.abs-web = {' \
   "Kanidm provisioning must create the Audiobookshelf client."
 require_fixed modules/kanidm/default.nix 'https://audiobookshelf.${vars.domain}/audiobookshelf/auth/openid/callback' \
@@ -80,20 +90,34 @@ forbid_match modules/kanidm/default.nix 'instanceUrl = "https://\$\{vars\.kanidm
 echo "ℹ️ Checking internal app routing and OIDC alignment…"
 require_fixed modules/immich/default.nix 'settings.server.externalDomain = "https://photoshare.${vars.domain}";' \
   "Immich must publish the photoshare external domain."
+require_fixed modules/immich/default.nix 'clientId = "immich-web";' \
+  "Immich must keep the expected Kanidm client ID in its JSON config."
+require_fixed modules/immich/default.nix 'clientSecret._secret = config.age.secrets.immichClientSecret.path;' \
+  "Immich must load its OIDC client secret into the JSON config from agenix."
+require_fixed modules/immich/default.nix 'issuerUrl = vars.kanidmIssuer "immich-web";' \
+  "Immich must keep its client-specific Kanidm issuer in the JSON config."
+require_fixed modules/immich/default.nix 'signingAlgorithm = "ES256";' \
+  "Immich must accept the ES256 ID tokens issued by Kanidm."
+require_fixed modules/immich/default.nix 'buttonText = "Login with Kanidm";' \
+  "Immich must expose a Kanidm-specific login button label."
 forbid_match modules/caddy/default.nix '"immich\.\$\{vars\.domain\}" = \{' \
   "Caddy must not publish a second Immich hostname alongside photoshare."
-require_fixed modules/immich/default.nix 'IMMICH_OIDC_CLIENT_ID = "immich-web";' \
-  "Immich must keep the expected Kanidm client ID."
-require_fixed modules/immich/default.nix 'IMMICH_OIDC_ISSUER = vars.kanidmIssuer "immich-web";' \
-  "Immich must keep its client-specific Kanidm issuer."
 require_fixed modules/paperless/default.nix 'PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";' \
   "Paperless must enable the django-allauth OpenID Connect provider."
+require_fixed modules/paperless/default.nix 'PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS = "true";' \
+  "Paperless must allow social-account signups so first-run Kanidm onboarding remains available."
 require_fixed modules/paperless/default.nix 'PAPERLESS_URL = "https://paperless.${vars.domain}";' \
   "Paperless must keep its external URL aligned with the routed hostname."
 require_fixed modules/paperless/default.nix 'provider_id: "kanidm"' \
   "Paperless must register the Kanidm provider id expected by its callback path."
 require_fixed modules/paperless/default.nix 'client_id: $clientId,' \
   "Paperless must generate the OIDC client id in its runtime provider JSON."
+require_fixed modules/paperless/default.nix 'substituteInPlace "$out/src/documents/templates/account/signup.html"' \
+  "Paperless packaging must keep social login visible on the first-run signup page."
+require_fixed modules/paperless/default.nix 'Creating initial social superuser' \
+  "Paperless packaging must promote the first social-login user to Paperless superuser."
+require_fixed configuration.nix '"127.0.0.1" = [ vars.kanidmDomain ];' \
+  "The server must resolve id.<domain> locally for internal OIDC clients."
 require_fixed modules/audiobookshelf/default.nix 'audiobookshelf-oidc-bootstrap' \
   "Audiobookshelf must bootstrap its OIDC settings from the active Kanidm metadata."
 require_fixed modules/audiobookshelf/default.nix '${vars.kanidmDiscoveryUrl "abs-web"}' \

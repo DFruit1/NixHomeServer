@@ -167,12 +167,35 @@ Before deploying to a different machine, update the following in `vars.nix`:
 ## 6) Bootstrap Kanidm
 
 ```bash
-nix shell nixpkgs#kanidm
-kanidm login --name admin --password "$(age --decrypt -i ~/.age/agenix.key secrets/kanidmSysAdminPass.age)"
-kanidm person create <user> --display-name "<Name>"
-kanidm person set-password <user>
-kanidm group add-member users <user>
+nix shell nixpkgs#kanidm_1_9 --impure
+kanidm login --url https://id.<domain> --name admindsaw
+kanidm person create <user> "<Display Name>" --url https://id.<domain>
+kanidm person update <user> --mail <user@example.com> --url https://id.<domain>
+kanidm group add-members users <user> --url https://id.<domain>
+# optional, for fileshare access
+kanidm group add-members fileshare_users <user> --url https://id.<domain>
+# optional, for delegated user/group administration
+kanidm group add-members idm_admins <user> --url https://id.<domain>
+# optional, give the new user a reset link so they can choose their own password
+kanidm person credential create-reset-token <user> --url https://id.<domain>
 ```
+
+Important:
+
+- `admin` and `idm_admin` are bootstrap / break-glass directory admin accounts.
+  They are not the normal day-to-day browser identity you should keep using.
+- After bootstrap, create a real person account for yourself and use that for
+  normal login.
+- If you want that person to manage other people and groups, add it to
+  `idm_admins`.
+- If you want that person to access private apps, add it to `users`.
+- If you want that person to access fileshare through OAuth2 Proxy, add it to
+  `fileshare_users`.
+- In Kanidm 1.9, the browser admin pages are still effectively read-only for
+  day-to-day user creation. Treat `kanidm` CLI as the supported path for
+  creating people and adjusting group membership.
+- See [documentation/kanidm_cli.md](/home/dsaw/Projects/NixOS/documentation/kanidm_cli.md)
+  for a safer command reference with guarded placeholders.
 
 The stack provisions these OIDC clients in Kanidm:
 
@@ -194,10 +217,35 @@ Copyparty itself is not a direct OIDC client in the current design. The public
 `fileshare.<domain>` flow authenticates at `oauth2-proxy`, which then forwards
 the authenticated request to Copyparty.
 
+Application admin/bootstrap note:
+
+- Kanidm handles authentication and access to the client, but it does not make
+  a user an in-app admin or superuser automatically.
+- If an app shows a first-run bootstrap form, create one local app admin once.
+  The Kanidm `admin` and `idm_admin` accounts are directory admins, not
+  application admins.
+- In Immich, the first account created in the app becomes the Immich admin.
+  Use your normal primary email there; keeping it aligned with your Kanidm
+  person makes later SSO use less confusing.
+  OAuth is Nix-managed in the Immich config file, so the admin UI will show
+  the setting as locked rather than letting you toggle it manually.
+- In Paperless-ngx, the first local signup becomes the Paperless superuser.
+  This repo also patches the first-run signup page so the Kanidm button stays
+  visible during first install, and the first social-login user is promoted to
+  Paperless superuser.
+  Paperless' current OIDC client does not send PKCE, so this repo explicitly
+  disables PKCE enforcement only for the `paperless-web` confidential client.
+- For fileshare, use `https://fileshare.<domain>`, not plain `http://`.
+  OAuth2 Proxy uses an HTTPS-only state cookie, so starting the flow on HTTP
+  will break the login.
+
 Kanidm provisioning now targets the local `https://localhost:8443` listener
 during activation so it does not depend on the public `id.<domain>` route being
 up mid-switch. The public `https://id.<domain>` path still needs to be checked
 separately after deploy for browser-facing certificate and routing correctness.
+For the server itself, `id.<domain>` is also pinned to localhost in
+`/etc/hosts`, so internal OIDC clients such as Paperless and Immich talk to the
+local Caddy/Kanidm path directly instead of going out through Cloudflare.
 
 Use redirect/callback URLs expected by each module.
 

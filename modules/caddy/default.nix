@@ -25,6 +25,8 @@
       "${vars.kanidmDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem
+          @edge_http header X-Forwarded-Proto http
+          redir @edge_http https://{host}{uri} 308
           reverse_proxy https://127.0.0.1:${toString vars.kanidmPort} {
             transport http {
               tls_server_name ${vars.kanidmDomain}
@@ -53,6 +55,8 @@
       "fileshare.${vars.domain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          @edge_http header X-Forwarded-Proto http
+          redir @edge_http https://{host}{uri} 308
           reverse_proxy http://127.0.0.1:${toString vars.oauth2ProxyPort}
         '';
       };

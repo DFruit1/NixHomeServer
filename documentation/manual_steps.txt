@@ -201,13 +201,26 @@ there instead.
 ─────────────────────────────────────────────────────────────────────
 11. KANIDM INITIALIZATION
 ─────────────────────────────────────────────────────────────────────
-$ nix shell nixpkgs#kanidm
-$ kanidm login --name admin --password "$(age --decrypt -i ~/.age/agenix.key secrets/kanidmSysAdminPass.age)"
+$ nix shell nixpkgs#kanidm_1_9 --impure
+$ kanidm login --url https://id.<domain> --name admindsaw
 
 Create first user:
-$ kanidm person create <user> --display-name "<Name>"
-$ kanidm person set-password <user>
-$ kanidm group add-member users <user>
+$ kanidm person create <user> "<Display Name>" --url https://id.<domain>
+$ kanidm person update <user> --mail <user@example.com> --url https://id.<domain>
+$ kanidm group add-members users <user> --url https://id.<domain>
+$ kanidm person credential create-reset-token <user> --url https://id.<domain>
+
+Important:
+  - `admin` and `idm_admin` are bootstrap / break-glass directory admin
+    accounts, not the normal browser account you should keep using.
+  - After bootstrap, create a real person account for yourself.
+  - Add that person to `idm_admins` if it should manage people and groups.
+  - Add that person to `users` for private app access.
+  - Add that person to `fileshare_users` for fileshare access.
+  - In Kanidm 1.9, use the `kanidm` CLI for user creation and membership
+    changes; the browser admin pages are not a reliable write workflow yet.
+  - See `documentation/kanidm_cli.md` for a command reference with guarded
+    placeholders.
 
 OIDC clients used by modules:
   - immich-web
@@ -223,6 +236,20 @@ Manage fileshare access by `fileshare_users` membership rather than by manually
 editing the `oauth2-proxy` Kanidm client after deploy.
 Copyparty itself is not a direct OIDC client in the current design; the public
 `fileshare.<domain>` login flow authenticates at `oauth2-proxy`.
+Application admin/bootstrap note:
+  - Kanidm authenticates users but does not assign each app's internal
+    admin/superuser role.
+  - If an app shows a first-run bootstrap form, create one local app admin
+    once. The Kanidm `admin` and `idm_admin` accounts are not automatically app
+    admins.
+  - In Immich, the first account created becomes the Immich admin.
+  - This repo patches Paperless-ngx so the Kanidm button stays visible on the
+    first-run signup page, and the first social-login user is promoted to
+    Paperless superuser.
+  - Paperless' current OIDC client does not send PKCE, so this repo disables
+    PKCE enforcement only for the `paperless-web` confidential client.
+  - For fileshare, always start at `https://fileshare.<domain>`, not plain
+    `http://`, because OAuth2 Proxy uses an HTTPS-only state cookie.
 
 Current bootstrap note:
   - Kanidm provisioning now targets the local `https://localhost:8443` listener
