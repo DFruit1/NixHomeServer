@@ -40,6 +40,10 @@ in
 
   services.kanidm = {
     enableServer = true;
+    enableClient = true;
+    clientSettings.uri = vars.kanidmBaseUrl;
+    enablePam = true;
+    unixSettings.pam_allowed_login_groups = [ "fileshare_users" ];
     package = pkgs.kanidmWithSecretProvisioning_1_9;
 
     serverSettings = {
@@ -80,7 +84,8 @@ in
       groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
       systems.oauth2.immich-web = {
-        displayName = "Immich";
+        displayName = "Photos";
+        imageFile = ./assets/photos.svg;
         originUrl = "https://${vars.photosDomain}/auth/login";
         originLanding = "https://${vars.photosDomain}";
         basicSecretFile = config.age.secrets.immichClientSecret.path;
@@ -90,7 +95,8 @@ in
       };
 
       systems.oauth2.paperless-web = {
-        displayName = "Paperless-ngx";
+        displayName = "Documents";
+        imageFile = ./assets/documents.svg;
         originUrl = "https://paperless.${vars.domain}/accounts/oidc/kanidm/login/callback/";
         originLanding = "https://paperless.${vars.domain}";
         basicSecretFile = config.age.secrets.paperlessClientSecret.path;
@@ -101,7 +107,8 @@ in
       };
 
       systems.oauth2.abs-web = {
-        displayName = "Audiobookshelf";
+        displayName = "Audiobooks";
+        imageFile = ./assets/audiobooks.svg;
         originUrl = [
           "https://${vars.audiobooksDomain}/audiobookshelf/auth/openid/callback"
           "https://${vars.audiobooksDomain}/audiobookshelf/auth/openid/mobile-redirect"
@@ -114,7 +121,8 @@ in
       };
 
       systems.oauth2.kavita-web = {
-        displayName = "Kavita";
+        displayName = "Books";
+        imageFile = ./assets/books.svg;
         originUrl = [
           "https://${vars.kavitaDomain}/signin-oidc"
           "https://${vars.kavitaDomain}/signout-callback-oidc"
@@ -127,10 +135,11 @@ in
       };
 
       systems.oauth2.oauth2-proxy = {
-        displayName = "OAuth2 Proxy";
+        displayName = "Files";
+        imageFile = ./assets/files.svg;
         originUrl = "https://${vars.filesDomain}/oauth2/callback";
         originLanding = "https://${vars.filesDomain}";
-        basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;
+        basicSecretFile = vars.oauth2ProxyClientSecretPath;
         preferShortUsername = true;
         scopeMaps.fileshare_users = [ "openid" "profile" "email" "groups" ];
       };
@@ -138,8 +147,53 @@ in
   };
 
   systemd.services.kanidm = {
-    after = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
-    wants = [ "caddy.service" "acme-${vars.kanidmDomain}.service" ];
+    after = [
+      "oauth2-proxy-secret-materialize.service"
+      "caddy.service"
+      "acme-${vars.kanidmDomain}.service"
+    ];
+    wants = [
+      "oauth2-proxy-secret-materialize.service"
+      "caddy.service"
+      "acme-${vars.kanidmDomain}.service"
+    ];
+  };
+
+  systemd.services.kanidm-branding = {
+    description = "Apply Kanidm portal branding";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "kanidm.service" ];
+    wants = [ "kanidm.service" ];
+    path = [ pkgs.kanidm_1_9 ];
+    script = ''
+      set -euo pipefail
+
+      export HOME="$(mktemp -d)"
+      trap 'rm -rf "$HOME"' EXIT
+      export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
+
+      kanidm login \
+        -H https://localhost:${toString vars.kanidmPort} \
+        -D admin \
+        --accept-invalid-certs >/dev/null
+
+      kanidm system domain set-displayname \
+        -H https://localhost:${toString vars.kanidmPort} \
+        -D admin \
+        --accept-invalid-certs \
+        "Sydney Basin Services"
+
+      kanidm system domain set-image \
+        -H https://localhost:${toString vars.kanidmPort} \
+        -D admin \
+        --accept-invalid-certs \
+        ${./assets/portal.svg} \
+        svg
+
+    '';
+    serviceConfig = {
+      Type = "oneshot";
+    };
   };
 
   users.users.kanidm.extraGroups = [ "caddy" ];

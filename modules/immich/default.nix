@@ -5,7 +5,7 @@
     enable = true;
     host = "127.0.0.1";
     port = vars.immichPort;
-    mediaLocation = "${vars.dataRoot}/immich";
+    mediaLocation = vars.immichManagedPhotosRoot;
     user = "immich";
     group = "immich";
     settings.server.externalDomain = "https://${vars.photosDomain}";
@@ -29,7 +29,5 @@
     machine-learning.enable = true;
   };
 
-  systemd.tmpfiles.rules = [
-    "d ${vars.dataRoot}/immich 0750 immich immich -"
-  ];
+  systemd.tmpfiles.rules = [ ];
 }

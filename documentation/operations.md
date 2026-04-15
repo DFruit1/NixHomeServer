@@ -35,6 +35,40 @@ tests/run-all.sh --with-runtime
 ./scripts/runtime-validation-report.sh
 ```
 
+## Storage layout
+
+Canonical persistent paths now live under:
+
+- `/mnt/data/appdata`
+- `/mnt/data/media`
+- `/mnt/data/workspaces`
+
+Service state roots:
+
+- Audiobookshelf: `/mnt/data/appdata/audiobookshelf`
+- Jellyfin: `/mnt/data/appdata/jellyfin/server`
+- Jellyseerr: `/mnt/data/appdata/jellyfin/jellyseerr`
+- Kavita: `/mnt/data/appdata/kavita`
+- Paperless: `/mnt/data/appdata/paperless`
+
+Media and ingest roots:
+
+- Immich managed: `/mnt/data/media/photos/managed`
+- Immich external import: `/mnt/data/media/photos/external`
+- Paperless consume: `/mnt/data/media/documents/consume`
+- Paperless archive: `/mnt/data/media/documents/archive`
+- Paperless export: `/mnt/data/media/documents/export`
+- Shared exchange: `/mnt/data/workspaces/shared/exchange`
+- Shared public: `/mnt/data/workspaces/shared/public`
+
+If you are migrating from the old app-centric layout, run:
+
+```bash
+sudo ./scripts/migrate-storage-layout.sh
+```
+
+before the rebuild that switches services onto the new paths.
+
 ## Deploy workflows
 
 ### A) Local-first on target host (safest)
@@ -111,6 +145,14 @@ journalctl -b \
   -u netbird-main
 ```
 
+If SMB is enabled for NetBird clients, also check:
+
+```bash
+systemctl status samba-smbd
+journalctl -u samba-smbd -n 100 --no-pager
+ss -tlpn | grep -E ':(139|445)\s'
+```
+
 ### Minimal health checklist
 
 - public HTTPS works:
@@ -162,6 +204,14 @@ Interpretation:
 - `snapraid diff` may show updated application databases and logs until the next
   sync; that is expected on a live system
 
+After the storage refactor, spot-check the new roots:
+
+```bash
+sudo find /mnt/data/appdata -maxdepth 2 -type d | sort
+sudo find /mnt/data/media -maxdepth 3 -type d | sort
+sudo find /mnt/data/workspaces -maxdepth 3 -type d | sort
+```
+
 ### Secrets
 ```bash
 ls -l /run/agenix
@@ -203,6 +253,19 @@ systemctl status oauth2-proxy
 journalctl -u oauth2-proxy -n 100 --no-pager
 curl -skI https://files.<domain>/
 ```
+
+### Copyparty
+
+```bash
+systemctl status copyparty
+journalctl -u copyparty -n 100 --no-pager
+```
+
+Healthy signs:
+
+- the page shows the authenticated username after the OAuth flow
+- the reverse-proxy warning about untrusted forwarded headers is gone
+- `/me/<username>`, `/shared/exchange`, `/shared/public`, `/incoming/photos`, and `/incoming/documents` are visible for allowed users
 
 ### Immich
 
@@ -251,6 +314,44 @@ systemctl status jellyseerr
 journalctl -u jellyseerr -n 100 --no-pager
 curl -skI https://jellyseerr.<domain>/
 ```
+
+Check the public setup state and the internal Jellyfin target:
+
+```bash
+curl -s http://127.0.0.1:5055/api/v1/settings/public | jq
+curl -s http://127.0.0.1:8096/System/Info/Public | jq
+```
+
+Expected:
+
+- `applicationUrl` is `https://jellyseerr.<domain>`
+- Jellyseerr points at Jellyfin on `127.0.0.1:8096`
+- users still browse Jellyfin on `https://video.<domain>`
+
+### Kanidm branding
+
+```bash
+systemctl status kanidm-branding
+journalctl -u kanidm-branding -n 100 --no-pager
+```
+
+Expected:
+
+- the apps listing uses the branded service labels `Photos`, `Documents`, `Audiobooks`, `Books`, and `Files`
+- the portal logo and service tiles match the repo-managed assets
+
+### SMB over NetBird
+
+```bash
+systemctl status samba-smbd
+journalctl -u samba-smbd -n 100 --no-pager
+```
+
+Expected:
+
+- SMB only listens on `nb0` and loopback
+- NetBird clients can authenticate with Kanidm accounts that are in `fileshare_users`
+- the aligned shares are `homes`, `exchange`, `public`, `photos-upload`, and `documents-upload`
 
 ## Troubleshooting by symptom
 

@@ -93,16 +93,16 @@ require_fixed modules/kavita/default.nix 'config.age.secrets.kavitaClientSecret.
   "Kavita must consume its OIDC client secret from agenix."
 require_fixed modules/kavita/default.nix 'tokenKeyFile = config.age.secrets.kavitaTokenKey.path;' \
   "Kavita must consume its token key from agenix."
-require_fixed modules/oauth2-proxy/default.nix 'clientSecret = null;' \
-  "OAuth2 Proxy must not embed the client secret directly into the unit command line."
-require_fixed modules/oauth2-proxy/default.nix 'cookie.secret = null;' \
-  "OAuth2 Proxy must not embed the cookie secret directly into the unit command line."
+require_fixed modules/oauth2-proxy/default.nix 'keyFile = vars.oauth2ProxyKeyFilePath;' \
+  "OAuth2 Proxy must load its runtime credentials from a generated key file instead of embedding them."
 require_fixed modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyClientSecret.path' \
-  "OAuth2 Proxy must source its client secret env file from agenix."
+  "OAuth2 Proxy must source its client secret material from agenix."
 require_fixed modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyCookieSecret.path' \
-  "OAuth2 Proxy must source its cookie secret env file from agenix."
-require_match scripts/gen-all-secrets.sh 'OAUTH2_PROXY_(CLIENT|COOKIE)_SECRET=' \
-  "OAuth2 Proxy clear-text staging files must be generated as environment-file entries."
+  "OAuth2 Proxy must source its cookie secret material from agenix."
+require_fixed modules/oauth2-proxy/default.nix "OAUTH2_PROXY_CLIENT_SECRET=%s\\nOAUTH2_PROXY_COOKIE_SECRET=%s\\n" \
+  "OAuth2 Proxy must generate a runtime environment file from normalized secret values."
+forbid_match scripts/gen-all-secrets.sh 'OAUTH2_PROXY_(CLIENT|COOKIE)_SECRET=' \
+  "OAuth2 Proxy clear-text staging secrets must be generated as raw values, not environment-file entries."
 require_fixed scripts/gen-all-secrets.sh '[[ "$token" != REPLACE_ME* ]]' \
   "Cloudflare API token validation must reject placeholder values before secrets are encrypted."
 require_fixed scripts/gen-all-secrets.sh 'printf '\''CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n'\''' \

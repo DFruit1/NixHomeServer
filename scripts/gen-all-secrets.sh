@@ -104,18 +104,8 @@ echo -n "🔐  Generating $name … "
     else
       secret=$(gen_secret "${SPEC[$name]}")
     fi
-    case "$name" in
-      oauth2ProxyClientSecret)
-        printf 'OAUTH2_PROXY_CLIENT_SECRET=%s\n' "$secret" >"$clear_file"
-        ;;
-      oauth2ProxyCookieSecret)
-        printf 'OAUTH2_PROXY_COOKIE_SECRET=%s\n' "$secret" >"$clear_file"
-        ;;
-      *)
-        # write without trailing newline to avoid accidental whitespace in clients
-        printf '%s' "$secret" >"$clear_file"
-        ;;
-    esac
+    # write without trailing newline to avoid accidental whitespace in clients
+    printf '%s' "$secret" >"$clear_file"
     chmod 0440 "$clear_file"
   fi
 

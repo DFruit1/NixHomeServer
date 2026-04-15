@@ -137,7 +137,13 @@ Admin intent groups:
 ### Files / Copyparty
 
 - access is enforced by OAuth2 Proxy before the app
-- no separate app bootstrap is expected here
+- Copyparty shows per-user and shared work areas:
+  - `/me/<username>`
+  - `/shared/exchange`
+  - `/shared/public`
+  - `/incoming/photos`
+  - `/incoming/documents`
+- the same logical areas are also available over NetBird-only SMB
 
 ### Immich
 
@@ -189,6 +195,12 @@ Interpretation:
 
 Do not treat non-empty `snapraid diff` as a fault by itself. It is expected when
 applications are active.
+
+Current canonical paths:
+
+- app state: `/mnt/data/appdata`
+- media libraries: `/mnt/data/media`
+- personal and shared workspaces: `/mnt/data/workspaces`
 
 ## Safe rebuild flow
 

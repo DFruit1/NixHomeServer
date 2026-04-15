@@ -37,7 +37,7 @@ in
   users.users.paperless = {
     isSystemUser = true;
     group = "paperless";
-    home = "${vars.dataRoot}/paperless";
+    home = vars.paperlessDataDir;
   };
 
   users.groups.paperless = { };
@@ -47,7 +47,9 @@ in
   ######################################################################
   services.paperless = {
     enable = true;
-    dataDir = "${vars.dataRoot}/paperless";
+    dataDir = vars.paperlessDataDir;
+    mediaDir = vars.paperlessArchiveDir;
+    consumptionDir = vars.paperlessConsumeDir;
     address = "127.0.0.1";
     port = vars.paperlessPort;
     package = paperlessPackage;
@@ -69,6 +71,7 @@ in
       PAPERLESS_ALLOWED_HOSTS = "paperless.${vars.domain}";
       # PAPERLESS_TIME_ZONE              = "Australia/Sydney";   # ← example
       # PAPERLESS_LOGLEVEL               = "INFO";
+      PAPERLESS_EXPORT_DIR = vars.paperlessExportDir;
     };
   };
 
@@ -121,7 +124,5 @@ in
       after = [ "paperless-oidc-env.service" ];
     });
 
-  systemd.tmpfiles.rules = [
-    "d ${vars.dataRoot}/paperless 0750 paperless paperless -"
-  ];
+  systemd.tmpfiles.rules = [ ];
 }

@@ -66,8 +66,8 @@ require_fixed modules/kanidm/default.nix 'overwriteMembers = false;' \
   "Kanidm provisioning must preserve manual fileshare_users membership changes."
 require_fixed modules/kanidm/default.nix 'originUrl = "https://${vars.filesDomain}/oauth2/callback";' \
   "Kanidm provisioning must register the OAuth2 Proxy callback URL."
-require_fixed modules/kanidm/default.nix 'basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;' \
-  "Kanidm provisioning must keep OAuth2 Proxy's client secret aligned with agenix."
+require_fixed modules/kanidm/default.nix 'basicSecretFile = vars.oauth2ProxyClientSecretPath;' \
+  "Kanidm provisioning must keep OAuth2 Proxy's client secret aligned with the runtime-normalized agenix secret."
 require_fixed modules/kanidm/default.nix 'scopeMaps.fileshare_users = [ "openid" "profile" "email" "groups" ];' \
   "Kanidm provisioning must scope OAuth2 Proxy access to the fileshare_users group."
 require_fixed modules/kanidm/default.nix 'systems.oauth2.immich-web = {' \
@@ -192,6 +192,20 @@ require_fixed modules/jellyfin/jellyseerr.nix '.main.applicationUrl = $appUrl' \
   "Jellyseerr must set its public application URL in the managed settings file."
 require_fixed modules/jellyfin/jellyseerr.nix '.jellyfin.externalHostname = $jellyfinExternalHost' \
   "Jellyseerr must point users back to the routed Jellyfin hostname."
+require_fixed modules/copyparty/default.nix 'auth-ord = "idp";' \
+  "Copyparty must trust the upstream identity-provider headers instead of local passwords."
+require_fixed modules/copyparty/default.nix 'idp-h-usr = "x-forwarded-preferred-username";' \
+  "Copyparty must read the forwarded preferred-username header from OAuth2 Proxy."
+require_fixed modules/copyparty/default.nix 'idp-h-grp = "x-forwarded-groups";' \
+  "Copyparty must read forwarded group headers when present."
+require_fixed modules/copyparty/default.nix 'idp-login = "/oauth2/start?rd={dst}";' \
+  "Copyparty login buttons must send users to the OAuth2 Proxy login flow."
+require_fixed modules/copyparty/default.nix 'idp-logout = "/oauth2/sign_out?rd=/";' \
+  "Copyparty logout buttons must send users through the OAuth2 Proxy logout flow."
+require_fixed modules/copyparty/default.nix 'no-bauth = true;' \
+  "Copyparty must remove the direct password login form when header auth is authoritative."
+require_fixed modules/caddy/default.nix 'header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}' \
+  "Caddy must preserve the Cloudflare client IP for the files auth chain."
 forbid_match modules/copyparty/default.nix 'CPP_OIDC_' \
   "Copyparty must not carry dead direct-OIDC environment settings while fileshare auth is handled by OAuth2 Proxy."
 

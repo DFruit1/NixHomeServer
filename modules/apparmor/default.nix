@@ -19,25 +19,33 @@ let
     ];
 
     "immich-server" = [
-      "${vars.dataRoot}/immich/**"
+      "${vars.immichManagedPhotosRoot}/**"
+      "${vars.immichExternalPhotosRoot}/**"
       "/var/lib/immich/**"
       "/var/log/immich/**"
     ];
 
     "paperless-web" = [
-      "${vars.dataRoot}/paperless/**"
+      "${vars.paperlessDataDir}/**"
+      "${vars.paperlessConsumeDir}/**"
+      "${vars.paperlessArchiveDir}/**"
+      "${vars.paperlessExportDir}/**"
       "/var/lib/paperless/**"
       "/var/log/paperless-ngx/**"
     ];
 
     audiobookshelf = [
-      "${vars.dataRoot}/audiobookshelf/**"
+      "${vars.audiobookshelfDataDir}/**"
+      "${vars.audiobooksRoot}/**"
+      "${vars.podcastsRoot}/**"
       "/var/lib/audiobookshelf/**"
       "/var/log/audiobookshelf/**"
     ];
 
     copyparty = [
-      "${vars.dataRoot}/copyparty/**"
+      "${vars.workspaceRoot}/**"
+      "${vars.photosUploadRoot}/**"
+      "${vars.documentsUploadRoot}/**"
       "/var/lib/copyparty/**"
       "/var/log/copyparty/**"
     ];

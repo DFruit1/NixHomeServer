@@ -101,6 +101,11 @@ cat <<EOF
 - Logged-out behavior:
 - \`test-basic\` denied:
 - \`test-files\` allowed:
+- \`/me/<username>\` private path:
+- \`/shared/exchange\` shared path:
+- \`/shared/public\` shared path:
+- \`/incoming/photos\` ingest path:
+- \`/incoming/documents\` ingest path:
 - Upload:
 - Download:
 - Rename:
@@ -166,9 +171,21 @@ cat <<EOF
 ### Jellyseerr
 
 - URL: \`https://${jellyseerr_domain}\`
+- Public settings show \`applicationUrl=https://${jellyseerr_domain}\`:
+- Internal Jellyfin target is \`127.0.0.1:8096\`:
 - Jellyfin-backed sign-in:
 - Request creation:
 - Admin or settings access:
+- Notes:
+
+### SMB over NetBird
+
+- SMB only reachable on NetBird:
+- \`homes\` share works:
+- \`exchange\` share works:
+- \`public\` share works:
+- \`photos-upload\` share works:
+- \`documents-upload\` share works:
 - Notes:
 
 ## Access-control regression summary
@@ -185,12 +202,15 @@ cat <<EOF
 
 ## Storage and write-path validation
 
-- Copyparty path: \`/mnt/data/copyparty\`
-- Immich path: \`/mnt/data/immich\`
-- Paperless path: \`/mnt/data/paperless\`
-- Audiobookshelf path: \`/mnt/data/audiobookshelf\`
-- Kavita path: \`/mnt/data/kavita\`
-- Jellyfin path: \`/mnt/data/jellyfin\`
+- Copyparty workspace root: \`/mnt/data/workspaces\`
+- Immich managed path: \`/mnt/data/media/photos/managed\`
+- Immich external path: \`/mnt/data/media/photos/external\`
+- Paperless consume path: \`/mnt/data/media/documents/consume\`
+- Paperless archive path: \`/mnt/data/media/documents/archive\`
+- Paperless export path: \`/mnt/data/media/documents/export\`
+- Audiobookshelf appdata path: \`/mnt/data/appdata/audiobookshelf\`
+- Kavita appdata path: \`/mnt/data/appdata/kavita\`
+- Jellyfin appdata path: \`/mnt/data/appdata/jellyfin/server\`
 - Any permission anomaly:
 - Any unexpected \`snapraid diff\` entries:
 

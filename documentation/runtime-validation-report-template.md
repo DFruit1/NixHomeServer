@@ -60,6 +60,11 @@ one with:
 - Logged-out behavior:
 - `test-basic` denied:
 - `test-files` allowed:
+- `/me/<username>` private path:
+- `/shared/exchange` shared path:
+- `/shared/public` shared path:
+- `/incoming/photos` ingest path:
+- `/incoming/documents` ingest path:
 - Upload:
 - Download:
 - Rename:
@@ -125,9 +130,21 @@ one with:
 ### Jellyseerr
 
 - URL: `https://jellyseerr.<domain>`
+- Public settings show `applicationUrl=https://jellyseerr.<domain>`:
+- Internal Jellyfin target is `127.0.0.1:8096`:
 - Jellyfin-backed sign-in:
 - Request creation:
 - Admin or settings access:
+- Notes:
+
+### SMB over NetBird
+
+- SMB only reachable on NetBird:
+- `homes` share works:
+- `exchange` share works:
+- `public` share works:
+- `photos-upload` share works:
+- `documents-upload` share works:
 - Notes:
 
 ## Access-control regression summary
@@ -145,11 +162,14 @@ one with:
 ## Storage and write-path validation
 
 - Copyparty path:
-- Immich path:
-- Paperless path:
-- Audiobookshelf path:
-- Kavita path:
-- Jellyfin path:
+- Immich managed path:
+- Immich external path:
+- Paperless consume path:
+- Paperless archive path:
+- Paperless export path:
+- Audiobookshelf appdata path:
+- Kavita appdata path:
+- Jellyfin appdata path:
 - Any permission anomaly:
 - Any unexpected `snapraid diff` entries:
 

@@ -157,9 +157,11 @@ Success criteria:
 Current implementation detail to verify:
 
 - [`modules/copyparty/default.nix`](/home/dsaw/Projects/NixOS/modules/copyparty/default.nix)
-  exposes a single root volume at `${vars.dataRoot}/copyparty` with broad write
-  access once a user reaches the app. Confirm that this is the actual runtime
-  behavior and that it is acceptable.
+  now exposes per-user, shared, and ingest-specific paths. Verify:
+  - `/me/<username>` stays scoped to the authenticated user
+  - `/shared/exchange` and `/shared/public` behave as intended for shared use
+  - `/incoming/photos` feeds the Immich external-library root
+  - `/incoming/documents` feeds the Paperless consume directory
 
 ## 5. Immich
 
@@ -184,6 +186,12 @@ Success criteria:
 - first successful OIDC login creates the user
 - normal users can upload media
 - admin behavior works or is explicitly recorded as needing local promotion
+
+Storage expectation to verify:
+
+- native uploads stay under `/mnt/data/media/photos/managed`
+- externally staged imports land under `/mnt/data/media/photos/external`
+- Copyparty and SMB do not write into the managed Immich root
 
 Current observed state:
 
@@ -212,6 +220,12 @@ Success criteria:
 - first OIDC login provisions the user
 - document ingestion works end to end
 - admin intent is honored or any app-local promotion gap is recorded
+
+Storage expectation to verify:
+
+- incoming files land under `/mnt/data/media/documents/consume`
+- Paperless archives into `/mnt/data/media/documents/archive`
+- exports land in `/mnt/data/media/documents/export`
 
 Current observed state:
 

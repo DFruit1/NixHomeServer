@@ -67,6 +67,40 @@ rec {
   # Paths
   ############################################################
   dataRoot = "/mnt/data";
+  appdataRoot = "${dataRoot}/appdata";
+  mediaRoot = "${dataRoot}/media";
+  workspaceRoot = "${dataRoot}/workspaces";
+  usersWorkspaceRoot = "${workspaceRoot}/users";
+  sharedWorkspaceRoot = "${workspaceRoot}/shared";
+
+  audiobookshelfDataDir = "${appdataRoot}/audiobookshelf";
+  jellyfinDataDir = "${appdataRoot}/jellyfin/server";
+  jellyfinLogDir = "${jellyfinDataDir}/log";
+  jellyseerrConfigDir = "${appdataRoot}/jellyfin/jellyseerr";
+  kavitaDataDir = "${appdataRoot}/kavita";
+  paperlessDataDir = "${appdataRoot}/paperless";
+
+  immichManagedPhotosRoot = "${mediaRoot}/photos/managed";
+  immichExternalPhotosRoot = "${mediaRoot}/photos/external";
+  paperlessConsumeDir = "${mediaRoot}/documents/consume";
+  paperlessArchiveDir = "${mediaRoot}/documents/archive";
+  paperlessExportDir = "${mediaRoot}/documents/export";
+  audiobooksRoot = "${mediaRoot}/audio/audiobooks";
+  podcastsRoot = "${mediaRoot}/audio/podcasts";
+  ebooksRoot = "${mediaRoot}/books/ebooks";
+  comicsRoot = "${mediaRoot}/books/comics";
+  mangaRoot = "${mediaRoot}/books/manga";
+  moviesRoot = "${mediaRoot}/video/movies";
+  showsRoot = "${mediaRoot}/video/shows";
+  homeVideosRoot = "${mediaRoot}/video/home";
+
+  sharedExchangeRoot = "${sharedWorkspaceRoot}/exchange";
+  sharedPublicRoot = "${sharedWorkspaceRoot}/public";
+  photosUploadRoot = immichExternalPhotosRoot;
+  documentsUploadRoot = paperlessConsumeDir;
+  oauth2ProxyRuntimeDir = "/run/oauth2-proxy";
+  oauth2ProxyKeyFilePath = "${oauth2ProxyRuntimeDir}/oauth2-proxy.env";
+  oauth2ProxyClientSecretPath = "${oauth2ProxyRuntimeDir}/client-secret";
 
   ############################################################
   # Kanidm OAuth2 / OIDC URLs

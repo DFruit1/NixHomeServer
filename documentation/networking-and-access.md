@@ -43,12 +43,25 @@ All non-public app hostnames in this stack are intentionally **NetBird-only**.
   - `audiobookshelf-users`
   - `kavita-login`
   - `fileshare_users`
+- `fileshare_users` now gates both:
+  - browser access to `https://files.<domain>` through OAuth2 Proxy
+  - SMB access over NetBird to the aligned file shares
 - App admin intent is tracked separately with:
   - `immich-admin`
   - `paperless-admin`
   - `audiobookshelf-admin`
   - `kavita-admin`
 - Jellyfin and Jellyseerr remain local-auth exceptions in the current stack.
+
+## Files access model
+
+- Public browser flow:
+  - `files.<domain>` stays public behind Cloudflare Tunnel, Caddy, and OAuth2 Proxy
+  - Copyparty consumes the authenticated username from proxy headers
+- Private mesh flow:
+  - SMB is exposed only on the NetBird interface
+  - valid shares are `homes`, `exchange`, `public`, `photos-upload`, and `documents-upload`
+  - no LAN or internet-facing SMB listener is exposed
 
 ## NetBird DNS distribution
 Private names only work on clients where NetBird distributes your server resolver.

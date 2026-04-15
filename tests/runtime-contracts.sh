@@ -39,6 +39,8 @@ require_json_equal "$(nix_eval_config_json 'services.jellyfin.enable')" "true" \
   "Jellyfin must be enabled in the evaluated NixOS config."
 require_json_equal "$(nix_eval_config_json 'services.jellyseerr.enable')" "true" \
   "Jellyseerr must be enabled in the evaluated NixOS config."
+require_json_equal "$(nix_eval_config_json 'services.samba.enable')" "true" \
+  "Samba must be enabled in the evaluated NixOS config."
 require_json_equal "$(nix_eval_config_json 'services.cloudflared.enable')" "true" \
   "Cloudflared must remain enabled in the evaluated NixOS config."
 require_json_equal "$(nix_eval_config_json 'services.openssh.settings.PasswordAuthentication')" "false" \
@@ -103,8 +105,16 @@ require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLES
   "Paperless must allow social-account signups in the evaluated config."
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_URL')" "\"https://paperless.${domain}\"" \
   "Paperless must keep its external URL aligned with the routed hostname."
+require_json_equal "$(nix_eval_config_json 'services.paperless.dataDir')" "\"$(nix_eval_var 'vars.paperlessDataDir')\"" \
+  "Paperless app state must live in the canonical appdata root."
+require_json_equal "$(nix_eval_config_json 'services.paperless.mediaDir')" "\"$(nix_eval_var 'vars.paperlessArchiveDir')\"" \
+  "Paperless archive data must live in the canonical documents archive root."
+require_json_equal "$(nix_eval_config_json 'services.paperless.consumptionDir')" "\"$(nix_eval_var 'vars.paperlessConsumeDir')\"" \
+  "Paperless consume data must live in the canonical documents ingest root."
 require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.enabled')" "true" \
   "Immich must enable OAuth in the evaluated JSON config."
+require_json_equal "$(nix_eval_config_json 'services.immich.mediaLocation')" "\"$(nix_eval_var 'vars.immichManagedPhotosRoot')\"" \
+  "Immich must keep managed uploads inside the canonical managed photos root."
 require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.clientId')" '"immich-web"' \
   "Immich must keep the expected Kanidm client ID in the evaluated JSON config."
 require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.issuerUrl')" "\"https://id.${domain}/oauth2/openid/immich-web\"" \
@@ -117,8 +127,28 @@ require_json_equal "$(nix_eval_config_json 'services.kavita.settings.OpenIdConne
   "Kavita must keep its client-specific Kanidm issuer in the evaluated JSON config."
 require_json_equal "$(nix_eval_config_json 'services.kavita.settings.OpenIdConnectSettings.ClientId')" '"kavita-web"' \
   "Kavita must keep the expected Kanidm client ID in the evaluated JSON config."
+require_json_equal "$(nix_eval_config_json 'services.audiobookshelf.dataDir')" "\"$(nix_eval_var 'vars.audiobookshelfDataDir')\"" \
+  "Audiobookshelf app state must live in the canonical appdata root."
+require_json_equal "$(nix_eval_config_json 'services.kavita.dataDir')" "\"$(nix_eval_var 'vars.kavitaDataDir')\"" \
+  "Kavita app state must live in the canonical appdata root."
+require_json_equal "$(nix_eval_config_json 'services.jellyfin.dataDir')" "\"$(nix_eval_var 'vars.jellyfinDataDir')\"" \
+  "Jellyfin app state must live in the canonical appdata root."
 require_json_equal "$(nix_eval_config_json 'services.jellyseerr.port')" "$(nix_eval_var 'builtins.toString vars.jellyseerrPort')" \
   "Jellyseerr must keep its configured internal port."
+require_json_equal "$(nix_eval_config_json 'services.jellyseerr.configDir')" "\"$(nix_eval_var 'vars.jellyseerrConfigDir')\"" \
+  "Jellyseerr config must live in the canonical appdata root."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.enablePam')" "true" \
+  "Kanidm PAM and NSS integration must be enabled for NetBird SMB access."
+require_json_equal "$(nix_eval_config_json 'services.copyparty.settings.auth-ord')" '"idp"' \
+  "Copyparty must prefer trusted identity-provider headers."
+require_json_equal "$(nix_eval_config_json 'services.copyparty.settings.idp-h-usr')" '"x-forwarded-preferred-username"' \
+  "Copyparty must consume the preferred username header from OAuth2 Proxy."
+require_json_equal "$(nix_eval_config_json 'services.copyparty.settings.idp-h-grp')" '"x-forwarded-groups"' \
+  "Copyparty must consume forwarded group claims when present."
+require_json_equal "$(nix_eval_config_json 'services.samba.settings.global' | jq -r '.["bind interfaces only"]' | jq -R .)" '"yes"' \
+  "Samba must bind only the explicitly declared interfaces."
+require_json_equal "$(nix_eval_config_json 'services.samba.settings.global.interfaces')" "\"lo ${netbird_iface}\"" \
+  "Samba must listen only on loopback and the NetBird interface."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.originUrl')" "\"https://${photos_domain}/auth/login\"" \
   "Kanidm provisioning must register the Immich callback URL."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.scopeMaps' | jq -c '.["immich-users"]')" '["openid","profile","email"]' \

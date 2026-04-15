@@ -29,6 +29,7 @@ the operator account stays functional after rebuilds.
 - group-based app access
 - OIDC clients and callback URLs
 - access policy for Immich, Paperless, Audiobookshelf, Kavita, and files
+- branding for the Kanidm apps listing page
 
 Kanidm does **not** automatically pre-create downstream app users unless that
 application supports just-in-time creation on first OIDC login.
@@ -60,6 +61,19 @@ application supports just-in-time creation on first OIDC login.
 | Kavita | `https://books.<domain>` | Kanidm OIDC | account is provisioned on first successful OIDC login | `kavita-admin` maps through OIDC group claims |
 | Jellyfin | `https://video.<domain>` | local app auth | local users only | local admin only |
 | Jellyseerr | `https://jellyseerr.<domain>` | Jellyfin-backed auth | bootstrap through Jellyfin | local/Jellyfin-backed admin |
+
+## Portal branding
+
+The apps listing is now intentionally branded with clearer service names:
+
+- `Photos`
+- `Documents`
+- `Audiobooks`
+- `Books`
+- `Files`
+
+The branding is applied by `kanidm-branding.service` after Kanidm starts, using
+repo-managed assets under `modules/kanidm/assets/`.
 
 ## First login
 

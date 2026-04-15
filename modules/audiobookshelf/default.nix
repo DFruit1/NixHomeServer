@@ -3,13 +3,13 @@
 {
   services.audiobookshelf = {
     enable = true;
-    dataDir = "${vars.dataRoot}/audiobookshelf";
+    dataDir = vars.audiobookshelfDataDir;
     port = vars.audiobookshelfPort;
   };
 
   ## Ensure runtime directory exists and is the service cwd
   systemd.services.audiobookshelf.serviceConfig = {
-    WorkingDirectory = lib.mkForce "${vars.dataRoot}/audiobookshelf";
+    WorkingDirectory = lib.mkForce vars.audiobookshelfDataDir;
   };
 
   systemd.services.audiobookshelf-oidc-bootstrap = {
@@ -33,7 +33,7 @@
     script = ''
       set -euo pipefail
 
-      db="${vars.dataRoot}/audiobookshelf/config/absdatabase.sqlite"
+      db="${vars.audiobookshelfDataDir}/config/absdatabase.sqlite"
       for _ in $(seq 1 30); do
         [[ -f "$db" ]] && break
         sleep 1
@@ -152,7 +152,5 @@
     '';
   };
 
-  systemd.tmpfiles.rules = [
-    "d ${vars.dataRoot}/audiobookshelf 0755 audiobookshelf audiobookshelf -"
-  ];
+  systemd.tmpfiles.rules = [ ];
 }

@@ -57,7 +57,12 @@
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
-          reverse_proxy http://127.0.0.1:${toString vars.oauth2ProxyPort}
+          reverse_proxy http://127.0.0.1:${toString vars.oauth2ProxyPort} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+            header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
+            header_up Cf-Connecting-Ip {http.request.header.Cf-Connecting-Ip}
+          }
         '';
       };
 

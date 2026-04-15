@@ -5,8 +5,8 @@
 
   services.jellyfin = {
     enable = true;
-    dataDir = "${vars.dataRoot}/jellyfin";
+    dataDir = vars.jellyfinDataDir;
     cacheDir = "/var/cache/jellyfin";
-    logDir = "${vars.dataRoot}/jellyfin/log";
+    logDir = vars.jellyfinLogDir;
   };
 }

@@ -15,8 +15,6 @@ which now provides a `whiptail`-based guided UI with:
 - a main menu ordered around the normal workflow
 - an automatic prompt to authenticate when an action needs a Kanidm CLI session
 - an automatic prompt to reauthenticate when a privileged admin action needs it
-- a group membership editor that loads the user's current access groups and lets you toggle the final desired state before applying
-- inline help for the currently highlighted group in the membership editor
 - an explicit typed confirmation before a user is created
 - automatic clearing of validity restrictions so new users do not expire by default
 
@@ -27,7 +25,6 @@ It also supports:
 - creating users
 - listing users in a readable table
 - inspecting users, including validity dates and managed access groups
-- toggling group membership
 - creating a password reset token for a selected user
 
 Use the password reset action when an account exists but cannot log in because it

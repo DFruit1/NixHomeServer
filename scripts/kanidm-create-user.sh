@@ -722,6 +722,16 @@ Use this when privileged admin actions say reauthentication is required."
   fi
 }
 
+ensure_privileged_reauth() {
+  reauth_flow --quiet
+  if [[ "$LAST_COMMAND_STATUS" -ne 0 ]]; then
+    show_command_result "Reauthenticate" \
+      "Privileged admin access is required before this action can continue."
+    return 1
+  fi
+  return 0
+}
+
 list_people_flow() {
   local rows body
 
@@ -787,7 +797,7 @@ view_person_flow() {
 }
 
 create_user_flow() {
-  local account_id display_name primary_email summary group_lines=""
+  local account_id display_name primary_email summary
 
   account_id="$(input_box "Create User" "New account id / username.")" || return 1
   [[ -n "$account_id" ]] || return 1
@@ -797,40 +807,19 @@ create_user_flow() {
 
   primary_email="$(input_box "Create User" "Primary email. Leave blank to skip." "")" || return 1
 
-  choose_groups \
-    "Create User" \
-    "Select common groups for this person.
-
-Recommended:
-- Give normal people 'users'
-- Add only the app login groups they actually need
-- Add admin groups only for trusted app administrators
-
-Choose a group to toggle it.
-Use 'Apply selected groups' when the list is correct.
-
-These are the only groups shown here on purpose." || return 1
-
-  if [[ "${#SELECTED_GROUPS[@]}" -gt 0 ]]; then
-    group_lines="$(printf '  - %s\n' "${SELECTED_GROUPS[@]}")"
-  else
-    group_lines="  (none)"
-  fi
-
   summary="Server URL: $SERVER_URL
 Admin username: $ADMIN_NAME
 Account id: $account_id
 Display name: $display_name
-Primary email: ${primary_email:-"(none)"}
-
-Groups:
-$group_lines"
+Primary email: ${primary_email:-"(none)"}"
 
   show_text_block "Create User Summary" "$summary"
   confirm_create_user "$account_id" || {
     msg_box "Create User" "Creation cancelled. No changes were made."
     return 0
   }
+
+  ensure_privileged_reauth || return 1
 
   run_kanidm_capture "Creating the new Kanidm user" \
     kanidm person create "$account_id" "$display_name" --url "$SERVER_URL" --name "$ADMIN_NAME"
@@ -850,15 +839,6 @@ $group_lines"
     require_success "Set Email" "User was created, but setting the primary email failed." || return 1
   fi
 
-  if [[ "${#SELECTED_GROUPS[@]}" -gt 0 ]]; then
-    local group_name
-    for group_name in "${SELECTED_GROUPS[@]}"; do
-      run_kanidm_capture "Adding the user to '$group_name'" \
-        kanidm group add-members "$group_name" "$account_id" --url "$SERVER_URL" --name "$ADMIN_NAME"
-        require_success "Add Group" "User was created, but adding '$account_id' to '$group_name' failed." || return 1
-    done
-  fi
-
   run_kanidm_capture "Loading the final user record" \
     kanidm person get "$account_id" --url "$SERVER_URL" --name "$ADMIN_NAME"
   show_command_result "User Created" "Final record for '$account_id'."
@@ -870,6 +850,8 @@ group_membership_flow() {
   local removed=()
   local before_groups=()
   local after_groups=()
+  local expected_state
+  local actual_state
   local summary
   account_id="$(choose_person "Group Membership" "Select a Kanidm user to change group membership for.")" || return 1
 
@@ -896,6 +878,8 @@ group_membership_flow() {
     return 0
   fi
 
+  ensure_privileged_reauth || return 1
+
   for group_name in "${added[@]}"; do
     run_kanidm_capture "Adding '$account_id' to '$group_name'" \
       kanidm group add-members "$group_name" "$account_id" --url "$SERVER_URL" --name "$ADMIN_NAME"
@@ -909,6 +893,20 @@ group_membership_flow() {
   done
 
   fetch_user_core_groups "$account_id" || return 1
+  expected_state="$(printf '%s\n' "${after_groups[@]}" | awk 'NF' | sort | tr '\n' ' ')"
+  actual_state="$(printf '%s\n' "${CURRENT_USER_GROUPS[@]}" | awk 'NF' | sort | tr '\n' ' ')"
+
+  if [[ "$expected_state" != "$actual_state" ]]; then
+    show_text_block "Group Membership Verification Failed" \
+"The requested group state for '$account_id' does not match the final state read from Kanidm.
+
+Expected (sorted): ${expected_state:-"(none)"}
+Actual   (sorted): ${actual_state:-"(none)"}
+
+Re-run 'Group Membership'. If this repeats, run the same add/remove command from CLI and inspect the exact error."
+    return 1
+  fi
+
   summary="Updated groups for '$account_id'."
   if [[ "${#added[@]}" -gt 0 ]]; then
     summary+=$'\n\nAdded:'
@@ -948,6 +946,8 @@ password_reset_flow() {
     return 1
   fi
 
+  ensure_privileged_reauth || return 1
+
   run_kanidm_capture "Creating a password reset token for '$account_id'" \
     kanidm person credential create-reset-token "$account_id" "$ttl" --url "$SERVER_URL" --name "$ADMIN_NAME"
   require_success "Password Reset" "Could not create a password reset token for '$account_id'." || return 1
@@ -967,19 +967,19 @@ main_menu() {
           "Recommended order:
   1. Authenticate
   2. Create or inspect a user
-  3. Add the right access groups
+  3. Reset a user's password if needed
 
 Authentication: $AUTH_STATUS
 $AUTH_HINT
 
 Server: $SERVER_URL
-Admin: $ADMIN_NAME" \
+Admin: $ADMIN_NAME
+Tool: $(basename "$REPO_ROOT")" \
           auth "Refresh or replace the current Kanidm CLI session" \
           status "Show whether the current admin CLI session is valid" \
           create "Create a new Kanidm person" \
           users "List current users" \
           view "Inspect one user record" \
-          groups "Toggle access groups to the desired final state" \
           reset "Create a password reset token for a user" \
           settings "Show connection settings loaded from vars.nix" \
           exit "Exit"
@@ -992,7 +992,8 @@ Admin: $ADMIN_NAME" \
 $AUTH_HINT
 
 Server: $SERVER_URL
-Admin: $ADMIN_NAME" \
+Admin: $ADMIN_NAME
+Tool: $(basename "$REPO_ROOT")" \
           auth "Login to Kanidm as the configured admin user" \
           status "Show whether the current admin CLI session is valid" \
           settings "Show connection settings loaded from vars.nix" \
@@ -1006,7 +1007,6 @@ Admin: $ADMIN_NAME" \
       create) ensure_authenticated "Creating a user" && create_user_flow ;;
       users) ensure_authenticated "Listing users" && list_people_flow ;;
       view) ensure_authenticated "Viewing a user record" && view_person_flow ;;
-      groups) ensure_authenticated "Managing group membership" && group_membership_flow ;;
       reset) ensure_authenticated "Creating a password reset token" && password_reset_flow ;;
       settings) show_current_settings ;;
       exit) break ;;

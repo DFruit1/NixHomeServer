@@ -4,7 +4,7 @@
   services.kavita = {
     enable = true;
     package = pkgsUnstable.kavita;
-    dataDir = "${vars.dataRoot}/kavita";
+    dataDir = vars.kavitaDataDir;
     tokenKeyFile = config.age.secrets.kavitaTokenKey.path;
     settings = {
       Port = vars.kavitaPort;
@@ -21,7 +21,7 @@
   systemd.services.kavita.preStart = lib.mkAfter ''
     ${pkgs.replace-secret}/bin/replace-secret '@OIDC_SECRET@' \
       ${config.age.secrets.kavitaClientSecret.path} \
-      '${vars.dataRoot}/kavita/config/appsettings.json'
+      '${vars.kavitaDataDir}/config/appsettings.json'
   '';
 
   systemd.services.kavita-oidc-bootstrap = {
@@ -44,7 +44,7 @@
     script = ''
       set -euo pipefail
 
-      db="${vars.dataRoot}/kavita/config/kavita.db"
+      db="${vars.kavitaDataDir}/config/kavita.db"
       for _ in $(seq 1 30); do
         [[ -f "$db" ]] && break
         sleep 1
@@ -54,13 +54,14 @@
         exit 1
       }
 
+      table_ready="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+        "select count(*) from sqlite_master where type = 'table' and name = 'ServerSetting';")"
+      [[ "$table_ready" == "1" ]] || exit 0
+
       client_secret="$(< ${config.age.secrets.kavitaClientSecret.path})"
       current="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
-        "select Value from ServerSetting where Key = 40;")"
-      [[ -n "$current" ]] || {
-        echo "Kavita OIDC settings row is missing" >&2
-        exit 1
-      }
+        "select Value from ServerSetting where Key = 40;" 2>/dev/null || true)"
+      [[ -n "$current" ]] || exit 0
 
       updated="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -c \
         --arg authority "${vars.kanidmIssuer "kavita-web"}" \

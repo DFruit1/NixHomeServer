@@ -36,7 +36,7 @@ done
 echo "ℹ️ Checking NetBird interface firewall intent…"
 nb_tcp="$(nix eval --json .#nixosConfigurations.${hostname}.config.networking.firewall.interfaces.\"${netbird_iface}\".allowedTCPPorts)"
 nb_udp="$(nix eval --json .#nixosConfigurations.${hostname}.config.networking.firewall.interfaces.\"${netbird_iface}\".allowedUDPPorts)"
-for required_port in 53 443; do
+for required_port in 53 139 443 445; do
   require_json_contains "$nb_tcp" "$required_port" \
     "The NetBird interface must expose TCP port ${required_port}."
 done
