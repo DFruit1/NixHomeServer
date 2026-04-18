@@ -70,16 +70,22 @@ require_fixed secrets/agenix.nix 'oauth2ProxyClientSecret = { file = ./oauth2Pro
   "OAuth2 Proxy client secret must remain readable by both kanidm provisioning and oauth2-proxy."
 require_fixed secrets/agenix.nix 'oauth2ProxyCookieSecret = { file = ./oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };' \
   "OAuth2 Proxy cookie secret must remain owned by oauth2-proxy."
+require_fixed secrets/agenix.nix 'mailArchiveOauth2ProxyClientSecret = { file = ./mailArchiveOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };' \
+  "The dedicated mail oauth2-proxy client secret must remain readable by both Kanidm provisioning and oauth2-proxy."
+require_fixed secrets/agenix.nix 'mailArchiveOauth2ProxyCookieSecret = { file = ./mailArchiveOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };' \
+  "The dedicated mail oauth2-proxy cookie secret must remain owned by oauth2-proxy."
+require_fixed secrets/agenix.nix 'resticPassword = { file = ./resticPassword.age; owner = "root"; mode = "0400"; };' \
+  "The restic repository password must remain owned by root."
 
-require_fixed modules/cloudflared/default.nix 'credentialsFile = config.age.secrets.cfHomeCreds.path;' \
+require_fixed modules/Core_Modules/cloudflared/default.nix 'credentialsFile = config.age.secrets.cfHomeCreds.path;' \
   "Cloudflared must consume the tunnel credentials from agenix."
 require_fixed configuration.nix 'credentialsFile = config.age.secrets.cfAPIToken.path;' \
   "ACME must consume the Cloudflare API token from agenix."
-require_fixed modules/kanidm/default.nix 'idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;' \
+require_fixed modules/Core_Modules/kanidm/default.nix 'idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;' \
   "Kanidm must consume the IDM admin secret from agenix."
-require_fixed modules/kanidm/default.nix 'adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;' \
+require_fixed modules/Core_Modules/kanidm/default.nix 'adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;' \
   "Kanidm must consume the system admin secret from agenix."
-require_fixed modules/netbird/default.nix 'login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;' \
+require_fixed modules/Core_Modules/netbird/default.nix 'login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;' \
   "NetBird must consume the setup key from agenix."
 require_fixed modules/immich/default.nix 'clientSecret._secret = config.age.secrets.immichClientSecret.path;' \
   "Immich must consume its OIDC client secret from agenix."
@@ -93,19 +99,35 @@ require_fixed modules/kavita/default.nix 'config.age.secrets.kavitaClientSecret.
   "Kavita must consume its OIDC client secret from agenix."
 require_fixed modules/kavita/default.nix 'tokenKeyFile = config.age.secrets.kavitaTokenKey.path;' \
   "Kavita must consume its token key from agenix."
-require_fixed modules/oauth2-proxy/default.nix 'keyFile = vars.oauth2ProxyKeyFilePath;' \
+require_fixed modules/Core_Modules/oauth2-proxy/default.nix 'keyFile = oauth2ProxyKeyFilePath;' \
   "OAuth2 Proxy must load its runtime credentials from a generated key file instead of embedding them."
-require_fixed modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyClientSecret.path' \
+require_fixed modules/Core_Modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyClientSecret.path' \
   "OAuth2 Proxy must source its client secret material from agenix."
-require_fixed modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyCookieSecret.path' \
+require_fixed modules/Core_Modules/oauth2-proxy/default.nix 'config.age.secrets.oauth2ProxyCookieSecret.path' \
   "OAuth2 Proxy must source its cookie secret material from agenix."
-require_fixed modules/oauth2-proxy/default.nix "OAUTH2_PROXY_CLIENT_SECRET=%s\\nOAUTH2_PROXY_COOKIE_SECRET=%s\\n" \
+require_fixed modules/mail-archive-ui/oauth2-proxy.nix 'config.age.secrets.mailArchiveOauth2ProxyClientSecret.path' \
+  "The dedicated mail oauth2-proxy must source its client secret from agenix."
+require_fixed modules/mail-archive-ui/oauth2-proxy.nix 'config.age.secrets.mailArchiveOauth2ProxyCookieSecret.path' \
+  "The dedicated mail oauth2-proxy must source its cookie secret from agenix."
+require_fixed modules/Core_Modules/oauth2-proxy/default.nix "OAUTH2_PROXY_CLIENT_SECRET=%s\\nOAUTH2_PROXY_COOKIE_SECRET=%s\\n" \
   "OAuth2 Proxy must generate a runtime environment file from normalized secret values."
-forbid_match scripts/gen-all-secrets.sh 'OAUTH2_PROXY_(CLIENT|COOKIE)_SECRET=' \
+require_fixed modules/backup/default.nix 'passwordFile = config.age.secrets.resticPassword.path;' \
+  "Restic backups must consume the repository password from agenix."
+forbid_match scripts/generate-managed-secrets.sh 'OAUTH2_PROXY_(CLIENT|COOKIE)_SECRET=' \
   "OAuth2 Proxy clear-text staging secrets must be generated as raw values, not environment-file entries."
-require_fixed scripts/gen-all-secrets.sh '[[ "$token" != REPLACE_ME* ]]' \
+require_fixed scripts/lib-secrets.sh '[[ "$token" != REPLACE_ME* ]]' \
   "Cloudflare API token validation must reject placeholder values before secrets are encrypted."
-require_fixed scripts/gen-all-secrets.sh 'printf '\''CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n'\''' \
+require_fixed scripts/lib-secrets.sh 'printf '\''CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n'\''' \
   "Cloudflare API token secrets must be normalized so both lego token variables are exported."
+require_match scripts/generate-managed-secrets.sh 'resticPassword:32' \
+  "Secret generation must include a restic repository password."
+require_match scripts/generate-managed-secrets.sh 'mailArchiveOauth2ProxyClientSecret:32' \
+  "Secret generation must include the dedicated mail oauth2-proxy client secret."
+require_match scripts/generate-managed-secrets.sh 'mailArchiveOauth2ProxyCookieSecret:32' \
+  "Secret generation must include the dedicated mail oauth2-proxy cookie secret."
+require_fixed scripts/gen-all-secrets.sh 'scripts/generate-managed-secrets.sh' \
+  "The wrapper secret helper must delegate generated secrets to the explicit generator."
+require_fixed scripts/gen-all-secrets.sh 'scripts/encrypt-staged-secrets.sh' \
+  "The wrapper secret helper must delegate manual staged secrets to the explicit encryptor."
 
 echo "✅ Secret policy tests passed."

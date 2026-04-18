@@ -23,7 +23,7 @@ Why this matters:
 - Copyparty does not need direct public auth logic.
 - Access policy is controlled through Kanidm group membership (`fileshare_users`).
 
-## 3) Private app flow (`paperless/photos/audiobooks/books/video/jellyseerr`)
+## 3) Private app flow (`paperless/photos/audiobooks/books/videos/jellyseerr`)
 1. NetBird client queries DNS for app hostname.
 2. Unbound returns server NetBird IP.
 3. Client connects over NetBird to Caddy on the server.
@@ -41,9 +41,9 @@ Why this matters:
 
 ## 5) Secrets lifecycle
 1. Operator stages required cleartext files in `secrets/top/`.
-2. `scripts/gen-all-secrets.sh` validates and encrypts into `secrets/*.age`.
-3. Host decrypts at runtime using `/etc/agenix/age.key`.
-4. Services consume decrypted files from `/run/agenix`.
+2. `scripts/gen-all-secrets.sh` generates repo-managed secret material, validates staged external secrets, and writes `secrets/*.age`.
+4. Host decrypts at runtime using `/etc/agenix/age.key`.
+5. Services consume decrypted files from `/run/agenix`.
 
 Why this matters:
 - Secrets can live in Git history only as encrypted blobs.

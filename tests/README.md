@@ -1,31 +1,24 @@
 # Tests
 
-This directory holds repository-level validation that is more specific than a plain flake evaluation.
+This directory now keeps only the slim active validation suite.
 
-Current coverage:
+Active tests:
 
-- `bootstrap-readiness.sh`: checks first-deploy prerequisites, required files, critical secrets, and operator documentation coverage.
-- `networking.sh`: checks the intended networking policy and service boundary assumptions:
-  - Cloudflare Tunnel only exposes the public subset.
-  - Caddy keeps the HTTP/TLS boundary in front of public entrypoints.
-  - Kanidm and Caddy share the ACME certificate paths consistently.
-  - Unbound, dnscrypt-proxy, and NetBird wiring stay aligned with `vars.nix`.
-  - DietPi companion networking guidance stays present when that architecture is documented.
-- `secrets.sh`: checks that agenix secret definitions, owners, and consumers remain aligned.
-- `auth-routing.sh`: checks OIDC client IDs, files auth flow, reverse-proxy routing, and the documented public/private app boundary.
-- `firewall.sh`: checks evaluated firewall exposure so only the intended global and NetBird interface ports stay open.
-- `runtime-contracts.sh`: checks evaluated NixOS service, hostname, tunnel, secret-path, and interface contracts directly from `config`.
-- `run-all.sh`: runs the repository policy suite together from one entrypoint.
-- `dietpi.sh`: runs live DietPi companion checks over SSH using `vars.piLanIP` and `DIETPI_SSH_TARGET` when needed.
+- `bootstrap-readiness.sh`: checks that active bootstrap files, archive paths, docs, and validation entrypoints are present and aligned with the simplified repo layout.
+- `module-imports.sh`: checks that every active module directory with a `default.nix` is explicitly imported by `configuration.nix`.
+- `deploy-wrapper.sh`: checks the guarded deploy helper contract.
+- `secrets.sh`: checks agenix definitions, secret consumers, and secret-generation helper wiring.
+- `core-config.sh`: checks the evaluated core service graph, data-disk stack, backup/mail-archive/power-management essentials, and confirms archived DietPi and rust-scaffold paths are gone from the active tree.
+- `run-all.sh`: runs the active suite from one entrypoint.
 - `lib.sh`: shared helper functions used by the test scripts.
+
+Archived policy coverage lives under `_archive/tests/`.
 
 Run manually from the repository root:
 
 ```bash
 tests/run-all.sh
-tests/run-all.sh --with-runtime
-tests/dietpi.sh
-DIETPI_SSH_TARGET=dietpi@192.168.0.123 tests/dietpi.sh
+tests/core-config.sh
 ```
 
 Prerequisites:
@@ -34,10 +27,4 @@ Prerequisites:
 - `jq`
 - `rg`
 
-The test scripts use `nix eval` where host-specific values from `vars.nix` and the evaluated NixOS configuration should remain authoritative, `jq` for JSON assertions, and `rg` for source assertions.
-
-`tests/run-all.sh` runs the static repository policy suite.
-`tests/run-all.sh --with-runtime` also runs the live DietPi companion check.
-`scripts/check-repo.sh` uses `tests/run-all.sh`, so the normal repository validation path stays static and deterministic.
-`tests/dietpi.sh` defaults to `root@<piLanIP>` using the `piLanIP` value from `vars.nix`. Set `DIETPI_SSH_TARGET` if the DietPi SSH login user is different or root SSH login is disabled.
-DietPi-specific checks are skipped unless `enableDietPiCompanion = true` in `vars.nix`.
+`tests/run-all.sh` is the canonical repo-local validation entrypoint used by `scripts/check-repo.sh`.

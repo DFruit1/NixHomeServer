@@ -28,7 +28,9 @@ At minimum set:
 - `netIface`
 - `serverLanIP`
 - `serverSSHPubKey`
-- `enableDietPiCompanion` and `piLanIP` (if used)
+
+`serverLanIP` is the address you reserve for this host on the router. It is no
+longer a statically assigned interface address in Nix.
 
 List stable disk IDs:
 ```bash
@@ -36,6 +38,10 @@ ls -l /dev/disk/by-id/
 ```
 
 Use `/dev/disk/by-id/*` values, not transient `/dev/sdX` names.
+
+If you want to change the default nightly suspend and morning wake behavior,
+edit `modules/power-management/default.nix` after install and use the
+vendor-neutral checklist in [Power Management](./power-management.md).
 
 ## 4) Optional: wipe target disks (destructive)
 ```bash

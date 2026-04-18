@@ -28,7 +28,7 @@ the operator account stays functional after rebuilds.
 - user identity: accounts, passwords, reset tokens
 - group-based app access
 - OIDC clients and callback URLs
-- access policy for Immich, Paperless, Audiobookshelf, Kavita, and files
+- access policy for Immich, Paperless, Audiobookshelf, Kavita, files, and the mail archive UI
 - branding for the Kanidm apps listing page
 
 Kanidm does **not** automatically pre-create downstream app users unless that
@@ -40,6 +40,7 @@ application supports just-in-time creation on first OIDC login.
 |---|---|
 | `users` | baseline identity group only; does not grant app access by itself |
 | `fileshare_users` | access to `https://files.<domain>` through OAuth2 Proxy |
+| `mail-archive-users` | opt-in access to `https://emails.<domain>` for mailbox sync and search |
 | `immich-users` | login access to `https://photos.<domain>` |
 | `immich-admin` | intended Immich admins; also grants login |
 | `paperless-users` | login access to `https://paperless.<domain>` |
@@ -47,19 +48,20 @@ application supports just-in-time creation on first OIDC login.
 | `audiobookshelf-users` | login access to `https://audiobooks.<domain>` |
 | `audiobookshelf-admin` | intended Audiobookshelf admins; also grants login |
 | `kavita-login` | login access to `https://books.<domain>` |
-| `kavita-admin` | Kavita admin role mapping; also grants login |
+| `kavita-admin` | Kavita login access plus intended admin users; local promotion is still required on the current package |
 | `idm_admins` | delegated directory administration inside Kanidm |
 
 ## App auth model
 
 | App | Sign-in URL | Auth model | First login behavior | Admin model |
 |---|---|---|---|---|
-| Copyparty | `https://files.<domain>` | Kanidm via OAuth2 Proxy | no separate app bootstrap here | app-local / server-side |
+| Copyparty | `https://files.<domain>` | Kanidm via OAuth2 Proxy | `fileshare_users` membership materializes the personal workspace path | app-local / server-side |
+| Mail Archive | `https://emails.<domain>` | Kanidm via dedicated OAuth2 Proxy | the user connects one or more IMAP accounts in the UI; the archive is created under app-owned storage on first save | proxy-side group gate plus app-local per-user scoping |
 | Immich | `https://photos.<domain>` | Kanidm OIDC | user row is created on first successful OIDC login | `immich-admin` is the intended admin group; promotion may still require app-local follow-up |
-| Paperless | `https://paperless.<domain>` | Kanidm OIDC | user row is created or linked on first successful OIDC login | `paperless-admin` is the intended admin group; keep one local recovery superuser |
+| Paperless | `https://paperless.<domain>` | Kanidm OIDC | user row is created or linked on first successful OIDC login, then auto-bound to the local `Users` group for dashboard/UI-settings/saved-view permissions | `paperless-admin` is the intended admin group; keep one local recovery superuser |
 | Audiobookshelf | `https://audiobooks.<domain>` | Kanidm OIDC | user row is created or linked on first successful OIDC login | `audiobookshelf-admin` is the intended admin group; keep root bootstrap as break-glass |
-| Kavita | `https://books.<domain>` | Kanidm OIDC | account is provisioned on first successful OIDC login | `kavita-admin` maps through OIDC group claims |
-| Jellyfin | `https://video.<domain>` | local app auth | local users only | local admin only |
+| Kavita | `https://books.<domain>` | Kanidm OIDC | fresh databases still require one local admin bootstrap; OIDC is enabled in startup config and synced into Kavita's DB-backed settings, but app-local roles remain authoritative on the current package | `kavita-admin` is admin intent only; promote locally in Kavita |
+| Jellyfin | `https://videos.<domain>` | local app auth | local users only | local admin only |
 | Jellyseerr | `https://jellyseerr.<domain>` | Jellyfin-backed auth | bootstrap through Jellyfin | local/Jellyfin-backed admin |
 
 ## Portal branding
@@ -71,6 +73,7 @@ The apps listing is now intentionally branded with clearer service names:
 - `Audiobooks`
 - `Books`
 - `Files`
+- `Mail Archive`
 
 The branding is applied by `kanidm-branding.service` after Kanidm starts, using
 repo-managed assets under `modules/kanidm/assets/`.
@@ -101,6 +104,13 @@ The important distinction is:
 
 Do not collapse those three layers together.
 
+Mail archive access is a separate utility capability:
+
+- the only required app-access group is `mail-archive-users`
+- `fileshare_users` is not required for the mail archive UI
+- mailbox connections are created in the browser UI at `https://emails.<domain>`
+- downloaded mail is stored under the app-owned archive root, not under the fileshare workspace tree
+
 ## Create a new user (copy/paste)
 
 ```bash
@@ -120,6 +130,9 @@ kanidm group add-members users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_US
 ```bash
 # Public files access
 kanidm group add-members fileshare_users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
+
+# Mail archive UI
+kanidm group add-members mail-archive-users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
 
 # Immich
 kanidm group add-members immich-users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
@@ -145,6 +158,8 @@ application.
 
 - `users` is now a baseline identity group only. It does not grant app access
   by itself.
+- `mail-archive-users` is intentionally separate from `fileshare_users`; add
+  only the group the user actually needs.
 - `admindsaw` is the intended privileged operator identity.
 - `dsaw` is the intended normal daily-use identity.
 - Jellyfin and Jellyseerr remain local-auth exceptions in the current stack.

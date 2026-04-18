@@ -1,15 +1,45 @@
-{ pkgs, vars, ... }:
+{ pkgs, vars, config, ... }:
 
 let
   prepareUserWorkspace = pkgs.writeShellScript "prepare-samba-user-workspace" ''
     set -euo pipefail
 
     username="$1"
-    root="${vars.usersWorkspaceRoot}/$username"
+    root="${vars.usersWorkspaceDataRoot}/$username"
     files="$root/files"
 
-    install -d -m 0770 -g users "$root"
-    install -d -m 0770 -g users "$files"
+    install -d -m 2770 -g users "$root"
+    install -d -m 2770 -g users "$files"
+  '';
+
+  syncFileshareWorkspaces = pkgs.writeShellScript "sync-fileshare-workspaces" ''
+    set -euo pipefail
+
+    export HOME="$(mktemp -d)"
+    trap 'rm -rf "$HOME"' EXIT
+    export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
+
+    members_json="$(
+      ${pkgs.kanidm_1_9}/bin/kanidm login \
+        -H https://localhost:${toString vars.kanidmPort} \
+        -D admin \
+        --accept-invalid-certs >/dev/null
+
+      ${pkgs.kanidm_1_9}/bin/kanidm group get \
+        fileshare_users \
+        -H https://localhost:${toString vars.kanidmPort} \
+        -D admin \
+        --accept-invalid-certs \
+        -o json
+    )"
+
+    while IFS= read -r username; do
+      [[ -n "$username" ]] || continue
+      ${prepareUserWorkspace} "$username"
+    done < <(
+      printf '%s' "$members_json" \
+        | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]'
+    )
   '';
 in
 {
@@ -96,4 +126,18 @@ in
   };
 
   networking.firewall.interfaces.${vars.netbirdIface}.allowedTCPPorts = [ 139 445 ];
+
+  systemd.services.fileshare-workspace-sync = {
+    description = "Create per-user fileshare workspaces from Kanidm group membership";
+    wantedBy = [ "multi-user.target" ];
+    wants = [ "kanidm.service" "local-fs.target" ];
+    after = [ "kanidm.service" "local-fs.target" ];
+    before = [ "copyparty.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+    };
+    script = ''
+      ${syncFileshareWorkspaces}
+    '';
+  };
 }

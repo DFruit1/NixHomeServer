@@ -1,10 +1,13 @@
 { vars, config, ... }:
 
+let
+  immichPort = 2283;
+in
 {
   services.immich = {
     enable = true;
     host = "127.0.0.1";
-    port = vars.immichPort;
+    port = immichPort;
     mediaLocation = vars.immichManagedPhotosRoot;
     user = "immich";
     group = "immich";

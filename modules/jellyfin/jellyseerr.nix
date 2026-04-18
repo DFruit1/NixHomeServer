@@ -1,5 +1,9 @@
 { config, pkgs, vars, lib, ... }:
 
+let
+  jellyfinPort = 8096;
+  jellyseerrPort = 5055;
+in
 {
   users.groups.jellyseerr = { };
   users.users.jellyseerr = {
@@ -10,7 +14,7 @@
 
   services.jellyseerr = {
     enable = true;
-    port = vars.jellyseerrPort;
+    port = jellyseerrPort;
     configDir = vars.jellyseerrConfigDir;
   };
 
@@ -21,7 +25,7 @@
     ReadWritePaths = [ vars.jellyseerrConfigDir ];
   };
 
-  systemd.services.jellyseerr-bootstrap = {
+  systemd.services.jellyseerr-bootstrap-v1 = {
     description = "Bootstrap Jellyseerr media-server and public settings";
     wantedBy = [ "multi-user.target" ];
     after = [
@@ -39,12 +43,20 @@
       set -euo pipefail
 
       settings_json="${config.services.jellyseerr.configDir}/settings.json"
-      public_url="http://127.0.0.1:${toString vars.jellyseerrPort}/api/v1/settings/public"
-      jellyfin_url="http://127.0.0.1:${toString vars.jellyseerrPort}/api/v1/settings/jellyfin"
+      managed_dir="${config.services.jellyseerr.configDir}/.nixos-managed"
+      marker_file="$managed_dir/jellyseerr-bootstrap-v1.done"
+      public_url="http://127.0.0.1:${toString jellyseerrPort}/api/v1/settings/public"
       public_body="$(mktemp)"
       changed=0
       http_code=""
       trap 'rm -f "$public_body"' EXIT
+
+      ${pkgs.coreutils}/bin/install -d -m 0755 "$managed_dir"
+
+      if [[ -f "$marker_file" ]]; then
+        echo "Jellyseerr bootstrap v1 already applied"
+        exit 0
+      fi
 
       for _ in $(seq 1 60); do
         http_code="$(${pkgs.curl}/bin/curl \
@@ -63,6 +75,10 @@
         exit 1
       fi
 
+      if [[ ! -f "$settings_json" ]]; then
+        exit 0
+      fi
+
       if [[ -f "$settings_json" ]]; then
         current="$(${pkgs.jq}/bin/jq -c . "$settings_json")"
         updated="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -c \
@@ -70,7 +86,7 @@
           --arg jellyfinHost "127.0.0.1" \
           --arg jellyfinExternalHost "${vars.jellyfinDomain}" \
           --arg forgotPasswordUrl "https://${vars.jellyfinDomain}/web/#/forgotpassword.html" \
-          --argjson jellyfinPort ${toString vars.jellyfinPort} \
+          --argjson jellyfinPort ${toString jellyfinPort} \
           '
             .main.applicationUrl = $appUrl
             | .main.applicationTitle = "Jellyseerr"
@@ -99,13 +115,23 @@
 
       if [[ "$http_code" == "401" ]]; then
         if [[ "$changed" == "1" ]]; then
+          echo "Jellyseerr bootstrap v1 updated managed settings"
+          touch "$marker_file"
           /run/current-system/sw/bin/systemctl restart jellyseerr.service
+        else
+          echo "Jellyseerr bootstrap v1 already converged"
+          touch "$marker_file"
         fi
         exit 0
       fi
 
       if [[ "$changed" == "1" ]]; then
+        echo "Jellyseerr bootstrap v1 updated managed settings"
+        touch "$marker_file"
         /run/current-system/sw/bin/systemctl restart jellyseerr.service
+      else
+        echo "Jellyseerr bootstrap v1 already converged"
+        touch "$marker_file"
       fi
     '';
     serviceConfig = {

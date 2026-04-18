@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title>Mail Archive</title>
+  <rect width="128" height="128" rx="28" fill="#f4efe5"/>
+  <rect x="18" y="28" width="92" height="72" rx="14" fill="#0f6b5c"/>
+  <path d="M28 42l36 27 36-27" fill="none" stroke="#f8f4ec" stroke-linecap="round" stroke-linejoin="round" stroke-width="8"/>
+  <path d="M28 88l26-23M100 88L74 65" fill="none" stroke="#d7efe9" stroke-linecap="round" stroke-linejoin="round" stroke-width="7"/>
+</svg>

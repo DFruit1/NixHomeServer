@@ -9,12 +9,12 @@ This stack depends on external systems before first deploy.
 - Nix-enabled admin workstation with `age`, `jq`, and `openssl`.
 
 ## Required staged files in `secrets/top/`
-Before rerunning `./scripts/gen-all-secrets.sh`, ensure these files exist:
+Before running the staged-secret encryptor, ensure these files exist:
 - `secrets/top/netbirdSetupKey`
 - `secrets/top/cfHomeCreds`
 - `secrets/top/cfAPIToken`
 
-`gen-all-secrets.sh` validates and encrypts these into `.age` files.
+`scripts/gen-all-secrets.sh` is the only documented operator entrypoint. It validates staged inputs, generates repo-managed secrets, and writes the encrypted `.age` files.
 
 ## Expected formats
 ### `netbirdSetupKey`
@@ -60,6 +60,26 @@ If repository already contains encrypted secrets, reuse the matching private key
 ./scripts/gen-all-secrets.sh
 ```
 
-Generated app/auth secrets include Kanidm admin credentials, OIDC client secrets, OAuth2 Proxy secrets, and app bootstrap secrets.
+Generated app/auth secrets include:
+
+- Kanidm admin credentials
+- OIDC client secrets
+- OAuth2 Proxy secrets
+- app bootstrap secrets
+- the `resticPassword` secret used by the local backup-disk scaffold
+
+Mail archive credentials are intentionally different:
+
+- do not add mailbox app passwords or provider tokens to agenix in this phase
+- the app stores them encrypted at rest under `/mnt/data/appdata/mail-archive-ui`
+- temporary sync material is written only under `/run/mail-archive-ui`
+- downloaded Maildir content lives under `/mnt/disk1/mail-archive`
+
+`resticPassword` is generated automatically. It does not need a manual staged
+file in `secrets/top/`.
+
+Internal helpers such as `generate-managed-secrets.sh`,
+`encrypt-staged-secrets.sh`, and `lib-secrets.sh` remain in-tree, but they are
+implementation details rather than part of the public operator workflow.
 
 After successful encryption, remove cleartext staged files from `secrets/top/`.

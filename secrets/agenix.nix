@@ -23,5 +23,8 @@
     kavitaTokenKey = { file = ./kavitaTokenKey.age; owner = "kavita"; mode = "0400"; };
     oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     oauth2ProxyCookieSecret = { file = ./oauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
+    mailArchiveOauth2ProxyClientSecret = { file = ./mailArchiveOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    mailArchiveOauth2ProxyCookieSecret = { file = ./mailArchiveOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
+    resticPassword = { file = ./resticPassword.age; owner = "root"; mode = "0400"; };
   };
 }

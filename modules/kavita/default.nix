@@ -1,5 +1,8 @@
 { config, lib, pkgs, vars, pkgsUnstable, ... }:
 
+let
+  kavitaPort = 5000;
+in
 {
   services.kavita = {
     enable = true;
@@ -7,13 +10,26 @@
     dataDir = vars.kavitaDataDir;
     tokenKeyFile = config.age.secrets.kavitaTokenKey.path;
     settings = {
-      Port = vars.kavitaPort;
+      Port = kavitaPort;
       IpAddresses = "127.0.0.1,::1";
       OpenIdConnectSettings = {
+        Enabled = true;
         Authority = vars.kanidmIssuer "kavita-web";
         ClientId = "kavita-web";
         Secret = "@OIDC_SECRET@";
+        ProvisionAccounts = true;
+        RequireVerifiedEmail = true;
+        SyncUserSettings = false;
+        RolesPrefix = "kavita-";
+        RolesClaim = "groups";
         CustomScopes = [ "groups" ];
+        DefaultRoles = [ "Login" ];
+        DefaultLibraries = [ ];
+        DefaultAgeRestriction = 0;
+        DefaultIncludeUnknowns = false;
+        AutoLogin = false;
+        DisablePasswordAuthentication = false;
+        ProviderName = "Kanidm";
       };
     };
   };
@@ -54,8 +70,14 @@
         exit 1
       }
 
-      table_ready="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
-        "select count(*) from sqlite_master where type = 'table' and name = 'ServerSetting';")"
+      table_ready=""
+      for _ in $(seq 1 30); do
+        table_ready="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+          "select count(*) from sqlite_master where type = 'table' and name = 'ServerSetting';" \
+          2>/dev/null || true)"
+        [[ "$table_ready" == "1" ]] && break
+        sleep 1
+      done
       [[ "$table_ready" == "1" ]] || exit 0
 
       client_secret="$(< ${config.age.secrets.kavitaClientSecret.path})"
@@ -63,6 +85,8 @@
         "select Value from ServerSetting where Key = 40;" 2>/dev/null || true)"
       [[ -n "$current" ]] || exit 0
 
+      # Kavita 0.8.8.x rejects the lowercase Kanidm group-derived roles used
+      # in this repo, so keep OIDC for auth/linking and leave roles local.
       updated="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -c \
         --arg authority "${vars.kanidmIssuer "kavita-web"}" \
         --arg clientId "kavita-web" \
@@ -73,10 +97,14 @@
           | .Secret = $secret
           | .ProvisionAccounts = true
           | .RequireVerifiedEmail = true
-          | .SyncUserSettings = true
+          | .SyncUserSettings = false
           | .RolesPrefix = "kavita-"
           | .RolesClaim = "groups"
           | .CustomScopes = ["groups"]
+          | .DefaultRoles = ["Login"]
+          | .DefaultLibraries = []
+          | .DefaultAgeRestriction = 0
+          | .DefaultIncludeUnknowns = false
           | .Enabled = true
           | .AutoLogin = false
           | .DisablePasswordAuthentication = false

@@ -17,7 +17,7 @@ Priority: **reliability, security, and reproducibility**
 * Prefer **clarity over cleverness**
 * Keep **service boundaries explicit** (`modules/<service>/`)
 * Keep **auth and networking paths auditable**
-* Use **vars.nix for all shared constants** (domains, ports, hostnames)
+* Use **vars.nix for shared, operator-facing values** that a new server owner is likely to change
 
 ---
 
@@ -25,8 +25,9 @@ Priority: **reliability, security, and reproducibility**
 
 * Public traffic must flow through **Caddy (policy boundary)**
 * Do not introduce implicit trust between services
-* Avoid hardcoded values — reuse `vars.nix`
+* Keep module-private constants, timers, paths, and stable loopback ports inside their owning modules
 * Remove all references when deleting a service (DNS, proxy, secrets, docs)
+* Prefer one documented deploy path and one documented validation path
 
 ---
 
@@ -78,14 +79,14 @@ After significant changes:
 
 ## Rebuild Command
 
-Use this command, password for sudo is 'changeme'
+Prefer the guarded deploy helper. Derive the target host from `vars.serverLanIP`.
 
 ```sh
-nix run nixpkgs#nixos-rebuild -- test \
-  --flake .#server \
-  --target-host dsaw@192.168.0.144 \
-  --build-host dsaw@192.168.0.144 \
-  --sudo \
-  --ask-sudo-password \
-  --no-reexec
+export SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+
+./scripts/deploy-validated.sh \
+  --target "dsaw@$SERVER_IP" \
+  --build-host "dsaw@$SERVER_IP" \
+  --action test \
+  --hostname server
 ```

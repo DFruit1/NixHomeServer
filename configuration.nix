@@ -1,29 +1,5 @@
 { config, pkgs, lib, vars, disko, ... }:
 
-###############################################################################
-#  Local helpers – were previously in diskconf.nix
-###############################################################################
-let
-  mergerfsMountPoint = "/mnt/data";
-  snapraidContentFiles =
-    [ "/var/lib/snapraid/snapraid.content" ]
-    ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}/snapraid.content") vars.dataDisks)
-    ++ [ "/mnt/parity/snapraid.content" ];
-
-  # build "/mnt/disk1:/mnt/disk2:…"
-  mergerfsSourceList =
-    lib.concatStringsSep ":"
-      (lib.imap0
-        (idx: _: "/mnt/disk${toString (idx + 1)}")
-        vars.dataDisks);
-
-  # build “data d1 /mnt/disk1” … for snapraid.conf
-  mkSnapraidLine = idx: _:
-    let n = toString (idx + 1); in
-    "data d${n} /mnt/disk${n}";
-
-in
-
 {
   ###############################################################################
   #  Core system bits (unchanged)
@@ -36,8 +12,7 @@ in
   boot.supportedFilesystems = [ "btrfs" "xfs" "vfat" ];
   networking = {
     hostName = vars.hostname;
-    defaultGateway = vars.defaultGateway;
-    nameservers = vars.primaryNameServers;
+    nameservers = [ "127.0.0.1" ];
     hosts = {
       # Resolve the public Kanidm hostname locally on the server so internal
       # OIDC clients talk to Caddy directly instead of traversing Cloudflare.
@@ -45,9 +20,7 @@ in
       "::1" = [ vars.kanidmDomain ];
     };
     interfaces.${vars.netIface} = {
-      ipv4.addresses = [
-        { address = vars.serverLanIP; prefixLength = 24; }
-      ];
+      useDHCP = lib.mkForce true;
     };
     networkmanager = {
       enable = true;
@@ -60,100 +33,38 @@ in
   ###############################################################################
   #  Disko – layout + engine
   ###############################################################################
-  # Import all modules found in the modules/ directory
-  imports =
-    let
-      modulePaths = builtins.map (name: ./modules + "/${name}")
-        (builtins.attrNames (builtins.readDir ./modules));
-    in
-    [ ./disko.nix ./secrets/agenix.nix ] ++ modulePaths;
+  imports = [
+    ./disko.nix
+    ./secrets/agenix.nix
+    ./modules/audiobookshelf
+    ./modules/backup
+    ./modules/Core_Modules/caddy
+    ./modules/Core_Modules/cloudflared
+    ./modules/Core_Modules/data-disks
+    ./modules/Core_Modules/kanidm
+    ./modules/Core_Modules/netbird
+    ./modules/Core_Modules/oauth2-proxy
+    ./modules/Core_Modules/storage
+    ./modules/Core_Modules/unbound
+    ./modules/copyparty
+    ./modules/immich
+    ./modules/jellyfin
+    ./modules/kavita
+    ./modules/mail-archive
+    ./modules/mail-archive-ui
+    ./modules/paperless
+    ./modules/power-management
+    ./modules/samba
+  ];
 
   disko.enableConfig = true;
   services.dbus.enable = true;
   systemd.services.dbus.stopIfChanged = true;
-
-  ###############################################################################
-  #  SnapRAID / mergerfs (formerly diskconf.nix)
-  ###############################################################################
-  environment.systemPackages = with pkgs; [
-    nix
-    mergerfs
-    snapraid
-    smartmontools
-  ];
-
-  fileSystems = {
-    "${mergerfsMountPoint}" = {
-      fsType = "fuse.mergerfs";
-      device = mergerfsSourceList;
-      options =
-        [
-          "defaults"
-          "allow_other"
-          "use_ino"
-          "minfreespace=10G"
-          "category.create=epmfs"
-        ]
-        ++ (lib.imap0 (idx: _: "x-systemd.requires=/mnt/disk${toString (idx + 1)}") vars.dataDisks)
-        ++ (lib.imap0 (idx: _: "x-systemd.after=/mnt/disk${toString (idx + 1)}") vars.dataDisks);
-    };
-  };
+  services.mail-archive-ui.enable = true;
 
   systemd.tmpfiles.rules = [
-    "d ${mergerfsMountPoint} 0755 root root -"
     "d /run/secrets 0750 root root -"
-    "d /var/lib/snapraid 0750 root root -"
   ];
-
-  environment.etc."snapraid.conf".text = ''
-    parity /mnt/parity/snapraid.parity
-    ${builtins.concatStringsSep "\n" (map (path: "content ${path}") snapraidContentFiles)}
-    ${builtins.concatStringsSep "\n" (lib.imap0 mkSnapraidLine vars.dataDisks)}
-    exclude *.unrecoverable
-    exclude /tmp/
-    exclude lost+found/
-  '';
-
-  # timers
-  systemd.timers.snapraid-sync = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = { OnCalendar = "daily"; Persistent = true; };
-  };
-  systemd.timers.snapraid-scrub = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = { OnCalendar = "weekly"; Persistent = true; };
-  };
-
-  # services
-  systemd.services.snapraid-sync = {
-    description = "Sync SnapRAID arrays";
-    unitConfig.RequiresMountsFor =
-      [ mergerfsMountPoint "/mnt/parity" ]
-      ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}") vars.dataDisks);
-    serviceConfig = {
-      Type = "oneshot";
-    };
-    path = [ pkgs.snapraid ];
-    script = "snapraid sync";
-  };
-
-  systemd.services.snapraid-scrub = {
-    description = "Scrub SnapRAID arrays";
-    unitConfig.RequiresMountsFor =
-      [ mergerfsMountPoint "/mnt/parity" ]
-      ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}") vars.dataDisks);
-    serviceConfig = {
-      Type = "oneshot";
-    };
-    path = [ pkgs.snapraid ];
-    script = "snapraid scrub -p 1 -o 10";
-  };
-
-  services.smartd = {
-    enable = true;
-    devices = map (id: { device = "/dev/disk/by-id/${id}"; })
-      (vars.dataDisks ++ [ vars.parityDisk ]);
-  };
 
   ###############################################################################
   #  ACME certificates
@@ -167,7 +78,7 @@ in
       # Use a public recursive resolver for DNS-01 zone discovery. The local
       # split-horizon Unbound zone intentionally serves this domain without SOA
       # records, which confuses lego's Cloudflare zone lookup.
-      dnsResolver = "${builtins.head vars.fallbackNameServers}:53";
+      dnsResolver = "9.9.9.9:53";
     };
     certs."${vars.domain}" = {
       extraDomainNames = [ "*.${vars.domain}" ];
@@ -204,8 +115,6 @@ in
       vars.serverSSHPubKey
     ];
   };
-
-  users.users.kanidm.extraGroups = [ "caddy" ];
 
   boot.loader.grub = {
     enable = true;

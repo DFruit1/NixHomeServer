@@ -17,15 +17,19 @@ Use this as a decision tree instead of reading the docs front to back.
   [Kanidm Guide](./kanidm.md)
 - concrete commands and TUI workflow:
   [Kanidm CLI Reference](./kanidm_cli.md)
+- IMAP backup and CLI search setup:
+  [Mail Archive](./mail-archive.md)
 - app-by-app first-login and validation behavior:
   [Runtime Validation](./runtime-validation.md)
-- record a real validation run in a reusable format:
-  [Runtime Validation Report Template](./runtime-validation-report-template.md)
 
 ## I need to troubleshoot or operate the server
 
 - deploy, rollback mindset, service checks, symptom-based debugging:
   [Operations](./operations.md)
+- nightly suspend policy, wake expectations, and firmware checklist:
+  [Power Management](./power-management.md)
+- staged backup restoration and post-restore validation:
+  [Restore and Recovery](./restore-and-recovery.md)
 - public vs private access, NetBird DNS, Unbound expectations:
   [Networking and Access](./networking-and-access.md)
 - required secrets and staged prerequisites:
@@ -37,4 +41,4 @@ Use this as a decision tree instead of reading the docs front to back.
 - [Stack Rationale](./references/stack-rationale.md)
 - [Glossary](./references/glossary.md)
 
-Legacy runbooks were moved to `superceded/documentation/`.
+Archived runbooks, report templates, and retired implementation paths now live under `_archive/`.

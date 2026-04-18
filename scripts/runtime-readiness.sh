@@ -103,6 +103,9 @@ need nix curl host systemctl findmnt
 hostname="$(nix_var 'vars.hostname')"
 domain="$(nix_var 'vars.domain')"
 nb_ip="$(nix_var 'vars.nbIP')"
+server_lan_ip="$(nix_var 'vars.serverLanIP')"
+dns_mode="$(nix_var 'vars.dnsMode')"
+local_dns_private_answer="$(nix_var 'vars.localDnsPrivateAnswer')"
 files_domain="$(nix_var 'vars.filesDomain')"
 photos_domain="$(nix_var 'vars.photosDomain')"
 audiobooks_domain="$(nix_var 'vars.audiobooksDomain')"
@@ -152,14 +155,19 @@ check_http "https://${jellyseerr_domain}/" 200 302 307
 
 echo
 echo "== DNS via Unbound =="
-check_public_dns "${kanidm_domain}" "${nb_ip}"
-check_public_dns "${files_domain}" "${nb_ip}"
-check_private_dns "paperless.${domain}" "${nb_ip}"
-check_private_dns "${photos_domain}" "${nb_ip}"
-check_private_dns "${audiobooks_domain}" "${nb_ip}"
-check_private_dns "${kavita_domain}" "${nb_ip}"
-check_private_dns "${jellyfin_domain}" "${nb_ip}"
-check_private_dns "${jellyseerr_domain}" "${nb_ip}"
+if [[ "$dns_mode" == "split-horizon" ]]; then
+  check_private_dns "${kanidm_domain}" "${server_lan_ip}"
+  check_private_dns "${files_domain}" "${server_lan_ip}"
+else
+  check_public_dns "${kanidm_domain}" "${nb_ip}"
+  check_public_dns "${files_domain}" "${nb_ip}"
+fi
+check_private_dns "paperless.${domain}" "${local_dns_private_answer}"
+check_private_dns "${photos_domain}" "${local_dns_private_answer}"
+check_private_dns "${audiobooks_domain}" "${local_dns_private_answer}"
+check_private_dns "${kavita_domain}" "${local_dns_private_answer}"
+check_private_dns "${jellyfin_domain}" "${local_dns_private_answer}"
+check_private_dns "${jellyseerr_domain}" "${local_dns_private_answer}"
 
 echo
 echo "== Storage =="

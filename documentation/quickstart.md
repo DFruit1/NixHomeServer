@@ -37,9 +37,20 @@ jq --version
 Edit [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix) and confirm at minimum:
 - `serverLanIP`
 - `netIface`
+- `dnsMode`
 - `serverSSHPubKey`
 - `mainDisk`, `dataDisks`, `parityDisk`
-- `enableDietPiCompanion` and `piLanIP` (if using DietPi)
+
+`serverLanIP` is now the router-reserved LAN address used for split-horizon
+DNS, docs, and deploy helpers. The host interface itself learns that address
+and the default route from DHCP.
+
+If you plan to change the default nightly suspend policy, adjust
+`modules/power-management/default.nix` and confirm the firmware prerequisites
+first. The short checklist is in [Power Management](./power-management.md).
+
+The default conservative power policy now also includes a `powersave` CPU
+governor and a weekly `fstrim` run in the evening maintenance window.
 
 ## 3) Prepare secrets
 Generate age keys (skip if reusing existing recipient key):
@@ -67,7 +78,7 @@ CLOUDFLARE_DNS_API_TOKEN=<CF_DNS_API_TOKEN>
 EOF_TOKEN
 ```
 
-Encrypt everything:
+Generate and encrypt secrets through the one public entrypoint:
 ```bash
 ./scripts/gen-all-secrets.sh
 ```
@@ -82,10 +93,41 @@ ssh -t "$SERVER_USER@$SERVER_IP" "sudo install -d -m 0700 /etc/agenix && sudo in
 ```bash
 nix flake check --no-build
 scripts/check-repo.sh
-tests/run-all.sh
+```
+
+First-party Rust apps in this repo use flake dev shells for local development
+and rebuilds. Do not install Rust globally just to work on them:
+
+```bash
+nix develop .#rust
+nix develop .#mail-archive-ui
 ```
 
 ## 6) Deploy
+Preferred guarded workstation deploy:
+```bash
+./scripts/deploy-validated.sh \
+  --target "$SERVER_USER@$SERVER_IP" \
+  --build-host "$SERVER_USER@$SERVER_IP" \
+  --action test \
+  --hostname "$HOST_NAME"
+```
+
+To switch only after the guarded test path passes:
+```bash
+./scripts/deploy-validated.sh \
+  --target "$SERVER_USER@$SERVER_IP" \
+  --build-host "$SERVER_USER@$SERVER_IP" \
+  --hostname "$HOST_NAME" \
+  --action switch
+```
+
+Direct policy-test entrypoint if you want it separately:
+```bash
+tests/run-all.sh
+tests/core-config.sh
+```
+
 Preferred local-first activation:
 ```bash
 ssh -t "$SERVER_USER@$SERVER_IP"
@@ -97,23 +139,6 @@ ssh -t "$SERVER_USER@$SERVER_IP"
 # nixos-rebuild test --flake .#server
 # systemctl --failed
 # nixos-rebuild switch --flake .#server
-```
-
-Workstation-driven deploy:
-```bash
-nix run nixpkgs#nixos-rebuild -- test \
-  --flake ".#$HOST_NAME" \
-  --target-host "$SERVER_USER@$SERVER_IP" \
-  --build-host "$SERVER_USER@$SERVER_IP" \
-  --sudo \
-  --ask-sudo-password
-
-nix run nixpkgs#nixos-rebuild -- switch \
-  --flake ".#$HOST_NAME" \
-  --target-host "$SERVER_USER@$SERVER_IP" \
-  --build-host "$SERVER_USER@$SERVER_IP" \
-  --sudo \
-  --ask-sudo-password
 ```
 
 ## 7) Bootstrap Kanidm users
@@ -132,7 +157,7 @@ Recommended onboarding model:
 
 ## 8) Verify expected access boundaries
 - Public should work: `https://id.<domain>`, `https://files.<domain>`
-- Private should require NetBird: `paperless`, `photos`, `audiobooks`, `books`, `video`, `jellyseerr`
+- Private should require NetBird: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`, `jellyseerr`
 
 After the first successful deploy, continue with:
 

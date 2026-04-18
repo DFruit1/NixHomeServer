@@ -6,12 +6,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools rg nix jq
+ensure_tools rg nix
 
-hostname="$(nix_eval_var 'vars.hostname')"
-server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
-
-echo "ℹ️ Checking bootstrap-critical files are present…"
+echo "ℹ️ Checking active bootstrap and documentation files…"
 for required_path in \
   README.md \
   flake.nix \
@@ -20,116 +17,110 @@ for required_path in \
   vars.nix \
   disko.nix \
   scripts/check-repo.sh \
+  scripts/deploy-validated.sh \
+  scripts/encrypt-staged-secrets.sh \
+  scripts/generate-managed-secrets.sh \
+  scripts/gen-all-secrets.sh \
+  scripts/lib-secrets.sh \
+  scripts/power-audit.sh \
+  scripts/restore-state.sh \
   scripts/runtime-readiness.sh \
-  scripts/runtime-validation-report.sh \
   documentation/README.md \
   documentation/first-admin-session.md \
   documentation/quickstart.md \
   documentation/install-from-scratch.md \
+  documentation/restore-and-recovery.md \
   documentation/secrets-and-prereqs.md \
   documentation/networking-and-access.md \
   documentation/operations.md \
+  documentation/power-management.md \
   documentation/kanidm.md \
+  documentation/mail-archive.md \
   documentation/runtime-validation.md \
-  documentation/runtime-validation-report-template.md \
+  modules/Core_Modules/data-disks/default.nix \
+  modules/Core_Modules/caddy/default.nix \
+  modules/Core_Modules/kanidm/default.nix \
+  modules/backup/default.nix \
   secrets/agenix.nix
 do
   if [[ ! -e "$required_path" ]]; then
-    echo "❌ Bootstrap-critical file is missing: $required_path"
+    echo "❌ Required active file is missing: $required_path"
     exit 1
   fi
 done
 
-echo "ℹ️ Checking vars.nix remains the bootstrap source of truth…"
-require_fixed vars.nix 'hostname = "server";' \
-  "vars.nix must keep the canonical hostname."
-require_match vars.nix 'serverLanIP = ".*";' \
-  "vars.nix must define serverLanIP."
-require_match vars.nix 'enableDietPiCompanion = (true|false);' \
-  "vars.nix must declare whether the DietPi companion is enabled."
-
-echo "ℹ️ Checking deploy and validation guidance is bootstrap-ready…"
-require_fixed documentation/quickstart.md "nix flake check --no-build" \
-  "Quickstart must document the flake-config-enabled flake-check command."
-require_match documentation/quickstart.md 'nix run nixpkgs#nixos-rebuild -- switch \\' \
-  "Quickstart must keep the documented workstation deploy flow."
-require_fixed documentation/quickstart.md "--flake .#${hostname}" \
-  "Quickstart must deploy the hostname from vars.nix."
-require_fixed documentation/operations.md "--target-host <admin-user>@<server-lan-ip>" \
-  "Operations guide must use portable target-host placeholders."
-require_fixed documentation/operations.md "--sudo" \
-  "Operations guide must document the non-root remote deploy sudo flow."
-require_match documentation/networking-and-access.md 'id\.<domain>' \
-  "Networking guide must document id.<domain> as public."
-require_match documentation/networking-and-access.md 'files\.<domain>' \
-  "Networking guide must document files.<domain> as public."
-require_match documentation/networking-and-access.md 'NetBird-only' \
-  "Networking guide must document the internal-only app boundary."
-require_match documentation/quickstart.md 'tests/run-all\.sh' \
-  "Quickstart must include the aggregate policy test entrypoint."
-require_match documentation/quickstart.md 'accept-flake-config = true' \
-  "Quickstart must explain the one-time flake-config trust option."
-require_match documentation/quickstart.md 'First Admin Session' \
-  "Quickstart must hand off to the first-admin operator guide after deploy."
-require_fixed scripts/check-repo.sh 'export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"' \
-  "Repository checks must default NIX_CONFIG for flake-enabled validation."
-require_match scripts/runtime-readiness.sh 'cloudflared-tunnel-' \
-  "Runtime readiness checks must inspect the concrete cloudflared tunnel unit."
-require_match scripts/runtime-readiness.sh 'snapraid diff' \
-  "Runtime readiness checks must include SnapRAID drift reporting."
-require_match scripts/runtime-validation-report.sh 'Runtime Validation Report' \
-  "Runtime validation report helper must emit the report scaffold."
-require_fixed modules/paperless/default.nix 'nodejs_20 = pkgs.nodejs_22;' \
-  "Paperless must keep the Node 22 frontend override until upstream packaging is stable here."
-require_fixed modules/paperless/default.nix "jq 'del(.packageManager)'" \
-  "Paperless must strip the frontend packageManager pin to keep builds offline and reproducible."
-forbid_match documentation/quickstart.md 'accept invalid\s+certificates' \
-  "Quickstart must not document insecure Kanidm certificate bypasses."
-forbid_match documentation/operations.md 'accepts invalid certificates' \
-  "Operations guide must not document insecure Kanidm certificate bypasses."
-
-echo "ℹ️ Checking required bootstrap secrets are declared…"
-for secret_name in \
-  cfAPIToken \
-  cfHomeCreds \
-  netbirdSetupKey \
-  kanidmAdminPass \
-  kanidmSysAdminPass
+echo "ℹ️ Checking archive structure…"
+for archived_path in \
+  _archive/superceded \
+  _archive/modules/apparmor \
+  _archive/documentation \
+  _archive/scripts \
+  _archive/tests \
+  _archive/rust-scaffold
 do
-  require_match secrets/agenix.nix "${secret_name}\\s*=" \
-    "secrets/agenix.nix must declare ${secret_name}."
+  if [[ ! -e "$archived_path" ]]; then
+    echo "❌ Expected archived path is missing: $archived_path"
+    exit 1
+  fi
 done
 
-echo "ℹ️ Checking hostname and service names stay represented in operator docs…"
-require_match documentation/quickstart.md "${hostname}" \
-  "Quickstart must mention the configured host."
-require_match documentation/quickstart.md 'nixos-rebuild test --flake \.#server' \
-  "Quickstart must include the local first-activation test flow."
-require_match documentation/networking-and-access.md '<domain>' \
-  "Networking guide must retain operator-facing domain placeholders."
-require_match documentation/operations.md 'paperless-web' \
-  "Operations guide must retain Paperless operator guidance."
-require_match documentation/operations.md 'cloudflared-tunnel-metro' \
-  "Operations guide must document the actual cloudflared tunnel unit."
-require_match documentation/operations.md 'host paperless\.<domain> 127\.0\.0\.1' \
-  "Operations guide must use host-based DNS checks that work on this server."
-require_match documentation/operations.md 'snapraid diff' \
-  "Operations guide must document SnapRAID drift checks."
-require_match documentation/kanidm.md 'Kanidm' \
-  "Kanidm guide must retain identity operator guidance."
-require_match documentation/kanidm.md 'immich-users' \
-  "Kanidm guide must document the app-specific access groups."
-require_match documentation/kanidm.md 'admindsaw' \
-  "Kanidm guide must document the intended operator identity."
-require_match documentation/operations.md 'users` is baseline identity only' \
-  "Operations guide must document that users alone does not grant app access."
-require_match documentation/first-admin-session.md 'Access Matrix' \
-  "First Admin Session must include the operator access matrix."
-require_match documentation/runtime-validation.md 'Expected Behavior Matrix' \
-  "Runtime Validation must include the app validation matrix."
-require_match documentation/runtime-validation.md 'Validation order' \
-  "Runtime Validation must document the ordered validation pass."
-require_match documentation/runtime-validation-report-template.md 'Access-control regression summary' \
-  "Runtime validation report template must capture regression outcomes."
+for archived_file in \
+  _archive/documentation/runtime-validation-full.md \
+  _archive/documentation/runtime-validation-report-template.md \
+  _archive/scripts/runtime-validation-report.sh
+do
+  if [[ ! -e "$archived_file" ]]; then
+    echo "❌ Expected archived file is missing: $archived_file"
+    exit 1
+  fi
+done
+
+echo "ℹ️ Checking vars.nix stays focused on host-editable values…"
+require_fixed vars.nix 'hostname = "server";' \
+  "vars.nix must keep the canonical hostname."
+require_fixed vars.nix 'serverLanIP = "192.168.8.12";' \
+  "vars.nix must keep the reserved LAN IP declaration."
+forbid_match vars.nix 'enableDietPiCompanion|piLanIP|legacyPhotosDomain|legacyAudiobooksDomain|legacyKavitaDomain|legacyJellyfinDomain|powerManagement = \{|rustScaffold' \
+  "vars.nix must not retain archived DietPi, legacy-host, power-management, or rust-scaffold settings."
+forbid_match vars.nix 'defaultGateway' \
+  "vars.nix must not retain defaultGateway."
+
+echo "ℹ️ Checking active docs and scripts for archived features…"
+forbid_match README.md 'superceded/' \
+  "README must not point to the retired superceded path."
+require_fixed README.md '_archive/' \
+  "README must point operators at the archive path."
+require_fixed documentation/README.md '_archive/' \
+  "Documentation index must point to the archive path."
+forbid_match documentation 'DietPi|dietpi|piLanIP|enableDietPiCompanion' \
+  "Active documentation must not mention the abandoned DietPi path."
+forbid_match documentation 'photo\.<domain>|audiobook\.<domain>|book\.<domain>|video\.<domain>' \
+  "Active documentation must not mention legacy redirect hostnames."
+forbid_match documentation 'rust-scaffold|services\.rust-scaffold' \
+  "Active documentation must not describe the archived rust-scaffold path."
+forbid_match documentation 'defaultGateway' \
+  "Active documentation must not tell operators to manage defaultGateway in vars.nix."
+forbid_match AGENTS.md '192\.168\.0\.144' \
+  "AGENTS.md must not retain the old hardcoded LAN IP."
+forbid_match documentation '192\.168\.0\.144' \
+  "Active documentation must not retain the old hardcoded LAN IP."
+
+echo "ℹ️ Checking deploy and validation entrypoints…"
+require_fixed documentation/quickstart.md 'nix flake check --no-build' \
+  "Quickstart must document flake checks."
+require_fixed documentation/quickstart.md 'scripts/check-repo.sh' \
+  "Quickstart must document the repo validation helper."
+require_fixed documentation/quickstart.md 'tests/run-all.sh' \
+  "Quickstart must document the slim test entrypoint."
+require_fixed documentation/quickstart.md 'scripts/gen-all-secrets.sh' \
+  "Quickstart must document the single public secrets entrypoint."
+require_fixed documentation/operations.md 'tests/core-config.sh' \
+  "Operations must mention the compact core-config validation."
+require_fixed documentation/operations.md 'scripts/deploy-validated.sh' \
+  "Operations must document the guarded deploy helper."
+require_fixed scripts/check-repo.sh 'tests/run-all.sh' \
+  "Repository validation must use the slim test entrypoint."
+require_fixed scripts/deploy-validated.sh 'nix flake check --no-build' \
+  "Deploy wrapper must run flake checks first."
 
 echo "✅ Bootstrap readiness tests passed."

@@ -50,20 +50,25 @@ NetBird-only endpoints:
 - `https://photos.<domain>`
 - `https://audiobooks.<domain>`
 - `https://books.<domain>`
-- `https://video.<domain>`
+- `https://videos.<domain>`
 - `https://jellyseerr.<domain>`
+
+When the default nightly suspend policy is enabled, all app endpoints and SSH
+are intentionally unavailable during the configured suspend window. Run
+connectivity checks outside that window or after the morning resume. See
+[Power Management](./power-management.md).
 
 ## Access Matrix
 
 | Service | URL | Auth model | Login group | Admin group | First login behavior | Local fallback |
 |---|---|---|---|---|---|---|
 | Kanidm | `https://id.<domain>` | Kanidm native | n/a | `idm_admins` for delegated admins | no downstream provisioning | `admin`, `idm_admin` |
-| Files / Copyparty | `https://files.<domain>` | Kanidm through OAuth2 Proxy | `fileshare_users` | app-local only | proxy grants access; Copyparty is not JIT-provisioned here | server-side/app-local |
+| Files / Copyparty | `https://files.<domain>` | Kanidm through OAuth2 Proxy | `fileshare_users` | app-local only | proxy grants access; personal workspaces are materialized from `fileshare_users` membership | server-side/app-local |
 | Immich | `https://photos.<domain>` | Kanidm OIDC | `immich-users` or `immich-admin` | `immich-admin` | local user row is created on first successful OIDC login | one local recovery admin may still be useful |
 | Paperless | `https://paperless.<domain>` | Kanidm OIDC | `paperless-users` or `paperless-admin` | `paperless-admin` | local user row is created or linked on first successful OIDC login | keep one local recovery superuser |
 | Audiobookshelf | `https://audiobooks.<domain>` | Kanidm OIDC | `audiobookshelf-users` or `audiobookshelf-admin` | `audiobookshelf-admin` | local user row is created or linked on first successful OIDC login | local root bootstrap account |
-| Kavita | `https://books.<domain>` | Kanidm OIDC | `kavita-login` or `kavita-admin` | `kavita-admin` | local account is provisioned on first successful OIDC login | none normally needed |
-| Jellyfin | `https://video.<domain>` | local app auth | local only | local only | local user creation only | local admin |
+| Kavita | `https://books.<domain>` | Kanidm OIDC | `kavita-login` or `kavita-admin` | local Kavita admin | fresh databases still require a one-time local admin bootstrap before normal OIDC provisioning | local admin bootstrap and promotion currently required |
+| Jellyfin | `https://videos.<domain>` | local app auth | local only | local only | local user creation only | local admin |
 | Jellyseerr | `https://jellyseerr.<domain>` | Jellyfin-backed auth | Jellyfin-driven | Jellyfin/Jellyseerr local | bootstrap through Jellyfin login | local/Jellyfin-backed admin |
 
 ## Confirm DNS and routing first
@@ -137,12 +142,17 @@ Admin intent groups:
 ### Files / Copyparty
 
 - access is enforced by OAuth2 Proxy before the app
-- Copyparty shows per-user and shared work areas:
-  - `/me/<username>`
-  - `/shared/exchange`
-  - `/shared/public`
-  - `/incoming/photos`
-  - `/incoming/documents`
+- `fileshare_users` membership now pre-creates each user workspace for web access
+- Copyparty shows two top-level roots:
+  - `/my-files`
+  - `/shared`
+- `/shared` contains:
+  - `exchange`
+  - `public`
+  - `photos`
+  - `documents`
+- logout clears the app session and immediately restarts the oauth2-proxy login
+  flow
 - the same logical areas are also available over NetBird-only SMB
 
 ### Immich
@@ -167,8 +177,10 @@ Admin intent groups:
 
 ### Kavita
 
-- OIDC login provisions the local account
-- `kavita-admin` is the cleanest group-mapped admin path in this stack
+- a fresh Kavita database still shows the local admin registration flow until an
+  initial admin exists
+- after that one-time bootstrap, OIDC login provisions the local account
+- `kavita-admin` is still the intended admin cohort, but current Kavita roles stay local after OIDC login
 
 ### Jellyfin and Jellyseerr
 
@@ -191,7 +203,12 @@ Interpretation:
 - `/mnt/data` should be `fuse.mergerfs`
 - `/mnt/parity` should be mounted
 - `snapraid status` should end with `No error detected.`
-- `snapraid diff` may show updated app databases and logs between sync runs
+- `snapraid diff` should mainly reflect media and workspace changes, not
+  `appdata/`, because app-owned state is excluded from parity
+
+SnapRAID intentionally excludes `/mnt/data/appdata` and top-level `*.bak-*`
+migration directories. It is meant to protect long-lived media and workspace
+content, not live service databases and logs.
 
 Do not treat non-empty `snapraid diff` as a fault by itself. It is expected when
 applications are active.
@@ -214,26 +231,25 @@ scripts/check-repo.sh
 Then either:
 
 ```bash
-nix run nixpkgs#nixos-rebuild -- test \
-  --flake .#server \
-  --target-host <admin-user>@<server-lan-ip> \
+./scripts/deploy-validated.sh \
+  --target <admin-user>@<server-lan-ip> \
   --build-host <admin-user>@<server-lan-ip> \
-  --sudo \
-  --ask-sudo-password \
-  --no-reexec
+  --action test \
+  --hostname server
 ```
 
 or, after the test generation looks good:
 
 ```bash
-nix run nixpkgs#nixos-rebuild -- switch \
-  --flake .#server \
-  --target-host <admin-user>@<server-lan-ip> \
+./scripts/deploy-validated.sh \
+  --target <admin-user>@<server-lan-ip> \
   --build-host <admin-user>@<server-lan-ip> \
-  --sudo \
-  --ask-sudo-password \
-  --no-reexec
+  --hostname server \
+  --action switch
 ```
+
+Use raw `nixos-rebuild` only as a manual fallback when the wrapper is not
+appropriate.
 
 ## If something is wrong
 
