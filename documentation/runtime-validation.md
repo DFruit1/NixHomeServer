@@ -15,8 +15,11 @@ This is the main smoke-test path. It checks:
 
 - core units
 - public and private HTTPS entrypoints
+- direct Copyparty upstream reachability on `http://127.0.0.1:3923/`
 - Unbound answers for private hostnames
-- mergerfs and parity mounts
+- mergerfs plus all configured data and parity mounts
+- `/mnt/backup` when `enableBackupDisk = true`
+- SMART degradation warnings for configured array disks and any attached backup disk
 - SnapRAID status and drift
 
 If this fails, stop and fix infrastructure first.
@@ -60,6 +63,9 @@ These behaviors still need a human spot-check after major changes:
 - Files / Copyparty:
   - logged-out users are redirected through OAuth2 Proxy
   - a `fileshare_users` member can upload, download, rename, and delete
+  - a logged-in user can create a share link
+  - a logged-out browser can open the resulting `/shares/...` link
+  - unrelated `files` paths still require OAuth
 - Mail archive:
   - a `mail-archive-users` member can open the UI, trigger a sync, and search
 - Immich:
@@ -77,22 +83,37 @@ These behaviors still need a human spot-check after major changes:
   - local auth and the Jellyfin-backed chain still work
 
 ## 5. Storage and write-path spot-check
-Confirm these paths still match the intended layout:
+Confirm these paths still match the current array topology from `vars.nix`:
 
 - `/mnt/data/appdata`
 - `/mnt/data/media`
 - `/mnt/data/workspaces`
-- `/mnt/disk1/mail-archive`
+- `/mnt/data/mail-archive`
 
 Quick checks:
 
+- `findmnt -R /mnt` shows `/mnt/data`, every configured data disk mount, and all configured parity mounts
+- `findmnt /mnt/backup` succeeds when the backup disk is enabled
+- `/mnt/cold-storage` exists but is not mounted unless you mounted it intentionally
 - Copyparty shared paths still map to the expected workspace and ingest roots
 - Immich managed uploads stay out of the external import root
 - Paperless ingest still lands in `/mnt/data/media/documents/consume`
+- runtime readiness shows no critical SMART degradation on active array disks
 - `snapraid diff` does not show anything unexpected after the validation write-path tests
 
 ## 6. Router cutover validation
-After the DHCP gateway change:
+
+### Pre-cutover / transition state
+Before the LAN cutover completes:
+
+- deploy and SSH commands may still need `CURRENT_SERVER_IP`
+- `vars.serverLanIP` and `vars.serverLanGateway` should remain the intended
+  final LAN values
+- local-console deploy is the preferred path while the gateway, subnet, or
+  switch port is actively changing
+
+### Post-cutover final-state checks
+After the LAN cutover:
 
 ```bash
 ip -4 addr show dev enp34s0
@@ -102,8 +123,8 @@ networkctl status enp34s0
 
 Expected:
 
-- the interface has the reserved DHCP lease `192.168.8.12`
-- the default route comes from the router
+- the interface has the static address `192.168.8.12`
+- the default route points at `192.168.8.1`
 - the host still uses `127.0.0.1` for local DNS resolution
 
 Then confirm:

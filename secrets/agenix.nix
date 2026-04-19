@@ -26,5 +26,6 @@
     mailArchiveOauth2ProxyClientSecret = { file = ./mailArchiveOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     mailArchiveOauth2ProxyCookieSecret = { file = ./mailArchiveOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     resticPassword = { file = ./resticPassword.age; owner = "root"; mode = "0400"; };
+    storageAlertWebhookUrl = { file = ./storageAlertWebhookUrl.age; owner = "root"; mode = "0400"; };
   };
 }

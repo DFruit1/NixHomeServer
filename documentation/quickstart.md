@@ -17,10 +17,12 @@ grep -qxF 'accept-flake-config = true' ~/.config/nix/nix.conf 2>/dev/null || ech
 
 export SERVER_USER='<admin-user>'
 export HOST_NAME="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.hostname')"
-export SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
 
 echo "HOST_NAME=$HOST_NAME"
-echo "SERVER_IP=$SERVER_IP"
+echo "TARGET_SERVER_IP=$TARGET_SERVER_IP"
+echo "CURRENT_SERVER_IP=$CURRENT_SERVER_IP"
 ```
 
 ## 1) Verify workstation tools
@@ -36,14 +38,30 @@ jq --version
 ## 2) Set machine-specific values
 Edit [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix) and confirm at minimum:
 - `serverLanIP`
+- `serverLanGateway`
 - `netIface`
 - `dnsMode`
 - `serverSSHPubKey`
-- `mainDisk`, `dataDisks`, `parityDisk`
+- `mainDisk`, `dataDisks`, `parityDisks`
+- `backupDisk`, `enableBackupDisk`
+- `coldStorageDisk`, `coldStorageMountPoint`
 
-`serverLanIP` is now the router-reserved LAN address used for split-horizon
-DNS, docs, and deploy helpers. The host interface itself learns that address
-and the default route from DHCP.
+`serverLanIP` and `serverLanGateway` define the host's static LAN address and
+default route. They are also used by split-horizon DNS, docs, and deploy
+helpers.
+
+During a migration window, the current SSH endpoint may differ from
+`serverLanIP`. Keep `vars.serverLanIP` pointed at the final target address and
+set `CURRENT_SERVER_IP` locally when the host is still reachable on a temporary
+address. Do not commit temporary IPs into the repo.
+
+Treat storage topology as config-driven. Operator checks should follow the current array topology from `vars.nix`, including all configured parity mounts, rather than assuming a fixed disk count.
+
+Current storage contract:
+
+- the protected array stays at 3 data disks plus 2 parity disks
+- `/mnt/backup` is the always-declared active backup target
+- `/mnt/cold-storage` is reserved for manual operator mounts only through `scripts/cold-storage.sh`
 
 If you plan to change the default nightly suspend policy, adjust
 `modules/power-management/default.nix` and confirm the firmware prerequisites
@@ -85,8 +103,8 @@ Generate and encrypt secrets through the one public entrypoint:
 
 ## 4) Install age key on server
 ```bash
-scp ~/.age/agenix.key "$SERVER_USER@$SERVER_IP:/tmp/agenix.key"
-ssh -t "$SERVER_USER@$SERVER_IP" "sudo install -d -m 0700 /etc/agenix && sudo install -m 0400 /tmp/agenix.key /etc/agenix/age.key && rm -f /tmp/agenix.key"
+scp ~/.age/agenix.key "$SERVER_USER@$CURRENT_SERVER_IP:/tmp/agenix.key"
+ssh -t "$SERVER_USER@$CURRENT_SERVER_IP" "sudo install -d -m 0700 /etc/agenix && sudo install -m 0400 /tmp/agenix.key /etc/agenix/age.key && rm -f /tmp/agenix.key"
 ```
 
 ## 5) Validate repository
@@ -107,8 +125,8 @@ nix develop .#mail-archive-ui
 Preferred guarded workstation deploy:
 ```bash
 ./scripts/deploy-validated.sh \
-  --target "$SERVER_USER@$SERVER_IP" \
-  --build-host "$SERVER_USER@$SERVER_IP" \
+  --target "$SERVER_USER@$CURRENT_SERVER_IP" \
+  --build-host "$SERVER_USER@$CURRENT_SERVER_IP" \
   --action test \
   --hostname "$HOST_NAME"
 ```
@@ -116,8 +134,8 @@ Preferred guarded workstation deploy:
 To switch only after the guarded test path passes:
 ```bash
 ./scripts/deploy-validated.sh \
-  --target "$SERVER_USER@$SERVER_IP" \
-  --build-host "$SERVER_USER@$SERVER_IP" \
+  --target "$SERVER_USER@$CURRENT_SERVER_IP" \
+  --build-host "$SERVER_USER@$CURRENT_SERVER_IP" \
   --hostname "$HOST_NAME" \
   --action switch
 ```
@@ -130,7 +148,7 @@ tests/core-config.sh
 
 Preferred local-first activation:
 ```bash
-ssh -t "$SERVER_USER@$SERVER_IP"
+ssh -t "$SERVER_USER@$CURRENT_SERVER_IP"
 # then on server:
 # sudo -i
 # cd /etc/nixos
@@ -140,6 +158,9 @@ ssh -t "$SERVER_USER@$SERVER_IP"
 # systemctl --failed
 # nixos-rebuild switch --flake .#server
 ```
+
+If you are actively cutting over the router or LAN addressing, prefer the
+local-console path so you do not strand the session mid-change.
 
 ## 7) Bootstrap Kanidm users
 Use [Kanidm Guide](./kanidm.md).
@@ -158,6 +179,7 @@ Recommended onboarding model:
 ## 8) Verify expected access boundaries
 - Public should work: `https://id.<domain>`, `https://files.<domain>`
 - Private should require NetBird: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`, `jellyseerr`
+- Logged-out `https://files.<domain>/` should still redirect through OAuth, while explicit Copyparty share links live under `https://files.<domain>/shares/...`
 
 After the first successful deploy, continue with:
 

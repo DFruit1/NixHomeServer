@@ -79,14 +79,21 @@ After significant changes:
 
 ## Rebuild Command
 
-Prefer the guarded deploy helper. Derive the target host from `vars.serverLanIP`.
+Prefer the guarded deploy helper. Derive the intended primary LAN address from
+`vars.serverLanIP`, then allow a local override for the currently reachable SSH
+endpoint during cutover.
 
 ```sh
-export SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
 
 ./scripts/deploy-validated.sh \
-  --target "dsaw@$SERVER_IP" \
-  --build-host "dsaw@$SERVER_IP" \
+  --target "dsaw@$CURRENT_SERVER_IP" \
+  --build-host "dsaw@$CURRENT_SERVER_IP" \
   --action test \
   --hostname server
 ```
+
+`vars.serverLanIP` remains the intended primary LAN address. During a
+migration window, do not commit the temporary reachable IP into the repo; set
+`CURRENT_SERVER_IP` locally instead.

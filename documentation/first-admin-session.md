@@ -84,7 +84,8 @@ This checks:
 - service units
 - public and private HTTPS entrypoints
 - private DNS answers from Unbound
-- mergerfs mount state
+- mergerfs plus all configured data and parity mounts
+- SMART degradation warnings for configured array disks and any attached backup disk
 - SnapRAID status and pending drift
 
 If you prefer the manual path, see [Operations](./operations.md).
@@ -153,6 +154,9 @@ Admin intent groups:
   - `documents`
 - logout clears the app session and immediately restarts the oauth2-proxy login
   flow
+- authenticated users can create Copyparty share links
+- anonymous visitors may open only the explicit `/shares/...` links
+- normal UI browsing and unrelated paths still require OAuth
 - the same logical areas are also available over NetBird-only SMB
 
 ### Immich
@@ -193,7 +197,7 @@ Admin intent groups:
 Run:
 
 ```bash
-sudo findmnt /mnt/data /mnt/parity
+sudo findmnt -R /mnt
 sudo snapraid status
 sudo snapraid diff
 ```
@@ -201,14 +205,16 @@ sudo snapraid diff
 Interpretation:
 
 - `/mnt/data` should be `fuse.mergerfs`
-- `/mnt/parity` should be mounted
+- every configured data disk mount and configured parity mount from `vars.nix` should be mounted
 - `snapraid status` should end with `No error detected.`
+- `./scripts/runtime-readiness.sh` should not report critical SMART degradation on active array disks
 - `snapraid diff` should mainly reflect media and workspace changes, not
   `appdata/`, because app-owned state is excluded from parity
 
-SnapRAID intentionally excludes `/mnt/data/appdata` and top-level `*.bak-*`
-migration directories. It is meant to protect long-lived media and workspace
-content, not live service databases and logs.
+SnapRAID intentionally excludes `/mnt/data/appdata`, legacy top-level app
+directories from older layouts, and top-level `*.bak-*` migration directories.
+It is meant to protect long-lived media and workspace content, not live service
+databases and logs.
 
 Do not treat non-empty `snapraid diff` as a fault by itself. It is expected when
 applications are active.
@@ -232,8 +238,8 @@ Then either:
 
 ```bash
 ./scripts/deploy-validated.sh \
-  --target <admin-user>@<server-lan-ip> \
-  --build-host <admin-user>@<server-lan-ip> \
+  --target <admin-user>@<current-server-ip> \
+  --build-host <admin-user>@<current-server-ip> \
   --action test \
   --hostname server
 ```
@@ -242,11 +248,14 @@ or, after the test generation looks good:
 
 ```bash
 ./scripts/deploy-validated.sh \
-  --target <admin-user>@<server-lan-ip> \
-  --build-host <admin-user>@<server-lan-ip> \
+  --target <admin-user>@<current-server-ip> \
+  --build-host <admin-user>@<current-server-ip> \
   --hostname server \
   --action switch
 ```
+
+Use the current reachable server address during a migration window. Keep
+`vars.serverLanIP` reserved for the intended final LAN address.
 
 Use raw `nixos-rebuild` only as a manual fallback when the wrapper is not
 appropriate.

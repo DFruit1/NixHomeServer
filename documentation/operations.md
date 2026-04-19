@@ -24,36 +24,50 @@ Read-only runtime audits:
 ./scripts/power-audit.sh
 ```
 
+Migration-only strict storage gate:
+
+```bash
+./scripts/storage-preflight.sh --mode strict --collect-dir ./tmp/storage-health
+```
+
+Storage validation is config-driven. Follow the current array topology from `vars.nix`, not old assumptions about a fixed number of data or parity disks.
+
 ## Deploy
 
 ### Remote guarded deploy
 Use the deploy wrapper as the only documented remote deploy path:
 
 ```bash
-export SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
 
 ./scripts/deploy-validated.sh \
-  --target "dsaw@$SERVER_IP" \
-  --build-host "dsaw@$SERVER_IP" \
+  --target "dsaw@$CURRENT_SERVER_IP" \
+  --build-host "dsaw@$CURRENT_SERVER_IP" \
   --action test \
   --hostname server
 ```
+
+`vars.serverLanIP` remains the intended primary LAN address. During a
+migration window, set `CURRENT_SERVER_IP` locally if the host is still
+reachable on a temporary address. Do not commit that temporary IP into active
+repo files.
 
 Switch only after the guarded test path passes:
 
 ```bash
 ./scripts/deploy-validated.sh \
-  --target "dsaw@$SERVER_IP" \
-  --build-host "dsaw@$SERVER_IP" \
+  --target "dsaw@$CURRENT_SERVER_IP" \
+  --build-host "dsaw@$CURRENT_SERVER_IP" \
   --action switch \
   --hostname server
 ```
 
 ### Local-console deploy
-Use this during high-risk changes such as the router cutover:
+Use this during high-risk changes such as the LAN cutover:
 
 ```bash
-ssh dsaw@<server-lan-ip>
+ssh dsaw@$CURRENT_SERVER_IP
 # then on the server:
 # sudo -i
 # cd /etc/nixos
@@ -74,8 +88,8 @@ sudo nixos-rebuild switch --rollback
 systemctl --failed --no-pager
 ```
 
-### Router cutover rollback
-If the DHCP lease, route, or resolver path is wrong after the gateway cutover:
+### LAN cutover rollback
+If the static address, route, or resolver path is wrong after the cutover:
 
 ```bash
 ip -4 addr show dev enp34s0
@@ -84,11 +98,22 @@ networkctl status enp34s0
 sudo nixos-rebuild switch --rollback
 ```
 
-Expected cutover state:
+Expected post-cutover state:
 
-- the interface gets the reserved DHCP lease `192.168.8.12`
-- the default route comes from the router
+- the interface keeps the static address `192.168.8.12`
+- the default route points at `192.168.8.1`
 - the server still uses `127.0.0.1` as its own resolver
+
+### Transition deploy notes
+Before the cutover completes:
+
+- use `CURRENT_SERVER_IP` for SSH, SCP, and guarded deploy commands
+- keep `TARGET_SERVER_IP` derived from `vars.serverLanIP`
+- prefer the local-console deploy path while the router, switch, or subnet is
+  actively changing
+
+After the cutover completes, stop using the temporary local override and
+confirm the host is reachable on `dsaw@192.168.8.12`.
 
 ## Smoke tests
 Run these after a successful test or switch:
@@ -103,6 +128,7 @@ Check the main entrypoints:
 
 - public: `https://id.<domain>`, `https://files.<domain>`
 - private over NetBird: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`, `jellyseerr`
+- Copyparty upstream: `curl -I http://127.0.0.1:3923/`
 
 If you need the short manual acceptance checklist, use [Runtime Validation](./runtime-validation.md).
 
@@ -151,21 +177,25 @@ networkctl status enp34s0
 
 Expected:
 
-- DHCP lease `192.168.8.12`
-- default route learned from the router
-- no statically pinned gateway in the NixOS config
+- static address `192.168.8.12`
+- default route `192.168.8.1`
+- `127.0.0.1` remains the server resolver
 
 ## Storage failure entrypoints
 
 ```bash
-findmnt /mnt/data
-findmnt /mnt/parity
+findmnt -R /mnt
+findmnt /mnt/backup
+./scripts/cold-storage.sh status
 systemctl status snapraid-sync.timer snapraid-scrub.timer
+sudo ./scripts/runtime-readiness.sh
 sudo snapraid status
 sudo snapraid diff
 ```
 
-If storage is unhealthy, stop write-path testing until `/mnt/data` and `/mnt/parity` look correct again.
+Check `/mnt/data`, every configured data mount, all configured parity mounts, and the active `/mnt/backup` target against `vars.nix`. `scripts/cold-storage.sh status` should report the cold-storage disk without auto-mounting it. The runtime readiness report also includes SMART degradation warnings for configured array disks and any attached backup disk.
+
+If storage is unhealthy, stop write-path testing until the config-driven mount set looks correct again and runtime readiness reports no critical SMART conditions on active array disks.
 
 ## Mail archive operations
 Useful commands:

@@ -27,6 +27,19 @@ nix_eval_var() {
     "
 }
 
+nix_eval_json() {
+  local expr="$1"
+
+  NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}" \
+    nix eval --json --impure --expr "
+      let
+        flake = builtins.getFlake (toString ${TESTS_REPO_ROOT});
+        vars = import ${TESTS_REPO_ROOT}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
+      in
+        ${expr}
+    "
+}
+
 nix_eval_config_json() {
   local attr_path="$1"
 

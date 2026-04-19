@@ -73,7 +73,7 @@ Mail archive credentials are intentionally different:
 - do not add mailbox app passwords or provider tokens to agenix in this phase
 - the app stores them encrypted at rest under `/mnt/data/appdata/mail-archive-ui`
 - temporary sync material is written only under `/run/mail-archive-ui`
-- downloaded Maildir content lives under `/mnt/disk1/mail-archive`
+- downloaded Maildir content lives under `/mnt/data/mail-archive`
 
 `resticPassword` is generated automatically. It does not need a manual staged
 file in `secrets/top/`.

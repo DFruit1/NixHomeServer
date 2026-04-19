@@ -5,7 +5,7 @@ let
     set -euo pipefail
 
     username="$1"
-    root="${vars.usersWorkspaceDataRoot}/$username"
+    root="${vars.usersWorkspaceRoot}/$username"
     files="$root/files"
 
     install -d -m 2770 -g users "$root"

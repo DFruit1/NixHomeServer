@@ -24,13 +24,22 @@ git clone <your-fork-or-origin-url> /mnt/src
 At minimum set:
 - `mainDisk`
 - `dataDisks`
-- `parityDisk`
+- `parityDisks`
+- `backupDisk`
+- `enableBackupDisk`
+- `coldStorageDisk`
+- `coldStorageMountPoint`
 - `netIface`
 - `serverLanIP`
+- `serverLanGateway`
 - `serverSSHPubKey`
 
-`serverLanIP` is the address you reserve for this host on the router. It is no
-longer a statically assigned interface address in Nix.
+`dataDisks` and `parityDisks` define the current protected-array topology. Keep docs and operator checks aligned to `vars.nix`; do not assume a fixed number of data or parity disks over the server lifetime.
+
+`serverLanIP` and `serverLanGateway` define the static LAN address and default
+route applied by NixOS. If the host is temporarily reachable on a different
+address during migration, keep those values set to the final target and handle
+the current reachable address as a local operator override only.
 
 List stable disk IDs:
 ```bash
@@ -38,6 +47,11 @@ ls -l /dev/disk/by-id/
 ```
 
 Use `/dev/disk/by-id/*` values, not transient `/dev/sdX` names.
+
+Current storage intent:
+
+- `backupDisk` is the active dedicated `/mnt/backup` target and should stay enabled
+- `coldStorageDisk` is tracked for manual operator mounts only and must not be added to the protected array
 
 If you want to change the default nightly suspend and morning wake behavior,
 edit `modules/power-management/default.nix` after install and use the

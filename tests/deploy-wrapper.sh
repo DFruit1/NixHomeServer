@@ -15,6 +15,10 @@ require_fixed scripts/deploy-validated.sh '"$repo_root/scripts/check-repo.sh"' \
   "deploy-validated.sh must run scripts/check-repo.sh before deploy."
 require_match scripts/deploy-validated.sh 'run_rebuild test' \
   "deploy-validated.sh must run nixos-rebuild test."
+require_fixed scripts/deploy-validated.sh 'expected_lan_ip="$(nix_var '\''vars.serverLanIP'\'')"' \
+  "deploy-validated.sh must evaluate vars.serverLanIP for transition-aware messaging."
+require_fixed scripts/deploy-validated.sh 'Transition deploy: the current SSH/build endpoint differs from vars.serverLanIP.' \
+  "deploy-validated.sh must emit a transition advisory when the current endpoint differs from vars.serverLanIP."
 require_fixed scripts/deploy-validated.sh 'runtime-readiness.sh' \
   "deploy-validated.sh must invoke runtime-readiness.sh when available on the target."
 require_match scripts/deploy-validated.sh 'if \[\[ "\$action" == "switch" \]\]' \

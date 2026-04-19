@@ -105,6 +105,13 @@ validate_cf_api_token() {
   [[ "$token" =~ ^[A-Za-z0-9_-]{20,}$ ]] && [[ "$token" != REPLACE_ME* ]]
 }
 
+validate_webhook_url() {
+  local url
+
+  url="$(tr -d '\r\n' <"$1")"
+  [[ "$url" =~ ^https?://[^[:space:]]+$ ]] && [[ "$url" != REPLACE_ME* ]]
+}
+
 normalize_cf_api_token() {
   local source_file="$1"
   local destination_file="$2"

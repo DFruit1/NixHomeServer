@@ -12,6 +12,8 @@
   boot.supportedFilesystems = [ "btrfs" "xfs" "vfat" ];
   networking = {
     hostName = vars.hostname;
+    useDHCP = lib.mkForce false;
+    defaultGateway = vars.serverLanGateway;
     nameservers = [ "127.0.0.1" ];
     hosts = {
       # Resolve the public Kanidm hostname locally on the server so internal
@@ -20,13 +22,16 @@
       "::1" = [ vars.kanidmDomain ];
     };
     interfaces.${vars.netIface} = {
-      useDHCP = lib.mkForce true;
-    };
-    networkmanager = {
-      enable = true;
-      dns = "none";
+      useDHCP = lib.mkForce false;
+      ipv4.addresses = [
+        {
+          address = vars.serverLanIP;
+          prefixLength = vars.serverLanPrefixLength;
+        }
+      ];
     };
   };
+  networking.networkmanager.enable = false;
   services.resolved.enable = false;
   time.timeZone = "Australia/Sydney";
 
@@ -45,6 +50,7 @@
     ./modules/Core_Modules/netbird
     ./modules/Core_Modules/oauth2-proxy
     ./modules/Core_Modules/storage
+    ./modules/Core_Modules/storage-monitoring
     ./modules/Core_Modules/unbound
     ./modules/copyparty
     ./modules/immich

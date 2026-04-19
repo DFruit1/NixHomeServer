@@ -45,8 +45,8 @@ lib.mkIf vars.enableBackups {
         let
           protectedRoots = backupStatePaths ++ backupCriticalDataPaths;
         in
-          !(lib.any (path: path == vars.mediaDataRoot || path == vars.workspaceDataRoot) protectedRoots);
-      message = "Backups must not include vars.mediaDataRoot or vars.workspaceDataRoot in this phase.";
+          !(lib.any (path: path == vars.mediaRoot || path == vars.workspaceRoot) protectedRoots);
+      message = "Backups must not include vars.mediaRoot or vars.workspaceRoot in this phase.";
     }
   ];
 

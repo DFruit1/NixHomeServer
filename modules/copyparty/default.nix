@@ -17,6 +17,9 @@ in
     settings = {
       i = "127.0.0.1";
       p = copypartyPort;
+      shr = "/shares";
+      "shr-who" = "auth";
+      "shr-site" = "https://${vars.filesDomain}";
       auth-ord = "idp";
       idp-h-usr = "x-forwarded-preferred-username";
       idp-h-grp = "x-forwarded-groups";
@@ -35,7 +38,7 @@ in
     volumes = { };
     globalExtraConfig = ''
       [/my-files/''${u}]
-      ${vars.usersWorkspaceDataRoot}/''${u}/files
+      ${vars.usersWorkspaceRoot}/''${u}/files
       accs:
         rwmda: ''${u}
       flags:
@@ -49,12 +52,12 @@ in
       [/shared]
       ${copypartySharedLayoutRoot}
       accs:
-        r: *
+        r: @acct
 
       [/shared/exchange]
-      ${vars.sharedExchangeDataRoot}
+      ${vars.sharedExchangeRoot}
       accs:
-        rwmda: *
+        rwmda: @acct
       flags:
         fk: 4
         e2d: true
@@ -64,9 +67,9 @@ in
         unlistcw: true
 
       [/shared/public]
-      ${vars.sharedPublicDataRoot}
+      ${vars.sharedPublicRoot}
       accs:
-        rwmda: *
+        rwmda: @acct
       flags:
         fk: 4
         e2d: true
@@ -76,9 +79,9 @@ in
         unlistcw: true
 
       [/shared/photos]
-      ${vars.photosUploadDataRoot}
+      ${vars.photosUploadRoot}
       accs:
-        rwmda: *
+        rwmda: @acct
       flags:
         fk: 4
         e2d: true
@@ -88,9 +91,9 @@ in
         unlistcw: true
 
       [/shared/documents]
-      ${vars.documentsUploadDataRoot}
+      ${vars.documentsUploadRoot}
       accs:
-        rwmda: *
+        rwmda: @acct
       flags:
         fk: 4
         e2d: true
@@ -117,10 +120,10 @@ in
       install -d -m 0755 ${copypartyLayoutRoot}
       rm -rf ${copypartySharedLayoutRoot}
       install -d -m 0755 ${copypartySharedLayoutRoot}
-      ln -sfn ${vars.sharedExchangeDataRoot} ${copypartySharedLayoutRoot}/exchange
-      ln -sfn ${vars.sharedPublicDataRoot} ${copypartySharedLayoutRoot}/public
-      ln -sfn ${vars.photosUploadDataRoot} ${copypartySharedLayoutRoot}/photos
-      ln -sfn ${vars.documentsUploadDataRoot} ${copypartySharedLayoutRoot}/documents
+      ln -sfn ${vars.sharedExchangeRoot} ${copypartySharedLayoutRoot}/exchange
+      ln -sfn ${vars.sharedPublicRoot} ${copypartySharedLayoutRoot}/public
+      ln -sfn ${vars.photosUploadRoot} ${copypartySharedLayoutRoot}/photos
+      ln -sfn ${vars.documentsUploadRoot} ${copypartySharedLayoutRoot}/documents
     '';
   };
 
@@ -136,11 +139,11 @@ in
     ];
     serviceConfig.BindPaths = lib.mkAfter [
       copypartyLayoutRoot
-      vars.usersWorkspaceDataRoot
-      vars.sharedExchangeDataRoot
-      vars.sharedPublicDataRoot
-      vars.photosUploadDataRoot
-      vars.documentsUploadDataRoot
+      vars.usersWorkspaceRoot
+      vars.sharedExchangeRoot
+      vars.sharedPublicRoot
+      vars.photosUploadRoot
+      vars.documentsUploadRoot
     ];
   };
 

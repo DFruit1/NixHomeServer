@@ -4,23 +4,55 @@ let
   snapraidSyncTimer = "*-*-* 22:00:00";
   snapraidScrubTimer = "Sun *-*-* 10:00:00";
   mergerfsMountPoint = vars.dataRoot;
+  dataMountPoint = idx: "/mnt/disk${toString (idx + 1)}";
+  parityMountPoint = idx:
+    if idx == 0 then
+      "/mnt/parity"
+    else
+      "/mnt/parity${toString (idx + 1)}";
+  parityDirectiveName = idx:
+    if idx == 0 then
+      "parity"
+    else
+      "${toString (idx + 1)}-parity";
+  legacyAppStateDirs = [
+    "audiobookshelf"
+    "copyparty"
+    "immich"
+    "jellyfin"
+    "kavita"
+    "paperless"
+  ];
+  dataMounts = lib.imap0 (idx: _: dataMountPoint idx) vars.dataDisks;
+  parityMounts = lib.imap0 (idx: _: parityMountPoint idx) vars.parityDisks;
+  mkActiveMount = mount: diskId: lib.nameValuePair mount {
+    device = lib.mkForce "/dev/disk/by-id/${diskId}-part1";
+    options = lib.mkAfter activeArrayMountOptions;
+  };
+  dataMountDefs = lib.imap0 (idx: diskId: mkActiveMount (dataMountPoint idx) diskId) vars.dataDisks;
+  parityMountDefs = lib.imap0 (idx: diskId: mkActiveMount (parityMountPoint idx) diskId) vars.parityDisks;
   snapraidContentFiles =
     [ "/var/lib/snapraid/snapraid.content" ]
-    ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}/snapraid.content") vars.dataDisks)
-    ++ [ "/mnt/parity/snapraid.content" ];
-  mergerfsSourceList =
-    lib.concatStringsSep ":"
-      (lib.imap0
-        (idx: _: "/mnt/disk${toString (idx + 1)}")
-        vars.dataDisks);
+    ++ map (mount: "${mount}/snapraid.content") dataMounts
+    ++ map (mount: "${mount}/snapraid.content") parityMounts;
+  mergerfsSourceList = lib.concatStringsSep ":" dataMounts;
   mkSnapraidLine = idx: _:
     let
       n = toString (idx + 1);
     in
-    "data d${n} /mnt/disk${n}";
-  snapraidMounts =
-    [ mergerfsMountPoint "/mnt/parity" ]
-    ++ (lib.imap0 (idx: _: "/mnt/disk${toString (idx + 1)}") vars.dataDisks);
+    "data d${n} ${dataMountPoint idx}";
+  mkParityLine = idx: _:
+    let
+      directive = parityDirectiveName idx;
+    in
+    "${directive} ${parityMountPoint idx}/snapraid.${directive}";
+  snapraidMounts = [ mergerfsMountPoint ] ++ dataMounts ++ parityMounts;
+  smartDevices =
+    vars.dataDisks
+    ++ vars.parityDisks
+    ++ lib.optional (vars.enableBackupDisk && vars.backupDisk != null) vars.backupDisk;
+  activeArrayMountOptions = [ "x-systemd.wanted-by=multi-user.target" ];
+  activeLeafMounts = dataMounts ++ parityMounts;
 in
 {
   environment.systemPackages = with pkgs; [
@@ -29,32 +61,39 @@ in
     smartmontools
   ];
 
-  fileSystems.${mergerfsMountPoint} = {
-    fsType = "fuse.mergerfs";
-    device = mergerfsSourceList;
-    options =
-      [
-        "defaults"
-        "allow_other"
-        "use_ino"
-        "minfreespace=10G"
-        "category.create=epmfs"
-      ]
-      ++ (lib.imap0 (idx: _: "x-systemd.requires=/mnt/disk${toString (idx + 1)}") vars.dataDisks)
-      ++ (lib.imap0 (idx: _: "x-systemd.after=/mnt/disk${toString (idx + 1)}") vars.dataDisks);
-  };
+  fileSystems =
+    builtins.listToAttrs (dataMountDefs ++ parityMountDefs)
+    // {
+      ${mergerfsMountPoint} = {
+        fsType = "fuse.mergerfs";
+        device = mergerfsSourceList;
+        options =
+          [
+            "defaults"
+            "allow_other"
+            "use_ino"
+            "minfreespace=10G"
+            "category.create=epmfs"
+          ]
+          ++ activeArrayMountOptions
+          ++ map (mount: "x-systemd.requires=${mount}") dataMounts
+          ++ map (mount: "x-systemd.after=${mount}") dataMounts;
+      };
+    };
 
   systemd.tmpfiles.rules = [
     "d ${mergerfsMountPoint} 0755 root root -"
     "d /var/lib/snapraid 0750 root root -"
-  ];
+  ]
+  ++ map (mount: "d ${mount} 0755 root root -") activeLeafMounts;
 
   environment.etc."snapraid.conf".text = ''
-    parity /mnt/parity/snapraid.parity
+    ${builtins.concatStringsSep "\n" (lib.imap0 mkParityLine vars.parityDisks)}
     ${builtins.concatStringsSep "\n" (map (path: "content ${path}") snapraidContentFiles)}
     ${builtins.concatStringsSep "\n" (lib.imap0 mkSnapraidLine vars.dataDisks)}
     exclude *.unrecoverable
     exclude /appdata/
+    ${builtins.concatStringsSep "\n" (map (dir: "exclude /${dir}/") legacyAppStateDirs)}
     exclude /*.bak-*/
     exclude /tmp/
     exclude lost+found/
@@ -94,7 +133,6 @@ in
 
   services.smartd = {
     enable = true;
-    devices = map (id: { device = "/dev/disk/by-id/${id}"; })
-      (vars.dataDisks ++ [ vars.parityDisk ]);
+    devices = map (id: { device = "/dev/disk/by-id/${id}"; }) smartDevices;
   };
 }

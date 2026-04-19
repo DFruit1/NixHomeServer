@@ -10,32 +10,36 @@ rec {
   kanidmAdminEmail = "dsaw@tuta.io";
   serverSSHPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
 
-  serverLanIP = "192.168.8.12"; # Router-reserved LAN IP used for DNS/docs, not a static interface assignment.
+  serverLanIP = "192.168.8.12"; # Intended primary LAN IP for the server.
+  serverLanPrefixLength = 24;
+  serverLanGateway = "192.168.8.1";
   nbIP = "100.72.113.237";
-  dnsMode = "netbird-only";
+  dnsMode = "split-horizon";
   netIface = "enp34s0";
 
   mainDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E";
   dataDisks = [
-    "ata-HGST_HUS726T4TALA6L4_V6G7R6MS" # sda
-    "ata-HGST_HUS726T4TALA6L4_V1JAKPNH" # sdc
-    "ata-HGST_HUS726T4TALA6L4_V1J9PKDH" # sdf
-    "ata-HGST_HUS726T4TALA6L4_V1JAN8PH" # sdg
-    "ata-HGST_HUS726T4TALA6L4_V1G5K8YC" # sde
+    "ata-HGST_HUS726T4TALA6L4_V6G7R6MS" # sde
+    "ata-HGST_HUS726T4TALA6L4_V1JAKPNH" # sdf
+    "ata-HGST_HUS726T4TALA6L4_V1JAN8PH" # sdh
   ];
-  parityDisk = "ata-HGST_HUS726040ALA610_K7G5W29L"; # sdd
+  parityDisks = [
+    "ata-HGST_HUS726T4TALA6L4_V1J9PKDH" # sdg
+    "ata-HGST_HUS726T4TALA6L4_V1G5K8YC" # sdd
+  ];
 
   enableBackups = true;
-  enableBackupDisk = false;
-  backupDisk = null;
+  enableBackupDisk = true;
+  backupDisk = "ata-ST500DM002-1BD142_W3TAKCTN"; # sda
+  coldStorageDisk = "ata-HGST_HUS726040ALA610_K7G5W29L"; # sdc
 
   cloudflareTunnelName = "metro";
   cloudflareTunnelID = "83990257-d193-42ca-94cc-6cd9b79beaf7";
   cloudflareAccountID = "a047e5f7e2a9bfa39439b4ef13fa9589";
 
   dataRoot = "/mnt/data";
-  primaryDataRoot = "/mnt/disk1";
   backupMountPoint = "/mnt/backup";
+  coldStorageMountPoint = "/mnt/cold-storage";
 
   ############################################################
   # Shared derived values
@@ -55,10 +59,6 @@ rec {
   workspaceRoot = "${dataRoot}/workspaces";
   usersWorkspaceRoot = "${workspaceRoot}/users";
   sharedWorkspaceRoot = "${workspaceRoot}/shared";
-  workspaceDataRoot = "${primaryDataRoot}/workspaces";
-  usersWorkspaceDataRoot = "${workspaceDataRoot}/users";
-  sharedWorkspaceDataRoot = "${workspaceDataRoot}/shared";
-  mediaDataRoot = "${primaryDataRoot}/media";
 
   ############################################################
   # Internal derived values
@@ -74,7 +74,7 @@ rec {
   kavitaDataDir = "${appdataRoot}/kavita";
   paperlessDataDir = "${appdataRoot}/paperless";
   mailArchiveUiDataDir = "${appdataRoot}/mail-archive-ui";
-  mailArchiveStoreRoot = "${primaryDataRoot}/mail-archive";
+  mailArchiveStoreRoot = "${dataRoot}/mail-archive";
 
   immichManagedPhotosRoot = "${mediaRoot}/photos/managed";
   immichExternalPhotosRoot = "${mediaRoot}/photos/external";
@@ -94,10 +94,6 @@ rec {
   sharedPublicRoot = "${sharedWorkspaceRoot}/public";
   photosUploadRoot = immichExternalPhotosRoot;
   documentsUploadRoot = paperlessConsumeDir;
-  sharedExchangeDataRoot = "${sharedWorkspaceDataRoot}/exchange";
-  sharedPublicDataRoot = "${sharedWorkspaceDataRoot}/public";
-  photosUploadDataRoot = "${mediaDataRoot}/photos/external";
-  documentsUploadDataRoot = "${mediaDataRoot}/documents/consume";
 
   kanidmDomain = "id.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";

@@ -12,6 +12,7 @@ Declarative NixOS home server designed for reliable self-hosting with clear secu
 - Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kavita, Jellyfin, Jellyseerr
 - Mail archive and search: IMAP to local Maildir plus Notmuch over SSH/CLI
 - Storage layout and parity: Disko + mergerfs + SnapRAID
+- Storage topology is config-driven from `vars.nix`; data and parity counts may change over the server lifetime
 - State backup scaffold: restic on a dedicated backup disk, disabled until the disk is connected
 - Declarative power policy: nightly suspend, RTC wake, Wake-on-LAN, and low-risk power tuning
 

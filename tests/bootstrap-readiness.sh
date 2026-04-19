@@ -17,14 +17,17 @@ for required_path in \
   vars.nix \
   disko.nix \
   scripts/check-repo.sh \
+  scripts/cold-storage.sh \
   scripts/deploy-validated.sh \
   scripts/encrypt-staged-secrets.sh \
   scripts/generate-managed-secrets.sh \
   scripts/gen-all-secrets.sh \
+  scripts/lib-storage-health.sh \
   scripts/lib-secrets.sh \
   scripts/power-audit.sh \
   scripts/restore-state.sh \
   scripts/runtime-readiness.sh \
+  scripts/storage-preflight.sh \
   documentation/README.md \
   documentation/first-admin-session.md \
   documentation/quickstart.md \
@@ -114,13 +117,31 @@ require_fixed documentation/quickstart.md 'tests/run-all.sh' \
   "Quickstart must document the slim test entrypoint."
 require_fixed documentation/quickstart.md 'scripts/gen-all-secrets.sh' \
   "Quickstart must document the single public secrets entrypoint."
+require_fixed documentation/quickstart.md 'TARGET_SERVER_IP' \
+  "Quickstart must document the intended reserved LAN IP variable."
+require_fixed documentation/quickstart.md 'CURRENT_SERVER_IP' \
+  "Quickstart must document the current reachable IP override."
 require_fixed documentation/operations.md 'tests/core-config.sh' \
   "Operations must mention the compact core-config validation."
 require_fixed documentation/operations.md 'scripts/deploy-validated.sh' \
   "Operations must document the guarded deploy helper."
+require_fixed documentation/operations.md 'TARGET_SERVER_IP' \
+  "Operations must document the intended reserved LAN IP variable."
+require_fixed documentation/operations.md 'CURRENT_SERVER_IP' \
+  "Operations must document the current reachable IP override."
+require_fixed AGENTS.md 'TARGET_SERVER_IP' \
+  "AGENTS.md must document the intended reserved LAN IP variable."
+require_fixed AGENTS.md 'CURRENT_SERVER_IP' \
+  "AGENTS.md must document the current reachable IP override."
 require_fixed scripts/check-repo.sh 'tests/run-all.sh' \
   "Repository validation must use the slim test entrypoint."
 require_fixed scripts/deploy-validated.sh 'nix flake check --no-build' \
   "Deploy wrapper must run flake checks first."
+require_fixed scripts/runtime-readiness.sh 'Skipping SnapRAID checks because storage mounts are unhealthy.' \
+  "Runtime readiness must report unhealthy storage before attempting SnapRAID."
+require_fixed scripts/runtime-readiness.sh '== SMART ==' \
+  "Runtime readiness must include the SMART degradation section."
+require_fixed scripts/lib-storage-health.sh '--mode warn|strict' \
+  "The shared SMART helper must expose warn and strict modes."
 
 echo "✅ Bootstrap readiness tests passed."

@@ -27,10 +27,10 @@ the server, but it is not an off-host backup strategy by itself.
 1. Provision the base machine and place the agenix age key at `/etc/agenix/age.key`.
 2. Ensure the repo is present on the machine.
 3. Rebuild the base system so the normal services, secrets, and restore tooling exist.
-4. Connect the dedicated backup disk and enable it in `vars.nix`:
-   - set `enableBackupDisk = true;`
-   - set `backupDisk = "<stable /dev/disk/by-id entry>";`
+4. Connect the dedicated backup disk and confirm `backupDisk` still points at the intended `/dev/disk/by-id` entry in `vars.nix`.
 5. Rebuild again so the disk is mounted at `/mnt/backup`.
+
+The backup disk is part of the active configuration now. The cold-storage disk remains manual-only and should stay outside restore automation unless you intentionally mount it with `scripts/cold-storage.sh`.
 
 ## Staged restore
 
@@ -108,3 +108,5 @@ Then work through the short manual checklist in [Runtime Validation](./runtime-v
 - If the backup disk is not mounted at `/mnt/backup`, restic backup jobs are
   expected to stay disabled or fail fast rather than silently writing to the
   root filesystem.
+- Runtime readiness now includes SMART degradation warnings, so review those
+  before resuming normal write workloads on restored storage.

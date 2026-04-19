@@ -42,14 +42,15 @@ Availability note:
   - `id.<domain>` and `files.<domain>` intentionally recurse to the public Cloudflare path
   - DNS service is meant for NetBird clients, not general LAN recursion
 - `dnsMode = "split-horizon"`:
-  - the router should reserve `vars.serverLanIP` for this server and provide the default route by DHCP
+  - the host binds `vars.serverLanIP` directly on `vars.netIface`
+  - `vars.serverLanGateway` is the pinned LAN default route
   - LAN clients should use `vars.serverLanIP` as primary DNS when you want hosted names resolved locally
   - hosted names resolve to `vars.serverLanIP` on LAN so on-network traffic stays local
   - NetBird clients still resolve private app names to `vars.nbIP`
   - `id.<domain>` and `files.<domain>` stay public for NetBird clients but resolve locally on LAN
 
 Current default:
-- `vars.dnsMode = "netbird-only"`
+- `vars.dnsMode = "split-horizon"`
 
 ## Identity and access behavior
 
@@ -76,6 +77,9 @@ Current default:
 
 - Public browser flow:
   - `files.<domain>` stays public behind Cloudflare Tunnel, Caddy, and OAuth2 Proxy
+  - the main UI remains behind OAuth2 Proxy
+  - only the explicit `/shares/...` namespace bypasses OAuth2 Proxy for anonymous share links
+  - Copyparty still limits share creation to authenticated users
   - Copyparty consumes the authenticated username from proxy headers
 - Private mesh flow:
   - SMB is exposed only on the NetBird interface
@@ -99,22 +103,32 @@ Aligned storage roots:
   - the UI reads the forwarded Kanidm username and keeps every mailbox, sync, and search action scoped to that user
 - Storage model:
   - app config, sqlite state, and the encryption key live under `/mnt/data/appdata/mail-archive-ui`
-  - downloaded mail lives under `/mnt/disk1/mail-archive/users/<user>/accounts/<account-id>/`
+  - downloaded mail lives under `/mnt/data/mail-archive/users/<user>/accounts/<account-id>/`
   - downloaded Maildir data is intentionally not exposed through Copyparty or SMB
 
 ## DNS Mode Toggle
 Set [`vars.dnsMode`](/home/dsaw/Projects/NixOS/vars.nix) to one of:
 
 - `"netbird-only"` for the current model where clients rely on NetBird DNS distribution
-- `"split-horizon"` when your router hands out DHCP and you want LAN clients to prefer this server for hosted names
+- `"split-horizon"` when you want LAN clients to prefer this server for hosted names
 
-Router/DHCP intent in split-horizon mode:
-- reserve `vars.serverLanIP` for the server on the router
+Router/LAN intent in split-horizon mode:
+- keep `vars.serverLanIP` and `vars.serverLanGateway` aligned with the active LAN
 - advertise the server as primary LAN DNS if you want local hosted-name resolution
-- let the router hand out the default route over DHCP
+- remove competing router-side overrides for `sydneybasiniot.org` unless they delegate back to this server resolver
+- ensure the router accepts traffic for `vars.serverLanIP` on that subnet
+
+During a cutover, the current SSH endpoint may temporarily differ from
+`vars.serverLanIP`. Keep `vars.serverLanIP` pointed at the intended final
+address and use a local `CURRENT_SERVER_IP` override in deploy commands until
+the router change is complete.
 
 ## NetBird DNS distribution
-Private names only work on clients where NetBird distributes your server resolver in `netbird-only` mode.
+Private names only work on clients where NetBird distributes your server resolver. In the current split-horizon model:
+
+- NetBird clients should keep receiving `100.72.113.237` as the hosted resolver for private names
+- the server itself should keep using local Unbound on `127.0.0.1`
+- exclude the server peer from NetBird hosted-DNS assignment so NetBird does not try to replace the server-side DNS listener
 
 Check server NetBird interface:
 ```bash
@@ -141,9 +155,10 @@ Expected:
   - `paperless/photos/emails/audiobooks/books/videos/jellyseerr` -> NetBird IP
   - `id/files` -> public Cloudflare path
 - in `split-horizon` mode on LAN:
-  - hosted names -> server LAN IP
+  - `id/files/paperless/photos/emails/audiobooks/books/videos/jellyseerr` -> server LAN IP
 - in `split-horizon` mode over NetBird:
   - private app names -> NetBird IP
+  - `id/files` -> public Cloudflare path
 
 ## Failure entrypoints
 

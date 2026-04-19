@@ -86,7 +86,7 @@ This contains:
 Downloaded mail:
 
 ```text
-/mnt/disk1/mail-archive/users/<user>/accounts/<account-id>/
+/mnt/data/mail-archive/users/<user>/accounts/<account-id>/
 ```
 
 Per account:
@@ -172,7 +172,7 @@ That means mail archive app state is included:
 Downloaded Maildir data is not included, because it lives under:
 
 ```text
-/mnt/disk1/mail-archive
+/mnt/data/mail-archive
 ```
 
 So the current policy is:

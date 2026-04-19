@@ -10,6 +10,7 @@ for test_script in \
   tests/bootstrap-readiness.sh \
   tests/module-imports.sh \
   tests/deploy-wrapper.sh \
+  tests/runtime-readiness.sh \
   tests/secrets.sh \
   tests/core-config.sh
 do

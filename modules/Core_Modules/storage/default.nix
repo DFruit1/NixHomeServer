@@ -7,10 +7,7 @@
     "d ${vars.workspaceRoot} 0755 root root -"
     "d ${vars.usersWorkspaceRoot} 0755 root root -"
     "d ${vars.sharedWorkspaceRoot} 0755 root root -"
-    "d ${vars.mediaDataRoot} 0755 root root -"
-    "d ${vars.workspaceDataRoot} 0755 root root -"
-    "d ${vars.usersWorkspaceDataRoot} 0755 root root -"
-    "d ${vars.sharedWorkspaceDataRoot} 0755 root root -"
+    "d ${vars.coldStorageMountPoint} 0750 root root -"
 
     "d ${vars.audiobookshelfDataDir} 0755 audiobookshelf audiobookshelf -"
     "d ${vars.audiobookshelfConfigDir} 0755 audiobookshelf audiobookshelf -"
@@ -37,9 +34,7 @@
     "d ${vars.immichManagedPhotosRoot}/upload 0750 immich immich -"
     "f ${vars.immichManagedPhotosRoot}/upload/.immich 0640 immich immich -"
     "d ${vars.immichExternalPhotosRoot} 2770 root immich -"
-    "d ${vars.photosUploadDataRoot} 2770 root immich -"
     "d ${vars.paperlessConsumeDir} 2770 root paperless -"
-    "d ${vars.documentsUploadDataRoot} 2770 root paperless -"
     "d ${vars.paperlessArchiveDir} 0750 paperless paperless -"
     "d ${vars.paperlessExportDir} 0770 paperless paperless -"
     "d ${vars.audiobooksRoot} 0755 root root -"
@@ -53,7 +48,5 @@
 
     "d ${vars.sharedExchangeRoot} 2775 root users -"
     "d ${vars.sharedPublicRoot} 2775 root users -"
-    "d ${vars.sharedExchangeDataRoot} 2775 root users -"
-    "d ${vars.sharedPublicDataRoot} 2775 root users -"
   ];
 }
