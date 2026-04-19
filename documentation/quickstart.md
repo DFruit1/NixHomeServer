@@ -94,6 +94,10 @@ EOF_CF
 cat > secrets/top/cfAPIToken <<'EOF_TOKEN'
 CLOUDFLARE_DNS_API_TOKEN=<CF_DNS_API_TOKEN>
 EOF_TOKEN
+
+cat > secrets/top/storageAlertWebhookUrl <<'EOF'
+<PASTE_NTFY_WEBHOOK_URL>
+EOF
 ```
 
 Generate and encrypt secrets through the one public entrypoint:

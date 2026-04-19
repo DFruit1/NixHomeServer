@@ -27,7 +27,6 @@ for required_path in \
   scripts/power-audit.sh \
   scripts/restore-state.sh \
   scripts/runtime-readiness.sh \
-  scripts/storage-preflight.sh \
   documentation/README.md \
   documentation/first-admin-session.md \
   documentation/quickstart.md \
@@ -39,6 +38,7 @@ for required_path in \
   documentation/power-management.md \
   documentation/kanidm.md \
   documentation/mail-archive.md \
+  documentation/storage-monitoring.md \
   documentation/runtime-validation.md \
   modules/Core_Modules/data-disks/default.nix \
   modules/Core_Modules/caddy/default.nix \
@@ -59,6 +59,8 @@ require_fixed vars.nix 'serverLanIP = "192.168.8.12";' \
   "vars.nix must keep the reserved LAN IP declaration."
 forbid_match vars.nix 'enableDietPiCompanion|piLanIP|legacyPhotosDomain|legacyAudiobooksDomain|legacyKavitaDomain|legacyJellyfinDomain|powerManagement = \{|rustScaffold' \
   "vars.nix must not retain archived DietPi, legacy-host, power-management, or rust-scaffold settings."
+forbid_match vars.nix 'cloudflareTunnelID|cloudflareAccountID' \
+  "vars.nix must not retain unused Cloudflare account or tunnel ID values."
 forbid_match vars.nix 'defaultGateway' \
   "vars.nix must not retain defaultGateway."
 
@@ -91,10 +93,16 @@ require_fixed documentation/quickstart.md 'tests/run-all.sh' \
   "Quickstart must document the slim test entrypoint."
 require_fixed documentation/quickstart.md 'scripts/gen-all-secrets.sh' \
   "Quickstart must document the single public secrets entrypoint."
+require_fixed documentation/quickstart.md 'storageAlertWebhookUrl' \
+  "Quickstart must document the staged storage alert webhook secret."
 require_fixed documentation/quickstart.md 'TARGET_SERVER_IP' \
   "Quickstart must document the intended reserved LAN IP variable."
 require_fixed documentation/quickstart.md 'CURRENT_SERVER_IP' \
   "Quickstart must document the current reachable IP override."
+require_fixed documentation/README.md 'storage-monitoring.md' \
+  "Documentation index must expose the storage monitoring runbook."
+require_fixed documentation/secrets-and-prereqs.md 'storageAlertWebhookUrl' \
+  "Secrets guide must document the staged storage alert webhook secret."
 require_fixed documentation/operations.md 'tests/core-config.sh' \
   "Operations must mention the compact core-config validation."
 require_fixed documentation/operations.md 'scripts/deploy-validated.sh' \

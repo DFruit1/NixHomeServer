@@ -24,12 +24,6 @@ Read-only runtime audits:
 ./scripts/power-audit.sh
 ```
 
-Migration-only strict storage gate:
-
-```bash
-./scripts/storage-preflight.sh --mode strict --collect-dir ./tmp/storage-health
-```
-
 Storage validation is config-driven. Follow the current array topology from `vars.nix`, not old assumptions about a fixed number of data or parity disks.
 
 ## Deploy

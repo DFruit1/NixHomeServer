@@ -13,6 +13,7 @@ Before running the staged-secret encryptor, ensure these files exist:
 - `secrets/top/netbirdSetupKey`
 - `secrets/top/cfHomeCreds`
 - `secrets/top/cfAPIToken`
+- `secrets/top/storageAlertWebhookUrl`
 
 `scripts/gen-all-secrets.sh` is the only documented operator entrypoint. It validates staged inputs, generates repo-managed secrets, and writes the encrypted `.age` files.
 
@@ -37,6 +38,14 @@ CLOUDFLARE_ZONE_API_TOKEN=<token>
 ```
 
 The script normalizes this secret so both token variable names are exported for ACME.
+
+### `storageAlertWebhookUrl`
+Single webhook URL for storage alerts:
+```bash
+https://ntfy.example.test/storage
+```
+
+Use one `http://...` or `https://...` URL with no extra whitespace or newlines.
 
 ## Age key handling
 Generate key pair on workstation:
@@ -77,6 +86,12 @@ Mail archive credentials are intentionally different:
 
 `resticPassword` is generated automatically. It does not need a manual staged
 file in `secrets/top/`.
+
+`storageAlertWebhookUrl` is a required staged external secret. The repo may
+carry a placeholder encrypted value so config evaluation still works before the
+real webhook is staged, but production alerts stay disabled until you replace
+that placeholder with a real staged webhook URL and rerun
+`./scripts/gen-all-secrets.sh`.
 
 Internal helpers such as `generate-managed-secrets.sh`,
 `encrypt-staged-secrets.sh`, and `lib-secrets.sh` remain in-tree, but they are

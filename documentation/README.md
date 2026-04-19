@@ -26,6 +26,8 @@ Use this as a decision tree instead of reading the docs front to back.
 
 - deploy, rollback mindset, service checks, symptom-based debugging:
   [Operations](./operations.md)
+- background SMART, SnapRAID, timer, and ntfy alert checks:
+  [Storage Monitoring](./storage-monitoring.md)
 - nightly suspend policy, wake expectations, and firmware checklist:
   [Power Management](./power-management.md)
 - staged backup restoration and post-restore validation:

@@ -34,8 +34,6 @@ rec {
   coldStorageDisk = "ata-HGST_HUS726040ALA610_K7G5W29L"; # sdc
 
   cloudflareTunnelName = "metro";
-  cloudflareTunnelID = "83990257-d193-42ca-94cc-6cd9b79beaf7";
-  cloudflareAccountID = "a047e5f7e2a9bfa39439b4ef13fa9589";
 
   dataRoot = "/mnt/data";
   backupMountPoint = "/mnt/backup";
