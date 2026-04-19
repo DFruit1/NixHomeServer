@@ -47,10 +47,16 @@ let
     in
     "${directive} ${parityMountPoint idx}/snapraid.${directive}";
   snapraidMounts = [ mergerfsMountPoint ] ++ dataMounts ++ parityMounts;
+  monitoredArrayDisks = vars.dataDisks ++ vars.parityDisks;
   smartDevices =
-    vars.dataDisks
-    ++ vars.parityDisks
-    ++ lib.optional (vars.enableBackupDisk && vars.backupDisk != null) vars.backupDisk;
+    (map (id: {
+      device = "/dev/disk/by-id/${id}";
+    }) monitoredArrayDisks)
+    ++ lib.optional (vars.enableBackupDisk && vars.backupDisk != null) {
+      device = "/dev/disk/by-id/${vars.backupDisk}";
+      # Keep smartd alive if the operator temporarily disconnects the backup disk.
+      options = "-d removable";
+    };
   activeArrayMountOptions = [ "x-systemd.wanted-by=multi-user.target" ];
   activeLeafMounts = dataMounts ++ parityMounts;
 in
@@ -133,6 +139,6 @@ in
 
   services.smartd = {
     enable = true;
-    devices = map (id: { device = "/dev/disk/by-id/${id}"; }) smartDevices;
+    devices = smartDevices;
   };
 }
