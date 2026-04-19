@@ -40,5 +40,3 @@ Declarative NixOS home server designed for reliable self-hosting with clear secu
 7. [Kanidm Guide](./documentation/kanidm.md) for user/group setup.
 8. [Mail Archive](./documentation/mail-archive.md) for per-user email backup and search.
 9. [Documentation Index](./documentation/README.md) for the task-oriented doc map.
-
-Archived runbooks and retired implementation paths have been moved to `_archive/`.

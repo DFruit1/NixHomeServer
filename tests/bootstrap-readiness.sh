@@ -52,32 +52,6 @@ do
   fi
 done
 
-echo "ℹ️ Checking archive structure…"
-for archived_path in \
-  _archive/superceded \
-  _archive/modules/apparmor \
-  _archive/documentation \
-  _archive/scripts \
-  _archive/tests \
-  _archive/rust-scaffold
-do
-  if [[ ! -e "$archived_path" ]]; then
-    echo "❌ Expected archived path is missing: $archived_path"
-    exit 1
-  fi
-done
-
-for archived_file in \
-  _archive/documentation/runtime-validation-full.md \
-  _archive/documentation/runtime-validation-report-template.md \
-  _archive/scripts/runtime-validation-report.sh
-do
-  if [[ ! -e "$archived_file" ]]; then
-    echo "❌ Expected archived file is missing: $archived_file"
-    exit 1
-  fi
-done
-
 echo "ℹ️ Checking vars.nix stays focused on host-editable values…"
 require_fixed vars.nix 'hostname = "server";' \
   "vars.nix must keep the canonical hostname."
@@ -91,10 +65,10 @@ forbid_match vars.nix 'defaultGateway' \
 echo "ℹ️ Checking active docs and scripts for archived features…"
 forbid_match README.md 'superceded/' \
   "README must not point to the retired superceded path."
-require_fixed README.md '_archive/' \
-  "README must point operators at the archive path."
-require_fixed documentation/README.md '_archive/' \
-  "Documentation index must point to the archive path."
+forbid_match README.md '_archive/' \
+  "README must not point operators at a removed archive path."
+forbid_match documentation/README.md '_archive/' \
+  "Documentation index must not point to a removed archive path."
 forbid_match documentation 'DietPi|dietpi|piLanIP|enableDietPiCompanion' \
   "Active documentation must not mention the abandoned DietPi path."
 forbid_match documentation 'photo\.<domain>|audiobook\.<domain>|book\.<domain>|video\.<domain>' \

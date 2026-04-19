@@ -63,6 +63,8 @@ require_json_equal "$(nix_eval_json 'vars.photosUploadRoot')" '"/mnt/data/media/
   "Upload roots must resolve through mergerfs."
 
 echo "ℹ️ Checking data-disk stack extraction…"
+require_fixed configuration.nix './modules/Core_Modules/storage-monitoring' \
+  "configuration.nix must import the storage-monitoring module."
 require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".fsType')" '"fuse.mergerfs"' \
   "mergerfs must remain mounted at /mnt/data."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.snapraid-sync.timerConfig.OnCalendar')" '"*-*-* 22:00:00"' \
@@ -82,6 +84,14 @@ require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/backup".mountPoint
   "The backup disk must stay mounted at /mnt/backup."
 require_json_contains "$(nix_eval_config_json 'fileSystems."/mnt/backup".options')" "nofail" \
   "The backup mount must tolerate a temporarily absent disk."
+require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-health-report".timerConfig.OnCalendar')" '"*:0/30"' \
+  "Storage monitoring must generate the 30-minute report timer."
+require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@disk1".timerConfig.OnCalendar')" '"Sat *-*-* 03:00:00"' \
+  "disk1 must keep the weekly short SMART schedule."
+require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@backupDisk".timerConfig.OnCalendar')" '"Sat *-*-* 04:40:00"' \
+  "The backup disk must keep the weekly short SMART schedule when enabled."
+require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-long@parity2".timerConfig.OnCalendar')" '"*-*-05 01:00:00"' \
+  "parity2 must keep the monthly long SMART schedule."
 require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".device')" '"/mnt/disk1:/mnt/disk2:/mnt/disk3"' \
   "mergerfs must contain only the three protected data mounts."
 for active_mount in /mnt/disk1 /mnt/disk2 /mnt/disk3 /mnt/parity /mnt/parity2 /mnt/data; do

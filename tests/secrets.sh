@@ -76,6 +76,8 @@ require_fixed secrets/agenix.nix 'mailArchiveOauth2ProxyCookieSecret = { file = 
   "The dedicated mail oauth2-proxy cookie secret must remain owned by oauth2-proxy."
 require_fixed secrets/agenix.nix 'resticPassword = { file = ./resticPassword.age; owner = "root"; mode = "0400"; };' \
   "The restic repository password must remain owned by root."
+require_fixed secrets/agenix.nix 'storageAlertWebhookUrl = { file = ./storageAlertWebhookUrl.age; owner = "root"; mode = "0400"; };' \
+  "The storage alert webhook secret must remain defined as a root-only agenix secret."
 
 require_fixed modules/Core_Modules/cloudflared/default.nix 'credentialsFile = config.age.secrets.cfHomeCreds.path;' \
   "Cloudflared must consume the tunnel credentials from agenix."
@@ -113,10 +115,14 @@ require_fixed modules/Core_Modules/oauth2-proxy/default.nix "OAUTH2_PROXY_CLIENT
   "OAuth2 Proxy must generate a runtime environment file from normalized secret values."
 require_fixed modules/backup/default.nix 'passwordFile = config.age.secrets.resticPassword.path;' \
   "Restic backups must consume the repository password from agenix."
+require_fixed modules/Core_Modules/storage-monitoring/default.nix 'config.age.secrets.storageAlertWebhookUrl.path' \
+  "Storage monitoring must source its ntfy webhook URL from agenix."
 forbid_match scripts/generate-managed-secrets.sh 'OAUTH2_PROXY_(CLIENT|COOKIE)_SECRET=' \
   "OAuth2 Proxy clear-text staging secrets must be generated as raw values, not environment-file entries."
 require_fixed scripts/lib-secrets.sh '[[ "$token" != REPLACE_ME* ]]' \
   "Cloudflare API token validation must reject placeholder values before secrets are encrypted."
+require_fixed scripts/lib-secrets.sh 'validate_webhook_url()' \
+  "The secret helper must validate staged ntfy webhook URLs before encryption."
 require_fixed scripts/lib-secrets.sh 'printf '\''CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n'\''' \
   "Cloudflare API token secrets must be normalized so both lego token variables are exported."
 require_match scripts/generate-managed-secrets.sh 'resticPassword:32' \
@@ -129,5 +135,7 @@ require_fixed scripts/gen-all-secrets.sh 'scripts/generate-managed-secrets.sh' \
   "The wrapper secret helper must delegate generated secrets to the explicit generator."
 require_fixed scripts/gen-all-secrets.sh 'scripts/encrypt-staged-secrets.sh' \
   "The wrapper secret helper must delegate manual staged secrets to the explicit encryptor."
+require_fixed scripts/encrypt-staged-secrets.sh 'encrypt_staged_secret storageAlertWebhookUrl validate_webhook_url' \
+  "The staged secret encryptor must support the ntfy webhook URL."
 
 echo "✅ Secret policy tests passed."

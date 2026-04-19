@@ -40,5 +40,3 @@ Use this as a decision tree instead of reading the docs front to back.
 - [How The Stack Works](./references/how-the-stack-works.md)
 - [Stack Rationale](./references/stack-rationale.md)
 - [Glossary](./references/glossary.md)
-
-Archived runbooks, report templates, and retired implementation paths now live under `_archive/`.

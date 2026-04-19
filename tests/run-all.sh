@@ -12,6 +12,7 @@ for test_script in \
   tests/deploy-wrapper.sh \
   tests/runtime-readiness.sh \
   tests/secrets.sh \
+  tests/storage-monitoring.sh \
   tests/core-config.sh
 do
   "$test_script"

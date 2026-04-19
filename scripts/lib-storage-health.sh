@@ -86,6 +86,85 @@ storage_health_transport_events() {
   ' <<<"$kernel_log"
 }
 
+storage_health_self_test_status() {
+  local smart_output="$1"
+  local status
+
+  status="$(
+    awk '
+      BEGIN {
+        in_log = 0
+      }
+
+      /^SMART Self-test log/ || /^SMART Extended Comprehensive Error Log/ {
+        in_log = 1
+        next
+      }
+
+      in_log && /^#/ {
+        sub(/^#[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
+        split($0, parts, /[[:space:]]{2,}/)
+        print parts[1]
+        exit
+      }
+    ' <<<"$smart_output"
+  )"
+
+  case "$status" in
+    Completed\ without\ error*)
+      printf 'passed\n'
+      ;;
+    Completed:*)
+      printf 'failed\n'
+      ;;
+    Self-test\ routine\ in\ progress*|Aborted\ by*)
+      printf 'in_progress\n'
+      ;;
+    "")
+      printf 'none\n'
+      ;;
+    *)
+      printf 'unknown\n'
+      ;;
+  esac
+}
+
+storage_health_emit_json() {
+  jq -nc \
+    --arg label "$STORAGE_HEALTH_LAST_LABEL" \
+    --arg device "$STORAGE_HEALTH_LAST_DEVICE" \
+    --arg severity "$STORAGE_HEALTH_LAST_SEVERITY" \
+    --arg detail "$STORAGE_HEALTH_LAST_DETAIL" \
+    --arg overallStatus "$STORAGE_HEALTH_LAST_SMART_OVERALL_STATUS" \
+    --arg selfTestStatus "$STORAGE_HEALTH_LAST_SELF_TEST_STATUS" \
+    --argjson smartReadable "$STORAGE_HEALTH_LAST_SMART_READABLE" \
+    --argjson currentPending "$STORAGE_HEALTH_LAST_CURRENT_PENDING" \
+    --argjson offlineUncorrectable "$STORAGE_HEALTH_LAST_OFFLINE_UNCORRECTABLE" \
+    --argjson reallocatedSectors "$STORAGE_HEALTH_LAST_REALLOCATED" \
+    --argjson reportedUncorrect "$STORAGE_HEALTH_LAST_REPORTED_UNCORRECT" \
+    --argjson crcErrors "$STORAGE_HEALTH_LAST_CRC_ERRORS" \
+    --argjson powerOnHours "$STORAGE_HEALTH_LAST_POWER_ON_HOURS" \
+    --argjson transportEventCount "$STORAGE_HEALTH_LAST_TRANSPORT_COUNT" \
+    '{
+      label: $label,
+      device: $device,
+      severity: $severity,
+      detail: $detail,
+      smartReadable: $smartReadable,
+      smartOverallStatus: $overallStatus,
+      lastSelfTestStatus: $selfTestStatus,
+      attributes: {
+        currentPendingSector: $currentPending,
+        offlineUncorrectable: $offlineUncorrectable,
+        reallocatedSectorCount: $reallocatedSectors,
+        reportedUncorrect: $reportedUncorrect,
+        udmaCrcErrorCount: $crcErrors,
+        powerOnHours: $powerOnHours
+      },
+      transportEventCount: $transportEventCount
+    }'
+}
+
 storage_health_assess_disk() {
   local device="$1"
   local label="$2"
@@ -94,8 +173,20 @@ storage_health_assess_disk() {
   local transport_events transport_count
   local had_errexit=0
 
+  STORAGE_HEALTH_LAST_LABEL="$label"
+  STORAGE_HEALTH_LAST_DEVICE="$device"
   STORAGE_HEALTH_LAST_SEVERITY="OK"
   STORAGE_HEALTH_LAST_DETAIL=""
+  STORAGE_HEALTH_LAST_SMART_READABLE=true
+  STORAGE_HEALTH_LAST_SMART_OVERALL_STATUS="unknown"
+  STORAGE_HEALTH_LAST_SELF_TEST_STATUS="unknown"
+  STORAGE_HEALTH_LAST_CURRENT_PENDING=0
+  STORAGE_HEALTH_LAST_OFFLINE_UNCORRECTABLE=0
+  STORAGE_HEALTH_LAST_REALLOCATED=0
+  STORAGE_HEALTH_LAST_REPORTED_UNCORRECT=0
+  STORAGE_HEALTH_LAST_CRC_ERRORS=0
+  STORAGE_HEALTH_LAST_POWER_ON_HOURS=0
+  STORAGE_HEALTH_LAST_TRANSPORT_COUNT=0
 
   if [[ $- == *e* ]]; then
     had_errexit=1
@@ -115,6 +206,7 @@ storage_health_assess_disk() {
 
   if [[ $smart_status -ne 0 ]] && ! grep -Eq 'SMART support is:|Serial Number:|Device Model:' <<<"$smart_output"; then
     STORAGE_HEALTH_LAST_SEVERITY="CRITICAL"
+    STORAGE_HEALTH_LAST_SMART_READABLE=false
     storage_health_note "SMART unreadable"
   fi
 
@@ -124,6 +216,8 @@ storage_health_assess_disk() {
   elif grep -Eq 'SMART overall-health self-assessment test result:[[:space:]]*(FAILED|FAIL)|SMART Health Status:[[:space:]]*(BAD|FAIL|FAILED)' <<<"$smart_output"; then
     overall_status="failed"
   fi
+  STORAGE_HEALTH_LAST_SMART_OVERALL_STATUS="$overall_status"
+  STORAGE_HEALTH_LAST_SELF_TEST_STATUS="$(storage_health_self_test_status "$smart_output")"
 
   if [[ "$overall_status" == "failed" ]]; then
     STORAGE_HEALTH_LAST_SEVERITY="CRITICAL"
@@ -136,6 +230,13 @@ storage_health_assess_disk() {
   reported_uncorrect="$(storage_health_attr_value "$smart_output" "Reported_Uncorrect")"
   crc_errors="$(storage_health_attr_value "$smart_output" "UDMA_CRC_Error_Count")"
   power_on_hours="$(storage_health_attr_value "$smart_output" "Power_On_Hours")"
+
+  STORAGE_HEALTH_LAST_CURRENT_PENDING="$current_pending"
+  STORAGE_HEALTH_LAST_OFFLINE_UNCORRECTABLE="$offline_uncorrect"
+  STORAGE_HEALTH_LAST_REALLOCATED="$reallocated"
+  STORAGE_HEALTH_LAST_REPORTED_UNCORRECT="$reported_uncorrect"
+  STORAGE_HEALTH_LAST_CRC_ERRORS="$crc_errors"
+  STORAGE_HEALTH_LAST_POWER_ON_HOURS="$power_on_hours"
 
   if (( current_pending > 0 )); then
     STORAGE_HEALTH_LAST_SEVERITY="CRITICAL"
@@ -171,6 +272,11 @@ storage_health_assess_disk() {
     storage_health_note "historical SMART self-test or error-log failures"
   fi
 
+  if [[ "$STORAGE_HEALTH_LAST_SELF_TEST_STATUS" == "failed" ]]; then
+    STORAGE_HEALTH_LAST_SEVERITY="CRITICAL"
+    storage_health_note "last SMART self-test failed"
+  fi
+
   if (( power_on_hours >= ${STORAGE_HEALTH_HIGH_HOURS_THRESHOLD:-40000} )) && [[ "$STORAGE_HEALTH_LAST_SEVERITY" == "OK" ]]; then
     storage_health_note "Power_On_Hours=${power_on_hours}"
   fi
@@ -178,6 +284,7 @@ storage_health_assess_disk() {
   transport_events="$(storage_health_transport_events "$device")"
   if [[ -n "$transport_events" ]]; then
     transport_count="$(printf '%s\n' "$transport_events" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+    STORAGE_HEALTH_LAST_TRANSPORT_COUNT="$transport_count"
     STORAGE_HEALTH_LAST_SEVERITY="CRITICAL"
     storage_health_note "recent kernel transport errors (${transport_count})"
   fi
@@ -185,9 +292,6 @@ storage_health_assess_disk() {
   if [[ -z "$STORAGE_HEALTH_LAST_DETAIL" ]]; then
     STORAGE_HEALTH_LAST_DETAIL="no degradation signals"
   fi
-
-  printf '%-8s %-12s %s\n' "$STORAGE_HEALTH_LAST_SEVERITY" "$label" "$device"
-  printf '  %s\n' "$STORAGE_HEALTH_LAST_DETAIL"
 }
 
 storage_health_check() {
@@ -198,7 +302,12 @@ storage_health_check() {
   STORAGE_HEALTH_WARN_COUNT=0
   STORAGE_HEALTH_CRITICAL_COUNT=0
 
-  printf '%-8s %-12s %s\n' "STATUS" "DISK" "DEVICE"
+  local output_format="${STORAGE_HEALTH_OUTPUT_FORMAT:-text}"
+  local disk_json=()
+
+  if [[ "$output_format" == "text" ]]; then
+    printf '%-8s %-12s %s\n' "STATUS" "DISK" "DEVICE"
+  fi
 
   local spec label device
   for spec in "$@"; do
@@ -223,12 +332,37 @@ storage_health_check() {
         STORAGE_HEALTH_CRITICAL_COUNT=$((STORAGE_HEALTH_CRITICAL_COUNT + 1))
         ;;
     esac
+
+    if [[ "$output_format" == "json" ]]; then
+      disk_json+=("$(storage_health_emit_json)")
+    else
+      printf '%-8s %-12s %s\n' "$STORAGE_HEALTH_LAST_SEVERITY" "$label" "$device"
+      printf '  %s\n' "$STORAGE_HEALTH_LAST_DETAIL"
+    fi
   done
 
-  printf 'Summary: %s OK, %s WARN, %s CRITICAL\n' \
-    "$STORAGE_HEALTH_OK_COUNT" \
-    "$STORAGE_HEALTH_WARN_COUNT" \
-    "$STORAGE_HEALTH_CRITICAL_COUNT"
+  if [[ "$output_format" == "json" ]]; then
+    if ((${#disk_json[@]} == 0)); then
+      jq -nc \
+        --arg mode "$mode" \
+        --argjson ok "$STORAGE_HEALTH_OK_COUNT" \
+        --argjson warn "$STORAGE_HEALTH_WARN_COUNT" \
+        --argjson critical "$STORAGE_HEALTH_CRITICAL_COUNT" \
+        '{mode: $mode, summary: {ok: $ok, warn: $warn, critical: $critical}, disks: []}'
+    else
+      printf '%s\n' "${disk_json[@]}" | jq -sc \
+        --arg mode "$mode" \
+        --argjson ok "$STORAGE_HEALTH_OK_COUNT" \
+        --argjson warn "$STORAGE_HEALTH_WARN_COUNT" \
+        --argjson critical "$STORAGE_HEALTH_CRITICAL_COUNT" \
+        '{mode: $mode, summary: {ok: $ok, warn: $warn, critical: $critical}, disks: .}'
+    fi
+  else
+    printf 'Summary: %s OK, %s WARN, %s CRITICAL\n' \
+      "$STORAGE_HEALTH_OK_COUNT" \
+      "$STORAGE_HEALTH_WARN_COUNT" \
+      "$STORAGE_HEALTH_CRITICAL_COUNT"
+  fi
 
   if [[ "$mode" == "strict" ]] && (( STORAGE_HEALTH_CRITICAL_COUNT > 0 )); then
     return 1
@@ -239,6 +373,7 @@ storage_health_main() {
   set -euo pipefail
 
   local mode="warn"
+  local format="text"
   local specs=()
 
   if (( EUID != 0 )) && command -v sudo >/dev/null 2>&1; then
@@ -251,6 +386,10 @@ storage_health_main() {
         mode="$2"
         shift 2
         ;;
+      --format)
+        format="$2"
+        shift 2
+        ;;
       --since)
         STORAGE_HEALTH_JOURNAL_SINCE="$2"
         shift 2
@@ -261,7 +400,7 @@ storage_health_main() {
         ;;
       --help|-h)
         cat <<'EOF'
-Usage: scripts/lib-storage-health.sh [--mode warn|strict] [--since "<journalctl window>"] label=/dev/disk/by-id/...
+Usage: scripts/lib-storage-health.sh [--mode warn|strict] [--format text|json] [--since "<journalctl window>"] label=/dev/disk/by-id/...
 EOF
         return 0
         ;;
@@ -277,6 +416,7 @@ EOF
     return 1
   fi
 
+  STORAGE_HEALTH_OUTPUT_FORMAT="$format"
   storage_health_check "$mode" "${specs[@]}"
 }
 

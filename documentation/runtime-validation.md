@@ -139,5 +139,3 @@ After a full manual pass:
 - remove temporary uploaded test files and documents
 - note any app that still requires local admin promotion
 - update docs if the validation uncovered a real behavior change
-
-If you need a detailed historical validation scaffold, use the archived material under `_archive/documentation/`.
