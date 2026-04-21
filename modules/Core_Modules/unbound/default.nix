@@ -4,6 +4,45 @@ let
   dnscryptListenAddress = "127.0.0.1";
   dnscryptListenPort = 5053;
   fallbackNameServers = [ "9.9.9.9" "1.1.1.1" ];
+  listenAddresses = [ "127.0.0.1" vars.nbIP ] ++ lib.optional vars.splitDnsMode vars.serverLanIP;
+  normaliseDnsName =
+    name:
+    if lib.hasSuffix "." name then
+      lib.removeSuffix "." name
+    else if lib.hasInfix "." name then
+      name
+    else
+      "${name}.${vars.lanDnsDomain}";
+  mkARecord =
+    name: ip:
+    "\"${normaliseDnsName name} A ${ip}\"";
+  mkPtrRecord =
+    name: ip:
+    let
+      octets = lib.splitString "." ip;
+    in
+    "\"${lib.concatStringsSep "." (lib.reverseList octets)}.in-addr.arpa PTR ${normaliseDnsName name}\"";
+  reverseZoneForIp =
+    ip:
+    let
+      octets = lib.splitString "." ip;
+    in
+    "${lib.concatStringsSep "." (lib.reverseList (lib.take 3 octets))}.in-addr.arpa";
+  lanHostNames = builtins.attrNames vars.lanDnsHosts;
+  lanDnsHostRecords =
+    lib.concatMap
+      (
+        hostName:
+        let
+          hostIp = vars.lanDnsHosts.${hostName};
+        in
+        [
+          (mkARecord hostName hostIp)
+          (mkPtrRecord hostName hostIp)
+        ]
+      )
+      lanHostNames;
+  lanReverseZones = lib.unique (map (hostName: reverseZoneForIp vars.lanDnsHosts.${hostName}) lanHostNames);
   privateHostedRecords =
     targetIp:
     [
@@ -23,9 +62,13 @@ let
     ++ [
       "\"${vars.kanidmDomain}           A ${vars.serverLanIP}\""
       "\"${vars.filesDomain}            A ${vars.serverLanIP}\""
-    ];
+    ]
+    ++ lanDnsHostRecords;
 
   netbirdHostedRecords = privateHostedRecords vars.nbIP;
+  lanLocalZones =
+    [ "${vars.domain} transparent" "${vars.lanDnsDomain} static" ]
+    ++ map (zone: "${zone} static") lanReverseZones;
 in
 
 {
@@ -68,7 +111,7 @@ in
       {
         server =
           {
-            interface = [ "0.0.0.0" "::" ];
+            interface = listenAddresses;
             access-control = [
               "192.168.0.0/16 allow"
               "${vars.netbirdCidr} allow"
@@ -113,7 +156,7 @@ in
         view = [
           {
             name = "lan";
-            local-zone = [ "${vars.domain} transparent" ];
+            local-zone = lanLocalZones;
             local-data = lanHostedRecords;
             view-first = true;
           }

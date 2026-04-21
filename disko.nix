@@ -1,106 +1,68 @@
 { lib, vars, ... }:
 
 let
-  dataMountPoint = idx: "/mnt/disk${toString (idx + 1)}";
-  parityMountPoint = idx:
-    if idx == 0 then
-      "/mnt/parity"
-    else
-      "/mnt/parity${toString (idx + 1)}";
+  dataPool = vars.zfsDataPool;
+  dataDiskIds = vars.zfsDataPoolDiskIds;
+  optionalDataMountOptions = [
+    "defaults"
+    "nofail"
+  ];
 
   mkDataDisk = idx: diskId:
     lib.nameValuePair "data${toString (idx + 1)}" {
       device = "/dev/disk/by-id/${diskId}";
       type = "disk";
-      content.type = "gpt";
-      content.partitions.data = {
-        size = "100%";
-        content = {
-          type = "filesystem";
-          format = "xfs";
-          mountpoint = dataMountPoint idx;
+      content = {
+        type = "gpt";
+        partitions.zfs = {
+          size = "100%";
+          content = {
+            type = "zfs";
+            pool = dataPool.name;
+          };
         };
       };
     };
 
-  mkParityDisk = idx: diskId:
-    lib.nameValuePair
-      (if idx == 0 then "parity" else "parity${toString (idx + 1)}")
-      {
-        device = "/dev/disk/by-id/${diskId}";
-        type = "disk";
-        content = {
-          type = "gpt";
-          partitions.parity = {
-            size = "100%";
-            content = {
-              type = "filesystem";
-              format = "xfs";
-              mountpoint = parityMountPoint idx;
-            };
-          };
-        };
-      };
+  mkDataVdev = idx: members: {
+    mode = "mirror";
+    members = map (memberIdx: "data${toString memberIdx}") [
+      ((idx * 2) + 1)
+      ((idx * 2) + 2)
+    ];
+  };
+
+  mkDataset = dataset:
+    lib.nameValuePair dataset {
+      type = "zfs_fs";
+      mountpoint = "${dataPool.mountPoint}/${dataset}";
+      mountOptions = optionalDataMountOptions;
+    };
+
 in
 {
   disko.devices = {
-    disk =
-      {
-        ##############################################################
-        #  System SSD  (Btrfs)                                       #
-        ##############################################################
-        system = {
-          device = "/dev/disk/by-id/${vars.mainDisk}";
-          type = "disk";
-          content = {
-            type = "gpt";
-            partitions = {
+    disk = builtins.listToAttrs (lib.imap0 mkDataDisk dataDiskIds);
 
-              boot = {
-                size = "512M";
-                type = "EF00";
-                content = {
-                  type = "filesystem";
-                  format = "vfat";
-                  mountpoint = "/boot";
-                };
-              };
-
-              root = {
-                size = "100%";
-                content = {
-                  type = "btrfs";
-                  subvolumes = {
-                    "/" = { mountpoint = "/"; mountOptions = [ "compress=zstd" "noatime" ]; };
-                    "/nix" = { mountpoint = "/nix"; mountOptions = [ "compress=zstd" "noatime" ]; };
-                    "/persist" = { mountpoint = "/persist"; mountOptions = [ "compress=zstd" "noatime" ]; };
-                  };
-                };
-              };
-            };
+    zpool = {
+      ${dataPool.name} = {
+        type = "zpool";
+        mode = {
+          topology = {
+            type = "topology";
+            vdev = lib.imap0 mkDataVdev dataPool.mirrorPairs;
           };
         };
-
-      }
-      // lib.optionalAttrs (vars.enableBackupDisk && vars.backupDisk != null) {
-        backup = {
-          device = "/dev/disk/by-id/${vars.backupDisk}";
-          type = "disk";
-          content = {
-            type = "gpt";
-            partitions.backup = {
-              size = "100%";
-              content = {
-                type = "filesystem";
-                format = "xfs";
-                mountpoint = vars.backupMountPoint;
-                mountOptions = [ "nofail" ];
-              };
-            };
-          };
+        mountpoint = dataPool.mountPoint;
+        mountOptions = optionalDataMountOptions;
+        rootFsOptions = {
+          acltype = "posixacl";
+          atime = "off";
+          compression = "zstd";
+          xattr = "sa";
         };
-      }
-      // builtins.listToAttrs (lib.imap0 mkParityDisk vars.parityDisks)
-      // builtins.listToAttrs (lib.imap0 mkDataDisk vars.dataDisks);
+        datasets = builtins.listToAttrs (map mkDataset dataPool.datasets);
+      };
+    };
   };
 }

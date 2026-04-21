@@ -13,22 +13,20 @@ require_fixed scripts/runtime-readiness.sh 'source "$repo_root/scripts/lib-stora
   "runtime-readiness.sh must source the shared SMART helper."
 require_fixed scripts/runtime-readiness.sh 'echo "== SMART =="' \
   "runtime-readiness.sh must report a dedicated SMART section."
-require_match scripts/runtime-readiness.sh 'builtins\.length vars\.dataDisks' \
-  "runtime-readiness.sh must derive data-disk mount checks from vars.dataDisks."
-require_match scripts/runtime-readiness.sh 'builtins\.length vars\.parityDisks' \
-  "runtime-readiness.sh must derive parity-mount checks from vars.parityDisks."
-require_match scripts/runtime-readiness.sh 'for parity_mount in "\$\{parity_mounts\[@\]\}"' \
-  "runtime-readiness.sh must iterate all configured parity mounts."
+require_fixed scripts/runtime-readiness.sh 'vars.zfsDataPool.datasets' \
+  "runtime-readiness.sh must derive dataset mount checks from vars.zfsDataPool.datasets."
+require_fixed scripts/runtime-readiness.sh 'vars.monitoredStorageDiskIds' \
+  "runtime-readiness.sh must derive SMART devices from vars.monitoredStorageDiskIds."
 require_fixed scripts/runtime-readiness.sh 'copyparty.service' \
   "runtime-readiness.sh must require the Copyparty unit."
-require_fixed scripts/runtime-readiness.sh 'required_units+=(mnt-backup.mount)' \
-  "runtime-readiness.sh must gate the backup mount on enableBackupDisk."
 require_fixed scripts/runtime-readiness.sh 'check_http "http://127.0.0.1:3923/" 200 302 401 403' \
   "runtime-readiness.sh must probe the direct Copyparty upstream."
-require_fixed scripts/runtime-readiness.sh 'check_mount "$backup_mount_point" "xfs"' \
-  "runtime-readiness.sh must verify the active backup mount."
-forbid_match scripts/runtime-readiness.sh '/mnt/disk4|/mnt/disk5' \
-  "runtime-readiness.sh must not hard-code retired disk4/disk5 mount checks."
+require_fixed scripts/runtime-readiness.sh 'check_mount "$data_pool_mount" "zfs"' \
+  "runtime-readiness.sh must verify the ZFS data pool mount."
+require_fixed scripts/runtime-readiness.sh 'echo "== ZFS =="' \
+  "runtime-readiness.sh must report a dedicated ZFS section."
+forbid_match scripts/runtime-readiness.sh 'mnt-backup|backup_mount_point|backup_disk_enabled' \
+  "runtime-readiness.sh must not retain the removed local backup-mount workflow."
 
 echo "ℹ️ Checking SMART helper fixture behavior…"
 fixture_dir="$TESTS_REPO_ROOT/tests/fixtures/storage-health"

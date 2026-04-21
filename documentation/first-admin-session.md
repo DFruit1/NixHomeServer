@@ -12,7 +12,7 @@ This host is a NixOS home server with:
 - Cloudflare Tunnel for the public edge
 - NetBird for private remote access
 - Unbound for private DNS answers
-- mergerfs and SnapRAID for data storage
+- a mirrored ZFS data pool plus manual cold-storage import tooling
 
 The important operational rule is simple: Kanidm knows who a person is, but
 Kanidm group membership decides which apps they may use.
@@ -39,12 +39,12 @@ stack, `users` only means the person exists.
 
 ## How to reach the services
 
-Public endpoints:
+Public-capable endpoints:
 
 - `https://id.<domain>`
 - `https://files.<domain>`
 
-NetBird-only endpoints:
+Private app endpoints:
 
 - `https://paperless.<domain>`
 - `https://photos.<domain>`
@@ -52,6 +52,9 @@ NetBird-only endpoints:
 - `https://books.<domain>`
 - `https://videos.<domain>`
 - `https://jellyseerr.<domain>`
+
+On the home LAN, these private app endpoints are intended to work through the
+router-forwarded split-DNS path. Off the home LAN, they require NetBird.
 
 When the default nightly suspend policy is enabled, all app endpoints and SSH
 are intentionally unavailable during the configured suspend window. Run
@@ -84,9 +87,9 @@ This checks:
 - service units
 - public and private HTTPS entrypoints
 - private DNS answers from Unbound
-- mergerfs plus all configured data and parity mounts
-- SMART degradation warnings for configured array disks and any attached backup disk
-- SnapRAID status and pending drift
+- the ZFS data pool plus expected child datasets
+- SMART degradation warnings for configured storage disks
+- ZFS pool health and dataset visibility
 
 If you prefer the manual path, see [Operations](./operations.md).
 
@@ -147,17 +150,13 @@ Admin intent groups:
 - Copyparty shows two top-level roots:
   - `/my-files`
   - `/shared`
-- `/shared` contains:
-  - `exchange`
-  - `public`
-  - `photos`
-  - `documents`
+- `/shared` is the single shared area and maps to the existing public workspace root
 - logout clears the app session and immediately restarts the oauth2-proxy login
   flow
 - authenticated users can create Copyparty share links
 - anonymous visitors may open only the explicit `/shares/...` links
 - normal UI browsing and unrelated paths still require OAuth
-- the same logical areas are also available over NetBird-only SMB
+- SMB no longer mirrors the Copyparty areas; the server instead exposes one LAN-only admin share for `/mnt/data`
 
 ### Immich
 
@@ -198,26 +197,17 @@ Run:
 
 ```bash
 sudo findmnt -R /mnt
-sudo snapraid status
-sudo snapraid diff
+sudo zpool status data
+sudo zfs list -r data
 ```
 
 Interpretation:
 
-- `/mnt/data` should be `fuse.mergerfs`
-- every configured data disk mount and configured parity mount from `vars.nix` should be mounted
-- `snapraid status` should end with `No error detected.`
+- `/mnt/data` should be `zfs`
+- the expected child datasets from `vars.zfsDataPool.datasets` should be mounted
+- `zpool status data` should report the pool healthy
 - `./scripts/runtime-readiness.sh` should not report critical SMART degradation on active array disks
-- `snapraid diff` should mainly reflect media and workspace changes, not
-  `appdata/`, because app-owned state is excluded from parity
-
-SnapRAID intentionally excludes `/mnt/data/appdata`, legacy top-level app
-directories from older layouts, and top-level `*.bak-*` migration directories.
-It is meant to protect long-lived media and workspace content, not live service
-databases and logs.
-
-Do not treat non-empty `snapraid diff` as a fault by itself. It is expected when
-applications are active.
+- the manual cold-storage pool should remain unmounted until you intentionally import it with `scripts/cold-storage.sh`
 
 Current canonical paths:
 

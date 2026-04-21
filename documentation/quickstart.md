@@ -41,27 +41,31 @@ Edit [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix) and confirm at minimum:
 - `serverLanGateway`
 - `netIface`
 - `dnsMode`
+- `lanDnsHosts`
+- `kanidmAuthSessionExpirySeconds`
 - `serverSSHPubKey`
-- `mainDisk`, `dataDisks`, `parityDisks`
-- `backupDisk`, `enableBackupDisk`
-- `coldStorageDisk`, `coldStorageMountPoint`
+- `mainDisk`, `zfsDataPool`
+- `coldStoragePools`, `coldStorageMountPoint`
 
 `serverLanIP` and `serverLanGateway` define the host's static LAN address and
 default route. They are also used by split-horizon DNS, docs, and deploy
 helpers.
+
+`lanDnsHosts` defines the LAN-only device records served under
+`lanDnsDomain`. These records also produce reverse DNS answers.
 
 During a migration window, the current SSH endpoint may differ from
 `serverLanIP`. Keep `vars.serverLanIP` pointed at the final target address and
 set `CURRENT_SERVER_IP` locally when the host is still reachable on a temporary
 address. Do not commit temporary IPs into the repo.
 
-Treat storage topology as config-driven. Operator checks should follow the current array topology from `vars.nix`, including all configured parity mounts, rather than assuming a fixed disk count.
+Treat storage topology as config-driven. Operator checks should follow the current ZFS pool and cold-storage topology from `vars.nix`, rather than assuming fixed disk roles.
 
 Current storage contract:
 
-- the protected array stays at 3 data disks plus 2 parity disks
-- `/mnt/backup` is the always-declared active backup target
-- `/mnt/cold-storage` is reserved for manual operator mounts only through `scripts/cold-storage.sh`
+- `/mnt/data` is a mirrored ZFS pool with child datasets for `appdata`, `media`, and `workspaces`
+- `disko.nix` is allowed to format only the mirrored data-pool disks from `vars.zfsDataPool`
+- `/mnt/cold-storage` is reserved for manual ZFS pool imports only through `scripts/cold-storage.sh`
 
 If you plan to change the default nightly suspend policy, adjust
 `modules/power-management/default.nix` and confirm the firmware prerequisites
@@ -166,6 +170,33 @@ ssh -t "$SERVER_USER@$CURRENT_SERVER_IP"
 If you are actively cutting over the router or LAN addressing, prefer the
 local-console path so you do not strand the session mid-change.
 
+## 6a) Configure router DNS fallback
+Recommended LAN DNS model:
+
+- clients receive only the router IP as DNS via DHCP
+- the router forwards only private app hostnames to `vars.serverLanIP`
+- `id.<domain>` and `files.<domain>` stay on the router's normal public DNS path
+
+For a dnsmasq-style router, the intended forward rules are:
+
+```conf
+server=/paperless.sydneybasiniot.org/192.168.8.12
+server=/photos.sydneybasiniot.org/192.168.8.12
+server=/emails.sydneybasiniot.org/192.168.8.12
+server=/audiobooks.sydneybasiniot.org/192.168.8.12
+server=/books.sydneybasiniot.org/192.168.8.12
+server=/videos.sydneybasiniot.org/192.168.8.12
+server=/jellyseerr.sydneybasiniot.org/192.168.8.12
+```
+
+Do not forward the whole zone:
+
+```conf
+server=/sydneybasiniot.org/192.168.8.12
+```
+
+That whole-zone rule makes the entire domain depend on the server's DNS availability and defeats graceful fallback for `id.<domain>` and `files.<domain>`.
+
 ## 7) Bootstrap Kanidm users
 Use [Kanidm Guide](./kanidm.md).
 
@@ -182,7 +213,8 @@ Recommended onboarding model:
 
 ## 8) Verify expected access boundaries
 - Public should work: `https://id.<domain>`, `https://files.<domain>`
-- Private should require NetBird: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`, `jellyseerr`
+- On the home LAN with router forwarding, private apps should work on the same canonical hostnames: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`, `jellyseerr`
+- Off the home LAN, those private apps should require NetBird
 - Logged-out `https://files.<domain>/` should still redirect through OAuth, while explicit Copyparty share links live under `https://files.<domain>/shares/...`
 
 After the first successful deploy, continue with:

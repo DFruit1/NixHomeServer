@@ -24,6 +24,11 @@ require_json_equal "$(nix_eval_config_json 'services.netbird.clients.myNetbirdCl
   "NetBird client must remain enabled."
 require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.enable')" "true" \
   "Mail archive UI must remain enabled."
+system_packages_json="$(nix_eval_config_json 'environment.systemPackages')"
+if ! printf '%s\n' "$system_packages_json" | rg 'jq-[^"]*' >/dev/null; then
+  echo "❌ The evaluated system path must include jq for runtime validation tooling."
+  exit 1
+fi
 
 echo "ℹ️ Checking simplified LAN networking…"
 require_json_equal "$(nix_eval_config_json 'networking.defaultGateway.address')" "\"$(nix_eval_var 'vars.serverLanGateway')\"" \
@@ -39,96 +44,97 @@ require_json_equal "$(nix_eval_config_json 'networking.nameservers')" '["127.0.0
   "The host must still resolve through the local Unbound instance."
 require_json_equal "$(nix_eval_config_json 'networking.networkmanager.enable')" "false" \
   "NetworkManager must remain disabled for the static LAN configuration."
+require_json_equal "$(nix_eval_json 'vars.lanDnsDomain')" '"home.arpa"' \
+  "vars.lanDnsDomain must keep the reserved LAN-only DNS suffix."
+require_json_equal "$(nix_eval_json 'vars.lanDnsHosts.router')" "\"$(nix_eval_var 'vars.serverLanGateway')\"" \
+  "The router LAN DNS record must follow vars.serverLanGateway."
+require_json_equal "$(nix_eval_json 'vars.kanidmAuthSessionExpirySeconds')" "259200" \
+  "Kanidm auth session grace must retain the configured three-day lifetime."
 
 echo "ℹ️ Checking storage topology config values…"
 require_json_equal "$(nix_eval_json 'vars.dnsMode')" '"split-horizon"' \
   "vars.dnsMode must switch the host to split-horizon DNS."
-require_json_equal "$(nix_eval_json 'builtins.length vars.dataDisks')" "3" \
-  "vars.dataDisks must define exactly three protected data disks."
-require_json_equal "$(nix_eval_json 'builtins.length vars.parityDisks')" "2" \
-  "vars.parityDisks must define exactly two protected parity disks."
-require_json_equal "$(nix_eval_json 'vars.backupDisk')" '"ata-ST500DM002-1BD142_W3TAKCTN"' \
-  "vars.backupDisk must point at the active 500 GB backup disk."
-require_json_equal "$(nix_eval_json 'vars.enableBackupDisk')" "true" \
-  "vars.enableBackupDisk must keep the backup disk active."
-require_json_equal "$(nix_eval_json 'vars.coldStorageDisk')" '"ata-HGST_HUS726040ALA610_K7G5W29L"' \
-  "vars.coldStorageDisk must track the manual cold-storage disk."
+require_json_equal "$(nix_eval_json 'vars.zfsDataPool.name')" '"data"' \
+  "vars.zfsDataPool must keep the canonical pool name."
+require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.mirrorPairs')" "2" \
+  "vars.zfsDataPool must define two mirror pairs."
+require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.datasets')" "3" \
+  "vars.zfsDataPool must keep the expected child datasets."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1JAKPNH" \
+  "The ZFS data pool must include the healthiest disk."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V6G7R6MS" \
+  "The ZFS data pool must include the oldest reliable disk."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1J9PKDH" \
+  "The ZFS data pool must include the second good disk."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1G5K8YC" \
+  "The ZFS data pool must include the former unstable parity disk."
+forbid_match vars.nix 'enableBackups|enableBackup[D]isk|backup[D]isk|backupMount[P]oint|backupRe[p]ository' \
+  "vars.nix must not retain the removed local-backup settings."
+require_json_equal "$(nix_eval_json 'builtins.length vars.coldStoragePools')" "1" \
+  "vars.coldStoragePools must track exactly one manual cold-storage pool."
+require_json_equal "$(nix_eval_json '(builtins.elemAt vars.coldStoragePools 0).name')" '"cold-v1jan8ph"' \
+  "The manual cold-storage pool name must stay stable."
+require_json_equal "$(nix_eval_json '(builtins.elemAt vars.coldStoragePools 0).disk')" '"ata-HGST_HUS726T4TALA6L4_V1JAN8PH"' \
+  "The manual cold-storage pool must target V1JAN8PH."
 require_json_equal "$(nix_eval_json 'vars.coldStorageMountPoint')" '"/mnt/cold-storage"' \
   "vars.coldStorageMountPoint must keep the manual mountpoint."
+require_json_equal "$(nix_eval_json 'builtins.length vars.monitoredStorageDiskIds')" "5" \
+  "The monitored storage disk list must include four pool disks plus one cold-storage disk."
 require_json_equal "$(nix_eval_json 'vars.mailArchiveStoreRoot')" '"/mnt/data/mail-archive"' \
-  "Mail archive storage must resolve through mergerfs."
+  "Mail archive storage must resolve through the ZFS data pool."
 require_json_equal "$(nix_eval_json 'vars.usersWorkspaceRoot')" '"/mnt/data/workspaces/users"' \
-  "Workspace roots must resolve through mergerfs."
+  "Workspace roots must resolve through the ZFS data pool."
 require_json_equal "$(nix_eval_json 'vars.photosUploadRoot')" '"/mnt/data/media/photos/external"' \
-  "Upload roots must resolve through mergerfs."
+  "Upload roots must resolve through the ZFS data pool."
 
 echo "ℹ️ Checking data-disk stack extraction…"
 require_fixed configuration.nix './modules/Core_Modules/storage-monitoring' \
   "configuration.nix must import the storage-monitoring module."
-require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".fsType')" '"fuse.mergerfs"' \
-  "mergerfs must remain mounted at /mnt/data."
-require_json_equal "$(nix_eval_config_json 'systemd.timers.snapraid-sync.timerConfig.OnCalendar')" '"*-*-* 22:00:00"' \
-  "SnapRAID sync must keep the nightly timer."
-require_json_equal "$(nix_eval_config_json 'systemd.timers.snapraid-scrub.timerConfig.OnCalendar')" '"Sun *-*-* 10:00:00"' \
-  "SnapRAID scrub must keep the weekly timer."
+require_fixed configuration.nix './disko-system.nix' \
+  "configuration.nix must import the SSD Disko layout separately from the data migration layout."
+require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".fsType')" '"zfs"' \
+  "The data pool must be mounted at /mnt/data as ZFS."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/appdata"')" "true" \
+  "The appdata dataset mount must exist."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/media"')" "true" \
+  "The media dataset mount must exist."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/workspaces"')" "true" \
+  "The workspaces dataset mount must exist."
+require_json_equal "$(nix_eval_config_json 'networking.hostId')" '"84e8c12a"' \
+  "networking.hostId must be set for ZFS imports."
 require_json_equal "$(nix_eval_config_json 'services.smartd.enable')" "true" \
   "SMART monitoring must remain enabled."
 smartd_devices="$(nix_eval_config_json 'services.smartd.devices')"
-require_json_equal "$(printf '%s\n' "$smartd_devices" | jq 'length')" "6" \
-  "smartd must monitor all configured data, parity, and backup disks."
-require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-ST500DM002-1BD142_W3TAKCTN" \
-  "smartd must include the active backup disk."
+require_json_equal "$(printf '%s\n' "$smartd_devices" | jq 'length')" "5" \
+  "smartd must monitor four active pool disks plus the configured cold-storage disk."
 forbid_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726040ALA610_K7G5W29L" \
-  "smartd must not monitor the manual cold-storage disk."
-require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/backup".mountPoint')" '"/mnt/backup"' \
-  "The backup disk must stay mounted at /mnt/backup."
-require_json_contains "$(nix_eval_config_json 'fileSystems."/mnt/backup".options')" "nofail" \
-  "The backup mount must tolerate a temporarily absent disk."
+  "smartd must exclude the retired failing disk."
+require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1JAKPNH" \
+  "smartd must monitor the healthiest pool disk."
+require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V6G7R6MS" \
+  "smartd must monitor the oldest reliable pool disk."
+require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1J9PKDH" \
+  "smartd must monitor the second mirror pair."
+require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1G5K8YC" \
+  "smartd must monitor the usable former parity disk."
+require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1JAN8PH" \
+  "smartd must monitor the manual cold-storage disk."
 require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-health-report".timerConfig.OnCalendar')" '"*:0/30"' \
   "Storage monitoring must generate the 30-minute report timer."
 require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@disk1".timerConfig.OnCalendar')" '"Sat *-*-* 03:00:00"' \
   "disk1 must keep the weekly short SMART schedule."
-require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@backupDisk".timerConfig.OnCalendar')" '"Sat *-*-* 04:40:00"' \
-  "The backup disk must keep the weekly short SMART schedule when enabled."
-require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-long@parity2".timerConfig.OnCalendar')" '"*-*-05 01:00:00"' \
-  "parity2 must keep the monthly long SMART schedule."
-require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".device')" '"/mnt/disk1:/mnt/disk2:/mnt/disk3"' \
-  "mergerfs must contain only the three protected data mounts."
-for active_mount in /mnt/disk1 /mnt/disk2 /mnt/disk3 /mnt/parity /mnt/parity2 /mnt/data; do
-  require_json_contains "$(nix_eval_config_json "fileSystems.\"${active_mount}\".options")" "x-systemd.wanted-by=multi-user.target" \
-    "${active_mount} must remain anchored under multi-user.target."
-done
-snapraid_config="$(nix_eval_config_raw 'environment.etc."snapraid.conf".text')"
-require_match <(printf '%s\n' "$snapraid_config") '^parity /mnt/parity/snapraid\.parity$' \
-  "SnapRAID must keep the primary parity directive."
-require_match <(printf '%s\n' "$snapraid_config") '^2-parity /mnt/parity2/snapraid\.2-parity$' \
-  "SnapRAID must keep the second parity directive."
-require_json_equal "$(printf '%s\n' "$snapraid_config" | rg -c '^parity ')" "1" \
-  "SnapRAID must emit exactly one parity directive."
-require_json_equal "$(printf '%s\n' "$snapraid_config" | rg -c '^2-parity ')" "1" \
-  "SnapRAID must emit exactly one 2-parity directive."
-require_json_equal "$(printf '%s\n' "$snapraid_config" | rg -c '^data d[0-9]+ ')" "3" \
-  "SnapRAID must emit exactly three data-disk directives."
-require_match <(printf '%s\n' "$snapraid_config") '^content /mnt/parity/snapraid\.content$' \
-  "SnapRAID must keep a content file on the first parity mount."
-require_match <(printf '%s\n' "$snapraid_config") '^content /mnt/parity2/snapraid\.content$' \
-  "SnapRAID must keep a content file on the second parity mount."
-require_match <(printf '%s\n' "$snapraid_config") '^content /mnt/disk3/snapraid\.content$' \
-  "SnapRAID must keep content files on all protected data mounts."
-forbid_match <(printf '%s\n' "$snapraid_config") '^data d4 ' \
-  "SnapRAID must not retain a fourth data-disk role."
-forbid_match <(printf '%s\n' "$snapraid_config") '^data d5 ' \
-  "SnapRAID must not retain a fifth data-disk role."
-forbid_match <(printf '%s\n' "$snapraid_config") 'W3TAKCTN|K7G5W29L|/mnt/backup|/mnt/cold-storage' \
-  "SnapRAID must not include the backup or cold-storage disks."
-for legacy_dir in audiobookshelf copyparty immich jellyfin kavita paperless; do
-  require_match <(printf '%s\n' "$snapraid_config") "^exclude /${legacy_dir}/$" \
-    "SnapRAID must exclude the legacy /${legacy_dir} app-state path."
-done
-require_json_contains "$(nix_eval_config_json 'systemd.services.snapraid-sync.unitConfig.RequiresMountsFor')" "/mnt/parity2" \
-  "snapraid-sync must wait for all configured parity mounts."
-require_json_contains "$(nix_eval_config_json 'systemd.services.snapraid-scrub.unitConfig.RequiresMountsFor')" "/mnt/parity2" \
-  "snapraid-scrub must wait for all configured parity mounts."
+require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@disk2".timerConfig.OnCalendar')" '"Sat *-*-* 03:20:00"' \
+  "disk2 must keep the weekly short SMART schedule."
+require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@cold-v1jan8ph".timerConfig.OnCalendar')" '"Sat *-*-* 04:20:00"' \
+  "The cold-storage SMART timer must follow the configured disk order."
+require_json_equal "$(nix_eval_config_json 'services.zfs.autoScrub.enable')" "true" \
+  "ZFS auto-scrub must be enabled for the data pool."
+require_fixed disko.nix 'vars.zfsDataPoolDiskIds' \
+  "The data-only Disko file must source the active pool disks from vars.zfsDataPoolDiskIds."
+forbid_match disko.nix 'vars\.mainDisk|vars\.coldStoragePools' \
+  "The data-only Disko file must not reference the system SSD or manual cold-storage variables."
+forbid_match disko.nix 'ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E|ata-HGST_HUS726T4TALA6L4_V1JAN8PH|ata-HGST_HUS726040ALA610_K7G5W29L' \
+  "The data-only Disko file must exclude the SSD, the manual cold-storage disk, and the retired failing disk."
 
 echo "ℹ️ Checking active routing surface…"
 caddy_hosts="$(nix_eval_config_json 'services.caddy.virtualHosts' | jq 'keys')"
@@ -150,38 +156,100 @@ if ! rg -F 'privateHostedRecords vars.serverLanIP' modules/Core_Modules/unbound/
   echo "❌ Unbound must still derive split-horizon LAN records from vars.serverLanIP."
   exit 1
 fi
+unbound_interfaces="$(nix_eval_config_json 'services.unbound.settings.server.interface')"
+require_json_contains "$unbound_interfaces" "127.0.0.1" \
+  "Unbound must listen on localhost for server-local recursion."
+require_json_contains "$unbound_interfaces" "$(nix_eval_var 'vars.nbIP')" \
+  "Unbound must listen on the NetBird address."
+require_json_contains "$unbound_interfaces" "$(nix_eval_var 'vars.serverLanIP')" \
+  "Unbound must listen on the primary LAN address in split-horizon mode."
+lan_view_json="$(nix_eval_config_json 'services.unbound.settings.view')"
+lan_view_local_zones="$(printf '%s\n' "$lan_view_json" | jq -r '.[] | select(.name == "lan") | .["local-zone"] | join("\n")')"
+lan_view_local_data="$(printf '%s\n' "$lan_view_json" | jq -r '.[] | select(.name == "lan") | .["local-data"] | join("\n")')"
+require_json_contains "$(jq -Rs . <<<"$lan_view_local_zones")" "$(nix_eval_var 'vars.lanDnsDomain') static" \
+  "The LAN Unbound view must serve the LAN-only DNS zone."
+require_json_contains "$(jq -Rs . <<<"$lan_view_local_data")" "$(nix_eval_var 'vars.hostname').$(nix_eval_var 'vars.lanDnsDomain')" \
+  "The LAN Unbound view must publish the server LAN hostname."
+require_json_contains "$(jq -Rs . <<<"$lan_view_local_data")" "router.$(nix_eval_var 'vars.lanDnsDomain')" \
+  "The LAN Unbound view must publish the router LAN hostname."
+require_json_contains "$(jq -Rs . <<<"$lan_view_local_data")" 'PTR' \
+  "The LAN Unbound view must include reverse DNS records for LAN hosts."
+lan_prefix_length="$(nix_eval_var 'toString vars.serverLanPrefixLength')"
+samba_settings_json="$(nix_eval_config_json 'services.samba.settings')"
+samba_settings_keys="$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in builtins.attrNames flake.nixosConfigurations.${hostname}.config.services.samba.settings')"
+samba_interfaces="$(printf '%s\n' "$samba_settings_json" | jq -c '.global.interfaces')"
+require_json_equal "$samba_interfaces" "\"lo $(nix_eval_var 'vars.netIface')\"" \
+  "Samba must bind only to localhost and the primary LAN interface."
+require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.global["hosts allow"]')" "\"$(nix_eval_var 'vars.serverLanIP')/${lan_prefix_length} 127.0.0.1\"" \
+  "Samba hosts-allow rules must be restricted to the LAN prefix plus localhost."
+require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data.path')" "\"$(nix_eval_var 'vars.dataRoot')\"" \
+  "The admin SMB share must expose the full data root."
+require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data["valid users"]')" "\"$(nix_eval_var 'vars.kanidmAdminUser')\"" \
+  "The admin SMB share must be gated to the delegated admin user."
+require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data["admin users"]')" "\"$(nix_eval_var 'vars.kanidmAdminUser')\"" \
+  "The admin SMB share must grant admin semantics to the delegated admin user."
+require_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"$(nix_eval_var 'vars.netIface')\".allowedTCPPorts")" "139" \
+  "The LAN interface must allow SMB port 139."
+require_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"$(nix_eval_var 'vars.netIface')\".allowedTCPPorts")" "445" \
+  "The LAN interface must allow SMB port 445."
+forbid_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"$(nix_eval_var 'vars.netbirdIface')\".allowedTCPPorts")" "139" \
+  "The NetBird interface must not allow SMB port 139."
+forbid_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"$(nix_eval_var 'vars.netbirdIface')\".allowedTCPPorts")" "445" \
+  "The NetBird interface must not allow SMB port 445."
+forbid_json_contains "$samba_settings_keys" "homes" \
+  "Samba must not retain the old homes share."
+forbid_json_contains "$samba_settings_keys" "exchange" \
+  "Samba must not retain the old exchange share."
+forbid_json_contains "$samba_settings_keys" "public" \
+  "Samba must not retain the old public share."
+forbid_json_contains "$samba_settings_keys" "photos-upload" \
+  "Samba must not retain the old photos-upload share."
+forbid_json_contains "$samba_settings_keys" "documents-upload" \
+  "Samba must not retain the old documents-upload share."
 require_match modules/Core_Modules/caddy/default.nix '@copyparty_shares path /shares /shares/\*' \
   "Caddy must bypass oauth2-proxy only for the explicit Copyparty share namespace."
 require_match modules/copyparty/default.nix 'shr = "/shares";' \
   "Copyparty must publish anonymous share links under /shares."
 require_match modules/copyparty/default.nix '"shr-who" = "auth";' \
   "Copyparty share creation must be limited to authenticated users."
-require_match modules/copyparty/default.nix 'r: @acct' \
-  "The shared root must require authenticated Copyparty accounts."
 require_match modules/copyparty/default.nix 'rwmda: @acct' \
   "Writable shared volumes must require authenticated Copyparty accounts."
+require_fixed modules/copyparty/default.nix '${vars.sharedPublicRoot}' \
+  "Copyparty /shared must point at the public shared workspace root."
+forbid_match modules/copyparty/default.nix '\[/shared/public\]' \
+  "Copyparty must not retain the public subdirectory."
+forbid_match modules/copyparty/default.nix '\[/shared/exchange\]' \
+  "Copyparty must not retain the exchange subdirectory."
+forbid_match modules/copyparty/default.nix '\[/shared/photos\]' \
+  "Copyparty must not retain the photos subdirectory."
+forbid_match modules/copyparty/default.nix '\[/shared/documents\]' \
+  "Copyparty must not retain the documents subdirectory."
 
 echo "ℹ️ Checking cold-storage tooling…"
 require_fixed modules/Core_Modules/storage/default.nix 'coldStorageMountPoint' \
   "Storage tmpfiles must create the cold-storage mountpoint."
-require_fixed scripts/cold-storage.sh 'Usage: scripts/cold-storage.sh <status|mount|unmount>' \
-  "The cold-storage helper must expose status, mount, and unmount."
-require_fixed scripts/cold-storage.sh 'vars.coldStorageDisk' \
-  "The cold-storage helper must resolve the disk from vars.nix."
-require_fixed scripts/cold-storage.sh 'vars.coldStorageMountPoint' \
-  "The cold-storage helper must resolve the mountpoint from vars.nix."
+require_fixed scripts/cold-storage.sh 'Usage: scripts/cold-storage.sh <status|mount|unmount> [pool-name]' \
+  "The cold-storage helper must expose named status, mount, and unmount commands."
+require_fixed scripts/cold-storage.sh 'vars.coldStoragePools' \
+  "The cold-storage helper must resolve pools from vars.nix."
+require_fixed scripts/cold-storage.sh 'zpool import -N -d /dev/disk/by-id' \
+  "The cold-storage helper must import pools without auto-mounting them."
 
-echo "ℹ️ Checking backup, power, and mail-archive essentials…"
-require_json_equal "$(nix_eval_config_json 'services.restic.backups."server-state".repository')" "\"$(nix_eval_var 'vars.backupRepository')\"" \
-  "Restic backups must target the canonical backup repository."
+echo "ℹ️ Checking power and mail-archive essentials…"
+forbid_match configuration.nix './modules/[b]ackup' \
+  "configuration.nix must not import the removed local-backup module."
 require_json_equal "$(nix_eval_config_json 'powerManagement.cpuFreqGovernor')" '"powersave"' \
   "Power management must retain the powersave governor."
-require_json_equal "$(nix_eval_config_json 'systemd.timers.power-management-nightly-suspend.timerConfig.OnCalendar')" '"*-*-* 23:00:00"' \
+require_json_equal "$(nix_eval_config_json 'systemd.timers.power-management-nightly-suspend.timerConfig.OnCalendar')" '"*-*-* 23:30:00"' \
   "Nightly suspend must keep the current schedule."
 require_json_equal "$mail_archive_port" "9011" \
   "Mail archive UI must keep the expected local port."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.mail-archive-sync.timerConfig.OnCalendar')" '"*-*-* 06,18:15:00"' \
   "Mail archive sync must keep the current schedule."
+require_fixed modules/Core_Modules/kanidm/default.nix 'kanidm group account-policy auth-expiry' \
+  "Kanidm must declaratively apply the account policy auth session expiry."
+require_fixed modules/Core_Modules/kanidm/default.nix 'idm_all_persons' \
+  "Kanidm auth session grace must target the default people policy."
 
 echo "ℹ️ Checking active tree for archived DietPi references…"
 if rg -n -i 'dietpi|piLanIP|enableDietPiCompanion' \

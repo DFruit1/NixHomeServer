@@ -75,7 +75,6 @@ Generated app/auth secrets include:
 - OIDC client secrets
 - OAuth2 Proxy secrets
 - app bootstrap secrets
-- the `resticPassword` secret used by the local backup-disk scaffold
 
 Mail archive credentials are intentionally different:
 
@@ -83,9 +82,6 @@ Mail archive credentials are intentionally different:
 - the app stores them encrypted at rest under `/mnt/data/appdata/mail-archive-ui`
 - temporary sync material is written only under `/run/mail-archive-ui`
 - downloaded Maildir content lives under `/mnt/data/mail-archive`
-
-`resticPassword` is generated automatically. It does not need a manual staged
-file in `secrets/top/`.
 
 `storageAlertWebhookUrl` is a required staged external secret. The repo may
 carry a placeholder encrypted value so config evaluation still works before the

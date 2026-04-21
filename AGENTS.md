@@ -6,7 +6,7 @@ This repository defines a reproducible NixOS home-server focused on:
 
 * Identity & SSO (Kanidm, OAuth2 Proxy)
 * Self-hosted apps (Immich, Paperless, Audiobookshelf, Copyparty)
-* Edge routing (Caddy, Cloudflared)
+* Edge routing (Caddy, Cloudflared, Netbird, Unbound)
 
 Priority: **reliability, security, and reproducibility**
 
@@ -14,29 +14,16 @@ Priority: **reliability, security, and reproducibility**
 
 ## Core Principles
 
-* Prefer **clarity over cleverness**
 * Keep **service boundaries explicit** (`modules/<service>/`)
-* Keep **auth and networking paths auditable**
 * Use **vars.nix for shared, operator-facing values** that a new server owner is likely to change
-
+* Avoid deprecated NixOS options
 ---
 
 ## Architecture Rules
 
-* Public traffic must flow through **Caddy (policy boundary)**
 * Do not introduce implicit trust between services
 * Keep module-private constants, timers, paths, and stable loopback ports inside their owning modules
 * Remove all references when deleting a service (DNS, proxy, secrets, docs)
-* Prefer one documented deploy path and one documented validation path
-
----
-
-## Security Rules
-
-* Never commit plaintext secrets
-* Treat `secrets/*.age` as sensitive
-* Keep TLS configuration consistent across services
-* Clearly mark any temporary or bootstrap-level insecure settings
 
 ---
 
@@ -60,23 +47,6 @@ For any `.nix` change:
 
 ---
 
-## Documentation Review
-
-After significant changes:
-
-* Run doc reviewer: `.codex/agents/doc-reviewer.md`
-* Apply any required documentation updates before finalizing
-
----
-
-## Operational Notes
-
-* Keep modules focused (one concern per file)
-* Prefer minimal systemd + firewall config
-* Avoid deprecated NixOS options
-
----
-
 ## Rebuild Command
 
 Prefer the guarded deploy helper. Derive the intended primary LAN address from
@@ -94,6 +64,7 @@ export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
   --hostname server
 ```
 
-`vars.serverLanIP` remains the intended primary LAN address. During a
-migration window, do not commit the temporary reachable IP into the repo; set
-`CURRENT_SERVER_IP` locally instead.
+The deployed bootstrap sudo password is stored as the root-only agenix
+secret `serverBootstrapSudoPassword`, which materializes at
+`/run/agenix/serverBootstrapSudoPassword` on the server. If an interactive sudo
+prompt is unavoidable, refer to that secret rather than relying on memory.

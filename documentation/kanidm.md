@@ -184,3 +184,10 @@ Use [Runtime Validation](./runtime-validation.md) to verify:
 Run `kanidm-user-tui` on the server.
 
 Full CLI examples: [Kanidm CLI Reference](./kanidm_cli.md).
+
+## Session grace
+
+The repo applies a default Kanidm auth-session policy to `idm_all_persons`
+after startup. The current value comes from `kanidmAuthSessionExpirySeconds` in
+[`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix), which is intended to make
+same-device browser sign-in less TOTP-heavy without lowering the MFA minimum.

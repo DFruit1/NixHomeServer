@@ -23,23 +23,25 @@ git clone <your-fork-or-origin-url> /mnt/src
 ## 3) Set hardware/network values in `vars.nix`
 At minimum set:
 - `mainDisk`
-- `dataDisks`
-- `parityDisks`
-- `backupDisk`
-- `enableBackupDisk`
-- `coldStorageDisk`
+- `zfsDataPool`
+- `coldStoragePools`
 - `coldStorageMountPoint`
 - `netIface`
 - `serverLanIP`
 - `serverLanGateway`
+- `lanDnsHosts`
+- `kanidmAuthSessionExpirySeconds`
 - `serverSSHPubKey`
 
-`dataDisks` and `parityDisks` define the current protected-array topology. Keep docs and operator checks aligned to `vars.nix`; do not assume a fixed number of data or parity disks over the server lifetime.
+`zfsDataPool` and `coldStoragePools` define the current storage topology. Keep docs and operator checks aligned to `vars.nix`; do not assume a fixed disk role outside the configured mirror pairs and manual pools.
 
 `serverLanIP` and `serverLanGateway` define the static LAN address and default
 route applied by NixOS. If the host is temporarily reachable on a different
 address during migration, keep those values set to the final target and handle
 the current reachable address as a local operator override only.
+
+`lanDnsHosts` defines the LAN-only DNS and reverse-DNS entries served under
+`lanDnsDomain`.
 
 List stable disk IDs:
 ```bash
@@ -50,8 +52,9 @@ Use `/dev/disk/by-id/*` values, not transient `/dev/sdX` names.
 
 Current storage intent:
 
-- `backupDisk` is the active dedicated `/mnt/backup` target and should stay enabled
-- `coldStorageDisk` is tracked for manual operator mounts only and must not be added to the protected array
+- `mainDisk` is the Btrfs system SSD and must never be included in the data-only Disko path
+- `zfsDataPool` defines the active mirrored data pool that `disko.nix` is allowed to create or recreate
+- `coldStoragePools` are tracked for manual operator imports only and must not be added to the mirrored data pool
 
 If you want to change the default nightly suspend and morning wake behavior,
 edit `modules/power-management/default.nix` after install and use the
@@ -68,9 +71,18 @@ done
 ## 5) Apply Disko layout (destructive)
 ```bash
 nix run github:nix-community/disko -- \
-  --mode zap_create_mount /mnt/src/disko.nix
+  --mode zap_create_mount /mnt/src/disko-install.nix
 findmnt -R /mnt
 ```
+
+For an existing system where the SSD must not be touched, use the mirror-only data layout instead:
+
+```bash
+nix run github:nix-community/disko -- \
+  --mode zap_create_mount /mnt/src/disko.nix
+```
+
+`disko.nix` is the destructive entrypoint for the mirrored data-pool disks only. The SSD/root layout is kept separately in `disko-system.nix`, and `disko-install.nix` combines both for blank-machine installs. Manual cold-storage pools remain outside the default Disko path.
 
 ## 6) Copy config into target root and generate hardware config
 ```bash

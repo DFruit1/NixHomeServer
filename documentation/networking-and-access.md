@@ -12,22 +12,23 @@ This guide explains what is public, what is private, and why.
 - Caddy is the local policy boundary for app routing and TLS termination.
 - Cloudflare Tunnel publishes only the endpoints that must be internet-reachable.
 - NetBird carries private app traffic to the server.
-- Unbound answers hosted DNS records over NetBird, and optionally on the LAN in split-horizon mode.
+- Unbound answers hosted DNS records over NetBird and on the LAN in split-horizon mode.
+- On the LAN, the recommended path is router DHCP -> router DNS -> conditional forwarding for private app names to this server.
 
 ## Endpoint matrix
-All non-public app hostnames in this stack are intentionally **NetBird-only**.
+Private app hostnames stay off the public internet, but in the recommended split-horizon setup they are reachable both on the home LAN and over NetBird.
 
-| Hostname | Public internet | NetBird required | Purpose |
-|---|---:|---:|---|
-| `id.<domain>` | Yes | No | Kanidm login and OIDC identity provider |
-| `files.<domain>` | Yes | No | OAuth2 Proxy + Copyparty public file flow |
-| `emails.<domain>` | No | Yes | Mail archive UI |
-| `paperless.<domain>` | No | Yes | Paperless app |
-| `photos.<domain>` | No | Yes | Immich app |
-| `audiobooks.<domain>` | No | Yes | Audiobookshelf app |
-| `books.<domain>` | No | Yes | Kavita app |
-| `videos.<domain>` | No | Yes | Jellyfin app |
-| `jellyseerr.<domain>` | No | Yes | Jellyseerr app |
+| Hostname | Public internet | LAN access | NetBird required off-LAN | Purpose |
+|---|---:|---:|---:|---|
+| `id.<domain>` | Yes | Yes | No | Kanidm login and OIDC identity provider |
+| `files.<domain>` | Yes | Yes | No | OAuth2 Proxy + Copyparty public file flow |
+| `emails.<domain>` | No | Yes | Yes | Mail archive UI |
+| `paperless.<domain>` | No | Yes | Yes | Paperless app |
+| `photos.<domain>` | No | Yes | Yes | Immich app |
+| `audiobooks.<domain>` | No | Yes | Yes | Audiobookshelf app |
+| `books.<domain>` | No | Yes | Yes | Kavita app |
+| `videos.<domain>` | No | Yes | Yes | Jellyfin app |
+| `jellyseerr.<domain>` | No | Yes | Yes | Jellyseerr app |
 
 Availability note:
 
@@ -44,10 +45,16 @@ Availability note:
 - `dnsMode = "split-horizon"`:
   - the host binds `vars.serverLanIP` directly on `vars.netIface`
   - `vars.serverLanGateway` is the pinned LAN default route
-  - LAN clients should use `vars.serverLanIP` as primary DNS when you want hosted names resolved locally
-  - hosted names resolve to `vars.serverLanIP` on LAN so on-network traffic stays local
+  - the recommended LAN model is that clients keep using the router as their only DNS server
+  - the router conditionally forwards only the private app hostnames to `vars.serverLanIP`
+  - private app names resolve to `vars.serverLanIP` on LAN when queried through those router forward rules
+  - LAN-only device records are served from `vars.lanDnsDomain` and default to:
+    - `<hostname>.home.arpa` -> `vars.serverLanIP`
+    - `router.home.arpa` -> `vars.serverLanGateway`
+  - reverse DNS for entries in `vars.lanDnsHosts` is served from the matching
+    `in-addr.arpa` zone
   - NetBird clients still resolve private app names to `vars.nbIP`
-  - `id.<domain>` and `files.<domain>` stay public for NetBird clients but resolve locally on LAN
+  - `id.<domain>` and `files.<domain>` stay public for NetBird clients and should usually stay on the router's normal public DNS path on LAN for graceful fallback
 
 Current default:
 - `vars.dnsMode = "split-horizon"`
@@ -63,9 +70,10 @@ Current default:
   - `kavita-login`
   - `fileshare_users`
   - `mail-archive-users`
-- `fileshare_users` now gates both:
-  - browser access to `https://files.<domain>` through OAuth2 Proxy
-  - SMB access over NetBird to the aligned file shares
+- `fileshare_users` gates browser access to `https://files.<domain>` through
+  OAuth2 Proxy
+- the broad SMB `data` share is intentionally separate and gated to the
+  delegated admin account
 - App admin intent is tracked separately with:
   - `immich-admin`
   - `paperless-admin`
@@ -81,19 +89,18 @@ Current default:
   - only the explicit `/shares/...` namespace bypasses OAuth2 Proxy for anonymous share links
   - Copyparty still limits share creation to authenticated users
   - Copyparty consumes the authenticated username from proxy headers
-- Private mesh flow:
-  - SMB is exposed only on the NetBird interface
-  - valid shares are `homes`, `exchange`, `public`, `photos-upload`, and `documents-upload`
-  - no LAN or internet-facing SMB listener is exposed
-  - the SMB shares map to the same storage roots Copyparty exposes for private files and ingest
+- Private LAN flow:
+  - SMB is exposed only on the primary LAN interface
+  - the only share is `data`
+  - the share maps to `/mnt/data`
+  - the share is intended for the delegated admin account, not general `fileshare_users`
+  - no NetBird or internet-facing SMB listener is exposed
 
 Aligned storage roots:
 
-- `homes` -> `/mnt/data/workspaces/users/%U/files`
-- `exchange` -> `/mnt/data/workspaces/shared/exchange`
-- `public` -> `/mnt/data/workspaces/shared/public`
-- `photos-upload` -> `/mnt/data/media/photos/external`
-- `documents-upload` -> `/mnt/data/media/documents/consume`
+- Copyparty `/my-files` -> `/mnt/data/workspaces/users/%U/files`
+- Copyparty `/shared` -> `/mnt/data/workspaces/shared/public`
+- SMB `data` -> `/mnt/data`
 
 ## Mail archive access model
 
@@ -104,19 +111,29 @@ Aligned storage roots:
 - Storage model:
   - app config, sqlite state, and the encryption key live under `/mnt/data/appdata/mail-archive-ui`
   - downloaded mail lives under `/mnt/data/mail-archive/users/<user>/accounts/<account-id>/`
-  - downloaded Maildir data is intentionally not exposed through Copyparty or SMB
+  - downloaded Maildir data is not exposed through Copyparty, but it is reachable through the admin-only SMB `data` share
 
 ## DNS Mode Toggle
 Set [`vars.dnsMode`](/home/dsaw/Projects/NixOS/vars.nix) to one of:
 
 - `"netbird-only"` for the current model where clients rely on NetBird DNS distribution
-- `"split-horizon"` when you want LAN clients to prefer this server for hosted names
+- `"split-horizon"` when you want LAN-local answers available through this server and router forwarding
 
 Router/LAN intent in split-horizon mode:
 - keep `vars.serverLanIP` and `vars.serverLanGateway` aligned with the active LAN
-- advertise the server as primary LAN DNS if you want local hosted-name resolution
-- remove competing router-side overrides for `sydneybasiniot.org` unless they delegate back to this server resolver
+- have DHCP advertise the router as the only DNS server for LAN clients
+- use router conditional forwarding for only the private app hostnames:
+  - `paperless.<domain>`
+  - `photos.<domain>`
+  - `emails.<domain>`
+  - `audiobooks.<domain>`
+  - `books.<domain>`
+  - `videos.<domain>`
+  - `jellyseerr.<domain>`
+- do not forward the whole `sydneybasiniot.org` zone to this server if you want `id.<domain>` and `files.<domain>` to keep graceful public fallback
 - ensure the router accepts traffic for `vars.serverLanIP` on that subnet
+- add or update LAN device records in [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix)
+  under `lanDnsHosts` when you want forward and reverse lookups for those devices
 
 During a cutover, the current SSH endpoint may temporarily differ from
 `vars.serverLanIP`. Keep `vars.serverLanIP` pointed at the intended final
@@ -148,6 +165,17 @@ host photos.<domain> 127.0.0.1
 host emails.<domain> 127.0.0.1
 host id.<domain> 127.0.0.1
 host files.<domain> 127.0.0.1
+
+# on the server or a LAN client using this resolver
+host server.home.arpa 192.168.8.12
+host 192.168.8.12 192.168.8.12
+
+# from a LAN client using the router as DNS
+host paperless.<domain> <router-ip>
+host photos.<domain> <router-ip>
+host emails.<domain> <router-ip>
+host id.<domain> <router-ip>
+host files.<domain> <router-ip>
 ```
 
 Expected:
@@ -155,7 +183,8 @@ Expected:
   - `paperless/photos/emails/audiobooks/books/videos/jellyseerr` -> NetBird IP
   - `id/files` -> public Cloudflare path
 - in `split-horizon` mode on LAN:
-  - `id/files/paperless/photos/emails/audiobooks/books/videos/jellyseerr` -> server LAN IP
+  - `paperless/photos/emails/audiobooks/books/videos/jellyseerr` -> server LAN IP through router conditional forwarding
+  - `id/files` -> public Cloudflare path unless you intentionally choose a more complex LAN-local rule
 - in `split-horizon` mode over NetBird:
   - private app names -> NetBird IP
   - `id/files` -> public Cloudflare path
@@ -194,5 +223,5 @@ Likely causes:
 
 - NetBird DNS distribution not active on the client
 - Unbound not serving the expected private records
-- client bypassing NetBird DNS and using public recursion instead
-- split-horizon enabled but the router is not advertising the server as the primary LAN DNS
+- client bypassing the router and using public recursion directly on the LAN
+- split-horizon enabled but the router is not conditionally forwarding the private app names to this server

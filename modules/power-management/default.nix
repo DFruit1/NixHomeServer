@@ -4,15 +4,12 @@ let
   cfg = rec {
     enable = true;
     cpuGovernor = "powersave";
-    suspendCalendar = "*-*-* 23:00:00";
+    suspendCalendar = "*-*-* 23:30:00";
     wakeTime = "06:00";
     skipIfSshSessions = true;
     skipIfOtherUserSessions = true;
     blockerUnits = [
-      "snapraid-sync.service"
-      "snapraid-scrub.service"
-      "restic-backups-server-state.service"
-      "restic-backups-server-state-prune.service"
+      "zfs-scrub-data.service"
     ];
     wakeOnLan = {
       enable = true;

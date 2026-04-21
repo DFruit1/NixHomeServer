@@ -1,112 +1,97 @@
 # Restore and Recovery
 
-Use this when the backup disk is connected and you need to stage a restore
-without overwriting the live system blindly.
+Use this when you need to rebuild the host or recover the mirrored ZFS data pool without touching the Btrfs system SSD by accident.
 
-## Scope
+## Recovery model
 
-Current first-pass protected paths:
+This repo now assumes:
 
-- `/var/lib/acme`
-- `/var/lib/kanidm`
-- `/var/lib/snapraid`
-- `/etc/ssh`
-- `/mnt/data/appdata`
+- the system disk is a Btrfs SSD managed by `disko-system.nix`
+- the active data array is the mirrored ZFS pool defined in `vars.zfsDataPool`
+- manual cold-storage pools remain outside the default destructive Disko path
+- offsite backups and any manual local copies are separate operator workflows
 
-Current intentional exclusions:
+## Before recovery work
 
-- `/mnt/data/media`
-- `/mnt/data/workspaces`
-- general data-drive content outside explicitly added future critical paths
+1. Confirm disk identities from `vars.nix` before running any destructive command.
+2. Keep `mainDisk` reserved for the existing Btrfs SSD only.
+3. Confirm `vars.zfsDataPoolDiskIds` matches exactly the mirrored data disks you intend to create or recreate.
+4. Confirm `vars.coldStoragePools` remains outside `disko.nix`.
 
-This backup scaffold is for system and app state first. It improves recovery on
-the server, but it is not an off-host backup strategy by itself.
-
-## Before you restore
-
-1. Provision the base machine and place the agenix age key at `/etc/agenix/age.key`.
-2. Ensure the repo is present on the machine.
-3. Rebuild the base system so the normal services, secrets, and restore tooling exist.
-4. Connect the dedicated backup disk and confirm `backupDisk` still points at the intended `/dev/disk/by-id` entry in `vars.nix`.
-5. Rebuild again so the disk is mounted at `/mnt/backup`.
-
-The backup disk is part of the active configuration now. The cold-storage disk remains manual-only and should stay outside restore automation unless you intentionally mount it with `scripts/cold-storage.sh`.
-
-## Staged restore
-
-Never restore directly into live system paths first.
-
-List snapshots and restore into an empty staging directory:
+Recommended verification:
 
 ```bash
-./scripts/restore-state.sh --target /tmp/server-state-restore
+ls -l /dev/disk/by-id
+nix eval --json --impure --expr '
+let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; };
+in {
+  mainDisk = vars.mainDisk;
+  zfsDataPoolDiskIds = vars.zfsDataPoolDiskIds;
+  coldStorageDiskIds = map (p: p.disk) vars.coldStoragePools;
+}'
 ```
 
-Select a specific snapshot if needed:
+## Rebuild-first recovery flow
 
-```bash
-./scripts/restore-state.sh \
-  --target /tmp/server-state-restore \
-  --snapshot <snapshot-id>
-```
-
-Restore only a subset when needed:
-
-```bash
-./scripts/restore-state.sh \
-  --target /tmp/server-state-restore \
-  --include /var/lib/kanidm \
-  --include /etc/ssh
-```
-
-## Restore order
-
-When moving restored state back into live paths, use this order:
-
-1. `/var/lib/acme`
-2. `/var/lib/kanidm`
-3. `/var/lib/snapraid`
-4. `/etc/ssh`
-5. `/mnt/data/appdata`
-
-Apply each step deliberately:
-
-- stop the affected service if needed
-- copy the staged data into place
-- confirm ownership and permissions
-- restart the affected service before moving on when that reduces ambiguity
-
-## After restore
-
-1. Rebuild the system:
+1. Put the repo on the target machine and install the agenix private key at `/etc/agenix/age.key`.
+2. Validate the repo:
 
 ```bash
 nix flake check --no-build
 scripts/check-repo.sh
 ```
 
-2. Run the post-restore readiness checks:
+3. Rebuild the host:
 
 ```bash
-./scripts/runtime-readiness.sh
+sudo nixos-rebuild test --flake .#server
+sudo nixos-rebuild switch --flake .#server
 ```
 
-3. Run the broader validation pass if the restore touched auth, routing, or app state:
+4. Run the runtime validation pass:
 
 ```bash
-./scripts/runtime-readiness.sh
+sudo ./scripts/runtime-readiness.sh
 ```
 
-Then work through the short manual checklist in [Runtime Validation](./runtime-validation.md).
+Then work through [Runtime Validation](./runtime-validation.md) if the rebuild touched auth, routing, or application state.
+
+## Recreating only the mirrored data pool
+
+If the `data` pool must be recreated and the SSD must remain untouched:
+
+1. Stop write-path activity and export the existing pool if it is imported:
+
+```bash
+sudo zpool export data
+```
+
+2. Run only the mirror-only Disko entrypoint:
+
+```bash
+sudo nix run github:nix-community/disko -- --mode zap_create_mount ./disko.nix
+```
+
+3. Do not use `disko-install.nix` or `disko-system.nix` for this case.
+
+4. Verify the result:
+
+```bash
+findmnt /
+findmnt -R /mnt/data
+sudo zpool status data
+sudo zfs list -r data
+```
+
+Expected result:
+
+- `/` remains `btrfs`
+- `/mnt/data` and its child datasets are `zfs`
+- the SSD was not repartitioned
+- the cold-storage disk was not touched
 
 ## Notes
 
-- The restore helper is intentionally non-destructive. It restores only into a
-  staging directory.
-- Future critical data-drive coverage should be added only in
-  `modules/backup/default.nix`.
-- If the backup disk is not mounted at `/mnt/backup`, restic backup jobs are
-  expected to stay disabled or fail fast rather than silently writing to the
-  root filesystem.
-- Runtime readiness now includes SMART degradation warnings, so review those
-  before resuming normal write workloads on restored storage.
+- `scripts/cold-storage.sh` remains the manual-only path for cold-storage imports and mounts.
+- Runtime readiness includes SMART degradation warnings, so review those before resuming normal write workloads.
+- If you adopt offsite backups later, document that separately from this repo’s base recovery flow.

@@ -105,7 +105,7 @@ else
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
-  run_optional "power-related timers" systemctl list-timers power-management-nightly-suspend.timer fstrim.timer snapraid-sync.timer snapraid-scrub.timer
+  run_optional "power-related timers" systemctl list-timers power-management-nightly-suspend.timer fstrim.timer zfs-scrub-data.timer
 else
   echo "-- power-related timers"
   echo "(systemctl is not available in PATH)"

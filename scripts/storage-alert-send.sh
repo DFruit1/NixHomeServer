@@ -54,12 +54,12 @@ normalized_digest="$(
     alerts,
     degradedDisks: [.disks[] | select(.severity != "OK") | {label, severity, detail}],
     unhealthyMounts: [.mounts[] | select(.severity != "OK") | {target, severity, detail}],
-    snapraid: {
-      statusSeverity: .snapraid.statusSeverity,
-      diffSeverity: .snapraid.diffSeverity,
-      statusSummary: .snapraid.statusSummary
-    },
-    backup: .backup
+    zfs: {
+      statusSeverity: .zfs.statusSeverity,
+      datasetSeverity: .zfs.datasetSeverity,
+      statusSummary: .zfs.statusSummary,
+      datasetSummary: .zfs.datasetSummary
+    }
   }' "$report_json" | sha256sum | awk '{print $1}'
 )"
 
@@ -107,7 +107,7 @@ body="$(
     [
       "Host: " + .hostname,
       "Severity: " + .overallSeverity,
-      "SnapRAID: " + .snapraid.statusSummary,
+      "ZFS pool: " + .zfs.statusSummary,
       "Report: " + $reportTxt,
       "Top findings:"
     ]

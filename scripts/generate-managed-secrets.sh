@@ -22,7 +22,6 @@ generated_secret_specs=(
   "mailArchiveOauth2ProxyClientSecret:32"
   "mailArchiveOauth2ProxyCookieSecret:32"
   "copypartyClientSecret:32"
-  "resticPassword:32"
   "kavitaClientSecret:32"
   "kavitaTokenKey:64"
 )

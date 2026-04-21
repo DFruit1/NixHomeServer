@@ -16,11 +16,10 @@ This is the main smoke-test path. It checks:
 - core units
 - public and private HTTPS entrypoints
 - direct Copyparty upstream reachability on `http://127.0.0.1:3923/`
-- Unbound answers for private hostnames
-- mergerfs plus all configured data and parity mounts
-- `/mnt/backup` when `enableBackupDisk = true`
-- SMART degradation warnings for configured array disks and any attached backup disk
-- SnapRAID status and drift
+- Unbound recursion plus hosted and LAN-only forward/reverse DNS records
+- the ZFS data-pool mount plus expected child datasets
+- SMART degradation warnings for configured pool disks and the manual cold-storage disk
+- ZFS pool health and dataset visibility
 
 If this fails, stop and fix infrastructure first.
 
@@ -30,15 +29,15 @@ Confirm the public endpoints work:
 - `https://id.<domain>`
 - `https://files.<domain>`
 
-Confirm the private endpoints still require NetBird reachability:
+Confirm the private endpoints work over NetBird and, when router forwarding is configured, on the home LAN:
 
-- `https://emails.<domain>`
-- `https://paperless.<domain>`
-- `https://photos.<domain>`
-- `https://audiobooks.<domain>`
-- `https://books.<domain>`
-- `https://videos.<domain>`
-- `https://jellyseerr.<domain>`
+- `https://emails.<domain>` over NetBird, and on the home LAN when router forwarding is configured
+- `https://paperless.<domain>` over NetBird, and on the home LAN when router forwarding is configured
+- `https://photos.<domain>` over NetBird, and on the home LAN when router forwarding is configured
+- `https://audiobooks.<domain>` over NetBird, and on the home LAN when router forwarding is configured
+- `https://books.<domain>` over NetBird, and on the home LAN when router forwarding is configured
+- `https://videos.<domain>` over NetBird, and on the home LAN when router forwarding is configured
+- `https://jellyseerr.<domain>` over NetBird, and on the home LAN when router forwarding is configured
 
 DNS expectations:
 
@@ -46,7 +45,11 @@ DNS expectations:
   - private names resolve to `vars.nbIP`
   - `id.<domain>` and `files.<domain>` follow the public path
 - `dnsMode = "split-horizon"`:
-  - hosted names resolve to `vars.serverLanIP` on LAN
+  - direct queries to the server's Unbound LAN view resolve hosted names to `vars.serverLanIP`
+  - LAN-only device names under `vars.lanDnsDomain` resolve from `vars.lanDnsHosts`
+  - reverse lookups for those LAN entries resolve locally as well
+  - in the recommended router-forwarded model, only the private app hostnames should resolve to `vars.serverLanIP` through the router
+  - `id.<domain>` and `files.<domain>` should stay on the router's normal public DNS path so they still work when server DNS is unavailable
   - private names still resolve to `vars.nbIP` over NetBird
 
 ## 3. Identity and delegated admin
@@ -62,10 +65,12 @@ These behaviors still need a human spot-check after major changes:
 
 - Files / Copyparty:
   - logged-out users are redirected through OAuth2 Proxy
+  - the logged-in UI shows only `/my-files` and `/shared`
   - a `fileshare_users` member can upload, download, rename, and delete
   - a logged-in user can create a share link
   - a logged-out browser can open the resulting `/shares/...` link
   - unrelated `files` paths still require OAuth
+  - `/shared` reads and writes to `/mnt/data/workspaces/shared/public`
 - Mail archive:
   - a `mail-archive-users` member can open the UI, trigger a sync, and search
 - Immich:
@@ -92,14 +97,16 @@ Confirm these paths still match the current array topology from `vars.nix`:
 
 Quick checks:
 
-- `findmnt -R /mnt` shows `/mnt/data`, every configured data disk mount, and all configured parity mounts
-- `findmnt /mnt/backup` succeeds when the backup disk is enabled
+- `findmnt -R /mnt` shows `/mnt/data` and the expected ZFS child datasets
 - `/mnt/cold-storage` exists but is not mounted unless you mounted it intentionally
-- Copyparty shared paths still map to the expected workspace and ingest roots
+- the LAN SMB `data` share mounts successfully for `admindsaw`
+- the LAN SMB `data` share can read and write under `/mnt/data/media`, `/mnt/data/workspaces`, `/mnt/data/mail-archive`, and `/mnt/data/appdata`
+- SMB access over NetBird no longer succeeds
+- Copyparty `/shared` still maps to `/mnt/data/workspaces/shared/public`
 - Immich managed uploads stay out of the external import root
 - Paperless ingest still lands in `/mnt/data/media/documents/consume`
 - runtime readiness shows no critical SMART degradation on active array disks
-- `snapraid diff` does not show anything unexpected after the validation write-path tests
+- `zpool status data` remains healthy after the validation write-path tests
 
 ## 6. Router cutover validation
 
@@ -131,6 +138,23 @@ Then confirm:
 
 - SSH works to `dsaw@192.168.8.12`
 - `./scripts/runtime-readiness.sh` passes
+- a LAN client using router DHCP resolves private app names to `192.168.8.12`
+- that same LAN client resolves `id.<domain>` and `files.<domain>` through the normal public path
+
+Router-forwarding spot check from a LAN client:
+
+```bash
+host paperless.<domain> <router-ip>
+host photos.<domain> <router-ip>
+host emails.<domain> <router-ip>
+host id.<domain> <router-ip>
+host files.<domain> <router-ip>
+```
+
+Expected:
+
+- `paperless/photos/emails/audiobooks/books/videos/jellyseerr` -> `192.168.8.12`
+- `id/files` -> non-`192.168.8.12` public answer
 
 ## 7. Cleanup
 After a full manual pass:

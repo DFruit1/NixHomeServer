@@ -16,29 +16,30 @@ state_dir="${tmpdir}/state"
 bin_dir="${tmpdir}/bin"
 dev_dir="${tmpdir}/devices"
 mount_root="${tmpdir}/mounts"
-mkdir -p "$state_dir" "$bin_dir" "$dev_dir" "$mount_root/data" "$mount_root/disk1" "$mount_root/parity" "$mount_root/backup" "$mount_root/cold-storage"
-touch "$dev_dir/clean" "$dev_dir/aging" "$dev_dir/backup"
+mkdir -p "$state_dir" "$bin_dir" "$dev_dir" "$mount_root/data" "$mount_root/data/appdata" "$mount_root/cold-storage/v1jan8ph"
+touch "$dev_dir/clean" "$dev_dir/aging"
 
 cat >"$config_file" <<EOF
 {
   "hostname": "server",
-  "mergerfsMount": "${mount_root}/data",
-  "dataMounts": ["${mount_root}/disk1"],
-  "parityMounts": ["${mount_root}/parity"],
+  "dataPool": {
+    "name": "data",
+    "mountPoint": "${mount_root}/data",
+    "datasetMounts": ["${mount_root}/data/appdata"]
+  },
   "disks": [
     { "label": "disk1", "device": "${dev_dir}/clean" },
-    { "label": "parity", "device": "${dev_dir}/aging" },
-    { "label": "backupDisk", "device": "${dev_dir}/backup" }
+    { "label": "cold-v1jan8ph", "device": "${dev_dir}/aging" }
   ],
-  "backup": {
-    "expected": true,
-    "mountPoint": "${mount_root}/backup",
-    "device": "${dev_dir}/backup"
-  },
   "coldStorage": {
-    "monitored": false,
-    "mountPoint": "${mount_root}/cold-storage",
-    "device": "${dev_dir}/cold-storage"
+    "pools": [
+      {
+        "name": "cold-v1jan8ph",
+        "mountPoint": "${mount_root}/cold-storage/v1jan8ph",
+        "device": "${dev_dir}/aging",
+        "monitored": true
+      }
+    ]
   }
 }
 EOF
@@ -129,23 +130,36 @@ esac
 EOF
 chmod +x "$bin_dir/systemctl"
 
-cat >"$bin_dir/snapraid" <<'EOF'
+cat >"$bin_dir/zpool" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-case "$1" in
-  status)
-    cat "$STORAGE_MONITORING_SNAPRAID_STATUS_FIXTURE"
-    ;;
-  diff)
-    cat "$STORAGE_MONITORING_SNAPRAID_DIFF_FIXTURE"
-    ;;
-  *)
-    exit 1
-    ;;
-esac
+if [[ "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "health" ]]; then
+  echo "${STORAGE_MONITORING_ZPOOL_HEALTH:-ONLINE}"
+  exit 0
+fi
+
+if [[ "$1" == "status" ]]; then
+  printf 'pool: %s\nstate: %s\n' "$2" "${STORAGE_MONITORING_ZPOOL_HEALTH:-ONLINE}"
+  exit 0
+fi
+
+exit 1
 EOF
-chmod +x "$bin_dir/snapraid"
+chmod +x "$bin_dir/zpool"
+
+cat >"$bin_dir/zfs" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1" == "list" ]]; then
+  cat "$STORAGE_MONITORING_ZFS_LIST_FIXTURE"
+  exit 0
+fi
+
+exit 1
+EOF
+chmod +x "$bin_dir/zfs"
 
 cat >"$bin_dir/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -165,30 +179,21 @@ EOF
 chmod +x "$bin_dir/sudo"
 
 cat >"$tmpdir/findmnt.clean" <<EOF
-${mount_root}/data=fuse.mergerfs
-${mount_root}/disk1=xfs
-${mount_root}/parity=xfs
-${mount_root}/backup=xfs
+${mount_root}/data=zfs
+${mount_root}/data/appdata=zfs
 EOF
 
 cat >"$tmpdir/systemctl.clean" <<'EOF'
-snapraid-sync.timer|active|enabled
-snapraid-scrub.timer|active|enabled
 storage-health-report.timer|active|enabled
 storage-smart-short@disk1.timer|active|enabled
 storage-smart-long@disk1.timer|active|enabled
-storage-smart-short@parity.timer|active|enabled
-storage-smart-long@parity.timer|active|enabled
-storage-smart-short@backupDisk.timer|active|enabled
-storage-smart-long@backupDisk.timer|active|enabled
+storage-smart-short@cold-v1jan8ph.timer|active|enabled
+storage-smart-long@cold-v1jan8ph.timer|active|enabled
 EOF
 
-cat >"$tmpdir/snapraid-status.clean" <<'EOF'
-No error detected.
-EOF
-
-cat >"$tmpdir/snapraid-diff.clean" <<'EOF'
- 100 equal
+cat >"$tmpdir/zfs-list.clean" <<EOF
+data	${mount_root}/data
+data/appdata	${mount_root}/data/appdata
 EOF
 
 run_report() {
@@ -202,8 +207,8 @@ run_report() {
     STORAGE_MONITORING_FIXTURE_DIR="$TESTS_REPO_ROOT/tests/fixtures/storage-health" \
     STORAGE_MONITORING_FINDMNT_FIXTURE="$tmpdir/findmnt.clean" \
     STORAGE_MONITORING_SYSTEMCTL_FIXTURE="$tmpdir/systemctl.clean" \
-    STORAGE_MONITORING_SNAPRAID_STATUS_FIXTURE="$tmpdir/snapraid-status.clean" \
-    STORAGE_MONITORING_SNAPRAID_DIFF_FIXTURE="$tmpdir/snapraid-diff.clean" \
+    STORAGE_MONITORING_ZPOOL_HEALTH="${STORAGE_MONITORING_ZPOOL_HEALTH:-ONLINE}" \
+    STORAGE_MONITORING_ZFS_LIST_FIXTURE="$tmpdir/zfs-list.clean" \
     STORAGE_ALERT_WEBHOOK_FILE="$tmpdir/webhook-url" \
     STORAGE_MONITORING_CURL_LOG="$curl_log" \
     scripts/storage-health-report.sh
@@ -216,8 +221,10 @@ curl_log_clean="${tmpdir}/curl.clean.log"
 run_report "$config_file" "$curl_log_clean"
 require_json_equal "$(jq -r '.overallSeverity' "$state_dir/latest.json")" 'WARN' \
   "Aging SMART fixtures must surface as a warning in the periodic report."
-require_json_equal "$(jq -r '.coldStorage.monitored' "$state_dir/latest.json")" 'false' \
-  "Cold storage must stay excluded from automated monitoring."
+require_json_equal "$(jq -r '.coldStorage.pools[0].monitored' "$state_dir/latest.json")" 'true' \
+  "Configured cold-storage pools must stay in automated monitoring."
+require_json_equal "$(jq -r '.zfs.statusSeverity' "$state_dir/latest.json")" 'OK' \
+  "Healthy ZFS pool state must be reported as OK."
 
 echo "ℹ️ Checking alert de-duplication…"
 curl_log_dedupe="${tmpdir}/curl.dedupe.log"
@@ -241,9 +248,8 @@ PATH="$bin_dir:$PATH" \
   STORAGE_MONITORING_FIXTURE_DIR="$TESTS_REPO_ROOT/tests/fixtures/storage-health" \
   STORAGE_MONITORING_FINDMNT_FIXTURE="$tmpdir/findmnt.clean" \
   STORAGE_MONITORING_SYSTEMCTL_FIXTURE="$tmpdir/systemctl.clean" \
-  STORAGE_MONITORING_SNAPRAID_STATUS_FIXTURE="$tmpdir/snapraid-status.clean" \
-  STORAGE_MONITORING_SNAPRAID_DIFF_FIXTURE="$tmpdir/snapraid-diff.clean" \
   STORAGE_MONITORING_JOURNAL_FIXTURE="$TESTS_REPO_ROOT/tests/fixtures/storage-health/transport.journal" \
+  STORAGE_MONITORING_ZFS_LIST_FIXTURE="$tmpdir/zfs-list.clean" \
   STORAGE_ALERT_WEBHOOK_FILE="$tmpdir/webhook-url" \
   STORAGE_MONITORING_CURL_LOG="${tmpdir}/curl.critical.log" \
   scripts/storage-health-report.sh

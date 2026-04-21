@@ -1,6 +1,6 @@
 # Storage Monitoring
 
-Disk checks are now a first-class operational feature.
+Disk checks are a first-class operational feature.
 
 This layer is complementary to `./scripts/runtime-readiness.sh`:
 
@@ -11,15 +11,8 @@ This layer is complementary to `./scripts/runtime-readiness.sh`:
 
 Automated storage monitoring includes:
 
-- all configured data disks from `vars.dataDisks`
-- all configured parity disks from `vars.parityDisks`
-- the configured backup disk when `enableBackupDisk = true`
-
-Automated storage monitoring excludes:
-
-- `vars.coldStorageDisk`
-
-Cold storage remains manual on purpose so it does not spin up for routine checks.
+- all configured mirrored data-pool disks from `vars.zfsDataPool`
+- all configured manual cold-storage disks from `vars.coldStoragePools`
 
 ## What runs automatically
 
@@ -27,31 +20,31 @@ Cold storage remains manual on purpose so it does not spin up for routine checks
 
 `smartd` remains enabled for:
 
-- data disks
-- parity disks
-- the active backup disk
-
-It does not monitor cold storage.
+- data-pool disks
+- configured cold-storage disks
 
 ### SMART self-test schedules
+
+Schedules are derived from the configured monitored-disk order, so they move when
+the storage topology changes.
+
+Current topology:
 
 Weekly short tests:
 
 - `disk1`: Saturday `03:00`
 - `disk2`: Saturday `03:20`
 - `disk3`: Saturday `03:40`
-- `parity`: Saturday `04:00`
-- `parity2`: Saturday `04:20`
-- `backupDisk`: Saturday `04:40` when enabled
+- `disk4`: Saturday `04:00`
+- `cold-v1jan8ph`: Saturday `04:20`
 
 Monthly long tests:
 
 - `disk1`: day `01` at `01:00`
 - `disk2`: day `02` at `01:00`
 - `disk3`: day `03` at `01:00`
-- `parity`: day `04` at `01:00`
-- `parity2`: day `05` at `01:00`
-- `backupDisk`: day `06` at `01:00` when enabled
+- `disk4`: day `04` at `01:00`
+- `cold-v1jan8ph`: day `05` at `01:00`
 
 These run as systemd timer/service pairs:
 
@@ -84,14 +77,13 @@ History older than 90 days is cleaned automatically.
 
 Each run evaluates:
 
-- mergerfs and all configured data/parity mounts
-- `/mnt/backup` when the backup disk is enabled
+- the `data` pool mount and expected child dataset mounts
 - SMART status for monitored disks
 - recent kernel transport errors from `journalctl -k`
 - last SMART self-test status
-- `snapraid status`
-- `snapraid diff`
-- timer state for SnapRAID and SMART monitoring timers
+- `zpool list` health for the data pool
+- `zfs list` coverage for the expected datasets
+- timer state for SMART monitoring timers
 
 ## Ntfy alerts
 
@@ -119,10 +111,6 @@ sudo jq . /var/lib/storage-monitoring/latest.json
 
 ## Cold storage
 
-Cold storage is intentionally excluded from:
-
-- `smartd`
-- SMART self-test timers
-- periodic reports
-- ntfy alerts
-- deploy/runtime gating
+Cold storage is monitored for SMART and reported in the periodic storage report,
+but it remains manual for imports and mounts. Use `scripts/cold-storage.sh` to
+import, mount, unmount, and export the configured pool.

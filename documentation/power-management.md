@@ -7,7 +7,7 @@ defaults defined directly in `modules/power-management/default.nix`.
 
 The active module currently manages:
 
-- suspend-to-RAM every day at `23:00`
+- suspend-to-RAM every day at `23:30`
 - RTC wake at `06:00`
 - Wake-on-LAN on the primary wired interface
 - CPU governor `powersave`
@@ -49,7 +49,7 @@ window. That includes:
 
 - `https://id.<domain>`
 - `https://files.<domain>`
-- all NetBird-only app endpoints
+- all private app endpoints
 - SSH
 
 The suspend job skips itself instead of forcing sleep when:
@@ -60,26 +60,19 @@ The suspend job skips itself instead of forcing sleep when:
 
 Current blocker units:
 
-- `snapraid-sync.service`
-- `snapraid-scrub.service`
-- `restic-backups-server-state.service`
-- `restic-backups-server-state-prune.service`
+- `zfs-scrub-data.service`
 
 ## Maintenance schedules vs sleep window
 
 Current defaults place maintenance outside the suspend window:
 
 - `fstrim`: `Sun *-*-* 19:00:00`
-- backup timer: `*-*-* 20:30:00`
-- backup prune timer: `Sat *-*-* 21:00:00`
-- SnapRAID sync: `*-*-* 22:00:00`
-- SnapRAID scrub: `Sun *-*-* 10:00:00`
+- ZFS scrub: managed by `services.zfs.autoScrub` for the `data` pool
 
 If you change the sleep window, re-check these timers in:
 
 - `modules/power-management/default.nix`
-- `modules/backup/default.nix`
-- `modules/Core_Modules/data-disks/default.nix`
+- `configuration.nix`
 
 ## Power audit workflow
 

@@ -38,7 +38,8 @@ kanidm group add-members mail-archive-users "$ACCOUNT_ID" --url "$KANIDM_URL" --
 ```
 
 The UI is private-only. Users must reach `https://emails.<domain>` over
-NetBird, or on the LAN when split-horizon DNS is enabled.
+NetBird, or on the LAN through the router-forwarded split-DNS path when that is
+configured.
 
 ## What the UI does
 
@@ -95,8 +96,9 @@ Per account:
 - `state/notmuch-config`
 - `state/mbsync-state/`
 
-This data is intentionally outside the Copyparty and SMB-exposed workspace
-paths.
+This data is intentionally outside the Copyparty-exposed workspace paths. It is
+reachable through the admin-only SMB `data` share because that share exposes
+the full `/mnt/data` tree.
 
 ## Secret handling
 
@@ -157,25 +159,13 @@ sudo systemctl start mail-archive-sync.service
 curl -fsS http://127.0.0.1:9011/healthz
 ```
 
-## Backup scope note
+## Recovery scope note
 
-The current restic backup-disk scaffold includes:
+The repo no longer ships an automated local backup target.
 
-- `/mnt/data/appdata`
+Mail archive state still lives under:
 
-That means mail archive app state is included:
+- `/mnt/data/appdata/mail-archive-ui` for sqlite metadata, encrypted mailbox credentials, and the app-local encryption key
+- `/mnt/data/mail-archive` for downloaded Maildir content
 
-- sqlite metadata
-- encrypted mailbox credentials
-- the app-local encryption key
-
-Downloaded Maildir data is not included, because it lives under:
-
-```text
-/mnt/data/mail-archive
-```
-
-So the current policy is:
-
-- app config and encrypted credentials are backed up
-- downloaded mail remains local to the server
+If you want these covered by backups, treat that as a separate offsite or operator-managed policy outside this repo.

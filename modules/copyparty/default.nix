@@ -1,9 +1,7 @@
-{ lib, pkgs, vars, copyparty, ... }:
+{ lib, vars, copyparty, ... }:
 
 let
   copypartyPort = 3923;
-  copypartyLayoutRoot = "/var/lib/copyparty/layout";
-  copypartySharedLayoutRoot = "${copypartyLayoutRoot}/shared";
 in
 
 {
@@ -50,23 +48,6 @@ in
         unlistcw: true
 
       [/shared]
-      ${copypartySharedLayoutRoot}
-      accs:
-        r: @acct
-
-      [/shared/exchange]
-      ${vars.sharedExchangeRoot}
-      accs:
-        rwmda: @acct
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/public]
       ${vars.sharedPublicRoot}
       accs:
         rwmda: @acct
@@ -77,77 +58,17 @@ in
         chmod_f: 664
         unlistcr: true
         unlistcw: true
-
-      [/shared/photos]
-      ${vars.photosUploadRoot}
-      accs:
-        rwmda: @acct
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 2770
-        chmod_f: 660
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/documents]
-      ${vars.documentsUploadRoot}
-      accs:
-        rwmda: @acct
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 2770
-        chmod_f: 660
-        unlistcr: true
-        unlistcw: true
     '';
   };
 
-  users.users.copyparty.extraGroups = [ "users" "immich" "paperless" ];
-
-  systemd.services.copyparty-layout-sync = {
-    description = "Build the simplified Copyparty shared layout";
-    before = [ "copyparty.service" ];
-    path = [ pkgs.coreutils ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
-    script = ''
-      set -euo pipefail
-
-      install -d -m 0755 ${copypartyLayoutRoot}
-      rm -rf ${copypartySharedLayoutRoot}
-      install -d -m 0755 ${copypartySharedLayoutRoot}
-      ln -sfn ${vars.sharedExchangeRoot} ${copypartySharedLayoutRoot}/exchange
-      ln -sfn ${vars.sharedPublicRoot} ${copypartySharedLayoutRoot}/public
-      ln -sfn ${vars.photosUploadRoot} ${copypartySharedLayoutRoot}/photos
-      ln -sfn ${vars.documentsUploadRoot} ${copypartySharedLayoutRoot}/documents
-    '';
-  };
+  users.users.copyparty.extraGroups = [ "users" ];
 
   systemd.services.copyparty = {
-    requires = [ "copyparty-layout-sync.service" ];
-    wants = [
-      "fileshare-workspace-sync.service"
-      "copyparty-layout-sync.service"
-    ];
-    after = [
-      "fileshare-workspace-sync.service"
-      "copyparty-layout-sync.service"
-    ];
+    wants = [ "fileshare-workspace-sync.service" ];
+    after = [ "fileshare-workspace-sync.service" ];
     serviceConfig.BindPaths = lib.mkAfter [
-      copypartyLayoutRoot
       vars.usersWorkspaceRoot
-      vars.sharedExchangeRoot
       vars.sharedPublicRoot
-      vars.photosUploadRoot
-      vars.documentsUploadRoot
     ];
   };
-
-  systemd.tmpfiles.rules = [
-    "d ${copypartyLayoutRoot} 0755 root root -"
-  ];
 }

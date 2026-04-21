@@ -1,4 +1,9 @@
-/secrets/
+/secrets/*
+!/secrets/*.age
+!/secrets/agenix.nix
+!/secrets/pubkeys/
+!/secrets/pubkeys/age.pub
+/secrets/top/
 /SensitivePrivateSecrets
 /.jj
 /ss

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 repo_root="${STORAGE_MONITORING_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+alert_send_script="${STORAGE_MONITORING_ALERT_SEND_SCRIPT:-$repo_root/scripts/storage-alert-send.sh}"
 cd "$repo_root"
 source "$repo_root/scripts/lib-storage-health.sh"
 
@@ -24,11 +25,10 @@ nix_json() {
     let
       flake = builtins.getFlake (toString ${repo_root});
       vars = import ${repo_root}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
-      dataLabels = builtins.genList (idx: \"disk\${toString (idx + 1)}\") (builtins.length vars.dataDisks);
-      parityLabels = builtins.genList (idx: if idx == 0 then \"parity\" else \"parity\${toString (idx + 1)}\") (builtins.length vars.parityDisks);
-      backupLabels = if vars.enableBackupDisk && vars.backupDisk != null then [ \"backupDisk\" ] else [ ];
-      labels = dataLabels ++ parityLabels ++ backupLabels;
-      diskIds = vars.dataDisks ++ vars.parityDisks ++ (if vars.enableBackupDisk && vars.backupDisk != null then [ vars.backupDisk ] else [ ]);
+      dataLabels = builtins.genList (idx: \"disk\${toString (idx + 1)}\") (builtins.length vars.monitoredDataDiskIds);
+      coldLabels = map (pool: pool.name) vars.coldStoragePools;
+      labels = dataLabels ++ coldLabels;
+      diskIds = vars.monitoredDataDiskIds ++ vars.monitoredColdStorageDiskIds;
       mkDisk = idx: {
         label = builtins.elemAt labels idx;
         device = \"/dev/disk/by-id/\${builtins.elemAt diskIds idx}\";
@@ -45,19 +45,19 @@ load_config_json() {
     nix_json '
       {
         hostname = vars.hostname;
-        mergerfsMount = vars.dataRoot;
-        dataMounts = builtins.genList (idx: "/mnt/disk${toString (idx + 1)}") (builtins.length vars.dataDisks);
-        parityMounts = builtins.genList (idx: if idx == 0 then "/mnt/parity" else "/mnt/parity${toString (idx + 1)}") (builtins.length vars.parityDisks);
-        disks = builtins.genList mkDisk (builtins.length diskIds);
-        backup = {
-          expected = vars.enableBackupDisk;
-          mountPoint = vars.backupMountPoint;
-          device = if vars.backupDisk == null then "" else "/dev/disk/by-id/${vars.backupDisk}";
+        dataPool = {
+          name = vars.zfsDataPool.name;
+          mountPoint = vars.zfsDataPool.mountPoint;
+          datasetMounts = map (dataset: "${vars.zfsDataPool.mountPoint}/${dataset}") vars.zfsDataPool.datasets;
         };
+        disks = builtins.genList mkDisk (builtins.length diskIds);
         coldStorage = {
-          monitored = false;
-          mountPoint = vars.coldStorageMountPoint;
-          device = "/dev/disk/by-id/${vars.coldStorageDisk}";
+          pools = map (pool: {
+            name = pool.name;
+            mountPoint = pool.mountPoint;
+            device = "/dev/disk/by-id/${pool.disk}";
+            monitored = true;
+          }) vars.coldStoragePools;
         };
       }
     '
@@ -151,7 +151,21 @@ append_lines() {
   done
 }
 
-need nix jq findmnt smartctl journalctl snapraid systemctl sha256sum
+zfs_status_json() {
+  jq -nc \
+    --arg statusSummary "$1" \
+    --arg statusSeverity "$2" \
+    --arg datasetSummary "$3" \
+    --arg datasetSeverity "$4" \
+    '{
+      statusSummary: $statusSummary,
+      statusSeverity: $statusSeverity,
+      datasetSummary: $datasetSummary,
+      datasetSeverity: $datasetSeverity
+    }'
+}
+
+need nix jq findmnt smartctl journalctl systemctl sha256sum zpool zfs
 
 config_json="$(load_config_json)"
 state_dir="${STORAGE_MONITORING_STATE_DIR:-/var/lib/storage-monitoring}"
@@ -168,75 +182,58 @@ trap 'rm -rf "$tmpdir"' EXIT
 mkdir -p "$state_dir" "$history_dir"
 
 hostname="$(jq -r '.hostname' <<<"$config_json")"
-backup_expected="$(jq -r '.backup.expected' <<<"$config_json")"
-backup_mount_point="$(jq -r '.backup.mountPoint' <<<"$config_json")"
-backup_device="$(jq -r '.backup.device' <<<"$config_json")"
+data_pool_name="$(jq -r '.dataPool.name' <<<"$config_json")"
 
 mounts_file="${tmpdir}/mounts.jsonl"
 timers_file="${tmpdir}/timers.jsonl"
 alerts_file="${tmpdir}/alerts.txt"
 : >"$alerts_file"
 
-check_mount_json "mergerfs" "$(jq -r '.mergerfsMount' <<<"$config_json")" "fuse.mergerfs" >>"$mounts_file"
+check_mount_json "dataPool" "$(jq -r '.dataPool.mountPoint' <<<"$config_json")" "zfs" >>"$mounts_file"
 while IFS= read -r mount; do
   label="$(basename "$mount")"
-  check_mount_json "$label" "$mount" "xfs" >>"$mounts_file"
-done < <(jq -r '.dataMounts[]' <<<"$config_json")
-while IFS= read -r mount; do
-  label="$(basename "$mount")"
-  check_mount_json "$label" "$mount" "xfs" >>"$mounts_file"
-done < <(jq -r '.parityMounts[]' <<<"$config_json")
-if [[ "$backup_expected" == "true" ]]; then
-  check_mount_json "backup" "$backup_mount_point" "xfs" >>"$mounts_file"
-fi
+  check_mount_json "$label" "$mount" "zfs" >>"$mounts_file"
+done < <(jq -r '.dataPool.datasetMounts[]' <<<"$config_json")
 
 mapfile -t smart_specs < <(jq -r '.disks[] | "\(.label)=\(.device)"' <<<"$config_json")
 smart_json="$("$repo_root/scripts/lib-storage-health.sh" --mode warn --format json "${smart_specs[@]}")"
 
-if [[ "$backup_expected" == "true" && ! -e "$backup_device" ]]; then
-  echo "Configured backup disk is enabled but not attached: ${backup_device}" >>"$alerts_file"
+mounts_ok=true
+if jq -e 'select(.severity != "OK")' "$mounts_file" >/dev/null 2>&1; then
+  mounts_ok=false
 fi
 
-array_mounts_ok=true
-if jq -e 'select(.label != "backup" and .severity != "OK")' "$mounts_file" >/dev/null 2>&1; then
-  array_mounts_ok=false
+zpool_health="$(
+  zpool list -H -o health "$data_pool_name" 2>/dev/null || true
+)"
+if [[ "$zpool_health" == "ONLINE" ]]; then
+  zpool_status_severity="OK"
+  zpool_status_summary="ONLINE"
+elif [[ -n "$zpool_health" ]]; then
+  zpool_status_severity="CRITICAL"
+  zpool_status_summary="$zpool_health"
+  echo "ZFS pool health for ${data_pool_name}: ${zpool_health}" >>"$alerts_file"
+else
+  zpool_status_severity="CRITICAL"
+  zpool_status_summary="pool missing"
+  echo "ZFS pool ${data_pool_name} is not importable." >>"$alerts_file"
 fi
 
-snapraid_status="skipped because monitored array mounts are unhealthy"
-snapraid_status_severity="WARN"
-snapraid_diff_summary="skipped because monitored array mounts are unhealthy"
-snapraid_diff_severity="WARN"
-
-if [[ "$array_mounts_ok" == "true" ]]; then
-  snapraid_status_output="$(snapraid status 2>&1 || true)"
-  snapraid_diff_output="$(snapraid diff 2>&1 || true)"
-
-  if grep -Fq "No error detected." <<<"$snapraid_status_output"; then
-    snapraid_status="clean"
-    snapraid_status_severity="OK"
-  else
-    snapraid_status="status not clean"
-    snapraid_status_severity="CRITICAL"
-    echo "SnapRAID status did not report a clean state." >>"$alerts_file"
+zfs_dataset_output="$(
+  zfs list -H -r -o name,mountpoint "$data_pool_name" 2>/dev/null || true
+)"
+zfs_dataset_severity="OK"
+zfs_dataset_summary="expected datasets listed"
+while IFS= read -r mount; do
+  [[ -n "$mount" ]] || continue
+  if ! grep -Fq "$mount" <<<"$zfs_dataset_output"; then
+    zfs_dataset_severity="CRITICAL"
+    zfs_dataset_summary="missing expected dataset mounts"
+    echo "Missing expected ZFS dataset mount in zfs list output: ${mount}" >>"$alerts_file"
   fi
-
-  if grep -Fq "There are differences!" <<<"$snapraid_diff_output"; then
-    snapraid_diff_summary="pending changes"
-    snapraid_diff_severity="WARN"
-    echo "SnapRAID diff shows pending changes." >>"$alerts_file"
-  elif grep -Eq '^[[:space:]]*[0-9]+ equal' <<<"$snapraid_diff_output"; then
-    snapraid_diff_summary="equal"
-    snapraid_diff_severity="OK"
-  else
-    snapraid_diff_summary="unexpected diff summary"
-    snapraid_diff_severity="CRITICAL"
-    echo "SnapRAID diff did not return an expected summary." >>"$alerts_file"
-  fi
-fi
+done < <(jq -r '.dataPool.datasetMounts[]' <<<"$config_json")
 
 append_lines "$timers_file" \
-  "$(timer_state_json "snapraid-sync.timer")" \
-  "$(timer_state_json "snapraid-scrub.timer")" \
   "$(timer_state_json "storage-health-report.timer")"
 while IFS= read -r label; do
   append_lines "$timers_file" \
@@ -254,32 +251,18 @@ while IFS= read -r line; do
   echo "$line" >>"$alerts_file"
 done < <(jq -r 'select(.severity != "OK") | "\(.unit): \(.detail)"' "$timers_file")
 
-if [[ "$backup_expected" == "true" && ! -e "$backup_device" ]]; then
-  backup_present=false
-else
-  backup_present=true
-fi
-
-if [[ "$snapraid_status_severity" != "OK" ]]; then
-  echo "SnapRAID status severity: ${snapraid_status_severity}" >>"$alerts_file"
-fi
-if [[ "$snapraid_diff_severity" != "OK" ]]; then
-  echo "SnapRAID diff severity: ${snapraid_diff_severity}" >>"$alerts_file"
-fi
-
-alerts_json="$(sort -u "$alerts_file" | sed '/^$/d' | jq -R . | jq -s '.')"
 mounts_json="$(jq -s '.' "$mounts_file")"
 timers_json="$(jq -s '.' "$timers_file")"
+alerts_json="$(sort -u "$alerts_file" | sed '/^$/d' | jq -R . | jq -s '.')"
+zfs_json="$(zfs_status_json "$zpool_status_summary" "$zpool_status_severity" "$zfs_dataset_summary" "$zfs_dataset_severity")"
 
 overall_severity="$(
   jq -nr \
     --argjson smart "$smart_json" \
     --argjson mounts "$mounts_json" \
     --argjson timers "$timers_json" \
-    --arg snapraidStatusSeverity "$snapraid_status_severity" \
-    --arg snapraidDiffSeverity "$snapraid_diff_severity" \
-    --argjson backupPresent "$backup_present" \
-    --argjson backupExpected "$backup_expected" '
+    --argjson zfsStatus "$zfs_json" \
+    '
       def escalate($current; $next):
         if $current == "CRITICAL" or $next == "CRITICAL" then "CRITICAL"
         elif $current == "WARN" or $next == "WARN" then "WARN"
@@ -290,8 +273,7 @@ overall_severity="$(
         ($smart.disks | map(.severity))
         + ($mounts | map(.severity))
         + ($timers | map(.severity))
-        + [$snapraidStatusSeverity, $snapraidDiffSeverity]
-        + [if ($backupExpected and ($backupPresent | not)) then "CRITICAL" else "OK" end]
+        + [$zfsStatus.statusSeverity, $zfsStatus.datasetSeverity]
       )[] as $severity ("OK"; escalate(.; $severity))
     '
 )"
@@ -304,15 +286,8 @@ report_json_payload="$(
     --argjson disks "$smart_json" \
     --argjson mounts "$mounts_json" \
     --argjson timers "$timers_json" \
-    --arg snapraidStatus "$snapraid_status" \
-    --arg snapraidStatusSeverity "$snapraid_status_severity" \
-    --arg snapraidDiffSummary "$snapraid_diff_summary" \
-    --arg snapraidDiffSeverity "$snapraid_diff_severity" \
+    --argjson zfsStatus "$zfs_json" \
     --argjson alerts "$alerts_json" \
-    --argjson backupExpected "$backup_expected" \
-    --argjson backupPresent "$backup_present" \
-    --arg backupMountPoint "$backup_mount_point" \
-    --arg backupDevice "$backup_device" \
     --argjson coldStorage "$(jq '.coldStorage' <<<"$config_json")" '
       {
         timestamp: $timestamp,
@@ -327,18 +302,7 @@ report_json_payload="$(
           lastSelfTestStatus
         })),
         timers: $timers,
-        snapraid: {
-          statusSummary: $snapraidStatus,
-          statusSeverity: $snapraidStatusSeverity,
-          diffSummary: $snapraidDiffSummary,
-          diffSeverity: $snapraidDiffSeverity
-        },
-        backup: {
-          expected: $backupExpected,
-          present: $backupPresent,
-          mountPoint: $backupMountPoint,
-          device: $backupDevice
-        },
+        zfs: $zfsStatus,
         alerts: $alerts,
         coldStorage: $coldStorage
       }
@@ -360,8 +324,8 @@ cp "$latest_json" "$history_json"
   echo "Disks:"
   jq -r '.disks[] | "- \(.label) \(.severity): \(.detail) [self-test=\(.lastSelfTestStatus)]"' "$latest_json"
   echo
-  echo "SnapRAID:"
-  jq -r '"- status: \(.snapraid.statusSeverity) (\(.snapraid.statusSummary))\n- diff: \(.snapraid.diffSeverity) (\(.snapraid.diffSummary))"' "$latest_json"
+  echo "ZFS:"
+  jq -r '"- pool: \(.zfs.statusSeverity) (\(.zfs.statusSummary))\n- datasets: \(.zfs.datasetSeverity) (\(.zfs.datasetSummary))"' "$latest_json"
   echo
   echo "Timers:"
   jq -r '.timers[] | "- \(.unit): \(.severity) (\(.detail))"' "$latest_json"
@@ -375,4 +339,4 @@ cp "$latest_json" "$history_json"
 } >"$latest_txt"
 cp "$latest_txt" "$history_txt"
 
-"$repo_root/scripts/storage-alert-send.sh" "$latest_json" "$latest_txt"
+bash "$alert_send_script" "$latest_json" "$latest_txt"

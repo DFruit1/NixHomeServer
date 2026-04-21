@@ -3,14 +3,14 @@
 let
   repoRoot = ../../..;
   reportScript = "${repoRoot}/scripts/storage-health-report.sh";
-  dataLabels = lib.imap0 (idx: _: "disk${toString (idx + 1)}") vars.dataDisks;
-  parityLabels = lib.imap0 (idx: _: if idx == 0 then "parity" else "parity${toString (idx + 1)}") vars.parityDisks;
-  backupLabels = lib.optional (vars.enableBackupDisk && vars.backupDisk != null) "backupDisk";
-  monitoredLabels = dataLabels ++ parityLabels ++ backupLabels;
-  monitoredDiskIds =
-    vars.dataDisks
-    ++ vars.parityDisks
-    ++ lib.optional (vars.enableBackupDisk && vars.backupDisk != null) vars.backupDisk;
+  alertSendScript = "${repoRoot}/scripts/storage-alert-send.sh";
+
+  dataLabels = lib.imap0 (idx: _: "disk${toString (idx + 1)}") vars.monitoredDataDiskIds;
+  coldLabels = map (pool: pool.name) vars.coldStoragePools;
+
+  monitoredLabels = dataLabels ++ coldLabels;
+  monitoredDiskIds = vars.monitoredDataDiskIds ++ vars.monitoredColdStorageDiskIds;
+
   monitoredDisks = lib.zipListsWith
     (label: diskId: {
       inherit label diskId;
@@ -18,6 +18,7 @@ let
     })
     monitoredLabels
     monitoredDiskIds;
+
   pad2 = value: lib.fixedWidthString 2 "0" (toString value);
   shortCalendar = idx:
     let
@@ -27,6 +28,7 @@ let
     in
     "Sat *-*-* ${pad2 hour}:${pad2 minute}:00";
   longCalendar = idx: "*-*-${pad2 (idx + 1)} 01:00:00";
+
   mkSmartService = kind: disk:
     lib.nameValuePair "storage-smart-${kind}@${disk.label}" {
       description = "Run SMART ${kind} self-test for ${disk.label}";
@@ -43,6 +45,7 @@ let
       '';
       serviceConfig.Type = "oneshot";
     };
+
   mkSmartTimer = kind: calendar: disk:
     lib.nameValuePair "storage-smart-${kind}@${disk.label}" {
       wantedBy = [ "timers.target" ];
@@ -52,6 +55,7 @@ let
         Unit = "storage-smart-${kind}@${disk.label}.service";
       };
     };
+
   shortTimers = lib.imap0 (idx: disk: mkSmartTimer "short" (shortCalendar idx) disk) monitoredDisks;
   longTimers = lib.imap0 (idx: disk: mkSmartTimer "long" (longCalendar idx) disk) monitoredDisks;
 in
@@ -68,14 +72,15 @@ in
     coreutils
     curl
     findutils
+    gawk
     gnugrep
     gnused
     jq
     nix
     smartmontools
-    snapraid
     systemd
     util-linux
+    zfs
   ];
 
   systemd.tmpfiles.rules = [
@@ -96,14 +101,15 @@ in
           coreutils
           curl
           findutils
+          gawk
           gnugrep
           gnused
           jq
           nix
           smartmontools
-          snapraid
           systemd
           util-linux
+          zfs
         ];
         script = ''
           exec ${pkgs.bash}/bin/bash ${reportScript}
@@ -112,6 +118,8 @@ in
           Type = "oneshot";
           Environment = [
             "STORAGE_ALERT_WEBHOOK_FILE=${config.age.secrets.storageAlertWebhookUrl.path}"
+            "STORAGE_MONITORING_REPO_ROOT=${repoRoot}"
+            "STORAGE_MONITORING_ALERT_SEND_SCRIPT=${alertSendScript}"
           ];
         };
       };

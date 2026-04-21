@@ -16,6 +16,8 @@ for required_path in \
   configuration.nix \
   vars.nix \
   disko.nix \
+  disko-install.nix \
+  disko-system.nix \
   scripts/check-repo.sh \
   scripts/cold-storage.sh \
   scripts/deploy-validated.sh \
@@ -25,7 +27,6 @@ for required_path in \
   scripts/lib-storage-health.sh \
   scripts/lib-secrets.sh \
   scripts/power-audit.sh \
-  scripts/restore-state.sh \
   scripts/runtime-readiness.sh \
   documentation/README.md \
   documentation/first-admin-session.md \
@@ -43,7 +44,6 @@ for required_path in \
   modules/Core_Modules/data-disks/default.nix \
   modules/Core_Modules/caddy/default.nix \
   modules/Core_Modules/kanidm/default.nix \
-  modules/backup/default.nix \
   secrets/agenix.nix
 do
   if [[ ! -e "$required_path" ]]; then
@@ -119,8 +119,8 @@ require_fixed scripts/check-repo.sh 'tests/run-all.sh' \
   "Repository validation must use the slim test entrypoint."
 require_fixed scripts/deploy-validated.sh 'nix flake check --no-build' \
   "Deploy wrapper must run flake checks first."
-require_fixed scripts/runtime-readiness.sh 'Skipping SnapRAID checks because storage mounts are unhealthy.' \
-  "Runtime readiness must report unhealthy storage before attempting SnapRAID."
+require_fixed scripts/runtime-readiness.sh '== ZFS ==' \
+  "Runtime readiness must include the ZFS pool section."
 require_fixed scripts/runtime-readiness.sh '== SMART ==' \
   "Runtime readiness must include the SMART degradation section."
 require_fixed scripts/lib-storage-health.sh '--mode warn|strict' \

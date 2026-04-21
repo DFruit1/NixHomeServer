@@ -96,6 +96,33 @@ check_public_dns() {
   fi
 }
 
+check_dns_resolves() {
+  local host_name="$1"
+  local answer
+
+  answer="$(host "$host_name" 127.0.0.1 2>/dev/null | awk '/has address/ { print $4; exit }')"
+  if [[ -n "$answer" ]]; then
+    echo "✅ dns ${host_name} -> ${answer}"
+  else
+    echo "❌ dns ${host_name} -> <no answer>"
+    failed=1
+  fi
+}
+
+check_ptr_dns() {
+  local ip="$1"
+  local expected_name="$2"
+  local answer
+
+  answer="$(host "$ip" 127.0.0.1 2>/dev/null | awk '/domain name pointer/ { print $5; exit }' | sed 's/\.$//')"
+  if [[ "$answer" == "$expected_name" ]]; then
+    echo "✅ ptr ${ip} -> ${answer}"
+  else
+    echo "❌ ptr ${ip} -> ${answer:-<no answer>} (expected ${expected_name})"
+    failed=1
+  fi
+}
+
 check_mount() {
   local target="$1"
   local expected_fstype="$2"
@@ -119,7 +146,7 @@ check_mount() {
   fi
 }
 
-need nix curl host systemctl findmnt jq smartctl journalctl
+need nix curl host systemctl findmnt jq smartctl journalctl zpool zfs
 
 hostname="$(nix_var 'vars.hostname')"
 domain="$(nix_var 'vars.domain')"
@@ -128,6 +155,7 @@ server_lan_ip="$(nix_var 'vars.serverLanIP')"
 dns_mode="$(nix_var 'vars.dnsMode')"
 local_dns_private_answer="$(nix_var 'vars.localDnsPrivateAnswer')"
 files_domain="$(nix_var 'vars.filesDomain')"
+lan_dns_domain="$(nix_var 'vars.lanDnsDomain')"
 photos_domain="$(nix_var 'vars.photosDomain')"
 audiobooks_domain="$(nix_var 'vars.audiobooksDomain')"
 kavita_domain="$(nix_var 'vars.kavitaDomain')"
@@ -135,9 +163,8 @@ jellyfin_domain="$(nix_var 'vars.jellyfinDomain')"
 jellyseerr_domain="$(nix_var 'vars.jellyseerrDomain')"
 kanidm_domain="$(nix_var 'vars.kanidmDomain')"
 cloudflared_unit="cloudflared-tunnel-$(nix_var 'vars.cloudflareTunnelName').service"
-backup_disk_enabled="$(nix_var 'if vars.enableBackupDisk then "true" else "false"')"
-backup_device="$(nix_var 'if vars.backupDisk == null then "" else "/dev/disk/by-id/${vars.backupDisk}"')"
-backup_mount_point="$(nix_var 'vars.backupMountPoint')"
+data_pool_name="$(nix_var 'vars.zfsDataPool.name')"
+data_pool_mount="$(nix_var 'vars.zfsDataPool.mountPoint')"
 
 failed=0
 storage_failed=0
@@ -147,20 +174,17 @@ if (( EUID != 0 )); then
 fi
 storage_health_cmd_prefix=("${sudo_cmd[@]}")
 
-mapfile -t data_mounts < <(
-  nix_json 'builtins.genList (idx: "/mnt/disk${toString (idx + 1)}") (builtins.length vars.dataDisks)' \
+mapfile -t data_dataset_mounts < <(
+  nix_json 'map (dataset: "${vars.zfsDataPool.mountPoint}/${dataset}") vars.zfsDataPool.datasets' \
     | jq -r '.[]'
 )
-mapfile -t parity_mounts < <(
-  nix_json 'builtins.genList (idx: if idx == 0 then "/mnt/parity" else "/mnt/parity${toString (idx + 1)}") (builtins.length vars.parityDisks)' \
+data_disk_count="$(nix_var 'toString (builtins.length vars.monitoredDataDiskIds)')"
+mapfile -t monitored_disk_devices < <(
+  nix_json 'map (diskId: "/dev/disk/by-id/${diskId}") vars.monitoredStorageDiskIds' \
     | jq -r '.[]'
 )
-mapfile -t data_devices < <(
-  nix_json 'map (diskId: "/dev/disk/by-id/${diskId}") vars.dataDisks' \
-    | jq -r '.[]'
-)
-mapfile -t parity_devices < <(
-  nix_json 'map (diskId: "/dev/disk/by-id/${diskId}") vars.parityDisks' \
+mapfile -t cold_storage_pool_names < <(
+  nix_json 'map (pool: pool.name) vars.coldStoragePools' \
     | jq -r '.[]'
 )
 
@@ -179,13 +203,8 @@ required_units=(
   audiobookshelf.service \
   kavita.service \
   jellyfin.service \
-  jellyseerr.service \
-  snapraid-sync.timer \
-  snapraid-scrub.timer
+  jellyseerr.service
 )
-if [[ "$backup_disk_enabled" == "true" ]]; then
-  required_units+=(mnt-backup.mount)
-fi
 for unit in "${required_units[@]}"; do
   check_unit "$unit"
 done
@@ -207,9 +226,13 @@ check_http "http://127.0.0.1:3923/" 200 302 401 403
 
 echo
 echo "== DNS via Unbound =="
+echo "ℹ️ Validating the server-local Unbound view; LAN client DNS policy may still be mediated by the router."
+check_dns_resolves "example.com"
 if [[ "$dns_mode" == "split-horizon" ]]; then
   check_private_dns "${kanidm_domain}" "${server_lan_ip}"
   check_private_dns "${files_domain}" "${server_lan_ip}"
+  check_private_dns "${hostname}.${lan_dns_domain}" "${server_lan_ip}"
+  check_ptr_dns "${server_lan_ip}" "${hostname}.${lan_dns_domain}"
 else
   check_public_dns "${kanidm_domain}" "${nb_ip}"
   check_public_dns "${files_domain}" "${nb_ip}"
@@ -223,44 +246,24 @@ check_private_dns "${jellyseerr_domain}" "${local_dns_private_answer}"
 
 echo
 echo "== Storage =="
-check_mount "/mnt/data" "fuse.mergerfs"
+check_mount "$data_pool_mount" "zfs"
 
-for disk in "${data_mounts[@]}"; do
-  check_mount "$disk" "xfs"
+for dataset_mount in "${data_dataset_mounts[@]}"; do
+  check_mount "$dataset_mount" "zfs"
 done
-
-for parity_mount in "${parity_mounts[@]}"; do
-  check_mount "$parity_mount" "xfs"
-done
-
-if [[ "$backup_disk_enabled" == "true" ]]; then
-  check_mount "$backup_mount_point" "xfs"
-fi
 
 echo
 echo "== SMART =="
 smart_specs=()
-for idx in "${!data_devices[@]}"; do
-  smart_specs+=("disk$((idx + 1))=${data_devices[$idx]}")
-done
-for idx in "${!parity_devices[@]}"; do
-  if (( idx == 0 )); then
-    smart_specs+=("parity=${parity_devices[$idx]}")
+for idx in "${!monitored_disk_devices[@]}"; do
+  if (( idx < data_disk_count )); then
+    label="disk$((idx + 1))"
   else
-    smart_specs+=("parity$((idx + 1))=${parity_devices[$idx]}")
+    cold_idx=$((idx - data_disk_count))
+    label="${cold_storage_pool_names[$cold_idx]}"
   fi
+  smart_specs+=("${label}=${monitored_disk_devices[$idx]}")
 done
-
-if [[ -n "$backup_device" ]]; then
-  if [[ -e "$backup_device" ]]; then
-    smart_specs+=("backupDisk=${backup_device}")
-  elif [[ "$backup_disk_enabled" == "true" ]]; then
-    echo "❌ configured backup disk is enabled but not attached: ${backup_device}"
-    failed=1
-  else
-    echo "ℹ️ backupDisk is configured but not attached: ${backup_device}"
-  fi
-fi
 
 if ((${#smart_specs[@]} == 0)); then
   echo "⚠️  no storage devices configured for SMART checks"
@@ -271,38 +274,33 @@ else
   fi
   if (( STORAGE_HEALTH_CRITICAL_COUNT > 0 )); then
     echo "❌ critical SMART degradation detected."
-    if (( storage_failed == 0 )); then
-      echo "   Active array mounts are present, so this is a hard runtime-readiness failure."
-    fi
     failed=1
   fi
 fi
 
 echo
-echo "== SnapRAID =="
-if (( storage_failed != 0 )); then
-  echo "❌ Skipping SnapRAID checks because storage mounts are unhealthy."
+echo "== ZFS =="
+zpool_health="$("${sudo_cmd[@]}" zpool list -H -o health "$data_pool_name" 2>&1 || true)"
+if [[ "$zpool_health" == "ONLINE" ]]; then
+  echo "✅ zpool health ONLINE: ${data_pool_name}"
 else
-  snapraid_status="$("${sudo_cmd[@]}" snapraid status 2>&1 || true)"
-  if grep -Fq "No error detected." <<<"$snapraid_status"; then
-    echo "✅ snapraid status clean"
-  else
-    echo "❌ snapraid status did not report a clean state"
-    printf '%s\n' "$snapraid_status" | sed -n '1,80p'
-    failed=1
-  fi
+  echo "❌ zpool health unexpected for ${data_pool_name}: ${zpool_health}"
+  "${sudo_cmd[@]}" zpool status "$data_pool_name" 2>&1 | sed -n '1,80p'
+  failed=1
+fi
 
-  snapraid_diff="$("${sudo_cmd[@]}" snapraid diff 2>&1 || true)"
-  if grep -Fq "There are differences!" <<<"$snapraid_diff"; then
-    echo "⚠️  snapraid diff shows pending changes"
-    printf '%s\n' "$snapraid_diff" | sed -n '1,40p'
-  elif grep -Eq '^[[:space:]]*[0-9]+ equal' <<<"$snapraid_diff"; then
-    echo "✅ snapraid diff completed"
-  else
-    echo "❌ snapraid diff did not return an expected summary"
-    printf '%s\n' "$snapraid_diff" | sed -n '1,80p'
-    failed=1
-  fi
+zfs_list_output="$("${sudo_cmd[@]}" zfs list -H -r -o name,mountpoint "$data_pool_name" 2>&1 || true)"
+if [[ -z "$zfs_list_output" ]]; then
+  echo "❌ zfs list returned no output for ${data_pool_name}"
+  failed=1
+else
+  echo "✅ zfs list returned datasets for ${data_pool_name}"
+  for dataset_mount in "${data_dataset_mounts[@]}"; do
+    if ! grep -Fq "${dataset_mount}" <<<"$zfs_list_output"; then
+      echo "❌ zfs list is missing expected dataset mountpoint: ${dataset_mount}"
+      failed=1
+    fi
+  done
 fi
 
 echo

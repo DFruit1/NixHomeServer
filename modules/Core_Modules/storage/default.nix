@@ -2,6 +2,7 @@
 
 {
   systemd.tmpfiles.rules = [
+    "d ${vars.dataRoot} 0755 root root -"
     "d ${vars.appdataRoot} 0755 root root -"
     "d ${vars.mediaRoot} 0755 root root -"
     "d ${vars.workspaceRoot} 0755 root root -"
@@ -48,5 +49,5 @@
 
     "d ${vars.sharedExchangeRoot} 2775 root users -"
     "d ${vars.sharedPublicRoot} 2775 root users -"
-  ];
+  ] ++ map (pool: "d ${pool.mountPoint} 0750 root root -") vars.coldStoragePools;
 }

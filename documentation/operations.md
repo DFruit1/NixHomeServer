@@ -24,7 +24,7 @@ Read-only runtime audits:
 ./scripts/power-audit.sh
 ```
 
-Storage validation is config-driven. Follow the current array topology from `vars.nix`, not old assumptions about a fixed number of data or parity disks.
+Storage validation is config-driven. Follow the current ZFS pool and manual cold-storage topology from `vars.nix`, not old assumptions about fixed disk roles.
 
 ## Deploy
 
@@ -157,8 +157,9 @@ Likely causes:
 
 - NetBird DNS distribution not active on the client
 - Unbound not serving the expected records
-- client bypassing NetBird DNS and using public recursion instead
-- split-horizon enabled but the router is not advertising the server as primary LAN DNS
+- client bypassing the router and using public recursion on the LAN
+- split-horizon enabled but the router is not forwarding the private app hostnames to the server
+- the router is forwarding the whole `sydneybasiniot.org` zone and you are seeing fallback behavior you did not intend
 
 ### LAN cutover route is wrong
 Check:
@@ -179,15 +180,13 @@ Expected:
 
 ```bash
 findmnt -R /mnt
-findmnt /mnt/backup
 ./scripts/cold-storage.sh status
-systemctl status snapraid-sync.timer snapraid-scrub.timer
 sudo ./scripts/runtime-readiness.sh
-sudo snapraid status
-sudo snapraid diff
+sudo zpool status data
+sudo zfs list -r data
 ```
 
-Check `/mnt/data`, every configured data mount, all configured parity mounts, and the active `/mnt/backup` target against `vars.nix`. `scripts/cold-storage.sh status` should report the cold-storage disk without auto-mounting it. The runtime readiness report also includes SMART degradation warnings for configured array disks and any attached backup disk.
+Check `/mnt/data` and each configured ZFS child dataset mount against `vars.nix`. `scripts/cold-storage.sh status` should report the configured cold-storage pool without auto-importing it. The runtime readiness report also includes SMART degradation warnings for the active pool disks and the manual cold-storage disk.
 
 If storage is unhealthy, stop write-path testing until the config-driven mount set looks correct again and runtime readiness reports no critical SMART conditions on active array disks.
 
@@ -204,12 +203,6 @@ curl -fsS http://127.0.0.1:9011/healthz
 User-facing access still depends on `mail-archive-users`.
 
 ## Backup and restore
-Backup scope and restore sequencing live in [Restore and Recovery](./restore-and-recovery.md).
+Recovery sequencing now lives in [Restore and Recovery](./restore-and-recovery.md).
 
-The backup policy remains intentionally narrow:
-
-- `/var/lib/kanidm`
-- `/var/lib/acme`
-- `/var/lib/snapraid`
-- `/etc/ssh`
-- `/mnt/data/appdata`
+The repo no longer ships a local backup target. Treat offsite backups and any manual local copies as separate operator workflows.

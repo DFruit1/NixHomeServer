@@ -19,7 +19,7 @@ This explains why each major component exists in this repository.
 | NetBird | WireGuard-based private mesh access | Reaches private apps securely from any network |
 | Unbound (+ dnscrypt-proxy) | Local private DNS authority + controlled upstream recursion | Consistent private hostname behavior |
 | Disko | Declarative disk partition/filesystem layout | Repeatable storage provisioning |
-| mergerfs + SnapRAID | Flexible multi-disk storage with parity | Practical home-server storage resilience |
+| ZFS mirrors | Mirrored storage pool with checksumming and dataset management | Practical home-server storage resilience |
 
 ## Why only two public endpoints
 Public internet is intentionally limited to:

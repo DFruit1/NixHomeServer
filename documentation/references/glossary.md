@@ -36,8 +36,5 @@ Certificate challenge method based on DNS records rather than direct inbound web
 ## Disko
 Declarative disk partition/filesystem layout for NixOS.
 
-## mergerfs
-Virtual filesystem that merges multiple data disks into one view.
-
-## SnapRAID
-Parity-based protection for data disks (helps recover from disk failure, not a full backup).
+## ZFS
+Copy-on-write filesystem and volume manager used here for the mirrored data pool and manual cold-storage pools.

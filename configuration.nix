@@ -5,13 +5,16 @@
   #  Core system bits (unchanged)
   ###############################################################################
   system.stateVersion = "25.05";
-  boot.initrd.supportedFilesystems = [ "btrfs" "xfs" "vfat" ];
-  boot.kernelModules = [ "jitterentropy_rng" ];
-  boot.initrd.kernelModules = [ "jitterentropy_rng" "crc32c-intel" ];
+  boot.initrd.supportedFilesystems = [ "btrfs" "vfat" "zfs" ];
+  # Load ZFS explicitly so the rebuilt system can manage the mirrored data pool
+  # without depending on filesystem autodetection to pull the module in.
+  boot.kernelModules = [ "jitterentropy_rng" "zfs" ];
+  boot.initrd.kernelModules = [ "jitterentropy_rng" "crc32c-intel" "zfs" ];
   boot.initrd.availableKernelModules = [ "nvme" "ahci" "xhci_pci" "usb_storage" "sd_mod" ];
-  boot.supportedFilesystems = [ "btrfs" "xfs" "vfat" ];
+  boot.supportedFilesystems = [ "btrfs" "vfat" "zfs" ];
   networking = {
     hostName = vars.hostname;
+    hostId = "84e8c12a";
     useDHCP = lib.mkForce false;
     defaultGateway = vars.serverLanGateway;
     nameservers = [ "127.0.0.1" ];
@@ -39,10 +42,10 @@
   #  Disko – layout + engine
   ###############################################################################
   imports = [
+    ./disko-system.nix
     ./disko.nix
     ./secrets/agenix.nix
     ./modules/audiobookshelf
-    ./modules/backup
     ./modules/Core_Modules/caddy
     ./modules/Core_Modules/cloudflared
     ./modules/Core_Modules/data-disks
@@ -65,6 +68,10 @@
 
   disko.enableConfig = true;
   services.dbus.enable = true;
+  services.zfs.autoScrub = {
+    enable = true;
+    pools = [ vars.zfsDataPool.name ];
+  };
   systemd.services.dbus.stopIfChanged = true;
   services.mail-archive-ui.enable = true;
 
@@ -162,6 +169,8 @@
   };
 
   services.btrfs.autoScrub.enable = true;
+
+  environment.systemPackages = [ pkgs.jq ];
 
   nix = {
     package = pkgs.nixVersions.latest;
