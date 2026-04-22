@@ -83,19 +83,19 @@ require_fixed modules/Core_Modules/cloudflared/default.nix 'credentialsFile = co
   "Cloudflared must consume the tunnel credentials from agenix."
 require_fixed configuration.nix 'credentialsFile = config.age.secrets.cfAPIToken.path;' \
   "ACME must consume the Cloudflare API token from agenix."
-require_fixed modules/Core_Modules/kanidm/default.nix 'idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;' \
+require_fixed modules/Core_Modules/kanidm/provision.nix 'idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;' \
   "Kanidm must consume the IDM admin secret from agenix."
-require_fixed modules/Core_Modules/kanidm/default.nix 'adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;' \
+require_fixed modules/Core_Modules/kanidm/provision.nix 'adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;' \
   "Kanidm must consume the system admin secret from agenix."
 require_fixed modules/Core_Modules/netbird/default.nix 'login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;' \
   "NetBird must consume the setup key from agenix."
 require_fixed modules/immich/default.nix 'clientSecret._secret = config.age.secrets.immichClientSecret.path;' \
   "Immich must consume its OIDC client secret from agenix."
-require_fixed modules/paperless/default.nix 'config.age.secrets.paperlessClientSecret.path' \
+require_fixed modules/paperless/bootstrap.nix 'config.age.secrets.paperlessClientSecret.path' \
   "Paperless must consume its OIDC client secret from agenix."
-require_fixed modules/audiobookshelf/default.nix 'config.age.secrets.absClientSecret.path' \
+require_fixed modules/audiobookshelf/oidc-bootstrap.nix 'config.age.secrets.absClientSecret.path' \
   "Audiobookshelf must consume its OIDC client secret from agenix."
-require_fixed modules/audiobookshelf/default.nix 'config.age.secrets.absBootstrapPass.path' \
+require_fixed modules/audiobookshelf/root-bootstrap.nix 'config.age.secrets.absBootstrapPass.path' \
   "Audiobookshelf root bootstrap must consume its local break-glass password from agenix."
 require_fixed modules/kavita/default.nix 'config.age.secrets.kavitaClientSecret.path' \
   "Kavita must consume its OIDC client secret from agenix."

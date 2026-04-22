@@ -2,21 +2,11 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_root"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
-
-nix_json() {
-  local expr="$1"
-  nix eval --json --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      vars = import ${repo_root}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
-    in
-      ${expr}
-  "
-}
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib-repo.sh"
+init_repo_root
+cd_repo_root
+ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
@@ -30,39 +20,6 @@ Examples:
   scripts/cold-storage.sh mount cold-v1jan8ph
 EOF
 }
-
-need() {
-  local tool
-  for tool in "$@"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      echo "❌ Missing required tool: $tool" >&2
-      exit 1
-    fi
-  done
-}
-
-need nix jq findmnt mountpoint install zpool zfs
-
-sudo_cmd=()
-if (( EUID != 0 )); then
-  sudo_cmd=(sudo)
-fi
-
-pools_json="$(
-  nix_json '
-    map (pool: {
-      name = pool.name;
-      disk = pool.disk;
-      mountPoint = pool.mountPoint;
-      device = "/dev/disk/by-id/${pool.disk}";
-    }) vars.coldStoragePools
-  '
-)"
-
-if [[ "$(jq 'length' <<<"$pools_json")" -eq 0 ]]; then
-  echo "❌ No cold-storage pools are configured." >&2
-  exit 1
-fi
 
 resolve_pool() {
   local requested="${1:-}"
@@ -87,6 +44,31 @@ resolve_pool() {
   fi
 
   printf '%s\n' "$selected"
+}
+
+load_pools_json() {
+  need nix jq findmnt mountpoint install zpool zfs
+
+  sudo_cmd=()
+  if (( EUID != 0 )); then
+    sudo_cmd=(sudo)
+  fi
+
+  pools_json="$(
+    nix_json '
+      map (pool: {
+        name = pool.name;
+        disk = pool.disk;
+        mountPoint = pool.mountPoint;
+        device = "/dev/disk/by-id/${pool.disk}";
+      }) vars.coldStoragePools
+    '
+  )"
+
+  if [[ "$(jq 'length' <<<"$pools_json")" -eq 0 ]]; then
+    echo "❌ No cold-storage pools are configured." >&2
+    exit 1
+  fi
 }
 
 status_pool() {
@@ -163,7 +145,12 @@ unmount_pool() {
 }
 
 case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
   status)
+    load_pools_json
     if [[ $# -gt 1 ]]; then
       status_pool "$(resolve_pool "${2:-}")"
     else
@@ -175,9 +162,11 @@ case "${1:-}" in
     fi
     ;;
   mount)
+    load_pools_json
     mount_pool "$(resolve_pool "${2:-}")"
     ;;
   unmount)
+    load_pools_json
     unmount_pool "$(resolve_pool "${2:-}")"
     ;;
   *)

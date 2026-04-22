@@ -1,6 +1,6 @@
 # Restore And Recovery
 
-Use this when rebuilding the host or recovering the mirrored ZFS data pool.
+Use this when rebuilding the host, recreating the mirrored ZFS data pool, or manually mounting and unmounting cold-storage pools.
 
 Recovery priorities:
 - keep the system SSD isolated from data-pool recovery
@@ -29,18 +29,7 @@ Keep these rules:
 
 ## 2. Rebuild-First Recovery
 
-Install the agenix key on the target machine, then run:
-
-```bash
-nix flake check --no-build
-scripts/check-repo.sh
-sudo nixos-rebuild test --flake .#server
-sudo nixos-rebuild switch --flake .#server
-sudo ./scripts/runtime-readiness.sh
-```
-
-If the rebuild touched auth, routing, or application behavior, continue with
-[Operations](./operations.md).
+Before destructive storage work, stabilize the host with the validation, guarded deploy, and runtime readiness workflows in [Operations](./operations.md). Use Quickstart only if the target still needs bootstrap inputs or the agenix key installed.
 
 ## 3. Recreate Only The Mirrored Data Pool
 

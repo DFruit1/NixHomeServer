@@ -2,47 +2,33 @@
 
 set -euo pipefail
 
-repo_root="${STORAGE_MONITORING_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib-repo.sh"
+init_repo_root "STORAGE_MONITORING_REPO_ROOT"
 alert_send_script="${STORAGE_MONITORING_ALERT_SEND_SCRIPT:-$repo_root/scripts/storage-alert-send.sh}"
-cd "$repo_root"
+cd_repo_root
 source "$repo_root/scripts/lib-storage-health.sh"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
-
-need() {
-  local tool
-  for tool in "$@"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      echo "❌ Missing required tool: $tool" >&2
-      exit 1
-    fi
-  done
-}
-
-nix_json() {
-  local expr="$1"
-  nix eval --json --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      vars = import ${repo_root}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
-      dataLabels = builtins.genList (idx: \"disk\${toString (idx + 1)}\") (builtins.length vars.monitoredDataDiskIds);
-      coldLabels = map (pool: pool.name) vars.coldStoragePools;
-      labels = dataLabels ++ coldLabels;
-      diskIds = vars.monitoredDataDiskIds ++ vars.monitoredColdStorageDiskIds;
-      mkDisk = idx: {
-        label = builtins.elemAt labels idx;
-        device = \"/dev/disk/by-id/\${builtins.elemAt diskIds idx}\";
-      };
-    in
-      ${expr}
-  "
-}
+ensure_default_nix_config
 
 load_config_json() {
   if [[ -n "${STORAGE_MONITORING_CONFIG_JSON_FILE:-}" ]]; then
     cat "$STORAGE_MONITORING_CONFIG_JSON_FILE"
   else
-    nix_json '
+    nix eval --json --impure --expr "
+      let
+        flake = builtins.getFlake (toString ${repo_root});
+        lib = flake.inputs.nixpkgs.lib;
+        vars = import ${repo_root}/vars.nix { inherit lib; };
+        cfg = (builtins.getAttr vars.hostname flake.nixosConfigurations).config;
+        dataLabels = builtins.genList (idx: \"disk\${toString (idx + 1)}\") (builtins.length vars.monitoredDataDiskIds);
+        coldLabels = map (pool: pool.name) vars.coldStoragePools;
+        labels = dataLabels ++ coldLabels;
+        diskIds = vars.monitoredDataDiskIds ++ vars.monitoredColdStorageDiskIds;
+        mkDisk = idx: {
+          label = builtins.elemAt labels idx;
+          device = \"/dev/disk/by-id/\${builtins.elemAt diskIds idx}\";
+        };
+      in
       {
         hostname = vars.hostname;
         dataPool = {
@@ -60,7 +46,7 @@ load_config_json() {
           }) vars.coldStoragePools;
         };
       }
-    '
+      "
   fi
 }
 

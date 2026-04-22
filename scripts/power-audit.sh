@@ -2,10 +2,11 @@
 
 set -euo pipefail
 
-repo_root="${POWER_AUDIT_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-cd "$repo_root"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib-repo.sh"
+init_repo_root "POWER_AUDIT_REPO_ROOT"
+cd_repo_root
+ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
@@ -17,16 +18,6 @@ configured policy from Nix plus useful runtime signals from the current host.
 Example:
   ./scripts/power-audit.sh
 EOF
-}
-
-need() {
-  local tool
-  for tool in "$@"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      echo "ERROR: Missing required tool: $tool"
-      exit 1
-    fi
-  done
 }
 
 case "${1:-}" in
@@ -41,17 +32,6 @@ case "${1:-}" in
     exit 1
     ;;
 esac
-
-nix_var() {
-  local expr="$1"
-  nix eval --raw --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      vars = import ${repo_root}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
-    in
-      ${expr}
-  "
-}
 
 nix_config_raw() {
   local attr="$1"

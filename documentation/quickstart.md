@@ -1,18 +1,15 @@
 # Quickstart
 
-Use this as the single bootstrap guide for:
-- first deploys to an existing NixOS host
-- blank-machine installs from a NixOS installer ISO
+Use this for bootstrap only:
+- workstation prerequisites
+- machine-specific `vars.nix` setup
 - secrets staging
-- the supported destructive disk wrapper entrypoints
+- the supported destructive disk wrappers
+- the initial agenix key install on a target host
 
-The operator contract is simple:
-- machine-specific values live in [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix)
-- `./scripts/gen-all-secrets.sh` is the only documented secrets entrypoint
-- `./scripts/format-system-disk.sh` and `./scripts/format-data-disks.sh` are the only documented destructive Disko entrypoints
-- `./scripts/deploy-validated.sh` is the normal remote deploy path
+Canonical validation, guarded deploy, runtime checks, and troubleshooting live in [Operations](./operations.md).
 
-## 1. Workstation And External Prereqs
+## 1. Workstation And External Prerequisites
 
 Required workstation tools:
 
@@ -104,59 +101,19 @@ For full details on accepted formats, use:
 ./scripts/gen-all-secrets.sh --help
 ```
 
-## 4. Existing Host Deploy
+## 4. Install The Agenix Key On The Target Host
 
-Derive the intended target IP from `vars.serverLanIP`, then keep any temporary
-SSH cutover address in a local override only:
+On an existing host, copy the agenix private key in before the first guarded deploy:
 
 ```bash
-export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
-export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
 export SERVER_USER='dsaw'
-export HOST_NAME="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.hostname')"
-```
+export CURRENT_SERVER_IP='192.168.8.12'
 
-Install the agenix private key on the target host:
-
-```bash
 scp ~/.age/agenix.key "$SERVER_USER@$CURRENT_SERVER_IP:/tmp/agenix.key"
 ssh -t "$SERVER_USER@$CURRENT_SERVER_IP" "sudo install -d -m 0700 /etc/agenix && sudo install -m 0400 /tmp/agenix.key /etc/agenix/age.key && rm -f /tmp/agenix.key"
 ```
 
-Run the repo validation gate:
-
-```bash
-nix flake check --no-build
-scripts/check-repo.sh
-tests/run-all.sh
-tests/core-config.sh
-```
-
-Run the guarded deploy:
-
-```bash
-./scripts/deploy-validated.sh \
-  --target "$SERVER_USER@$CURRENT_SERVER_IP" \
-  --build-host "$SERVER_USER@$CURRENT_SERVER_IP" \
-  --action test \
-  --hostname "$HOST_NAME"
-```
-
-Switch only after the test generation looks correct:
-
-```bash
-./scripts/deploy-validated.sh \
-  --target "$SERVER_USER@$CURRENT_SERVER_IP" \
-  --build-host "$SERVER_USER@$CURRENT_SERVER_IP" \
-  --action switch \
-  --hostname "$HOST_NAME"
-```
-
-For argument details and cutover notes, use:
-
-```bash
-./scripts/deploy-validated.sh --help
-```
+For the first validation gate and guarded deploy, continue with [Operations](./operations.md#2-common-commands).
 
 ## 5. Blank-Machine Install
 
@@ -175,8 +132,7 @@ Preview the destructive wrapper commands first:
 ./scripts/format-data-disks.sh --print-only
 ```
 
-Run the destructive install path only after `vars.nix` matches the target
-hardware:
+Run the destructive install path only after `vars.nix` matches the target hardware:
 
 ```bash
 ./scripts/format-system-disk.sh
@@ -205,9 +161,9 @@ For wrapper details and guardrails, use:
 ./scripts/format-data-disks.sh --help
 ```
 
-## 6. Post-Boot
+## 6. First Deploy And First Login
 
-After first boot:
-1. Run the validation gate again from the repo root.
-2. Continue with [Operations](./operations.md) for runtime checks, DNS expectations, and guarded day-2 deploys.
-3. Continue with [Kanidm Guide](./kanidm.md) for admin login, user creation, and group grants.
+After the host is bootable and has the agenix key:
+1. Run the canonical validation and guarded deploy workflow in [Operations](./operations.md).
+2. Continue with [Kanidm Guide](./kanidm.md) for delegated operator login, user creation, and group grants.
+3. Use [Restore and Recovery](./restore-and-recovery.md) only if the mirrored data pool or a cold-storage pool needs manual intervention.

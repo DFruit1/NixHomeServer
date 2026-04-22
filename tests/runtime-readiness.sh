@@ -9,6 +9,8 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools rg mktemp
 
 echo "ℹ️ Checking runtime-readiness topology handling…"
+require_fixed scripts/runtime-readiness.sh 'source "$script_dir/lib-repo.sh"' \
+  "runtime-readiness.sh must source the shared repo helper."
 require_fixed scripts/runtime-readiness.sh 'source "$repo_root/scripts/lib-storage-health.sh"' \
   "runtime-readiness.sh must source the shared SMART helper."
 require_fixed scripts/runtime-readiness.sh 'echo "== SMART =="' \

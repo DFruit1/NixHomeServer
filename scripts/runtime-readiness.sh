@@ -2,11 +2,12 @@
 
 set -euo pipefail
 
-repo_root="${RUNTIME_READINESS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-cd "$repo_root"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib-repo.sh"
+init_repo_root "RUNTIME_READINESS_REPO_ROOT"
+cd_repo_root
 source "$repo_root/scripts/lib-storage-health.sh"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
+ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
@@ -18,16 +19,6 @@ entrypoints, Unbound answers, ZFS mounts, and SMART health against vars.nix.
 Example:
   sudo ./scripts/runtime-readiness.sh
 EOF
-}
-
-need() {
-  local tool
-  for tool in "$@"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      echo "❌ Missing required tool: $tool"
-      exit 1
-    fi
-  done
 }
 
 case "${1:-}" in
@@ -42,28 +33,6 @@ case "${1:-}" in
     exit 1
     ;;
 esac
-
-nix_var() {
-  local expr="$1"
-  nix eval --raw --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      vars = import ${repo_root}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
-    in
-      ${expr}
-  "
-}
-
-nix_json() {
-  local expr="$1"
-  nix eval --json --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      vars = import ${repo_root}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
-    in
-      ${expr}
-  "
-}
 
 check_unit() {
   local unit="$1"

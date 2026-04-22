@@ -2,10 +2,12 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_root"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib-repo.sh"
+source "$script_dir/lib-destructive-wrapper.sh"
+init_repo_root
+cd_repo_root
+ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
@@ -19,113 +21,6 @@ Examples:
   scripts/format-system-disk.sh --print-only
   scripts/format-system-disk.sh
 EOF
-}
-
-need() {
-  local tool
-  for tool in "$@"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      echo "❌ Missing required tool: $tool" >&2
-      exit 1
-    fi
-  done
-}
-
-fail() {
-  echo "❌ $1" >&2
-  exit 1
-}
-
-nix_json() {
-  local expr="$1"
-  nix eval --json --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
-    in
-      ${expr}
-  "
-}
-
-join_by_space() {
-  local first=1
-  local item
-
-  for item in "$@"; do
-    if (( first )); then
-      printf '%s' "$item"
-      first=0
-    else
-      printf ' %s' "$item"
-    fi
-  done
-}
-
-join_command() {
-  local rendered
-  printf -v rendered '%q ' "$@"
-  printf '%s\n' "${rendered% }"
-}
-
-print_device_paths() {
-  local disk_id
-  for disk_id in "$@"; do
-    echo "  - /dev/disk/by-id/${disk_id}"
-  done
-}
-
-print_device_resolutions() {
-  local disk_id device resolved
-  for disk_id in "$@"; do
-    device="/dev/disk/by-id/${disk_id}"
-    if [[ -e "$device" ]]; then
-      resolved="$(readlink -f -- "$device" 2>/dev/null || true)"
-      if [[ -n "$resolved" ]]; then
-        echo "  - ${device} -> ${resolved}"
-      else
-        echo "  - ${device} -> present but resolution failed"
-      fi
-    else
-      echo "  - ${device} -> missing"
-    fi
-  done
-}
-
-ensure_target_devices_exist() {
-  local disk_id device missing=0
-  for disk_id in "$@"; do
-    device="/dev/disk/by-id/${disk_id}"
-    if [[ ! -e "$device" ]]; then
-      echo "❌ Target device path is missing: ${device}" >&2
-      missing=1
-    fi
-  done
-
-  if (( missing )); then
-    exit 1
-  fi
-}
-
-confirm_exact() {
-  local prompt="$1"
-  local expected="$2"
-  local actual
-
-  if [[ ! -e /dev/tty ]]; then
-    fail "Interactive confirmation requires /dev/tty. Use --print-only for a non-destructive preview."
-  fi
-
-  if ! read -r -p "${prompt}" actual < /dev/tty; then
-    fail "Failed to read confirmation."
-  fi
-
-  if [[ "$actual" != "$expected" ]]; then
-    echo "❌ Confirmation mismatch." >&2
-    echo "   Expected: ${expected}" >&2
-    echo "   Actual:   ${actual}" >&2
-    exit 1
-  fi
 }
 
 print_only=false

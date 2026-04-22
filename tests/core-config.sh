@@ -249,7 +249,7 @@ forbid_match modules/copyparty/default.nix '\[/shared/documents\]' \
   "Copyparty must not retain the documents subdirectory."
 
 echo "ℹ️ Checking cold-storage tooling…"
-require_fixed modules/Core_Modules/storage/default.nix 'coldStorageMountPoint' \
+require_fixed modules/Core_Modules/storage/layout.nix 'coldStorageMountPoint' \
   "Storage tmpfiles must create the cold-storage mountpoint."
 require_fixed scripts/cold-storage.sh 'Usage: scripts/cold-storage.sh <status|mount|unmount> [pool-name]' \
   "The cold-storage helper must expose named status, mount, and unmount commands."
@@ -281,9 +281,9 @@ require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.u
   "Mail archive sync must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.mail-archive-sync.timerConfig.OnCalendar')" '"*-*-* 06,18:15:00"' \
   "Mail archive sync must keep the current schedule."
-require_fixed modules/Core_Modules/kanidm/default.nix 'kanidm group account-policy auth-expiry' \
+require_fixed modules/Core_Modules/kanidm/account-policy.nix 'kanidm group account-policy auth-expiry' \
   "Kanidm must declaratively apply the account policy auth session expiry."
-require_fixed modules/Core_Modules/kanidm/default.nix 'idm_all_persons' \
+require_fixed modules/Core_Modules/kanidm/account-policy.nix 'idm_all_persons' \
   "Kanidm auth session grace must target the default people policy."
 
 echo "ℹ️ Checking active tree for archived DietPi references…"

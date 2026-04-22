@@ -3,18 +3,31 @@
 Use this as the single day-2 runbook for deploys, runtime validation, DNS and
 access expectations, power checks, storage monitoring, and troubleshooting.
 
-## 1. Validation Gate
+Use the other guides this way:
+- [Quickstart](./quickstart.md) owns workstation setup, secrets staging, agenix key installation, and the supported destructive disk wrappers.
+- [Kanidm Guide](./kanidm.md) owns operator identity workflows and app access grants.
+- [Restore and Recovery](./restore-and-recovery.md) owns mirrored data-pool recreation and cold-storage mount or unmount operations.
+
+## 1. Common Commands
+
+- Validation gate: `nix flake check --no-build` then `scripts/check-repo.sh`
+- Guarded deploy: `./scripts/deploy-validated.sh`
+- Runtime readiness: `sudo ./scripts/runtime-readiness.sh`
+- Power audit: `./scripts/power-audit.sh`
+- Failed units: `systemctl --failed --no-pager`
+
+## 2. Validation Gate
 
 Run from the repo root before deploys and after meaningful config changes:
 
 ```bash
 nix flake check --no-build
 scripts/check-repo.sh
-tests/run-all.sh
-tests/core-config.sh
 ```
 
-## 2. Guarded Deploy
+`scripts/check-repo.sh` already runs `tests/run-all.sh`, including `tests/core-config.sh`.
+
+## 3. Guarded Deploy
 
 Derive the intended target address from `vars.serverLanIP`, then keep any
 temporary reachable cutover address in `CURRENT_SERVER_IP` only:
@@ -42,7 +55,7 @@ Switch only after the guarded test path passes:
 
 Use `./scripts/deploy-validated.sh --help` for argument details.
 
-## 3. Runtime Validation
+## 4. Runtime Validation
 
 Primary runtime validation:
 
@@ -64,7 +77,7 @@ Additional read-only audits:
 systemctl --failed --no-pager
 ```
 
-## 4. Access And DNS Model
+## 5. Access And DNS Model
 
 Public endpoints:
 - `https://id.<domain>`
@@ -89,7 +102,7 @@ Recommended LAN DNS model:
 - The router forwards only the private app hostnames to the server.
 - Do not forward the whole public zone to the server.
 
-## 5. Power Management
+## 6. Power Management
 
 Current policy is declarative and owned by
 [`modules/power-management/default.nix`](/home/dsaw/Projects/NixOS/modules/power-management/default.nix).
@@ -106,7 +119,7 @@ Audit with:
 systemctl list-timers power-management-nightly-suspend.timer fstrim.timer zfs-scrub-data.timer
 ```
 
-## 6. Storage Monitoring
+## 7. Storage Monitoring
 
 Background storage monitoring complements runtime readiness.
 
@@ -126,14 +139,9 @@ sudo cat /var/lib/storage-monitoring/latest.txt
 sudo jq . /var/lib/storage-monitoring/latest.json
 ```
 
-Cold storage remains manual for imports and mounts:
+Cold-storage pool import, mount, and unmount workflows live in [Restore and Recovery](./restore-and-recovery.md).
 
-```bash
-./scripts/cold-storage.sh status
-./scripts/cold-storage.sh --help
-```
-
-## 7. Failure Entry Points
+## 8. Failure Entry Points
 
 Public endpoint failure:
 

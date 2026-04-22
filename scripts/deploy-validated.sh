@@ -2,10 +2,11 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_root"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib-repo.sh"
+init_repo_root
+cd_repo_root
+ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
@@ -20,17 +21,6 @@ Example:
   export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
   ./scripts/deploy-validated.sh --target "dsaw@$CURRENT_SERVER_IP" --build-host "dsaw@$CURRENT_SERVER_IP" --action test --hostname server
 EOF
-}
-
-nix_var() {
-  local expr="$1"
-  nix eval --raw --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      vars = import ${repo_root}/vars.nix { lib = flake.inputs.nixpkgs.lib; };
-    in
-      ${expr}
-  "
 }
 
 target_host=""

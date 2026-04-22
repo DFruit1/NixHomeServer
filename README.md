@@ -1,6 +1,6 @@
 # NixHomeServer
 
-Declarative NixOS home server optimized for reliability, security, and reproducibility.
+Declarative NixOS home server optimized for reliability, security, and reproducibility. It keeps identity, routing, apps, storage, and validation in one reproducible NixOS configuration.
 
 ## What this stack runs
 - Identity and OIDC: Kanidm
@@ -14,27 +14,13 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 - Storage: Btrfs system SSD, mirrored ZFS data pool, manual cold-storage pools
 - Validation: `nix flake check --no-build`, `scripts/check-repo.sh`, `scripts/runtime-readiness.sh`
 
-## Access model
-- Public endpoints: `https://id.<domain>`, `https://files.<domain>`
-- Private app endpoints: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`
-- Private apps are intended to work on the home LAN through router-forwarded split DNS and off-LAN through NetBird
-- Caddy is the routing boundary for app traffic
-- Kanidm group membership decides app access
-
 ## Start Here
-1. [Quickstart](./documentation/quickstart.md) for first deploys, blank-machine installs, secrets staging, and disk wrapper entrypoints.
-2. [Operations](./documentation/operations.md) for validation, guarded deploys, DNS expectations, power checks, storage monitoring, and troubleshooting.
+1. [Quickstart](./documentation/quickstart.md) for workstation prerequisites, `vars.nix`, secrets staging, agenix key installation, and the supported destructive disk wrappers.
+2. [Operations](./documentation/operations.md) for the canonical validation gate, guarded deploy workflow, runtime readiness, DNS expectations, power checks, storage monitoring, and troubleshooting.
 3. [Kanidm Guide](./documentation/kanidm.md) for operator identities, access groups, onboarding, and CLI/TUI workflows.
-4. [Restore and Recovery](./documentation/restore-and-recovery.md) for rebuild and data-pool recovery sequencing.
+4. [Restore and Recovery](./documentation/restore-and-recovery.md) for rebuild sequencing, mirrored data-pool recreation, and manual cold-storage operations.
 5. [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private mail archive control plane and its storage model.
 
-## Validation Gate
-```bash
-nix flake check --no-build
-scripts/check-repo.sh
-```
+Validation gate: see [Operations](./documentation/operations.md#2-common-commands) for the canonical `nix flake check --no-build` and `scripts/check-repo.sh` workflow.
 
-## Deploy Entry Point
-```bash
-./scripts/deploy-validated.sh --help
-```
+Deploy entry point: `./scripts/deploy-validated.sh --help`

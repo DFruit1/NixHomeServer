@@ -25,6 +25,8 @@ for required_path in \
   scripts/format-system-disk.sh \
   scripts/generate-managed-secrets.sh \
   scripts/gen-all-secrets.sh \
+  scripts/lib-destructive-wrapper.sh \
+  scripts/lib-repo.sh \
   scripts/lib-storage-health.sh \
   scripts/lib-secrets.sh \
   scripts/power-audit.sh \
@@ -37,6 +39,22 @@ for required_path in \
   modules/Core_Modules/data-disks/default.nix \
   modules/Core_Modules/caddy/default.nix \
   modules/Core_Modules/kanidm/default.nix \
+  modules/Core_Modules/kanidm/service.nix \
+  modules/Core_Modules/kanidm/provision.nix \
+  modules/Core_Modules/kanidm/branding.nix \
+  modules/Core_Modules/kanidm/account-policy.nix \
+  modules/Core_Modules/kanidm/user-tui.nix \
+  modules/Core_Modules/storage/layout.nix \
+  modules/Core_Modules/storage/migrations.nix \
+  modules/audiobookshelf/service.nix \
+  modules/audiobookshelf/storage-migration.nix \
+  modules/audiobookshelf/oidc-bootstrap.nix \
+  modules/audiobookshelf/root-bootstrap.nix \
+  modules/paperless/package.nix \
+  modules/paperless/service.nix \
+  modules/paperless/bootstrap.nix \
+  modules/jellyfin/service.nix \
+  modules/jellyfin/network-config.nix \
   secrets/agenix.nix
 do
   if [[ ! -e "$required_path" ]]; then
@@ -98,26 +116,24 @@ forbid_match documentation '192\.168\.0\.144' \
   "Active documentation must not retain the old hardcoded LAN IP."
 
 echo "ℹ️ Checking deploy and validation entrypoints…"
-require_fixed documentation/quickstart.md 'nix flake check --no-build' \
-  "Quickstart must document flake checks."
-require_fixed documentation/quickstart.md 'scripts/check-repo.sh' \
-  "Quickstart must document the repo validation helper."
-require_fixed documentation/quickstart.md 'tests/run-all.sh' \
-  "Quickstart must document the slim test entrypoint."
 require_fixed documentation/quickstart.md 'scripts/gen-all-secrets.sh' \
   "Quickstart must document the single public secrets entrypoint."
 require_fixed documentation/quickstart.md 'storageAlertWebhookUrl' \
   "Quickstart must document the staged storage alert webhook secret."
-require_fixed documentation/quickstart.md 'TARGET_SERVER_IP' \
-  "Quickstart must document the intended reserved LAN IP variable."
 require_fixed documentation/quickstart.md 'CURRENT_SERVER_IP' \
-  "Quickstart must document the current reachable IP override."
+  "Quickstart must document the current reachable SSH override used to install the agenix key."
 require_fixed documentation/quickstart.md './scripts/format-system-disk.sh' \
   "Quickstart must document the safer system-disk wrapper."
 require_fixed documentation/quickstart.md './scripts/format-data-disks.sh' \
   "Quickstart must document the safer data-disk wrapper."
-require_fixed documentation/operations.md 'tests/core-config.sh' \
-  "Operations must mention the compact core-config validation."
+forbid_match documentation/quickstart.md 'nix flake check --no-build|scripts/check-repo.sh|tests/run-all.sh|TARGET_SERVER_IP' \
+  "Quickstart must defer the validation gate and guarded deploy commands to Operations."
+require_fixed documentation/operations.md 'nix flake check --no-build' \
+  "Operations must own the flake validation command."
+require_fixed documentation/operations.md 'scripts/check-repo.sh' \
+  "Operations must own the repo validation helper."
+require_fixed documentation/operations.md 'tests/run-all.sh' \
+  "Operations must explain that the repo helper runs the full test suite."
 require_fixed documentation/operations.md 'scripts/deploy-validated.sh' \
   "Operations must document the guarded deploy helper."
 require_fixed documentation/operations.md 'TARGET_SERVER_IP' \
@@ -128,8 +144,18 @@ require_fixed documentation/operations.md './scripts/runtime-readiness.sh' \
   "Operations must document the runtime validation helper."
 require_fixed documentation/operations.md './scripts/power-audit.sh' \
   "Operations must document the power audit helper."
+forbid_match documentation/operations.md './scripts/format-system-disk.sh|./scripts/format-data-disks.sh|./scripts/cold-storage.sh mount|./scripts/cold-storage.sh unmount' \
+  "Operations must link out instead of duplicating destructive or recovery command ownership."
 require_fixed documentation/kanidm.md 'kanidm-user-tui' \
   "Kanidm guide must document the admin TUI."
+require_fixed documentation/kanidm.md 'kanidm login' \
+  "Kanidm guide must own the delegated login flow."
+require_fixed documentation/kanidm.md 'kanidm reauth' \
+  "Kanidm guide must own the reauthentication flow."
+require_fixed documentation/kanidm.md 'kanidm group add-members' \
+  "Kanidm guide must own group membership commands."
+forbid_match documentation/kanidm.md 'runtime-readiness\.sh|nix flake check --no-build|scripts/check-repo.sh' \
+  "Kanidm guide must not duplicate generic validation workflows."
 require_fixed rust/apps/mail-archive-ui/README.md 'mail-archive-users' \
   "Mail archive UI README must document the access group."
 require_fixed AGENTS.md 'TARGET_SERVER_IP' \
@@ -140,8 +166,14 @@ require_fixed scripts/check-repo.sh 'tests/run-all.sh' \
   "Repository validation must use the slim test entrypoint."
 require_fixed documentation/restore-and-recovery.md './scripts/format-data-disks.sh' \
   "Restore-and-recovery must use the safer data-disk wrapper."
+require_fixed documentation/restore-and-recovery.md './scripts/cold-storage.sh mount' \
+  "Restore-and-recovery must own the cold-storage mount workflow."
+require_fixed documentation/restore-and-recovery.md './scripts/cold-storage.sh unmount' \
+  "Restore-and-recovery must own the cold-storage unmount workflow."
 require_fixed documentation/restore-and-recovery.md 'not the supported operator workflow' \
   "Restore-and-recovery must warn that direct Disko commands are not the supported operator workflow."
+forbid_match documentation/restore-and-recovery.md 'nix flake check --no-build|scripts/check-repo.sh|scripts/deploy-validated.sh' \
+  "Restore-and-recovery must not duplicate the validation gate or guarded deploy commands."
 require_fixed scripts/deploy-validated.sh 'nix flake check --no-build' \
   "Deploy wrapper must run flake checks first."
 require_fixed scripts/runtime-readiness.sh '== ZFS ==' \
@@ -150,5 +182,13 @@ require_fixed scripts/runtime-readiness.sh '== SMART ==' \
   "Runtime readiness must include the SMART degradation section."
 require_fixed scripts/lib-storage-health.sh '--mode warn|strict' \
   "The shared SMART helper must expose warn and strict modes."
+require_fixed scripts/deploy-validated.sh 'source "$script_dir/lib-repo.sh"' \
+  "Deploy wrapper must source the shared repo helper."
+require_fixed scripts/runtime-readiness.sh 'source "$script_dir/lib-repo.sh"' \
+  "Runtime readiness must source the shared repo helper."
+require_fixed scripts/format-system-disk.sh 'source "$script_dir/lib-destructive-wrapper.sh"' \
+  "System-disk wrapper must source the shared destructive helper."
+require_fixed scripts/format-data-disks.sh 'source "$script_dir/lib-destructive-wrapper.sh"' \
+  "Data-disk wrapper must source the shared destructive helper."
 
 echo "✅ Bootstrap readiness tests passed."

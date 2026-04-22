@@ -7,6 +7,8 @@ Use this as the single operator guide for:
 - user onboarding
 - CLI and TUI commands
 
+Validation, service health, DNS checks, and guarded deploys live in [Operations](./operations.md).
+
 ## 1. Operator Identities
 
 Intended identities:
@@ -36,12 +38,6 @@ Admin intent groups:
 - `kavita-admin`
 
 ## 3. First Admin Session
-
-Confirm the system is healthy first:
-
-```bash
-sudo ./scripts/runtime-readiness.sh
-```
 
 Log into Kanidm as the delegated operator:
 
@@ -123,7 +119,7 @@ Delete a user:
 kanidm person delete "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
 ```
 
-## 7. Validation After Identity Changes
+## 7. After Identity Changes
 
 After changing users or groups:
 - re-run `kanidm reauth`

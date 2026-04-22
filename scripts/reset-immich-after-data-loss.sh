@@ -2,10 +2,11 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_root"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/lib-repo.sh"
+init_repo_root
+cd_repo_root
+ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
@@ -14,29 +15,6 @@ Usage: scripts/reset-immich-after-data-loss.sh [--print-only|--yes]
 Reset the SSD-backed Immich PostgreSQL database after the ZFS media pool has
 been recreated without restoring the original media contents.
 EOF
-}
-
-need() {
-  local tool
-  for tool in "$@"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-      echo "❌ Missing required tool: $tool" >&2
-      exit 1
-    fi
-  done
-}
-
-nix_json() {
-  local expr="$1"
-  nix eval --json --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
-      cfg = (builtins.getAttr vars.hostname flake.nixosConfigurations).config;
-    in
-      ${expr}
-  "
 }
 
 print_only=false
