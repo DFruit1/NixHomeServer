@@ -1,43 +1,40 @@
 # NixHomeServer
 
-Declarative NixOS home server designed for reliable self-hosting with clear security boundaries.
+Declarative NixOS home server optimized for reliability, security, and reproducibility.
 
-## What this stack does
-- Identity and SSO: Kanidm
+## What this stack runs
+- Identity and OIDC: Kanidm
 - Public auth gateway: OAuth2 Proxy
-- Reverse proxy and TLS policy boundary: Caddy
-- Internet exposure: Cloudflare Tunnel (public endpoints only)
-- Private remote access: NetBird mesh
-- Internal DNS authority: Unbound
-- Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kavita, Jellyfin, Jellyseerr
-- Mail archive and search: IMAP to local Maildir plus Notmuch over SSH/CLI
-- Storage layout: Btrfs system SSD + Disko-managed ZFS mirrored data pool + manual cold-storage pool
-- Storage topology is config-driven from `vars.nix`
-- Declarative power policy: nightly suspend, RTC wake, Wake-on-LAN, and low-risk power tuning
+- Reverse proxy and TLS boundary: Caddy
+- Public exposure: Cloudflare Tunnel
+- Private remote access: NetBird
+- Private DNS: Unbound
+- Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kavita, Jellyfin
+- Mail archive and search: `mail-archive-ui`, `mbsync`, `notmuch`
+- Storage: Btrfs system SSD, mirrored ZFS data pool, manual cold-storage pools
+- Validation: `nix flake check --no-build`, `scripts/check-repo.sh`, `scripts/runtime-readiness.sh`
 
 ## Access model
-- Public internet endpoints: `https://id.<domain>`, `https://files.<domain>`
-- Private app endpoints: `paperless`, `photos`, `audiobooks`, `books`, `videos`, `jellyseerr`
-  - on the home LAN, these are intended to work through router-forwarded split DNS
-  - off the home LAN, they require NetBird
-- Caddy is the routing boundary for all app traffic.
-- Kanidm is default-deny for app access; users only reach apps through
-  app-specific groups.
-- `admindsaw` is the intended admin identity and `dsaw` is the intended
-  day-to-day identity.
+- Public endpoints: `https://id.<domain>`, `https://files.<domain>`
+- Private app endpoints: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`
+- Private apps are intended to work on the home LAN through router-forwarded split DNS and off-LAN through NetBird
+- Caddy is the routing boundary for app traffic
+- Kanidm group membership decides app access
 
-## Validation and Recovery
-- Primary validation gate: `nix flake check --no-build`
-- Guarded deploy helper: `./scripts/deploy-validated.sh --target <user@host>`
-- Recovery path: declarative rebuild plus ZFS pool validation
+## Start Here
+1. [Quickstart](./documentation/quickstart.md) for first deploys, blank-machine installs, secrets staging, and disk wrapper entrypoints.
+2. [Operations](./documentation/operations.md) for validation, guarded deploys, DNS expectations, power checks, storage monitoring, and troubleshooting.
+3. [Kanidm Guide](./documentation/kanidm.md) for operator identities, access groups, onboarding, and CLI/TUI workflows.
+4. [Restore and Recovery](./documentation/restore-and-recovery.md) for rebuild and data-pool recovery sequencing.
+5. [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private mail archive control plane and its storage model.
 
-## Start here
-1. [First Admin Session](./documentation/first-admin-session.md) if the server already exists and you need to understand how to operate it.
-2. [Quickstart](./documentation/quickstart.md) for the shortest copy-paste deployment path.
-3. [Install From Scratch](./documentation/install-from-scratch.md) if you are provisioning blank disks.
-4. [Secrets and Prerequisites](./documentation/secrets-and-prereqs.md) before first deploy.
-5. [Operations](./documentation/operations.md) for validation, deploy, checks, and troubleshooting.
-6. [Restore and Recovery](./documentation/restore-and-recovery.md) for rebuild and storage-recovery ordering.
-7. [Kanidm Guide](./documentation/kanidm.md) for user/group setup.
-8. [Mail Archive](./documentation/mail-archive.md) for per-user email backup and search.
-9. [Documentation Index](./documentation/README.md) for the task-oriented doc map.
+## Validation Gate
+```bash
+nix flake check --no-build
+scripts/check-repo.sh
+```
+
+## Deploy Entry Point
+```bash
+./scripts/deploy-validated.sh --help
+```

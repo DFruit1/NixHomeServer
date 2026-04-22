@@ -2,20 +2,33 @@
 
 let
   audiobookshelfPort = 13378;
+  dataDir = "/var/lib/audiobookshelf";
+  configDir = "${dataDir}/config";
+  metadataDir = "${dataDir}/metadata";
+  backupDir = "${metadataDir}/backups";
+  managedDir = "${dataDir}/.nixos-managed";
 in
 {
   services.audiobookshelf = {
     enable = true;
-    dataDir = vars.audiobookshelfDataDir;
+    dataDir = "audiobookshelf";
     port = audiobookshelfPort;
   };
 
   ## Ensure runtime directory exists and is the service cwd
   systemd.services.audiobookshelf = {
-    after = [ "audiobookshelf-storage-migration-v1.service" ];
-    wants = [ "audiobookshelf-storage-migration-v1.service" ];
+    after = [
+      "app-state-migration-v1.service"
+      "audiobookshelf-storage-migration-v1.service"
+      "data-pool-layout.service"
+    ];
+    wants = [
+      "app-state-migration-v1.service"
+      "audiobookshelf-storage-migration-v1.service"
+      "data-pool-layout.service"
+    ];
     serviceConfig = {
-      WorkingDirectory = lib.mkForce vars.audiobookshelfDataDir;
+      WorkingDirectory = lib.mkForce dataDir;
     };
   };
 
@@ -40,16 +53,16 @@ in
     script = ''
       set -euo pipefail
 
-      db="${vars.audiobookshelfConfigDir}/absdatabase.sqlite"
+      db="${configDir}/absdatabase.sqlite"
       legacy_root="${vars.dataRoot}/audiobookshelf"
-      data_dir="${vars.audiobookshelfDataDir}"
-      backup_dir="${vars.audiobookshelfBackupDir}"
-      managed_dir="${vars.audiobookshelfDataDir}/.nixos-managed"
+      data_dir="${dataDir}"
+      backup_dir="${backupDir}"
+      managed_dir="${managedDir}"
       marker_file="$managed_dir/audiobookshelf-storage-migration-v1.done"
 
       install -d -m 0755 \
-        "${vars.audiobookshelfConfigDir}" \
-        "${vars.audiobookshelfMetadataDir}" \
+        "${configDir}" \
+        "${metadataDir}" \
         "$backup_dir" \
         "$managed_dir"
 
@@ -121,9 +134,11 @@ in
     script = ''
       set -euo pipefail
 
-      db="${vars.audiobookshelfDataDir}/config/absdatabase.sqlite"
-      managed_dir="${vars.audiobookshelfDataDir}/.nixos-managed"
+      db="${configDir}/absdatabase.sqlite"
+      managed_dir="${managedDir}"
       marker_file="$managed_dir/audiobookshelf-oidc-bootstrap-v1.done"
+      current=""
+      table_ready=""
 
       install -d -m 0755 "$managed_dir"
 
@@ -141,16 +156,34 @@ in
         exit 1
       }
 
-      discovery="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
-        --resolve '${vars.kanidmDomain}:443:127.0.0.1' \
-        '${vars.kanidmDiscoveryUrl "abs-web"}')"
-      client_secret="$(< ${config.age.secrets.absClientSecret.path})"
-      current="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
-        "select value from settings where key = 'server-settings';")"
+      for _ in $(seq 1 30); do
+        table_ready="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+          "select count(*) from sqlite_master where type = 'table' and name = 'settings';" \
+          2>/dev/null || true)"
+        [[ "$table_ready" == "1" ]] && break
+        sleep 1
+      done
+      [[ "$table_ready" == "1" ]] || {
+        echo "Audiobookshelf settings table did not become ready at $db" >&2
+        exit 1
+      }
+
+      for _ in $(seq 1 30); do
+        current="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+          "select value from settings where key = 'server-settings';" \
+          2>/dev/null || true)"
+        [[ -n "$current" ]] && break
+        sleep 1
+      done
       [[ -n "$current" ]] || {
         echo "Audiobookshelf server-settings row is missing" >&2
         exit 1
       }
+
+      discovery="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
+        --resolve '${vars.kanidmDomain}:443:127.0.0.1' \
+        '${vars.kanidmDiscoveryUrl "abs-web"}')"
+      client_secret="$(< ${config.age.secrets.absClientSecret.path})"
 
       updated="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -c \
         --arg clientId "abs-web" \
@@ -213,7 +246,7 @@ in
     script = ''
       set -euo pipefail
 
-      managed_dir="${vars.audiobookshelfDataDir}/.nixos-managed"
+      managed_dir="${managedDir}"
       marker_file="$managed_dir/audiobookshelf-root-bootstrap-v1.done"
       status_json=""
 
@@ -268,6 +301,11 @@ in
       echo "Audiobookshelf root bootstrap v1 initialized the local root record"
       touch "$marker_file"
     '';
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "5s";
+    };
   };
 
   systemd.tmpfiles.rules = [ ];

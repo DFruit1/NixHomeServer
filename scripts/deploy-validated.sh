@@ -10,6 +10,15 @@ export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
 usage() {
   cat <<'EOF'
 Usage: scripts/deploy-validated.sh --target <user@host> [--build-host <user@host>] [--action test|switch] [--hostname <flake-hostname>]
+
+Guarded remote deploy entrypoint for this repo. The reserved target LAN IP still
+comes from vars.serverLanIP; use a temporary SSH host only via --target and
+--build-host during cutover work.
+
+Example:
+  export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+  export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
+  ./scripts/deploy-validated.sh --target "dsaw@$CURRENT_SERVER_IP" --build-host "dsaw@$CURRENT_SERVER_IP" --action test --hostname server
 EOF
 }
 

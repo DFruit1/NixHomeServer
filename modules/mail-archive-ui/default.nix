@@ -6,8 +6,10 @@ let
   group = "mail-archive-ui";
   defaultTags = [ "new" ];
   mailArchiveUiPort = 9011;
+  mailArchiveStoreRoot = "${vars.dataRoot}/mail-archive";
+  dataDirDefault = "/persist/appdata/mail-archive-ui";
   runtimeDirDefault = "/run/mail-archive-ui";
-  lockDirDefault = "${vars.mailArchiveUiDataDir}/locks";
+  lockDirDefault = "${dataDirDefault}/locks";
   environmentEntries =
     [
       "MAIL_ARCHIVE_UI_ADDRESS=${cfg.address}"
@@ -46,13 +48,13 @@ in
 
     dataDir = lib.mkOption {
       type = lib.types.str;
-      default = vars.mailArchiveUiDataDir;
+      default = dataDirDefault;
       description = "Writable app data directory for sqlite state and the app master key.";
     };
 
     storeRoot = lib.mkOption {
       type = lib.types.str;
-      default = vars.mailArchiveStoreRoot;
+      default = mailArchiveStoreRoot;
       description = "Writable root for downloaded mail archives.";
     };
 
@@ -87,8 +89,6 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${cfg.dataDir} 0750 ${user} ${group} -"
-      "d ${cfg.storeRoot} 0750 ${user} ${group} -"
-      "d ${cfg.storeRoot}/users 0750 ${user} ${group} -"
       "d ${cfg.runtimeDir} 0750 ${user} ${group} -"
       "d ${cfg.lockDir} 0750 ${user} ${group} -"
     ];
@@ -96,8 +96,18 @@ in
     systemd.services.mail-archive-ui = {
       description = "Mail archive UI";
       wantedBy = [ "multi-user.target" ];
-      wants = [ "network-online.target" "local-fs.target" ];
-      after = [ "network-online.target" "local-fs.target" ];
+      wants = [
+        "app-state-migration-v1.service"
+        "data-pool-layout.service"
+        "network-online.target"
+        "local-fs.target"
+      ];
+      after = [
+        "app-state-migration-v1.service"
+        "data-pool-layout.service"
+        "network-online.target"
+        "local-fs.target"
+      ];
       path = [ pkgs.isync pkgs.notmuch pkgs.coreutils ];
 
       serviceConfig = {

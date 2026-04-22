@@ -2,13 +2,14 @@
 
 let
   immichPort = 2283;
+  immichManagedPhotosRoot = "${vars.mediaRoot}/photos/managed";
 in
 {
   services.immich = {
     enable = true;
     host = "127.0.0.1";
     port = immichPort;
-    mediaLocation = vars.immichManagedPhotosRoot;
+    mediaLocation = immichManagedPhotosRoot;
     user = "immich";
     group = "immich";
     settings.server.externalDomain = "https://${vars.photosDomain}";
@@ -30,6 +31,11 @@ in
     };
     redis.enable = true;
     machine-learning.enable = true;
+  };
+
+  systemd.services.immich-server = {
+    after = [ "data-pool-layout.service" ];
+    wants = [ "data-pool-layout.service" ];
   };
 
   systemd.tmpfiles.rules = [ ];

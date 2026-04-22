@@ -4,7 +4,10 @@ let
   dnscryptListenAddress = "127.0.0.1";
   dnscryptListenPort = 5053;
   fallbackNameServers = [ "9.9.9.9" "1.1.1.1" ];
-  listenAddresses = [ "127.0.0.1" vars.nbIP ] ++ lib.optional vars.splitDnsMode vars.serverLanIP;
+  splitDnsMode = vars.dnsMode == "split-horizon";
+  netbirdIface = "nb0";
+  netbirdCidr = "100.64.0.0/10";
+  listenAddresses = [ "127.0.0.1" vars.nbIP ] ++ lib.optional splitDnsMode vars.serverLanIP;
   normaliseDnsName =
     name:
     if lib.hasSuffix "." name then
@@ -54,7 +57,6 @@ let
       "\"${vars.photosDomain}           A ${targetIp}\""
       "\"${vars.kavitaDomain}           A ${targetIp}\""
       "\"${vars.jellyfinDomain}         A ${targetIp}\""
-      "\"${vars.jellyseerrDomain}       A ${targetIp}\""
     ];
 
   lanHostedRecords =
@@ -114,7 +116,7 @@ in
             interface = listenAddresses;
             access-control = [
               "192.168.0.0/16 allow"
-              "${vars.netbirdCidr} allow"
+              "${netbirdCidr} allow"
               "127.0.0.0/8 allow"
             ];
             verbosity = 1;
@@ -126,19 +128,19 @@ in
             auto-trust-anchor-file = "/var/lib/unbound/root.key";
           }
           // (
-            if vars.splitDnsMode then
+            if splitDnsMode then
               {
                 access-control-view = [
                   "192.168.0.0/16 lan"
                   "127.0.0.0/8 lan"
-                  "${vars.netbirdCidr} netbird"
+                  "${netbirdCidr} netbird"
                 ];
               }
             else
               {
-                # Private app names resolve to the NetBird address. Public tunnel names
-                # like id.<domain> and files.<domain> are intentionally omitted so
-                # Unbound recurses to Cloudflare for those names.
+                # Private apps resolve to the NetBird address here. Public tunnel
+                # names like id.<domain> and files.<domain> stay on normal public
+                # recursion by design.
                 local-zone = [ "${vars.domain} transparent" ];
                 local-data = netbirdHostedRecords;
               }
@@ -152,7 +154,7 @@ in
           }
         ];
       }
-      // lib.optionalAttrs vars.splitDnsMode {
+      // lib.optionalAttrs splitDnsMode {
         view = [
           {
             name = "lan";
@@ -175,12 +177,12 @@ in
 
   networking.firewall.interfaces =
     {
-      ${vars.netbirdIface} = {
+      ${netbirdIface} = {
         allowedTCPPorts = [ 53 ];
         allowedUDPPorts = [ 53 ];
       };
     }
-    // lib.optionalAttrs vars.splitDnsMode {
+    // lib.optionalAttrs splitDnsMode {
       ${vars.netIface} = {
         allowedTCPPorts = [ 53 ];
         allowedUDPPorts = [ 53 ];

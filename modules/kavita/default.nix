@@ -2,12 +2,13 @@
 
 let
   kavitaPort = 5000;
+  dataDir = "/var/lib/kavita";
 in
 {
   services.kavita = {
     enable = true;
     package = pkgsUnstable.kavita;
-    dataDir = vars.kavitaDataDir;
+    dataDir = dataDir;
     tokenKeyFile = config.age.secrets.kavitaTokenKey.path;
     settings = {
       Port = kavitaPort;
@@ -37,8 +38,13 @@ in
   systemd.services.kavita.preStart = lib.mkAfter ''
     ${pkgs.replace-secret}/bin/replace-secret '@OIDC_SECRET@' \
       ${config.age.secrets.kavitaClientSecret.path} \
-      '${vars.kavitaDataDir}/config/appsettings.json'
+      '${dataDir}/config/appsettings.json'
   '';
+
+  systemd.services.kavita = {
+    after = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
+    wants = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
+  };
 
   systemd.services.kavita-oidc-bootstrap = {
     description = "Synchronize Kavita OIDC settings";
@@ -60,7 +66,7 @@ in
     script = ''
       set -euo pipefail
 
-      db="${vars.kavitaDataDir}/config/kavita.db"
+      db="${dataDir}/config/kavita.db"
       for _ in $(seq 1 30); do
         [[ -f "$db" ]] && break
         sleep 1

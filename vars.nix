@@ -1,30 +1,27 @@
 { lib, ... }:
 
 rec {
-  ############################################################
-  # User-editable values
-  ############################################################
   hostname = "server";
   domain = "sydneybasiniot.org";
   kanidmAdminUser = "admindsaw";
   kanidmAdminEmail = "dsaw@tuta.io";
   serverSSHPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
 
-  serverLanIP = "192.168.8.12"; # Intended primary LAN IP for the server.
+  serverLanIP = "192.168.8.12"; # Primary LAN IP to assign to the host.
   serverLanPrefixLength = 24;
-  serverLanGateway = "192.168.8.1";
+  serverLanGateway = "192.168.8.1"; # Default IPv4 gateway for the LAN uplink.
   nbIP = "100.72.113.237";
-  dnsMode = "split-horizon";
+  dnsMode = "split-horizon"; # Either "split-horizon" or "netbird-only".
   lanDnsDomain = "home.arpa";
-  lanDnsHosts = {
+  lanDnsHosts = { # LAN-only forward and reverse records served by Unbound.
     "${hostname}" = serverLanIP;
     router = serverLanGateway;
   };
   netIface = "enp34s0";
-  kanidmAuthSessionExpirySeconds = 259200; # 3 days
+  kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
 
-  mainDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E";
-  zfsDataPool = {
+  mainDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # System SSD by-id value.
+  zfsDataPool = { # Active mirrored ZFS pool created by the data-disk wrapper.
     name = "data";
     mountPoint = "/mnt/data";
     mirrorPairs = [
@@ -38,14 +35,14 @@ rec {
       ]
     ];
     datasets = [
-      "appdata"
       "media"
       "workspaces"
+      "mail-archive"
     ];
   };
 
   coldStorageMountPoint = "/mnt/cold-storage";
-  coldStoragePools = [
+  coldStoragePools = [ # Manual-import pools kept outside the default Disko path.
     {
       name = "cold-v1jan8ph";
       disk = "ata-HGST_HUS726T4TALA6L4_V1JAN8PH";
@@ -55,64 +52,17 @@ rec {
 
   cloudflareTunnelName = "metro";
 
-  dataRoot = zfsDataPool.mountPoint;
-
-  ############################################################
-  # Shared derived values
-  ############################################################
-  splitDnsMode = dnsMode == "split-horizon";
-  localDnsPrivateAnswer = if splitDnsMode then serverLanIP else nbIP;
-
-  netbirdIface = "nb0";
-  netbirdCidr = "100.64.0.0/10";
-  wgPort = 51820;
-  kanidmPort = 8443;
-
   zfsDataPoolDiskIds = lib.flatten zfsDataPool.mirrorPairs;
   monitoredDataDiskIds = zfsDataPoolDiskIds;
   monitoredColdStorageDiskIds = map (pool: pool.disk) coldStoragePools;
   monitoredStorageDiskIds = monitoredDataDiskIds ++ monitoredColdStorageDiskIds;
 
-  appdataRoot = "${dataRoot}/appdata";
+  dataRoot = zfsDataPool.mountPoint;
   mediaRoot = "${dataRoot}/media";
   workspaceRoot = "${dataRoot}/workspaces";
   usersWorkspaceRoot = "${workspaceRoot}/users";
   sharedWorkspaceRoot = "${workspaceRoot}/shared";
-
-  ############################################################
-  # Internal derived values
-  ############################################################
-  audiobookshelfDataDir = "${appdataRoot}/audiobookshelf";
-  audiobookshelfConfigDir = "${audiobookshelfDataDir}/config";
-  audiobookshelfMetadataDir = "${audiobookshelfDataDir}/metadata";
-  audiobookshelfBackupDir = "${audiobookshelfMetadataDir}/backups";
-
-  jellyfinDataDir = "${appdataRoot}/jellyfin/server";
-  jellyfinLogDir = "${jellyfinDataDir}/log";
-  jellyseerrConfigDir = "${appdataRoot}/jellyfin/jellyseerr";
-  kavitaDataDir = "${appdataRoot}/kavita";
-  paperlessDataDir = "${appdataRoot}/paperless";
-  mailArchiveUiDataDir = "${appdataRoot}/mail-archive-ui";
-  mailArchiveStoreRoot = "${dataRoot}/mail-archive";
-
-  immichManagedPhotosRoot = "${mediaRoot}/photos/managed";
-  immichExternalPhotosRoot = "${mediaRoot}/photos/external";
-  paperlessConsumeDir = "${mediaRoot}/documents/consume";
-  paperlessArchiveDir = "${mediaRoot}/documents/archive";
-  paperlessExportDir = "${mediaRoot}/documents/export";
-  audiobooksRoot = "${mediaRoot}/audio/audiobooks";
-  podcastsRoot = "${mediaRoot}/audio/podcasts";
-  ebooksRoot = "${mediaRoot}/books/ebooks";
-  comicsRoot = "${mediaRoot}/books/comics";
-  mangaRoot = "${mediaRoot}/books/manga";
-  moviesRoot = "${mediaRoot}/video/movies";
-  showsRoot = "${mediaRoot}/video/shows";
-  homeVideosRoot = "${mediaRoot}/video/home";
-
-  sharedExchangeRoot = "${sharedWorkspaceRoot}/exchange";
   sharedPublicRoot = "${sharedWorkspaceRoot}/public";
-  photosUploadRoot = immichExternalPhotosRoot;
-  documentsUploadRoot = paperlessConsumeDir;
 
   kanidmDomain = "id.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
@@ -124,5 +74,4 @@ rec {
   emailsDomain = "emails.${domain}";
   kavitaDomain = "books.${domain}";
   jellyfinDomain = "videos.${domain}";
-  jellyseerrDomain = "jellyseerr.${domain}";
 }

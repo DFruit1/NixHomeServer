@@ -8,6 +8,18 @@ source "$repo_root/scripts/lib-storage-health.sh"
 
 export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/runtime-readiness.sh
+
+Read-only runtime validation for the active host. It checks core units, HTTPS
+entrypoints, Unbound answers, ZFS mounts, and SMART health against vars.nix.
+
+Example:
+  sudo ./scripts/runtime-readiness.sh
+EOF
+}
+
 need() {
   local tool
   for tool in "$@"; do
@@ -17,6 +29,19 @@ need() {
     fi
   done
 }
+
+case "${1:-}" in
+  "")
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
 
 nix_var() {
   local expr="$1"
@@ -153,14 +178,12 @@ domain="$(nix_var 'vars.domain')"
 nb_ip="$(nix_var 'vars.nbIP')"
 server_lan_ip="$(nix_var 'vars.serverLanIP')"
 dns_mode="$(nix_var 'vars.dnsMode')"
-local_dns_private_answer="$(nix_var 'vars.localDnsPrivateAnswer')"
 files_domain="$(nix_var 'vars.filesDomain')"
 lan_dns_domain="$(nix_var 'vars.lanDnsDomain')"
 photos_domain="$(nix_var 'vars.photosDomain')"
 audiobooks_domain="$(nix_var 'vars.audiobooksDomain')"
 kavita_domain="$(nix_var 'vars.kavitaDomain')"
 jellyfin_domain="$(nix_var 'vars.jellyfinDomain')"
-jellyseerr_domain="$(nix_var 'vars.jellyseerrDomain')"
 kanidm_domain="$(nix_var 'vars.kanidmDomain')"
 cloudflared_unit="cloudflared-tunnel-$(nix_var 'vars.cloudflareTunnelName').service"
 data_pool_name="$(nix_var 'vars.zfsDataPool.name')"
@@ -173,6 +196,12 @@ if (( EUID != 0 )); then
   sudo_cmd=(sudo)
 fi
 storage_health_cmd_prefix=("${sudo_cmd[@]}")
+
+if [[ "$dns_mode" == "split-horizon" ]]; then
+  local_dns_private_answer="$server_lan_ip"
+else
+  local_dns_private_answer="$nb_ip"
+fi
 
 mapfile -t data_dataset_mounts < <(
   nix_json 'map (dataset: "${vars.zfsDataPool.mountPoint}/${dataset}") vars.zfsDataPool.datasets' \
@@ -202,8 +231,7 @@ required_units=(
   paperless-web.service \
   audiobookshelf.service \
   kavita.service \
-  jellyfin.service \
-  jellyseerr.service
+  jellyfin.service
 )
 for unit in "${required_units[@]}"; do
   check_unit "$unit"
@@ -218,7 +246,6 @@ check_http "https://paperless.${domain}/" 200 302
 check_http "https://${audiobooks_domain}/" 200 302
 check_http "https://${kavita_domain}/" 200 302
 check_http "https://${jellyfin_domain}/" 200 302
-check_http "https://${jellyseerr_domain}/" 200 302 307
 
 echo
 echo "== Internal HTTP =="
@@ -242,7 +269,6 @@ check_private_dns "${photos_domain}" "${local_dns_private_answer}"
 check_private_dns "${audiobooks_domain}" "${local_dns_private_answer}"
 check_private_dns "${kavita_domain}" "${local_dns_private_answer}"
 check_private_dns "${jellyfin_domain}" "${local_dns_private_answer}"
-check_private_dns "${jellyseerr_domain}" "${local_dns_private_answer}"
 
 echo
 echo "== Storage =="

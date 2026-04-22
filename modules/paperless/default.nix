@@ -2,6 +2,10 @@
 
 let
   paperlessPort = 8000;
+  dataDir = "/var/lib/paperless";
+  paperlessConsumeDir = "${vars.mediaRoot}/documents/consume";
+  paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
+  paperlessExportDir = "${vars.mediaRoot}/documents/export";
   paperlessUserPermissionCodenames = [
     "view_uisettings"
     "add_uisettings"
@@ -56,7 +60,7 @@ in
   users.users.paperless = {
     isSystemUser = true;
     group = "paperless";
-    home = vars.paperlessDataDir;
+    home = dataDir;
   };
 
   users.groups.paperless = { };
@@ -66,9 +70,9 @@ in
   ######################################################################
   services.paperless = {
     enable = true;
-    dataDir = vars.paperlessDataDir;
-    mediaDir = vars.paperlessArchiveDir;
-    consumptionDir = vars.paperlessConsumeDir;
+    dataDir = dataDir;
+    mediaDir = paperlessArchiveDir;
+    consumptionDir = paperlessConsumeDir;
     address = "127.0.0.1";
     port = paperlessPort;
     package = paperlessPackage;
@@ -90,7 +94,7 @@ in
       PAPERLESS_ALLOWED_HOSTS = "paperless.${vars.domain}";
       # PAPERLESS_TIME_ZONE              = "Australia/Sydney";   # ← example
       # PAPERLESS_LOGLEVEL               = "INFO";
-      PAPERLESS_EXPORT_DIR = vars.paperlessExportDir;
+      PAPERLESS_EXPORT_DIR = paperlessExportDir;
     };
   };
 
@@ -147,7 +151,7 @@ in
         script = ''
           set -euo pipefail
 
-          db="${vars.paperlessDataDir}/db.sqlite3"
+          db="${dataDir}/db.sqlite3"
           for _ in $(seq 1 30); do
             [[ -f "$db" ]] && break
             sleep 1
@@ -203,7 +207,12 @@ in
       "paperless-web"
     ] (_: {
       requires = [ "paperless-oidc-env.service" ];
-      after = [ "paperless-oidc-env.service" ];
+      after = [
+        "app-state-migration-v1.service"
+        "data-pool-layout.service"
+        "paperless-oidc-env.service"
+      ];
+      wants = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
     });
 
   systemd.tmpfiles.rules = [ ];

@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools rg nix
+ensure_tools jq rg nix
 
 echo "ℹ️ Checking active bootstrap and documentation files…"
 for required_path in \
@@ -16,31 +16,24 @@ for required_path in \
   configuration.nix \
   vars.nix \
   disko.nix \
-  disko-install.nix \
   disko-system.nix \
   scripts/check-repo.sh \
   scripts/cold-storage.sh \
   scripts/deploy-validated.sh \
   scripts/encrypt-staged-secrets.sh \
+  scripts/format-data-disks.sh \
+  scripts/format-system-disk.sh \
   scripts/generate-managed-secrets.sh \
   scripts/gen-all-secrets.sh \
   scripts/lib-storage-health.sh \
   scripts/lib-secrets.sh \
   scripts/power-audit.sh \
   scripts/runtime-readiness.sh \
-  documentation/README.md \
-  documentation/first-admin-session.md \
   documentation/quickstart.md \
-  documentation/install-from-scratch.md \
   documentation/restore-and-recovery.md \
-  documentation/secrets-and-prereqs.md \
-  documentation/networking-and-access.md \
   documentation/operations.md \
-  documentation/power-management.md \
   documentation/kanidm.md \
-  documentation/mail-archive.md \
-  documentation/storage-monitoring.md \
-  documentation/runtime-validation.md \
+  rust/apps/mail-archive-ui/README.md \
   modules/Core_Modules/data-disks/default.nix \
   modules/Core_Modules/caddy/default.nix \
   modules/Core_Modules/kanidm/default.nix \
@@ -51,6 +44,28 @@ do
     exit 1
   fi
 done
+
+if [[ -e disko-install.nix ]]; then
+  echo "❌ disko-install.nix must not exist; the combined destructive Disko path was removed."
+  exit 1
+fi
+
+expected_doc_files="$(
+  printf '%s\n' \
+    documentation/kanidm.md \
+    documentation/operations.md \
+    documentation/quickstart.md \
+    documentation/restore-and-recovery.md
+)"
+actual_doc_files="$(find documentation -maxdepth 1 -type f -name '*.md' | sort)"
+require_json_equal "$(printf '%s\n' "$actual_doc_files" | jq -R -s 'split("\n")[:-1]')" \
+  "$(printf '%s\n' "$expected_doc_files" | jq -R -s 'split("\n")[:-1]')" \
+  "Documentation root must contain only the canonical operator docs."
+
+if find documentation/references -maxdepth 1 -type f -name '*.md' | grep -q .; then
+  echo "❌ Reference documentation files must be removed."
+  exit 1
+fi
 
 echo "ℹ️ Checking vars.nix stays focused on host-editable values…"
 require_fixed vars.nix 'hostname = "server";' \
@@ -69,8 +84,6 @@ forbid_match README.md 'superceded/' \
   "README must not point to the retired superceded path."
 forbid_match README.md '_archive/' \
   "README must not point operators at a removed archive path."
-forbid_match documentation/README.md '_archive/' \
-  "Documentation index must not point to a removed archive path."
 forbid_match documentation 'DietPi|dietpi|piLanIP|enableDietPiCompanion' \
   "Active documentation must not mention the abandoned DietPi path."
 forbid_match documentation 'photo\.<domain>|audiobook\.<domain>|book\.<domain>|video\.<domain>' \
@@ -99,10 +112,10 @@ require_fixed documentation/quickstart.md 'TARGET_SERVER_IP' \
   "Quickstart must document the intended reserved LAN IP variable."
 require_fixed documentation/quickstart.md 'CURRENT_SERVER_IP' \
   "Quickstart must document the current reachable IP override."
-require_fixed documentation/README.md 'storage-monitoring.md' \
-  "Documentation index must expose the storage monitoring runbook."
-require_fixed documentation/secrets-and-prereqs.md 'storageAlertWebhookUrl' \
-  "Secrets guide must document the staged storage alert webhook secret."
+require_fixed documentation/quickstart.md './scripts/format-system-disk.sh' \
+  "Quickstart must document the safer system-disk wrapper."
+require_fixed documentation/quickstart.md './scripts/format-data-disks.sh' \
+  "Quickstart must document the safer data-disk wrapper."
 require_fixed documentation/operations.md 'tests/core-config.sh' \
   "Operations must mention the compact core-config validation."
 require_fixed documentation/operations.md 'scripts/deploy-validated.sh' \
@@ -111,12 +124,24 @@ require_fixed documentation/operations.md 'TARGET_SERVER_IP' \
   "Operations must document the intended reserved LAN IP variable."
 require_fixed documentation/operations.md 'CURRENT_SERVER_IP' \
   "Operations must document the current reachable IP override."
+require_fixed documentation/operations.md './scripts/runtime-readiness.sh' \
+  "Operations must document the runtime validation helper."
+require_fixed documentation/operations.md './scripts/power-audit.sh' \
+  "Operations must document the power audit helper."
+require_fixed documentation/kanidm.md 'kanidm-user-tui' \
+  "Kanidm guide must document the admin TUI."
+require_fixed rust/apps/mail-archive-ui/README.md 'mail-archive-users' \
+  "Mail archive UI README must document the access group."
 require_fixed AGENTS.md 'TARGET_SERVER_IP' \
   "AGENTS.md must document the intended reserved LAN IP variable."
 require_fixed AGENTS.md 'CURRENT_SERVER_IP' \
   "AGENTS.md must document the current reachable IP override."
 require_fixed scripts/check-repo.sh 'tests/run-all.sh' \
   "Repository validation must use the slim test entrypoint."
+require_fixed documentation/restore-and-recovery.md './scripts/format-data-disks.sh' \
+  "Restore-and-recovery must use the safer data-disk wrapper."
+require_fixed documentation/restore-and-recovery.md 'not the supported operator workflow' \
+  "Restore-and-recovery must warn that direct Disko commands are not the supported operator workflow."
 require_fixed scripts/deploy-validated.sh 'nix flake check --no-build' \
   "Deploy wrapper must run flake checks first."
 require_fixed scripts/runtime-readiness.sh '== ZFS ==' \

@@ -7,6 +7,18 @@ cd "$repo_root"
 
 export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}"
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/power-audit.sh
+
+Read-only audit for the declarative power-management surface. It reports the
+configured policy from Nix plus useful runtime signals from the current host.
+
+Example:
+  ./scripts/power-audit.sh
+EOF
+}
+
 need() {
   local tool
   for tool in "$@"; do
@@ -16,6 +28,19 @@ need() {
     fi
   done
 }
+
+case "${1:-}" in
+  "")
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
 
 nix_var() {
   local expr="$1"

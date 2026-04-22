@@ -1,41 +1,38 @@
-# Quickstart (Existing Host)
+# Quickstart
 
-Use this guide when the server already has NixOS installed and reachable by SSH.
+Use this as the single bootstrap guide for:
+- first deploys to an existing NixOS host
+- blank-machine installs from a NixOS installer ISO
+- secrets staging
+- the supported destructive disk wrapper entrypoints
 
-## 0) One-time prep block (copy/paste)
-Run from your workstation in the repo root:
+The operator contract is simple:
+- machine-specific values live in [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix)
+- `./scripts/gen-all-secrets.sh` is the only documented secrets entrypoint
+- `./scripts/format-system-disk.sh` and `./scripts/format-data-disks.sh` are the only documented destructive Disko entrypoints
+- `./scripts/deploy-validated.sh` is the normal remote deploy path
 
-```bash
-set -euo pipefail
+## 1. Workstation And External Prereqs
 
-# Clone if needed
-# git clone <your-fork-or-origin-url> NixHomeServer
-# cd NixHomeServer
+Required workstation tools:
 
-mkdir -p ~/.config/nix
-grep -qxF 'accept-flake-config = true' ~/.config/nix/nix.conf 2>/dev/null || echo 'accept-flake-config = true' >> ~/.config/nix/nix.conf
-
-export SERVER_USER='<admin-user>'
-export HOST_NAME="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.hostname')"
-export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
-export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
-
-echo "HOST_NAME=$HOST_NAME"
-echo "TARGET_SERVER_IP=$TARGET_SERVER_IP"
-echo "CURRENT_SERVER_IP=$CURRENT_SERVER_IP"
-```
-
-## 1) Verify workstation tools
 ```bash
 git --version
 ssh -V
 nix --version
 age --version
-rg --version
 jq --version
+rg --version
 ```
 
-## 2) Set machine-specific values
+Required external setup before first deploy:
+- Cloudflare zone for `<domain>`
+- Cloudflare Tunnel for this host
+- NetBird management account and reusable setup key
+- Age keypair for agenix secrets
+
+## 2. Set Machine Values
+
 Edit [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix) and confirm at minimum:
 - `serverLanIP`
 - `serverLanGateway`
@@ -44,38 +41,22 @@ Edit [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix) and confirm at minimum:
 - `lanDnsHosts`
 - `kanidmAuthSessionExpirySeconds`
 - `serverSSHPubKey`
-- `mainDisk`, `zfsDataPool`
-- `coldStoragePools`, `coldStorageMountPoint`
+- `mainDisk`
+- `zfsDataPool`
+- `coldStoragePools`
 
-`serverLanIP` and `serverLanGateway` define the host's static LAN address and
-default route. They are also used by split-horizon DNS, docs, and deploy
-helpers.
+List stable disk IDs before changing storage values:
 
-`lanDnsHosts` defines the LAN-only device records served under
-`lanDnsDomain`. These records also produce reverse DNS answers.
+```bash
+ls -l /dev/disk/by-id/
+```
 
-During a migration window, the current SSH endpoint may differ from
-`serverLanIP`. Keep `vars.serverLanIP` pointed at the final target address and
-set `CURRENT_SERVER_IP` locally when the host is still reachable on a temporary
-address. Do not commit temporary IPs into the repo.
+Use `/dev/disk/by-id/*`, not transient `/dev/sdX` names.
 
-Treat storage topology as config-driven. Operator checks should follow the current ZFS pool and cold-storage topology from `vars.nix`, rather than assuming fixed disk roles.
+## 3. Generate And Stage Secrets
 
-Current storage contract:
+Generate an age keypair if needed:
 
-- `/mnt/data` is a mirrored ZFS pool with child datasets for `appdata`, `media`, and `workspaces`
-- `disko.nix` is allowed to format only the mirrored data-pool disks from `vars.zfsDataPool`
-- `/mnt/cold-storage` is reserved for manual ZFS pool imports only through `scripts/cold-storage.sh`
-
-If you plan to change the default nightly suspend policy, adjust
-`modules/power-management/default.nix` and confirm the firmware prerequisites
-first. The short checklist is in [Power Management](./power-management.md).
-
-The default conservative power policy now also includes a `powersave` CPU
-governor and a weekly `fstrim` run in the evening maintenance window.
-
-## 3) Prepare secrets
-Generate age keys (skip if reusing existing recipient key):
 ```bash
 mkdir -p ~/.age
 age-keygen -o ~/.age/agenix.key
@@ -83,7 +64,14 @@ mkdir -p secrets/pubkeys
 age-keygen -y ~/.age/agenix.key > secrets/pubkeys/age.pub
 ```
 
-Stage required manual secrets:
+Stage the required cleartext inputs under `secrets/top/`:
+- `netbirdSetupKey`
+- `cfHomeCreds`
+- `cfAPIToken`
+- `storageAlertWebhookUrl`
+
+Expected examples:
+
 ```bash
 mkdir -p secrets/top
 
@@ -100,37 +88,52 @@ CLOUDFLARE_DNS_API_TOKEN=<CF_DNS_API_TOKEN>
 EOF_TOKEN
 
 cat > secrets/top/storageAlertWebhookUrl <<'EOF'
-<PASTE_NTFY_WEBHOOK_URL>
+https://ntfy.example.test/storage
 EOF
 ```
 
-Generate and encrypt secrets through the one public entrypoint:
+Generate repo-managed secrets and encrypt staged inputs:
+
 ```bash
 ./scripts/gen-all-secrets.sh
 ```
 
-## 4) Install age key on server
+For full details on accepted formats, use:
+
+```bash
+./scripts/gen-all-secrets.sh --help
+```
+
+## 4. Existing Host Deploy
+
+Derive the intended target IP from `vars.serverLanIP`, then keep any temporary
+SSH cutover address in a local override only:
+
+```bash
+export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
+export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
+export SERVER_USER='dsaw'
+export HOST_NAME="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.hostname')"
+```
+
+Install the agenix private key on the target host:
+
 ```bash
 scp ~/.age/agenix.key "$SERVER_USER@$CURRENT_SERVER_IP:/tmp/agenix.key"
 ssh -t "$SERVER_USER@$CURRENT_SERVER_IP" "sudo install -d -m 0700 /etc/agenix && sudo install -m 0400 /tmp/agenix.key /etc/agenix/age.key && rm -f /tmp/agenix.key"
 ```
 
-## 5) Validate repository
+Run the repo validation gate:
+
 ```bash
 nix flake check --no-build
 scripts/check-repo.sh
+tests/run-all.sh
+tests/core-config.sh
 ```
 
-First-party Rust apps in this repo use flake dev shells for local development
-and rebuilds. Do not install Rust globally just to work on them:
+Run the guarded deploy:
 
-```bash
-nix develop .#rust
-nix develop .#mail-archive-ui
-```
-
-## 6) Deploy
-Preferred guarded workstation deploy:
 ```bash
 ./scripts/deploy-validated.sh \
   --target "$SERVER_USER@$CURRENT_SERVER_IP" \
@@ -139,86 +142,72 @@ Preferred guarded workstation deploy:
   --hostname "$HOST_NAME"
 ```
 
-To switch only after the guarded test path passes:
+Switch only after the test generation looks correct:
+
 ```bash
 ./scripts/deploy-validated.sh \
   --target "$SERVER_USER@$CURRENT_SERVER_IP" \
   --build-host "$SERVER_USER@$CURRENT_SERVER_IP" \
-  --hostname "$HOST_NAME" \
-  --action switch
+  --action switch \
+  --hostname "$HOST_NAME"
 ```
 
-Direct policy-test entrypoint if you want it separately:
+For argument details and cutover notes, use:
+
 ```bash
-tests/run-all.sh
-tests/core-config.sh
+./scripts/deploy-validated.sh --help
 ```
 
-Preferred local-first activation:
+## 5. Blank-Machine Install
+
+Boot a recent NixOS installer ISO, get network access, then clone the repo:
+
 ```bash
-ssh -t "$SERVER_USER@$CURRENT_SERVER_IP"
-# then on server:
-# sudo -i
-# cd /etc/nixos
-# nix flake check --no-build
-# scripts/check-repo.sh
-# nixos-rebuild test --flake .#server
-# systemctl --failed
-# nixos-rebuild switch --flake .#server
+mkdir -p /mnt/src
+git clone <your-fork-or-origin-url> /mnt/src
+cd /mnt/src
 ```
 
-If you are actively cutting over the router or LAN addressing, prefer the
-local-console path so you do not strand the session mid-change.
+Preview the destructive wrapper commands first:
 
-## 6a) Configure router DNS fallback
-Recommended LAN DNS model:
-
-- clients receive only the router IP as DNS via DHCP
-- the router forwards only private app hostnames to `vars.serverLanIP`
-- `id.<domain>` and `files.<domain>` stay on the router's normal public DNS path
-
-For a dnsmasq-style router, the intended forward rules are:
-
-```conf
-server=/paperless.sydneybasiniot.org/192.168.8.12
-server=/photos.sydneybasiniot.org/192.168.8.12
-server=/emails.sydneybasiniot.org/192.168.8.12
-server=/audiobooks.sydneybasiniot.org/192.168.8.12
-server=/books.sydneybasiniot.org/192.168.8.12
-server=/videos.sydneybasiniot.org/192.168.8.12
-server=/jellyseerr.sydneybasiniot.org/192.168.8.12
+```bash
+./scripts/format-system-disk.sh --print-only
+./scripts/format-data-disks.sh --print-only
 ```
 
-Do not forward the whole zone:
+Run the destructive install path only after `vars.nix` matches the target
+hardware:
 
-```conf
-server=/sydneybasiniot.org/192.168.8.12
+```bash
+./scripts/format-system-disk.sh
+./scripts/format-data-disks.sh
+findmnt -R /mnt
 ```
 
-That whole-zone rule makes the entire domain depend on the server's DNS availability and defeats graceful fallback for `id.<domain>` and `files.<domain>`.
+Direct `nix run ... disko ...` commands are reserved for expert/manual
+debugging only and are not the supported operator workflow.
 
-## 7) Bootstrap Kanidm users
-Use [Kanidm Guide](./kanidm.md).
+Copy the repo into the installed system, install the agenix key, and install:
 
-Recommended operator model:
-- `admindsaw`: delegated admin identity
-- `dsaw`: normal daily-use identity
+```bash
+cp -r /mnt/src/* /mnt/etc/nixos
+nixos-generate-config --root /mnt
+install -d -m 0700 /mnt/etc/agenix
+install -m 0400 /path/to/agenix.key /mnt/etc/agenix/age.key
+nixos-install --flake /mnt/etc/nixos#server
+reboot
+```
 
-Recommended onboarding model:
-1. create the person in Kanidm
-2. add them to `users`
-3. add them to app-specific `*-users` groups
-4. add them to `*-admin` groups only when needed
-5. have them sign into the target app so OIDC can create or link the local row
+For wrapper details and guardrails, use:
 
-## 8) Verify expected access boundaries
-- Public should work: `https://id.<domain>`, `https://files.<domain>`
-- On the home LAN with router forwarding, private apps should work on the same canonical hostnames: `emails`, `paperless`, `photos`, `audiobooks`, `books`, `videos`, `jellyseerr`
-- Off the home LAN, those private apps should require NetBird
-- Logged-out `https://files.<domain>/` should still redirect through OAuth, while explicit Copyparty share links live under `https://files.<domain>/shares/...`
+```bash
+./scripts/format-system-disk.sh --help
+./scripts/format-data-disks.sh --help
+```
 
-After the first successful deploy, continue with:
+## 6. Post-Boot
 
-1. [First Admin Session](./first-admin-session.md)
-2. [Kanidm Guide](./kanidm.md)
-3. [Operations](./operations.md)
+After first boot:
+1. Run the validation gate again from the repo root.
+2. Continue with [Operations](./operations.md) for runtime checks, DNS expectations, and guarded day-2 deploys.
+3. Continue with [Kanidm Guide](./kanidm.md) for admin login, user creation, and group grants.

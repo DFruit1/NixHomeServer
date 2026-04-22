@@ -16,7 +16,7 @@ state_dir="${tmpdir}/state"
 bin_dir="${tmpdir}/bin"
 dev_dir="${tmpdir}/devices"
 mount_root="${tmpdir}/mounts"
-mkdir -p "$state_dir" "$bin_dir" "$dev_dir" "$mount_root/data" "$mount_root/data/appdata" "$mount_root/cold-storage/v1jan8ph"
+mkdir -p "$state_dir" "$bin_dir" "$dev_dir" "$mount_root/data" "$mount_root/data/mail-archive" "$mount_root/cold-storage/v1jan8ph"
 touch "$dev_dir/clean" "$dev_dir/aging"
 
 cat >"$config_file" <<EOF
@@ -25,7 +25,7 @@ cat >"$config_file" <<EOF
   "dataPool": {
     "name": "data",
     "mountPoint": "${mount_root}/data",
-    "datasetMounts": ["${mount_root}/data/appdata"]
+    "datasetMounts": ["${mount_root}/data/mail-archive"]
   },
   "disks": [
     { "label": "disk1", "device": "${dev_dir}/clean" },
@@ -180,7 +180,7 @@ chmod +x "$bin_dir/sudo"
 
 cat >"$tmpdir/findmnt.clean" <<EOF
 ${mount_root}/data=zfs
-${mount_root}/data/appdata=zfs
+${mount_root}/data/mail-archive=zfs
 EOF
 
 cat >"$tmpdir/systemctl.clean" <<'EOF'
@@ -193,7 +193,7 @@ EOF
 
 cat >"$tmpdir/zfs-list.clean" <<EOF
 data	${mount_root}/data
-data/appdata	${mount_root}/data/appdata
+data/mail-archive	${mount_root}/data/mail-archive
 EOF
 
 run_report() {

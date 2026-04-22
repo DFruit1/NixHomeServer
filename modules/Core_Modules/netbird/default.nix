@@ -1,5 +1,9 @@
 { lib, config, vars, ... }:
 
+let
+  netbirdIface = "nb0";
+  wgPort = 51820;
+in
 {
   users.groups."netbird-main" = { };
 
@@ -13,14 +17,14 @@
     name = "main";
     hardened = true;
     autoStart = true;
-    interface = vars.netbirdIface;
-    port = vars.wgPort;
+    interface = netbirdIface;
+    port = wgPort;
     openFirewall = false;
     login.enable = true;
     login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;
   };
 
-  networking.firewall.allowedUDPPorts = [ vars.wgPort ];
+  networking.firewall.allowedUDPPorts = [ wgPort ];
   # The upstream login helper matches "Disconnected" as if it were "Connected"
   # and exits before it ever runs `netbird up --setup-key-file=...`.
   systemd.services."netbird-main-login".script = lib.mkForce ''

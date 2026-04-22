@@ -1,6 +1,7 @@
 { lib, config, pkgs, vars, ... }:
 
 let
+  kanidmPort = 8443;
   oauth2ProxyClientSecretPath = "/run/oauth2-proxy/client-secret";
   mkManualGroup =
     members:
@@ -50,7 +51,7 @@ in
     serverSettings = {
       origin = "https://${vars.kanidmDomain}";
       domain = vars.domain;
-      bindaddress = "127.0.0.1:${toString vars.kanidmPort}";
+      bindaddress = "127.0.0.1:${toString kanidmPort}";
 
       # reuse certificates obtained by Caddy
       tls_chain =
@@ -65,7 +66,7 @@ in
       adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;
       # Provision directly against the local Kanidm listener so activation does
       # not depend on Caddy/public DNS/certificate reachability.
-      instanceUrl = "https://localhost:${toString vars.kanidmPort}";
+      instanceUrl = "https://localhost:${toString kanidmPort}";
       acceptInvalidCerts = true;
 
       persons.${vars.kanidmAdminUser} = {
@@ -73,6 +74,8 @@ in
         mailAddresses = [ vars.kanidmAdminEmail ];
       };
 
+      # Group membership is the access boundary. Keep broad identity (`users`)
+      # separate from app-specific login and admin cohorts.
       groups.fileshare_users = mkManualGroup [ vars.kanidmAdminUser ];
       groups."mail-archive-users" = mkManualGroup [ ];
       groups."immich-users" = mkManualGroup [ ];
@@ -185,18 +188,18 @@ in
       export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
 
       kanidm login \
-        -H https://localhost:${toString vars.kanidmPort} \
+        -H https://localhost:${toString kanidmPort} \
         -D admin \
         --accept-invalid-certs >/dev/null
 
       kanidm system domain set-displayname \
-        -H https://localhost:${toString vars.kanidmPort} \
+        -H https://localhost:${toString kanidmPort} \
         -D admin \
         --accept-invalid-certs \
         "Sydney Basin Services"
 
       kanidm system domain set-image \
-        -H https://localhost:${toString vars.kanidmPort} \
+        -H https://localhost:${toString kanidmPort} \
         -D admin \
         --accept-invalid-certs \
         ${./assets/portal.svg} \
@@ -222,12 +225,12 @@ in
       export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
 
       kanidm login \
-        -H https://localhost:${toString vars.kanidmPort} \
+        -H https://localhost:${toString kanidmPort} \
         -D idm_admin \
         --accept-invalid-certs >/dev/null
 
       kanidm group account-policy auth-expiry \
-        -H https://localhost:${toString vars.kanidmPort} \
+        -H https://localhost:${toString kanidmPort} \
         -D idm_admin \
         --accept-invalid-certs \
         idm_all_persons \

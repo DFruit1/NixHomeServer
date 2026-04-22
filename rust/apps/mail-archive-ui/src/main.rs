@@ -394,7 +394,6 @@ fn load_config() -> AppConfig {
 fn ensure_app_layout(config: &AppConfig) -> Result<(), String> {
     for directory in [
         config.data_dir.as_ref(),
-        config.store_root.as_ref(),
         config.runtime_dir.as_ref(),
         config.lock_dir.as_ref(),
     ] {
@@ -962,7 +961,14 @@ fn ensure_account_paths(
     config: &AppConfig,
     account: &AccountRecord,
 ) -> Result<AccountPaths, String> {
-    let root = PathBuf::from(config.store_root.as_ref())
+    let store_root = PathBuf::from(config.store_root.as_ref());
+    let store_root_metadata = fs::metadata(&store_root)
+        .map_err(|error| format!("mail archive store root is unavailable: {error}"))?;
+    if !store_root_metadata.is_dir() {
+        return Err("mail archive store root is not a directory".to_string());
+    }
+
+    let root = store_root
         .join("users")
         .join(&account.username)
         .join("accounts")

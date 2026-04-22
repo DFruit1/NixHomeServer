@@ -1,13 +1,25 @@
 { pkgs, vars, ... }:
 
+let
+  dataDir = "/var/lib/jellyfin";
+  logDir = "${dataDir}/log";
+  managedDir = "${dataDir}/.nixos-managed";
+in
 {
-  imports = [ ./jellyseerr.nix ];
-
   services.jellyfin = {
     enable = true;
-    dataDir = vars.jellyfinDataDir;
+    dataDir = dataDir;
     cacheDir = "/var/cache/jellyfin";
-    logDir = vars.jellyfinLogDir;
+    logDir = logDir;
+  };
+
+  systemd.tmpfiles.rules = [
+    "d ${logDir} 0750 jellyfin jellyfin -"
+  ];
+
+  systemd.services.jellyfin = {
+    after = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
+    wants = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
   };
 
   systemd.services.jellyfin-network-config-v1 = {
@@ -19,8 +31,8 @@
     script = ''
       set -euo pipefail
 
-      config_file="${vars.jellyfinDataDir}/config/network.xml"
-      managed_dir="${vars.jellyfinDataDir}/.nixos-managed"
+      config_file="${dataDir}/config/network.xml"
+      managed_dir="${managedDir}"
       marker_file="$managed_dir/jellyfin-network-config-v1.done"
 
       ${pkgs.coreutils}/bin/install -d -m 0755 "$managed_dir"

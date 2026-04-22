@@ -1,6 +1,7 @@
 { pkgs, vars, config, ... }:
 
 let
+  kanidmPort = 8443;
   prepareUserWorkspace = pkgs.writeShellScript "prepare-samba-user-workspace" ''
     set -euo pipefail
 
@@ -21,13 +22,13 @@ let
 
     members_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm login \
-        -H https://localhost:${toString vars.kanidmPort} \
+        -H https://localhost:${toString kanidmPort} \
         -D admin \
         --accept-invalid-certs >/dev/null
 
       ${pkgs.kanidm_1_9}/bin/kanidm group get \
         fileshare_users \
-        -H https://localhost:${toString vars.kanidmPort} \
+        -H https://localhost:${toString kanidmPort} \
         -D admin \
         --accept-invalid-certs \
         -o json

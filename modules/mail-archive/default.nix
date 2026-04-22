@@ -14,6 +14,7 @@ in
     description = "Synchronize mail archive UI accounts and refresh notmuch indexes";
     wants = [ "mail-archive-ui.service" "local-fs.target" ];
     after = [ "mail-archive-ui.service" "local-fs.target" ];
+    unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
     serviceConfig = {
       Type = "oneshot";
       User = "mail-archive-ui";

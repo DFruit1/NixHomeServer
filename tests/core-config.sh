@@ -60,6 +60,14 @@ require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.mirrorPair
   "vars.zfsDataPool must define two mirror pairs."
 require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.datasets')" "3" \
   "vars.zfsDataPool must keep the expected child datasets."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'media' \
+  "vars.zfsDataPool must keep the media dataset."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'workspaces' \
+  "vars.zfsDataPool must keep the workspaces dataset."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'mail-archive' \
+  "vars.zfsDataPool must include the dedicated mail-archive dataset."
+forbid_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'appdata' \
+  "vars.zfsDataPool must not retain the removed appdata dataset."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1JAKPNH" \
   "The ZFS data pool must include the healthiest disk."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V6G7R6MS" \
@@ -80,12 +88,14 @@ require_json_equal "$(nix_eval_json 'vars.coldStorageMountPoint')" '"/mnt/cold-s
   "vars.coldStorageMountPoint must keep the manual mountpoint."
 require_json_equal "$(nix_eval_json 'builtins.length vars.monitoredStorageDiskIds')" "5" \
   "The monitored storage disk list must include four pool disks plus one cold-storage disk."
-require_json_equal "$(nix_eval_json 'vars.mailArchiveStoreRoot')" '"/mnt/data/mail-archive"' \
-  "Mail archive storage must resolve through the ZFS data pool."
 require_json_equal "$(nix_eval_json 'vars.usersWorkspaceRoot')" '"/mnt/data/workspaces/users"' \
   "Workspace roots must resolve through the ZFS data pool."
-require_json_equal "$(nix_eval_json 'vars.photosUploadRoot')" '"/mnt/data/media/photos/external"' \
-  "Upload roots must resolve through the ZFS data pool."
+require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.storeRoot')" '"/mnt/data/mail-archive"' \
+  "Mail archive storage must resolve through the ZFS data pool."
+require_fixed modules/immich/default.nix '"${vars.mediaRoot}/photos/managed"' \
+  "Immich must derive its managed library under vars.mediaRoot."
+forbid_match vars.nix 'appdataRoot|audiobookshelfDataDir|audiobookshelfConfigDir|audiobookshelfMetadataDir|audiobookshelfBackupDir|jellyfinDataDir|jellyfinLogDir|kavitaDataDir|paperlessDataDir|mailArchiveUiDataDir' \
+  "vars.nix must not retain the old shared app-state path definitions."
 
 echo "ℹ️ Checking data-disk stack extraction…"
 require_fixed configuration.nix './modules/Core_Modules/storage-monitoring' \
@@ -94,12 +104,12 @@ require_fixed configuration.nix './disko-system.nix' \
   "configuration.nix must import the SSD Disko layout separately from the data migration layout."
 require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".fsType')" '"zfs"' \
   "The data pool must be mounted at /mnt/data as ZFS."
-require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/appdata"')" "true" \
-  "The appdata dataset mount must exist."
 require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/media"')" "true" \
   "The media dataset mount must exist."
 require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/workspaces"')" "true" \
   "The workspaces dataset mount must exist."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/mail-archive"')" "true" \
+  "The mail-archive dataset mount must exist."
 require_json_equal "$(nix_eval_config_json 'networking.hostId')" '"84e8c12a"' \
   "networking.hostId must be set for ZFS imports."
 require_json_equal "$(nix_eval_config_json 'services.smartd.enable')" "true" \
@@ -135,6 +145,18 @@ forbid_match disko.nix 'vars\.mainDisk|vars\.coldStoragePools' \
   "The data-only Disko file must not reference the system SSD or manual cold-storage variables."
 forbid_match disko.nix 'ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E|ata-HGST_HUS726T4TALA6L4_V1JAN8PH|ata-HGST_HUS726040ALA610_K7G5W29L' \
   "The data-only Disko file must exclude the SSD, the manual cold-storage disk, and the retired failing disk."
+require_fixed scripts/format-system-disk.sh 'vars.mainDisk' \
+  "The system-disk wrapper must source the target SSD from vars.mainDisk."
+require_fixed scripts/format-data-disks.sh 'vars.zfsDataPoolDiskIds' \
+  "The data-disk wrapper must source the target pool disks from vars.zfsDataPoolDiskIds."
+forbid_match scripts/format-system-disk.sh 'disko-install\.nix' \
+  "The system-disk wrapper must not reference the removed combined Disko path."
+forbid_match scripts/format-data-disks.sh 'disko-install\.nix' \
+  "The data-disk wrapper must not reference the removed combined Disko path."
+forbid_match scripts/format-system-disk.sh 'ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E|ata-HGST_HUS726T4TALA6L4_V1JAKPNH|ata-HGST_HUS726T4TALA6L4_V6G7R6MS|ata-HGST_HUS726T4TALA6L4_V1J9PKDH|ata-HGST_HUS726T4TALA6L4_V1G5K8YC|ata-HGST_HUS726T4TALA6L4_V1JAN8PH' \
+  "The system-disk wrapper must not hardcode current disk IDs."
+forbid_match scripts/format-data-disks.sh 'ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E|ata-HGST_HUS726T4TALA6L4_V1JAKPNH|ata-HGST_HUS726T4TALA6L4_V6G7R6MS|ata-HGST_HUS726T4TALA6L4_V1J9PKDH|ata-HGST_HUS726T4TALA6L4_V1G5K8YC|ata-HGST_HUS726T4TALA6L4_V1JAN8PH' \
+  "The data-disk wrapper must not hardcode current disk IDs."
 
 echo "ℹ️ Checking active routing surface…"
 caddy_hosts="$(nix_eval_config_json 'services.caddy.virtualHosts' | jq 'keys')"
@@ -192,9 +214,10 @@ require_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"
   "The LAN interface must allow SMB port 139."
 require_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"$(nix_eval_var 'vars.netIface')\".allowedTCPPorts")" "445" \
   "The LAN interface must allow SMB port 445."
-forbid_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"$(nix_eval_var 'vars.netbirdIface')\".allowedTCPPorts")" "139" \
+netbird_iface="$(nix_eval_config_json 'services.netbird.clients.myNetbirdClient.interface' | jq -r .)"
+forbid_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"${netbird_iface}\".allowedTCPPorts")" "139" \
   "The NetBird interface must not allow SMB port 139."
-forbid_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"$(nix_eval_var 'vars.netbirdIface')\".allowedTCPPorts")" "445" \
+forbid_json_contains "$(nix_eval_config_json "networking.firewall.interfaces.\"${netbird_iface}\".allowedTCPPorts")" "445" \
   "The NetBird interface must not allow SMB port 445."
 forbid_json_contains "$samba_settings_keys" "homes" \
   "Samba must not retain the old homes share."
@@ -244,6 +267,18 @@ require_json_equal "$(nix_eval_config_json 'systemd.timers.power-management-nigh
   "Nightly suspend must keep the current schedule."
 require_json_equal "$mail_archive_port" "9011" \
   "Mail archive UI must keep the expected local port."
+require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.dataDir')" '"/persist/appdata/mail-archive-ui"' \
+  "Mail archive UI state must live on the SSD-backed persist volume."
+require_json_equal "$(nix_eval_config_json 'services.paperless.dataDir')" '"/var/lib/paperless"' \
+  "Paperless state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'services.kavita.dataDir')" '"/var/lib/kavita"' \
+  "Kavita state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'services.jellyfin.dataDir')" '"/var/lib/jellyfin"' \
+  "Jellyfin state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf.serviceConfig.WorkingDirectory')" '"/var/lib/audiobookshelf"' \
+  "Audiobookshelf state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
+  "Mail archive sync must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.mail-archive-sync.timerConfig.OnCalendar')" '"*-*-* 06,18:15:00"' \
   "Mail archive sync must keep the current schedule."
 require_fixed modules/Core_Modules/kanidm/default.nix 'kanidm group account-policy auth-expiry' \

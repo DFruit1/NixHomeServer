@@ -8,6 +8,7 @@ let
     map
       (diskId: {
         device = "/dev/disk/by-id/${diskId}";
+        options = "-d removable";
       })
       (monitoredPoolDisks ++ monitoredColdDisks);
 in
@@ -19,6 +20,7 @@ in
 
   services.smartd = {
     enable = true;
+    autodetect = false;
     devices = smartDevices;
   };
 }

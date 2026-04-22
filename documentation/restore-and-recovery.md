@@ -1,24 +1,15 @@
-# Restore and Recovery
+# Restore And Recovery
 
-Use this when you need to rebuild the host or recover the mirrored ZFS data pool without touching the Btrfs system SSD by accident.
+Use this when rebuilding the host or recovering the mirrored ZFS data pool.
 
-## Recovery model
+Recovery priorities:
+- keep the system SSD isolated from data-pool recovery
+- rebuild declaratively before doing destructive storage work
+- treat manual cold-storage pools as separate from the default Disko path
 
-This repo now assumes:
+## 1. Pre-Flight
 
-- the system disk is a Btrfs SSD managed by `disko-system.nix`
-- the active data array is the mirrored ZFS pool defined in `vars.zfsDataPool`
-- manual cold-storage pools remain outside the default destructive Disko path
-- offsite backups and any manual local copies are separate operator workflows
-
-## Before recovery work
-
-1. Confirm disk identities from `vars.nix` before running any destructive command.
-2. Keep `mainDisk` reserved for the existing Btrfs SSD only.
-3. Confirm `vars.zfsDataPoolDiskIds` matches exactly the mirrored data disks you intend to create or recreate.
-4. Confirm `vars.coldStoragePools` remains outside `disko.nix`.
-
-Recommended verification:
+Confirm the target disks from [`vars.nix`](/home/dsaw/Projects/NixOS/vars.nix):
 
 ```bash
 ls -l /dev/disk/by-id
@@ -31,67 +22,65 @@ in {
 }'
 ```
 
-## Rebuild-first recovery flow
+Keep these rules:
+- `mainDisk` is the system SSD only
+- `vars.zfsDataPoolDiskIds` are the only disks in scope for mirrored data-pool recreation
+- `vars.coldStoragePools` stay outside the default destructive Disko path
 
-1. Put the repo on the target machine and install the agenix private key at `/etc/agenix/age.key`.
-2. Validate the repo:
+## 2. Rebuild-First Recovery
+
+Install the agenix key on the target machine, then run:
 
 ```bash
 nix flake check --no-build
 scripts/check-repo.sh
-```
-
-3. Rebuild the host:
-
-```bash
 sudo nixos-rebuild test --flake .#server
 sudo nixos-rebuild switch --flake .#server
-```
-
-4. Run the runtime validation pass:
-
-```bash
 sudo ./scripts/runtime-readiness.sh
 ```
 
-Then work through [Runtime Validation](./runtime-validation.md) if the rebuild touched auth, routing, or application state.
+If the rebuild touched auth, routing, or application behavior, continue with
+[Operations](./operations.md).
 
-## Recreating only the mirrored data pool
+## 3. Recreate Only The Mirrored Data Pool
 
-If the `data` pool must be recreated and the SSD must remain untouched:
-
-1. Stop write-path activity and export the existing pool if it is imported:
+If the `data` pool must be recreated while the SSD must remain untouched:
 
 ```bash
 sudo zpool export data
-```
-
-2. Run only the mirror-only Disko entrypoint:
-
-```bash
-sudo nix run github:nix-community/disko -- --mode zap_create_mount ./disko.nix
-```
-
-3. Do not use `disko-install.nix` or `disko-system.nix` for this case.
-
-4. Verify the result:
-
-```bash
+./scripts/format-data-disks.sh
 findmnt /
 findmnt -R /mnt/data
 sudo zpool status data
 sudo zfs list -r data
 ```
 
+Direct `nix run ... disko ...` commands are reserved for expert/manual
+debugging only and are not the supported operator workflow.
+
+For wrapper details and guardrails, use:
+
+```bash
+./scripts/format-data-disks.sh --help
+```
+
 Expected result:
-
 - `/` remains `btrfs`
-- `/mnt/data` and its child datasets are `zfs`
+- `/mnt/data` and configured child datasets are `zfs`
 - the SSD was not repartitioned
-- the cold-storage disk was not touched
+- manual cold-storage disks were not touched
 
-## Notes
+## 4. Cold Storage
 
-- `scripts/cold-storage.sh` remains the manual-only path for cold-storage imports and mounts.
-- Runtime readiness includes SMART degradation warnings, so review those before resuming normal write workloads.
-- If you adopt offsite backups later, document that separately from this repo’s base recovery flow.
+Cold-storage imports remain manual:
+
+```bash
+./scripts/cold-storage.sh status
+./scripts/cold-storage.sh mount cold-v1jan8ph
+./scripts/cold-storage.sh unmount cold-v1jan8ph
+```
+
+## 5. Notes
+
+- Runtime readiness includes SMART degradation warnings; review those before resuming write workloads.
+- Offsite backup policy is outside this repo’s base recovery workflow.

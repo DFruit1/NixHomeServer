@@ -3,6 +3,9 @@
 let
   mailArchiveOauth2ProxyPort = 4181;
   jellyfinPort = 8096;
+  kanidmPort = 8443;
+  netbirdIface = "nb0";
+  splitDnsMode = vars.dnsMode == "split-horizon";
 in
 {
   services.caddy = {
@@ -31,7 +34,7 @@ in
           tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
-          reverse_proxy https://127.0.0.1:${toString vars.kanidmPort} {
+          reverse_proxy https://127.0.0.1:${toString kanidmPort} {
             transport http {
               tls_server_name ${vars.kanidmDomain}
               tls_trust_pool file /var/lib/acme/${vars.kanidmDomain}/fullchain.pem
@@ -61,6 +64,7 @@ in
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
+          # Keep only explicit anonymous share links outside OAuth2 Proxy.
           @copyparty_shares path /shares /shares/*
           handle @copyparty_shares {
             reverse_proxy http://127.0.0.1:${toString config.services.copyparty.settings.p} {
@@ -113,13 +117,6 @@ in
           }
         '';
       };
-
-      "${vars.jellyseerrDomain}" = {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          reverse_proxy http://127.0.0.1:${toString config.services.jellyseerr.port}
-        '';
-      };
     };
   };
 
@@ -139,9 +136,9 @@ in
   # local DNS answers remain reachable.
   networking.firewall.interfaces =
     {
-      ${vars.netbirdIface}.allowedTCPPorts = [ 443 ];
+      ${netbirdIface}.allowedTCPPorts = [ 443 ];
     }
-    // lib.optionalAttrs vars.splitDnsMode {
+    // lib.optionalAttrs splitDnsMode {
       ${vars.netIface}.allowedTCPPorts = [ 443 ];
     };
 }

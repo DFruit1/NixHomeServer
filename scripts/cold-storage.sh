@@ -21,6 +21,13 @@ nix_json() {
 usage() {
   cat <<'EOF'
 Usage: scripts/cold-storage.sh <status|mount|unmount> [pool-name]
+
+Operate only on the manual cold-storage pools declared in vars.coldStoragePools.
+This helper does not create or destroy pools.
+
+Examples:
+  scripts/cold-storage.sh status
+  scripts/cold-storage.sh mount cold-v1jan8ph
 EOF
 }
 
