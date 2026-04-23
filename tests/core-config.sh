@@ -261,6 +261,8 @@ require_fixed scripts/cold-storage.sh 'zpool import -N -d /dev/disk/by-id' \
 echo "ℹ️ Checking power and mail-archive essentials…"
 forbid_match configuration.nix './modules/[b]ackup' \
   "configuration.nix must not import the removed local-backup module."
+require_fixed scripts/check-repo.sh 'nix build ".#checks.${system}.mail-archive-ui-test" --print-build-logs' \
+  "Repository checks must execute the built mail archive UI test derivation."
 require_json_equal "$(nix_eval_config_json 'powerManagement.cpuFreqGovernor')" '"powersave"' \
   "Power management must retain the powersave governor."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.power-management-nightly-suspend.timerConfig.OnCalendar')" '"*-*-* 23:30:00"' \
@@ -279,8 +281,18 @@ require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf.serv
   "Audiobookshelf state must live under /var/lib."
 require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
   "Mail archive sync must be gated on the data pool mount."
+require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-ui.serviceConfig.UMask')" '"0077"' \
+  "Mail archive UI must set a restrictive UMask."
+require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.serviceConfig.UMask')" '"0077"' \
+  "Mail archive sync must set a restrictive UMask."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.mail-archive-sync.timerConfig.OnCalendar')" '"*-*-* 06,18:15:00"' \
   "Mail archive sync must keep the current schedule."
+require_match rust/apps/mail-archive-ui/src/main.rs '\.route\("/accounts/\{id\}/edit"' \
+  "Mail archive UI must expose the mailbox edit route."
+require_match rust/apps/mail-archive-ui/src/main.rs '\.route\("/accounts/\{id\}/toggle-sync"' \
+  "Mail archive UI must expose the mailbox schedule toggle route."
+require_match rust/apps/mail-archive-ui/src/main.rs '\.route\("/accounts/\{id\}/reindex"' \
+  "Mail archive UI must expose the mailbox reindex route."
 require_fixed modules/Core_Modules/kanidm/account-policy.nix 'kanidm group account-policy auth-expiry' \
   "Kanidm must declaratively apply the account policy auth session expiry."
 require_fixed modules/Core_Modules/kanidm/account-policy.nix 'idm_all_persons' \

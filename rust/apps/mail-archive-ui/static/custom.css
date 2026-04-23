@@ -8,8 +8,13 @@
   --accent: #0f6b5c;
   --accent-strong: #084f44;
   --accent-soft: #d7efe9;
+  --accent-ghost: rgba(15, 107, 92, 0.08);
   --border: rgba(29, 31, 28, 0.12);
   --danger: #8d2d1c;
+  --danger-soft: #fae7e2;
+  --warning: #715d11;
+  --warning-soft: #efe7cc;
+  --info-soft: rgba(15, 107, 92, 0.08);
   --shadow: 0 22px 60px rgba(30, 25, 15, 0.14);
   --radius: 22px;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
@@ -34,18 +39,54 @@ a {
 }
 
 .page {
-  width: min(1120px, calc(100% - 2rem));
+  width: min(1180px, calc(100% - 2rem));
   margin: 0 auto;
-  padding: 2rem 0 4rem;
+  padding: 1.4rem 0 4rem;
 }
 
+.topbar,
 .hero,
 .panel,
-.result {
+.result,
+.account-card {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  padding: 1.2rem 1.4rem;
+  margin-bottom: 1.2rem;
+}
+
+.topnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.topnav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.6rem;
+  padding: 0.65rem 0.95rem;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--accent-strong);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.topnav a.active {
+  background: var(--accent-soft);
+  border-color: rgba(15, 107, 92, 0.16);
 }
 
 .hero {
@@ -53,8 +94,57 @@ a {
   margin-bottom: 1.5rem;
 }
 
+.panel {
+  padding: 1.4rem;
+}
+
+.result,
+.account-card {
+  padding: 1.15rem 1.2rem;
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.section-head {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.card-grid,
+.grid {
+  display: grid;
+  gap: 1.1rem;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+}
+
+.card-header,
+.result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.9rem;
+  align-items: flex-start;
+}
+
+.card-meta,
+.tag-list,
+.nav,
+.actions,
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.account-card form,
+.action-row form {
+  margin: 0;
+}
+
 .eyebrow {
-  margin: 0 0 0.4rem;
+  margin: 0 0 0.35rem;
   font-size: 0.82rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -71,8 +161,6 @@ h2 {
 .meta,
 .hint,
 label,
-th,
-td,
 input,
 select,
 textarea,
@@ -87,13 +175,6 @@ button {
   color: var(--muted);
 }
 
-.nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-top: 1.2rem;
-}
-
 .nav a,
 button,
 .button-link {
@@ -101,6 +182,7 @@ button,
   align-items: center;
   justify-content: center;
   gap: 0.4rem;
+  min-height: 2.8rem;
   border-radius: 999px;
   border: 0;
   background: var(--accent);
@@ -118,27 +200,34 @@ button.secondary {
   background: var(--accent-soft);
 }
 
-.grid {
-  display: grid;
-  gap: 1.2rem;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+.pill,
+.badge,
+.tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.3rem 0.72rem;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
-.panel {
-  padding: 1.4rem;
+.pill,
+.badge {
+  background: var(--accent-ghost);
+  color: var(--accent-strong);
 }
 
-.stack {
-  display: grid;
-  gap: 1rem;
+.tag {
+  background: rgba(15, 107, 92, 0.12);
+  color: var(--accent-strong);
 }
 
 .status {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 0.3rem 0.72rem;
-  font-size: 0.85rem;
+  padding: 0.32rem 0.78rem;
+  font-size: 0.82rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -150,13 +239,23 @@ button.secondary {
 }
 
 .status.pending {
-  background: #efe7cc;
-  color: #715d11;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .status.error {
   background: #f8ddd7;
   color: var(--danger);
+}
+
+.status.idle {
+  background: rgba(29, 31, 28, 0.08);
+  color: var(--muted);
+}
+
+.status.unindexed {
+  background: rgba(15, 107, 92, 0.12);
+  color: var(--accent-strong);
 }
 
 form {
@@ -190,69 +289,44 @@ textarea {
   color: inherit;
 }
 
+input[type="checkbox"] {
+  width: auto;
+}
+
 textarea {
   min-height: 9rem;
   resize: vertical;
 }
 
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  padding: 0.9rem 0;
-  text-align: left;
-  border-bottom: 1px solid rgba(29, 31, 28, 0.1);
-  vertical-align: top;
-}
-
-th {
-  color: var(--muted);
-  font-weight: 700;
-}
-
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+.result-summary {
   margin-top: 1rem;
 }
 
-.result {
-  padding: 1rem 1.1rem;
+.empty-state {
+  display: grid;
+  gap: 0.9rem;
+  justify-items: start;
 }
 
-.tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.tag {
-  border-radius: 999px;
-  padding: 0.25rem 0.65rem;
-  background: rgba(15, 107, 92, 0.08);
-  color: var(--accent-strong);
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.flash {
+.flash,
+.error {
   margin-bottom: 1rem;
   padding: 0.95rem 1.1rem;
   border-radius: 18px;
+}
+
+.flash {
   background: #eaf6f2;
   border: 1px solid rgba(15, 107, 92, 0.18);
 }
 
 .error {
-  margin-bottom: 1rem;
-  padding: 0.95rem 1.1rem;
-  border-radius: 18px;
-  background: #fae7e2;
+  background: var(--danger-soft);
   border: 1px solid rgba(141, 45, 28, 0.18);
+}
+
+.error.compact {
+  margin-bottom: 0;
 }
 
 .muted-list {
@@ -261,20 +335,43 @@ th {
   color: var(--muted);
 }
 
+code {
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.95em;
+}
+
 @media (max-width: 720px) {
   .page {
-    width: min(100% - 1rem, 1120px);
+    width: min(100% - 1rem, 1180px);
     padding-top: 1rem;
   }
 
+  .topbar,
   .hero,
   .panel,
-  .result {
+  .result,
+  .account-card {
     border-radius: 18px;
   }
 
-  th:nth-child(3),
-  td:nth-child(3) {
-    display: none;
+  .topbar,
+  .card-header,
+  .result-head {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .topnav,
+  .action-row,
+  .actions,
+  .nav {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .topnav a,
+  .button-link,
+  button {
+    width: 100%;
   }
 }

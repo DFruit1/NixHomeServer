@@ -21,6 +21,7 @@ in
       Group = "mail-archive-ui";
       WorkingDirectory = cfg.dataDir;
       ExecStart = "${cfg.package}/bin/mail-archive-ui sync-due";
+      UMask = "0077";
       NoNewPrivileges = true;
       PrivateTmp = true;
       ProtectSystem = "strict";

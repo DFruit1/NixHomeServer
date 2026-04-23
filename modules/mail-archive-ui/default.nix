@@ -118,6 +118,7 @@ in
         ExecStart = "${cfg.package}/bin/mail-archive-ui";
         Environment = environmentEntries;
         Restart = "on-failure";
+        UMask = "0077";
         DynamicUser = false;
         NoNewPrivileges = true;
         PrivateTmp = true;

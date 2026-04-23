@@ -21,15 +21,22 @@ Operational checks:
 ```bash
 systemctl status mail-archive-ui mail-archive-oauth2-proxy mail-archive-sync.timer
 sudo systemctl start mail-archive-sync.service
-curl -fsS http://127.0.0.1:9011/healthz
+curl -fsS http://127.0.0.1:9011/healthz | jq .
 ```
 
 Functional scope:
 - stores mailbox credentials encrypted at rest
 - generates `mbsync` config on demand
-- updates per-account `notmuch` indexes
+- updates or repairs per-account `notmuch` indexes
 - exposes metadata-only search results
+- supports mailbox edit, schedule toggle, manual sync, and reindex actions
+- persists per-user search defaults for query and mailbox filter
 - is intentionally not a webmail frontend
+
+Health behavior:
+- `/healthz` returns JSON
+- `200 OK` means the DB, writable runtime paths, store root, and tool discovery checks passed
+- `503` means the app is degraded before mailbox traffic is attempted
 
 ## Development
 
@@ -48,3 +55,12 @@ CLI sync mode:
 ```bash
 cargo run -- sync-due
 ```
+
+Repo validation:
+
+```bash
+nix flake check --no-build
+scripts/check-repo.sh
+```
+
+`scripts/check-repo.sh` now builds and runs the packaged mail UI test derivation in addition to the shell policy suite.

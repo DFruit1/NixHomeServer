@@ -16,6 +16,11 @@ fi
 echo "ℹ️ Running flake checks (no build)…"
 nix flake check --no-build
 
+system="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
+
+echo "ℹ️ Running mail archive UI test derivation…"
+nix build ".#checks.${system}.mail-archive-ui-test" --print-build-logs
+
 echo "ℹ️ Running repository policy tests…"
 tests/run-all.sh
 

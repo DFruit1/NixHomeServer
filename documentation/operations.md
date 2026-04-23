@@ -26,6 +26,8 @@ scripts/check-repo.sh
 ```
 
 `scripts/check-repo.sh` already runs `tests/run-all.sh`, including `tests/core-config.sh`.
+It also builds and runs the packaged `mail-archive-ui` test derivation so Rust app
+regressions cannot slip past the repo gate.
 
 ## 3. Guarded Deploy
 
@@ -175,5 +177,9 @@ Mail archive service checks:
 ```bash
 systemctl status mail-archive-ui mail-archive-oauth2-proxy mail-archive-sync.timer
 sudo systemctl start mail-archive-sync.service
-curl -fsS http://127.0.0.1:9011/healthz
+curl -fsS http://127.0.0.1:9011/healthz | jq .
 ```
+
+Mailbox repair notes:
+- Use the UI `Reindex` action when downloaded mail is present but search looks stale.
+- Use `Sync now` when the mailbox needs a fresh IMAP pull before reindexing.
