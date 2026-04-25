@@ -103,7 +103,7 @@ in
         zpool list -v "${zfsPoolName}" > "$zpool_list_file"
         zfs list -r -o name,type,used,avail,refer,mountpoint,compressratio "${zfsPoolName}" > "$zfs_list_file"
         zfs get -r -o name,property,value,source \
-          mountpoint compression recordsize quota reservation acltype xattr \
+          mountpoint,compression,recordsize,quota,reservation,acltype,xattr \
           "${zfsPoolName}" > "$zfs_props_file"
         findmnt -R -o TARGET,SOURCE,FSTYPE,OPTIONS "${vars.dataRoot}" > "$findmnt_file"
 
@@ -115,7 +115,7 @@ in
           ]
         }; do
           IFS=: read -r label root_path <<< "$spec"
-          inventory_file="${inventoryRoot}/${label}.tsv"
+          inventory_file="${inventoryRoot}/''${label}.tsv"
           if [[ -d "$root_path" ]]; then
             (
               printf 'relative_path\ttype\tmode\towner\tgroup\tsize\n'
