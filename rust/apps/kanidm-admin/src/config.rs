@@ -158,7 +158,17 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn write_script(path: &Path, body: &str) {
-        fs::write(path, body).expect("write script");
+        let shell = std::process::Command::new("bash")
+            .args(["-lc", "command -v bash"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.trim().to_string())
+            .filter(|stdout| !stdout.is_empty())
+            .unwrap_or_else(|| "/bin/sh".to_string());
+        let rewritten = body.replacen("#!/usr/bin/env bash", &format!("#!{shell}"), 1);
+        fs::write(path, rewritten).expect("write script");
         let mut permissions = fs::metadata(path).expect("metadata").permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("chmod");

@@ -1,12 +1,13 @@
 use clap::{Args, Parser, Subcommand};
 use kanidm_admin::{
     commands::{
-        access::{grant_access, revoke_access, show_access, why_denied},
+        access::{grant_access, revoke_access, set_access, show_access, why_denied, SetAccessOptions},
         auth::{auth_login, auth_reauth, auth_status},
         config::show_config,
         jellyfin::set_jellyfin_password,
         users::{
-            create_user, list_users, reset_token, show_user, CreateUserOptions, ResetTokenOptions,
+            create_user, delete_user, disable_user, enable_user, list_users, reset_token,
+            show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
     config::{resolve_config, ConfigOverrides},
@@ -72,6 +73,17 @@ enum UsersSubcommand {
     Show {
         account_id: String,
     },
+    Disable {
+        account_id: String,
+    },
+    Enable {
+        account_id: String,
+    },
+    Delete {
+        account_id: String,
+        #[arg(long)]
+        confirm: String,
+    },
     Create {
         account_id: String,
         #[arg(long)]
@@ -106,6 +118,13 @@ enum AccessSubcommand {
     Revoke {
         account_id: String,
         group: String,
+    },
+    Set {
+        account_id: String,
+        #[arg(long = "group")]
+        groups: Vec<String>,
+        #[arg(long, default_value_t = false)]
+        allow_empty: bool,
     },
     WhyDenied {
         #[arg(long)]
@@ -177,6 +196,19 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         Commands::Users(command) => match command.command {
             UsersSubcommand::List => list_users(&kanidm).map(Some),
             UsersSubcommand::Show { account_id } => show_user(&kanidm, &account_id).map(Some),
+            UsersSubcommand::Disable { account_id } => disable_user(&kanidm, &account_id).map(Some),
+            UsersSubcommand::Enable { account_id } => enable_user(&kanidm, &account_id).map(Some),
+            UsersSubcommand::Delete {
+                account_id,
+                confirm,
+            } => delete_user(
+                &kanidm,
+                DeleteUserOptions {
+                    account_id,
+                    confirm,
+                },
+            )
+            .map(Some),
             UsersSubcommand::Create {
                 account_id,
                 display_name,
@@ -209,6 +241,19 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             AccessSubcommand::Revoke { account_id, group } => {
                 revoke_access(&kanidm, &account_id, &group).map(Some)
             }
+            AccessSubcommand::Set {
+                account_id,
+                groups,
+                allow_empty,
+            } => set_access(
+                &kanidm,
+                SetAccessOptions {
+                    account_id,
+                    groups,
+                    allow_empty,
+                },
+            )
+            .map(Some),
             AccessSubcommand::WhyDenied { app, user } => why_denied(&kanidm, &user, app).map(Some),
         },
         Commands::Jellyfin(command) => match command.command {
@@ -327,6 +372,56 @@ mod tests {
                     ttl: 7200
                 }
             }) if account_id == "dsaw"
+        ));
+    }
+
+    #[test]
+    fn parses_users_delete() {
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "users",
+            "delete",
+            "dsaw",
+            "--confirm",
+            "dsaw",
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Users(UsersCommand {
+                command: UsersSubcommand::Delete {
+                    account_id,
+                    confirm
+                }
+            }) if account_id == "dsaw" && confirm == "dsaw"
+        ));
+    }
+
+    #[test]
+    fn parses_access_set() {
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "access",
+            "set",
+            "dsaw",
+            "--group",
+            "users",
+            "--group",
+            "paperless-users",
+            "--allow-empty",
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Access(AccessCommand {
+                command: AccessSubcommand::Set {
+                    account_id,
+                    groups,
+                    allow_empty: true
+                }
+            }) if account_id == "dsaw" && groups == vec!["users".to_string(), "paperless-users".to_string()]
         ));
     }
 

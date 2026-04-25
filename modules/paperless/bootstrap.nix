@@ -47,6 +47,7 @@ in
 
           legacy_dir='${paperlessLegacyConsumeDir}'
           inbox_dir='${paperlessInboxDir}'
+          archive_dir='${vars.mediaRoot}/documents/archive'
 
           if [[ -L "$legacy_dir" ]]; then
             rm -f "$legacy_dir"
@@ -62,6 +63,8 @@ in
           fi
 
           install -d -m 2770 -o root -g paperless "$inbox_dir"
+          install -d -m 0750 -o paperless -g paperless "$archive_dir"
+          install -d -m 0700 -o copyparty -g copyparty "$archive_dir/.hist"
         '';
       };
 

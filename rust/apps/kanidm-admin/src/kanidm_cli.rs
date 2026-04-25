@@ -1,13 +1,17 @@
 use std::{
     ffi::OsString,
     process::{Command, Stdio},
+    thread::sleep,
+    time::{Duration, Instant},
 };
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::{config::ResolvedConfig, AppError};
+
+const VERIFICATION_BACKOFF_MS: [u64; 7] = [250, 500, 1_000, 2_000, 2_000, 2_000, 2_000];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BackendFailure {
@@ -29,6 +33,13 @@ pub struct KanidmCli {
     program: OsString,
     server_url: String,
     admin_name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct VerificationCheck<T> {
+    pub matched: bool,
+    pub observed: Value,
+    pub value: T,
 }
 
 impl KanidmCli {
@@ -91,6 +102,39 @@ impl KanidmCli {
         )
     }
 
+    pub fn person_disable(&self, account_id: &str) -> Result<(), AppError> {
+        let args = self.base_args(["person", "validity", "expire-at", account_id, "now"]);
+        self.run_unit(
+            args,
+            &format!("failed to disable Kanidm user '{account_id}'"),
+        )
+    }
+
+    pub fn person_enable(&self, account_id: &str) -> Result<(), AppError> {
+        let clear_expiry = self.base_args(["person", "validity", "expire-at", account_id, "clear"]);
+        self.run_unit(
+            clear_expiry,
+            &format!("failed to clear expiry for Kanidm user '{account_id}' while enabling the account"),
+        )?;
+
+        let clear_valid_from =
+            self.base_args(["person", "validity", "begin-from", account_id, "clear"]);
+        self.run_unit(
+            clear_valid_from,
+            &format!(
+                "failed to clear valid-from restriction for Kanidm user '{account_id}' while enabling the account"
+            ),
+        )
+    }
+
+    pub fn person_delete(&self, account_id: &str) -> Result<(), AppError> {
+        let args = self.base_args(["person", "delete", account_id]);
+        self.run_unit(
+            args,
+            &format!("failed to delete Kanidm user '{account_id}'"),
+        )
+    }
+
     pub fn clear_expiry(&self, account_id: &str) -> Result<(), AppError> {
         let args = self.base_args(["person", "validity", "expire-at", account_id, "clear"]);
         self.run_unit(
@@ -120,12 +164,13 @@ impl KanidmCli {
         account_id: &str,
         ttl: u64,
     ) -> Result<String, AppError> {
+        let ttl_string = ttl.to_string();
         let args = self.base_args([
             "person",
             "credential",
             "create-reset-token",
             account_id,
-            &ttl.to_string(),
+            ttl_string.as_str(),
         ]);
         self.run_stdout(
             args,
@@ -255,10 +300,7 @@ impl KanidmCli {
                     }
                 } else {
                     AppError::Io {
-                        message: format!(
-                            "failed to execute {}: {error}",
-                            self.program.to_string_lossy()
-                        ),
+                        message: format!("failed to execute {}: {error}", self.program.to_string_lossy()),
                     }
                 }
             })?;
@@ -321,6 +363,52 @@ impl KanidmCli {
 #[derive(Debug, Clone)]
 struct BackendSuccess {
     stdout: String,
+}
+
+pub fn verify_with_retry<T, F>(
+    context: &str,
+    expected: Value,
+    write_completed: bool,
+    mut probe: F,
+) -> Result<T, AppError>
+where
+    F: FnMut() -> Result<VerificationCheck<T>, AppError>,
+{
+    let start = Instant::now();
+    let mut observed_states = Vec::new();
+
+    for (attempt, delay_ms) in std::iter::once(0)
+        .chain(VERIFICATION_BACKOFF_MS)
+        .enumerate()
+    {
+        if delay_ms > 0 {
+            sleep(Duration::from_millis(delay_ms));
+        }
+
+        match probe() {
+            Ok(check) => {
+                observed_states.push(check.observed.clone());
+                if check.matched {
+                    return Ok(check.value);
+                }
+            }
+            Err(error) => observed_states.push(json!({
+                "attempt": attempt + 1,
+                "probe_error": error.to_string(),
+                "details": error.json_payload(),
+            })),
+        }
+    }
+
+    Err(AppError::Verification {
+        message: context.to_string(),
+        details: json!({
+            "elapsed_ms": start.elapsed().as_millis(),
+            "expected_state": expected,
+            "observed_states": observed_states,
+            "write_completed": write_completed,
+        }),
+    })
 }
 
 fn failure_message(failure: &BackendFailure) -> String {

@@ -140,7 +140,52 @@ check_mount() {
   fi
 }
 
-need nix curl host systemctl findmnt jq smartctl journalctl zpool zfs
+run_as_copyparty() {
+  if (( EUID == 0 )); then
+    runuser -u copyparty -- "$@"
+  else
+    sudo -u copyparty "$@"
+  fi
+}
+
+check_copyparty_archive_access() {
+  local archive_dir="$1"
+  local hist_dir="${archive_dir}/.hist"
+
+  if [[ ! -d "$archive_dir" ]]; then
+    echo "❌ copyparty archive missing: ${archive_dir}"
+    failed=1
+    return
+  fi
+
+  if [[ ! -d "$hist_dir" ]]; then
+    echo "❌ copyparty metadata missing: ${hist_dir}"
+    failed=1
+    return
+  fi
+
+  if ! run_as_copyparty test -x "$archive_dir"; then
+    echo "❌ copyparty cannot traverse: ${archive_dir}"
+    failed=1
+    return
+  fi
+
+  if ! run_as_copyparty test -r "$hist_dir"; then
+    echo "❌ copyparty cannot read: ${hist_dir}"
+    failed=1
+    return
+  fi
+
+  if ! run_as_copyparty test -w "$hist_dir"; then
+    echo "❌ copyparty cannot write: ${hist_dir}"
+    failed=1
+    return
+  fi
+
+  echo "✅ copyparty archive metadata access: ${hist_dir}"
+}
+
+need nix curl host systemctl findmnt jq smartctl journalctl zpool zfs runuser
 
 hostname="$(nix_var 'vars.hostname')"
 domain="$(nix_var 'vars.domain')"
@@ -148,6 +193,7 @@ nb_ip="$(nix_var 'vars.nbIP')"
 server_lan_ip="$(nix_var 'vars.serverLanIP')"
 dns_mode="$(nix_var 'vars.dnsMode')"
 files_domain="$(nix_var 'vars.filesDomain')"
+media_root="$(nix_var 'vars.mediaRoot')"
 lan_dns_domain="$(nix_var 'vars.lanDnsDomain')"
 photos_domain="$(nix_var 'vars.photosDomain')"
 audiobooks_domain="$(nix_var 'vars.audiobooksDomain')"
@@ -215,6 +261,10 @@ check_http "https://paperless.${domain}/" 200 302
 check_http "https://${audiobooks_domain}/" 200 302
 check_http "https://${kavita_domain}/" 200 302
 check_http "https://${jellyfin_domain}/" 200 302
+
+echo
+echo "== Copyparty Paths =="
+check_copyparty_archive_access "${media_root}/documents/archive"
 
 echo
 echo "== Internal HTTP =="

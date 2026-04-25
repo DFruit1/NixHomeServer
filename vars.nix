@@ -51,18 +51,76 @@ rec {
   mediaRoot = "${dataRoot}/media";
   usersWorkspaceRoot = "${dataRoot}/users";
   sharedPublicRoot = "${dataRoot}/shared";
-  userBooksSubdirs = [
+  personalKavitaLibraries = [
+    {
+      dir = "ebooks";
+      type = 2;
+      fileGroupTypes = [ 2 3 1 ];
+      label = "Ebooks";
+    }
+    {
+      dir = "comics";
+      type = 1;
+      fileGroupTypes = [ 1 4 3 ];
+      label = "Comics";
+    }
+    {
+      dir = "manga";
+      type = 0;
+      fileGroupTypes = [ 1 4 ];
+      label = "Manga";
+    }
+    {
+      dir = "other";
+      type = 2;
+      fileGroupTypes = [ 2 3 1 ];
+      label = "Other";
+    }
+  ];
+  personalJellyfinLibraries = [
+    {
+      dir = "movies";
+      collectionType = "movies";
+      label = "Movies";
+    }
+    {
+      dir = "shows";
+      collectionType = "tvshows";
+      label = "Shows";
+    }
+    {
+      dir = "home";
+      collectionType = "homevideos";
+      label = "Home Videos";
+    }
+    {
+      dir = "music-videos";
+      collectionType = "musicvideos";
+      label = "Music Videos";
+    }
+    {
+      dir = "youtube";
+      collectionType = "homevideos";
+      label = "YouTube";
+    }
+    {
+      dir = "other";
+      collectionType = "homevideos";
+      label = "Other Videos";
+    }
+  ];
+  userBooksSubdirs = map (library: library.dir) personalKavitaLibraries;
+  userVideoSubdirs = map (library: library.dir) personalJellyfinLibraries;
+  sharedBooksSubdirs = [
     "ebooks"
     "comics"
     "manga"
   ];
-  userVideoSubdirs = [
+  sharedVideoSubdirs = [
     "movies"
     "shows"
     "home"
   ];
-  sharedBooksSubdirs = userBooksSubdirs;
-  sharedVideoSubdirs = userVideoSubdirs;
   sharedAudiobooksRoot = "${sharedPublicRoot}/audiobooks";
   sharedBooksRoot = "${sharedPublicRoot}/books";
   sharedEbooksRoot = "${sharedBooksRoot}/ebooks";

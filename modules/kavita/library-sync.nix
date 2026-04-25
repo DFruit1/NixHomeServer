@@ -5,6 +5,7 @@ let
   kanidmPort = 8443;
   dataDir = "/var/lib/kavita";
   managedDir = "${dataDir}/.nixos-managed";
+  personalKavitaLibrariesJson = builtins.toJSON vars.personalKavitaLibraries;
   syncScript = pkgs.writeShellScript "kavita-library-sync-v1" ''
     set -euo pipefail
 
@@ -135,9 +136,12 @@ SQL
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
-      add_desired_library "$username Ebooks" '2' "${vars.usersWorkspaceRoot}/$username/books/ebooks" '[2,3,1]'
-      add_desired_library "$username Comics" '1' "${vars.usersWorkspaceRoot}/$username/books/comics" '[1,4,3]'
-      add_desired_library "$username Manga" '0' "${vars.usersWorkspaceRoot}/$username/books/manga" '[1,4]'
+      while IFS=$'\t' read -r dir label type file_groups_json; do
+        add_desired_library "$username $label" "$type" "${vars.usersWorkspaceRoot}/$username/books/$dir" "$file_groups_json"
+      done < <(
+        printf '%s' '${personalKavitaLibrariesJson}' \
+          | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, (.type | tostring), (.fileGroupTypes | tojson) ] | @tsv'
+      )
     done < "$desired_users_file"
 
     libraries_json="$(load_libraries_json)"
@@ -345,32 +349,35 @@ SQL
         continue
       fi
 
+      allowed_names_json="$(
+        {
+          printf '%s\n' "Shared Ebooks" "Shared Comics" "Shared Manga"
+          printf '%s' '${personalKavitaLibrariesJson}' \
+            | ${pkgs.jq}/bin/jq -r --arg username "$username" '.[] | "\($username) \(.label)"'
+        } \
+          | ${pkgs.jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
+      )"
       allowed_json="$(
-        ${pkgs.jq}/bin/jq -cn --argjson libs "$libraries_json" --arg username "$username" '
-          def decode_array:
-            if . == null then []
-            elif type == "string" then fromjson
-            else .
-            end;
-          [
-            $libs[]
-            | select(
-                .name == "Shared Ebooks"
-                or .name == "Shared Comics"
-                or .name == "Shared Manga"
-                or .name == ($username + " Ebooks")
-                or .name == ($username + " Comics")
-                or .name == ($username + " Manga")
-              )
-            | {
-                id,
-                name,
-                type,
-                libraryFileTypes: (.libraryFileTypes | decode_array),
-                excludePatterns: (.excludePatterns | decode_array)
-              }
-          ]
-        '
+        ${pkgs.jq}/bin/jq -cn \
+          --argjson libs "$libraries_json" \
+          --argjson allowed_names "$allowed_names_json" '
+            def decode_array:
+              if . == null then []
+              elif type == "string" then fromjson
+              else .
+              end;
+            [
+              $libs[]
+              | select(.name as $name | any($allowed_names[]; . == $name))
+              | {
+                  id,
+                  name,
+                  type,
+                  libraryFileTypes: (.libraryFileTypes | decode_array),
+                  excludePatterns: (.excludePatterns | decode_array)
+                }
+            ]
+          '
       )"
       update_user_access "$username" user "$allowed_json"
     done < "$desired_users_file"

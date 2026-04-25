@@ -5,6 +5,8 @@ let
   userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
   userVideoSubdirs = lib.escapeShellArgs vars.userVideoSubdirs;
+  kavitaWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
+  jellyfinWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/videos/${name}"'') vars.userVideoSubdirs;
   prepareUserWorkspace = pkgs.writeShellScript "prepare-samba-user-workspace" ''
     set -euo pipefail
 
@@ -89,14 +91,10 @@ let
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
     apply_writable_acl kavita-media \
       "$root/books" \
-      "$root/books/ebooks" \
-      "$root/books/comics" \
-      "$root/books/manga"
+      ${kavitaWritablePaths}
     apply_writable_acl jellyfin-media \
       "$root/videos" \
-      "$root/videos/movies" \
-      "$root/videos/shows" \
-      "$root/videos/home"
+      ${jellyfinWritablePaths}
 
     apply_readonly_acl immich "$root/photos"
     apply_readonly_acl paperless "$root/documents"

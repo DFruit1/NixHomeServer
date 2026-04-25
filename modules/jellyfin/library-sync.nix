@@ -5,6 +5,7 @@ let
   kanidmPort = 8443;
   dataDir = "/var/lib/jellyfin";
   managedDir = "${dataDir}/.nixos-managed";
+  personalJellyfinLibrariesJson = builtins.toJSON vars.personalJellyfinLibraries;
   syncScript = pkgs.writeShellScript "jellyfin-library-sync-v1" ''
     set -euo pipefail
 
@@ -117,9 +118,12 @@ let
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
-      add_desired_library "$username Movies" 'movies' "${vars.usersWorkspaceRoot}/$username/videos/movies"
-      add_desired_library "$username Shows" 'tvshows' "${vars.usersWorkspaceRoot}/$username/videos/shows"
-      add_desired_library "$username Home Videos" 'homevideos' "${vars.usersWorkspaceRoot}/$username/videos/home"
+      while IFS=$'\t' read -r dir label collection_type; do
+        add_desired_library "$username $label" "$collection_type" "${vars.usersWorkspaceRoot}/$username/videos/$dir"
+      done < <(
+        printf '%s' '${personalJellyfinLibrariesJson}' \
+          | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, .collectionType ] | @tsv'
+      )
     done < "$desired_users_file"
 
     token="$(authenticate_admin)"
@@ -267,49 +271,24 @@ PY
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
+      allowed_json="$(
+        {
+          printf '%s\n' "Shared Movies" "Shared Shows" "Shared Home Videos"
+          printf '%s' '${personalJellyfinLibrariesJson}' \
+            | ${pkgs.jq}/bin/jq -r --arg username "$username" '.[] | "\($username) \(.label)"'
+        } | while IFS= read -r library_name; do
+          [[ -n "$library_name" ]] || continue
+          library_id="''${library_ids["$library_name"]:-}"
+          [[ -n "$library_id" ]] || continue
+          printf '%s\n' "$library_id"
+        done | ${pkgs.jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
+      )"
+
       if ${pkgs.gnugrep}/bin/grep -Fxq "$username" "$admin_users_file"; then
-        allowed_json="$(
-          ${pkgs.jq}/bin/jq -cn \
-            --arg shared_movies "''${library_ids["Shared Movies"]:-}" \
-            --arg shared_shows "''${library_ids["Shared Shows"]:-}" \
-            --arg shared_home "''${library_ids["Shared Home Videos"]:-}" \
-            --arg user_movies "''${library_ids["$username Movies"]:-}" \
-            --arg user_shows "''${library_ids["$username Shows"]:-}" \
-            --arg user_home "''${library_ids["$username Home Videos"]:-}" '
-              [
-                $shared_movies,
-                $shared_shows,
-                $shared_home,
-                $user_movies,
-                $user_shows,
-                $user_home
-              ]
-              | map(select(type == "string" and length > 0))
-            '
-        )"
         update_user_policy "$username" admin "$allowed_json"
         continue
       fi
 
-      allowed_json="$(
-        ${pkgs.jq}/bin/jq -cn \
-          --arg shared_movies "''${library_ids["Shared Movies"]:-}" \
-          --arg shared_shows "''${library_ids["Shared Shows"]:-}" \
-          --arg shared_home "''${library_ids["Shared Home Videos"]:-}" \
-          --arg user_movies "''${library_ids["$username Movies"]:-}" \
-          --arg user_shows "''${library_ids["$username Shows"]:-}" \
-          --arg user_home "''${library_ids["$username Home Videos"]:-}" '
-            [
-              $shared_movies,
-              $shared_shows,
-              $shared_home,
-              $user_movies,
-              $user_shows,
-              $user_home
-            ]
-            | map(select(length > 0))
-          '
-      )"
       update_user_policy "$username" user "$allowed_json"
     done < "$desired_users_file"
   '';

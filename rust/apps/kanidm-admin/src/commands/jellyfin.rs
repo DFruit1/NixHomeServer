@@ -1,9 +1,9 @@
 use std::{
     env,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use pbkdf2::pbkdf2_hmac;
@@ -37,19 +37,23 @@ pub fn set_jellyfin_password(
         .unwrap_or_else(|| PathBuf::from(DEFAULT_PASSWORD_HASH_DIR));
     let path = directory.join(format!("{account_id}.pbkdf2"));
 
-    write_password_hash(&directory, &path, &hash_password(&password))?;
+    write_password_hash_atomic(&directory, &path, &hash_password(&password))?;
 
     Ok(CommandOutput {
-        message: format!("stored desired Jellyfin password hash for '{account_id}'"),
+        message: format!("staged desired Jellyfin password hash for '{account_id}'"),
         human: format!(
-            "Stored the desired Jellyfin password hash for '{account_id}'.\nPath: {}\nSource env var: {password_env}",
+            "Staged the desired Jellyfin password hash for '{account_id}'.\nPath: {}\nSource env var: {password_env}\nThe Jellyfin sync service still needs to apply this staged hash.",
             path.display()
         ),
         details: json!({
             "account_id": account_id,
             "path": path,
             "password_env": password_env,
+            "staged": true,
         }),
+        warnings: vec![
+            "The Jellyfin sync timer or service must still converge before the password change is active.".to_string(),
+        ],
     })
 }
 
@@ -89,7 +93,11 @@ fn hex_upper(bytes: &[u8]) -> String {
     out
 }
 
-fn write_password_hash(directory: &PathBuf, path: &PathBuf, password_hash: &str) -> Result<(), AppError> {
+fn write_password_hash_atomic(
+    directory: &Path,
+    path: &Path,
+    password_hash: &str,
+) -> Result<(), AppError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     builder.mode(0o700);
@@ -100,16 +108,23 @@ fn write_password_hash(directory: &PathBuf, path: &PathBuf, password_hash: &str)
         ),
     })?;
 
+    let temp_path = directory.join(format!(
+        ".{}.pbkdf2.tmp-{}",
+        path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("jellyfin"),
+        std::process::id()
+    ));
+
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .mode(0o600)
-        .open(path)
+        .open(&temp_path)
         .map_err(|error| AppError::Io {
             message: format!(
-                "failed to open Jellyfin password state file '{}': {error}",
-                path.display()
+                "failed to open temporary Jellyfin password state file '{}' in '{}': {error}",
+                temp_path.display(),
+                directory.display()
             ),
         })?;
 
@@ -117,10 +132,35 @@ fn write_password_hash(directory: &PathBuf, path: &PathBuf, password_hash: &str)
         .and_then(|_| file.write_all(b"\n"))
         .map_err(|error| AppError::Io {
             message: format!(
-                "failed to write Jellyfin password state file '{}': {error}",
-                path.display()
+                "failed to write temporary Jellyfin password state file '{}': {error}",
+                temp_path.display()
             ),
-        })
+        })?;
+
+    file.sync_all().map_err(|error| AppError::Io {
+        message: format!(
+            "failed to fsync temporary Jellyfin password state file '{}': {error}",
+            temp_path.display()
+        ),
+    })?;
+    drop(file);
+
+    fs::rename(&temp_path, path).map_err(|error| AppError::Io {
+        message: format!(
+            "failed to atomically replace Jellyfin password state file '{}' with '{}': {error}",
+            path.display(),
+            temp_path.display()
+        ),
+    })?;
+
+    best_effort_directory_sync(directory);
+    Ok(())
+}
+
+fn best_effort_directory_sync(directory: &Path) {
+    if let Ok(dir) = File::open(directory) {
+        let _ = dir.sync_all();
+    }
 }
 
 #[cfg(test)]
@@ -146,8 +186,26 @@ mod tests {
         let stored = fs::read_to_string(&hash_path).expect("hash file");
         assert!(stored.starts_with("$PBKDF2-SHA512$iterations=210000$"));
         assert!(output.human.contains(hash_path.to_string_lossy().as_ref()));
+        assert!(output.human.contains("still needs to apply"));
 
         env::remove_var(PASSWORD_HASH_DIR_ENV);
         env::remove_var("TEST_JELLYFIN_PASSWORD");
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("dsaw.pbkdf2");
+        fs::write(&path, "old-value\n").expect("seed");
+
+        write_password_hash_atomic(temp.path(), &path, "new-value").expect("write");
+
+        let stored = fs::read_to_string(&path).expect("read");
+        assert_eq!(stored, "new-value\n");
+        assert!(temp
+            .path()
+            .read_dir()
+            .expect("read_dir")
+            .all(|entry| !entry.expect("entry").file_name().to_string_lossy().contains(".tmp-")));
     }
 }

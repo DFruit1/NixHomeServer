@@ -24,5 +24,6 @@ pub fn show_config(config: &ResolvedConfig) -> CommandOutput {
             "admin_name": config.admin_name,
             "kanidm_bin": kanidm_bin,
         }),
+        warnings: Vec::new(),
     }
 }

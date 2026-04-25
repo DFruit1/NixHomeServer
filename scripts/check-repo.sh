@@ -18,6 +18,12 @@ nix flake check --no-build
 
 system="$(nix eval --impure --raw --expr 'builtins.currentSystem')"
 
+echo "ℹ️ Running kanidm-admin clippy check derivation…"
+nix build ".#checks.${system}.kanidm-admin-clippy" --print-build-logs
+
+echo "ℹ️ Running kanidm-admin test derivation…"
+nix build ".#checks.${system}.kanidm-admin-test" --print-build-logs
+
 echo "ℹ️ Running mail archive UI test derivation…"
 nix build ".#checks.${system}.mail-archive-ui-test" --print-build-logs
 

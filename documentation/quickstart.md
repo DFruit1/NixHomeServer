@@ -75,6 +75,28 @@ ls -l /dev/disk/by-id/
 
 Use `/dev/disk/by-id/*`, not transient `/dev/sdX` names.
 
+## Personal Media Categories
+
+Per-user media roots are created automatically under `/mnt/data/users/<user>/`.
+
+Books categories under `books/`:
+- `ebooks`: general book files such as EPUB, MOBI, AZW, and standard PDFs
+- `comics`: western comics and comic archive formats
+- `manga`: manga and similar chapter or volume-oriented material
+- `other`: book-like reading material that should still be exposed through Kavita, such as textbooks, papers, manuals, and reference PDFs
+
+Video categories under `videos/`:
+- `movies`: standard movie collections
+- `shows`: episodic TV or series content
+- `home`: personal videos and recordings
+- `music-videos`: music video collections using Jellyfin's dedicated Music Videos type
+- `youtube`: downloaded YouTube-style videos exposed as Jellyfin `homevideos`
+- `other`: catch-all video material exposed as Jellyfin `homevideos`
+
+Shared media roots remain narrower and unchanged:
+- shared books: `ebooks`, `comics`, `manga`
+- shared videos: `movies`, `shows`, `home`
+
 ## Destructive Storage Command Matrix
 
 | Command or workflow | What it destroys | What it must not touch | Verify first in [`vars.nix`](../vars.nix) | Preview or handoff |
