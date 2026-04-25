@@ -27,11 +27,7 @@ rec {
     mirrorPairs = [
       [
         "ata-HGST_HUS726T4TALA6L4_V1JAKPNH"
-        "ata-HGST_HUS726T4TALA6L4_V6G7R6MS"
-      ]
-      [
         "ata-HGST_HUS726T4TALA6L4_V1J9PKDH"
-        "ata-HGST_HUS726T4TALA6L4_V1G5K8YC"
       ]
     ];
     datasets = [
@@ -42,13 +38,7 @@ rec {
   };
 
   coldStorageMountPoint = "/mnt/cold-storage";
-  coldStoragePools = [ # Manual-import pools kept outside the default Disko path.
-    {
-      name = "cold-v1jan8ph";
-      disk = "ata-HGST_HUS726T4TALA6L4_V1JAN8PH";
-      mountPoint = "${coldStorageMountPoint}/v1jan8ph";
-    }
-  ];
+  coldStoragePools = [ ]; # Optional manual-import pools kept outside the default Disko path.
 
   cloudflareTunnelName = "metro";
 

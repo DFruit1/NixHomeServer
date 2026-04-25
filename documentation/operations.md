@@ -1,14 +1,44 @@
 # Operations
 
-Use this as the single day-2 runbook for deploys, runtime validation, DNS and
-access expectations, power checks, storage monitoring, and troubleshooting.
+Use this as the single day-2 runbook for validation, guarded deploys, rollback, runtime readiness, DNS expectations, power checks, storage monitoring, and first-response troubleshooting.
 
 Use the other guides this way:
 - [Quickstart](./quickstart.md) owns workstation setup, secrets staging, agenix key installation, and the supported destructive disk wrappers.
 - [Kanidm Guide](./kanidm.md) owns operator identity workflows and app access grants.
-- [Restore and Recovery](./restore-and-recovery.md) owns mirrored data-pool recreation and cold-storage mount or unmount operations.
+- [Restore And Recovery](./restore-and-recovery.md) owns single-mirror data-pool recreation, degraded-disk replacement, and cold-storage mount or unmount operations.
 
-## 1. Common Commands
+## When To Use This Guide
+
+Use Operations when any of these are true:
+- the host already exists and you need the canonical validation gate
+- you need the guarded deploy workflow for a config change
+- a deploy completed but the new generation is bad and you need rollback steps
+- runtime readiness, DNS behavior, or service status needs to be checked
+- storage monitoring, power-management timers, or failed units need a quick audit
+
+## Conventions
+
+- Placeholders such as `<domain>`, `TARGET_SERVER_IP`, and `CURRENT_SERVER_IP` are examples. Replace them with your operator values before running commands.
+- Group names such as `users`, `immich-users`, `paperless-users`, `fileshare_users`, and `*-admin` are literal names managed by this repo.
+- Command blocks use the same context format:
+  - Run from: where to execute the commands
+  - Privileges: whether `sudo` is required
+  - Environment: whether a plain shell or a specific `nix shell` is expected
+
+## Shared Troubleshooting Matrix
+
+| Symptom | First commands | Next document or section |
+| --- | --- | --- |
+| Public endpoint down | `systemctl status caddy cloudflared-tunnel-metro` and `journalctl -u caddy -u cloudflared-tunnel-metro -n 100 --no-pager` | Stay in [Service Failure Entry Points](#service-failure-entry-points). |
+| Private hostname resolves incorrectly | `systemctl status unbound netbird-main`, `host paperless.<domain> 127.0.0.1`, and `resolvectl query paperless.<domain>` | Stay in [Access And DNS Model](#access-and-dns-model) and [Service Failure Entry Points](#service-failure-entry-points). |
+| User reaches sign-in but app still denies access | Confirm the app and user in [Kanidm Guide](./kanidm.md#troubleshooting-flow). | Continue in [Kanidm Guide](./kanidm.md#troubleshooting-flow). |
+| Deploy succeeded but the new generation is bad | Start with the rollback path that matches your current access: SSH, bootloader, or local console. | Use [Rollback After A Bad Generation](#rollback-after-a-bad-generation). |
+| `/mnt/data` is missing or datasets do not mount | `findmnt -R /mnt`, `sudo zpool status data`, and `sudo zfs list -r data` | Continue in [Restore And Recovery](./restore-and-recovery.md). |
+| `zpool status data` shows `DEGRADED` or a failed member | Confirm which member failed, avoid any topology changes, and start the degraded-disk replacement workflow. | Continue in [Restore And Recovery](./restore-and-recovery.md#scenario-replace-a-degraded-disk-in-a-mirror-pool). |
+| Cold-storage pool does not appear | Confirm the configured pool names and current import state. | Continue in [Restore And Recovery](./restore-and-recovery.md#scenario-mount-or-unmount-a-cold-storage-pool). |
+| Power or overnight availability looks wrong | `./scripts/power-audit.sh` and `systemctl list-timers power-management-nightly-suspend.timer fstrim.timer zfs-scrub-data.timer` | Stay in [Power Management](#power-management). |
+
+## Common Commands
 
 - Validation gate: `nix flake check --no-build` then `scripts/check-repo.sh`
 - Guarded deploy: `./scripts/deploy-validated.sh`
@@ -16,23 +46,56 @@ Use the other guides this way:
 - Power audit: `./scripts/power-audit.sh`
 - Failed units: `systemctl --failed --no-pager`
 
-## 2. Validation Gate
+## Validation Gate
 
-Run from the repo root before deploys and after meaningful config changes:
+Run the flake check first.
+
+- Run from: `workstation repo root`
+- Privileges: `sudo not required`
+- Environment: `plain shell`
 
 ```bash
 nix flake check --no-build
+```
+
+Expected result:
+- evaluation completes without option, flake, or type errors
+- the host configuration and packages still evaluate cleanly before any deploy work
+
+If it fails:
+- stop before deploying anything
+- fix the reported Nix evaluation error first
+- rerun the command until it completes cleanly
+
+Run the repo policy and test gate second.
+
+- Run from: `workstation repo root`
+- Privileges: `sudo not required`
+- Environment: `plain shell`
+
+```bash
 scripts/check-repo.sh
 ```
 
-`scripts/check-repo.sh` already runs `tests/run-all.sh`, including `tests/core-config.sh`.
-It also builds and runs the packaged `mail-archive-ui` test derivation so Rust app
-regressions cannot slip past the repo gate.
+`scripts/check-repo.sh` already runs `tests/run-all.sh`, including `tests/core-config.sh`. It also builds and runs the packaged `mail-archive-ui` test derivation so Rust app regressions cannot slip past the repo gate.
 
-## 3. Guarded Deploy
+Expected result:
+- repository policy tests pass
+- the packaged `mail-archive-ui` test derivation builds and runs
+- the script exits with `Repository checks passed.`
 
-Derive the intended target address from `vars.serverLanIP`, then keep any
-temporary reachable cutover address in `CURRENT_SERVER_IP` only:
+If it fails:
+- stop before deploying anything
+- fix the failing test, policy check, or build error
+- rerun the full script instead of assuming a partial fix is enough
+
+## Guarded Deploy
+
+Derive the intended target address from `vars.serverLanIP`, then keep any temporary reachable cutover address in `CURRENT_SERVER_IP` only.
+
+- Run from: `workstation repo root`
+- Privileges: `sudo may be requested on the target host`
+- Environment: `plain shell`
 
 ```bash
 export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
@@ -45,7 +108,22 @@ export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
   --hostname server
 ```
 
-Switch only after the guarded test path passes:
+Expected result:
+- the helper reruns validation before the remote rebuild
+- remote `nixos-rebuild test` completes
+- the helper checks failed units and runs remote runtime readiness successfully
+- any transition notice is advisory only and still ends with a clean validation result
+
+If it fails:
+- do not proceed to `--action switch`
+- fix the reported validation, SSH, rebuild, unit, or runtime-readiness failure first
+- if the issue is storage- or recovery-related, move to [Restore And Recovery](./restore-and-recovery.md)
+
+Only switch after the guarded test path passes.
+
+- Run from: `workstation repo root`
+- Privileges: `sudo may be requested on the target host`
+- Environment: `plain shell`
 
 ```bash
 ./scripts/deploy-validated.sh \
@@ -55,11 +133,83 @@ Switch only after the guarded test path passes:
   --hostname server
 ```
 
+Expected result:
+- the switch completes on the target host
+- the new generation becomes active without introducing failed units
+- follow-up readiness checks remain clean on the switched generation
+
+If it fails:
+- stop and use [Rollback After A Bad Generation](#rollback-after-a-bad-generation) if the new generation is already active and bad
+- otherwise fix the reported rebuild or connectivity problem and rerun the guarded test path first
+
 Use `./scripts/deploy-validated.sh --help` for argument details.
 
-## 4. Runtime Validation
+## Rollback After A Bad Generation
+
+Use the rollback path that matches your current access.
+
+### SSH Still Works
+
+- Run from: `target server shell`
+- Privileges: `sudo required`
+- Environment: `plain shell`
+
+```bash
+sudo nixos-rebuild switch --rollback
+sudo systemctl --failed --no-pager
+sudo ./scripts/runtime-readiness.sh
+```
+
+Expected result:
+- the system switches back to the previous generation
+- failed units return to the pre-change baseline
+- runtime readiness passes again on the rolled-back generation
+
+If it fails:
+- move to a local console and use the local rollback path below
+- if the host cannot keep the network up long enough for SSH, use the bootloader rollback path
+
+### You Can Still Reach The Bootloader
+
+At the next reboot, select the previous known-good generation from the NixOS boot menu.
+
+Expected result:
+- the system boots into the older generation
+- remote access and expected services return
+
+If it fails:
+- use a local console for the next recovery step
+- if the issue is storage-related after rollback, continue in [Restore And Recovery](./restore-and-recovery.md)
+
+### Only A Local Console Is Available
+
+- Run from: `local console`
+- Privileges: `sudo required`
+- Environment: `plain shell`
+
+```bash
+sudo nix-env -p /nix/var/nix/profiles/system --list-generations
+sudo nixos-rebuild switch --rollback
+sudo systemctl --failed --no-pager
+sudo ./scripts/runtime-readiness.sh
+```
+
+Expected result:
+- you can confirm the currently installed generations
+- the local system switches back to the previous generation
+- runtime readiness verifies that the rollback is actually healthy
+
+If it fails:
+- inspect the console errors before attempting another deploy
+- if the rollback restores boot but `/mnt/data` is still missing, continue in [Restore And Recovery](./restore-and-recovery.md)
+
+## Runtime Validation
 
 Primary runtime validation:
+
+- Run from: `target server shell`
+- Privileges: `sudo required`
+- Environment: `plain shell`
 
 ```bash
 sudo ./scripts/runtime-readiness.sh
@@ -72,14 +222,34 @@ The readiness check validates:
 - ZFS mounts derived from `vars.zfsDataPool.datasets`
 - SMART health for `vars.monitoredStorageDiskIds`
 
+Expected result:
+- all required units report active
+- HTTP checks return one of the expected status codes
+- DNS answers match the configured public or split-horizon model
+- the ZFS pool and expected datasets are mounted
+- SMART checks do not report hard failures
+
+If it fails:
+- use [Service Failure Entry Points](#service-failure-entry-points) for service and DNS issues
+- use [Kanidm Guide](./kanidm.md#troubleshooting-flow) if the failure is app access after successful sign-in
+- use [Restore And Recovery](./restore-and-recovery.md) if the failure is mount- or storage-related
+
 Additional read-only audits:
+
+- Run from: `target server shell`
+- Privileges: `sudo not required`
+- Environment: `plain shell`
 
 ```bash
 ./scripts/power-audit.sh
 systemctl --failed --no-pager
 ```
 
-## 5. Access And DNS Model
+Expected result:
+- `./scripts/power-audit.sh` reports the configured power policy and any follow-up concerns
+- `systemctl --failed --no-pager` is empty or only shows already-understood failures
+
+## Access And DNS Model
 
 Public endpoints:
 - `https://id.<domain>`
@@ -104,24 +274,25 @@ Recommended LAN DNS model:
 - The router forwards only the private app hostnames to the server.
 - Do not forward the whole public zone to the server.
 
-## 6. Power Management
+## Power Management
 
-Current policy is declarative and owned by
-[`modules/power-management/default.nix`](/home/dsaw/Projects/NixOS/modules/power-management/default.nix).
+Current policy is declarative and owned by [`modules/power-management/default.nix`](../modules/power-management/default.nix).
 
 Operational expectations:
 - nightly suspend makes SSH and app endpoints intentionally unavailable during the sleep window
 - RTC wake and Wake-on-LAN are part of the expected policy
 - `fstrim` and ZFS scrub should stay outside the sleep window
 
-Audit with:
+- Run from: `target server shell`
+- Privileges: `sudo not required`
+- Environment: `plain shell`
 
 ```bash
 ./scripts/power-audit.sh
 systemctl list-timers power-management-nightly-suspend.timer fstrim.timer zfs-scrub-data.timer
 ```
 
-## 7. Storage Monitoring
+## Storage Monitoring
 
 Background storage monitoring complements runtime readiness.
 
@@ -131,7 +302,9 @@ What runs automatically:
 - `storage-smart-long@*.timer`
 - `storage-health-report.timer`
 
-Useful commands:
+- Run from: `target server shell`
+- Privileges: `sudo required for on-demand report generation and report reads`
+- Environment: `plain shell`
 
 ```bash
 systemctl list-timers 'storage-*'
@@ -141,11 +314,23 @@ sudo cat /var/lib/storage-monitoring/latest.txt
 sudo jq . /var/lib/storage-monitoring/latest.json
 ```
 
-Cold-storage pool import, mount, and unmount workflows live in [Restore and Recovery](./restore-and-recovery.md).
+Expected result:
+- the timers appear active
+- the latest report exists and reflects the current pool and monitored disks
 
-## 8. Failure Entry Points
+If it fails:
+- inspect the service status and latest report output
+- continue in [Restore And Recovery](./restore-and-recovery.md) if the problem is a missing pool or missing mount
+
+Cold-storage pool import, mount, and unmount workflows live in [Restore And Recovery](./restore-and-recovery.md).
+
+## Service Failure Entry Points
 
 Public endpoint failure:
+
+- Run from: `target server shell`
+- Privileges: `sudo not required`
+- Environment: `plain shell`
 
 ```bash
 systemctl status caddy cloudflared-tunnel-metro
@@ -153,6 +338,10 @@ journalctl -u caddy -u cloudflared-tunnel-metro -n 100 --no-pager
 ```
 
 Private hostname resolves wrongly:
+
+- Run from: `target server shell`
+- Privileges: `sudo not required`
+- Environment: `plain shell`
 
 ```bash
 systemctl status unbound netbird-main
@@ -164,15 +353,24 @@ resolvectl query paperless.<domain>
 
 Storage or mount failure:
 
+- Run from: `target server shell`
+- Privileges: `sudo required for ZFS and readiness checks`
+- Environment: `plain shell`
+
 ```bash
 findmnt -R /mnt
 sudo zpool status data
 sudo zfs list -r data
-./scripts/cold-storage.sh status
 sudo ./scripts/runtime-readiness.sh
 ```
 
+If `/mnt/data` or a configured dataset is missing, move to [Restore And Recovery](./restore-and-recovery.md).
+
 Mail archive service checks:
+
+- Run from: `target server shell`
+- Privileges: `sudo required for the manual sync trigger`
+- Environment: `plain shell`
 
 ```bash
 systemctl status mail-archive-ui mail-archive-oauth2-proxy mail-archive-sync.timer

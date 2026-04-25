@@ -89,6 +89,7 @@ lib.mkIf cfg.enable {
     description = "Nightly suspend with RTC wake scheduling";
     path = with pkgs; [
       coreutils
+      gawk
       gnugrep
       procps
       systemd

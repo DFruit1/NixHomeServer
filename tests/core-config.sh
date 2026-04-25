@@ -56,8 +56,8 @@ require_json_equal "$(nix_eval_json 'vars.dnsMode')" '"split-horizon"' \
   "vars.dnsMode must switch the host to split-horizon DNS."
 require_json_equal "$(nix_eval_json 'vars.zfsDataPool.name')" '"data"' \
   "vars.zfsDataPool must keep the canonical pool name."
-require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.mirrorPairs')" "2" \
-  "vars.zfsDataPool must define two mirror pairs."
+require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.mirrorPairs')" "1" \
+  "vars.zfsDataPool must define one active mirror pair."
 require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.datasets')" "3" \
   "vars.zfsDataPool must keep the expected child datasets."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'media' \
@@ -70,24 +70,20 @@ forbid_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'appdata' \
   "vars.zfsDataPool must not retain the removed appdata dataset."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1JAKPNH" \
   "The ZFS data pool must include the healthiest disk."
-require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V6G7R6MS" \
-  "The ZFS data pool must include the oldest reliable disk."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1J9PKDH" \
   "The ZFS data pool must include the second good disk."
-require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1G5K8YC" \
-  "The ZFS data pool must include the former unstable parity disk."
+forbid_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V6G7R6MS" \
+  "The ZFS data pool must leave the oldest healthy disk out as an offline spare."
+forbid_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1G5K8YC" \
+  "The ZFS data pool must exclude the faulted disk."
 forbid_match vars.nix 'enableBackups|enableBackup[D]isk|backup[D]isk|backupMount[P]oint|backupRe[p]ository' \
   "vars.nix must not retain the removed local-backup settings."
-require_json_equal "$(nix_eval_json 'builtins.length vars.coldStoragePools')" "1" \
-  "vars.coldStoragePools must track exactly one manual cold-storage pool."
-require_json_equal "$(nix_eval_json '(builtins.elemAt vars.coldStoragePools 0).name')" '"cold-v1jan8ph"' \
-  "The manual cold-storage pool name must stay stable."
-require_json_equal "$(nix_eval_json '(builtins.elemAt vars.coldStoragePools 0).disk')" '"ata-HGST_HUS726T4TALA6L4_V1JAN8PH"' \
-  "The manual cold-storage pool must target V1JAN8PH."
+require_json_equal "$(nix_eval_json 'builtins.length vars.coldStoragePools')" "0" \
+  "vars.coldStoragePools must be empty when no manual cold-storage pool is attached."
 require_json_equal "$(nix_eval_json 'vars.coldStorageMountPoint')" '"/mnt/cold-storage"' \
-  "vars.coldStorageMountPoint must keep the manual mountpoint."
-require_json_equal "$(nix_eval_json 'builtins.length vars.monitoredStorageDiskIds')" "5" \
-  "The monitored storage disk list must include four pool disks plus one cold-storage disk."
+  "vars.coldStorageMountPoint must keep the reserved optional mountpoint."
+require_json_equal "$(nix_eval_json 'builtins.length vars.monitoredStorageDiskIds')" "2" \
+  "The monitored storage disk list must include only the active mirror pair."
 require_json_equal "$(nix_eval_json 'vars.usersWorkspaceRoot')" '"/mnt/data/workspaces/users"' \
   "Workspace roots must resolve through the ZFS data pool."
 require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.storeRoot')" '"/mnt/data/mail-archive"' \
@@ -115,28 +111,28 @@ require_json_equal "$(nix_eval_config_json 'networking.hostId')" '"84e8c12a"' \
 require_json_equal "$(nix_eval_config_json 'services.smartd.enable')" "true" \
   "SMART monitoring must remain enabled."
 smartd_devices="$(nix_eval_config_json 'services.smartd.devices')"
-require_json_equal "$(printf '%s\n' "$smartd_devices" | jq 'length')" "5" \
-  "smartd must monitor four active pool disks plus the configured cold-storage disk."
+require_json_equal "$(printf '%s\n' "$smartd_devices" | jq 'length')" "2" \
+  "smartd must monitor only the active mirror pair."
 forbid_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726040ALA610_K7G5W29L" \
   "smartd must exclude the retired failing disk."
 require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1JAKPNH" \
   "smartd must monitor the healthiest pool disk."
-require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V6G7R6MS" \
-  "smartd must monitor the oldest reliable pool disk."
 require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1J9PKDH" \
-  "smartd must monitor the second mirror pair."
-require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1G5K8YC" \
-  "smartd must monitor the usable former parity disk."
-require_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1JAN8PH" \
-  "smartd must monitor the manual cold-storage disk."
+  "smartd must monitor the second healthy disk in the active mirror."
+forbid_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V6G7R6MS" \
+  "smartd must leave the offline spare out of the active monitoring set."
+forbid_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1G5K8YC" \
+  "smartd must exclude the faulted disk from the active monitoring set."
+forbid_json_contains "$(printf '%s\n' "$smartd_devices" | jq 'map(.device)')" "/dev/disk/by-id/ata-HGST_HUS726T4TALA6L4_V1JAN8PH" \
+  "smartd must not monitor an unconfigured cold-storage disk."
 require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-health-report".timerConfig.OnCalendar')" '"*:0/30"' \
   "Storage monitoring must generate the 30-minute report timer."
 require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@disk1".timerConfig.OnCalendar')" '"Sat *-*-* 03:00:00"' \
   "disk1 must keep the weekly short SMART schedule."
 require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@disk2".timerConfig.OnCalendar')" '"Sat *-*-* 03:20:00"' \
   "disk2 must keep the weekly short SMART schedule."
-require_json_equal "$(nix_eval_config_json 'systemd.timers."storage-smart-short@cold-v1jan8ph".timerConfig.OnCalendar')" '"Sat *-*-* 04:20:00"' \
-  "The cold-storage SMART timer must follow the configured disk order."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.systemd.timers ? "storage-smart-short@cold-v1jan8ph"')" "false" \
+  "No cold-storage SMART timer should exist when no cold-storage pool is configured."
 require_json_equal "$(nix_eval_config_json 'services.zfs.autoScrub.enable')" "true" \
   "ZFS auto-scrub must be enabled for the data pool."
 require_fixed disko.nix 'vars.zfsDataPoolDiskIds' \
