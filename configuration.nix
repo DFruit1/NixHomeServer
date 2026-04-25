@@ -52,6 +52,7 @@
     ./modules/Core_Modules/kanidm
     ./modules/Core_Modules/netbird
     ./modules/Core_Modules/oauth2-proxy
+    ./modules/Core_Modules/restic-state
     ./modules/Core_Modules/storage
     ./modules/Core_Modules/storage-monitoring
     ./modules/Core_Modules/unbound
