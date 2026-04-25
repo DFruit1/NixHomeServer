@@ -4,6 +4,7 @@ use kanidm_admin::{
         access::{grant_access, revoke_access, show_access, why_denied},
         auth::{auth_login, auth_reauth, auth_status},
         config::show_config,
+        jellyfin::set_jellyfin_password,
         users::{
             create_user, list_users, reset_token, show_user, CreateUserOptions, ResetTokenOptions,
         },
@@ -40,6 +41,7 @@ enum Commands {
     Auth(AuthCommand),
     Users(UsersCommand),
     Access(AccessCommand),
+    Jellyfin(JellyfinCommand),
     Config(ConfigCommand),
     #[command(alias = "tui")]
     Interactive,
@@ -110,6 +112,21 @@ enum AccessSubcommand {
         app: AppAccessTarget,
         #[arg(long)]
         user: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct JellyfinCommand {
+    #[command(subcommand)]
+    command: JellyfinSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum JellyfinSubcommand {
+    SetPassword {
+        account_id: String,
+        #[arg(long, default_value = "JELLYFIN_PASSWORD")]
+        password_env: String,
     },
 }
 
@@ -194,6 +211,12 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             }
             AccessSubcommand::WhyDenied { app, user } => why_denied(&kanidm, &user, app).map(Some),
         },
+        Commands::Jellyfin(command) => match command.command {
+            JellyfinSubcommand::SetPassword {
+                account_id,
+                password_env,
+            } => set_jellyfin_password(&account_id, &password_env).map(Some),
+        },
         Commands::Config(command) => match command.command {
             ConfigSubcommand::Show => Ok(Some(show_config(&config))),
         },
@@ -254,6 +277,29 @@ mod tests {
             Commands::Auth(AuthCommand {
                 command: AuthSubcommand::Reauth
             })
+        ));
+    }
+
+    #[test]
+    fn parses_jellyfin_set_password() {
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "jellyfin",
+            "set-password",
+            "dsaw",
+            "--password-env",
+            "CUSTOM_JF_PASSWORD",
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Jellyfin(JellyfinCommand {
+                command: JellyfinSubcommand::SetPassword {
+                    account_id,
+                    password_env
+                }
+            }) if account_id == "dsaw" && password_env == "CUSTOM_JF_PASSWORD"
         ));
     }
 

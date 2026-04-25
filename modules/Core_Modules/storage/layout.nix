@@ -2,20 +2,27 @@
 
 let
   mailArchiveStoreRoot = "${vars.dataRoot}/mail-archive";
+  workspaceStorageRoot = "${vars.dataRoot}/workspaces";
+  backingUsersRoot = "${workspaceStorageRoot}/users";
+  backingSharedRoot = "${workspaceStorageRoot}/shared";
   immichManagedPhotosRoot = "${vars.mediaRoot}/photos/managed";
   immichExternalPhotosRoot = "${vars.mediaRoot}/photos/external";
   paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
   paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
   paperlessExportDir = "${vars.mediaRoot}/documents/export";
-  audiobooksRoot = "${vars.mediaRoot}/audio/audiobooks";
   podcastsRoot = "${vars.mediaRoot}/audio/podcasts";
-  ebooksRoot = "${vars.mediaRoot}/books/ebooks";
-  comicsRoot = "${vars.mediaRoot}/books/comics";
-  mangaRoot = "${vars.mediaRoot}/books/manga";
-  moviesRoot = "${vars.mediaRoot}/video/movies";
-  showsRoot = "${vars.mediaRoot}/video/shows";
-  homeVideosRoot = "${vars.mediaRoot}/video/home";
-  sharedExchangeRoot = "${vars.sharedWorkspaceRoot}/exchange";
+  legacyAudiobooksRoot = "${vars.mediaRoot}/audio/audiobooks";
+  legacyEbooksRoot = "${vars.mediaRoot}/books/ebooks";
+  legacyComicsRoot = "${vars.mediaRoot}/books/comics";
+  legacyMangaRoot = "${vars.mediaRoot}/books/manga";
+  legacyMoviesRoot = "${vars.mediaRoot}/video/movies";
+  legacyShowsRoot = "${vars.mediaRoot}/video/shows";
+  legacyHomeVideosRoot = "${vars.mediaRoot}/video/home";
+  genericSharedContentDirs = map (name: "${vars.sharedPublicRoot}/${name}") (
+    builtins.filter (name: name != "emails") vars.sharedContentSubdirs
+  );
+  sharedBooksDirs = map (name: "${vars.sharedBooksRoot}/${name}") vars.sharedBooksSubdirs;
+  sharedVideoDirs = map (name: "${vars.sharedVideosRoot}/${name}") vars.sharedVideoSubdirs;
 
   mkDirCmd =
     {
@@ -46,7 +53,19 @@ let
       group = "root";
     }
     {
-      path = vars.workspaceRoot;
+      path = "${vars.mediaRoot}/audio";
+      mode = "0755";
+      user = "root";
+      group = "root";
+    }
+    {
+      path = "${vars.mediaRoot}/books";
+      mode = "0755";
+      user = "root";
+      group = "root";
+    }
+    {
+      path = "${vars.mediaRoot}/video";
       mode = "0755";
       user = "root";
       group = "root";
@@ -58,22 +77,10 @@ let
       group = "root";
     }
     {
-      path = vars.sharedWorkspaceRoot;
-      mode = "0755";
+      path = vars.sharedPublicRoot;
+      mode = "2775";
       user = "root";
-      group = "root";
-    }
-    {
-      path = mailArchiveStoreRoot;
-      mode = "0750";
-      user = "mail-archive-ui";
-      group = "mail-archive-ui";
-    }
-    {
-      path = "${mailArchiveStoreRoot}/users";
-      mode = "0750";
-      user = "mail-archive-ui";
-      group = "mail-archive-ui";
+      group = "users";
     }
     {
       path = immichManagedPhotosRoot;
@@ -142,69 +149,175 @@ let
       group = "paperless";
     }
     {
-      path = audiobooksRoot;
-      mode = "2775";
-      user = "root";
-      group = "media-library";
-    }
-    {
       path = podcastsRoot;
       mode = "2775";
       user = "root";
-      group = "media-library";
-    }
-    {
-      path = ebooksRoot;
-      mode = "2775";
-      user = "root";
-      group = "media-library";
-    }
-    {
-      path = comicsRoot;
-      mode = "2775";
-      user = "root";
-      group = "media-library";
-    }
-    {
-      path = mangaRoot;
-      mode = "2775";
-      user = "root";
-      group = "media-library";
-    }
-    {
-      path = moviesRoot;
-      mode = "2775";
-      user = "root";
-      group = "media-library";
-    }
-    {
-      path = showsRoot;
-      mode = "2775";
-      user = "root";
-      group = "media-library";
-    }
-    {
-      path = homeVideosRoot;
-      mode = "2775";
-      user = "root";
-      group = "media-library";
-    }
-    {
-      path = sharedExchangeRoot;
-      mode = "2775";
-      user = "root";
       group = "users";
     }
     {
-      path = vars.sharedPublicRoot;
+      path = vars.sharedEmailsRoot;
+      mode = "0770";
+      user = "mail-archive-ui";
+      group = "mail-archive-ui";
+    }
+  ] ++ map
+    (path: {
+      inherit path;
       mode = "2775";
       user = "root";
       group = "users";
+    })
+    (
+      genericSharedContentDirs
+      ++ [
+        vars.sharedBooksRoot
+        vars.sharedVideosRoot
+      ]
+      ++ sharedBooksDirs
+      ++ sharedVideoDirs
+    );
+
+  materializeDirectRootScript = ''
+    materialize_root_from_legacy() {
+      local target_path="$1"
+      local legacy_path="$2"
+      local mode="$3"
+      local owner="$4"
+      local group="$5"
+      local linked_source=""
+
+      if [[ -L "$target_path" ]]; then
+        linked_source="$(${pkgs.coreutils}/bin/readlink -f "$target_path" || true)"
+        ${pkgs.coreutils}/bin/rm -f "$target_path"
+      elif [[ -e "$target_path" && ! -d "$target_path" ]]; then
+        echo "Refusing to replace existing non-directory path: $target_path" >&2
+        exit 1
+      fi
+
+      ${pkgs.coreutils}/bin/install -d -m "$mode" -o "$owner" -g "$group" "$target_path"
+
+      for source_path in "$linked_source" "$legacy_path"; do
+        [[ -n "$source_path" && -d "$source_path" && "$source_path" != "$target_path" ]] || continue
+        ${pkgs.rsync}/bin/rsync -a --ignore-existing "$source_path"/ "$target_path"/
+      done
+
+      ${pkgs.coreutils}/bin/chown "$owner:$group" "$target_path"
+      ${pkgs.coreutils}/bin/chmod "$mode" "$target_path"
     }
-  ];
+
+    materialize_root_from_legacy '${vars.usersWorkspaceRoot}' '${backingUsersRoot}' 0755 root root
+    materialize_root_from_legacy '${vars.sharedPublicRoot}' '${backingSharedRoot}' 2775 root users
+  '';
+
+  legacyMailArchiveMigrationScript = ''
+    legacy_mail_root='${mailArchiveStoreRoot}/users'
+    ${pkgs.coreutils}/bin/install -d -m 0770 -o mail-archive-ui -g mail-archive-ui '${vars.sharedEmailsRoot}'
+
+    if [[ -d "$legacy_mail_root" ]]; then
+      for legacy_user_root in "$legacy_mail_root"/*; do
+        [[ -d "$legacy_user_root" ]] || continue
+        username="$(${pkgs.coreutils}/bin/basename "$legacy_user_root")"
+        target_user_root='${vars.usersWorkspaceRoot}/'"$username"
+        target_emails="$target_user_root/emails"
+
+        ${pkgs.coreutils}/bin/install -d -m 2770 -o root -g users "$target_user_root"
+        if [[ -L "$target_emails" ]]; then
+          ${pkgs.coreutils}/bin/rm -f "$target_emails"
+        elif [[ -e "$target_emails" && ! -d "$target_emails" ]]; then
+          echo "Refusing to replace existing non-directory path: $target_emails" >&2
+          exit 1
+        fi
+
+        ${pkgs.coreutils}/bin/install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$target_emails"
+        ${pkgs.rsync}/bin/rsync -a --ignore-existing "$legacy_user_root"/ "$target_emails"/
+        ${pkgs.coreutils}/bin/chown -R mail-archive-ui:mail-archive-ui "$target_emails"
+      done
+    fi
+  '';
+
+  legacySharedSymlinkScript = ''
+    migrate_dir_to_symlink() {
+      local source_path="$1"
+      local target_path="$2"
+
+      ${pkgs.coreutils}/bin/install -d -m 2775 -o root -g users "$(${pkgs.coreutils}/bin/dirname "$target_path")"
+      ${pkgs.coreutils}/bin/install -d -m 2775 -o root -g users "$target_path"
+
+      if [[ -L "$source_path" ]]; then
+        ${pkgs.coreutils}/bin/ln -sfn "$target_path" "$source_path"
+        return
+      fi
+
+      if [[ -d "$source_path" ]]; then
+        ${pkgs.rsync}/bin/rsync -a --ignore-existing "$source_path"/ "$target_path"/
+        ${pkgs.coreutils}/bin/rm -rf "$source_path"
+      elif [[ -e "$source_path" ]]; then
+        echo "Refusing to replace existing non-directory path: $source_path" >&2
+        exit 1
+      fi
+
+      ${pkgs.coreutils}/bin/ln -sfn "$target_path" "$source_path"
+    }
+
+    migrate_dir_to_symlink '${legacyAudiobooksRoot}' '${vars.sharedAudiobooksRoot}'
+    migrate_dir_to_symlink '${legacyEbooksRoot}' '${vars.sharedEbooksRoot}'
+    migrate_dir_to_symlink '${legacyComicsRoot}' '${vars.sharedComicsRoot}'
+    migrate_dir_to_symlink '${legacyMangaRoot}' '${vars.sharedMangaRoot}'
+    migrate_dir_to_symlink '${legacyMoviesRoot}' '${vars.sharedMoviesRoot}'
+    migrate_dir_to_symlink '${legacyShowsRoot}' '${vars.sharedShowsRoot}'
+    migrate_dir_to_symlink '${legacyHomeVideosRoot}' '${vars.sharedHomeVideosRoot}'
+  '';
+
+  sharedMediaAclScript = ''
+    ${pkgs.acl}/bin/setfacl \
+      -m 'g:mail-archive-ui:--x' \
+      -m 'g:immich:--x' \
+      -m 'g:paperless:--x' \
+      '${vars.sharedPublicRoot}'
+
+    apply_recursive_acl() {
+      local access_spec="$1"
+      local default_spec="$2"
+      shift
+      shift
+
+      for path in "$@"; do
+        [[ -d "$path" ]] || continue
+        ${pkgs.acl}/bin/setfacl -R -m "$access_spec" "$path"
+        ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl -m "$default_spec" '{}' +
+      done
+    }
+
+    apply_media_acl() {
+      local group_name="$1"
+      shift
+
+      apply_recursive_acl "g:''${group_name}:rwX" "d:g:''${group_name}:rwx" "$@"
+    }
+
+    apply_media_acl audiobookshelf-media '${vars.sharedAudiobooksRoot}'
+    apply_media_acl kavita-media '${vars.sharedEbooksRoot}' '${vars.sharedComicsRoot}' '${vars.sharedMangaRoot}'
+    apply_media_acl jellyfin-media '${vars.sharedMoviesRoot}' '${vars.sharedShowsRoot}' '${vars.sharedHomeVideosRoot}'
+
+    apply_readonly_acl() {
+      local group_name="$1"
+      shift
+
+      apply_recursive_acl "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
+    }
+
+    apply_readonly_acl immich '${vars.sharedPublicRoot}/photos'
+    apply_readonly_acl paperless '${vars.sharedPublicRoot}/documents'
+  '';
 
   zfsContentLayoutScript = lib.concatStringsSep "\n" (
     (map mkDirCmd zfsContentDirs)
+    ++ [
+      materializeDirectRootScript
+      legacyMailArchiveMigrationScript
+      legacySharedSymlinkScript
+      sharedMediaAclScript
+    ]
     ++ map mkImmichSentinelCmd [
       "${immichManagedPhotosRoot}/backups/.immich"
       "${immichManagedPhotosRoot}/encoded-video/.immich"
@@ -216,7 +329,9 @@ let
   );
 in
 {
-  users.groups.media-library = { };
+  users.groups.audiobookshelf-media = { };
+  users.groups.kavita-media = { };
+  users.groups.jellyfin-media = { };
 
   systemd.tmpfiles.rules = [
     "d /persist/appdata 0755 root root -"
@@ -231,8 +346,13 @@ in
     after = [ "local-fs.target" ];
     before = [
       "audiobookshelf.service"
+      "audiobookshelf-library-sync-v1.service"
       "copyparty.service"
       "jellyfin.service"
+      "jellyfin-library-sync-v1.service"
+      "jellyfin-user-sync-v1.service"
+      "kavita.service"
+      "kavita-library-sync-v1.service"
       "mail-archive-sync.service"
       "mail-archive-ui.service"
       "paperless-consumer.service"

@@ -11,7 +11,7 @@ in
     port = audiobookshelfPort;
   };
 
-  users.users.audiobookshelf.extraGroups = lib.mkAfter [ "media-library" ];
+  users.users.audiobookshelf.extraGroups = lib.mkAfter [ "audiobookshelf-media" ];
 
   systemd.services.audiobookshelf = {
     after = [

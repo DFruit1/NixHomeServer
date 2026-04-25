@@ -35,7 +35,7 @@ in
     volumes = { };
     globalExtraConfig = ''
       [/''${u}]
-      ${vars.usersWorkspaceRoot}/''${u}/files
+      ${vars.usersWorkspaceRoot}/''${u}
       accs:
         rwmda: ''${u}
       flags:
@@ -46,87 +46,33 @@ in
         unlistcr: true
         unlistcw: true
 
-      [/documents]
-      ${vars.mediaRoot}/documents
+      [/''${u}/emails]
+      ${vars.usersWorkspaceRoot}/''${u}/emails
       accs:
-        r: @acct
+        r: ''${u}
       flags:
         fk: 4
         e2d: true
-        chmod_d: 750
-        chmod_f: 640
         unlistcr: true
         unlistcw: true
 
-      [/documents/inbox]
-      ${vars.mediaRoot}/documents/inbox
-      accs:
-        rwmda: @acct
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 770
-        chmod_f: 660
-        unlistcr: true
-        unlistcw: true
-
-      [/documents/archive]
+      [/shared/documents]
       ${vars.mediaRoot}/documents/archive
       accs:
         r: @acct
       flags:
         fk: 4
         e2d: true
-        chmod_d: 750
-        chmod_f: 640
         unlistcr: true
         unlistcw: true
 
-      [/documents/export]
-      ${vars.mediaRoot}/documents/export
+      [/shared/emails]
+      ${vars.sharedEmailsRoot}
       accs:
         r: @acct
       flags:
         fk: 4
         e2d: true
-        chmod_d: 750
-        chmod_f: 640
-        unlistcr: true
-        unlistcw: true
-
-      [/audiobooks]
-      ${vars.mediaRoot}/audio
-      accs:
-        rwmda: @acct
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
-
-      [/books]
-      ${vars.mediaRoot}/books
-      accs:
-        rwmda: @acct
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
-
-      [/videos]
-      ${vars.mediaRoot}/video
-      accs:
-        rwmda: @acct
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
         unlistcr: true
         unlistcw: true
 
@@ -147,7 +93,7 @@ in
   users.users.copyparty.extraGroups = lib.mkAfter [
     "users"
     "paperless"
-    "media-library"
+    "mail-archive-ui"
   ];
 
   systemd.services.copyparty = {
@@ -162,10 +108,7 @@ in
     serviceConfig.BindPaths = lib.mkAfter [
       vars.usersWorkspaceRoot
       vars.sharedPublicRoot
-      "${vars.mediaRoot}/documents"
-      "${vars.mediaRoot}/audio"
-      "${vars.mediaRoot}/books"
-      "${vars.mediaRoot}/video"
+      "${vars.mediaRoot}/documents/archive"
     ];
   };
 }

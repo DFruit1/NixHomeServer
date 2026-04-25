@@ -49,10 +49,48 @@ rec {
 
   dataRoot = zfsDataPool.mountPoint;
   mediaRoot = "${dataRoot}/media";
-  workspaceRoot = "${dataRoot}/workspaces";
-  usersWorkspaceRoot = "${workspaceRoot}/users";
-  sharedWorkspaceRoot = "${workspaceRoot}/shared";
-  sharedPublicRoot = "${sharedWorkspaceRoot}/public";
+  usersWorkspaceRoot = "${dataRoot}/users";
+  sharedPublicRoot = "${dataRoot}/shared";
+  userBooksSubdirs = [
+    "ebooks"
+    "comics"
+    "manga"
+  ];
+  userVideoSubdirs = [
+    "movies"
+    "shows"
+    "home"
+  ];
+  sharedBooksSubdirs = userBooksSubdirs;
+  sharedVideoSubdirs = userVideoSubdirs;
+  sharedAudiobooksRoot = "${sharedPublicRoot}/audiobooks";
+  sharedBooksRoot = "${sharedPublicRoot}/books";
+  sharedEbooksRoot = "${sharedBooksRoot}/ebooks";
+  sharedComicsRoot = "${sharedBooksRoot}/comics";
+  sharedMangaRoot = "${sharedBooksRoot}/manga";
+  sharedEmailsRoot = "${sharedPublicRoot}/emails";
+  sharedVideosRoot = "${sharedPublicRoot}/videos";
+  sharedMoviesRoot = "${sharedVideosRoot}/movies";
+  sharedShowsRoot = "${sharedVideosRoot}/shows";
+  sharedHomeVideosRoot = "${sharedVideosRoot}/home";
+  userContentSubdirs = [
+    "documents"
+    "photos"
+    "audiobooks"
+    "books"
+    "videos"
+    "emails"
+    "files"
+  ];
+  sharedContentSubdirs = [
+    "documents"
+    "photos"
+    "audiobooks"
+    "books"
+    "emails"
+    "videos"
+    "files"
+  ];
 
   kanidmDomain = "id.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";

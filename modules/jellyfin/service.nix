@@ -12,7 +12,7 @@ in
     logDir = logDir;
   };
 
-  users.users.jellyfin.extraGroups = lib.mkAfter [ "media-library" ];
+  users.users.jellyfin.extraGroups = lib.mkAfter [ "jellyfin-media" ];
 
   systemd.tmpfiles.rules = [
     "d ${logDir} 0750 jellyfin jellyfin -"

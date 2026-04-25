@@ -38,6 +38,7 @@ for required_path in \
   rust/apps/kanidm-admin/Cargo.toml \
   rust/apps/kanidm-admin/default.nix \
   rust/apps/kanidm-admin/src/main.rs \
+  rust/apps/kanidm-admin/src/commands/jellyfin.rs \
   rust/apps/mail-archive-ui/README.md \
   modules/Core_Modules/data-disks/default.nix \
   modules/Core_Modules/caddy/default.nix \
@@ -53,11 +54,15 @@ for required_path in \
   modules/audiobookshelf/storage-migration.nix \
   modules/audiobookshelf/oidc-bootstrap.nix \
   modules/audiobookshelf/root-bootstrap.nix \
+  modules/audiobookshelf/library-sync.nix \
+  modules/kavita/library-sync.nix \
   modules/paperless/package.nix \
   modules/paperless/service.nix \
   modules/paperless/bootstrap.nix \
   modules/jellyfin/service.nix \
   modules/jellyfin/network-config.nix \
+  modules/jellyfin/user-sync.nix \
+  modules/jellyfin/library-sync.nix \
   secrets/agenix.nix
 do
   if [[ ! -e "$required_path" ]]; then
@@ -182,6 +187,12 @@ require_fixed scripts/check-repo.sh 'tests/run-all.sh' \
   "Repository validation must use the slim test entrypoint."
 require_fixed documentation/restore-and-recovery.md './scripts/format-data-disks.sh' \
   "Restore-and-recovery must use the safer data-disk wrapper."
+require_fixed documentation/restore-and-recovery.md 'restic-backups-system-state.service' \
+  "Restore-and-recovery must require a fresh SSD-backed system-state snapshot before destructive recovery."
+require_fixed documentation/restore-and-recovery.md 'app-state-roots.tsv' \
+  "Restore-and-recovery must document the app-state inventory used for SSD-backed restores."
+require_fixed documentation/restore-and-recovery.md '/var/lib/jellyfin' \
+  "Restore-and-recovery must explicitly call out Jellyfin's SSD-backed local state."
 require_fixed documentation/restore-and-recovery.md './scripts/cold-storage.sh mount' \
   "Restore-and-recovery must own the cold-storage mount workflow."
 require_fixed documentation/restore-and-recovery.md './scripts/cold-storage.sh unmount' \

@@ -55,6 +55,22 @@ Stop conditions:
 - any disk ID overlaps between the SSD, mirrored data pool, and cold-storage pools
 - the physical disks on the host do not match the declarative disk IDs
 
+## SSD-Backed App State Coverage
+
+The local `system-state` Restic job snapshots `/var/lib` and `/persist/appdata`, so the app-local state that must survive data-pool recreation is expected to be captured there before any destructive storage work.
+
+Key state roots:
+- Jellyfin: `/var/lib/jellyfin`
+- Audiobookshelf: `/var/lib/audiobookshelf`
+- Kavita: `/var/lib/kavita`
+- Paperless: `/var/lib/paperless` and `/var/lib/redis-paperless`
+- Immich: `/var/lib/postgresql/16` and `/var/lib/redis-immich`, plus `dumps/postgresql.sql` in the backup metadata
+- Copyparty: `/var/lib/copyparty`
+- Mail Archive UI: `/persist/appdata/mail-archive-ui`
+- Kanidm: `/var/lib/kanidm`
+
+The backup metadata file `/persist/appdata/system-state-backup/metadata/app-state-roots.tsv` records the expected local state roots, their ownership and mode, and the related data-pool payload roots for each service.
+
 ## How The Mirrored Data Pool Works
 
 The active `data` pool is a mirrored ZFS pool built from the single mirror pair declared in [`vars.nix`](../vars.nix) under `zfsDataPool.mirrorPairs`.
@@ -163,6 +179,7 @@ Preconditions:
 - the host is stable enough that you have already finished the relevant [Validation Gate](./operations.md#validation-gate) and [Runtime Validation](./operations.md#runtime-validation) work outside this guide
 - you have confirmed the exact mirrored data-pool disk IDs in [`vars.nix`](../vars.nix)
 - you have accepted that all existing contents on the current pool member disks will be destroyed
+- you are prepared to stop if the fresh `system-state` snapshot or `app-state-roots.tsv` inventory shows missing SSD-backed app state
 
 Command Context:
 - Run from: `workstation repo root`
@@ -170,13 +187,21 @@ Command Context:
 - Environment: `plain shell`
 
 Steps:
-1. Preview the exact destructive target set first.
+1. Capture a fresh SSD-backed snapshot and verify the app-state inventory before touching the mirrored data pool.
+
+```bash
+sudo systemctl start restic-backups-system-state.service
+sudo restic-system-state snapshots
+sudo column -t -s $'\t' /persist/appdata/system-state-backup/metadata/app-state-roots.tsv
+```
+
+2. Preview the exact destructive target set.
 
 ```bash
 ./scripts/format-data-disks.sh --print-only
 ```
 
-2. Export the pool if it is currently imported, then recreate only the mirrored data-pool disks.
+3. Export the pool if it is currently imported, then recreate only the mirrored data-pool disks.
 
 ```bash
 sudo zpool export data
@@ -189,15 +214,18 @@ sudo zfs list -r data
 
 Direct `nix run ... disko ...` commands are reserved for expert or manual debugging only and are not the supported operator workflow.
 
-3. Finish with [Runtime Validation](./operations.md#runtime-validation) after the pool is back.
+4. Finish with [Runtime Validation](./operations.md#runtime-validation) after the pool is back. If an app later shows first-run behavior or missing local users, continue in [Scenario: Restore SSD-Backed App State](#scenario-restore-ssd-backed-app-state).
 
 Expected Result:
+- the fresh `system-state` snapshot completes successfully
+- `/persist/appdata/system-state-backup/metadata/app-state-roots.tsv` shows `present` for the expected live app-state roots
 - `/` remains `btrfs`
 - `/mnt/data` and configured child datasets are `zfs`
 - the SSD was not repartitioned
 - optional manual cold-storage disks were not touched
 
 Stop Conditions:
+- the backup job fails or `app-state-roots.tsv` marks an expected state root as `missing`
 - the wrapper preview includes `mainDisk`
 - the wrapper preview includes any cold-storage disk
 - `sudo zpool status data` does not return an `ONLINE` mirrored pool after recreation
@@ -346,6 +374,7 @@ Steps:
 systemctl status restic-backups-system-state.timer
 sudo systemctl start restic-backups-system-state.service
 sudo restic-system-state snapshots
+sudo column -t -s $'\t' /persist/appdata/system-state-backup/metadata/app-state-roots.tsv
 ```
 
 2. Restore the latest snapshot into a scratch directory for inspection.
@@ -354,16 +383,23 @@ sudo restic-system-state snapshots
 sudo restic-system-state restore latest --target /tmp/system-state-restore
 ```
 
-3. Use the restored metadata and files to decide what must be copied back before returning to [Guarded Deploy](./operations.md#guarded-deploy) and [Runtime Validation](./operations.md#runtime-validation).
+3. Inspect the restored app-state inventory and database dumps before copying anything back.
+
+```bash
+sudo column -t -s $'\t' /tmp/system-state-restore/persist/appdata/system-state-backup/metadata/app-state-roots.tsv
+sudo ls -1 /tmp/system-state-restore/persist/appdata/system-state-backup/dumps
+```
+
+4. Use the restored metadata and files to decide what must be copied back before returning to [Guarded Deploy](./operations.md#guarded-deploy) and [Runtime Validation](./operations.md#runtime-validation).
 
 Expected Result:
 - the snapshot list is readable
 - the restore command recreates the backed-up tree under `/tmp/system-state-restore`
-- metadata about the pool layout and critical managed paths is available for inspection
+- metadata about the pool layout, app-state roots, and critical managed paths is available for inspection
 
 Stop Conditions:
 - the snapshot list is empty when you expected local backups
-- the restore output is missing critical paths such as `/etc/agenix`, `/etc/ssh`, or `/persist/appdata`
+- the restore output is missing critical paths such as `/etc/agenix`, `/etc/ssh`, `/var/lib/jellyfin`, or `/persist/appdata`
 - you are about to overwrite live files without first confirming the restored contents
 
 Next Document If The Problem Is Elsewhere:

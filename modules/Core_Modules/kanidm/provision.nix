@@ -33,6 +33,8 @@ in
     groups."audiobookshelf-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."kavita-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."kavita-login" = mkManualGroup [ ];
+    groups."jellyfin-users" = mkManualGroup [ ];
+    groups."jellyfin-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
     systems.oauth2.immich-web = {

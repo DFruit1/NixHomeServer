@@ -5,6 +5,8 @@ let
   dataDir = "/var/lib/kavita";
 in
 {
+  imports = [ ./library-sync.nix ];
+
   services.kavita = {
     enable = true;
     package = pkgsUnstable.kavita;
@@ -35,7 +37,7 @@ in
     };
   };
 
-  users.users.kavita.extraGroups = lib.mkAfter [ "media-library" ];
+  users.users.kavita.extraGroups = lib.mkAfter [ "kavita-media" ];
 
   systemd.services.kavita.preStart = lib.mkAfter ''
     ${pkgs.replace-secret}/bin/replace-secret '@OIDC_SECRET@' \

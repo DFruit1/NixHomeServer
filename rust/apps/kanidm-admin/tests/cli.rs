@@ -227,3 +227,26 @@ fn access_grant_rejects_unknown_group() {
         .code(4)
         .stderr(predicate::str::contains("invalid managed group"));
 }
+
+#[test]
+fn jellyfin_set_password_writes_hash_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_JELLYFIN_PASSWORD_HASH_DIR", dir.path())
+        .env("TEST_JELLYFIN_PASSWORD", "super-secret")
+        .args([
+            "jellyfin",
+            "set-password",
+            "dsaw",
+            "--password-env",
+            "TEST_JELLYFIN_PASSWORD",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("stored desired Jellyfin password hash"));
+
+    let written = fs::read_to_string(dir.path().join("dsaw.pbkdf2")).expect("hash file");
+    assert!(written.starts_with("$PBKDF2-SHA512$iterations=210000$"));
+}

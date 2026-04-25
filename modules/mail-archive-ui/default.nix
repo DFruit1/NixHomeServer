@@ -6,7 +6,7 @@ let
   group = "mail-archive-ui";
   defaultTags = [ "new" ];
   mailArchiveUiPort = 9011;
-  mailArchiveStoreRoot = "${vars.dataRoot}/mail-archive";
+  mailArchiveStoreRoot = vars.usersWorkspaceRoot;
   dataDirDefault = "/persist/appdata/mail-archive-ui";
   runtimeDirDefault = "/run/mail-archive-ui";
   lockDirDefault = "${dataDirDefault}/locks";
@@ -55,7 +55,7 @@ in
     storeRoot = lib.mkOption {
       type = lib.types.str;
       default = mailArchiveStoreRoot;
-      description = "Writable root for downloaded mail archives.";
+      description = "Writable root containing per-user content directories for downloaded mail archives.";
     };
 
     runtimeDir = lib.mkOption {

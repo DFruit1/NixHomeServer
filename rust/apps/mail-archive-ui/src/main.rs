@@ -1825,8 +1825,8 @@ fn ensure_account_paths(
     }
 
     let root = store_root
-        .join("users")
         .join(&account.username)
+        .join("emails")
         .join("accounts")
         .join(account.id.to_string());
     let maildir = root.join("maildir");
@@ -3179,6 +3179,39 @@ mod tests {
         let paths = ensure_account_paths(config, account).expect("paths");
         ensure_notmuch_config(config, account, &paths).expect("config");
         fs::read_to_string(paths.notmuch_config).expect("notmuch config")
+    }
+
+    #[test]
+    fn account_paths_live_under_the_users_email_tree() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account = example_account();
+
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+
+        assert_eq!(
+            paths.maildir,
+            tempdir
+                .path()
+                .join("store")
+                .join("alice")
+                .join("emails")
+                .join("accounts")
+                .join("42")
+                .join("maildir")
+        );
+        assert_eq!(
+            paths.state_dir,
+            tempdir
+                .path()
+                .join("store")
+                .join("alice")
+                .join("emails")
+                .join("accounts")
+                .join("42")
+                .join("state")
+        );
     }
 
     #[test]

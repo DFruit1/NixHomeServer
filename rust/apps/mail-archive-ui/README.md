@@ -12,7 +12,7 @@ Access model:
 
 Storage model:
 - app state and the app-local encryption key live under `/persist/appdata/mail-archive-ui`
-- downloaded mail lives under `/mnt/data/mail-archive/users/<user>/accounts/<account-id>/`
+- downloaded mail lives under `/mnt/data/users/<user>/emails/accounts/<account-id>/`
 - mailbox credentials are not stored in agenix
 - temporary sync material lives only under `/run/mail-archive-ui`
 

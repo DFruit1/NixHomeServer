@@ -63,7 +63,7 @@ require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.datasets')
 require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'media' \
   "vars.zfsDataPool must keep the media dataset."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'workspaces' \
-  "vars.zfsDataPool must keep the workspaces dataset."
+  "vars.zfsDataPool must keep the workspaces backing dataset."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'mail-archive' \
   "vars.zfsDataPool must include the dedicated mail-archive dataset."
 forbid_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'appdata' \
@@ -84,12 +84,37 @@ require_json_equal "$(nix_eval_json 'vars.coldStorageMountPoint')" '"/mnt/cold-s
   "vars.coldStorageMountPoint must keep the reserved optional mountpoint."
 require_json_equal "$(nix_eval_json 'builtins.length vars.monitoredStorageDiskIds')" "2" \
   "The monitored storage disk list must include only the active mirror pair."
-require_json_equal "$(nix_eval_json 'vars.usersWorkspaceRoot')" '"/mnt/data/workspaces/users"' \
-  "Workspace roots must resolve through the ZFS data pool."
-require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.storeRoot')" '"/mnt/data/mail-archive"' \
-  "Mail archive storage must resolve through the ZFS data pool."
+require_json_equal "$(nix_eval_json 'vars.usersWorkspaceRoot')" '"/mnt/data/users"' \
+  "Per-user content roots must resolve directly under the ZFS data pool."
+require_json_equal "$(nix_eval_json 'vars.sharedPublicRoot')" '"/mnt/data/shared"' \
+  "The shared content root must resolve directly under the ZFS data pool."
+require_json_equal "$(nix_eval_json 'vars.sharedAudiobooksRoot')" '"/mnt/data/shared/audiobooks"' \
+  "Shared audiobooks must resolve through the shared public upload tree."
+require_json_equal "$(nix_eval_json 'vars.sharedEmailsRoot')" '"/mnt/data/shared/emails"' \
+  "Shared mail archives must resolve through the shared content root."
+require_json_equal "$(nix_eval_json 'vars.sharedEbooksRoot')" '"/mnt/data/shared/books/ebooks"' \
+  "Shared ebooks must resolve through the shared public upload tree."
+require_json_equal "$(nix_eval_json 'vars.sharedMoviesRoot')" '"/mnt/data/shared/videos/movies"' \
+  "Shared movies must resolve through the shared public upload tree."
+require_json_contains "$(nix_eval_json 'vars.userBooksSubdirs')" "ebooks" \
+  "Per-user book roots must include ebooks."
+require_json_contains "$(nix_eval_json 'vars.userVideoSubdirs')" "movies" \
+  "Per-user video roots must include movies."
+require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.storeRoot')" '"/mnt/data/users"' \
+  "Mail archive storage must resolve through the per-user content root."
+restic_paths_json="$(nix_eval_config_json 'services.restic.backups.system-state.paths')"
+require_json_contains "$restic_paths_json" "/var/lib" \
+  "The system-state backup must include /var/lib for SSD-backed app state."
+require_json_contains "$restic_paths_json" "/persist/appdata" \
+  "The system-state backup must include /persist/appdata for SSD-backed app state."
 require_fixed modules/immich/default.nix '"${vars.mediaRoot}/photos/managed"' \
   "Immich must derive its managed library under vars.mediaRoot."
+require_fixed modules/Core_Modules/restic-state/default.nix 'app-state-roots.tsv' \
+  "The Restic metadata staging must emit an explicit app-state inventory."
+require_fixed modules/Core_Modules/restic-state/default.nix '/var/lib/jellyfin' \
+  "The Restic app-state inventory must cover Jellyfin."
+require_fixed modules/Core_Modules/restic-state/default.nix '/persist/appdata/mail-archive-ui' \
+  "The Restic app-state inventory must cover the mail archive UI."
 forbid_match vars.nix 'appdataRoot|audiobookshelfDataDir|audiobookshelfConfigDir|audiobookshelfMetadataDir|audiobookshelfBackupDir|jellyfinDataDir|jellyfinLogDir|kavitaDataDir|paperlessDataDir|mailArchiveUiDataDir' \
   "vars.nix must not retain the old shared app-state path definitions."
 
@@ -103,7 +128,7 @@ require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".fsType')" '"
 require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/media"')" "true" \
   "The media dataset mount must exist."
 require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/workspaces"')" "true" \
-  "The workspaces dataset mount must exist."
+  "The workspaces backing dataset mount must exist."
 require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/mail-archive"')" "true" \
   "The mail-archive dataset mount must exist."
 require_json_equal "$(nix_eval_config_json 'networking.hostId')" '"84e8c12a"' \
@@ -233,16 +258,36 @@ require_match modules/copyparty/default.nix '"shr-who" = "auth";' \
   "Copyparty share creation must be limited to authenticated users."
 require_match modules/copyparty/default.nix 'rwmda: @acct' \
   "Writable shared volumes must require authenticated Copyparty accounts."
+require_match modules/copyparty/default.nix "\\$\\{vars\\.usersWorkspaceRoot\\}/''\\$\\{u\\}" \
+  "Copyparty per-user roots must point at each user's top-level content directory."
 require_fixed modules/copyparty/default.nix '${vars.sharedPublicRoot}' \
-  "Copyparty /shared must point at the public shared workspace root."
+  "Copyparty /shared must point at the shared content root."
+forbid_match modules/copyparty/default.nix 'media-library' \
+  "Copyparty must not retain the removed broad media-library group."
+require_json_contains "$(nix_eval_json 'vars.userContentSubdirs')" "emails" \
+  "Per-user content roots must include an emails directory."
+require_json_contains "$(nix_eval_json 'vars.sharedContentSubdirs')" "emails" \
+  "Shared content roots must include an emails directory."
+require_match modules/copyparty/default.nix '\[/shared/documents\]' \
+  "Copyparty must keep exposing Paperless archives through /shared/documents."
+require_match modules/copyparty/default.nix '\[/shared/emails\]' \
+  "Copyparty must expose shared mail archives as a read-only subtree."
+require_match modules/copyparty/default.nix "\\[/''\\$\\{u\\}/emails\\]" \
+  "Copyparty must expose each user's mail archive as a read-only subtree."
+forbid_match modules/copyparty/default.nix '\[/documents\]' \
+  "Copyparty must not expose the old global documents mount."
+forbid_match modules/copyparty/default.nix '\[/audiobooks\]' \
+  "Copyparty must not expose the old global audiobooks mount."
+forbid_match modules/copyparty/default.nix '\[/books\]' \
+  "Copyparty must not expose the old global books mount."
+forbid_match modules/copyparty/default.nix '\[/videos\]' \
+  "Copyparty must not expose the old global videos mount."
 forbid_match modules/copyparty/default.nix '\[/shared/public\]' \
   "Copyparty must not retain the public subdirectory."
 forbid_match modules/copyparty/default.nix '\[/shared/exchange\]' \
   "Copyparty must not retain the exchange subdirectory."
 forbid_match modules/copyparty/default.nix '\[/shared/photos\]' \
   "Copyparty must not retain the photos subdirectory."
-forbid_match modules/copyparty/default.nix '\[/shared/documents\]' \
-  "Copyparty must not retain the documents subdirectory."
 
 echo "ℹ️ Checking cold-storage tooling…"
 require_fixed modules/Core_Modules/storage/layout.nix 'coldStorageMountPoint' \
@@ -273,8 +318,40 @@ require_json_equal "$(nix_eval_config_json 'services.kavita.dataDir')" '"/var/li
   "Kavita state must live under /var/lib."
 require_json_equal "$(nix_eval_config_json 'services.jellyfin.dataDir')" '"/var/lib/jellyfin"' \
   "Jellyfin state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'users.users.audiobookshelf.extraGroups')" '["audiobookshelf-media"]' \
+  "Audiobookshelf must use the app-specific media group."
+require_json_equal "$(nix_eval_config_json 'users.users.kavita.extraGroups')" '["kavita-media"]' \
+  "Kavita must use the app-specific media group."
+require_json_equal "$(nix_eval_config_json 'users.users.jellyfin.extraGroups')" '["jellyfin-media"]' \
+  "Jellyfin must use the app-specific media group."
+forbid_match modules/audiobookshelf/service.nix 'media-library' \
+  "Audiobookshelf must not retain the removed broad media-library group."
+forbid_match modules/kavita/default.nix 'media-library' \
+  "Kavita must not retain the removed broad media-library group."
+forbid_match modules/jellyfin/service.nix 'media-library' \
+  "Jellyfin must not retain the removed broad media-library group."
+require_json_equal "$(nix_eval_config_json 'systemd.timers.audiobookshelf-library-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
+  "Audiobookshelf library sync must run every minute."
+require_json_equal "$(nix_eval_config_json 'systemd.timers.kavita-library-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
+  "Kavita library sync must run every minute."
+require_json_equal "$(nix_eval_config_json 'systemd.timers.jellyfin-user-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
+  "Jellyfin user sync must run every minute."
+require_json_equal "$(nix_eval_config_json 'systemd.timers.jellyfin-library-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
+  "Jellyfin library sync must run every minute."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups."jellyfin-users".members')" '[]' \
+  "Kanidm must provision the Jellyfin login group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups."jellyfin-admin".members')" "[\"admindsaw\"]" \
+  "Kanidm must provision the Jellyfin admin-intent group."
 require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf.serviceConfig.WorkingDirectory')" '"/var/lib/audiobookshelf"' \
   "Audiobookshelf state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf-library-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
+  "Audiobookshelf library sync must be gated on the data pool mount."
+require_json_equal "$(nix_eval_config_json 'systemd.services.kavita-library-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
+  "Kavita library sync must be gated on the data pool mount."
+require_json_equal "$(nix_eval_config_json 'systemd.services.jellyfin-user-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
+  "Jellyfin user sync must be gated on the data pool mount."
+require_json_equal "$(nix_eval_config_json 'systemd.services.jellyfin-library-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
+  "Jellyfin library sync must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
   "Mail archive sync must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-ui.serviceConfig.UMask')" '"0077"' \

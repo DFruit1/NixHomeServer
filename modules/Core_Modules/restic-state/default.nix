@@ -8,6 +8,126 @@ let
   dumpsRoot = "${stagingRoot}/dumps";
   inventoryRoot = "${metadataRoot}/inventories";
   zfsPoolName = vars.zfsDataPool.name;
+  appStateEntries = [
+    {
+      app = "kanidm";
+      component = "server";
+      stateRoot = "/var/lib/kanidm";
+      payloadRoots = [ ];
+      notes = "Identity directory state.";
+    }
+    {
+      app = "caddy";
+      component = "acme";
+      stateRoot = "/var/lib/acme";
+      payloadRoots = [ ];
+      notes = "ACME certificate state.";
+    }
+    {
+      app = "cloudflared";
+      component = "service";
+      stateRoot = "/var/lib/cloudflared";
+      payloadRoots = [ ];
+      notes = "Tunnel credentials and local service state.";
+    }
+    {
+      app = "netbird";
+      component = "service";
+      stateRoot = "/var/lib/netbird-main";
+      payloadRoots = [ ];
+      notes = "Mesh client identity and local state.";
+    }
+    {
+      app = "unbound";
+      component = "service";
+      stateRoot = "/var/lib/unbound";
+      payloadRoots = [ ];
+      notes = "Resolver trust-anchor state.";
+    }
+    {
+      app = "audiobookshelf";
+      component = "app";
+      stateRoot = "/var/lib/audiobookshelf";
+      payloadRoots = [ "${vars.mediaRoot}/audio" ];
+      notes = "Local users, metadata, and server config.";
+    }
+    {
+      app = "jellyfin";
+      component = "app";
+      stateRoot = "/var/lib/jellyfin";
+      payloadRoots = [ "${vars.mediaRoot}/video" ];
+      notes = "Local users, libraries, and server config.";
+    }
+    {
+      app = "kavita";
+      component = "app";
+      stateRoot = "/var/lib/kavita";
+      payloadRoots = [ "${vars.mediaRoot}/books" ];
+      notes = "Library database, local users, and server settings.";
+    }
+    {
+      app = "paperless";
+      component = "app";
+      stateRoot = "/var/lib/paperless";
+      payloadRoots = [ "${vars.mediaRoot}/documents" ];
+      notes = "Application state and local metadata.";
+    }
+    {
+      app = "paperless";
+      component = "redis";
+      stateRoot = config.services.redis.servers.paperless.settings.dir;
+      payloadRoots = [ "${vars.mediaRoot}/documents" ];
+      notes = "Paperless Redis persistence.";
+    }
+    {
+      app = "immich";
+      component = "postgresql";
+      stateRoot = config.services.postgresql.dataDir;
+      payloadRoots = [ "${vars.mediaRoot}/photos/managed" ];
+      notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
+    }
+    {
+      app = "immich";
+      component = "redis";
+      stateRoot = config.services.redis.servers.immich.settings.dir;
+      payloadRoots = [ "${vars.mediaRoot}/photos/managed" ];
+      notes = "Immich Redis persistence.";
+    }
+    {
+      app = "copyparty";
+      component = "app";
+      stateRoot = "/var/lib/copyparty";
+      payloadRoots = [
+        vars.usersWorkspaceRoot
+        vars.sharedPublicRoot
+        "${vars.mediaRoot}/documents"
+        "${vars.mediaRoot}/audio"
+        "${vars.mediaRoot}/books"
+        "${vars.mediaRoot}/video"
+      ];
+      notes = "Local state directory for Copyparty.";
+    }
+    {
+      app = "mail-archive-ui";
+      component = "app";
+      stateRoot = "/persist/appdata/mail-archive-ui";
+      payloadRoots = [
+        vars.usersWorkspaceRoot
+        vars.sharedEmailsRoot
+      ];
+      notes = "SQLite state, locks, and the app master key.";
+    }
+  ];
+  appStateSpec = lib.concatMapStringsSep "\n" (
+    entry:
+    lib.concatStringsSep "\t" [
+      entry.app
+      entry.component
+      entry.stateRoot
+      (lib.concatStringsSep ";" entry.payloadRoots)
+      entry.notes
+    ]
+  ) appStateEntries;
   criticalPaths = [
     vars.dataRoot
     vars.mediaRoot
@@ -15,11 +135,9 @@ let
     "${vars.mediaRoot}/audio"
     "${vars.mediaRoot}/books"
     "${vars.mediaRoot}/video"
-    vars.workspaceRoot
     vars.usersWorkspaceRoot
-    vars.sharedWorkspaceRoot
     vars.sharedPublicRoot
-    "${vars.dataRoot}/mail-archive"
+    vars.sharedEmailsRoot
   ];
 in
 {
@@ -79,6 +197,7 @@ in
       install -d -m 0700 "${metadataRoot}" "${dumpsRoot}" "${inventoryRoot}"
 
       timestamp_file="${metadataRoot}/timestamp.txt"
+      app_state_file="${metadataRoot}/app-state-roots.tsv"
       critical_paths_file="${metadataRoot}/critical-paths.tsv"
       zpool_status_file="${metadataRoot}/zpool-status.txt"
       zpool_list_file="${metadataRoot}/zpool-list.txt"
@@ -87,6 +206,54 @@ in
       findmnt_file="${metadataRoot}/findmnt-data-root.txt"
 
       date --iso-8601=seconds > "$timestamp_file"
+
+      printf 'app\tcomponent\tstate_root\tstate_status\tstate_type\towner\tgroup\tmode\tpayload_roots\tpayload_status\tnotes\n' > "$app_state_file"
+      while IFS=$'\t' read -r app component state_root payload_roots notes; do
+        if [[ -e "$state_root" ]]; then
+          state_status="present"
+          IFS=$'\t' read -r state_type owner group mode < <(stat -c '%F\t%U\t%G\t%a' "$state_root")
+        else
+          state_status="missing"
+          state_type="-"
+          owner="-"
+          group="-"
+          mode="-"
+        fi
+
+        payload_status="n/a"
+        if [[ -n "$payload_roots" ]]; then
+          IFS=';' read -r -a payload_root_array <<< "$payload_roots"
+          present_count=0
+          for payload_root in "''${payload_root_array[@]}"; do
+            if [[ -e "$payload_root" ]]; then
+              ((present_count += 1))
+            fi
+          done
+
+          if (( present_count == ''${#payload_root_array[@]} )); then
+            payload_status="present"
+          elif (( present_count > 0 )); then
+            payload_status="partial"
+          else
+            payload_status="missing"
+          fi
+        fi
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$app" \
+          "$component" \
+          "$state_root" \
+          "$state_status" \
+          "$state_type" \
+          "$owner" \
+          "$group" \
+          "$mode" \
+          "$payload_roots" \
+          "$payload_status" \
+          "$notes" >> "$app_state_file"
+      done <<'EOF'
+      ${appStateSpec}
+      EOF
 
       : > "$critical_paths_file"
       printf 'path\ttype\towner\tgroup\tmode\n' >> "$critical_paths_file"
@@ -110,8 +277,8 @@ in
         for spec in ${
           lib.escapeShellArgs [
             "media:${vars.mediaRoot}"
-            "workspaces:${vars.workspaceRoot}"
-            "mail-archive:${vars.dataRoot}/mail-archive"
+            "users:${vars.usersWorkspaceRoot}"
+            "shared:${vars.sharedPublicRoot}"
           ]
         }; do
           IFS=: read -r label root_path <<< "$spec"
