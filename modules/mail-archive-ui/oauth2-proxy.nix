@@ -6,7 +6,7 @@ let
   proxyArgs = [
     "--provider=oidc"
     "--approval-prompt=auto"
-    "--scope=openid profile email groups"
+    "--scope=openid profile email groups_name"
     "--email-domain=*"
     "--upstream=http://127.0.0.1:${toString cfg.port}"
     "--redirect-url=https://${vars.emailsDomain}/oauth2/callback"

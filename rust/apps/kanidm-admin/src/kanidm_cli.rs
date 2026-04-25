@@ -1,4 +1,7 @@
-use std::{ffi::OsString, process::Command};
+use std::{
+    ffi::OsString,
+    process::{Command, Stdio},
+};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -70,6 +73,11 @@ impl KanidmCli {
         self.run_json(args, "failed to list Kanidm users")
     }
 
+    pub fn group_list<T: DeserializeOwned>(&self) -> Result<T, AppError> {
+        let args = self.base_args(["group", "list", "-o", "json"]);
+        self.run_json(args, "failed to list Kanidm groups")
+    }
+
     pub fn person_get<T: DeserializeOwned>(&self, account_id: &str) -> Result<T, AppError> {
         let args = self.base_args(["person", "get", account_id, "-o", "json"]);
         self.run_json(args, &format!("failed to load Kanidm user '{account_id}'"))
@@ -107,6 +115,24 @@ impl KanidmCli {
         )
     }
 
+    pub fn person_create_reset_token(
+        &self,
+        account_id: &str,
+        ttl: u64,
+    ) -> Result<String, AppError> {
+        let args = self.base_args([
+            "person",
+            "credential",
+            "create-reset-token",
+            account_id,
+            &ttl.to_string(),
+        ]);
+        self.run_stdout(
+            args,
+            &format!("failed to create a password reset token for Kanidm user '{account_id}'"),
+        )
+    }
+
     pub fn group_add_members(&self, group: &str, account_id: &str) -> Result<(), AppError> {
         let args = self.base_args(["group", "add-members", group, account_id]);
         self.run_unit(
@@ -121,6 +147,26 @@ impl KanidmCli {
             args,
             &format!("failed to remove '{account_id}' from group '{group}'"),
         )
+    }
+
+    pub fn login(&self) -> Result<(), AppError> {
+        self.run_inherited([
+            "login",
+            "--url",
+            &self.server_url,
+            "--name",
+            &self.admin_name,
+        ])
+    }
+
+    pub fn reauth(&self) -> Result<(), AppError> {
+        self.run_inherited([
+            "reauth",
+            "--url",
+            &self.server_url,
+            "--name",
+            &self.admin_name,
+        ])
     }
 
     fn run_json<T: DeserializeOwned>(
@@ -140,6 +186,52 @@ impl KanidmCli {
 
     fn run_unit(&self, args: Vec<String>, context: &str) -> Result<(), AppError> {
         self.run_success(args, context).map(|_| ())
+    }
+
+    fn run_stdout(&self, args: Vec<String>, context: &str) -> Result<String, AppError> {
+        self.run_success(args, context).map(|output| output.stdout)
+    }
+
+    fn run_inherited<'a>(&self, args: impl IntoIterator<Item = &'a str>) -> Result<(), AppError> {
+        let rendered_args = args.into_iter().map(ToOwned::to_owned).collect::<Vec<_>>();
+        let status = Command::new(&self.program)
+            .args(&rendered_args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    AppError::MissingDependency {
+                        binary: self.program.to_string_lossy().to_string(),
+                    }
+                } else {
+                    AppError::Io {
+                        message: format!(
+                            "failed to execute {} interactively: {error}",
+                            self.program.to_string_lossy()
+                        ),
+                    }
+                }
+            })?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(AppError::Backend {
+                message: format!(
+                    "{} exited unsuccessfully; inspect the terminal output above",
+                    self.program.to_string_lossy()
+                ),
+                failure: Box::new(BackendFailure {
+                    program: self.program.to_string_lossy().to_string(),
+                    args: rendered_args,
+                    status: status.code(),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                }),
+            })
+        }
     }
 
     fn run_success(&self, args: Vec<String>, context: &str) -> Result<BackendSuccess, AppError> {

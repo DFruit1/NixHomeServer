@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/lib-repo.sh"
 init_repo_root "RUNTIME_READINESS_REPO_ROOT"
 cd_repo_root
-source "$repo_root/scripts/lib-storage-health.sh"
+source "$script_dir/lib-storage-health.sh"
 ensure_default_nix_config
 
 usage() {

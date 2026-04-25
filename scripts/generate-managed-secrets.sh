@@ -24,6 +24,7 @@ generated_secret_specs=(
   "copypartyClientSecret:32"
   "kavitaClientSecret:32"
   "kavitaTokenKey:64"
+  "resticSystemStatePassword:32"
 )
 
 generate_secret_value() {

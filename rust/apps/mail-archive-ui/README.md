@@ -28,6 +28,7 @@ Functional scope:
 - stores mailbox credentials encrypted at rest
 - generates `mbsync` config on demand
 - updates or repairs per-account `notmuch` indexes
+- indexes supported document attachment text for search, including `pdf`, `doc`, `docx`, `odt`, `rtf`, and `text/plain`
 - exposes metadata-only search results
 - supports mailbox edit, schedule toggle, manual sync, and reindex actions
 - persists per-user search defaults for query and mailbox filter

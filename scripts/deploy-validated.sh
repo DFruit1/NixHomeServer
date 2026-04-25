@@ -140,6 +140,18 @@ run_rebuild() {
     --ask-sudo-password
 }
 
+create_runtime_readiness_archive() {
+  local archive_path="$1"
+
+  tar -C "$repo_root" \
+    --exclude=.git \
+    --exclude='./result' \
+    --exclude='./result-*' \
+    --exclude='./rust/apps/mail-archive-ui/target' \
+    --exclude='./rust/apps/kanidm-admin/target' \
+    -cf "$archive_path" .
+}
+
 echo "ℹ️ Running flake checks (no build)…"
 nix flake check --no-build
 
@@ -154,13 +166,24 @@ run_rebuild test
 echo "ℹ️ Checking for failed units on ${target_host}…"
 ssh -t "$target_host" "sudo systemctl --failed --no-pager"
 
-if ssh "$target_host" "test -x '$repo_root/scripts/runtime-readiness.sh'"; then
+if [[ -x "$repo_root/scripts/runtime-readiness.sh" ]]; then
   echo "ℹ️ Running runtime readiness checks on ${target_host}…"
-  ssh -t "$target_host" "cd '$repo_root' && sudo ./scripts/runtime-readiness.sh"
+  readiness_archive="$(mktemp)"
+  trap 'rm -f "$readiness_archive"' EXIT
+  create_runtime_readiness_archive "$readiness_archive"
+  scp "$readiness_archive" "$target_host:/tmp/runtime-readiness.tar"
+  ssh -tt "$target_host" "
+    set -euo pipefail
+    tmpdir=\$(mktemp -d)
+    trap 'rm -rf \"\$tmpdir\" /tmp/runtime-readiness.tar' EXIT
+    tar -C \"\$tmpdir\" -xf /tmp/runtime-readiness.tar
+    chmod +x \"\$tmpdir/scripts/runtime-readiness.sh\"
+    sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\"
+  "
+  rm -f "$readiness_archive"
+  trap - EXIT
 else
-  echo "ℹ️ Remote runtime readiness script not found at $repo_root/scripts/runtime-readiness.sh"
-  echo "   Next step on the target host:"
-  echo "   cd $repo_root && sudo ./scripts/runtime-readiness.sh"
+  echo "ℹ️ Local runtime readiness script not found at $repo_root/scripts/runtime-readiness.sh"
 fi
 
 if [[ "$action" == "switch" ]]; then
@@ -170,4 +193,4 @@ fi
 
 echo "✅ Deploy validation completed."
 echo "Next verification command:"
-echo "  ssh -t $target_host 'cd $repo_root && sudo ./scripts/runtime-readiness.sh'"
+echo "  readiness_archive=\$(mktemp) && tar -C $repo_root --exclude=.git --exclude='./result' --exclude='./result-*' --exclude='./rust/apps/mail-archive-ui/target' --exclude='./rust/apps/kanidm-admin/target' -cf \"\$readiness_archive\" . && scp \"\$readiness_archive\" $target_host:/tmp/runtime-readiness.tar && ssh -tt $target_host 'tmpdir=\$(mktemp -d); trap \"rm -rf \\\"\$tmpdir\\\" /tmp/runtime-readiness.tar\" EXIT; tar -C \"\$tmpdir\" -xf /tmp/runtime-readiness.tar; chmod +x \"\$tmpdir/scripts/runtime-readiness.sh\"; sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\"' && rm -f \"\$readiness_archive\""

@@ -103,7 +103,7 @@ in
       originLanding = "https://${vars.emailsDomain}";
       basicSecretFile = config.age.secrets.mailArchiveOauth2ProxyClientSecret.path;
       preferShortUsername = true;
-      scopeMaps."mail-archive-users" = [ "openid" "profile" "email" "groups" ];
+      scopeMaps."mail-archive-users" = [ "openid" "profile" "email" "groups_name" ];
     };
   };
 }

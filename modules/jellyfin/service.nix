@@ -1,4 +1,4 @@
-{ ... }:
+{ lib, ... }:
 
 let
   dataDir = "/var/lib/jellyfin";
@@ -11,6 +11,8 @@ in
     cacheDir = "/var/cache/jellyfin";
     logDir = logDir;
   };
+
+  users.users.jellyfin.extraGroups = lib.mkAfter [ "media-library" ];
 
   systemd.tmpfiles.rules = [
     "d ${logDir} 0750 jellyfin jellyfin -"

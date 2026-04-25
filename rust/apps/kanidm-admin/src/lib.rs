@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod config;
 pub mod groups;
+pub mod interactive;
 pub mod kanidm_cli;
 pub mod models;
 pub mod output;

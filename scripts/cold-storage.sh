@@ -17,7 +17,7 @@ This helper does not create or destroy pools.
 
 Examples:
   scripts/cold-storage.sh status
-  scripts/cold-storage.sh mount cold-v1jan8ph
+  scripts/cold-storage.sh mount <pool-name>
 EOF
 }
 

@@ -35,6 +35,8 @@ in
     };
   };
 
+  users.users.kavita.extraGroups = lib.mkAfter [ "media-library" ];
+
   systemd.services.kavita.preStart = lib.mkAfter ''
     ${pkgs.replace-secret}/bin/replace-secret '@OIDC_SECRET@' \
       ${config.age.secrets.kavitaClientSecret.path} \

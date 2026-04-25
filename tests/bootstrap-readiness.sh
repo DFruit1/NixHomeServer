@@ -35,6 +35,9 @@ for required_path in \
   documentation/restore-and-recovery.md \
   documentation/operations.md \
   documentation/kanidm.md \
+  rust/apps/kanidm-admin/Cargo.toml \
+  rust/apps/kanidm-admin/default.nix \
+  rust/apps/kanidm-admin/src/main.rs \
   rust/apps/mail-archive-ui/README.md \
   modules/Core_Modules/data-disks/default.nix \
   modules/Core_Modules/caddy/default.nix \
@@ -65,6 +68,11 @@ done
 
 if [[ -e disko-install.nix ]]; then
   echo "❌ disko-install.nix must not exist; the combined destructive Disko path was removed."
+  exit 1
+fi
+
+if [[ -e scripts/kanidm-create-user.sh ]]; then
+  echo "❌ scripts/kanidm-create-user.sh must not exist; the Rust kanidm-admin workflow replaced the legacy shell TUI."
   exit 1
 fi
 
@@ -146,18 +154,26 @@ require_fixed documentation/operations.md './scripts/power-audit.sh' \
   "Operations must document the power audit helper."
 forbid_match documentation/operations.md './scripts/format-system-disk.sh|./scripts/format-data-disks.sh|./scripts/cold-storage.sh mount|./scripts/cold-storage.sh unmount' \
   "Operations must link out instead of duplicating destructive or recovery command ownership."
-require_fixed documentation/kanidm.md 'kanidm-user-tui' \
-  "Kanidm guide must document the admin TUI."
+require_fixed documentation/kanidm.md 'kanidm-admin' \
+  "Kanidm guide must document the Rust operator CLI."
+require_fixed documentation/kanidm.md 'kanidm-admin interactive' \
+  "Kanidm guide must document the interactive kanidm-admin workflow."
 require_fixed documentation/kanidm.md 'kanidm login' \
   "Kanidm guide must own the delegated login flow."
 require_fixed documentation/kanidm.md 'kanidm reauth' \
   "Kanidm guide must own the reauthentication flow."
+require_fixed documentation/kanidm.md 'kanidm-admin users reset-token' \
+  "Kanidm guide must document Kanidm password reset token creation via the Rust CLI."
 require_fixed documentation/kanidm.md 'kanidm group add-members' \
   "Kanidm guide must own group membership commands."
+forbid_match documentation/kanidm.md 'kanidm-user-tui' \
+  "Kanidm guide must not retain the retired TUI workflow."
 forbid_match documentation/kanidm.md 'runtime-readiness\.sh|nix flake check --no-build|scripts/check-repo.sh' \
   "Kanidm guide must not duplicate generic validation workflows."
 require_fixed rust/apps/mail-archive-ui/README.md 'mail-archive-users' \
   "Mail archive UI README must document the access group."
+require_fixed rust/apps/default.nix 'kanidm-admin = import ./kanidm-admin' \
+  "The Rust app registry must expose the kanidm-admin CLI."
 require_fixed AGENTS.md 'TARGET_SERVER_IP' \
   "AGENTS.md must document the intended reserved LAN IP variable."
 require_fixed AGENTS.md 'CURRENT_SERVER_IP' \

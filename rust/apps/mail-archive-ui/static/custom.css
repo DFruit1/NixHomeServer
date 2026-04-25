@@ -44,7 +44,6 @@ a {
   padding: 1.4rem 0 4rem;
 }
 
-.topbar,
 .hero,
 .panel,
 .result,
@@ -53,40 +52,6 @@ a {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-}
-
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  align-items: flex-start;
-  padding: 1.2rem 1.4rem;
-  margin-bottom: 1.2rem;
-}
-
-.topnav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-}
-
-.topnav a {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 2.6rem;
-  padding: 0.65rem 0.95rem;
-  border-radius: 999px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--accent-strong);
-  text-decoration: none;
-  font-weight: 600;
-}
-
-.topnav a.active {
-  background: var(--accent-soft);
-  border-color: rgba(15, 107, 92, 0.16);
 }
 
 .hero {
@@ -132,7 +97,10 @@ a {
 .tag-list,
 .nav,
 .actions,
-.action-row {
+.action-row,
+.footer-nav,
+.progress-metrics,
+.dashboard-summary {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
@@ -202,7 +170,8 @@ button.secondary {
 
 .pill,
 .badge,
-.tag {
+.tag,
+.summary-metric {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
@@ -220,6 +189,28 @@ button.secondary {
 .tag {
   background: rgba(15, 107, 92, 0.12);
   color: var(--accent-strong);
+}
+
+.summary-metric {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  min-width: 8rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--accent-ghost);
+  color: var(--ink);
+}
+
+.metric-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.summary-metric strong {
+  font-size: 1.05rem;
 }
 
 .status {
@@ -256,6 +247,26 @@ button.secondary {
 .status.unindexed {
   background: rgba(15, 107, 92, 0.12);
   color: var(--accent-strong);
+}
+
+.progress-cluster {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.progress-bar {
+  overflow: hidden;
+  height: 0.75rem;
+  border-radius: 999px;
+  background: rgba(29, 31, 28, 0.08);
+}
+
+.progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #57aa8f);
+  transition: width 180ms ease;
 }
 
 form {
@@ -335,6 +346,39 @@ textarea {
   color: var(--muted);
 }
 
+.page-footer {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(29, 31, 28, 0.12);
+}
+
+.footer-nav a {
+  color: var(--accent-strong);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.footer-nav a.active {
+  text-decoration: underline;
+  text-underline-offset: 0.2rem;
+}
+
+.footer-meta {
+  margin: 0;
+  max-width: 100%;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: rgba(95, 98, 92, 0.82);
+  overflow-wrap: anywhere;
+}
+
+.hidden {
+  display: none;
+}
+
 code {
   font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
   font-size: 0.95em;
@@ -346,7 +390,6 @@ code {
     padding-top: 1rem;
   }
 
-  .topbar,
   .hero,
   .panel,
   .result,
@@ -354,22 +397,21 @@ code {
     border-radius: 18px;
   }
 
-  .topbar,
   .card-header,
   .result-head {
     grid-template-columns: 1fr;
     display: grid;
   }
 
-  .topnav,
   .action-row,
   .actions,
-  .nav {
+  .nav,
+  .dashboard-summary,
+  .progress-metrics {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .topnav a,
   .button-link,
   button {
     width: 100%;

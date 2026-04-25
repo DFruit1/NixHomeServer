@@ -3,6 +3,18 @@
 let
   cfg = config.services.mail-archive-ui;
   mailArchiveSyncTimer = "*-*-* 06,18:15:00";
+  defaultTags = [ "new" ];
+  environmentEntries =
+    [
+      "MAIL_ARCHIVE_UI_ADDRESS=${cfg.address}"
+      "MAIL_ARCHIVE_UI_PORT=${toString cfg.port}"
+      "MAIL_ARCHIVE_UI_DATA_DIR=${cfg.dataDir}"
+      "MAIL_ARCHIVE_UI_STORE_ROOT=${cfg.storeRoot}"
+      "MAIL_ARCHIVE_UI_RUNTIME_DIR=${cfg.runtimeDir}"
+      "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
+      "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
+    ]
+    ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
 in
 {
   environment.systemPackages = [
@@ -21,6 +33,7 @@ in
       Group = "mail-archive-ui";
       WorkingDirectory = cfg.dataDir;
       ExecStart = "${cfg.package}/bin/mail-archive-ui sync-due";
+      Environment = environmentEntries;
       UMask = "0077";
       NoNewPrivileges = true;
       PrivateTmp = true;

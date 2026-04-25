@@ -4,7 +4,7 @@ let
   mailArchiveStoreRoot = "${vars.dataRoot}/mail-archive";
   immichManagedPhotosRoot = "${vars.mediaRoot}/photos/managed";
   immichExternalPhotosRoot = "${vars.mediaRoot}/photos/external";
-  paperlessConsumeDir = "${vars.mediaRoot}/documents/consume";
+  paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
   paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
   paperlessExportDir = "${vars.mediaRoot}/documents/export";
   audiobooksRoot = "${vars.mediaRoot}/audio/audiobooks";
@@ -124,7 +124,7 @@ let
       group = "immich";
     }
     {
-      path = paperlessConsumeDir;
+      path = paperlessInboxDir;
       mode = "2770";
       user = "root";
       group = "paperless";
@@ -137,57 +137,57 @@ let
     }
     {
       path = paperlessExportDir;
-      mode = "0770";
+      mode = "0750";
       user = "paperless";
       group = "paperless";
     }
     {
       path = audiobooksRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = podcastsRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = ebooksRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = comicsRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = mangaRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = moviesRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = showsRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = homeVideosRoot;
-      mode = "0755";
+      mode = "2775";
       user = "root";
-      group = "root";
+      group = "media-library";
     }
     {
       path = sharedExchangeRoot;
@@ -216,6 +216,8 @@ let
   );
 in
 {
+  users.groups.media-library = { };
+
   systemd.tmpfiles.rules = [
     "d /persist/appdata 0755 root root -"
     "d /persist/appdata/mail-archive-ui 0750 mail-archive-ui mail-archive-ui -"

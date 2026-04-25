@@ -2,6 +2,8 @@
 
 let
   dataDir = "/var/lib/paperless";
+  paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
+  paperlessLegacyConsumeDir = "${vars.mediaRoot}/documents/consume";
   paperlessUserPermissionCodenames = [
     "view_uisettings"
     "add_uisettings"
@@ -23,6 +25,46 @@ in
 {
   systemd.services =
     {
+      paperless-storage-layout-v1 = {
+        description = "Migrate the Paperless consume directory to the inbox layout";
+        wantedBy = [ "multi-user.target" ];
+        wants = [ "data-pool-layout.service" ];
+        after = [ "data-pool-layout.service" ];
+        before = [
+          "copyparty.service"
+          "paperless-consumer.service"
+          "paperless-scheduler.service"
+          "paperless-task-queue.service"
+          "paperless-web.service"
+        ];
+        path = [ pkgs.coreutils ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+
+          legacy_dir='${paperlessLegacyConsumeDir}'
+          inbox_dir='${paperlessInboxDir}'
+
+          if [[ -L "$legacy_dir" ]]; then
+            rm -f "$legacy_dir"
+          fi
+
+          if [[ -d "$legacy_dir" ]]; then
+            if [[ -d "$inbox_dir" ]]; then
+              cp -a -n "$legacy_dir"/. "$inbox_dir"/
+              rm -rf "$legacy_dir"
+            else
+              mv "$legacy_dir" "$inbox_dir"
+            fi
+          fi
+
+          install -d -m 2770 -o root -g paperless "$inbox_dir"
+        '';
+      };
+
       paperless-oidc-env = {
         description = "Generate Paperless OIDC environment";
         path = [ pkgs.jq ];
@@ -129,12 +171,20 @@ in
       "paperless-task-queue"
       "paperless-web"
     ] (_: {
-      requires = [ "paperless-oidc-env.service" ];
+      requires = [
+        "paperless-oidc-env.service"
+        "paperless-storage-layout-v1.service"
+      ];
       after = [
         "app-state-migration-v1.service"
         "data-pool-layout.service"
         "paperless-oidc-env.service"
+        "paperless-storage-layout-v1.service"
       ];
-      wants = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
+      wants = [
+        "app-state-migration-v1.service"
+        "data-pool-layout.service"
+        "paperless-storage-layout-v1.service"
+      ];
     });
 }

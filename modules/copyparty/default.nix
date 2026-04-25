@@ -31,11 +31,10 @@ in
       xff-hdr = "x-forwarded-for";
       xff-src = "127.0.0.1/32";
       no-reload = true;
-      "html-head-s" = "<script>document.addEventListener('DOMContentLoaded',()=>{if(document.documentElement.id!=='ht_spl')return;const user=document.getElementById('un')?.textContent?.trim();if(!user)return;const addAlias=(headingId,href,label)=>{const heading=document.getElementById(headingId);const list=heading?.nextElementSibling;if(!list||list.tagName!=='UL')return;for(const li of Array.from(list.querySelectorAll('li'))){const a=li.querySelector('a');if(a?.textContent?.trim()==='/my-files/'+user+'/')li.remove();}if(Array.from(list.querySelectorAll('a')).some(a=>a.textContent?.trim()===label))return;const li=document.createElement('li');const a=document.createElement('a');a.href=href;a.textContent=label;li.appendChild(a);list.prepend(li);};addAlias('f','/my-files/'+encodeURIComponent(user)+'/','/my-files/');addAlias('g','/my-files/'+encodeURIComponent(user)+'/','/my-files/');});</script>";
     };
     volumes = { };
     globalExtraConfig = ''
-      [/my-files/''${u}]
+      [/''${u}]
       ${vars.usersWorkspaceRoot}/''${u}/files
       accs:
         rwmda: ''${u}
@@ -44,6 +43,90 @@ in
         e2d: true
         chmod_d: 770
         chmod_f: 660
+        unlistcr: true
+        unlistcw: true
+
+      [/documents]
+      ${vars.mediaRoot}/documents
+      accs:
+        r: @acct
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 750
+        chmod_f: 640
+        unlistcr: true
+        unlistcw: true
+
+      [/documents/inbox]
+      ${vars.mediaRoot}/documents/inbox
+      accs:
+        rwmda: @acct
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 770
+        chmod_f: 660
+        unlistcr: true
+        unlistcw: true
+
+      [/documents/archive]
+      ${vars.mediaRoot}/documents/archive
+      accs:
+        r: @acct
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 750
+        chmod_f: 640
+        unlistcr: true
+        unlistcw: true
+
+      [/documents/export]
+      ${vars.mediaRoot}/documents/export
+      accs:
+        r: @acct
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 750
+        chmod_f: 640
+        unlistcr: true
+        unlistcw: true
+
+      [/audiobooks]
+      ${vars.mediaRoot}/audio
+      accs:
+        rwmda: @acct
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
+        unlistcr: true
+        unlistcw: true
+
+      [/books]
+      ${vars.mediaRoot}/books
+      accs:
+        rwmda: @acct
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
+        unlistcr: true
+        unlistcw: true
+
+      [/videos]
+      ${vars.mediaRoot}/video
+      accs:
+        rwmda: @acct
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
         unlistcr: true
         unlistcw: true
 
@@ -61,14 +144,28 @@ in
     '';
   };
 
-  users.users.copyparty.extraGroups = [ "users" ];
+  users.users.copyparty.extraGroups = lib.mkAfter [
+    "users"
+    "paperless"
+    "media-library"
+  ];
 
   systemd.services.copyparty = {
-    wants = [ "fileshare-workspace-sync.service" ];
-    after = [ "fileshare-workspace-sync.service" ];
+    wants = [
+      "fileshare-workspace-sync.service"
+      "paperless-storage-layout-v1.service"
+    ];
+    after = [
+      "fileshare-workspace-sync.service"
+      "paperless-storage-layout-v1.service"
+    ];
     serviceConfig.BindPaths = lib.mkAfter [
       vars.usersWorkspaceRoot
       vars.sharedPublicRoot
+      "${vars.mediaRoot}/documents"
+      "${vars.mediaRoot}/audio"
+      "${vars.mediaRoot}/books"
+      "${vars.mediaRoot}/video"
     ];
   };
 }

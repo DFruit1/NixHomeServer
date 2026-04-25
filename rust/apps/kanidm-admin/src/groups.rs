@@ -142,6 +142,10 @@ pub fn required_group_for_app(app: AppAccessTarget) -> &'static str {
     }
 }
 
+pub fn managed_group_names() -> Vec<&'static str> {
+    MANAGED_GROUPS.iter().map(|group| group.name).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

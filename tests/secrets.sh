@@ -74,6 +74,8 @@ require_fixed secrets/agenix.nix 'mailArchiveOauth2ProxyClientSecret = { file = 
   "The dedicated mail oauth2-proxy client secret must remain readable by both Kanidm provisioning and oauth2-proxy."
 require_fixed secrets/agenix.nix 'mailArchiveOauth2ProxyCookieSecret = { file = ./mailArchiveOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };' \
   "The dedicated mail oauth2-proxy cookie secret must remain owned by oauth2-proxy."
+require_fixed secrets/agenix.nix 'resticSystemStatePassword = { file = ./resticSystemStatePassword.age; owner = "root"; mode = "0400"; };' \
+  "The local Restic system-state repository password must remain a root-only agenix secret."
 require_fixed secrets/agenix.nix 'serverBootstrapSudoPassword = { file = ./serverBootstrapSudoPassword.age; owner = "root"; mode = "0400"; };' \
   "The server bootstrap sudo password must remain mounted as a root-only agenix secret."
 require_fixed secrets/agenix.nix 'storageAlertWebhookUrl = { file = ./storageAlertWebhookUrl.age; owner = "root"; mode = "0400"; };' \
@@ -111,6 +113,8 @@ require_fixed modules/mail-archive-ui/oauth2-proxy.nix 'config.age.secrets.mailA
   "The dedicated mail oauth2-proxy must source its client secret from agenix."
 require_fixed modules/mail-archive-ui/oauth2-proxy.nix 'config.age.secrets.mailArchiveOauth2ProxyCookieSecret.path' \
   "The dedicated mail oauth2-proxy must source its cookie secret from agenix."
+require_fixed modules/Core_Modules/restic-state/default.nix 'config.age.secrets.resticSystemStatePassword.path' \
+  "The local Restic system-state job must source its repository password from agenix."
 require_fixed modules/Core_Modules/oauth2-proxy/default.nix "OAUTH2_PROXY_CLIENT_SECRET=%s\\nOAUTH2_PROXY_COOKIE_SECRET=%s\\n" \
   "OAuth2 Proxy must generate a runtime environment file from normalized secret values."
 require_fixed modules/Core_Modules/storage-monitoring/default.nix 'config.age.secrets.storageAlertWebhookUrl.path' \
@@ -127,6 +131,8 @@ require_match scripts/generate-managed-secrets.sh 'mailArchiveOauth2ProxyClientS
   "Secret generation must include the dedicated mail oauth2-proxy client secret."
 require_match scripts/generate-managed-secrets.sh 'mailArchiveOauth2ProxyCookieSecret:32' \
   "Secret generation must include the dedicated mail oauth2-proxy cookie secret."
+require_match scripts/generate-managed-secrets.sh 'resticSystemStatePassword:32' \
+  "Secret generation must include the local Restic system-state repository password."
 require_fixed scripts/gen-all-secrets.sh 'scripts/generate-managed-secrets.sh' \
   "The wrapper secret helper must delegate generated secrets to the explicit generator."
 require_fixed scripts/gen-all-secrets.sh 'scripts/encrypt-staged-secrets.sh' \

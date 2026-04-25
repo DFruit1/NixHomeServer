@@ -3,7 +3,7 @@
 let
   paperlessPort = 8000;
   dataDir = "/var/lib/paperless";
-  paperlessConsumeDir = "${vars.mediaRoot}/documents/consume";
+  paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
   paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
   paperlessExportDir = "${vars.mediaRoot}/documents/export";
 in
@@ -22,7 +22,7 @@ in
     enable = true;
     dataDir = dataDir;
     mediaDir = paperlessArchiveDir;
-    consumptionDir = paperlessConsumeDir;
+    consumptionDir = paperlessInboxDir;
     address = "127.0.0.1";
     port = paperlessPort;
 

@@ -11,6 +11,8 @@ in
     port = audiobookshelfPort;
   };
 
+  users.users.audiobookshelf.extraGroups = lib.mkAfter [ "media-library" ];
+
   systemd.services.audiobookshelf = {
     after = [
       "app-state-migration-v1.service"

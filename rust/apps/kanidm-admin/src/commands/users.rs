@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use crate::{
     kanidm_cli::KanidmCli,
-    models::{parse_person_list, parse_person_record},
+    models::{parse_person_list, parse_person_record, parse_reset_token_summary},
     output::CommandOutput,
     AppError,
 };
@@ -13,6 +13,12 @@ pub struct CreateUserOptions {
     pub display_name: String,
     pub email: Option<String>,
     pub clear_validity: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResetTokenOptions {
+    pub account_id: String,
+    pub ttl_seconds: u64,
 }
 
 pub fn list_users(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
@@ -47,11 +53,14 @@ pub fn show_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, App
     let value = cli.person_get::<Value>(account_id)?;
     let person = parse_person_record(&value, account_id)?;
     let human = format!(
-        "Account ID: {}\nDisplay Name: {}\nPrimary Email: {}\nUUID: {}\n\nManaged Login Groups:\n{}\n\nManaged Admin-Intent Groups:\n{}",
+        "Account ID: {}\nDisplay Name: {}\nPrimary Email: {}\nSPN: {}\nUUID: {}\nValid From: {}\nExpiry Date: {}\n\nManaged Login Groups:\n{}\n\nManaged Admin-Intent Groups:\n{}",
         person.account_id,
         person.display_name.as_deref().unwrap_or("-"),
         person.primary_email.as_deref().unwrap_or("-"),
+        person.spn.as_deref().unwrap_or("-"),
         person.uuid.as_deref().unwrap_or("-"),
+        person.valid_from.as_deref().unwrap_or("not set"),
+        person.expiry.as_deref().unwrap_or("not set"),
         render_group_block(&person.access_groups.login),
         render_group_block(&person.access_groups.admin_intent),
     );
@@ -98,6 +107,43 @@ pub fn create_user(cli: &KanidmCli, options: CreateUserOptions) -> Result<Comman
         details: json!({
             "user": person,
             "completed_steps": completed_steps,
+        }),
+    })
+}
+
+pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<CommandOutput, AppError> {
+    let stdout = cli.person_create_reset_token(&options.account_id, options.ttl_seconds)?;
+    let summary = parse_reset_token_summary(&stdout);
+
+    let mut human = format!(
+        "Created a password reset token for '{}'.\nTTL Seconds: {}",
+        options.account_id, options.ttl_seconds
+    );
+    if let Some(url) = &summary.reset_url {
+        human.push_str(&format!("\nReset URL: {url}"));
+    }
+    if let Some(token) = &summary.token {
+        human.push_str(&format!("\nToken: {token}"));
+    }
+    human.push_str(
+        "\n\nGive this token or link to the target user through a secure channel.\n\nRaw Output:\n",
+    );
+    human.push_str(if summary.raw_output.is_empty() {
+        "(no output)"
+    } else {
+        &summary.raw_output
+    });
+
+    Ok(CommandOutput {
+        message: format!(
+            "created a password reset token for '{}'",
+            options.account_id
+        ),
+        human,
+        details: json!({
+            "account_id": options.account_id,
+            "ttl_seconds": options.ttl_seconds,
+            "reset_token": summary,
         }),
     })
 }

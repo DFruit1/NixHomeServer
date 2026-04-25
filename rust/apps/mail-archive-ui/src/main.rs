@@ -16,7 +16,10 @@ use chacha20poly1305::{
 use chrono::{DateTime, Utc};
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{self, Deserializer},
+    Deserialize, Serialize,
+};
 use std::{
     cmp::Reverse,
     env,
@@ -38,7 +41,152 @@ const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 const DEFAULT_LOCK_DIR: &str = ".";
 const MASTER_KEY_FILENAME: &str = "master.key";
 const DB_FILENAME: &str = "mail-archive-ui.sqlite3";
+const ATTACHMENT_TEXT_MIME_PATTERNS: &[&str] = &[
+    "^application/pdf$",
+    "^application/msword$",
+    "^application/rtf$",
+    "^application/vnd[.]oasis[.]opendocument[.]text$",
+    "^application/vnd[.]openxmlformats-officedocument[.]wordprocessingml[.]document$",
+    "^text/plain$",
+];
 const CUSTOM_CSS: &str = include_str!("../static/custom.css");
+const DASHBOARD_JS: &str = r#"const DASHBOARD_ROOT = document.querySelector("[data-dashboard-status-root]");
+
+if (DASHBOARD_ROOT) {
+  const numberFormatter = new Intl.NumberFormat();
+  const RUNNING_INTERVAL_MS = 3000;
+  const IDLE_INTERVAL_MS = 15000;
+  let pollTimer = null;
+
+  const setText = (element, value) => {
+    if (element) {
+      element.textContent = value;
+    }
+  };
+
+  const setCount = (root, selector, value, suffix = "") => {
+    const element = root.querySelector(selector);
+    if (element) {
+      element.textContent = `${numberFormatter.format(value)}${suffix}`;
+    }
+  };
+
+  const updateSummary = (totals) => {
+    const summary = document.querySelector("[data-dashboard-summary]");
+    if (!summary) {
+      return;
+    }
+
+    setCount(
+      summary,
+      '[data-summary-field="downloaded"]',
+      totals.downloaded_message_count,
+    );
+    setCount(
+      summary,
+      '[data-summary-field="indexed"]',
+      totals.indexed_message_count,
+    );
+    setCount(
+      summary,
+      '[data-summary-field="pending"]',
+      totals.pending_index_count,
+    );
+    setCount(
+      summary,
+      '[data-summary-field="coverage"]',
+      totals.index_coverage_percent,
+      "%",
+    );
+  };
+
+  const updateAccountCard = (account) => {
+    const card = document.querySelector(`[data-account-id="${account.id}"]`);
+    if (!card) {
+      return;
+    }
+
+    const statusBadge = card.querySelector("[data-status-badge]");
+    if (statusBadge) {
+      statusBadge.className = `status ${account.status_class}`;
+      statusBadge.textContent = account.status_label;
+    }
+
+    setText(card.querySelector("[data-index-pill]"), account.index_label);
+    setText(
+      card.querySelector('[data-progress-field="downloaded"]'),
+      numberFormatter.format(account.downloaded_message_count),
+    );
+    setText(
+      card.querySelector('[data-progress-field="indexed"]'),
+      numberFormatter.format(account.indexed_message_count),
+    );
+    setText(
+      card.querySelector('[data-progress-field="pending"]'),
+      numberFormatter.format(account.pending_index_count),
+    );
+    setText(
+      card.querySelector('[data-progress-field="coverage"]'),
+      `${account.index_coverage_percent}%`,
+    );
+    setText(card.querySelector("[data-progress-note]"), account.progress_note);
+    setText(card.querySelector("[data-last-activity]"), `Last activity ${account.last_activity}`);
+
+    const progressBar = card.querySelector("[data-progress-bar]");
+    if (progressBar) {
+      progressBar.style.width = `${account.index_coverage_percent}%`;
+    }
+
+    const errorBox = card.querySelector("[data-sync-error]");
+    if (errorBox) {
+      if (account.last_sync_error) {
+        errorBox.textContent = account.last_sync_error;
+        errorBox.classList.remove("hidden");
+      } else {
+        errorBox.textContent = "";
+        errorBox.classList.add("hidden");
+      }
+    }
+  };
+
+  const scheduleNextPoll = (accounts) => {
+    const hasRunningAccount = accounts.some((account) => account.status_label === "running");
+    const delay = document.hidden || !hasRunningAccount ? IDLE_INTERVAL_MS : RUNNING_INTERVAL_MS;
+    pollTimer = window.setTimeout(fetchStatus, delay);
+  };
+
+  const fetchStatus = async () => {
+    window.clearTimeout(pollTimer);
+
+    try {
+      const response = await fetch("/api/accounts/status", {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+
+      if (!response.ok) {
+        throw new Error(`status ${response.status}`);
+      }
+
+      const payload = await response.json();
+      updateSummary(payload.totals);
+      payload.accounts.forEach(updateAccountCard);
+      scheduleNextPoll(payload.accounts);
+    } catch (error) {
+      console.error("mail archive status refresh failed", error);
+      pollTimer = window.setTimeout(fetchStatus, IDLE_INTERVAL_MS);
+    }
+  };
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      fetchStatus();
+    }
+  });
+
+  fetchStatus();
+}
+"#;
 const GROUP_NAME: &str = "mail-archive-users";
 
 #[derive(Clone, Debug)]
@@ -163,7 +311,57 @@ struct DashboardParams {
 #[derive(Debug, Deserialize)]
 struct SearchParams {
     q: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
     account_id: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+struct DashboardAccountView {
+    account: AccountRecord,
+    status: AccountStatusPayload,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AccountProgressCounts {
+    downloaded_message_count: usize,
+    indexed_message_count: usize,
+    pending_index_count: usize,
+    index_coverage_percent: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DashboardStatusPayload {
+    generated_at: String,
+    totals: DashboardTotals,
+    accounts: Vec<AccountStatusPayload>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorPayload {
+    error: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct DashboardTotals {
+    downloaded_message_count: usize,
+    indexed_message_count: usize,
+    pending_index_count: usize,
+    index_coverage_percent: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AccountStatusPayload {
+    id: i64,
+    status_class: String,
+    status_label: String,
+    index_label: String,
+    last_activity: String,
+    downloaded_message_count: usize,
+    indexed_message_count: usize,
+    pending_index_count: usize,
+    index_coverage_percent: usize,
+    progress_note: String,
+    last_sync_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -229,6 +427,7 @@ async fn main() {
     let config = load_config();
     ensure_app_layout(&config).expect("failed to prepare mail archive ui paths");
     initialize_db(&config).expect("failed to initialize sqlite schema");
+    reconcile_interrupted_syncs(&config).expect("failed to reconcile interrupted sync state");
 
     if let Some(mode) = env::args().nth(1) {
         if mode == "sync-due" {
@@ -263,6 +462,7 @@ async fn main() {
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(dashboard))
+        .route("/api/accounts/status", get(account_status_api))
         .route("/accounts/new", get(new_account))
         .route("/accounts", post(create_account))
         .route("/accounts/{id}/edit", get(edit_account))
@@ -273,6 +473,7 @@ fn router(state: AppState) -> Router {
         .route("/search", get(search_page))
         .route("/healthz", get(healthz))
         .route("/static/custom.css", get(custom_css))
+        .route("/static/dashboard.js", get(dashboard_js))
         .with_state(state)
 }
 
@@ -281,30 +482,53 @@ async fn dashboard(
     headers: HeaderMap,
     Query(params): Query<DashboardParams>,
 ) -> Response {
-    match identity_from_headers(&headers) {
-        Ok(identity) => match list_accounts_for_user(&state.config, &identity.username) {
-            Ok(accounts) => {
-                let mut account_views = Vec::new();
-                for account in accounts {
-                    let account_paths = ensure_account_paths(&state.config, &account);
-                    let index_state = match account_paths {
-                        Ok(paths) => account_index_state(&paths),
-                        Err(_) => IndexState::NotConfigured,
-                    };
-                    account_views.push((account, index_state));
-                }
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
 
-                html_response(render_dashboard(
-                    &identity,
-                    &account_views,
-                    params.flash.as_deref(),
-                    params.error.as_deref(),
-                ))
-            }
-            Err(error) => server_error_page("Failed to load accounts", &error, Some(&identity)),
-        },
-        Err((status, message)) => auth_error(status, &message),
+    match load_dashboard_account_views(&state.config, &identity.username) {
+        Ok(account_views) => html_response(render_dashboard(
+            &identity,
+            &account_views,
+            params.flash.as_deref(),
+            params.error.as_deref(),
+        )),
+        Err(error) => server_error_page("Failed to load accounts", &error, Some(&identity)),
     }
+}
+
+async fn account_status_api(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let payload = match tokio::task::spawn_blocking(move || {
+        load_dashboard_status_payload(&config, &username)
+    })
+    .await
+    {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(error)) => {
+            return no_store_response(json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorPayload { error },
+            ))
+        }
+        Err(_) => {
+            return no_store_response(json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorPayload {
+                    error: "status task failed".to_string(),
+                },
+            ))
+        }
+    };
+
+    no_store_response(json_response(StatusCode::OK, payload))
 }
 
 async fn new_account(headers: HeaderMap) -> Response {
@@ -477,21 +701,17 @@ async fn sync_account(
         return auth_error(status, &message);
     }
 
+    if let Err(error) = load_account_for_user(&state.config, &identity.username, account_id) {
+        return server_error_page("Failed to load mailbox", &error, Some(&identity));
+    }
+
     let config = state.config.clone();
     let username = identity.username.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Sync);
+    });
 
-    let sync_result = tokio::task::spawn_blocking(move || {
-        run_account_action_for_user(&config, &username, account_id, AccountAction::Sync)
-    })
-    .await;
-
-    let redirect_target = match sync_result {
-        Ok(Ok(())) => "/?flash=Mailbox+sync+completed".to_string(),
-        Ok(Err(error)) => format!("/?error={}", url_encode_component(&error)),
-        Err(_) => "/?error=Mailbox+sync+task+failed".to_string(),
-    };
-
-    redirect_response(&redirect_target)
+    redirect_response("/?flash=Mailbox+sync+started")
 }
 
 async fn reindex_account(
@@ -508,21 +728,17 @@ async fn reindex_account(
         return auth_error(status, &message);
     }
 
+    if let Err(error) = load_account_for_user(&state.config, &identity.username, account_id) {
+        return server_error_page("Failed to load mailbox", &error, Some(&identity));
+    }
+
     let config = state.config.clone();
     let username = identity.username.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Reindex);
+    });
 
-    let reindex_result = tokio::task::spawn_blocking(move || {
-        run_account_action_for_user(&config, &username, account_id, AccountAction::Reindex)
-    })
-    .await;
-
-    let redirect_target = match reindex_result {
-        Ok(Ok(())) => "/?flash=Mailbox+reindex+completed".to_string(),
-        Ok(Err(error)) => format!("/?error={}", url_encode_component(&error)),
-        Err(_) => "/?error=Mailbox+reindex+task+failed".to_string(),
-    };
-
-    redirect_response(&redirect_target)
+    redirect_response("/?flash=Mailbox+reindex+started")
 }
 
 async fn search_page(
@@ -685,6 +901,15 @@ async fn custom_css() -> Response {
     let response = (
         [(CONTENT_TYPE, "text/css; charset=utf-8")],
         CUSTOM_CSS.to_string(),
+    )
+        .into_response();
+    harden_response(response)
+}
+
+async fn dashboard_js() -> Response {
+    let response = (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        DASHBOARD_JS.to_string(),
     )
         .into_response();
     harden_response(response)
@@ -1498,8 +1723,9 @@ fn run_account_action(
 }
 
 fn acquire_account_lock(config: &AppConfig, account_id: i64) -> Result<SyncLock, String> {
-    let lock_path =
-        PathBuf::from(config.lock_dir.as_ref()).join(format!("account-{account_id}.lock"));
+    let lock_path = sync_lock_path(config, account_id);
+    remove_stale_sync_lock(&lock_path)?;
+
     match OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -1507,15 +1733,84 @@ fn acquire_account_lock(config: &AppConfig, account_id: i64) -> Result<SyncLock,
         .open(&lock_path)
     {
         Ok(mut file) => {
-            std::io::Write::write_all(&mut file, account_id.to_string().as_bytes())
+            let contents = format!("pid:{}", std::process::id());
+            std::io::Write::write_all(&mut file, contents.as_bytes())
                 .map_err(|error| format!("failed to write sync lock: {error}"))?;
             Ok(SyncLock { path: lock_path })
         }
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            Err("Mailbox sync is already running".to_string())
+            if lock_pid_is_active(&lock_path) {
+                Err("Mailbox sync is already running".to_string())
+            } else {
+                remove_stale_sync_lock(&lock_path)?;
+                acquire_account_lock(config, account_id)
+            }
         }
         Err(error) => Err(format!("failed to create sync lock: {error}")),
     }
+}
+
+fn sync_lock_path(config: &AppConfig, account_id: i64) -> PathBuf {
+    PathBuf::from(config.lock_dir.as_ref()).join(format!("account-{account_id}.lock"))
+}
+
+fn reconcile_interrupted_syncs(config: &AppConfig) -> Result<(), String> {
+    let connection = open_db(config)?;
+    let mut statement = connection
+        .prepare("SELECT id FROM accounts WHERE last_sync_status = 'running'")
+        .map_err(|error| format!("failed to prepare interrupted sync query: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed to query interrupted syncs: {error}"))?;
+    let account_ids = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode interrupted sync account id: {error}"))?;
+    drop(statement);
+    drop(connection);
+
+    for account_id in account_ids {
+        let lock_path = sync_lock_path(config, account_id);
+        if lock_pid_is_active(&lock_path) {
+            continue;
+        }
+
+        remove_stale_sync_lock(&lock_path)?;
+        update_sync_finished(
+            config,
+            account_id,
+            "error",
+            Some("Mailbox sync was interrupted before completion.".to_string()),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn remove_stale_sync_lock(lock_path: &FsPath) -> Result<(), String> {
+    if !lock_path.exists() || lock_pid_is_active(lock_path) {
+        return Ok(());
+    }
+
+    fs::remove_file(lock_path).map_err(|error| {
+        format!(
+            "failed to remove stale sync lock {}: {error}",
+            lock_path.display()
+        )
+    })
+}
+
+fn lock_pid_is_active(lock_path: &FsPath) -> bool {
+    let Some(pid) = read_lock_pid(lock_path) else {
+        return false;
+    };
+    pid > 0 && FsPath::new("/proc").join(pid.to_string()).exists()
+}
+
+fn read_lock_pid(lock_path: &FsPath) -> Option<u32> {
+    fs::read_to_string(lock_path)
+        .ok()
+        .and_then(|raw| raw.trim().strip_prefix("pid:").map(str::to_string))
+        .and_then(|raw| raw.parse::<u32>().ok())
 }
 
 fn ensure_account_paths(
@@ -1572,12 +1867,14 @@ fn ensure_notmuch_config(
     account_paths: &AccountPaths,
 ) -> Result<(), String> {
     let tags = config.default_tags.join(";");
+    let attachment_text_patterns = ATTACHMENT_TEXT_MIME_PATTERNS.join(";");
     let contents = format!(
-        "[database]\npath={}\n\n[user]\nname={}\nprimary_email={}\n\n[new]\ntags={}\nignore=\n\n[search]\nexclude_tags=\n\n[maildir]\nsynchronize_flags=true\n",
+        "[database]\npath={}\n\n[user]\nname={}\nprimary_email={}\n\n[new]\ntags={}\nignore=\n\n[search]\nexclude_tags=\n\n[index]\nas_text={}\n\n[maildir]\nsynchronize_flags=true\n",
         account_paths.maildir.display(),
         account.username,
         account.imap_username,
-        tags
+        tags,
+        attachment_text_patterns,
     );
 
     if fs::read_to_string(&account_paths.notmuch_config)
@@ -1829,9 +2126,235 @@ fn search_mail(
     Ok(results)
 }
 
+fn load_dashboard_account_views(
+    config: &AppConfig,
+    username: &str,
+) -> Result<Vec<DashboardAccountView>, String> {
+    let accounts = list_accounts_for_user(config, username)?;
+    Ok(accounts
+        .into_iter()
+        .map(|account| build_dashboard_account_view(config, account))
+        .collect())
+}
+
+fn load_dashboard_status_payload(
+    config: &AppConfig,
+    username: &str,
+) -> Result<DashboardStatusPayload, String> {
+    let accounts = load_dashboard_account_views(config, username)?;
+    let statuses = accounts
+        .iter()
+        .map(|view| view.status.clone())
+        .collect::<Vec<_>>();
+    Ok(DashboardStatusPayload {
+        generated_at: Utc::now().to_rfc3339(),
+        totals: dashboard_totals(statuses.clone()),
+        accounts: statuses,
+    })
+}
+
+fn build_dashboard_account_view(
+    config: &AppConfig,
+    account: AccountRecord,
+) -> DashboardAccountView {
+    let last_activity = last_activity_label(&account);
+    let last_sync_error = account.last_sync_error.clone();
+    let (index_state, counts, progress_error) = match ensure_account_paths(config, &account) {
+        Ok(account_paths) => {
+            let index_state = account_index_state(&account_paths);
+            match load_account_progress(&account_paths, index_state) {
+                Ok(counts) => (index_state, counts, None),
+                Err(error) => (index_state, AccountProgressCounts::default(), Some(error)),
+            }
+        }
+        Err(error) => (
+            IndexState::NotConfigured,
+            AccountProgressCounts::default(),
+            Some(error),
+        ),
+    };
+    let (status_class, status_label) = account_status(&account, index_state);
+    let progress_note = if progress_error.is_some() {
+        "Progress metrics are temporarily unavailable.".to_string()
+    } else {
+        account_progress_note(&account, &counts, index_state).to_string()
+    };
+
+    DashboardAccountView {
+        status: AccountStatusPayload {
+            id: account.id,
+            status_class: status_class.to_string(),
+            status_label: status_label.to_string(),
+            index_label: account_index_label(index_state).to_string(),
+            last_activity,
+            downloaded_message_count: counts.downloaded_message_count,
+            indexed_message_count: counts.indexed_message_count,
+            pending_index_count: counts.pending_index_count,
+            index_coverage_percent: counts.index_coverage_percent,
+            progress_note,
+            last_sync_error,
+        },
+        account,
+    }
+}
+
+fn load_account_progress(
+    account_paths: &AccountPaths,
+    index_state: IndexState,
+) -> Result<AccountProgressCounts, String> {
+    let downloaded_message_count = count_maildir_messages(&account_paths.maildir)?;
+    let indexed_message_count = if index_state == IndexState::Indexed {
+        count_indexed_messages(account_paths)?
+    } else {
+        0
+    };
+    Ok(progress_counts(
+        downloaded_message_count,
+        indexed_message_count,
+    ))
+}
+
+fn count_maildir_messages(maildir: &FsPath) -> Result<usize, String> {
+    count_maildir_messages_inner(maildir, false)
+}
+
+fn count_maildir_messages_inner(path: &FsPath, count_files_here: bool) -> Result<usize, String> {
+    let entries = fs::read_dir(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let mut total = 0;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", entry.path().display()))?;
+
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            total += count_maildir_messages_inner(
+                &entry.path(),
+                name.as_ref() == "cur" || name.as_ref() == "new",
+            )?;
+        } else if count_files_here && file_type.is_file() {
+            total += 1;
+        }
+    }
+
+    Ok(total)
+}
+
+fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String> {
+    let output = execute_command(
+        "notmuch",
+        &["count", "*"],
+        &[
+            ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+            (
+                "NOTMUCH_CONFIG",
+                account_paths.notmuch_config.to_string_lossy().as_ref(),
+            ),
+        ],
+    )?;
+
+    if !output.status.success() {
+        let detail = command_failure_detail("notmuch", &output);
+        if detail.contains("No database found") || detail.contains("not initialized") {
+            return Ok(0);
+        }
+        return Err(detail);
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .map_err(|error| {
+            format!(
+                "failed to parse indexed message count from '{}': {error}",
+                String::from_utf8_lossy(&output.stdout).trim()
+            )
+        })
+}
+
+fn progress_counts(
+    downloaded_message_count: usize,
+    indexed_message_count: usize,
+) -> AccountProgressCounts {
+    let pending_index_count = downloaded_message_count.saturating_sub(indexed_message_count);
+    let index_coverage_percent = if downloaded_message_count == 0 {
+        usize::from(indexed_message_count > 0) * 100
+    } else {
+        (indexed_message_count.min(downloaded_message_count) * 100) / downloaded_message_count
+    };
+    AccountProgressCounts {
+        downloaded_message_count,
+        indexed_message_count,
+        pending_index_count,
+        index_coverage_percent,
+    }
+}
+
+fn dashboard_totals(accounts: Vec<AccountStatusPayload>) -> DashboardTotals {
+    let downloaded_message_count = accounts
+        .iter()
+        .map(|account| account.downloaded_message_count)
+        .sum::<usize>();
+    let indexed_message_count = accounts
+        .iter()
+        .map(|account| account.indexed_message_count)
+        .sum::<usize>();
+    let pending_index_count = downloaded_message_count.saturating_sub(indexed_message_count);
+    let index_coverage_percent = if downloaded_message_count == 0 {
+        usize::from(indexed_message_count > 0) * 100
+    } else {
+        (indexed_message_count.min(downloaded_message_count) * 100) / downloaded_message_count
+    };
+
+    DashboardTotals {
+        downloaded_message_count,
+        indexed_message_count,
+        pending_index_count,
+        index_coverage_percent,
+    }
+}
+
+fn account_index_label(index_state: IndexState) -> &'static str {
+    match index_state {
+        IndexState::Indexed => "Indexed",
+        IndexState::ConfiguredNoDatabase | IndexState::NotConfigured => "Unindexed",
+    }
+}
+
+fn account_progress_note(
+    account: &AccountRecord,
+    counts: &AccountProgressCounts,
+    index_state: IndexState,
+) -> &'static str {
+    if account.last_sync_status.as_deref() == Some("running") && counts.pending_index_count > 0 {
+        "Sync is active. Downloaded mail should rise first, then the index will catch up."
+    } else if counts.downloaded_message_count == 0 {
+        "No messages downloaded yet."
+    } else if counts.pending_index_count > 0 {
+        "Downloaded mail is ahead of the current search index."
+    } else if index_state == IndexState::Indexed {
+        "Search index is caught up with the downloaded archive."
+    } else {
+        "Run Sync now or Reindex to build the search index."
+    }
+}
+
+fn last_activity_label(account: &AccountRecord) -> String {
+    account
+        .last_sync_finished_at
+        .as_deref()
+        .or(account.last_sync_started_at.as_deref())
+        .unwrap_or("Never")
+        .to_string()
+}
+
 fn render_dashboard(
     identity: &Identity,
-    accounts: &[(AccountRecord, IndexState)],
+    accounts: &[DashboardAccountView],
     flash: Option<&str>,
     error: Option<&str>,
 ) -> String {
@@ -1868,14 +2391,15 @@ fn render_dashboard(
     );
 
     body.push_str("<section class=\"panel stack\"><div class=\"section-head\"><h2>Connected mailboxes</h2><p class=\"meta\">Edit connection details, trigger syncs, or repair indexes without exposing the archive as webmail.</p></div>");
+    body.push_str(&render_dashboard_totals(accounts));
     if accounts.is_empty() {
         body.push_str(
             "<div class=\"empty-state\"><p class=\"meta\">No mailbox is configured yet. Start with Gmail or a generic IMAP account.</p><a class=\"button-link\" href=\"/accounts/new\">Add mailbox</a></div>",
         );
     } else {
-        body.push_str("<div class=\"card-grid\">");
-        for (account, index_state) in accounts {
-            body.push_str(&render_account_card(account, *index_state));
+        body.push_str("<div class=\"card-grid\" data-dashboard-status-root>");
+        for view in accounts {
+            body.push_str(&render_account_card(view));
         }
         body.push_str("</div>");
     }
@@ -1884,61 +2408,86 @@ fn render_dashboard(
     layout("Mail Archive", Some(identity), "dashboard", &body)
 }
 
-fn render_account_card(account: &AccountRecord, index_state: IndexState) -> String {
-    let (status_class, status_label) = account_status(account, index_state);
+fn render_dashboard_totals(accounts: &[DashboardAccountView]) -> String {
+    let totals = dashboard_totals(accounts.iter().map(|view| view.status.clone()).collect());
+    format!(
+        "<div class=\"dashboard-summary\" data-dashboard-summary>
+          <div class=\"summary-metric\"><span class=\"metric-label\">Downloaded</span><strong data-summary-field=\"downloaded\">{}</strong></div>
+          <div class=\"summary-metric\"><span class=\"metric-label\">Indexed</span><strong data-summary-field=\"indexed\">{}</strong></div>
+          <div class=\"summary-metric\"><span class=\"metric-label\">Pending index</span><strong data-summary-field=\"pending\">{}</strong></div>
+          <div class=\"summary-metric\"><span class=\"metric-label\">Coverage</span><strong data-summary-field=\"coverage\">{}%</strong></div>
+        </div>",
+        totals.downloaded_message_count,
+        totals.indexed_message_count,
+        totals.pending_index_count,
+        totals.index_coverage_percent,
+    )
+}
+
+fn render_account_card(view: &DashboardAccountView) -> String {
+    let account = &view.account;
+    let status = &view.status;
     let schedule_label = if account.sync_enabled {
         "Scheduled"
     } else {
         "Manual only"
     };
-    let last_activity = account
-        .last_sync_finished_at
-        .as_deref()
-        .or(account.last_sync_started_at.as_deref())
-        .map(escape_html)
-        .unwrap_or_else(|| "Never".to_string());
     let mut body = String::new();
 
     writeln!(
         &mut body,
-        "<article class=\"account-card stack\">
+        "<article class=\"account-card stack\" data-account-card data-account-id=\"{}\">
           <div class=\"card-header\">
             <div>
               <p class=\"eyebrow\">{}</p>
               <h2>{}</h2>
               <p class=\"meta\">{} · {}:{}</p>
             </div>
-            <span class=\"status {}\">{}</span>
+            <span class=\"status {}\" data-status-badge>{}</span>
           </div>
           <div class=\"card-meta\">
             <span class=\"pill\">{}</span>
-            <span class=\"pill\">{}</span>
+            <span class=\"pill\" data-index-pill>{}</span>
           </div>
           <div class=\"hint\">Mailbox user: {}</div>
           <div class=\"hint\">Added {} · Updated {}</div>
-          <div class=\"hint\">Last activity {}</div>
+          <div class=\"progress-cluster\">
+            <div class=\"progress-metrics\">
+              <div class=\"summary-metric\"><span class=\"metric-label\">Downloaded</span><strong data-progress-field=\"downloaded\">{}</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Indexed</span><strong data-progress-field=\"indexed\">{}</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Pending index</span><strong data-progress-field=\"pending\">{}</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Coverage</span><strong data-progress-field=\"coverage\">{}%</strong></div>
+            </div>
+            <div class=\"progress-bar\" aria-label=\"Index coverage\"><span data-progress-bar style=\"width: {}%\"></span></div>
+            <p class=\"meta\" data-progress-note>{}</p>
+          </div>
+          <div class=\"hint\" data-last-activity>Last activity {}</div>
           <div class=\"action-row\">
             <form method=\"post\" action=\"/accounts/{}/sync\"><button type=\"submit\">Sync now</button></form>
             <form method=\"post\" action=\"/accounts/{}/reindex\"><button class=\"secondary\" type=\"submit\">Reindex</button></form>
             <a class=\"button-link secondary\" href=\"/accounts/{}/edit\">Edit</a>
             <form method=\"post\" action=\"/accounts/{}/toggle-sync\"><button class=\"secondary\" type=\"submit\">{}</button></form>
           </div>",
+        account.id,
         escape_html(&account.provider_kind),
         escape_html(&account.display_name),
         escape_html(&account.imap_host),
         account.imap_port,
         account.id,
-        status_class,
-        escape_html(status_label),
+        escape_html(&status.status_class),
+        escape_html(&status.status_label),
         escape_html(schedule_label),
-        escape_html(match index_state {
-            IndexState::Indexed => "Indexed",
-            IndexState::ConfiguredNoDatabase | IndexState::NotConfigured => "Unindexed",
-        }),
+        escape_html(&status.index_label),
         escape_html(&account.imap_username),
         escape_html(&account.created_at),
         escape_html(&account.updated_at),
-        last_activity,
+        status.downloaded_message_count,
+        status.indexed_message_count,
+        status.pending_index_count,
+        status.index_coverage_percent,
+        status.index_coverage_percent,
+        escape_html(&status.progress_note),
+        escape_html(&status.last_activity),
         account.id,
         account.id,
         account.id,
@@ -1951,13 +2500,15 @@ fn render_account_card(account: &AccountRecord, index_state: IndexState) -> Stri
     )
     .ok();
 
-    if let Some(error) = account.last_sync_error.as_deref() {
+    if let Some(error) = status.last_sync_error.as_deref() {
         writeln!(
             &mut body,
-            "<div class=\"error compact\">{}</div>",
+            "<div class=\"error compact\" data-sync-error>{}</div>",
             escape_html(error)
         )
         .ok();
+    } else {
+        body.push_str("<div class=\"error compact hidden\" data-sync-error></div>");
     }
 
     body.push_str("</article>");
@@ -2098,7 +2649,7 @@ fn render_search(
         "<section class=\"hero\">
           <p class=\"eyebrow\">Search Archive</p>
           <h1>Query your downloaded mail with notmuch.</h1>
-          <p class=\"lede\">Search runs only across your own archive. Results show metadata only, not message bodies.</p>
+          <p class=\"lede\">Search runs only across your own archive. Results stay metadata-only, but queries can match indexed message text and supported document attachments.</p>
         </section>",
     );
 
@@ -2221,6 +2772,11 @@ fn render_search_result(result: &SearchResult) -> String {
 }
 
 fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str) -> String {
+    let dashboard_script = if active_nav == "dashboard" {
+        r#"<script src="/static/dashboard.js" defer></script>"#
+    } else {
+        ""
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -2229,31 +2785,29 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{}</title>
     <link rel="stylesheet" href="/static/custom.css">
+    {}
   </head>
   <body>
     <main class="page">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">Mail Archive</p>
-          <strong>Private archive control plane</strong>
-          <div class="meta">{}</div>
-        </div>
-        <nav class="topnav">
+      {}
+      <footer class="page-footer">
+        <nav class="footer-nav">
           <a class="{}" href="/">Dashboard</a>
           <a class="{}" href="/accounts/new">Add mailbox</a>
           <a class="{}" href="/search">Search</a>
         </nav>
-      </header>
-      {}
+        <p class="meta footer-meta">{}</p>
+      </footer>
     </main>
   </body>
 </html>"#,
         escape_html(title),
-        escape_html(&identity_summary(identity)),
+        dashboard_script,
+        body,
         nav_active_class(active_nav == "dashboard"),
         nav_active_class(active_nav == "accounts"),
         nav_active_class(active_nav == "search"),
-        body
+        escape_html(&identity_summary(identity)),
     )
 }
 
@@ -2314,22 +2868,6 @@ fn escape_html(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn url_encode_component(input: &str) -> String {
-    let mut encoded = String::new();
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            b' ' => encoded.push('+'),
-            _ => {
-                let _ = write!(&mut encoded, "%{byte:02X}");
-            }
-        }
-    }
-    encoded
-}
-
 fn format_timestamp(timestamp: i64) -> String {
     DateTime::<Utc>::from_timestamp(timestamp, 0)
         .map(|value| value.format("%Y-%m-%d %H:%M UTC").to_string())
@@ -2343,6 +2881,24 @@ fn random_hex(bytes: usize) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+fn parse_optional_query_i64(raw: Option<&str>) -> Result<Option<i64>, String> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|error| format!("invalid integer '{value}': {error}")),
+        None => Ok(None),
+    }
+}
+
+fn deserialize_optional_query_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    parse_optional_query_i64(raw.as_deref()).map_err(de::Error::custom)
 }
 
 fn normalize_selected_account_id(
@@ -2370,6 +2926,13 @@ fn json_response<T: Serialize>(status: StatusCode, payload: T) -> Response {
     harden_response((status, Json(payload)).into_response())
 }
 
+fn no_store_response(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert("Cache-Control", HeaderValue::from_static("no-store"));
+    response
+}
+
 fn redirect_response(location: &str) -> Response {
     harden_response(Redirect::to(location).into_response())
 }
@@ -2385,7 +2948,7 @@ fn harden_response(mut response: Response) -> Response {
     headers.insert(
         "Content-Security-Policy",
         HeaderValue::from_static(
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
         ),
     );
     response
@@ -2817,6 +3380,42 @@ mod tests {
     }
 
     #[test]
+    fn stale_lock_is_replaced_when_pid_is_not_active() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+
+        let lock_path = sync_lock_path(&config, 9);
+        write_private_file(&lock_path, b"999999").expect("stale lock");
+
+        let lock = acquire_account_lock(&config, 9).expect("lock should be reacquired");
+        let contents = fs::read_to_string(&lock.path).expect("lock contents");
+        assert_eq!(contents.trim(), format!("pid:{}", std::process::id()));
+    }
+
+    #[test]
+    fn reconcile_interrupted_sync_marks_running_account_as_error() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_account(&config, "alice", "secret");
+
+        update_sync_started(&config, account_id).expect("mark running");
+        let lock_path = sync_lock_path(&config, account_id);
+        write_private_file(&lock_path, b"999999").expect("stale lock");
+
+        reconcile_interrupted_syncs(&config).expect("reconcile");
+
+        let account = read_account(&config, "alice", account_id);
+        assert_eq!(account.last_sync_status.as_deref(), Some("error"));
+        assert_eq!(
+            account.last_sync_error.as_deref(),
+            Some("Mailbox sync was interrupted before completion.")
+        );
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
     fn html_page_references_stylesheet_and_security_headers() {
         let identity = Identity {
             username: "alice".to_string(),
@@ -2831,6 +3430,7 @@ mod tests {
             "<section>Body</section>",
         );
         assert!(html.contains("/static/custom.css"));
+        assert!(html.contains("/static/dashboard.js"));
         assert!(html.contains("alice@example.com"));
 
         let response = html_response(html);
@@ -2851,7 +3451,7 @@ mod tests {
             "",
             "<section class=\"panel stack\"><p class=\"eyebrow\">Access denied</p><h1>Request blocked</h1><div class=\"error\">nope</div></section>",
         );
-        assert!(html.contains("Private archive control plane"));
+        assert!(html.contains("page-footer"));
         assert!(html.contains("Request blocked"));
     }
 
@@ -2938,6 +3538,11 @@ mod tests {
         let account = read_account(&config, "alice", account_id);
         let initial = read_notmuch_config(&config, &account);
         assert!(initial.contains("primary_email=alice@gmail.com"));
+        assert!(initial.contains("[index]\nas_text="));
+        assert!(initial.contains("^application/pdf$"));
+        assert!(initial.contains(
+            "^application/vnd[.]openxmlformats-officedocument[.]wordprocessingml[.]document$"
+        ));
 
         update_account_for_user(
             &config,
@@ -3145,5 +3750,37 @@ mod tests {
     fn saved_query_detection_only_runs_on_explicit_q_param() {
         assert!(has_explicit_query_param("q=from%3Abilling"));
         assert!(!has_explicit_query_param("account_id=4"));
+    }
+
+    #[test]
+    fn empty_account_query_value_is_treated_as_all_mailboxes() {
+        assert_eq!(parse_optional_query_i64(None).expect("none"), None);
+        assert_eq!(parse_optional_query_i64(Some("")).expect("empty"), None);
+        assert_eq!(parse_optional_query_i64(Some("  ")).expect("blank"), None);
+        assert_eq!(
+            parse_optional_query_i64(Some("7")).expect("number"),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn maildir_message_count_tracks_root_and_nested_folders() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let maildir = tempdir.path().join("maildir");
+
+        fs::create_dir_all(maildir.join("cur")).expect("root cur");
+        fs::create_dir_all(maildir.join("new")).expect("root new");
+        fs::create_dir_all(maildir.join(".Archive/cur")).expect("archive cur");
+        fs::create_dir_all(maildir.join(".Archive/tmp")).expect("archive tmp");
+        fs::create_dir_all(maildir.join(".notmuch")).expect("notmuch");
+
+        write_private_file(&maildir.join("cur/root-message"), b"1").expect("root cur message");
+        write_private_file(&maildir.join("new/root-new"), b"1").expect("root new message");
+        write_private_file(&maildir.join(".Archive/cur/sub-message"), b"1")
+            .expect("archive cur message");
+        write_private_file(&maildir.join(".Archive/tmp/not-a-message"), b"1").expect("tmp file");
+        write_private_file(&maildir.join(".notmuch/metadata"), b"1").expect("metadata");
+
+        assert_eq!(count_maildir_messages(&maildir).expect("message count"), 3);
     }
 }
