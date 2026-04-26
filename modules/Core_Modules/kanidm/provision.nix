@@ -33,14 +33,16 @@ in
     groups."audiobookshelf-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."kavita-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."kavita-login" = mkManualGroup [ ];
-    groups."jellyfin-users" = mkManualGroup [ ];
-    groups."jellyfin-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
     systems.oauth2.immich-web = {
       displayName = "Photos";
       imageFile = ./assets/photos.svg;
-      originUrl = "https://${vars.photosDomain}/auth/login";
+      originUrl = [
+        "https://${vars.photosDomain}/auth/login"
+        "https://${vars.photosDomain}/user-settings"
+        "https://${vars.photosDomain}/api/oauth/mobile-redirect"
+      ];
       originLanding = "https://${vars.photosDomain}";
       basicSecretFile = config.age.secrets.immichClientSecret.path;
       preferShortUsername = true;
@@ -115,7 +117,7 @@ in
       originLanding = "https://${vars.kiwixDomain}";
       basicSecretFile = config.age.secrets.kiwixOauth2ProxyClientSecret.path;
       preferShortUsername = true;
-      scopeMaps.users = [ "openid" "profile" "email" "groups" ];
+      scopeMaps.users = [ "openid" "profile" "email" "groups_name" ];
     };
   };
 }

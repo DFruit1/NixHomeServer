@@ -159,13 +159,6 @@ pub fn why_denied(
                 .iter()
                 .any(|group| group == required_group);
 
-            let mut warnings = person.warnings.clone();
-            if matches!(app, AppAccessTarget::Jellyfin) {
-                warnings.push(
-                    "Jellyfin also requires local password staging and the Jellyfin sync service to converge.".to_string(),
-                );
-            }
-
             let checked = [
                 format!("user record found: yes ({})", person.value.account_id),
                 format!(
@@ -225,7 +218,7 @@ pub fn why_denied(
                     },
                     "did_not_check": did_not_check,
                 }),
-                warnings,
+                warnings: person.warnings,
             })
         }
         Err(AppError::UserNotFound { .. }) => Ok(CommandOutput {
@@ -401,22 +394,14 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
-fn app_specific_checked_note(app: AppAccessTarget) -> String {
-    match app {
-        AppAccessTarget::Jellyfin => {
-            "app-specific note: Jellyfin group membership alone is insufficient; local Jellyfin password and local user sync also matter.".to_string()
-        }
-        _ => "app-specific note: this command only checked repo-managed group state and account validity fields.".to_string(),
-    }
+fn app_specific_checked_note(_: AppAccessTarget) -> String {
+    "app-specific note: this command only checked repo-managed group state and account validity fields."
+        .to_string()
 }
 
-fn app_specific_missing_user_note(app: AppAccessTarget) -> String {
-    match app {
-        AppAccessTarget::Jellyfin => {
-            "Jellyfin group membership alone is insufficient; local Jellyfin password and local user sync also matter.".to_string()
-        }
-        _ => "This command only checks repo-managed group state and account validity fields when the user record exists.".to_string(),
-    }
+fn app_specific_missing_user_note(_: AppAccessTarget) -> String {
+    "This command only checks repo-managed group state and account validity fields when the user record exists."
+        .to_string()
 }
 
 #[derive(Debug, Clone)]

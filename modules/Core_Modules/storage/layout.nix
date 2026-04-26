@@ -284,6 +284,51 @@ let
     migrate_dir_to_symlink '${legacyHomeVideosRoot}' '${vars.sharedHomeVideosRoot}'
   '';
 
+  personalVideoMigrationScript = ''
+    migrate_personal_videos_into_shared() {
+      local user_videos_root="$1"
+      local category=""
+      local source_dir=""
+      local target_dir=""
+
+      [[ -e "$user_videos_root" ]] || return 0
+      [[ -d "$user_videos_root" ]] || {
+        echo "Refusing to migrate non-directory personal videos root: $user_videos_root" >&2
+        exit 1
+      }
+
+      for category in movies shows home music-videos youtube other; do
+        source_dir="$user_videos_root/$category"
+        target_dir='${vars.sharedVideosRoot}/'"$category"
+
+        [[ -e "$source_dir" ]] || continue
+        [[ -d "$source_dir" ]] || {
+          echo "Refusing to migrate non-directory personal video category: $source_dir" >&2
+          exit 1
+        }
+
+        ${pkgs.coreutils}/bin/install -d -m 2775 -o root -g users "$target_dir"
+        ${pkgs.rsync}/bin/rsync -a --ignore-existing --remove-source-files "$source_dir"/ "$target_dir"/
+        ${pkgs.findutils}/bin/find "$source_dir" -depth -type d -empty -delete
+
+        if [[ -d "$source_dir" ]] && ${pkgs.findutils}/bin/find "$source_dir" -mindepth 1 -print -quit | ${pkgs.gnugrep}/bin/grep -q .; then
+          echo "Personal video migration left remaining content in $source_dir; inspect conflicts manually." >&2
+        fi
+      done
+
+      ${pkgs.findutils}/bin/find "$user_videos_root" -depth -type d -empty -delete
+      if [[ -d "$user_videos_root" ]] && ${pkgs.findutils}/bin/find "$user_videos_root" -mindepth 1 -print -quit | ${pkgs.gnugrep}/bin/grep -q .; then
+        echo "Personal video migration left remaining content in $user_videos_root; inspect unexpected paths manually." >&2
+      fi
+    }
+
+    shopt -s nullglob
+    for user_videos_root in '${vars.usersWorkspaceRoot}'/*/videos; do
+      migrate_personal_videos_into_shared "$user_videos_root"
+    done
+    shopt -u nullglob
+  '';
+
   sharedMediaAclScript = ''
     ${pkgs.acl}/bin/setfacl \
       -m 'g:mail-archive-ui:--x' \
@@ -336,6 +381,7 @@ let
       materializeDirectRootScript
       legacyMailArchiveMigrationScript
       legacySharedSymlinkScript
+      personalVideoMigrationScript
       sharedMediaAclScript
     ]
     ++ map mkImmichSentinelCmd [
@@ -369,8 +415,7 @@ in
       "audiobookshelf-library-sync-v1.service"
       "copyparty.service"
       "jellyfin.service"
-      "jellyfin-library-sync-v1.service"
-      "jellyfin-user-sync-v1.service"
+      "jellyfin-reconcile-v1.service"
       "kavita.service"
       "kavita-library-sync-v1.service"
       "mail-archive-sync.service"

@@ -197,6 +197,7 @@ media_root="$(nix_var 'vars.mediaRoot')"
 lan_dns_domain="$(nix_var 'vars.lanDnsDomain')"
 kiwix_domain="$(nix_var 'vars.kiwixDomain')"
 photos_domain="$(nix_var 'vars.photosDomain')"
+sharephotos_domain="$(nix_var 'vars.sharePhotosDomain')"
 audiobooks_domain="$(nix_var 'vars.audiobooksDomain')"
 kavita_domain="$(nix_var 'vars.kavitaDomain')"
 jellyfin_domain="$(nix_var 'vars.jellyfinDomain')"
@@ -261,6 +262,7 @@ check_http "https://${kanidm_domain}/" 200 303
 check_http "https://${files_domain}/" 200 302 303 401 403
 check_http "https://${kiwix_domain}/" 200 302
 check_http "https://${photos_domain}/" 200 302
+check_http "https://${sharephotos_domain}/share/healthcheck" 200
 check_http "https://paperless.${domain}/" 200 302
 check_http "https://${audiobooks_domain}/" 200 302
 check_http "https://${kavita_domain}/" 200 302
@@ -290,6 +292,7 @@ fi
 check_private_dns "paperless.${domain}" "${local_dns_private_answer}"
 check_private_dns "${kiwix_domain}" "${local_dns_private_answer}"
 check_private_dns "${photos_domain}" "${local_dns_private_answer}"
+check_dns_resolves "${sharephotos_domain}"
 check_private_dns "${audiobooks_domain}" "${local_dns_private_answer}"
 check_private_dns "${kavita_domain}" "${local_dns_private_answer}"
 check_private_dns "${jellyfin_domain}" "${local_dns_private_answer}"

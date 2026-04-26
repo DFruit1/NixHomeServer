@@ -27,6 +27,10 @@
           service = "https://127.0.0.1:443";
           originRequest.originServerName = vars.filesDomain;
         };
+        "${vars.sharePhotosDomain}" = {
+          service = "https://127.0.0.1:443";
+          originRequest.originServerName = vars.sharePhotosDomain;
+        };
       };
       default = "http_status:404";
     };

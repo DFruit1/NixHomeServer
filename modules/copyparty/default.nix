@@ -76,6 +76,19 @@ in
         unlistcr: true
         unlistcw: true
 
+      [/shared/videos]
+      ${vars.sharedVideosRoot}
+      accs:
+        rw: @acct
+        rwmda: ${vars.kanidmAdminUser}
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
+        unlistcr: true
+        unlistcw: true
+
       [/shared]
       ${vars.sharedPublicRoot}
       accs:

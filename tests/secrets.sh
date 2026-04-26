@@ -91,7 +91,7 @@ require_fixed modules/Core_Modules/kanidm/provision.nix 'adminPasswordFile = con
   "Kanidm must consume the system admin secret from agenix."
 require_fixed modules/Core_Modules/netbird/default.nix 'login.setupKeyFile = config.age.secrets.netbirdSetupKey.path;' \
   "NetBird must consume the setup key from agenix."
-require_fixed modules/immich/default.nix 'clientSecret._secret = config.age.secrets.immichClientSecret.path;' \
+require_fixed modules/immich/service.nix 'clientSecret._secret = config.age.secrets.immichClientSecret.path;' \
   "Immich must consume its OIDC client secret from agenix."
 require_fixed modules/paperless/bootstrap.nix 'config.age.secrets.paperlessClientSecret.path' \
   "Paperless must consume its OIDC client secret from agenix."

@@ -14,6 +14,11 @@ use chacha20poly1305::{
     ChaCha20Poly1305, Key, Nonce,
 };
 use chrono::{DateTime, Utc};
+#[cfg(target_os = "linux")]
+use landlock::{
+    path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,
+    RulesetCreatedAttr, RulesetStatus, ABI,
+};
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{
@@ -664,6 +669,7 @@ async fn main() {
     ensure_app_layout(&config).expect("failed to prepare mail archive ui paths");
     initialize_db(&config).expect("failed to initialize sqlite schema");
     reconcile_interrupted_syncs(&config).expect("failed to reconcile interrupted sync state");
+    install_filesystem_sandbox(&config);
 
     if let Some(mode) = env::args().nth(1) {
         if mode == "sync-due" {
@@ -1221,6 +1227,86 @@ fn ensure_app_layout(config: &AppConfig) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn install_filesystem_sandbox(config: &AppConfig) {
+    #[cfg(target_os = "linux")]
+    match restrict_filesystem(config) {
+        Ok(status) => log_landlock_status(status),
+        Err(error) => eprintln!("mail-archive-ui Landlock sandbox disabled: {error}"),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_filesystem_sandbox(_config: &AppConfig) {}
+
+#[cfg(target_os = "linux")]
+fn restrict_filesystem(config: &AppConfig) -> Result<RestrictionStatus, String> {
+    let abi = ABI::V6;
+    let read_access = AccessFs::from_read(abi) | AccessFs::Execute;
+    let write_access = AccessFs::from_all(abi);
+    let (read_only_roots, read_write_roots) = landlock_roots(config);
+
+    Ruleset::default()
+        .handle_access(AccessFs::from_all(abi))
+        .map_err(|error| format!("failed to configure Landlock access set: {error}"))?
+        .create()
+        .map_err(|error| format!("failed to create Landlock ruleset: {error}"))?
+        .add_rules(path_beneath_rules(
+            read_only_roots.iter().map(PathBuf::as_path),
+            read_access,
+        ))
+        .map_err(|error| format!("failed to add read-only Landlock rules: {error}"))?
+        .add_rules(path_beneath_rules(
+            read_write_roots.iter().map(PathBuf::as_path),
+            write_access,
+        ))
+        .map_err(|error| format!("failed to add read-write Landlock rules: {error}"))?
+        .restrict_self()
+        .map_err(|error| format!("failed to apply Landlock sandbox: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn log_landlock_status(status: RestrictionStatus) {
+    let label = match status.ruleset {
+        RulesetStatus::FullyEnforced => "fully enforced",
+        RulesetStatus::PartiallyEnforced => "partially enforced",
+        RulesetStatus::NotEnforced => "not enforced",
+    };
+    eprintln!("mail-archive-ui Landlock sandbox: {label}");
+}
+
+fn landlock_roots(config: &AppConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let read_only_roots = dedupe_paths([
+        Some(PathBuf::from("/nix/store")),
+        Some(PathBuf::from("/etc")),
+        Some(PathBuf::from("/run/current-system")),
+        Some(PathBuf::from("/run/systemd/resolve")),
+        Some(PathBuf::from("/dev/null")),
+        Some(PathBuf::from("/dev/random")),
+        Some(PathBuf::from("/dev/urandom")),
+    ]);
+    let read_write_roots = dedupe_paths([
+        Some(PathBuf::from(config.data_dir.as_ref())),
+        Some(PathBuf::from(config.store_root.as_ref())),
+        Some(PathBuf::from(config.runtime_dir.as_ref())),
+        Some(PathBuf::from(config.lock_dir.as_ref())),
+        config.paperless_consume_root.as_deref().map(PathBuf::from),
+        config.paperless_staging_dir.as_deref().map(PathBuf::from),
+    ]);
+
+    (read_only_roots, read_write_roots)
+}
+
+fn dedupe_paths<const N: usize>(paths: [Option<PathBuf>; N]) -> Vec<PathBuf> {
+    let mut deduped = Vec::new();
+    for path in paths.into_iter().flatten() {
+        if deduped.iter().any(|existing| existing == &path) {
+            continue;
+        }
+        deduped.push(path);
+    }
+    deduped
 }
 
 fn initialize_db(config: &AppConfig) -> Result<(), String> {
@@ -4700,6 +4786,27 @@ mod tests {
         ensure_app_layout(config).expect("layout");
         fs::create_dir_all(config.store_root.as_ref()).expect("store root");
         initialize_db(config).expect("db");
+    }
+
+    #[test]
+    fn landlock_roots_include_runtime_store_and_paperless_paths() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+
+        let (read_only, read_write) = landlock_roots(&config);
+
+        assert!(read_only.contains(&PathBuf::from("/nix/store")));
+        assert!(read_only.contains(&PathBuf::from("/etc")));
+        assert!(read_write.contains(&PathBuf::from(config.data_dir.as_ref())));
+        assert!(read_write.contains(&PathBuf::from(config.store_root.as_ref())));
+        assert!(read_write.contains(&PathBuf::from(config.runtime_dir.as_ref())));
+        assert!(read_write.contains(&PathBuf::from(config.lock_dir.as_ref())));
+        assert!(read_write.contains(&PathBuf::from(
+            config.paperless_consume_root.as_deref().expect("paperless consume root"),
+        )));
+        assert!(read_write.contains(&PathBuf::from(
+            config.paperless_staging_dir.as_deref().expect("paperless staging root"),
+        )));
     }
 
     fn example_account() -> AccountRecord {

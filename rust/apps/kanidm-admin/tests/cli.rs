@@ -563,7 +563,7 @@ fn jellyfin_set_password_writes_hash_file() {
         .stdout(predicate::str::contains(
             "Staged the desired Jellyfin password hash",
         ))
-        .stdout(predicate::str::contains("still needs to apply"));
+        .stdout(predicate::str::contains("reconcile service still needs to apply"));
 
     let written = fs::read_to_string(dir.path().join("dsaw.pbkdf2")).expect("hash file");
     assert!(written.starts_with("$PBKDF2-SHA512$iterations=210000$"));

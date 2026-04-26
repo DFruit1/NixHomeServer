@@ -61,8 +61,7 @@ for required_path in \
   modules/paperless/bootstrap.nix \
   modules/jellyfin/service.nix \
   modules/jellyfin/network-config.nix \
-  modules/jellyfin/user-sync.nix \
-  modules/jellyfin/library-sync.nix \
+  modules/jellyfin/reconcile.nix \
   secrets/agenix.nix
 do
   if [[ ! -e "$required_path" ]]; then
@@ -173,6 +172,8 @@ require_fixed documentation/kanidm.md 'kanidm group add-members' \
   "Kanidm guide must own group membership commands."
 forbid_match documentation/kanidm.md 'kanidm-user-tui' \
   "Kanidm guide must not retain the retired TUI workflow."
+forbid_match documentation/kanidm.md 'jellyfin-users|jellyfin-admin|why-denied --app jellyfin' \
+  "Kanidm guide must not document Jellyfin as a Kanidm-managed app."
 forbid_match documentation/kanidm.md 'runtime-readiness\.sh|nix flake check --no-build|scripts/check-repo.sh' \
   "Kanidm guide must not duplicate generic validation workflows."
 require_fixed rust/apps/mail-archive-ui/README.md 'mail-archive-users' \

@@ -79,7 +79,8 @@ rec {
       label = "Other";
     }
   ];
-  personalJellyfinLibraries = [
+  personalJellyfinLibraries = [ ];
+  sharedJellyfinLibraries = [
     {
       dir = "movies";
       collectionType = "movies";
@@ -112,7 +113,6 @@ rec {
     }
   ];
   sharedKavitaLibraries = personalKavitaLibraries;
-  sharedJellyfinLibraries = personalJellyfinLibraries;
   userBooksSubdirs = map (library: library.dir) personalKavitaLibraries;
   userVideoSubdirs = map (library: library.dir) personalJellyfinLibraries;
   sharedBooksSubdirs = map (library: library.dir) sharedKavitaLibraries;
@@ -136,7 +136,6 @@ rec {
     "photos"
     "audiobooks"
     "books"
-    "videos"
     "emails"
     "files"
   ];
@@ -155,6 +154,7 @@ rec {
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
   photosDomain = "photos.${domain}";
+  sharePhotosDomain = "sharephotos.${domain}";
   audiobooksDomain = "audiobooks.${domain}";
   filesDomain = "files.${domain}";
   emailsDomain = "emails.${domain}";

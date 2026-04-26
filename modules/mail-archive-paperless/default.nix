@@ -39,5 +39,26 @@ in
         paperlessStagingDir
       ];
     };
+
+    systemd.tmpfiles.rules = [
+      "d ${paperlessStagingDir} 0770 mail-archive-ui mail-archive-ui -"
+    ];
+
+    system.activationScripts.mailArchivePaperlessStagingDir = lib.stringAfter [ "users" "groups" ] ''
+      mkdir -p ${lib.escapeShellArg paperlessConsumeRoot}
+      chown root:paperless ${lib.escapeShellArg paperlessConsumeRoot}
+      chmod 2770 ${lib.escapeShellArg paperlessConsumeRoot}
+      ${pkgs.acl}/bin/setfacl \
+        -m u:mail-archive-ui:--x \
+        ${lib.escapeShellArg paperlessCfg.consumptionDir}
+      ${pkgs.acl}/bin/setfacl \
+        -m u:mail-archive-ui:rwx \
+        -m d:u:mail-archive-ui:rwx \
+        ${lib.escapeShellArg paperlessConsumeRoot}
+
+      mkdir -p ${lib.escapeShellArg paperlessStagingDir}
+      chown mail-archive-ui:mail-archive-ui ${lib.escapeShellArg paperlessStagingDir}
+      chmod 0770 ${lib.escapeShellArg paperlessStagingDir}
+    '';
   };
 }

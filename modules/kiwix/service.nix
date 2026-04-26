@@ -5,22 +5,30 @@ let
   kiwixStateDirDefault = "/var/lib/kiwix";
   kiwixPort = 8081;
   libraryFile = "${cfg.stateDir}/library.xml";
+  prepareLibraryRootScript = pkgs.writeShellScript "kiwix-prepare-library-root" ''
+    set -euo pipefail
+
+    library_root=${lib.escapeShellArg cfg.libraryRoot}
+    upload_user=${lib.escapeShellArg cfg.uploadUser}
+
+    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
+    ${pkgs.acl}/bin/setfacl \
+      -m "u:$upload_user:rwx" \
+      -m g:kiwix:rx \
+      -m "d:u:$upload_user:rwx" \
+      -m d:g:kiwix:rx \
+      "$library_root"
+  '';
   syncLibraryScript = pkgs.writeShellScript "kiwix-sync-library" ''
     set -euo pipefail
 
     library_root=${lib.escapeShellArg cfg.libraryRoot}
     library_file=${lib.escapeShellArg libraryFile}
-    admin_user=${lib.escapeShellArg vars.kanidmAdminUser}
+    upload_user=${lib.escapeShellArg cfg.uploadUser}
     tmp_library="$(mktemp)"
     trap 'rm -f "$tmp_library"' EXIT
 
-    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
-    ${pkgs.acl}/bin/setfacl \
-      -m "u:$admin_user:rwx" \
-      -m g:kiwix:r-x \
-      -m "d:u:$admin_user:rwx" \
-      -m d:g:kiwix:r-x \
-      "$library_root"
+    ${prepareLibraryRootScript}
 
     cat >"$tmp_library" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -29,8 +37,8 @@ EOF
 
     while IFS= read -r -d $'\0' zim_path; do
       ${pkgs.acl}/bin/setfacl \
-        -m "u:$admin_user:rw-" \
-        -m g:kiwix:r-- \
+        -m "u:$upload_user:rw" \
+        -m g:kiwix:r \
         "$zim_path"
 
       if ! ${cfg.package}/bin/kiwix-manage "$tmp_library" add "$zim_path"; then
@@ -76,6 +84,21 @@ in
       description = "Directory containing uploaded ZIM files.";
     };
 
+    uploadUser = lib.mkOption {
+      type = lib.types.str;
+      default =
+        if builtins.hasAttr vars.kanidmAdminUser config.users.users then
+          vars.kanidmAdminUser
+        else if builtins.hasAttr "dsaw" config.users.users then
+          "dsaw"
+        else
+          throw "services.kiwixServe.uploadUser must name a local Unix account.";
+      description = ''
+        Local Unix account allowed to upload ZIM files. This must be a
+        machine account; the Kanidm principal alone is not sufficient.
+      '';
+    };
+
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = kiwixStateDirDefault;
@@ -95,8 +118,11 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0750 kiwix kiwix -"
-      "d ${cfg.libraryRoot} 0750 root kiwix -"
     ];
+
+    system.activationScripts.kiwixLibraryRoot = lib.stringAfter [ "users" "groups" ] ''
+      ${prepareLibraryRootScript}
+    '';
 
     systemd.services.kiwix-library-sync = {
       description = "Synchronize the generated Kiwix library catalog with uploaded ZIM files";
@@ -120,12 +146,12 @@ in
       '';
     };
 
-    systemd.paths.kiwix-library-sync = {
-      description = "Watch the Kiwix upload directory for ZIM file changes";
+    systemd.timers.kiwix-library-sync = {
+      description = "Periodically rescan uploaded ZIM files for Kiwix";
       wantedBy = [ "multi-user.target" ];
-      pathConfig = {
-        PathChanged = cfg.libraryRoot;
-        PathModified = cfg.libraryRoot;
+      timerConfig = {
+        OnBootSec = "30s";
+        OnUnitActiveSec = "30s";
         Unit = "kiwix-library-sync.service";
       };
     };
@@ -160,7 +186,7 @@ in
         PrivateTmp = true;
         ProtectSystem = "strict";
         ProtectHome = true;
-        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_NETLINK" "AF_UNIX" ];
         ReadOnlyPaths = [
           cfg.libraryRoot
           cfg.stateDir

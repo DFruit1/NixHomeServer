@@ -6,7 +6,7 @@ let
   proxyArgs = [
     "--provider=oidc"
     "--approval-prompt=auto"
-    "--scope=openid profile email groups"
+    "--scope=openid profile email groups_name"
     "--email-domain=*"
     "--upstream=http://127.0.0.1:${toString cfg.port}"
     "--redirect-url=https://${vars.kiwixDomain}/oauth2/callback"
@@ -25,6 +25,21 @@ let
     "--allowed-group=users"
     "--cookie-name=_oauth2_proxy_kiwix"
   ];
+  waitForDiscoveryScript = pkgs.writeShellScript "kiwix-oauth2-proxy-wait-for-discovery" ''
+    set -euo pipefail
+
+    discovery_url=${lib.escapeShellArg (vars.kanidmDiscoveryUrl "kiwix-web")}
+
+    for _ in $(seq 1 60); do
+      if ${pkgs.curl}/bin/curl --silent --show-error --fail --cacert /etc/ssl/certs/ca-bundle.crt "$discovery_url" >/dev/null; then
+        exit 0
+      fi
+      sleep 1
+    done
+
+    echo "Timed out waiting for Kanidm OIDC discovery at $discovery_url" >&2
+    exit 1
+  '';
 in
 {
   config = lib.mkIf cfg.enable {
@@ -50,6 +65,7 @@ in
         Type = "simple";
         User = "oauth2-proxy";
         Group = "oauth2-proxy";
+        ExecStartPre = [ waitForDiscoveryScript ];
         ExecStart = "${pkgs.oauth2-proxy}/bin/oauth2-proxy ${lib.concatStringsSep " " (map lib.escapeShellArg proxyArgs)}";
         Restart = "on-failure";
         NoNewPrivileges = true;

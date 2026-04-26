@@ -15,7 +15,7 @@ pub struct ManagedGroup {
     pub description: &'static str,
 }
 
-pub const MANAGED_GROUPS: [ManagedGroup; 13] = [
+pub const MANAGED_GROUPS: [ManagedGroup; 11] = [
     ManagedGroup {
         name: "users",
         category: GroupCategory::Login,
@@ -71,16 +71,6 @@ pub const MANAGED_GROUPS: [ManagedGroup; 13] = [
         category: GroupCategory::AdminIntent,
         description: "Intended Books / Kavita admin.",
     },
-    ManagedGroup {
-        name: "jellyfin-users",
-        category: GroupCategory::Login,
-        description: "Can sign into Videos / Jellyfin.",
-    },
-    ManagedGroup {
-        name: "jellyfin-admin",
-        category: GroupCategory::AdminIntent,
-        description: "Intended Videos / Jellyfin admin.",
-    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
@@ -92,7 +82,6 @@ pub enum AppAccessTarget {
     Paperless,
     Audiobookshelf,
     Kavita,
-    Jellyfin,
 }
 
 pub fn managed_group(name: &str) -> Option<&'static ManagedGroup> {
@@ -150,7 +139,6 @@ pub fn required_group_for_app(app: AppAccessTarget) -> &'static str {
         AppAccessTarget::Paperless => "paperless-users",
         AppAccessTarget::Audiobookshelf => "audiobookshelf-users",
         AppAccessTarget::Kavita => "kavita-login",
-        AppAccessTarget::Jellyfin => "jellyfin-users",
     }
 }
 
@@ -179,10 +167,6 @@ mod tests {
         assert_eq!(
             required_group_for_app(AppAccessTarget::MailArchive),
             "mail-archive-users"
-        );
-        assert_eq!(
-            required_group_for_app(AppAccessTarget::Jellyfin),
-            "jellyfin-users"
         );
     }
 

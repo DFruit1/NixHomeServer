@@ -50,14 +50,12 @@ Login access groups:
 - `paperless-users`
 - `audiobookshelf-users`
 - `kavita-login`
-- `jellyfin-users`
 
 Admin intent groups:
 - `immich-admin`
 - `paperless-admin`
 - `audiobookshelf-admin`
 - `kavita-admin`
-- `jellyfin-admin`
 
 ## First Admin Session
 
@@ -158,7 +156,7 @@ Normal onboarding sequence:
 - Paperless: first successful OIDC login creates or links the local user row.
 - Audiobookshelf: OIDC is configured, but the local bootstrap or root flow still exists.
 - Kavita: OIDC handles auth and provisioning, but admin roles remain app-local.
-- Jellyfin is an intentional local-auth exception. `jellyfin-users` and `jellyfin-admin` still drive local-account reconciliation, but the Jellyfin password stays separate from Kanidm.
+- Jellyfin is a local-auth-only exception and is not access-controlled through Kanidm groups.
 
 Expected result after first login:
 - the user reaches the app instead of looping back to the login flow
@@ -188,7 +186,6 @@ kanidm-admin access grant dsaw mail-archive-users
 kanidm-admin access revoke dsaw mail-archive-users
 kanidm-admin access set dsaw --group users --group mail-archive-users
 kanidm-admin access why-denied --app mail-archive --user dsaw
-sudo env JELLYFIN_PASSWORD='replace-me' kanidm-admin jellyfin set-password dsaw --password-env JELLYFIN_PASSWORD
 ```
 
 Auth command safety notes:
@@ -224,7 +221,6 @@ kanidm group remove-members paperless-users "$NEW_USER" --url "$KANIDM_URL" --na
 Expected result:
 - the user either appears in or disappears from the target group immediately
 - the next app login reflects the membership change after normal OIDC reauthentication
-- for Jellyfin, group membership alone is not enough; set or rotate the local Jellyfin password separately
 
 Authoritative managed-group convergence:
 
@@ -296,7 +292,6 @@ kanidm person list --url "$KANIDM_URL" --name "$ADMIN_USER"
 kanidm-admin users show "$NEW_USER"
 kanidm-admin access show "$NEW_USER"
 kanidm-admin access why-denied --app mail-archive --user "$NEW_USER"
-kanidm-admin access why-denied --app jellyfin --user "$NEW_USER"
 ```
 
 Expected result:
@@ -307,7 +302,7 @@ Expected result:
 4. If group membership looks correct but the app role is still wrong, treat it as an app-local role or admin issue.
    - Immich and Paperless should provision the local account at first successful OIDC login.
    - Audiobookshelf and Kavita can still require app-local admin or bootstrap work after identity is correct.
-   - Jellyfin is intentionally local-auth and should not be debugged as an OIDC grant issue. Group membership alone is insufficient; the local Jellyfin password and Jellyfin sync must also converge.
+   - Jellyfin is intentionally local-auth and should be debugged inside Jellyfin itself, not as a Kanidm group or OIDC grant issue.
 
 ## After Identity Changes
 

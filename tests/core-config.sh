@@ -108,16 +108,12 @@ require_json_contains "$(nix_eval_json 'vars.userBooksSubdirs')" "ebooks" \
   "Per-user book roots must include ebooks."
 require_json_contains "$(nix_eval_json 'vars.userBooksSubdirs')" "other" \
   "Per-user book roots must include the fixed other category."
-require_json_contains "$(nix_eval_json 'vars.userVideoSubdirs')" "movies" \
-  "Per-user video roots must include movies."
-require_json_contains "$(nix_eval_json 'vars.userVideoSubdirs')" "music-videos" \
-  "Per-user video roots must include music videos."
-require_json_contains "$(nix_eval_json 'vars.userVideoSubdirs')" "youtube" \
-  "Per-user video roots must include YouTube."
-require_json_contains "$(nix_eval_json 'vars.userVideoSubdirs')" "other" \
-  "Per-user video roots must include the fixed other category."
+require_json_equal "$(nix_eval_json 'vars.userVideoSubdirs')" '[]' \
+  "Per-user video roots must be disabled."
 require_json_contains "$(nix_eval_json 'vars.sharedBooksSubdirs')" "other" \
   "Shared book roots must include the fixed other category."
+require_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "movies" \
+  "Shared video roots must include movies."
 require_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "music-videos" \
   "Shared video roots must include music videos."
 require_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "youtube" \
@@ -131,8 +127,23 @@ require_json_contains "$restic_paths_json" "/var/lib" \
   "The system-state backup must include /var/lib for SSD-backed app state."
 require_json_contains "$restic_paths_json" "/persist/appdata" \
   "The system-state backup must include /persist/appdata for SSD-backed app state."
-require_fixed modules/immich/default.nix '"${vars.mediaRoot}/photos/managed"' \
+require_json_equal "$(nix_eval_json 'vars.sharePhotosDomain')" "\"sharephotos.$(nix_eval_var 'vars.domain')\"" \
+  "vars.sharePhotosDomain must define the public share-proxy hostname."
+require_fixed modules/immich/service.nix '"${vars.mediaRoot}/photos/managed"' \
   "Immich must derive its managed library under vars.mediaRoot."
+require_json_equal "$(nix_eval_config_json 'services.immich.settings.server.externalDomain')" "\"https://$(nix_eval_var 'vars.sharePhotosDomain')\"" \
+  "Immich public share links must point at the share proxy hostname."
+require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.mobileOverrideEnabled')" "true" \
+  "Immich must enable the HTTPS mobile redirect override."
+require_json_equal "$(nix_eval_config_json 'services.immich.settings.oauth.mobileRedirectUri')" "\"https://$(nix_eval_var 'vars.photosDomain')/api/oauth/mobile-redirect\"" \
+  "Immich must use the documented HTTPS mobile redirect override path."
+immich_oauth_origins_json="$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2.immich-web.originUrl')"
+require_json_contains "$immich_oauth_origins_json" "https://$(nix_eval_var 'vars.photosDomain')/auth/login" \
+  "Kanidm must allow Immich web login redirects."
+require_json_contains "$immich_oauth_origins_json" "https://$(nix_eval_var 'vars.photosDomain')/user-settings" \
+  "Kanidm must allow Immich web account-linking redirects."
+require_json_contains "$immich_oauth_origins_json" "https://$(nix_eval_var 'vars.photosDomain')/api/oauth/mobile-redirect" \
+  "Kanidm must allow the Immich HTTPS mobile redirect override."
 require_fixed modules/Core_Modules/restic-state/default.nix 'app-state-roots.tsv' \
   "The Restic metadata staging must emit an explicit app-state inventory."
 require_fixed modules/Core_Modules/restic-state/default.nix '/var/lib/jellyfin' \
@@ -211,6 +222,10 @@ require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.filesDomain')" \
   "Caddy must serve files.<domain>."
 require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.emailsDomain')" \
   "Caddy must serve emails.<domain>."
+require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.photosDomain')" \
+  "Caddy must serve the private Immich hostname."
+require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.sharePhotosDomain')" \
+  "Caddy must serve the public Immich share-proxy hostname."
 forbid_json_contains "$caddy_hosts" "photo.$(nix_eval_var 'vars.domain')" \
   "Caddy must not retain the legacy photo hostname."
 forbid_json_contains "$caddy_hosts" "audiobook.$(nix_eval_var 'vars.domain')" \
@@ -219,6 +234,11 @@ forbid_json_contains "$caddy_hosts" "book.$(nix_eval_var 'vars.domain')" \
   "Caddy must not retain the legacy book hostname."
 forbid_json_contains "$caddy_hosts" "video.$(nix_eval_var 'vars.domain')" \
   "Caddy must not retain the legacy video hostname."
+cloudflared_ingress_hosts="$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in builtins.attrNames flake.nixosConfigurations.${hostname}.config.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress')"
+require_json_contains "$cloudflared_ingress_hosts" "$(nix_eval_var 'vars.sharePhotosDomain')" \
+  "Cloudflared must publish the public share-proxy hostname."
+forbid_json_contains "$cloudflared_ingress_hosts" "$(nix_eval_var 'vars.photosDomain')" \
+  "Cloudflared must not publish the private Immich hostname."
 if ! rg -F 'privateHostedRecords vars.serverLanIP' modules/Core_Modules/unbound/default.nix >/dev/null; then
   echo "❌ Unbound must still derive split-horizon LAN records from vars.serverLanIP."
   exit 1
@@ -251,6 +271,25 @@ require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.global["hos
   "Samba hosts-allow rules must be restricted to the LAN prefix plus localhost."
 require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data.path')" "\"$(nix_eval_var 'vars.dataRoot')\"" \
   "The admin SMB share must expose the full data root."
+
+echo "ℹ️ Checking rootless Immich share proxy…"
+require_json_equal "$(nix_eval_config_json 'virtualisation.podman.enable')" "true" \
+  "Podman must be enabled for the rootless Immich share proxy."
+require_json_equal "$(nix_eval_config_json 'users.manageLingering')" "true" \
+  "NixOS must manage lingering for the rootless Immich share proxy user."
+require_json_equal "$(nix_eval_config_json 'users.users."immich-public-proxy".isSystemUser')" "true" \
+  "The Immich share proxy must run under a dedicated system user."
+require_json_equal "$(nix_eval_config_json 'users.users."immich-public-proxy".linger')" "true" \
+  "The Immich share proxy user must linger so its user manager starts at boot."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.environment.etc ? "containers/systemd/users/3001/immich-public-proxy.container"')" "true" \
+  "The Immich share proxy quadlet must be installed declaratively under /etc/containers/systemd/users/3001."
+immich_proxy_quadlet_json="$(nix_eval_config_json 'environment.etc."containers/systemd/users/3001/immich-public-proxy.container".text')"
+require_json_contains "$immich_proxy_quadlet_json" 'DropCapability=all' \
+  "The Immich share proxy quadlet must drop all Linux capabilities."
+require_json_contains "$immich_proxy_quadlet_json" 'NoNewPrivileges=true' \
+  "The Immich share proxy quadlet must disable privilege escalation."
+require_json_contains "$immich_proxy_quadlet_json" 'ReadOnly=true' \
+  "The Immich share proxy quadlet must mount the container root filesystem read-only."
 require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data["valid users"]')" "\"$(nix_eval_var 'vars.kanidmAdminUser')\"" \
   "The admin SMB share must be gated to the delegated admin user."
 require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data["admin users"]')" "\"$(nix_eval_var 'vars.kanidmAdminUser')\"" \
@@ -286,10 +325,18 @@ require_match modules/copyparty/default.nix "\\$\\{vars\\.usersWorkspaceRoot\\}/
   "Copyparty per-user roots must point at each user's top-level content directory."
 require_fixed modules/copyparty/default.nix '${vars.sharedPublicRoot}' \
   "Copyparty /shared must point at the shared content root."
+require_match modules/copyparty/default.nix '\[/shared/videos\]' \
+  "Copyparty must expose a dedicated shared-videos subtree."
+require_match modules/copyparty/default.nix 'rw: @acct' \
+  "Copyparty shared videos must grant authenticated users read and write without delete."
+require_fixed modules/copyparty/default.nix 'rwmda: ${vars.kanidmAdminUser}' \
+  "Copyparty shared videos must reserve delete-capable access for the delegated admin."
 forbid_match modules/copyparty/default.nix 'media-library' \
   "Copyparty must not retain the removed broad media-library group."
 require_json_contains "$(nix_eval_json 'vars.userContentSubdirs')" "emails" \
   "Per-user content roots must include an emails directory."
+forbid_json_contains "$(nix_eval_json 'vars.userContentSubdirs')" "videos" \
+  "Per-user content roots must not include videos."
 require_json_contains "$(nix_eval_json 'vars.sharedContentSubdirs')" "emails" \
   "Shared content roots must include an emails directory."
 require_match modules/copyparty/default.nix '\[/shared/documents\]' \
@@ -342,6 +389,10 @@ require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.environment
   "Mail archive UI must point Paperless filing at the dedicated consume subtree."
 require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.environment.MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR')" '"/mnt/data/media/documents/.mail-archive-paperless-staging"' \
   "Mail archive UI must stage Paperless handoffs outside the watched consume subtree."
+require_fixed modules/mail-archive-paperless/default.nix '-m u:mail-archive-ui:--x' \
+  "Mail archive UI must retain traversal access to the Paperless inbox parent directory."
+require_fixed rust/apps/mail-archive-ui/Cargo.toml 'landlock = "0.4.4"' \
+  "Mail archive UI must depend on the Landlock crate for process self-sandboxing."
 require_json_equal "$(nix_eval_json 'vars.paperlessEnableDangerousMacroOfficeParsing')" 'false' \
   "Paperless dangerous Office parsing must stay disabled by default."
 require_json_equal "$(nix_eval_json 'vars.paperlessOcrLanguage')" '"eng"' \
@@ -447,6 +498,10 @@ require_json_equal "$(nix_eval_config_json 'users.users.jellyfin.extraGroups')" 
   "Jellyfin must use the app-specific media group."
 forbid_match modules/audiobookshelf/service.nix 'media-library' \
   "Audiobookshelf must not retain the removed broad media-library group."
+require_fixed modules/audiobookshelf/oidc-bootstrap.nix '["audiobookshelf://oauth", "lissen://oauth"]' \
+  "Audiobookshelf must allow both the official app and Lissen mobile redirect URIs."
+forbid_match modules/audiobookshelf/oidc-bootstrap.nix 'audiobookshelf-oidc-bootstrap-v1\.done|marker_file=' \
+  "Audiobookshelf OIDC bootstrap must keep converging instead of persisting a done-marker gate."
 forbid_match modules/kavita/default.nix 'media-library' \
   "Kavita must not retain the removed broad media-library group."
 forbid_match modules/jellyfin/service.nix 'media-library' \
@@ -455,24 +510,20 @@ require_json_equal "$(nix_eval_config_json 'systemd.timers.audiobookshelf-librar
   "Audiobookshelf library sync must run every minute."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.kavita-library-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
   "Kavita library sync must run every minute."
-require_json_equal "$(nix_eval_config_json 'systemd.timers.jellyfin-user-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
-  "Jellyfin user sync must run every minute."
-require_json_equal "$(nix_eval_config_json 'systemd.timers.jellyfin-library-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
-  "Jellyfin library sync must run every minute."
-require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups."jellyfin-users".members')" '[]' \
-  "Kanidm must provision the Jellyfin login group."
-require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups."jellyfin-admin".members')" "[\"admindsaw\"]" \
-  "Kanidm must provision the Jellyfin admin-intent group."
+require_json_equal "$(nix_eval_config_json 'systemd.timers.jellyfin-reconcile-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
+  "Jellyfin reconcile must run every minute."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c 'has("jellyfin-users")')" 'false' \
+  "Kanidm must not provision a Jellyfin login group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c 'has("jellyfin-admin")')" 'false' \
+  "Kanidm must not provision a Jellyfin admin-intent group."
 require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf.serviceConfig.WorkingDirectory')" '"/var/lib/audiobookshelf"' \
   "Audiobookshelf state must live under /var/lib."
 require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf-library-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
   "Audiobookshelf library sync must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.services.kavita-library-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
   "Kavita library sync must be gated on the data pool mount."
-require_json_equal "$(nix_eval_config_json 'systemd.services.jellyfin-user-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
-  "Jellyfin user sync must be gated on the data pool mount."
-require_json_equal "$(nix_eval_config_json 'systemd.services.jellyfin-library-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
-  "Jellyfin library sync must be gated on the data pool mount."
+require_json_equal "$(nix_eval_config_json 'systemd.services.jellyfin-reconcile-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
+  "Jellyfin reconcile must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \
   "Mail archive sync must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-ui.serviceConfig.UMask')" '"0077"' \

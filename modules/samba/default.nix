@@ -4,9 +4,7 @@ let
   kanidmPort = 8443;
   userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
-  userVideoSubdirs = lib.escapeShellArgs vars.userVideoSubdirs;
   kavitaWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
-  jellyfinWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/videos/${name}"'') vars.userVideoSubdirs;
   prepareUserWorkspace = pkgs.writeShellScript "prepare-samba-user-workspace" ''
     set -euo pipefail
 
@@ -22,9 +20,6 @@ let
     done
     for name in ${userBooksSubdirs}; do
       install -d -m 2770 -g users "$root/books/$name"
-    done
-    for name in ${userVideoSubdirs}; do
-      install -d -m 2770 -g users "$root/videos/$name"
     done
 
     if [[ -L "$emails" ]]; then
@@ -51,7 +46,6 @@ let
 
     ${pkgs.acl}/bin/setfacl \
       -m g:kavita-media:--x \
-      -m g:jellyfin-media:--x \
       -m g:mail-archive-ui:--x \
       -m g:immich:--x \
       -m g:paperless:--x \
@@ -92,9 +86,6 @@ let
     apply_writable_acl kavita-media \
       "$root/books" \
       ${kavitaWritablePaths}
-    apply_writable_acl jellyfin-media \
-      "$root/videos" \
-      ${jellyfinWritablePaths}
 
     apply_readonly_acl immich "$root/photos"
     apply_readonly_acl paperless "$root/documents"

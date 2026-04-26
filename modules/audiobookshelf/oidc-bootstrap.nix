@@ -29,16 +29,10 @@ in
 
       db="${configDir}/absdatabase.sqlite"
       managed_dir="${managedDir}"
-      marker_file="$managed_dir/audiobookshelf-oidc-bootstrap-v1.done"
       current=""
       table_ready=""
 
       install -d -m 0755 "$managed_dir"
-
-      if [[ -f "$marker_file" ]]; then
-        echo "Audiobookshelf OIDC bootstrap v1 already applied"
-        exit 0
-      fi
 
       for _ in $(seq 1 30); do
         [[ -f "$db" ]] && break
@@ -99,7 +93,7 @@ in
           | .authOpenIDAutoLaunch = false
           | .authOpenIDAutoRegister = true
           | .authOpenIDMatchExistingBy = "username"
-          | .authOpenIDMobileRedirectURIs = ["audiobookshelf://oauth"]
+          | .authOpenIDMobileRedirectURIs = ["audiobookshelf://oauth", "lissen://oauth"]
           | .authOpenIDGroupClaim = ""
           | .authOpenIDAdvancedPermsClaim = ""
           | .authOpenIDSubfolderForRedirectURLs = $subfolder
@@ -107,7 +101,6 @@ in
 
       if [[ "$current" == "$updated" ]]; then
         echo "Audiobookshelf OIDC bootstrap v1 already converged"
-        touch "$marker_file"
         exit 0
       fi
 
@@ -116,7 +109,6 @@ in
         "update settings set value = '$escaped' where key = 'server-settings';"
 
       echo "Audiobookshelf OIDC bootstrap v1 updated managed auth settings"
-      touch "$marker_file"
       /run/current-system/sw/bin/systemctl restart audiobookshelf.service
     '';
   };

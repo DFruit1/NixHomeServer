@@ -42,7 +42,7 @@ pub fn set_jellyfin_password(
     Ok(CommandOutput {
         message: format!("staged desired Jellyfin password hash for '{account_id}'"),
         human: format!(
-            "Staged the desired Jellyfin password hash for '{account_id}'.\nPath: {}\nSource env var: {password_env}\nThe Jellyfin sync service still needs to apply this staged hash.",
+            "Staged the desired Jellyfin password hash for '{account_id}'.\nPath: {}\nSource env var: {password_env}\nThe Jellyfin reconcile service still needs to apply this staged hash.",
             path.display()
         ),
         details: json!({
@@ -52,7 +52,7 @@ pub fn set_jellyfin_password(
             "staged": true,
         }),
         warnings: vec![
-            "The Jellyfin sync timer or service must still converge before the password change is active.".to_string(),
+            "The Jellyfin reconcile timer or service must still converge before the password change is active.".to_string(),
         ],
     })
 }

@@ -1,23 +1,95 @@
-{ config, pkgs, vars, ... }:
+{ pkgs, vars, ... }:
 
 let
   jellyfinPort = 8096;
-  kanidmPort = 8443;
   dataDir = "/var/lib/jellyfin";
+  dbPath = "${dataDir}/data/jellyfin.db";
   managedDir = "${dataDir}/.nixos-managed";
-  personalJellyfinLibrariesJson = builtins.toJSON vars.personalJellyfinLibraries;
+  desiredPasswordDir = "${managedDir}/desired-password-hashes";
   sharedJellyfinLibrariesJson = builtins.toJSON vars.sharedJellyfinLibraries;
-  syncScript = pkgs.writeShellScript "jellyfin-library-sync-v1" ''
+  syncScript = pkgs.writeShellScript "jellyfin-reconcile-v1" ''
     set -euo pipefail
 
     managed_dir="${managedDir}"
     bootstrap_password_file="$managed_dir/admin-bootstrap-password"
 
-    [[ -f "$bootstrap_password_file" ]] || {
-      echo "Jellyfin bootstrap password file is missing; run jellyfin-user-sync-v1 first" >&2
-      exit 1
-    }
+    ${pkgs.coreutils}/bin/install -d -m 0700 "$managed_dir" '${desiredPasswordDir}'
+
+    if [[ ! -f "$bootstrap_password_file" ]]; then
+      ${pkgs.python3}/bin/python3 - <<'PY' > "$bootstrap_password_file"
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+      chmod 0600 "$bootstrap_password_file"
+    fi
+
     bootstrap_password="$(< "$bootstrap_password_file")"
+
+    ensure_bootstrap_password() {
+      local state
+      state="$(${pkgs.python3}/bin/python3 - "${dbPath}" '${vars.kanidmAdminUser}' "$bootstrap_password" <<'PY'
+import hashlib
+import os
+import sqlite3
+import sys
+
+db_path, username, password = sys.argv[1:]
+
+def hash_password(value: str) -> str:
+    salt = os.urandom(16)
+    iterations = 210000
+    derived = hashlib.pbkdf2_hmac("sha512", value.encode(), salt, iterations)
+    return f"$PBKDF2-SHA512$iterations={iterations}$''${salt.hex().upper()}$''${derived.hex().upper()}"
+
+def verify_password(value: str, stored: str | None) -> bool:
+    if not stored or not stored.startswith("$PBKDF2-SHA512$"):
+        return False
+    parts = stored.split("$")
+    if len(parts) != 5 or not parts[2].startswith("iterations="):
+        return False
+    iterations = int(parts[2].split("=", 1)[1])
+    salt = bytes.fromhex(parts[3])
+    expected = parts[4].upper()
+    actual = hashlib.pbkdf2_hmac("sha512", value.encode(), salt, iterations).hex().upper()
+    return actual == expected
+
+connection = sqlite3.connect(db_path)
+cursor = connection.cursor()
+row = cursor.execute(
+    "select Password from Users where Username = ? limit 1",
+    (username,),
+).fetchone()
+if row is None:
+    print("missing")
+    sys.exit(0)
+if verify_password(password, row[0]):
+    print("unchanged")
+    sys.exit(0)
+cursor.execute(
+    "update Users set Password = ?, InvalidLoginAttemptCount = 0, MustUpdatePassword = 0 where Username = ?",
+    (hash_password(password), username),
+)
+connection.commit()
+print("updated")
+PY
+)"
+
+      case "$state" in
+        unchanged)
+          ;;
+        updated)
+          /run/current-system/sw/bin/systemctl restart jellyfin.service
+          ;;
+        missing)
+          echo "Jellyfin admin user ${vars.kanidmAdminUser} does not exist yet" >&2
+          exit 1
+          ;;
+        *)
+          echo "Unexpected Jellyfin bootstrap password state: $state" >&2
+          exit 1
+          ;;
+      esac
+    }
 
     wait_for_jellyfin() {
       local status_json=""
@@ -41,7 +113,7 @@ let
         auth_json="$(${pkgs.curl}/bin/curl --silent --show-error \
           -X POST \
           -H 'Content-Type: application/json' \
-          -H 'X-Emby-Authorization: MediaBrowser Client="nixos-jellyfin-library-sync", Device="nixos-jellyfin-library-sync", DeviceId="nixos-jellyfin-library-sync", Version="1.0.0"' \
+          -H 'X-Emby-Authorization: MediaBrowser Client="nixos-jellyfin-reconcile", Device="nixos-jellyfin-reconcile", DeviceId="nixos-jellyfin-reconcile", Version="1.0.0"' \
           --data "$(${pkgs.jq}/bin/jq -cn \
             --arg username '${vars.kanidmAdminUser}' \
             --arg password "$bootstrap_password" \
@@ -58,57 +130,6 @@ let
       exit 1
     }
 
-    wait_for_jellyfin
-
-    export HOME="$(mktemp -d)"
-    trap 'rm -rf "$HOME"' EXIT
-    export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
-
-    login_group_json="$(
-      ${pkgs.kanidm_1_9}/bin/kanidm login \
-        -H https://localhost:${toString kanidmPort} \
-        -D admin \
-        --accept-invalid-certs >/dev/null
-
-      ${pkgs.kanidm_1_9}/bin/kanidm group get \
-        jellyfin-users \
-        -H https://localhost:${toString kanidmPort} \
-        -D admin \
-        --accept-invalid-certs \
-        -o json
-    )"
-
-    admin_group_json="$(
-      ${pkgs.kanidm_1_9}/bin/kanidm group get \
-        jellyfin-admin \
-        -H https://localhost:${toString kanidmPort} \
-        -D admin \
-        --accept-invalid-certs \
-        -o json
-    )"
-
-    login_users_file="$(mktemp)"
-    admin_users_file="$(mktemp)"
-    desired_users_file="$(mktemp)"
-    desired_libraries_file="$(mktemp)"
-    desired_library_names_file="$(mktemp)"
-
-    printf '%s' "$login_group_json" \
-      | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]' \
-      | ${pkgs.coreutils}/bin/sort -u > "$login_users_file"
-
-    printf '%s' "$admin_group_json" \
-      | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]' \
-      | ${pkgs.coreutils}/bin/sort -u > "$admin_users_file"
-
-    cat "$login_users_file" "$admin_users_file" | ${pkgs.coreutils}/bin/sort -u > "$desired_users_file"
-
-    format_personal_library_name() {
-      local username="$1"
-      local label="$2"
-
-      printf '%s (%s)\n' "$label" "$username"
-    }
     format_shared_library_name() {
       local label="$1"
 
@@ -125,6 +146,92 @@ let
       printf '%s\n' "$name" >> "$desired_library_names_file"
     }
 
+    urlencode() {
+      ${pkgs.python3}/bin/python3 - "$1" <<'PY'
+import sys
+from urllib.parse import quote
+print(quote(sys.argv[1], safe=""))
+PY
+    }
+
+    apply_staged_password_hashes() {
+      ${pkgs.python3}/bin/python3 - "${dbPath}" '${desiredPasswordDir}' <<'PY'
+import pathlib
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+password_dir = pathlib.Path(sys.argv[2])
+
+connection = sqlite3.connect(db_path)
+cursor = connection.cursor()
+
+for path in sorted(password_dir.glob("*.pbkdf2")):
+    username = path.stem
+    password_hash = path.read_text(encoding="utf-8").strip()
+    cursor.execute(
+        "update Users set Password = ?, InvalidLoginAttemptCount = 0, MustUpdatePassword = 0 where Username = ?",
+        (password_hash, username),
+    )
+
+connection.commit()
+PY
+    }
+
+    update_user_deletion_policy() {
+      local username="$1"
+      local is_admin="$2"
+      local deletion_ids_json="$3"
+      local current=""
+      local user_id=""
+      local user_json=""
+      local policy_json=""
+
+      current="$(
+        printf '%s' "$users_json" \
+          | ${pkgs.jq}/bin/jq -c --arg username "$username" '.[] | select(.Name == $username)'
+      )"
+      [[ -n "$current" ]] || return 0
+
+      user_id="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -r '.Id')"
+      user_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
+        -H "$auth_header" \
+        "http://127.0.0.1:${toString jellyfinPort}/Users/$user_id")"
+
+      policy_json="$(
+        printf '%s' "$user_json" \
+          | ${pkgs.jq}/bin/jq -c \
+            --argjson deletion_ids "$deletion_ids_json" \
+            --argjson is_admin "$is_admin" '
+              .Policy
+              | .EnableContentDeletionFromFolders = $deletion_ids
+              | if has("EnableContentDeletion") then
+                  .EnableContentDeletion = (($deletion_ids | length) > 0)
+                else
+                  .
+                end
+              | if $is_admin then
+                  .IsAdministrator = true
+                else
+                  .
+                end
+            '
+      )"
+
+      ${pkgs.curl}/bin/curl --silent --show-error --fail \
+        -X POST \
+        -H "$auth_header" \
+        -H 'Content-Type: application/json' \
+        --data "$policy_json" \
+        "http://127.0.0.1:${toString jellyfinPort}/Users/$user_id/Policy" >/dev/null
+    }
+
+    ensure_bootstrap_password
+    wait_for_jellyfin
+
+    desired_libraries_file="$(mktemp)"
+    desired_library_names_file="$(mktemp)"
+
     while IFS=$'\t' read -r dir label collection_type; do
       add_desired_library \
         "$(format_shared_library_name "$label")" \
@@ -135,36 +242,12 @@ let
         | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, .collectionType ] | @tsv'
     )
 
-    while IFS= read -r username; do
-      [[ -n "$username" ]] || continue
-      while IFS=$'\t' read -r dir label collection_type; do
-        add_desired_library \
-          "$(format_personal_library_name "$username" "$label")" \
-          "$collection_type" \
-          "${vars.usersWorkspaceRoot}/$username/videos/$dir"
-      done < <(
-        printf '%s' '${personalJellyfinLibrariesJson}' \
-          | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, .collectionType ] | @tsv'
-      )
-    done < "$desired_users_file"
-
     token="$(authenticate_admin)"
     auth_header="Authorization: MediaBrowser Token=$token"
-
-    urlencode() {
-      ${pkgs.python3}/bin/python3 - "$1" <<'PY'
-import sys
-from urllib.parse import quote
-print(quote(sys.argv[1], safe=""))
-PY
-    }
 
     libraries_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
       -H "$auth_header" \
       "http://127.0.0.1:${toString jellyfinPort}/Library/VirtualFolders")"
-    users_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
-      -H "$auth_header" \
-      "http://127.0.0.1:${toString jellyfinPort}/Users")"
 
     managed_current_names="$(
       printf '%s' "$libraries_json" \
@@ -182,6 +265,7 @@ PY
     )"
 
     while IFS= read -r current_name; do
+      query=""
       [[ -n "$current_name" ]] || continue
       if ! ${pkgs.gnugrep}/bin/grep -Fxq "$current_name" "$desired_library_names_file"; then
         query="name=$(urlencode "$current_name")&refreshLibrary=true"
@@ -200,11 +284,11 @@ PY
       local library_name="$1"
       local collection_type="$2"
       local library_path="$3"
-      local current
-      local current_locations
-      local current_type
+      local current=""
+      local current_locations=""
+      local current_type=""
       local body='{}'
-      local query
+      local query=""
 
       current="$(
         printf '%s' "$libraries_json" \
@@ -252,95 +336,39 @@ PY
       library_ids["$library_name"]="$library_id"
     done < "$desired_libraries_file"
 
-    update_user_policy() {
-      local username="$1"
-      local mode="$2"
-      local allowed_json="$3"
-      local current
-      local user_id
-      local user_json
-      local policy_json
+    shared_deletion_ids_json="$(
+      printf '%s\n' "''${library_ids[@]}" \
+        | ${pkgs.jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0)) | unique'
+    )"
 
-      current="$(
-        printf '%s' "$users_json" \
-          | ${pkgs.jq}/bin/jq -c --arg username "$username" '.[] | select(.Name == $username)'
-      )"
-      [[ -n "$current" ]] || return 0
-      user_id="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -r '.Id')"
-      user_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
-        -H "$auth_header" \
-        "http://127.0.0.1:${toString jellyfinPort}/Users/$user_id")"
+    apply_staged_password_hashes
 
-      policy_json="$(
-        printf '%s' "$user_json" \
-          | ${pkgs.jq}/bin/jq -c \
-            --argjson is_admin "$([ "$mode" = admin ] && echo true || echo false)" \
-            --argjson allowed "$allowed_json" '
-              .Policy
-              | .IsAdministrator = $is_admin
-              | .EnableAllFolders = false
-              | .EnabledFolders = $allowed
-            '
-      )"
+    users_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
+      -H "$auth_header" \
+      "http://127.0.0.1:${toString jellyfinPort}/Users")"
 
-      ${pkgs.curl}/bin/curl --silent --show-error --fail \
-        -X POST \
-        -H "$auth_header" \
-        -H 'Content-Type: application/json' \
-        --data "$policy_json" \
-        "http://127.0.0.1:${toString jellyfinPort}/Users/$user_id/Policy" >/dev/null
-    }
+    update_user_deletion_policy '${vars.kanidmAdminUser}' true "$shared_deletion_ids_json"
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
-      allowed_json="$(
-        {
-          printf '%s' '${sharedJellyfinLibrariesJson}' \
-            | ${pkgs.jq}/bin/jq -r '.[] | .label' \
-            | while IFS= read -r label; do
-              [[ -n "$label" ]] || continue
-              format_shared_library_name "$label"
-            done
-          printf '%s' '${personalJellyfinLibrariesJson}' \
-            | ${pkgs.jq}/bin/jq -r '.[] | .label' \
-            | while IFS= read -r label; do
-              [[ -n "$label" ]] || continue
-              format_personal_library_name "$username" "$label"
-            done
-        } | while IFS= read -r library_name; do
-          [[ -n "$library_name" ]] || continue
-          library_id="''${library_ids["$library_name"]:-}"
-          [[ -n "$library_id" ]] || continue
-          printf '%s\n' "$library_id"
-        done | ${pkgs.jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
-      )"
-
-      if ${pkgs.gnugrep}/bin/grep -Fxq "$username" "$admin_users_file"; then
-        update_user_policy "$username" admin "$allowed_json"
-        continue
-      fi
-
-      update_user_policy "$username" user "$allowed_json"
-    done < "$desired_users_file"
+      [[ "$username" == '${vars.kanidmAdminUser}' ]] && continue
+      update_user_deletion_policy "$username" false '[]'
+    done < <(
+      printf '%s' "$users_json" | ${pkgs.jq}/bin/jq -r '.[].Name'
+    )
   '';
 in
 {
-  systemd.services.jellyfin-library-sync-v1 = {
-    description = "Synchronize Jellyfin managed personal and shared libraries";
+  systemd.services.jellyfin-reconcile-v1 = {
+    description = "Reconcile Jellyfin shared libraries and deletion policy";
     wantedBy = [ "multi-user.target" ];
     wants = [
       "jellyfin.service"
-      "jellyfin-user-sync-v1.service"
       "data-pool-layout.service"
-      "fileshare-workspace-sync.service"
-      "kanidm.service"
     ];
     after = [
       "jellyfin.service"
-      "jellyfin-user-sync-v1.service"
       "data-pool-layout.service"
-      "fileshare-workspace-sync.service"
-      "kanidm.service"
     ];
     unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
     serviceConfig = {
@@ -348,12 +376,11 @@ in
       WorkingDirectory = dataDir;
     };
     script = ''
-      ${pkgs.coreutils}/bin/install -d -m 0700 ${managedDir}
       ${syncScript}
     '';
   };
 
-  systemd.timers.jellyfin-library-sync-v1 = {
+  systemd.timers.jellyfin-reconcile-v1 = {
     wantedBy = [ "timers.target" ];
     timerConfig = {
       OnCalendar = "*-*-* *:*:00";

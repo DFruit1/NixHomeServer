@@ -75,17 +75,19 @@ ls -l /dev/disk/by-id/
 
 Use `/dev/disk/by-id/*`, not transient `/dev/sdX` names.
 
-## Personal Media Categories
+## Media Categories
 
-Per-user media roots are created automatically under `/mnt/data/users/<user>/`.
+Per-user book roots are created automatically under `/mnt/data/users/<user>/books/`.
 
-Books categories under `books/`:
+Books categories:
 - `ebooks`: general book files such as EPUB, MOBI, AZW, and standard PDFs
 - `comics`: western comics and comic archive formats
 - `manga`: manga and similar chapter or volume-oriented material
 - `other`: book-like reading material that should still be exposed through Kavita, such as textbooks, papers, manuals, and reference PDFs
 
-Video categories under `videos/`:
+All Jellyfin-visible video content is shared-only under `/mnt/data/shared/videos/`.
+There are no per-user Jellyfin video folders.
+Upload shared video content through the files app or the admin-only SMB share into these categories:
 - `movies`: standard movie collections
 - `shows`: episodic TV or series content
 - `home`: personal videos and recordings
@@ -93,7 +95,7 @@ Video categories under `videos/`:
 - `youtube`: downloaded YouTube-style videos exposed as Jellyfin `homevideos`
 - `other`: catch-all video material exposed as Jellyfin `homevideos`
 
-Shared media roots mirror the same category layout:
+Shared media roots:
 - shared books: `ebooks`, `comics`, `manga`, `other`
 - shared videos: `movies`, `shows`, `home`, `music-videos`, `youtube`, `other`
 
