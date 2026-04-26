@@ -29,19 +29,22 @@ pub enum AppError {
     InvalidManagedGroup { group: String },
 
     #[error("user not found: {account_id}")]
-    UserNotFound { account_id: String },
+    UserNotFound { account_id: String, details: Value },
 
     #[error("{message}")]
     Verification { message: String, details: Value },
 
     #[error("{message}")]
-    SessionRequired { message: String },
+    SessionRequired { message: String, details: Value },
 
     #[error("{message}")]
-    ReauthRequired { message: String },
+    ReauthRequired { message: String, details: Value },
 
     #[error("{message}")]
     Json { message: String, details: Value },
+
+    #[error("{message}")]
+    BackendTimeout { message: String, details: Value },
 
     #[error("{message}")]
     Io { message: String },
@@ -60,6 +63,7 @@ impl AppError {
             Self::Json { .. } => 9,
             Self::Backend { .. } => 10,
             Self::Io { .. } => 11,
+            Self::BackendTimeout { .. } => 12,
         }
     }
 
@@ -76,10 +80,24 @@ impl AppError {
                     message.clone()
                 }
             }
-            Self::Verification { message, details } | Self::Json { message, details } => {
+            Self::Verification { message, details }
+            | Self::Json { message, details }
+            | Self::BackendTimeout { message, details } => {
                 let rendered =
                     serde_json::to_string_pretty(details).unwrap_or_else(|_| details.to_string());
                 format!("{message}\n\nDetails:\n{rendered}")
+            }
+            Self::SessionRequired { message, details }
+            | Self::ReauthRequired { message, details } => {
+                let diagnostic = details
+                    .get("diagnostic")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                match diagnostic {
+                    Some(diagnostic) => format!("{message}\n\nDiagnostic:\n{diagnostic}"),
+                    None => message.clone(),
+                }
             }
             _ => self.to_string(),
         }
@@ -110,19 +128,25 @@ impl AppError {
             Self::InvalidManagedGroup { group } => {
                 json!({ "kind": "invalid_managed_group", "group": group })
             }
-            Self::UserNotFound { account_id } => {
-                json!({ "kind": "user_not_found", "account_id": account_id })
+            Self::UserNotFound {
+                account_id,
+                details,
+            } => {
+                json!({ "kind": "user_not_found", "account_id": account_id, "details": details })
             }
             Self::Verification { details, .. } => {
                 json!({ "kind": "verification", "details": details })
             }
-            Self::SessionRequired { message } => {
-                json!({ "kind": "session_required", "message": message })
+            Self::SessionRequired { message, details } => {
+                json!({ "kind": "session_required", "message": message, "details": details })
             }
-            Self::ReauthRequired { message } => {
-                json!({ "kind": "reauth_required", "message": message })
+            Self::ReauthRequired { message, details } => {
+                json!({ "kind": "reauth_required", "message": message, "details": details })
             }
             Self::Json { details, .. } => json!({ "kind": "json", "details": details }),
+            Self::BackendTimeout { details, .. } => {
+                json!({ "kind": "backend_timeout", "details": details })
+            }
             Self::Io { message } => json!({ "kind": "io", "message": message }),
         }
     }

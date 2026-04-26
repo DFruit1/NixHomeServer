@@ -318,6 +318,8 @@ require_fixed scripts/cold-storage.sh 'zpool import -N -d /dev/disk/by-id' \
 echo "ℹ️ Checking power and mail-archive essentials…"
 forbid_match configuration.nix './modules/[b]ackup' \
   "configuration.nix must not import the removed local-backup module."
+require_fixed configuration.nix './modules/mail-archive-paperless' \
+  "configuration.nix must import the mail archive Paperless integration module."
 require_fixed scripts/check-repo.sh 'nix build ".#checks.${system}.mail-archive-ui-test" --print-build-logs' \
   "Repository checks must execute the built mail archive UI test derivation."
 require_json_equal "$(nix_eval_config_json 'powerManagement.cpuFreqGovernor')" '"powersave"' \
@@ -328,8 +330,103 @@ require_json_equal "$mail_archive_port" "9011" \
   "Mail archive UI must keep the expected local port."
 require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.dataDir')" '"/persist/appdata/mail-archive-ui"' \
   "Mail archive UI state must live on the SSD-backed persist volume."
+require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.environment.MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT')" '"/mnt/data/media/documents/inbox/mail-archive"' \
+  "Mail archive UI must point Paperless filing at the dedicated consume subtree."
+require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.environment.MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR')" '"/mnt/data/media/documents/.mail-archive-paperless-staging"' \
+  "Mail archive UI must stage Paperless handoffs outside the watched consume subtree."
+require_json_equal "$(nix_eval_json 'vars.paperlessEnableDangerousMacroOfficeParsing')" 'false' \
+  "Paperless dangerous Office parsing must stay disabled by default."
+require_json_equal "$(nix_eval_json 'vars.paperlessOcrLanguage')" '"eng"' \
+  "Paperless OCR language must remain operator-configurable through vars."
 require_json_equal "$(nix_eval_config_json 'services.paperless.dataDir')" '"/var/lib/paperless"' \
   "Paperless state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'services.paperless.configureTika')" 'true' \
+  "Paperless must enable Tika-backed Office and email parsing."
+require_json_equal "$(nix_eval_config_json 'services.paperless.exporter.enable')" 'true' \
+  "Paperless must enable scheduled exports."
+require_json_equal "$(nix_eval_config_json 'services.paperless.exporter.directory')" '"/mnt/data/media/documents/export"' \
+  "Paperless exports must land in the shared documents export directory."
+require_json_equal "$(nix_eval_config_json 'services.paperless.exporter.onCalendar')" '"02:00"' \
+  "Paperless exports must complete before the system-state backup window."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_OCR_LANGUAGE')" "\"$(nix_eval_var 'vars.paperlessOcrLanguage')\"" \
+  "Paperless OCR language must follow vars.paperlessOcrLanguage."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_OCR_CLEAN')" '"clean"' \
+  "Paperless must enable OCR cleanup for imported documents."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_OCR_OUTPUT_TYPE')" '"pdfa"' \
+  "Paperless must archive OCR output as PDF/A."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_CONSUMER_INOTIFY_DELAY')" '"2"' \
+  "Paperless must wait briefly for inotify bursts before consuming files."
+paperless_ignore_patterns_json="$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_CONSUMER_IGNORE_PATTERNS')"
+forbid_json_contains "$paperless_ignore_patterns_json" "*.[dD][oO][cC][xX]" \
+  "Paperless must allow safe .docx ingestion by default."
+forbid_json_contains "$paperless_ignore_patterns_json" "*.[xX][lL][sS][xX]" \
+  "Paperless must allow safe .xlsx ingestion by default."
+forbid_json_contains "$paperless_ignore_patterns_json" "*.[oO][dD][tT]" \
+  "Paperless must allow safe .odt ingestion by default."
+forbid_json_contains "$paperless_ignore_patterns_json" "*.[eE][mM][lL]" \
+  "Paperless must allow .eml ingestion by default."
+require_json_contains "$paperless_ignore_patterns_json" "*.[dD][oO][cC]" \
+  "Paperless must block legacy .doc ingestion by default."
+require_json_contains "$paperless_ignore_patterns_json" "*.[xX][lL][sS]" \
+  "Paperless must block legacy .xls ingestion by default."
+require_json_contains "$paperless_ignore_patterns_json" "*.[dD][oO][cC][mM]" \
+  "Paperless must block macro-capable .docm ingestion by default."
+require_json_contains "$paperless_ignore_patterns_json" "*.[xX][lL][sS][mM]" \
+  "Paperless must block macro-capable .xlsm ingestion by default."
+require_json_contains "$paperless_ignore_patterns_json" "*.[pP][pP][tT][xX]" \
+  "Paperless must block broader presentation ingestion by default."
+require_json_contains "$paperless_ignore_patterns_json" "*.[oO][dD][sS]" \
+  "Paperless must block broader spreadsheet ingestion by default."
+require_json_contains "$paperless_ignore_patterns_json" "*.[oO][dD][pP]" \
+  "Paperless must block broader presentation ingestion by default."
+dangermode_paperless_ignore_patterns_json="$(
+  NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes}" \
+    nix eval --json --impure --expr "
+      let
+        flake = builtins.getFlake (toString ${TESTS_REPO_ROOT});
+        lib = flake.inputs.nixpkgs.lib;
+        system = \"x86_64-linux\";
+        vars = (import ${TESTS_REPO_ROOT}/vars.nix { inherit lib; }) // {
+          paperlessEnableDangerousMacroOfficeParsing = true;
+        };
+        cfg = lib.nixosSystem {
+          inherit system;
+          modules = [
+            ${TESTS_REPO_ROOT}/hardware-configuration.nix
+            ${TESTS_REPO_ROOT}/configuration.nix
+            flake.inputs.agenix.nixosModules.default
+            flake.inputs.disko.nixosModules.disko
+          ];
+          specialArgs = {
+            inherit vars;
+            self = flake;
+            disko = flake.inputs.disko;
+            copyparty = flake.inputs.copyparty;
+            pkgsUnstable = flake.inputs.nixpkgs-unstable.legacyPackages.\${system};
+          };
+        };
+      in
+        cfg.config.services.paperless.settings.PAPERLESS_CONSUMER_IGNORE_PATTERNS
+    "
+)"
+forbid_json_contains "$dangermode_paperless_ignore_patterns_json" "*.[dD][oO][cC]" \
+  "Paperless dangerous mode must re-enable legacy .doc ingestion."
+forbid_json_contains "$dangermode_paperless_ignore_patterns_json" "*.[xX][lL][sS]" \
+  "Paperless dangerous mode must re-enable legacy .xls ingestion."
+forbid_json_contains "$dangermode_paperless_ignore_patterns_json" "*.[dD][oO][cC][mM]" \
+  "Paperless dangerous mode must re-enable macro-capable .docm ingestion."
+forbid_json_contains "$dangermode_paperless_ignore_patterns_json" "*.[xX][lL][sS][mM]" \
+  "Paperless dangerous mode must re-enable macro-capable .xlsm ingestion."
+forbid_json_contains "$dangermode_paperless_ignore_patterns_json" "*.[pP][pP][tT][xX]" \
+  "Paperless dangerous mode must re-enable broader presentation ingestion."
+forbid_json_contains "$dangermode_paperless_ignore_patterns_json" "*.[oO][dD][sS]" \
+  "Paperless dangerous mode must re-enable broader spreadsheet ingestion."
+forbid_json_contains "$dangermode_paperless_ignore_patterns_json" "*.[oO][dD][pP]" \
+  "Paperless dangerous mode must re-enable broader presentation ingestion."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_CONSUMER_RECURSIVE')" '"true"' \
+  "Paperless must recurse into the mail archive consume subtree."
+require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS')" '"true"' \
+  "Paperless must tag imported mail attachments from consume subdirectories."
 require_json_equal "$(nix_eval_config_json 'services.kavita.dataDir')" '"/var/lib/kavita"' \
   "Kavita state must live under /var/lib."
 require_json_equal "$(nix_eval_config_json 'services.jellyfin.dataDir')" '"/var/lib/jellyfin"' \
@@ -372,10 +469,27 @@ require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.u
   "Mail archive sync must be gated on the data pool mount."
 require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-ui.serviceConfig.UMask')" '"0077"' \
   "Mail archive UI must set a restrictive UMask."
+require_json_contains "$(nix_eval_config_json 'systemd.services.mail-archive-ui.serviceConfig.ReadWritePaths')" "/mnt/data/media/documents/inbox/mail-archive" \
+  "Mail archive UI must only gain write access to the dedicated Paperless consume subtree."
+require_json_contains "$(nix_eval_config_json 'systemd.services.mail-archive-ui.serviceConfig.ReadWritePaths')" "/mnt/data/media/documents/.mail-archive-paperless-staging" \
+  "Mail archive UI must write Paperless staging output to the dedicated staging directory."
 require_json_equal "$(nix_eval_config_json 'systemd.services.mail-archive-sync.serviceConfig.UMask')" '"0077"' \
   "Mail archive sync must set a restrictive UMask."
+mail_archive_ui_path_json="$(nix_eval_config_json 'systemd.services.mail-archive-ui.path')"
+if ! printf '%s\n' "$mail_archive_ui_path_json" | rg 'ripmime-[^"]*' >/dev/null; then
+  echo "❌ Mail archive UI must include ripmime in its runtime path."
+  exit 1
+fi
+if ! printf '%s\n' "$mail_archive_ui_path_json" | rg '(^|-)file-[^"]*' >/dev/null; then
+  echo "❌ Mail archive UI must include file in its runtime path."
+  exit 1
+fi
 require_json_equal "$(nix_eval_config_json 'systemd.timers.mail-archive-sync.timerConfig.OnCalendar')" '"*-*-* 06,18:15:00"' \
   "Mail archive sync must keep the current schedule."
+require_fixed modules/Core_Modules/storage/layout.nix 'documents/inbox/mail-archive' \
+  "Storage layout must provision the dedicated Paperless consume subtree for mail attachments."
+require_fixed modules/Core_Modules/storage/layout.nix 'documents/.mail-archive-paperless-staging' \
+  "Storage layout must provision the dedicated Paperless staging directory."
 require_match rust/apps/mail-archive-ui/src/main.rs '\.route\("/accounts/\{id\}/edit"' \
   "Mail archive UI must expose the mailbox edit route."
 require_match rust/apps/mail-archive-ui/src/main.rs '\.route\("/accounts/\{id\}/toggle-sync"' \

@@ -381,3 +381,5 @@ curl -fsS http://127.0.0.1:9011/healthz | jq .
 Mailbox repair notes:
 - Use the UI `Reindex` action when downloaded mail is present but search looks stale.
 - Use `Sync now` when the mailbox needs a fresh IMAP pull before reindexing.
+- Enable `Send attachments to Paperless for filing` per mailbox when qualifying attachments should flow into Paperless.
+- The first run after enabling Paperless filing backfills the existing downloaded mailbox once; later runs only process newly reviewed mail.

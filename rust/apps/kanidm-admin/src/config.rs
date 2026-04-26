@@ -2,7 +2,9 @@ use std::{
     env,
     ffi::OsString,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    thread::sleep,
+    time::{Duration, Instant},
 };
 
 use serde::Deserialize;
@@ -14,6 +16,9 @@ pub const ENV_SERVER_URL: &str = "KANIDM_ADMIN_SERVER_URL";
 pub const ENV_ADMIN_NAME: &str = "KANIDM_ADMIN_NAME";
 pub const ENV_KANIDM_BIN: &str = "KANIDM_ADMIN_KANIDM_BIN";
 pub const ENV_NIX_BIN: &str = "KANIDM_ADMIN_NIX_BIN";
+
+const NIX_EVAL_TIMEOUT: Duration = Duration::from_secs(20);
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigOverrides {
@@ -114,20 +119,7 @@ fn nix_repo_defaults(nix_bin: &OsString, repo_root: &Path) -> Result<RepoDefault
         "let repo = {repo_literal}; flake = builtins.getFlake repo; vars = import (builtins.toPath (repo + \"/vars.nix\")) {{ lib = flake.inputs.nixpkgs.lib; }}; in {{ serverUrl = vars.kanidmBaseUrl; adminName = vars.kanidmAdminUser; }}"
     );
 
-    let output = Command::new(nix_bin)
-        .args(["eval", "--json", "--impure", "--expr", &expr])
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                AppError::MissingDependency {
-                    binary: nix_bin.to_string_lossy().to_string(),
-                }
-            } else {
-                AppError::Io {
-                    message: format!("failed to execute nix eval: {error}"),
-                }
-            }
-        })?;
+    let output = run_nix_eval(nix_bin, &expr)?;
 
     if !output.status.success() {
         return Err(AppError::Config {
@@ -145,6 +137,79 @@ fn nix_repo_defaults(nix_bin: &OsString, repo_root: &Path) -> Result<RepoDefault
             "stdout": String::from_utf8_lossy(&output.stdout),
         }),
     })
+}
+
+fn run_nix_eval(nix_bin: &OsString, expr: &str) -> Result<std::process::Output, AppError> {
+    run_nix_eval_with_timeout(nix_bin, expr, NIX_EVAL_TIMEOUT)
+}
+
+fn run_nix_eval_with_timeout(
+    nix_bin: &OsString,
+    expr: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, AppError> {
+    let args = vec![
+        "eval".to_string(),
+        "--json".to_string(),
+        "--impure".to_string(),
+        "--expr".to_string(),
+        expr.to_string(),
+    ];
+    let mut child = Command::new(nix_bin)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppError::MissingDependency {
+                    binary: nix_bin.to_string_lossy().to_string(),
+                }
+            } else {
+                AppError::Io {
+                    message: format!("failed to execute nix eval: {error}"),
+                }
+            }
+        })?;
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child.wait_with_output().map_err(|error| AppError::Io {
+                    message: format!("failed to collect nix eval output: {error}"),
+                });
+            }
+            Ok(None) if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let output = child.wait_with_output().map_err(|error| AppError::Io {
+                    message: format!("failed to collect timed-out nix eval output: {error}"),
+                })?;
+                return Err(AppError::BackendTimeout {
+                    message: format!(
+                        "failed to derive defaults from vars.nix via nix eval: command timed out after {} second(s)",
+                        timeout.as_secs()
+                    ),
+                    details: serde_json::json!({
+                        "program": nix_bin.to_string_lossy(),
+                        "args": args,
+                        "elapsed_ms": start.elapsed().as_millis(),
+                        "stdout": String::from_utf8_lossy(&output.stdout),
+                        "stderr": String::from_utf8_lossy(&output.stderr),
+                    }),
+                });
+            }
+            Ok(None) => sleep(POLL_INTERVAL),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Io {
+                    message: format!("failed while waiting on nix eval: {error}"),
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -261,5 +326,26 @@ printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw"}'
             Some(value) => env::set_var(key, value),
             None => env::remove_var(key),
         }
+    }
+
+    #[test]
+    fn nix_eval_timeout_is_reported() {
+        let temp = tempdir().expect("tempdir");
+        let nix_script = temp.path().join("slow-nix.sh");
+        write_script(
+            &nix_script,
+            r#"#!/usr/bin/env bash
+sleep 1
+"#,
+        );
+
+        let error = run_nix_eval_with_timeout(
+            &nix_script.into_os_string(),
+            "{}",
+            Duration::from_millis(10),
+        )
+        .expect_err("timeout");
+
+        assert!(matches!(error, AppError::BackendTimeout { .. }));
     }
 }

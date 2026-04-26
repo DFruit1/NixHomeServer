@@ -1,4 +1,4 @@
-{ vars, ... }:
+{ lib, vars, ... }:
 
 let
   paperlessPort = 8000;
@@ -6,6 +6,51 @@ let
   paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
   paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
   paperlessExportDir = "${vars.mediaRoot}/documents/export";
+  blockedOfficeExtensions = lib.optionals (!vars.paperlessEnableDangerousMacroOfficeParsing) [
+    "doc"
+    "dot"
+    "docm"
+    "dotm"
+    "xls"
+    "xlt"
+    "xlsm"
+    "xltm"
+    "xlsb"
+    "ppt"
+    "pps"
+    "pot"
+    "pptx"
+    "ppsx"
+    "potx"
+    "pptm"
+    "ppsm"
+    "potm"
+    "sldm"
+    "ods"
+    "odp"
+  ];
+  mkCaseInsensitiveExtensionPattern =
+    extension:
+    "*."
+    + lib.concatMapStrings (
+      char:
+      let
+        lower = lib.toLower char;
+        upper = lib.toUpper char;
+      in
+      if lower == upper then char else "[${lower}${upper}]"
+    ) (lib.stringToCharacters extension);
+  paperlessConsumerIgnorePatterns = [
+    ".DS_Store"
+    ".DS_STORE"
+    "._*"
+    ".stfolder/*"
+    ".stversions/*"
+    ".localized/*"
+    "desktop.ini"
+    "@eaDir/*"
+    "Thumbs.db"
+  ] ++ map mkCaseInsensitiveExtensionPattern blockedOfficeExtensions;
 in
 {
   services.paperless.environmentFile = "/run/paperless-oidc.env";
@@ -20,11 +65,17 @@ in
 
   services.paperless = {
     enable = true;
+    configureTika = true;
     dataDir = dataDir;
     mediaDir = paperlessArchiveDir;
     consumptionDir = paperlessInboxDir;
     address = "127.0.0.1";
     port = paperlessPort;
+    exporter = {
+      enable = true;
+      directory = paperlessExportDir;
+      onCalendar = "02:00";
+    };
 
     settings = {
       PAPERLESS_SOCIAL_LOGIN_ENABLED = "true";
@@ -35,6 +86,11 @@ in
       PAPERLESS_URL = "https://paperless.${vars.domain}";
       PAPERLESS_ALLOWED_HOSTS = "paperless.${vars.domain}";
       PAPERLESS_EXPORT_DIR = paperlessExportDir;
+      PAPERLESS_OCR_LANGUAGE = vars.paperlessOcrLanguage;
+      PAPERLESS_OCR_CLEAN = "clean";
+      PAPERLESS_OCR_OUTPUT_TYPE = "pdfa";
+      PAPERLESS_CONSUMER_INOTIFY_DELAY = "2";
+      PAPERLESS_CONSUMER_IGNORE_PATTERNS = paperlessConsumerIgnorePatterns;
     };
   };
 

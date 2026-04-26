@@ -139,6 +139,10 @@ fn normalize_record_object<'a>(
         Value::Array(entries) => match entries.as_slice() {
             [] => Err(AppError::UserNotFound {
                 account_id: account_id_hint.to_string(),
+                details: json!({
+                    "source": "empty_json_array",
+                    "value": value,
+                }),
             }),
             [entry] => normalize_record_object(entry, account_id_hint, warnings),
             _ => Err(AppError::Verification {
@@ -204,7 +208,10 @@ fn optional_string_field(
 ) -> Option<String> {
     let values = object.get(field)?;
     match values {
-        Value::Array(entries) => entries.first().and_then(Value::as_str).map(ToOwned::to_owned),
+        Value::Array(entries) => entries
+            .first()
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         Value::String(value) => Some(value.clone()),
         _ => {
             warnings.push(format!(
@@ -290,33 +297,66 @@ pub fn parse_group_list(value: &Value) -> Result<Parsed<Vec<GroupSummary>>, AppE
     })
 }
 
-pub fn parse_reset_token_summary(stdout: &str) -> ResetTokenSummary {
+pub fn parse_reset_token_summary(stdout: &str) -> Parsed<ResetTokenSummary> {
     let raw_output = stdout.trim().to_string();
-    let reset_url = raw_output
+    let url_candidates = raw_output
         .split_whitespace()
-        .find(|word| word.starts_with("https://") || word.starts_with("http://"))
-        .map(trim_token_text);
+        .filter(|word| word.starts_with("https://") || word.starts_with("http://"))
+        .map(trim_token_text)
+        .collect::<Vec<_>>();
 
-    let token = raw_output.lines().find_map(|line| {
-        let lower = line.to_lowercase();
-        if !lower.contains("token") {
-            return None;
-        }
-
-        if let Some((_, value)) = line.split_once(':') {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+    let token_candidates = raw_output
+        .lines()
+        .filter_map(|line| {
+            if let Some((_, value)) = line.split_once(':') {
+                let label = line
+                    .split_once(':')
+                    .map(|(label, _)| label.trim().to_lowercase())?;
+                if !label.contains("token") {
+                    return None;
+                }
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
             }
-        }
 
-        None
-    });
+            None
+        })
+        .collect::<Vec<_>>();
 
-    ResetTokenSummary {
-        raw_output,
-        reset_url,
-        token,
+    let mut warnings = Vec::new();
+    if url_candidates.is_empty() {
+        warnings.push(
+            "reset-token output did not contain a reset URL; use the raw backend output"
+                .to_string(),
+        );
+    } else if url_candidates.len() > 1 {
+        warnings.push(
+            "reset-token output contained multiple reset URLs; using the first parsed URL and preserving the raw backend output"
+                .to_string(),
+        );
+    }
+
+    if token_candidates.is_empty() {
+        warnings.push(
+            "reset-token output did not contain a parseable token; use the raw backend output"
+                .to_string(),
+        );
+    } else if token_candidates.len() > 1 {
+        warnings.push(
+            "reset-token output contained multiple token-like lines; using the first parsed token and preserving the raw backend output"
+                .to_string(),
+        );
+    }
+
+    Parsed {
+        value: ResetTokenSummary {
+            raw_output,
+            reset_url: url_candidates.first().cloned(),
+            token: token_candidates.first().cloned(),
+        },
+        warnings,
     }
 }
 
@@ -369,10 +409,20 @@ mod tests {
             "Reset token: abc123\nUse this link: https://id.example.test/ui/reset?token=abc123\n",
         );
 
-        assert_eq!(summary.token.as_deref(), Some("abc123"));
+        assert_eq!(summary.value.token.as_deref(), Some("abc123"));
         assert_eq!(
-            summary.reset_url.as_deref(),
+            summary.value.reset_url.as_deref(),
             Some("https://id.example.test/ui/reset?token=abc123")
         );
+        assert!(summary.warnings.is_empty());
+    }
+
+    #[test]
+    fn warns_when_reset_token_output_is_partial() {
+        let summary = parse_reset_token_summary("Reset token: abc123\n");
+
+        assert_eq!(summary.value.token.as_deref(), Some("abc123"));
+        assert!(summary.value.reset_url.is_none());
+        assert_eq!(summary.warnings.len(), 1);
     }
 }

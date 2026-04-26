@@ -22,7 +22,7 @@ let
           "$out/src/paperless/adapter.py"
       '';
 
-  paperlessPackage = pkgs.callPackage "${pkgs.path}/pkgs/by-name/pa/paperless-ngx/package.nix" {
+  paperlessPackage = pkgs.callPackage (pkgs.path + "/pkgs/by-name/pa/paperless-ngx/package.nix") {
     fetchFromGitHub = patchedPaperlessFetchFromGitHub;
     nodejs_20 = pkgs.nodejs_22;
   };

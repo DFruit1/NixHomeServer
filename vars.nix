@@ -3,6 +3,8 @@
 rec {
   hostname = "server";
   domain = "sydneybasiniot.org";
+  paperlessEnableDangerousMacroOfficeParsing = false;
+  paperlessOcrLanguage = "eng";
   kanidmAdminUser = "admindsaw";
   kanidmAdminEmail = "dsaw@tuta.io";
   serverSSHPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";

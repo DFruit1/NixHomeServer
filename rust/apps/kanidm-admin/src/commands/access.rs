@@ -122,7 +122,10 @@ pub fn set_access(cli: &KanidmCli, options: SetAccessOptions) -> Result<CommandO
     };
 
     Ok(CommandOutput {
-        message: format!("set managed access groups for '{}'", person.value.account_id),
+        message: format!(
+            "set managed access groups for '{}'",
+            person.value.account_id
+        ),
         human: format!(
             "Set managed access groups for '{}'.\n\nAdded:\n{}\n\nRemoved:\n{}\n\n{}",
             person.value.account_id,
@@ -304,15 +307,19 @@ fn verify_group_membership(
                 .iter()
                 .any(|candidate| candidate == group);
 
-            Ok(VerificationCheck {
-                matched: actual_present == expected_present,
-                observed: json!({
-                    "actual_present": actual_present,
-                    "actual_groups": person.value.access_groups.all_managed,
-                    "warnings": person.warnings,
-                }),
-                value: person,
-            })
+            let observed = json!({
+                "actual_present": actual_present,
+                "actual_groups": &person.value.access_groups.all_managed,
+                "warnings": &person.warnings,
+            });
+            if actual_present == expected_present {
+                Ok(VerificationCheck::Matched {
+                    observed,
+                    value: person,
+                })
+            } else {
+                Ok(VerificationCheck::Mismatch { observed })
+            }
         },
     )
 }
@@ -335,14 +342,18 @@ fn verify_managed_groups(
         || {
             let person = load_person(cli, account_id)?;
             let actual = &person.value.access_groups.all_managed;
-            Ok(VerificationCheck {
-                matched: actual == desired_groups,
-                observed: json!({
-                    "actual_groups": actual,
-                    "warnings": person.warnings,
-                }),
-                value: person,
-            })
+            let observed = json!({
+                "actual_groups": actual,
+                "warnings": &person.warnings,
+            });
+            if actual == desired_groups {
+                Ok(VerificationCheck::Matched {
+                    observed,
+                    value: person,
+                })
+            } else {
+                Ok(VerificationCheck::Mismatch { observed })
+            }
         },
     )
 }
@@ -383,7 +394,11 @@ fn merge_warnings(mut left: Vec<String>, mut right: Vec<String>) -> Vec<String> 
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 fn app_specific_checked_note(app: AppAccessTarget) -> String {

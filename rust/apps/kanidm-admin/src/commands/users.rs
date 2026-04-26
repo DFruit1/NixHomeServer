@@ -2,7 +2,9 @@ use serde_json::{json, Value};
 
 use crate::{
     kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
-    models::{parse_person_list, parse_person_record, parse_reset_token_summary, Parsed, PersonRecord},
+    models::{
+        parse_person_list, parse_person_record, parse_reset_token_summary, Parsed, PersonRecord,
+    },
     output::CommandOutput,
     AppError,
 };
@@ -213,8 +215,7 @@ pub fn delete_user(cli: &KanidmCli, options: DeleteUserOptions) -> Result<Comman
         }),
         true,
         || match load_person(cli, &options.account_id) {
-            Err(AppError::UserNotFound { .. }) => Ok(VerificationCheck {
-                matched: true,
+            Err(AppError::UserNotFound { .. }) => Ok(VerificationCheck::Matched {
                 observed: json!({
                     "deleted": true,
                     "account_id": options.account_id,
@@ -222,15 +223,13 @@ pub fn delete_user(cli: &KanidmCli, options: DeleteUserOptions) -> Result<Comman
                 value: (),
             }),
             Err(error) => Err(error),
-            Ok(person) => Ok(VerificationCheck {
-                matched: false,
+            Ok(person) => Ok(VerificationCheck::Mismatch {
                 observed: json!({
                     "deleted": false,
                     "account_id": person.value.account_id,
                     "user": person.value,
                     "warnings": person.warnings,
                 }),
-                value: (),
             }),
         },
     )?;
@@ -254,19 +253,19 @@ pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<Comman
         "Created a password reset token for '{}'.\nTTL Seconds: {}",
         options.account_id, options.ttl_seconds
     );
-    if let Some(url) = &summary.reset_url {
+    if let Some(url) = &summary.value.reset_url {
         human.push_str(&format!("\nReset URL: {url}"));
     }
-    if let Some(token) = &summary.token {
+    if let Some(token) = &summary.value.token {
         human.push_str(&format!("\nToken: {token}"));
     }
     human.push_str(
         "\n\nGive this token or link to the target user through a secure channel.\n\nRaw Output:\n",
     );
-    human.push_str(if summary.raw_output.is_empty() {
+    human.push_str(if summary.value.raw_output.is_empty() {
         "(no output)"
     } else {
-        &summary.raw_output
+        &summary.value.raw_output
     });
 
     Ok(CommandOutput {
@@ -278,9 +277,10 @@ pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<Comman
         details: json!({
             "account_id": options.account_id,
             "ttl_seconds": options.ttl_seconds,
-            "reset_token": summary,
+            "parsed_fields_complete": summary.value.token.is_some() && summary.value.reset_url.is_some() && summary.warnings.is_empty(),
+            "reset_token": summary.value,
         }),
-        warnings: Vec::new(),
+        warnings: summary.warnings,
     })
 }
 
@@ -317,14 +317,19 @@ where
 {
     verify_with_retry(context, expected_state, write_completed, || {
         let person = load_person(cli, account_id)?;
-        Ok(VerificationCheck {
-            matched: predicate(&person.value),
-            observed: json!({
-                "user": person.value,
-                "warnings": person.warnings,
-            }),
-            value: person,
-        })
+        let matched = predicate(&person.value);
+        let observed = json!({
+            "user": &person.value,
+            "warnings": &person.warnings,
+        });
+        if matched {
+            Ok(VerificationCheck::Matched {
+                observed,
+                value: person,
+            })
+        } else {
+            Ok(VerificationCheck::Mismatch { observed })
+        }
     })
 }
 

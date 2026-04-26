@@ -15,11 +15,15 @@ rustLib.mkRustApp {
     export MAIL_ARCHIVE_UI_STORE_ROOT="$PWD/.local/mail-archive-ui/store"
     export MAIL_ARCHIVE_UI_RUNTIME_DIR="$PWD/.local/mail-archive-ui/runtime"
     export MAIL_ARCHIVE_UI_LOCK_DIR="$PWD/.local/mail-archive-ui/locks"
+    export MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT="$PWD/.local/mail-archive-ui/paperless-consume"
+    export MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR="$PWD/.local/mail-archive-ui/paperless-staging"
     mkdir -p \
       "$MAIL_ARCHIVE_UI_DATA_DIR" \
       "$MAIL_ARCHIVE_UI_STORE_ROOT" \
       "$MAIL_ARCHIVE_UI_RUNTIME_DIR" \
-      "$MAIL_ARCHIVE_UI_LOCK_DIR"
+      "$MAIL_ARCHIVE_UI_LOCK_DIR" \
+      "$MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT" \
+      "$MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR"
   '';
   meta = {
     description = "Private mail archive UI for Kanidm-authenticated users.";

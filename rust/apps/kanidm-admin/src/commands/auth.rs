@@ -1,9 +1,29 @@
+use std::io::{stdin, stdout, IsTerminal};
+
 use serde_json::json;
 
 use crate::{
     kanidm_cli::{verify_with_retry, KanidmCli, SessionState, VerificationCheck},
-    output::CommandOutput,
+    output::{CommandOutput, OutputFormat},
+    AppError,
 };
+
+pub fn ensure_interactive_auth_allowed(format: OutputFormat) -> Result<(), AppError> {
+    if format != OutputFormat::Human {
+        return Err(AppError::Config {
+            message: "interactive Kanidm authentication commands only support --format human"
+                .to_string(),
+        });
+    }
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        return Err(AppError::Config {
+            message:
+                "interactive Kanidm authentication commands require a terminal on stdin and stdout"
+                    .to_string(),
+        });
+    }
+    Ok(())
+}
 
 pub fn auth_status(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
     let status = cli.session_status()?;
@@ -59,21 +79,18 @@ pub fn auth_login(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
         || {
             let status = cli.session_status()?;
             Ok(match status {
-                SessionState::Authenticated { stdout } => VerificationCheck {
-                    matched: true,
+                SessionState::Authenticated { stdout } => VerificationCheck::Matched {
                     observed: json!({
                         "session_present": true,
                         "stdout": stdout.trim(),
                     }),
                     value: stdout,
                 },
-                SessionState::Missing { diagnostic } => VerificationCheck {
-                    matched: false,
+                SessionState::Missing { diagnostic } => VerificationCheck::Mismatch {
                     observed: json!({
                         "session_present": false,
                         "diagnostic": diagnostic.trim(),
                     }),
-                    value: diagnostic,
                 },
             })
         },

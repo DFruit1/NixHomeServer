@@ -61,6 +61,7 @@
     ./modules/jellyfin
     ./modules/kavita
     ./modules/mail-archive
+    ./modules/mail-archive-paperless
     ./modules/mail-archive-ui
     ./modules/paperless
     ./modules/power-management

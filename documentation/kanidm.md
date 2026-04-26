@@ -96,7 +96,7 @@ The interactive flow covers:
 - create user
 - list users
 - inspect a user
-- edit repo-managed access groups
+- edit repo-managed access groups when the backend group inventory is complete
 - create password reset tokens
 
 Expected result:
@@ -190,6 +190,11 @@ kanidm-admin access why-denied --app mail-archive --user dsaw
 sudo env JELLYFIN_PASSWORD='replace-me' kanidm-admin jellyfin set-password dsaw --password-env JELLYFIN_PASSWORD
 ```
 
+Auth command safety notes:
+
+- `kanidm-admin auth login` and `kanidm-admin auth reauth` are terminal-only commands. They require `--format human` and an attached TTY on stdin and stdout.
+- Non-interactive `kanidm-admin` backend calls use a fixed internal timeout. A hung `kanidm` or `nix eval` subprocess now fails explicitly instead of waiting forever.
+
 ## Useful CLI Commands
 
 Read-only inspection:
@@ -234,6 +239,7 @@ kanidm-admin access set "$NEW_USER" --allow-empty
 Expected result:
 - `access set` makes the repo-managed group set explicit instead of relying on multiple grant or revoke calls
 - omitting every `--group` requires `--allow-empty` so you do not accidentally strip all managed access
+- the interactive authoritative group editor refuses to continue if the Kanidm group inventory is incomplete or partially parsed, because partial inventory is unsafe for authoritative mutation
 
 Reset, disable, or re-enable a user:
 
@@ -247,6 +253,11 @@ kanidm person credential update "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_U
 kanidm person disable "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
 kanidm person enable "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
 ```
+
+Reset-token note:
+
+- `kanidm-admin users reset-token` always preserves the raw backend output.
+- If the wrapper cannot parse a reset URL or token cleanly, it now emits warnings instead of pretending the structured fields are complete.
 
 Delete a user:
 

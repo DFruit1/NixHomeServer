@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 
 use crate::{config::ResolvedConfig, AppError};
 
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
+const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const VERIFICATION_BACKOFF_MS: [u64; 7] = [250, 500, 1_000, 2_000, 2_000, 2_000, 2_000];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -35,11 +37,11 @@ pub struct KanidmCli {
     admin_name: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct VerificationCheck<T> {
-    pub matched: bool,
-    pub observed: Value,
-    pub value: T,
+#[derive(Debug)]
+pub enum VerificationCheck<T> {
+    Matched { observed: Value, value: T },
+    Mismatch { observed: Value },
+    Fatal { observed: Value, error: AppError },
 }
 
 impl KanidmCli {
@@ -60,18 +62,19 @@ impl KanidmCli {
     }
 
     pub fn session_status(&self) -> Result<SessionState, AppError> {
+        let context = "failed to inspect the current Kanidm session";
         let args = self.base_args(["session", "list"]);
-        match self.run_raw(args)? {
+        match self.run_raw(args, context)? {
             Ok(output) => Ok(SessionState::Authenticated {
                 stdout: output.stdout,
             }),
             Err(failure) => {
-                let diagnostic = failure_message(&failure);
-                if is_session_missing(&diagnostic) {
+                let diagnostic = preferred_diagnostic(&failure);
+                if is_session_missing(&normalized(&diagnostic)) {
                     Ok(SessionState::Missing { diagnostic })
                 } else {
                     Err(AppError::Backend {
-                        message: "failed to inspect the current Kanidm session".to_string(),
+                        message: context.to_string(),
                         failure: Box::new(failure),
                     })
                 }
@@ -90,8 +93,22 @@ impl KanidmCli {
     }
 
     pub fn person_get<T: DeserializeOwned>(&self, account_id: &str) -> Result<T, AppError> {
+        let context = format!("failed to load Kanidm user '{account_id}'");
         let args = self.base_args(["person", "get", account_id, "-o", "json"]);
-        self.run_json(args, &format!("failed to load Kanidm user '{account_id}'"))
+        let output = match self.run_raw(args, &context)? {
+            Ok(output) => output,
+            Err(failure) => {
+                return Err(self.classify_person_get_failure(account_id, &context, failure))
+            }
+        };
+
+        serde_json::from_str(&output.stdout).map_err(|error| AppError::Json {
+            message: format!("{context}: invalid JSON from kanidm backend"),
+            details: json!({
+                "error": error.to_string(),
+                "stdout": output.stdout,
+            }),
+        })
     }
 
     pub fn person_create(&self, account_id: &str, display_name: &str) -> Result<(), AppError> {
@@ -114,7 +131,9 @@ impl KanidmCli {
         let clear_expiry = self.base_args(["person", "validity", "expire-at", account_id, "clear"]);
         self.run_unit(
             clear_expiry,
-            &format!("failed to clear expiry for Kanidm user '{account_id}' while enabling the account"),
+            &format!(
+                "failed to clear expiry for Kanidm user '{account_id}' while enabling the account"
+            ),
         )?;
 
         let clear_valid_from =
@@ -280,7 +299,7 @@ impl KanidmCli {
     }
 
     fn run_success(&self, args: Vec<String>, context: &str) -> Result<BackendSuccess, AppError> {
-        match self.run_raw(args)? {
+        match self.run_raw(args, context)? {
             Ok(output) => Ok(output),
             Err(failure) => Err(self.classify_failure(context, failure)),
         }
@@ -289,60 +308,70 @@ impl KanidmCli {
     fn run_raw(
         &self,
         args: Vec<String>,
+        context: &str,
     ) -> Result<Result<BackendSuccess, BackendFailure>, AppError> {
-        let output = Command::new(&self.program)
-            .args(&args)
-            .output()
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    AppError::MissingDependency {
-                        binary: self.program.to_string_lossy().to_string(),
-                    }
-                } else {
-                    AppError::Io {
-                        message: format!("failed to execute {}: {error}", self.program.to_string_lossy()),
-                    }
-                }
-            })?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let output = run_captured_command(&self.program, &args, context, COMMAND_TIMEOUT)?;
 
         if output.status.success() {
-            Ok(Ok(BackendSuccess { stdout }))
+            Ok(Ok(BackendSuccess {
+                stdout: output.stdout,
+            }))
         } else {
             Ok(Err(BackendFailure {
                 program: self.program.to_string_lossy().to_string(),
                 args,
                 status: output.status.code(),
-                stdout,
-                stderr,
+                stdout: output.stdout,
+                stderr: output.stderr,
             }))
         }
     }
 
     fn classify_failure(&self, context: &str, failure: BackendFailure) -> AppError {
-        let diagnostic = failure_message(&failure);
-        if is_session_missing(&diagnostic) {
+        let diagnostic = preferred_diagnostic(&failure);
+        let normalized_diagnostic = normalized(&diagnostic);
+        if is_session_missing(&normalized_diagnostic) {
             return AppError::SessionRequired {
                 message: format!(
                     "{context}. Run `kanidm login --url {} --name {}` first.",
                     self.server_url, self.admin_name
                 ),
+                details: session_or_reauth_details(&diagnostic, &failure),
             };
         }
-        if is_reauth_required(&diagnostic) {
+        if is_reauth_required(&normalized_diagnostic) {
             return AppError::ReauthRequired {
                 message: format!(
                     "{context}. Run `kanidm reauth --url {} --name {}` first.",
                     self.server_url, self.admin_name
                 ),
+                details: session_or_reauth_details(&diagnostic, &failure),
             };
         }
         AppError::Backend {
             message: context.to_string(),
             failure: Box::new(failure),
         }
+    }
+
+    fn classify_person_get_failure(
+        &self,
+        account_id: &str,
+        context: &str,
+        failure: BackendFailure,
+    ) -> AppError {
+        let diagnostic = preferred_diagnostic(&failure);
+        if is_user_not_found(&normalized(&diagnostic)) {
+            return AppError::UserNotFound {
+                account_id: account_id.to_string(),
+                details: json!({
+                    "diagnostic": diagnostic,
+                    "backend": backend_failure_payload(&failure),
+                }),
+            };
+        }
+
+        self.classify_failure(context, failure)
     }
 
     fn base_args<'a>(&self, prefix: impl IntoIterator<Item = &'a str>) -> Vec<String> {
@@ -365,6 +394,13 @@ struct BackendSuccess {
     stdout: String,
 }
 
+#[derive(Debug)]
+struct CapturedCommandOutput {
+    status: std::process::ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
 pub fn verify_with_retry<T, F>(
     context: &str,
     expected: Value,
@@ -375,9 +411,9 @@ where
     F: FnMut() -> Result<VerificationCheck<T>, AppError>,
 {
     let start = Instant::now();
-    let mut observed_states = Vec::new();
+    let mut attempts = Vec::new();
 
-    for (attempt, delay_ms) in std::iter::once(0)
+    for (attempt_index, delay_ms) in std::iter::once(0)
         .chain(VERIFICATION_BACKOFF_MS)
         .enumerate()
     {
@@ -385,18 +421,63 @@ where
             sleep(Duration::from_millis(delay_ms));
         }
 
+        let attempt_number = attempt_index + 1;
         match probe() {
-            Ok(check) => {
-                observed_states.push(check.observed.clone());
-                if check.matched {
-                    return Ok(check.value);
-                }
+            Ok(VerificationCheck::Matched { observed, value }) => {
+                attempts.push(json!({
+                    "attempt": attempt_number,
+                    "delay_ms": delay_ms,
+                    "outcome": "matched",
+                    "observed": observed,
+                }));
+                return Ok(value);
             }
-            Err(error) => observed_states.push(json!({
-                "attempt": attempt + 1,
-                "probe_error": error.to_string(),
-                "details": error.json_payload(),
-            })),
+            Ok(VerificationCheck::Mismatch { observed }) => {
+                attempts.push(json!({
+                    "attempt": attempt_number,
+                    "delay_ms": delay_ms,
+                    "outcome": "mismatch",
+                    "observed": observed,
+                }));
+            }
+            Ok(VerificationCheck::Fatal { observed, error }) => {
+                attempts.push(json!({
+                    "attempt": attempt_number,
+                    "delay_ms": delay_ms,
+                    "outcome": "fatal",
+                    "observed": observed,
+                    "error": error.json_payload(),
+                }));
+                return Err(AppError::Verification {
+                    message: context.to_string(),
+                    details: json!({
+                        "elapsed_ms": start.elapsed().as_millis(),
+                        "expected_state": expected,
+                        "attempts": attempts,
+                        "write_completed": write_completed,
+                        "fatal_error": error.json_payload(),
+                    }),
+                });
+            }
+            Err(error) => {
+                attempts.push(json!({
+                    "attempt": attempt_number,
+                    "delay_ms": delay_ms,
+                    "outcome": "fatal",
+                    "observed": error.json_payload(),
+                    "error": error.json_payload(),
+                }));
+                return Err(AppError::Verification {
+                    message: context.to_string(),
+                    details: json!({
+                        "elapsed_ms": start.elapsed().as_millis(),
+                        "expected_state": expected,
+                        "attempts": attempts,
+                        "write_completed": write_completed,
+                        "fatal_error": error.json_payload(),
+                    }),
+                });
+            }
         }
     }
 
@@ -405,19 +486,117 @@ where
         details: json!({
             "elapsed_ms": start.elapsed().as_millis(),
             "expected_state": expected,
-            "observed_states": observed_states,
+            "attempts": attempts,
             "write_completed": write_completed,
         }),
     })
 }
 
-fn failure_message(failure: &BackendFailure) -> String {
+fn run_captured_command(
+    program: &OsString,
+    args: &[String],
+    context: &str,
+    timeout: Duration,
+) -> Result<CapturedCommandOutput, AppError> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppError::MissingDependency {
+                    binary: program.to_string_lossy().to_string(),
+                }
+            } else {
+                AppError::Io {
+                    message: format!("failed to execute {}: {error}", program.to_string_lossy()),
+                }
+            }
+        })?;
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = child.wait_with_output().map_err(|error| AppError::Io {
+                    message: format!(
+                        "failed to collect output from {}: {error}",
+                        program.to_string_lossy()
+                    ),
+                })?;
+                return Ok(CapturedCommandOutput {
+                    status: output.status,
+                    stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                    stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                });
+            }
+            Ok(None) if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let output = child.wait_with_output().map_err(|error| AppError::Io {
+                    message: format!(
+                        "failed to collect timed-out output from {}: {error}",
+                        program.to_string_lossy()
+                    ),
+                })?;
+                return Err(AppError::BackendTimeout {
+                    message: format!(
+                        "{context}: command timed out after {} second(s)",
+                        timeout.as_secs()
+                    ),
+                    details: json!({
+                        "program": program.to_string_lossy(),
+                        "args": args,
+                        "elapsed_ms": start.elapsed().as_millis(),
+                        "stdout": String::from_utf8_lossy(&output.stdout),
+                        "stderr": String::from_utf8_lossy(&output.stderr),
+                    }),
+                });
+            }
+            Ok(None) => sleep(COMMAND_POLL_INTERVAL),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Io {
+                    message: format!(
+                        "failed while waiting on {}: {error}",
+                        program.to_string_lossy()
+                    ),
+                });
+            }
+        }
+    }
+}
+
+fn backend_failure_payload(failure: &BackendFailure) -> Value {
+    json!({
+        "program": failure.program,
+        "args": failure.args,
+        "status": failure.status,
+        "stdout": failure.stdout,
+        "stderr": failure.stderr,
+    })
+}
+
+fn session_or_reauth_details(diagnostic: &str, failure: &BackendFailure) -> Value {
+    json!({
+        "diagnostic": diagnostic,
+        "backend": backend_failure_payload(failure),
+    })
+}
+
+fn preferred_diagnostic(failure: &BackendFailure) -> String {
     let stderr = failure.stderr.trim();
     if !stderr.is_empty() {
-        stderr.to_lowercase()
+        stderr.to_string()
     } else {
-        failure.stdout.trim().to_lowercase()
+        failure.stdout.trim().to_string()
     }
+}
+
+fn normalized(text: &str) -> String {
+    text.trim().to_lowercase()
 }
 
 fn is_session_missing(text: &str) -> bool {
@@ -425,11 +604,117 @@ fn is_session_missing(text: &str) -> bool {
         || text.contains("session has expired")
         || text.contains("login again")
         || text.contains("not authenticated")
+        || text.contains("authentication required")
 }
 
 fn is_reauth_required(text: &str) -> bool {
     text.contains("privileges have expired")
         || text.contains("privileges have not been re-authenticated")
         || text.contains("need to re-authenticate again")
-        || text.contains("reauth")
+        || text.contains("must re-authenticate")
+        || text.contains("privileged session has expired")
+}
+
+fn is_user_not_found(text: &str) -> bool {
+    text.contains("not found")
+        || text.contains("no matching entries")
+        || text.contains("does not exist")
+        || text.contains("no entries were returned")
+        || text.contains("cannot find")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
+
+    use super::*;
+    use crate::config::ResolvedConfig;
+
+    fn write_script(path: &Path, body: &str) {
+        let shell = ProcessCommand::new("bash")
+            .args(["-lc", "command -v bash"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.trim().to_string())
+            .filter(|stdout| !stdout.is_empty())
+            .unwrap_or_else(|| "/bin/sh".to_string());
+        let rewritten = body.replacen("#!/usr/bin/env bash", &format!("#!{shell}"), 1);
+        fs::write(path, rewritten).expect("write script");
+        let mut permissions = fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod");
+    }
+
+    #[test]
+    fn captured_command_times_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("sleep.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+sleep 1
+"#,
+        );
+
+        let error = run_captured_command(
+            &script.into_os_string(),
+            &[],
+            "timed command",
+            Duration::from_millis(10),
+        )
+        .expect_err("timeout");
+
+        assert!(matches!(error, AppError::BackendTimeout { .. }));
+    }
+
+    #[test]
+    fn verification_stops_on_fatal_probe_error() {
+        let error =
+            verify_with_retry::<(), _>("verification failed", json!({"ok": true}), true, || {
+                Err(AppError::Json {
+                    message: "bad json".to_string(),
+                    details: json!({"stdout": "oops"}),
+                })
+            })
+            .expect_err("fatal error");
+
+        match error {
+            AppError::Verification { details, .. } => {
+                assert_eq!(details["attempts"][0]["outcome"], "fatal");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reauth_classifier_is_not_triggered_by_unrelated_text() {
+        assert!(!is_reauth_required(
+            "documentation mentions reauthentication flow"
+        ));
+        assert!(is_reauth_required("privileges have expired"));
+    }
+
+    #[test]
+    fn person_get_normalizes_supported_not_found_diagnostics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+printf 'No matching entries were found\n' >&2
+exit 1
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedConfig {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+        });
+
+        let error = cli.person_get::<Value>("dsaw").expect_err("not found");
+        assert!(matches!(error, AppError::UserNotFound { .. }));
+    }
 }

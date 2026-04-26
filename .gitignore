@@ -7,3 +7,5 @@
 /SensitivePrivateSecrets
 /.jj
 /ss
+/result
+/rust/apps/*/target/

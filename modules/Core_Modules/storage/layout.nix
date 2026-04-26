@@ -8,6 +8,8 @@ let
   immichManagedPhotosRoot = "${vars.mediaRoot}/photos/managed";
   immichExternalPhotosRoot = "${vars.mediaRoot}/photos/external";
   paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
+  paperlessMailArchiveConsumeRoot = "${vars.mediaRoot}/documents/inbox/mail-archive";
+  paperlessMailArchiveStagingDir = "${vars.mediaRoot}/documents/.mail-archive-paperless-staging";
   paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
   paperlessExportDir = "${vars.mediaRoot}/documents/export";
   podcastsRoot = "${vars.mediaRoot}/audio/podcasts";
@@ -135,6 +137,18 @@ let
       mode = "2770";
       user = "root";
       group = "paperless";
+    }
+    {
+      path = paperlessMailArchiveConsumeRoot;
+      mode = "2770";
+      user = "root";
+      group = "paperless";
+    }
+    {
+      path = paperlessMailArchiveStagingDir;
+      mode = "0770";
+      user = "mail-archive-ui";
+      group = "mail-archive-ui";
     }
     {
       path = paperlessArchiveDir;
@@ -308,6 +322,10 @@ let
 
     apply_readonly_acl immich '${vars.sharedPublicRoot}/photos'
     apply_readonly_acl paperless '${vars.sharedPublicRoot}/documents'
+    apply_recursive_acl \
+      "u:mail-archive-ui:rwX" \
+      "d:u:mail-archive-ui:rwx" \
+      '${paperlessMailArchiveConsumeRoot}'
   '';
 
   zfsContentLayoutScript = lib.concatStringsSep "\n" (

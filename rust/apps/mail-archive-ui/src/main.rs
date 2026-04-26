@@ -20,12 +20,13 @@ use serde::{
     de::{self, Deserializer},
     Deserialize, Serialize,
 };
+use sha2::{Digest, Sha256};
 use std::{
     cmp::Reverse,
     env,
     fmt::Write as _,
     fs::{self, OpenOptions},
-    io::ErrorKind,
+    io::{ErrorKind, Read},
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path as FsPath, PathBuf},
@@ -39,6 +40,8 @@ const DEFAULT_DATA_DIR: &str = ".";
 const DEFAULT_STORE_ROOT: &str = ".";
 const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 const DEFAULT_LOCK_DIR: &str = ".";
+const PAPERLESS_REVIEWED_TAG: &str = "paperless-reviewed";
+const PAPERLESS_FILED_TAG: &str = "paperless-filed";
 const MASTER_KEY_FILENAME: &str = "master.key";
 const DB_FILENAME: &str = "mail-archive-ui.sqlite3";
 const ATTACHMENT_TEXT_MIME_PATTERNS: &[&str] = &[
@@ -61,6 +64,27 @@ if (DASHBOARD_ROOT) {
   const setText = (element, value) => {
     if (element) {
       element.textContent = value;
+    }
+  };
+
+  const setVisibility = (element, visible) => {
+    if (element) {
+      element.classList.toggle("hidden", !visible);
+    }
+  };
+
+  const setOptionalText = (root, selector, value) => {
+    const element = root.querySelector(selector);
+    if (!element) {
+      return;
+    }
+
+    if (value) {
+      element.textContent = value;
+      element.classList.remove("hidden");
+    } else {
+      element.textContent = "";
+      element.classList.add("hidden");
     }
   };
 
@@ -100,7 +124,7 @@ if (DASHBOARD_ROOT) {
     );
   };
 
-  const updateAccountCard = (account) => {
+    const updateAccountCard = (account) => {
     const card = document.querySelector(`[data-account-id="${account.id}"]`);
     if (!card) {
       return;
@@ -113,6 +137,7 @@ if (DASHBOARD_ROOT) {
     }
 
     setText(card.querySelector("[data-index-pill]"), account.index_label);
+    setText(card.querySelector("[data-paperless-pill]"), account.paperless_label);
     setText(
       card.querySelector('[data-progress-field="downloaded"]'),
       numberFormatter.format(account.downloaded_message_count),
@@ -131,26 +156,78 @@ if (DASHBOARD_ROOT) {
     );
     setText(card.querySelector("[data-progress-note]"), account.progress_note);
     setText(card.querySelector("[data-last-activity]"), `Last activity ${account.last_activity}`);
+    setText(card.querySelector("[data-paperless-note]"), account.paperless_note);
 
     const progressBar = card.querySelector("[data-progress-bar]");
     if (progressBar) {
       progressBar.style.width = `${account.index_coverage_percent}%`;
     }
 
-    const errorBox = card.querySelector("[data-sync-error]");
-    if (errorBox) {
-      if (account.last_sync_error) {
-        errorBox.textContent = account.last_sync_error;
-        errorBox.classList.remove("hidden");
+    const syncNotice = card.querySelector("[data-sync-diagnostic]");
+    if (syncNotice) {
+      const metaParts = [];
+      if (account.diagnostic_phase) {
+        metaParts.push(`Phase ${account.diagnostic_phase}`);
+      }
+      if (account.diagnostic_code) {
+        metaParts.push(`Code ${account.diagnostic_code}`);
+      }
+      setVisibility(syncNotice, Boolean(account.diagnostic_summary));
+      setOptionalText(syncNotice, "[data-diagnostic-summary]", account.diagnostic_summary);
+      setOptionalText(syncNotice, "[data-diagnostic-impact]", account.diagnostic_impact);
+      setOptionalText(syncNotice, "[data-diagnostic-action]", account.recommended_action);
+      setOptionalText(
+        syncNotice,
+        "[data-diagnostic-meta]",
+        metaParts.length > 0 ? metaParts.join(" · ") : "",
+      );
+      setText(
+        syncNotice.querySelector("[data-diagnostic-detail]"),
+        account.diagnostic_detail || "",
+      );
+
+      const detailWrap = syncNotice.querySelector("[data-diagnostic-details]");
+      if (detailWrap) {
+        detailWrap.open = false;
+        detailWrap.classList.toggle("hidden", !account.diagnostic_detail);
+      }
+    }
+
+    const progressWarning = card.querySelector("[data-progress-warning]");
+    if (progressWarning) {
+      setVisibility(progressWarning, Boolean(account.progress_warning));
+      setOptionalText(progressWarning, "[data-progress-warning-text]", account.progress_warning);
+      setOptionalText(
+        progressWarning,
+        "[data-progress-warning-action]",
+        account.progress_warning_action,
+      );
+      setText(
+        progressWarning.querySelector("[data-progress-warning-detail]"),
+        account.progress_warning_detail || "",
+      );
+
+      const detailWrap = progressWarning.querySelector("[data-progress-warning-details]");
+      if (detailWrap) {
+        detailWrap.open = false;
+        detailWrap.classList.toggle("hidden", !account.progress_warning_detail);
+      }
+    }
+
+    const paperlessErrorBox = card.querySelector("[data-paperless-error]");
+    if (paperlessErrorBox) {
+      if (account.last_paperless_error) {
+        paperlessErrorBox.textContent = account.last_paperless_error;
+        paperlessErrorBox.classList.remove("hidden");
       } else {
-        errorBox.textContent = "";
-        errorBox.classList.add("hidden");
+        paperlessErrorBox.textContent = "";
+        paperlessErrorBox.classList.add("hidden");
       }
     }
   };
 
   const scheduleNextPoll = (accounts) => {
-    const hasRunningAccount = accounts.some((account) => account.status_label === "running");
+    const hasRunningAccount = accounts.some((account) => account.status_label === "syncing");
     const delay = document.hidden || !hasRunningAccount ? IDLE_INTERVAL_MS : RUNNING_INTERVAL_MS;
     pollTimer = window.setTimeout(fetchStatus, delay);
   };
@@ -197,6 +274,8 @@ struct AppConfig {
     store_root: Arc<str>,
     runtime_dir: Arc<str>,
     lock_dir: Arc<str>,
+    paperless_consume_root: Option<Arc<str>>,
+    paperless_staging_dir: Option<Arc<str>>,
     default_tags: Arc<[String]>,
 }
 
@@ -225,12 +304,21 @@ struct AccountRecord {
     folder_patterns_json: String,
     encrypted_secret: String,
     sync_enabled: bool,
+    paperless_enabled: bool,
     created_at: String,
     updated_at: String,
     last_sync_started_at: Option<String>,
     last_sync_finished_at: Option<String>,
     last_sync_status: Option<String>,
     last_sync_error: Option<String>,
+    last_sync_phase: Option<String>,
+    last_sync_code: Option<String>,
+    last_sync_summary: Option<String>,
+    last_sync_detail: Option<String>,
+    paperless_last_export_started_at: Option<String>,
+    paperless_last_export_finished_at: Option<String>,
+    paperless_last_export_status: Option<String>,
+    paperless_last_export_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -257,6 +345,31 @@ struct AccountPaths {
     sync_state_dir: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+struct PaperlessPaths {
+    consume_root: PathBuf,
+    staging_root: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct PaperlessExportSummary {
+    exported_count: usize,
+    duplicate_count: usize,
+    ignored_count: usize,
+}
+
+#[derive(Clone, Debug)]
+struct CandidateMessage {
+    file_path: PathBuf,
+    message_key: String,
+}
+
+#[derive(Clone, Debug)]
+struct MessageMetadata {
+    normalized_message_id: Option<String>,
+    message_sha256: String,
+}
+
 #[derive(Debug)]
 struct TempSecretFile {
     path: PathBuf,
@@ -276,6 +389,17 @@ struct TempConfigFile {
 impl Drop for TempConfigFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[derive(Debug)]
+struct TempExtractionDir {
+    path: PathBuf,
+}
+
+impl Drop for TempExtractionDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -300,6 +424,7 @@ struct CreateAccountForm {
     secret: String,
     folder_patterns: String,
     sync_enabled: Option<String>,
+    paperless_enabled: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,6 +487,18 @@ struct AccountStatusPayload {
     index_coverage_percent: usize,
     progress_note: String,
     last_sync_error: Option<String>,
+    diagnostic_phase: Option<String>,
+    diagnostic_code: Option<String>,
+    diagnostic_summary: Option<String>,
+    diagnostic_detail: Option<String>,
+    diagnostic_impact: Option<String>,
+    recommended_action: Option<String>,
+    progress_warning: Option<String>,
+    progress_warning_detail: Option<String>,
+    progress_warning_action: Option<String>,
+    paperless_label: String,
+    paperless_note: String,
+    last_paperless_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,10 +533,108 @@ enum IndexState {
     Indexed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SyncPhase {
+    Preflight,
+    Download,
+    Index,
+    Reconcile,
+    Metrics,
+}
+
+impl SyncPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            SyncPhase::Preflight => "preflight",
+            SyncPhase::Download => "download",
+            SyncPhase::Index => "index",
+            SyncPhase::Reconcile => "reconcile",
+            SyncPhase::Metrics => "metrics",
+        }
+    }
+
+    fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "preflight" => Some(Self::Preflight),
+            "download" => Some(Self::Download),
+            "index" => Some(Self::Index),
+            "reconcile" => Some(Self::Reconcile),
+            "metrics" => Some(Self::Metrics),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SyncDiagnostic {
+    phase: Option<SyncPhase>,
+    code: String,
+    summary: String,
+    detail: String,
+}
+
+#[derive(Clone, Debug)]
+struct DashboardSyncNotice {
+    diagnostic_phase: Option<String>,
+    diagnostic_code: Option<String>,
+    diagnostic_summary: Option<String>,
+    diagnostic_detail: Option<String>,
+    diagnostic_impact: Option<String>,
+    recommended_action: Option<String>,
+    progress_warning: Option<String>,
+    progress_warning_detail: Option<String>,
+    progress_warning_action: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum AccountAction {
     Sync,
     Reindex,
+}
+
+impl SyncDiagnostic {
+    fn new(
+        phase: SyncPhase,
+        code: impl Into<String>,
+        summary: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            phase: Some(phase),
+            code: code.into(),
+            summary: summary.into(),
+            detail: truncate_diagnostic_detail(&detail.into()),
+        }
+    }
+
+    fn legacy(detail: impl Into<String>) -> Self {
+        let detail = truncate_diagnostic_detail(&detail.into());
+        Self {
+            phase: None,
+            code: "legacy_error".to_string(),
+            summary: "The last sync reported an error.".to_string(),
+            detail,
+        }
+    }
+
+    fn interrupted() -> Self {
+        Self::new(
+            SyncPhase::Reconcile,
+            "interrupted",
+            "A previous sync stopped before indexing finished.",
+            "The account was marked running but no active sync lock remained.",
+        )
+    }
+}
+
+impl std::fmt::Display for SyncDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.detail.is_empty() {
+            formatter.write_str(&self.summary)
+        } else {
+            write!(formatter, "{}: {}", self.summary, self.detail)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -413,6 +648,7 @@ struct ValidatedAccount {
     folder_patterns: Vec<String>,
     secret: Option<String>,
     sync_enabled: bool,
+    paperless_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -543,6 +779,7 @@ async fn new_account(headers: HeaderMap) -> Response {
                 secret: String::new(),
                 folder_patterns: gmail_default_patterns().join("\n"),
                 sync_enabled: Some("on".to_string()),
+                paperless_enabled: None,
             };
 
             html_response(render_account_form(
@@ -711,7 +948,7 @@ async fn sync_account(
         let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Sync);
     });
 
-    redirect_response("/?flash=Mailbox+sync+started")
+    redirect_response("/?flash=Mailbox+sync+requested")
 }
 
 async fn reindex_account(
@@ -738,7 +975,7 @@ async fn reindex_account(
         let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Reindex);
     });
 
-    redirect_response("/?flash=Mailbox+reindex+started")
+    redirect_response("/?flash=Mailbox+reindex+requested")
 }
 
 async fn search_page(
@@ -930,6 +1167,16 @@ fn load_config() -> AppConfig {
         env::var("MAIL_ARCHIVE_UI_RUNTIME_DIR").unwrap_or_else(|_| DEFAULT_RUNTIME_DIR.to_string());
     let lock_dir =
         env::var("MAIL_ARCHIVE_UI_LOCK_DIR").unwrap_or_else(|_| DEFAULT_LOCK_DIR.to_string());
+    let paperless_consume_root = env::var("MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Arc::<str>::from);
+    let paperless_staging_dir = env::var("MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Arc::<str>::from);
     let default_tags = env::var("MAIL_ARCHIVE_UI_DEFAULT_TAGS")
         .ok()
         .map(|value| {
@@ -950,6 +1197,8 @@ fn load_config() -> AppConfig {
         store_root: Arc::<str>::from(store_root),
         runtime_dir: Arc::<str>::from(runtime_dir),
         lock_dir: Arc::<str>::from(lock_dir),
+        paperless_consume_root,
+        paperless_staging_dir,
         default_tags: Arc::from(default_tags),
     }
 }
@@ -962,6 +1211,13 @@ fn ensure_app_layout(config: &AppConfig) -> Result<(), String> {
     ] {
         fs::create_dir_all(directory)
             .map_err(|error| format!("failed to create {directory}: {error}"))?;
+    }
+
+    if let Some(path) = config.paperless_consume_root.as_deref() {
+        fs::create_dir_all(path).map_err(|error| format!("failed to create {path}: {error}"))?;
+    }
+    if let Some(path) = config.paperless_staging_dir.as_deref() {
+        fs::create_dir_all(path).map_err(|error| format!("failed to create {path}: {error}"))?;
     }
 
     Ok(())
@@ -987,12 +1243,21 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 folder_patterns_json TEXT NOT NULL,
                 encrypted_secret TEXT NOT NULL,
                 sync_enabled INTEGER NOT NULL,
+                paperless_enabled INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_sync_started_at TEXT,
                 last_sync_finished_at TEXT,
                 last_sync_status TEXT,
-                last_sync_error TEXT
+                last_sync_error TEXT,
+                last_sync_phase TEXT,
+                last_sync_code TEXT,
+                last_sync_summary TEXT,
+                last_sync_detail TEXT,
+                paperless_last_export_started_at TEXT,
+                paperless_last_export_finished_at TEXT,
+                paperless_last_export_status TEXT,
+                paperless_last_export_error TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts (username);
@@ -1002,10 +1267,91 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 last_query TEXT,
                 default_account_id INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS paperless_attachment_exports (
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                attachment_sha256 TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                paperless_relpath TEXT,
+                outcome TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(account_id, message_key, attachment_sha256)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_paperless_attachment_exports_sha256
+            ON paperless_attachment_exports (attachment_sha256);
             "#,
         )
         .map_err(|error| format!("failed to initialize sqlite schema: {error}"))?;
 
+    ensure_account_column(
+        &connection,
+        "last_sync_phase",
+        "ALTER TABLE accounts ADD COLUMN last_sync_phase TEXT",
+    )?;
+    ensure_account_column(
+        &connection,
+        "last_sync_code",
+        "ALTER TABLE accounts ADD COLUMN last_sync_code TEXT",
+    )?;
+    ensure_account_column(
+        &connection,
+        "last_sync_summary",
+        "ALTER TABLE accounts ADD COLUMN last_sync_summary TEXT",
+    )?;
+    ensure_account_column(
+        &connection,
+        "last_sync_detail",
+        "ALTER TABLE accounts ADD COLUMN last_sync_detail TEXT",
+    )?;
+    ensure_account_column(
+        &connection,
+        "paperless_enabled",
+        "ALTER TABLE accounts ADD COLUMN paperless_enabled INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_account_column(
+        &connection,
+        "paperless_last_export_started_at",
+        "ALTER TABLE accounts ADD COLUMN paperless_last_export_started_at TEXT",
+    )?;
+    ensure_account_column(
+        &connection,
+        "paperless_last_export_finished_at",
+        "ALTER TABLE accounts ADD COLUMN paperless_last_export_finished_at TEXT",
+    )?;
+    ensure_account_column(
+        &connection,
+        "paperless_last_export_status",
+        "ALTER TABLE accounts ADD COLUMN paperless_last_export_status TEXT",
+    )?;
+    ensure_account_column(
+        &connection,
+        "paperless_last_export_error",
+        "ALTER TABLE accounts ADD COLUMN paperless_last_export_error TEXT",
+    )?;
+
+    Ok(())
+}
+
+fn ensure_account_column(connection: &Connection, column: &str, sql: &str) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(accounts)")
+        .map_err(|error| format!("failed to inspect accounts schema: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("failed to inspect accounts columns: {error}"))?;
+
+    for row in rows {
+        if row.map_err(|error| format!("failed to decode accounts column: {error}"))? == column {
+            return Ok(());
+        }
+    }
+
+    connection
+        .execute(sql, [])
+        .map_err(|error| format!("failed to add accounts column {column}: {error}"))?;
     Ok(())
 }
 
@@ -1191,6 +1537,7 @@ fn validate_account_form(
         folder_patterns,
         secret: (!secret.is_empty()).then(|| secret.to_string()),
         sync_enabled: form.sync_enabled.is_some(),
+        paperless_enabled: form.paperless_enabled.is_some(),
     })
 }
 
@@ -1247,6 +1594,7 @@ fn account_form_from_account(account: &AccountRecord) -> CreateAccountForm {
         secret: String::new(),
         folder_patterns,
         sync_enabled: account.sync_enabled.then(|| "on".to_string()),
+        paperless_enabled: account.paperless_enabled.then(|| "on".to_string()),
     }
 }
 
@@ -1282,11 +1630,18 @@ fn insert_account(
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
+                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_status,
-                last_sync_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                last_sync_error,
+                last_sync_phase,
+                last_sync_code,
+                last_sync_summary,
+                last_sync_detail,
+                paperless_last_export_status,
+                paperless_last_export_error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
             "#,
             params![
                 username,
@@ -1299,9 +1654,16 @@ fn insert_account(
                 patterns_json,
                 encrypted_secret,
                 if account.sync_enabled { 1 } else { 0 },
+                if account.paperless_enabled { 1 } else { 0 },
                 now,
                 now,
                 "idle",
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
                 Option::<String>::None,
             ],
         )
@@ -1342,8 +1704,9 @@ fn update_account_for_user(
                 folder_patterns_json = ?7,
                 encrypted_secret = ?8,
                 sync_enabled = ?9,
-                updated_at = ?10
-            WHERE username = ?11 AND id = ?12
+                paperless_enabled = ?10,
+                updated_at = ?11
+            WHERE username = ?12 AND id = ?13
             "#,
             params![
                 account.provider_kind,
@@ -1355,6 +1718,7 @@ fn update_account_for_user(
                 patterns_json,
                 encrypted_secret,
                 if account.sync_enabled { 1 } else { 0 },
+                if account.paperless_enabled { 1 } else { 0 },
                 now,
                 username,
                 account_id,
@@ -1412,12 +1776,21 @@ fn list_accounts_for_user(
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
+                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_started_at,
                 last_sync_finished_at,
                 last_sync_status,
-                last_sync_error
+                last_sync_error,
+                last_sync_phase,
+                last_sync_code,
+                last_sync_summary,
+                last_sync_detail,
+                paperless_last_export_started_at,
+                paperless_last_export_finished_at,
+                paperless_last_export_status,
+                paperless_last_export_error
             FROM accounts
             WHERE username = ?1
             ORDER BY display_name COLLATE NOCASE, id ASC
@@ -1458,12 +1831,21 @@ fn load_account_for_user(
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
+                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_started_at,
                 last_sync_finished_at,
                 last_sync_status,
-                last_sync_error
+                last_sync_error,
+                last_sync_phase,
+                last_sync_code,
+                last_sync_summary,
+                last_sync_detail,
+                paperless_last_export_started_at,
+                paperless_last_export_finished_at,
+                paperless_last_export_status,
+                paperless_last_export_error
             FROM accounts
             WHERE username = ?1 AND id = ?2
             "#,
@@ -1537,12 +1919,21 @@ fn map_account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
         folder_patterns_json: row.get(8)?,
         encrypted_secret: row.get(9)?,
         sync_enabled: row.get::<_, i64>(10)? != 0,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
-        last_sync_started_at: row.get(13)?,
-        last_sync_finished_at: row.get(14)?,
-        last_sync_status: row.get(15)?,
-        last_sync_error: row.get(16)?,
+        paperless_enabled: row.get::<_, i64>(11)? != 0,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        last_sync_started_at: row.get(14)?,
+        last_sync_finished_at: row.get(15)?,
+        last_sync_status: row.get(16)?,
+        last_sync_error: row.get(17)?,
+        last_sync_phase: row.get(18)?,
+        last_sync_code: row.get(19)?,
+        last_sync_summary: row.get(20)?,
+        last_sync_detail: row.get(21)?,
+        paperless_last_export_started_at: row.get(22)?,
+        paperless_last_export_finished_at: row.get(23)?,
+        paperless_last_export_status: row.get(24)?,
+        paperless_last_export_error: row.get(25)?,
     })
 }
 
@@ -1614,12 +2005,21 @@ fn sync_due(config: &AppConfig) -> Result<bool, String> {
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
+                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_started_at,
                 last_sync_finished_at,
                 last_sync_status,
-                last_sync_error
+                last_sync_error,
+                last_sync_phase,
+                last_sync_code,
+                last_sync_summary,
+                last_sync_detail,
+                paperless_last_export_started_at,
+                paperless_last_export_finished_at,
+                paperless_last_export_status,
+                paperless_last_export_error
             FROM accounts
             WHERE sync_enabled = 1
             ORDER BY username ASC, display_name COLLATE NOCASE ASC, id ASC
@@ -1637,8 +2037,16 @@ fn sync_due(config: &AppConfig) -> Result<bool, String> {
         let account = row.map_err(|error| format!("failed to decode sync account: {error}"))?;
         if let Err(error) = run_account_action(config, &account, AccountAction::Sync) {
             eprintln!(
-                "mail-archive-ui sync failed for {}:{}: {error}",
-                account.username, account.id
+                "mail-archive-ui sync failed username={} account_id={} phase={} code={} summary={} detail={}",
+                account.username,
+                account.id,
+                error
+                    .phase
+                    .map(SyncPhase::as_str)
+                    .unwrap_or("unknown"),
+                error.code,
+                error.summary,
+                error.detail
             );
             had_errors = true;
         }
@@ -1652,8 +2060,14 @@ fn run_account_action_for_user(
     username: &str,
     account_id: i64,
     action: AccountAction,
-) -> Result<(), String> {
-    let account = load_account_for_user(config, username, account_id)?;
+) -> Result<(), SyncDiagnostic> {
+    let account = load_account_for_user(config, username, account_id).map_err(|error| {
+        preflight_sync_diagnostic(
+            "account_lookup_failed",
+            "Mailbox sync could not load the selected mailbox configuration.",
+            error,
+        )
+    })?;
     run_account_action(config, &account, action)
 }
 
@@ -1661,62 +2075,160 @@ fn run_account_action(
     config: &AppConfig,
     account: &AccountRecord,
     action: AccountAction,
-) -> Result<(), String> {
-    let _lock = acquire_account_lock(config, account.id)?;
-    update_sync_started(config, account.id)?;
+) -> Result<(), SyncDiagnostic> {
+    let _lock = acquire_account_lock(config, account.id).map_err(|error| {
+        preflight_sync_diagnostic(
+            "sync_lock_unavailable",
+            "Mailbox sync could not start because another run is already active.",
+            error,
+        )
+    })?;
+    update_sync_started(config, account.id).map_err(|error| {
+        preflight_sync_diagnostic(
+            "sync_state_update_failed",
+            "Mailbox sync could not record that the run started.",
+            error,
+        )
+    })?;
 
-    let result: Result<(), String> = match action {
-        AccountAction::Sync => {
-            let encryption_key = load_or_create_master_key(config)?;
-            let secret = decrypt_secret(&encryption_key, &account.encrypted_secret)?;
-            let account_paths = ensure_account_paths(config, account)?;
-            ensure_notmuch_config(config, account, &account_paths)?;
-            let temp_secret = write_temp_secret(config, account.id, &secret)?;
-            let temp_config =
-                write_temp_mbsyncrc(config, account, &account_paths, &temp_secret.path)?;
+    let result = (|| -> Result<(), SyncDiagnostic> {
+        match action {
+            AccountAction::Sync => {
+                let encryption_key = load_or_create_master_key(config).map_err(|error| {
+                    preflight_sync_diagnostic(
+                        "master_key_unavailable",
+                        "Mailbox sync could not read the archive encryption key.",
+                        error,
+                    )
+                })?;
+                let secret =
+                    decrypt_secret(&encryption_key, &account.encrypted_secret).map_err(|error| {
+                        preflight_sync_diagnostic(
+                            "secret_decrypt_failed",
+                            "Mailbox sync could not unlock the stored mailbox credential.",
+                            error,
+                        )
+                    })?;
+                let account_paths = ensure_account_paths(config, account).map_err(|error| {
+                    preflight_sync_diagnostic(
+                        "archive_path_unavailable",
+                        "Mailbox sync could not prepare the archive paths.",
+                        error,
+                    )
+                })?;
+                ensure_notmuch_config(config, account, &account_paths).map_err(|error| {
+                    preflight_sync_diagnostic(
+                        "index_config_failed",
+                        "Mailbox sync could not prepare the notmuch configuration.",
+                        error,
+                    )
+                })?;
+                let temp_secret =
+                    write_temp_secret(config, account.id, &secret).map_err(|error| {
+                        preflight_sync_diagnostic(
+                            "temp_secret_failed",
+                            "Mailbox sync could not prepare the temporary mailbox credential file.",
+                            error,
+                        )
+                    })?;
+                let temp_config = write_temp_mbsyncrc(
+                    config,
+                    account,
+                    &account_paths,
+                    &temp_secret.path,
+                )
+                .map_err(|error| {
+                    preflight_sync_diagnostic(
+                        "sync_config_failed",
+                        "Mailbox sync could not generate the temporary mbsync configuration.",
+                        error,
+                    )
+                })?;
 
-            run_command(
-                "mbsync",
-                &["-c", temp_config.path.to_string_lossy().as_ref(), "--all"],
-                &[("HOME", account_paths.state_dir.to_string_lossy().as_ref())],
-            )?;
+                run_sync_command(
+                    SyncPhase::Download,
+                    "download_failed",
+                    "Mailbox download failed before new mail could be indexed.",
+                    "mbsync",
+                    &["-c", temp_config.path.to_string_lossy().as_ref(), "--all"],
+                    &[("HOME", account_paths.state_dir.to_string_lossy().as_ref())],
+                )?;
 
-            run_command(
-                "notmuch",
-                &["new"],
-                &[
-                    ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
-                    (
-                        "NOTMUCH_CONFIG",
-                        account_paths.notmuch_config.to_string_lossy().as_ref(),
-                    ),
-                ],
-            )
+                run_sync_command(
+                    SyncPhase::Index,
+                    "index_failed",
+                    "Mail download completed, but indexing failed. Downloaded mail may be missing from search until reindex succeeds.",
+                    "notmuch",
+                    &["new"],
+                    &[
+                        ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+                        (
+                            "NOTMUCH_CONFIG",
+                            account_paths.notmuch_config.to_string_lossy().as_ref(),
+                        ),
+                    ],
+                )?;
+            }
+            AccountAction::Reindex => {
+                let account_paths = ensure_account_paths(config, account).map_err(|error| {
+                    preflight_sync_diagnostic(
+                        "archive_path_unavailable",
+                        "Mailbox reindex could not prepare the archive paths.",
+                        error,
+                    )
+                })?;
+                ensure_notmuch_config(config, account, &account_paths).map_err(|error| {
+                    preflight_sync_diagnostic(
+                        "index_config_failed",
+                        "Mailbox reindex could not prepare the notmuch configuration.",
+                        error,
+                    )
+                })?;
+                run_sync_command(
+                    SyncPhase::Index,
+                    "index_failed",
+                    "Mailbox reindex failed. Downloaded mail may be missing from search until reindex succeeds.",
+                    "notmuch",
+                    &["new"],
+                    &[
+                        ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+                        (
+                            "NOTMUCH_CONFIG",
+                            account_paths.notmuch_config.to_string_lossy().as_ref(),
+                        ),
+                    ],
+                )?;
+            }
         }
-        AccountAction::Reindex => {
-            let account_paths = ensure_account_paths(config, account)?;
-            ensure_notmuch_config(config, account, &account_paths)?;
-            run_command(
-                "notmuch",
-                &["new"],
-                &[
-                    ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
-                    (
-                        "NOTMUCH_CONFIG",
-                        account_paths.notmuch_config.to_string_lossy().as_ref(),
-                    ),
-                ],
-            )
-        }
-    };
+
+        Ok(())
+    })();
 
     match result {
         Ok(()) => {
-            update_sync_finished(config, account.id, "ok", None)?;
+            update_sync_finished(config, account.id, "ok", None).map_err(|error| {
+                preflight_sync_diagnostic(
+                    "sync_state_update_failed",
+                    "Mailbox sync completed, but the final status could not be saved.",
+                    error,
+                )
+            })?;
+            if let Err(error) = maybe_export_account_to_paperless(config, account) {
+                eprintln!(
+                    "mail-archive-ui paperless export failed username={} account_id={} detail={}",
+                    account.username, account.id, error
+                );
+            }
             Ok(())
         }
         Err(error) => {
-            update_sync_finished(config, account.id, "error", Some(error.clone()))?;
+            update_sync_finished(config, account.id, "error", Some(&error)).map_err(|db_error| {
+                preflight_sync_diagnostic(
+                    "sync_state_update_failed",
+                    "Mailbox sync failed and the diagnostic state could not be saved.",
+                    db_error,
+                )
+            })?;
             Err(error)
         }
     }
@@ -1775,12 +2287,8 @@ fn reconcile_interrupted_syncs(config: &AppConfig) -> Result<(), String> {
         }
 
         remove_stale_sync_lock(&lock_path)?;
-        update_sync_finished(
-            config,
-            account_id,
-            "error",
-            Some("Mailbox sync was interrupted before completion.".to_string()),
-        )?;
+        let diagnostic = SyncDiagnostic::interrupted();
+        update_sync_finished(config, account_id, "error", Some(&diagnostic))?;
     }
 
     Ok(())
@@ -1993,7 +2501,11 @@ fn update_sync_started(config: &AppConfig, account_id: i64) -> Result<(), String
                 last_sync_started_at = ?1,
                 updated_at = ?1,
                 last_sync_status = 'running',
-                last_sync_error = NULL
+                last_sync_error = NULL,
+                last_sync_phase = NULL,
+                last_sync_code = NULL,
+                last_sync_summary = NULL,
+                last_sync_detail = NULL
             WHERE id = ?2
             "#,
             params![Utc::now().to_rfc3339(), account_id],
@@ -2006,10 +2518,17 @@ fn update_sync_finished(
     config: &AppConfig,
     account_id: i64,
     status: &str,
-    error_message: Option<String>,
+    diagnostic: Option<&SyncDiagnostic>,
 ) -> Result<(), String> {
     let connection = open_db(config)?;
     let now = Utc::now().to_rfc3339();
+    let phase = diagnostic
+        .and_then(|value| value.phase)
+        .map(SyncPhase::as_str)
+        .map(str::to_string);
+    let code = diagnostic.map(|value| value.code.clone());
+    let summary = diagnostic.map(|value| value.summary.clone());
+    let detail = diagnostic.map(|value| value.detail.clone());
     connection
         .execute(
             r#"
@@ -2018,13 +2537,105 @@ fn update_sync_finished(
                 last_sync_finished_at = ?1,
                 updated_at = ?1,
                 last_sync_status = ?2,
-                last_sync_error = ?3
-            WHERE id = ?4
+                last_sync_error = ?3,
+                last_sync_phase = ?4,
+                last_sync_code = ?5,
+                last_sync_summary = ?6,
+                last_sync_detail = ?7
+            WHERE id = ?8
             "#,
-            params![now, status, error_message, account_id],
+            params![now, status, detail, phase, code, summary, detail, account_id],
         )
         .map_err(|error| format!("failed to mark sync finish: {error}"))?;
     Ok(())
+}
+
+fn truncate_diagnostic_detail(detail: &str) -> String {
+    let trimmed = detail.trim();
+    let mut truncated = String::new();
+    for character in trimmed.chars().take(2048) {
+        truncated.push(character);
+    }
+    truncated
+}
+
+fn sync_command_detail(command: &str, output: &Output) -> String {
+    let detail = command_failure_detail(command, output);
+    if detail.starts_with(command) {
+        detail
+    } else {
+        format!("{command}: {detail}")
+    }
+}
+
+fn preflight_sync_diagnostic(
+    code: &str,
+    summary: &str,
+    detail: impl Into<String>,
+) -> SyncDiagnostic {
+    SyncDiagnostic::new(SyncPhase::Preflight, code, summary, detail.into())
+}
+
+fn command_sync_diagnostic(
+    phase: SyncPhase,
+    code: &str,
+    summary: &str,
+    command: &str,
+    output: &Output,
+) -> SyncDiagnostic {
+    SyncDiagnostic::new(phase, code, summary, sync_command_detail(command, output))
+}
+
+fn run_sync_command(
+    phase: SyncPhase,
+    code: &str,
+    summary: &str,
+    command: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<(), SyncDiagnostic> {
+    let output = execute_command(command, args, envs).map_err(|error| {
+        SyncDiagnostic::new(
+            phase,
+            format!("{code}_spawn_failed"),
+            summary,
+            format!("failed to run {command}: {error}"),
+        )
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(command_sync_diagnostic(phase, code, summary, command, &output))
+}
+
+fn stored_sync_diagnostic(account: &AccountRecord) -> Option<SyncDiagnostic> {
+    if account.last_sync_status.as_deref() != Some("error") {
+        return None;
+    }
+
+    if let Some(detail) = account.last_sync_error.as_deref() {
+        if detail == "Mailbox sync was interrupted before completion." {
+            return Some(SyncDiagnostic::interrupted());
+        }
+    }
+
+    match (
+        account.last_sync_phase.as_deref(),
+        account.last_sync_code.as_deref(),
+        account.last_sync_summary.as_deref(),
+        account.last_sync_detail.as_deref().or(account.last_sync_error.as_deref()),
+    ) {
+        (phase, Some(code), Some(summary), Some(detail)) => Some(SyncDiagnostic {
+            phase: phase.and_then(SyncPhase::from_stored),
+            code: code.to_string(),
+            summary: summary.to_string(),
+            detail: truncate_diagnostic_detail(detail),
+        }),
+        (_, _, _, Some(detail)) => Some(SyncDiagnostic::legacy(detail)),
+        _ => None,
+    }
 }
 
 fn execute_command(command: &str, args: &[&str], envs: &[(&str, &str)]) -> Result<Output, String> {
@@ -2063,6 +2674,689 @@ fn command_failure_detail(command: &str, output: &Output) -> String {
     } else {
         format!("{command} exited with {}", output.status)
     }
+}
+
+fn maybe_export_account_to_paperless(
+    config: &AppConfig,
+    account: &AccountRecord,
+) -> Result<(), String> {
+    if !account.paperless_enabled {
+        return Ok(());
+    }
+
+    update_paperless_export_started(config, account.id)?;
+    match export_account_to_paperless(config, account) {
+        Ok(_) => {
+            update_paperless_export_finished(config, account.id, "ok", None)?;
+            Ok(())
+        }
+        Err(error) => {
+            update_paperless_export_finished(config, account.id, "error", Some(error.clone()))?;
+            Err(error)
+        }
+    }
+}
+
+fn export_account_to_paperless(
+    config: &AppConfig,
+    account: &AccountRecord,
+) -> Result<PaperlessExportSummary, String> {
+    let account_paths = ensure_account_paths(config, account)?;
+    let paperless_paths = paperless_paths(config)?;
+    let candidates = list_paperless_candidate_messages(&account_paths)?;
+    let mut summary = PaperlessExportSummary {
+        exported_count: 0,
+        duplicate_count: 0,
+        ignored_count: 0,
+    };
+
+    for candidate in candidates {
+        let message_summary = export_candidate_message_to_paperless(
+            config,
+            account,
+            &account_paths,
+            &paperless_paths,
+            &candidate,
+        )?;
+        tag_notmuch_message(&account_paths, &candidate.file_path, PAPERLESS_REVIEWED_TAG)?;
+        if message_summary.exported_count > 0 {
+            tag_notmuch_message(&account_paths, &candidate.file_path, PAPERLESS_FILED_TAG)?;
+        }
+        summary.exported_count += message_summary.exported_count;
+        summary.duplicate_count += message_summary.duplicate_count;
+        summary.ignored_count += message_summary.ignored_count;
+    }
+
+    Ok(summary)
+}
+
+fn export_candidate_message_to_paperless(
+    config: &AppConfig,
+    account: &AccountRecord,
+    account_paths: &AccountPaths,
+    paperless_paths: &PaperlessPaths,
+    candidate: &CandidateMessage,
+) -> Result<PaperlessExportSummary, String> {
+    let extraction_dir = create_temp_extraction_dir(paperless_paths, account.id)?;
+    extract_message_attachments(&candidate.file_path, &extraction_dir.path)?;
+    let extracted_files = collect_regular_files(&extraction_dir.path)?;
+
+    let mut summary = PaperlessExportSummary {
+        exported_count: 0,
+        duplicate_count: 0,
+        ignored_count: 0,
+    };
+
+    for extracted_file in extracted_files {
+        let metadata = fs::metadata(&extracted_file).map_err(|error| {
+            format!(
+                "failed to inspect extracted attachment {}: {error}",
+                extracted_file.display()
+            )
+        })?;
+        let original_filename = extracted_file
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "attachment".to_string());
+        let attachment_sha256 = sha256_file(&extracted_file)?;
+
+        if metadata.len() == 0 {
+            record_attachment_export(
+                config,
+                account.id,
+                &candidate.message_key,
+                &attachment_sha256,
+                &original_filename,
+                None,
+                "ignored",
+            )?;
+            summary.ignored_count += 1;
+            continue;
+        }
+
+        let mime_type = detect_attachment_mime_type(&extracted_file)?;
+        if !is_supported_document_attachment(&mime_type, &extracted_file)
+            || looks_like_inline_artifact(&original_filename, &mime_type, metadata.len())
+        {
+            record_attachment_export(
+                config,
+                account.id,
+                &candidate.message_key,
+                &attachment_sha256,
+                &original_filename,
+                None,
+                "ignored",
+            )?;
+            summary.ignored_count += 1;
+            continue;
+        }
+
+        if let Some(existing_relpath) = find_existing_paperless_export(config, &attachment_sha256)?
+        {
+            record_attachment_export(
+                config,
+                account.id,
+                &candidate.message_key,
+                &attachment_sha256,
+                &original_filename,
+                Some(existing_relpath.as_str()),
+                "duplicate",
+            )?;
+            summary.duplicate_count += 1;
+            continue;
+        }
+
+        let relpath = move_attachment_into_paperless(
+            account,
+            account_paths,
+            paperless_paths,
+            &attachment_sha256,
+            &original_filename,
+            &extracted_file,
+        )
+        .map_err(|error| {
+            let _ = record_attachment_export(
+                config,
+                account.id,
+                &candidate.message_key,
+                &attachment_sha256,
+                &original_filename,
+                None,
+                "error",
+            );
+            error
+        })?;
+        record_attachment_export(
+            config,
+            account.id,
+            &candidate.message_key,
+            &attachment_sha256,
+            &original_filename,
+            Some(relpath.as_str()),
+            "exported",
+        )?;
+        summary.exported_count += 1;
+    }
+
+    Ok(summary)
+}
+
+fn paperless_paths(config: &AppConfig) -> Result<PaperlessPaths, String> {
+    let consume_root = config
+        .paperless_consume_root
+        .as_deref()
+        .ok_or_else(|| "Paperless consume root is not configured".to_string())?;
+    let staging_root = config
+        .paperless_staging_dir
+        .as_deref()
+        .ok_or_else(|| "Paperless staging directory is not configured".to_string())?;
+
+    Ok(PaperlessPaths {
+        consume_root: PathBuf::from(consume_root),
+        staging_root: PathBuf::from(staging_root),
+    })
+}
+
+fn create_temp_extraction_dir(
+    paperless_paths: &PaperlessPaths,
+    account_id: i64,
+) -> Result<TempExtractionDir, String> {
+    let path = paperless_paths
+        .staging_root
+        .join(format!("account-{account_id}"))
+        .join(random_hex(8));
+    fs::create_dir_all(&path).map_err(|error| {
+        format!(
+            "failed to create extraction directory {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(TempExtractionDir { path })
+}
+
+fn extract_message_attachments(message_path: &FsPath, output_dir: &FsPath) -> Result<(), String> {
+    run_command(
+        "ripmime",
+        &[
+            "-i",
+            message_path.to_string_lossy().as_ref(),
+            "-d",
+            output_dir.to_string_lossy().as_ref(),
+            "-q",
+        ],
+        &[],
+    )
+}
+
+fn collect_regular_files(root: &FsPath) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    collect_regular_files_inner(root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_regular_files_inner(root: &FsPath, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(root)
+        .map_err(|error| format!("failed to read {}: {error}", root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("failed to read {}: {error}", root.display()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", entry.path().display()))?;
+        if file_type.is_dir() {
+            collect_regular_files_inner(&entry.path(), files)?;
+        } else if file_type.is_file() {
+            files.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+fn list_paperless_candidate_messages(
+    account_paths: &AccountPaths,
+) -> Result<Vec<CandidateMessage>, String> {
+    let output = execute_command(
+        "notmuch",
+        &[
+            "search",
+            "--output=files",
+            "--format=text",
+            &format!("not tag:{PAPERLESS_REVIEWED_TAG}"),
+        ],
+        &[
+            ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+            (
+                "NOTMUCH_CONFIG",
+                account_paths.notmuch_config.to_string_lossy().as_ref(),
+            ),
+        ],
+    )?;
+
+    if !output.status.success() {
+        let detail = command_failure_detail("notmuch", &output);
+        if detail.contains("No database found") || detail.contains("not initialized") {
+            return Ok(Vec::new());
+        }
+        return Err(detail);
+    }
+
+    let mut candidates = Vec::new();
+    for raw_line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let file_path = PathBuf::from(line);
+        if !file_path.is_file() {
+            continue;
+        }
+        let metadata = read_message_metadata(&file_path)?;
+        let message_key = metadata
+            .normalized_message_id
+            .map(|value| format!("message-id:{value}"))
+            .unwrap_or_else(|| format!("sha256:{}", metadata.message_sha256));
+        candidates.push(CandidateMessage {
+            file_path,
+            message_key,
+        });
+    }
+    Ok(candidates)
+}
+
+fn read_message_metadata(message_path: &FsPath) -> Result<MessageMetadata, String> {
+    let bytes = fs::read(message_path)
+        .map_err(|error| format!("failed to read {}: {error}", message_path.display()))?;
+    Ok(MessageMetadata {
+        normalized_message_id: extract_message_id(&bytes).and_then(normalize_message_id),
+        message_sha256: sha256_hex(&bytes),
+    })
+}
+
+fn extract_message_id(message_bytes: &[u8]) -> Option<String> {
+    let headers = String::from_utf8_lossy(message_bytes);
+    let mut current_name = String::new();
+    let mut current_value = String::new();
+
+    for line in headers.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            break;
+        }
+
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if !current_name.is_empty() {
+                if !current_value.is_empty() {
+                    current_value.push(' ');
+                }
+                current_value.push_str(line.trim());
+            }
+            continue;
+        }
+
+        if current_name.eq_ignore_ascii_case("message-id") {
+            return Some(current_value);
+        }
+
+        current_name.clear();
+        current_value.clear();
+
+        if let Some((name, value)) = line.split_once(':') {
+            current_name = name.trim().to_string();
+            current_value = value.trim().to_string();
+        }
+    }
+
+    if current_name.eq_ignore_ascii_case("message-id") {
+        Some(current_value)
+    } else {
+        None
+    }
+}
+
+fn normalize_message_id(raw: String) -> Option<String> {
+    let collapsed = raw.split_whitespace().collect::<String>();
+    let trimmed = collapsed
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_ascii_lowercase())
+    }
+}
+
+fn sha256_file(path: &FsPath) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn detect_attachment_mime_type(path: &FsPath) -> Result<String, String> {
+    let output = execute_command(
+        "file",
+        &["--mime-type", "-b", path.to_string_lossy().as_ref()],
+        &[],
+    )?;
+    if output.status.success() {
+        let detected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !detected.is_empty() {
+            return Ok(detected);
+        }
+    } else if let Some(fallback) = fallback_mime_from_extension(path) {
+        return Ok(fallback);
+    } else {
+        return Err(command_failure_detail("file", &output));
+    }
+
+    Ok(
+        fallback_mime_from_extension(path)
+            .unwrap_or_else(|| "application/octet-stream".to_string()),
+    )
+}
+
+fn fallback_mime_from_extension(path: &FsPath) -> Option<String> {
+    let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    Some(
+        match extension.as_str() {
+            "pdf" => "application/pdf",
+            "txt" => "text/plain",
+            "doc" => "application/msword",
+            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "odt" => "application/vnd.oasis.opendocument.text",
+            "rtf" => "application/rtf",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "tif" | "tiff" => "image/tiff",
+            "gif" => "image/gif",
+            "bmp" => "image/bmp",
+            "webp" => "image/webp",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+fn is_supported_document_attachment(mime_type: &str, path: &FsPath) -> bool {
+    is_supported_document_mime(mime_type)
+        || (mime_type == "application/octet-stream"
+            && fallback_mime_from_extension(path)
+                .as_deref()
+                .is_some_and(is_supported_document_mime))
+}
+
+fn is_supported_document_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "application/pdf"
+            | "text/plain"
+            | "application/msword"
+            | "application/rtf"
+            | "application/vnd.oasis.opendocument.text"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) || mime_type.starts_with("image/")
+}
+
+fn looks_like_inline_artifact(filename: &str, mime_type: &str, size_bytes: u64) -> bool {
+    mime_type.starts_with("image/") && size_bytes <= 1024
+        || filename.eq_ignore_ascii_case("winmail.dat")
+        || filename.eq_ignore_ascii_case("smime.p7s")
+}
+
+fn find_existing_paperless_export(
+    config: &AppConfig,
+    attachment_sha256: &str,
+) -> Result<Option<String>, String> {
+    let connection = open_db(config)?;
+    connection
+        .query_row(
+            r#"
+            SELECT paperless_relpath
+            FROM paperless_attachment_exports
+            WHERE attachment_sha256 = ?1 AND outcome = 'exported'
+            ORDER BY created_at ASC
+            LIMIT 1
+            "#,
+            params![attachment_sha256],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed to query paperless export dedupe: {error}"))?
+        .flatten()
+        .map_or(Ok(None), |value| Ok(Some(value)))
+}
+
+fn record_attachment_export(
+    config: &AppConfig,
+    account_id: i64,
+    message_key: &str,
+    attachment_sha256: &str,
+    original_filename: &str,
+    paperless_relpath: Option<&str>,
+    outcome: &str,
+) -> Result<(), String> {
+    let connection = open_db(config)?;
+    let now = Utc::now().to_rfc3339();
+    connection
+        .execute(
+            r#"
+            INSERT INTO paperless_attachment_exports (
+                account_id,
+                message_key,
+                attachment_sha256,
+                original_filename,
+                paperless_relpath,
+                outcome,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+            ON CONFLICT(account_id, message_key, attachment_sha256) DO UPDATE
+            SET
+                original_filename = excluded.original_filename,
+                paperless_relpath = COALESCE(
+                    paperless_attachment_exports.paperless_relpath,
+                    excluded.paperless_relpath
+                ),
+                outcome = CASE
+                    WHEN paperless_attachment_exports.outcome = 'exported'
+                        AND excluded.outcome = 'duplicate'
+                    THEN paperless_attachment_exports.outcome
+                    ELSE excluded.outcome
+                END,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                account_id,
+                message_key,
+                attachment_sha256,
+                original_filename,
+                paperless_relpath,
+                outcome,
+                now,
+            ],
+        )
+        .map_err(|error| format!("failed to record paperless attachment export: {error}"))?;
+    Ok(())
+}
+
+fn move_attachment_into_paperless(
+    account: &AccountRecord,
+    _account_paths: &AccountPaths,
+    paperless_paths: &PaperlessPaths,
+    attachment_sha256: &str,
+    original_filename: &str,
+    source_path: &FsPath,
+) -> Result<String, String> {
+    let safe_name = safe_filename(original_filename);
+    let relpath = PathBuf::from("user-".to_string() + &account.username)
+        .join(format!("account-{}", account.id))
+        .join(format!("{attachment_sha256}--{safe_name}"));
+    let destination = paperless_paths.consume_root.join(&relpath);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    if destination.exists() {
+        return Ok(relpath.to_string_lossy().to_string());
+    }
+    fs::rename(source_path, &destination).map_err(|error| {
+        format!(
+            "failed to move {} into Paperless consume tree: {error}",
+            source_path.display()
+        )
+    })?;
+    sync_path(&destination)?;
+    if let Some(parent) = destination.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(relpath.to_string_lossy().to_string())
+}
+
+fn sync_path(path: &FsPath) -> Result<(), String> {
+    let file = fs::File::open(path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("failed to sync {}: {error}", path.display()))
+}
+
+fn sync_directory(path: &FsPath) -> Result<(), String> {
+    let dir = fs::File::open(path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    dir.sync_all()
+        .map_err(|error| format!("failed to sync {}: {error}", path.display()))
+}
+
+fn safe_filename(raw: &str) -> String {
+    let sanitized = raw
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if sanitized.is_empty() {
+        "attachment".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn tag_notmuch_message(
+    account_paths: &AccountPaths,
+    file_path: &FsPath,
+    tag: &str,
+) -> Result<(), String> {
+    let relative_path = if let Ok(relative) = file_path.strip_prefix(&account_paths.maildir) {
+        relative.to_path_buf()
+    } else {
+        let canonical_maildir = fs::canonicalize(&account_paths.maildir).map_err(|error| {
+            format!(
+                "failed to resolve {}: {error}",
+                account_paths.maildir.display()
+            )
+        })?;
+        let canonical_file = fs::canonicalize(file_path)
+            .map_err(|error| format!("failed to resolve {}: {error}", file_path.display()))?;
+        canonical_file
+            .strip_prefix(&canonical_maildir)
+            .map_err(|_| {
+                format!(
+                    "message path {} is outside the maildir",
+                    file_path.display()
+                )
+            })?
+            .to_path_buf()
+    };
+    let query = format!(
+        "path:\"{}\"",
+        escape_notmuch_query_value(&relative_path.to_string_lossy())
+    );
+    run_command(
+        "notmuch",
+        &["tag", &format!("+{tag}"), "--", query.as_str()],
+        &[
+            ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+            (
+                "NOTMUCH_CONFIG",
+                account_paths.notmuch_config.to_string_lossy().as_ref(),
+            ),
+        ],
+    )
+}
+
+fn escape_notmuch_query_value(value: &str) -> String {
+    value.replace('\\', r"\\").replace('"', "\\\"")
+}
+
+fn update_paperless_export_started(config: &AppConfig, account_id: i64) -> Result<(), String> {
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            UPDATE accounts
+            SET
+                paperless_last_export_started_at = ?1,
+                paperless_last_export_status = 'running',
+                paperless_last_export_error = NULL,
+                updated_at = ?1
+            WHERE id = ?2
+            "#,
+            params![Utc::now().to_rfc3339(), account_id],
+        )
+        .map_err(|error| format!("failed to mark paperless export start: {error}"))?;
+    Ok(())
+}
+
+fn update_paperless_export_finished(
+    config: &AppConfig,
+    account_id: i64,
+    status: &str,
+    error_message: Option<String>,
+) -> Result<(), String> {
+    let connection = open_db(config)?;
+    let now = Utc::now().to_rfc3339();
+    connection
+        .execute(
+            r#"
+            UPDATE accounts
+            SET
+                paperless_last_export_finished_at = ?1,
+                paperless_last_export_status = ?2,
+                paperless_last_export_error = ?3,
+                updated_at = ?1
+            WHERE id = ?4
+            "#,
+            params![now, status, error_message, account_id],
+        )
+        .map_err(|error| format!("failed to mark paperless export finish: {error}"))?;
+    Ok(())
+}
+
+fn visible_notmuch_tags(tags: Vec<String>) -> Vec<String> {
+    tags.into_iter()
+        .filter(|tag| !tag.starts_with("paperless-"))
+        .collect()
 }
 
 fn search_mail(
@@ -2117,7 +3411,7 @@ fn search_mail(
                     .unwrap_or_else(|| format_timestamp(item.timestamp.unwrap_or_default())),
                 from: item.authors.unwrap_or_else(|| "Unknown sender".to_string()),
                 subject: item.subject.unwrap_or_else(|| "(no subject)".to_string()),
-                tags: item.tags.unwrap_or_default(),
+                tags: visible_notmuch_tags(item.tags.unwrap_or_default()),
             });
         }
     }
@@ -2158,7 +3452,7 @@ fn build_dashboard_account_view(
     account: AccountRecord,
 ) -> DashboardAccountView {
     let last_activity = last_activity_label(&account);
-    let last_sync_error = account.last_sync_error.clone();
+    let sync_diagnostic = stored_sync_diagnostic(&account);
     let (index_state, counts, progress_error) = match ensure_account_paths(config, &account) {
         Ok(account_paths) => {
             let index_state = account_index_state(&account_paths);
@@ -2173,12 +3467,27 @@ fn build_dashboard_account_view(
             Some(error),
         ),
     };
-    let (status_class, status_label) = account_status(&account, index_state);
-    let progress_note = if progress_error.is_some() {
-        "Progress metrics are temporarily unavailable.".to_string()
-    } else {
-        account_progress_note(&account, &counts, index_state).to_string()
-    };
+    let metrics_diagnostic = progress_error.map(metrics_sync_diagnostic);
+    let (status_class, status_label) =
+        account_status(&account, index_state, &counts, sync_diagnostic.as_ref());
+    let progress_note = account_progress_note(
+        &account,
+        &counts,
+        index_state,
+        sync_diagnostic.as_ref(),
+        metrics_diagnostic.as_ref(),
+    );
+    let sync_notice = dashboard_sync_notice(
+        sync_diagnostic.as_ref(),
+        metrics_diagnostic.as_ref(),
+        &counts,
+        index_state,
+    );
+    let (paperless_label, paperless_note) = paperless_status_summary(&account);
+    let last_sync_error = account
+        .last_sync_detail
+        .clone()
+        .or_else(|| account.last_sync_error.clone());
 
     DashboardAccountView {
         status: AccountStatusPayload {
@@ -2193,6 +3502,18 @@ fn build_dashboard_account_view(
             index_coverage_percent: counts.index_coverage_percent,
             progress_note,
             last_sync_error,
+            diagnostic_phase: sync_notice.diagnostic_phase,
+            diagnostic_code: sync_notice.diagnostic_code,
+            diagnostic_summary: sync_notice.diagnostic_summary,
+            diagnostic_detail: sync_notice.diagnostic_detail,
+            diagnostic_impact: sync_notice.diagnostic_impact,
+            recommended_action: sync_notice.recommended_action,
+            progress_warning: sync_notice.progress_warning,
+            progress_warning_detail: sync_notice.progress_warning_detail,
+            progress_warning_action: sync_notice.progress_warning_action,
+            paperless_label,
+            paperless_note,
+            last_paperless_error: account.paperless_last_export_error.clone(),
         },
         account,
     }
@@ -2329,17 +3650,202 @@ fn account_progress_note(
     account: &AccountRecord,
     counts: &AccountProgressCounts,
     index_state: IndexState,
-) -> &'static str {
-    if account.last_sync_status.as_deref() == Some("running") && counts.pending_index_count > 0 {
+    sync_diagnostic: Option<&SyncDiagnostic>,
+    metrics_diagnostic: Option<&SyncDiagnostic>,
+) -> String {
+    if metrics_diagnostic.is_some() {
+        "Counts are unavailable because the archive or search index could not be read."
+            .to_string()
+    } else if account.last_sync_status.as_deref() == Some("running")
+        && counts.pending_index_count > 0
+    {
         "Sync is active. Downloaded mail should rise first, then the index will catch up."
+            .to_string()
+    } else if sync_diagnostic
+        .as_ref()
+        .and_then(|value| value.phase)
+        .is_some_and(|phase| matches!(phase, SyncPhase::Index | SyncPhase::Reconcile))
+        && counts.pending_index_count > 0
+    {
+        "Downloaded mail is ahead of search. Run Reindex to catch up.".to_string()
     } else if counts.downloaded_message_count == 0 {
-        "No messages downloaded yet."
+        "No messages downloaded yet.".to_string()
     } else if counts.pending_index_count > 0 {
-        "Downloaded mail is ahead of the current search index."
+        "Downloaded mail is ahead of the current search index. Run Reindex to catch up."
+            .to_string()
     } else if index_state == IndexState::Indexed {
-        "Search index is caught up with the downloaded archive."
+        "Search index is caught up with the downloaded archive.".to_string()
     } else {
-        "Run Sync now or Reindex to build the search index."
+        "Run Sync now or Reindex to build the search index.".to_string()
+    }
+}
+
+fn metrics_sync_diagnostic(error: String) -> SyncDiagnostic {
+    SyncDiagnostic::new(
+        SyncPhase::Metrics,
+        "metrics_unavailable",
+        "Archive counts could not be verified for this mailbox.",
+        error,
+    )
+}
+
+fn diagnostic_impact(
+    diagnostic: &SyncDiagnostic,
+    counts: &AccountProgressCounts,
+    index_state: IndexState,
+) -> Option<String> {
+    match diagnostic.phase {
+        Some(SyncPhase::Download) => Some(
+            "The sync did not reach the indexing step, so newly downloaded mail may still be missing."
+                .to_string(),
+        ),
+        Some(SyncPhase::Index | SyncPhase::Reconcile)
+            if counts.pending_index_count > 0 =>
+        {
+            Some(format!(
+                "{} downloaded messages are not searchable yet.",
+                counts.pending_index_count
+            ))
+        }
+        Some(SyncPhase::Index | SyncPhase::Reconcile) => Some(
+            "Downloaded mail may be missing from search until reindex succeeds.".to_string(),
+        ),
+        Some(SyncPhase::Preflight) => Some(
+            "The sync stopped before the mailbox download step started.".to_string(),
+        ),
+        Some(SyncPhase::Metrics) => Some(
+            "Downloaded and indexed counts are hidden until the archive can be read again."
+                .to_string(),
+        ),
+        None if counts.pending_index_count > 0 => Some(format!(
+            "{} downloaded messages may not be searchable yet.",
+            counts.pending_index_count
+        )),
+        None if index_state != IndexState::Indexed => Some(
+            "The archive has not been fully indexed yet.".to_string(),
+        ),
+        None => Some("Review the technical detail below before retrying.".to_string()),
+    }
+}
+
+fn diagnostic_recommended_action(
+    diagnostic: &SyncDiagnostic,
+    counts: &AccountProgressCounts,
+) -> Option<String> {
+    match diagnostic.phase {
+        Some(SyncPhase::Download | SyncPhase::Preflight) => Some(
+            "Check the mailbox credentials and archive paths, then run Sync now again."
+                .to_string(),
+        ),
+        Some(SyncPhase::Index | SyncPhase::Reconcile) if counts.pending_index_count > 0 => Some(
+            "Run Reindex to catch search up with the downloaded archive.".to_string(),
+        ),
+        Some(SyncPhase::Index | SyncPhase::Reconcile) => Some(
+            "Run Reindex after checking the notmuch configuration and archive state.".to_string(),
+        ),
+        Some(SyncPhase::Metrics) => Some(
+            "Check archive and notmuch access, then refresh the dashboard.".to_string(),
+        ),
+        None => Some(
+            "Review the technical detail below, then retry Sync now or Reindex.".to_string(),
+        ),
+    }
+}
+
+fn dashboard_sync_notice(
+    sync_diagnostic: Option<&SyncDiagnostic>,
+    metrics_diagnostic: Option<&SyncDiagnostic>,
+    counts: &AccountProgressCounts,
+    index_state: IndexState,
+) -> DashboardSyncNotice {
+    let mut notice = DashboardSyncNotice {
+        diagnostic_phase: None,
+        diagnostic_code: None,
+        diagnostic_summary: None,
+        diagnostic_detail: None,
+        diagnostic_impact: None,
+        recommended_action: None,
+        progress_warning: None,
+        progress_warning_detail: None,
+        progress_warning_action: None,
+    };
+
+    if let Some(diagnostic) = sync_diagnostic {
+        notice.diagnostic_phase = diagnostic.phase.map(SyncPhase::as_str).map(str::to_string);
+        notice.diagnostic_code = Some(diagnostic.code.clone());
+        notice.diagnostic_summary = Some(diagnostic.summary.clone());
+        notice.diagnostic_detail = Some(diagnostic.detail.clone());
+        notice.diagnostic_impact = diagnostic_impact(diagnostic, counts, index_state);
+        notice.recommended_action = diagnostic_recommended_action(diagnostic, counts);
+    }
+
+    if let Some(diagnostic) = metrics_diagnostic {
+        notice.progress_warning = Some(diagnostic.summary.clone());
+        notice.progress_warning_detail = Some(diagnostic.detail.clone());
+        notice.progress_warning_action = diagnostic_recommended_action(diagnostic, counts);
+
+        if notice.diagnostic_summary.is_none() {
+            notice.diagnostic_phase =
+                diagnostic.phase.map(SyncPhase::as_str).map(str::to_string);
+            notice.diagnostic_code = Some(diagnostic.code.clone());
+            notice.diagnostic_summary = Some(diagnostic.summary.clone());
+            notice.diagnostic_detail = Some(diagnostic.detail.clone());
+            notice.diagnostic_impact = diagnostic_impact(diagnostic, counts, index_state);
+            notice.recommended_action = diagnostic_recommended_action(diagnostic, counts);
+        }
+    }
+
+    notice
+}
+
+fn paperless_status_summary(account: &AccountRecord) -> (String, String) {
+    if !account.paperless_enabled {
+        return (
+            "Paperless off".to_string(),
+            "Attachment filing is disabled for this mailbox.".to_string(),
+        );
+    }
+
+    match account.paperless_last_export_status.as_deref() {
+        Some("running") => (
+            "Paperless running".to_string(),
+            format!(
+                "Qualifying attachments are being handed off to Paperless{}.",
+                account
+                    .paperless_last_export_started_at
+                    .as_deref()
+                    .map(|timestamp| format!(" since {timestamp}"))
+                    .unwrap_or_default()
+            ),
+        ),
+        Some("error") => (
+            "Paperless error".to_string(),
+            "The last attachment export failed; the mailbox will retry on the next run."
+                .to_string(),
+        ),
+        Some("ok") => (
+            "Paperless on".to_string(),
+            format!(
+                "Qualifying attachments are handed off to Paperless after sync or reindex{}.",
+                account
+                    .paperless_last_export_finished_at
+                    .as_deref()
+                    .map(|timestamp| format!(" (last export {timestamp})"))
+                    .unwrap_or_default()
+            ),
+        ),
+        _ => (
+            "Paperless on".to_string(),
+            "Qualifying attachments will be handed off to Paperless on the next run.".to_string(),
+        ),
+    }
+}
+
+fn folder_mode_label(mode: &str) -> &str {
+    match mode {
+        "gmail_default" => "gmail-default",
+        "generic_default" => "generic-default",
+        _ => "custom",
     }
 }
 
@@ -2424,6 +3930,70 @@ fn render_dashboard_totals(accounts: &[DashboardAccountView]) -> String {
     )
 }
 
+fn hidden_class(visible: bool) -> &'static str {
+    if visible {
+        ""
+    } else {
+        " hidden"
+    }
+}
+
+fn render_sync_diagnostic_notice(status: &AccountStatusPayload) -> String {
+    let meta = match (
+        status.diagnostic_phase.as_deref(),
+        status.diagnostic_code.as_deref(),
+    ) {
+        (Some(phase), Some(code)) => Some(format!("Phase {phase} · Code {code}")),
+        (Some(phase), None) => Some(format!("Phase {phase}")),
+        (None, Some(code)) => Some(format!("Code {code}")),
+        (None, None) => None,
+    };
+
+    format!(
+        "<div class=\"notice sync{}\" data-sync-diagnostic>
+          <p class=\"notice-title{}\" data-diagnostic-summary>{}</p>
+          <p class=\"meta notice-meta{}\" data-diagnostic-meta>{}</p>
+          <p class=\"notice-copy{}\" data-diagnostic-impact>{}</p>
+          <p class=\"notice-copy{}\" data-diagnostic-action>{}</p>
+          <details class=\"notice-details{}\" data-diagnostic-details>
+            <summary>Technical detail</summary>
+            <pre data-diagnostic-detail>{}</pre>
+          </details>
+        </div>",
+        hidden_class(status.diagnostic_summary.is_some()),
+        hidden_class(status.diagnostic_summary.is_some()),
+        escape_html(status.diagnostic_summary.as_deref().unwrap_or("")),
+        hidden_class(meta.is_some()),
+        escape_html(meta.as_deref().unwrap_or("")),
+        hidden_class(status.diagnostic_impact.is_some()),
+        escape_html(status.diagnostic_impact.as_deref().unwrap_or("")),
+        hidden_class(status.recommended_action.is_some()),
+        escape_html(status.recommended_action.as_deref().unwrap_or("")),
+        hidden_class(status.diagnostic_detail.is_some()),
+        escape_html(status.diagnostic_detail.as_deref().unwrap_or("")),
+    )
+}
+
+fn render_progress_warning_notice(status: &AccountStatusPayload) -> String {
+    format!(
+        "<div class=\"notice warning{}\" data-progress-warning>
+          <p class=\"notice-title{}\" data-progress-warning-text>{}</p>
+          <p class=\"notice-copy{}\" data-progress-warning-action>{}</p>
+          <details class=\"notice-details{}\" data-progress-warning-details>
+            <summary>Technical detail</summary>
+            <pre data-progress-warning-detail>{}</pre>
+          </details>
+        </div>",
+        hidden_class(status.progress_warning.is_some()),
+        hidden_class(status.progress_warning.is_some()),
+        escape_html(status.progress_warning.as_deref().unwrap_or("")),
+        hidden_class(status.progress_warning_action.is_some()),
+        escape_html(status.progress_warning_action.as_deref().unwrap_or("")),
+        hidden_class(status.progress_warning_detail.is_some()),
+        escape_html(status.progress_warning_detail.as_deref().unwrap_or("")),
+    )
+}
+
 fn render_account_card(view: &DashboardAccountView) -> String {
     let account = &view.account;
     let status = &view.status;
@@ -2448,8 +4018,9 @@ fn render_account_card(view: &DashboardAccountView) -> String {
           <div class=\"card-meta\">
             <span class=\"pill\">{}</span>
             <span class=\"pill\" data-index-pill>{}</span>
+            <span class=\"pill\" data-paperless-pill>{}</span>
           </div>
-          <div class=\"hint\">Mailbox user: {}</div>
+          <div class=\"hint\">Mailbox user: {} · Folder mode: {}</div>
           <div class=\"hint\">Added {} · Updated {}</div>
           <div class=\"progress-cluster\">
             <div class=\"progress-metrics\">
@@ -2461,13 +4032,16 @@ fn render_account_card(view: &DashboardAccountView) -> String {
             <div class=\"progress-bar\" aria-label=\"Index coverage\"><span data-progress-bar style=\"width: {}%\"></span></div>
             <p class=\"meta\" data-progress-note>{}</p>
           </div>
+          <div class=\"hint\" data-paperless-note>{}</div>
           <div class=\"hint\" data-last-activity>Last activity {}</div>
           <div class=\"action-row\">
             <form method=\"post\" action=\"/accounts/{}/sync\"><button type=\"submit\">Sync now</button></form>
             <form method=\"post\" action=\"/accounts/{}/reindex\"><button class=\"secondary\" type=\"submit\">Reindex</button></form>
             <a class=\"button-link secondary\" href=\"/accounts/{}/edit\">Edit</a>
             <form method=\"post\" action=\"/accounts/{}/toggle-sync\"><button class=\"secondary\" type=\"submit\">{}</button></form>
-          </div>",
+          </div>
+          {}
+          {}",
         account.id,
         escape_html(&account.provider_kind),
         escape_html(&account.display_name),
@@ -2478,7 +4052,9 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         escape_html(&status.status_label),
         escape_html(schedule_label),
         escape_html(&status.index_label),
+        escape_html(&status.paperless_label),
         escape_html(&account.imap_username),
+        escape_html(folder_mode_label(&account.folder_mode)),
         escape_html(&account.created_at),
         escape_html(&account.updated_at),
         status.downloaded_message_count,
@@ -2487,6 +4063,7 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         status.index_coverage_percent,
         status.index_coverage_percent,
         escape_html(&status.progress_note),
+        escape_html(&status.paperless_note),
         escape_html(&status.last_activity),
         account.id,
         account.id,
@@ -2497,18 +4074,20 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         } else {
             "Enable schedule"
         },
+        render_sync_diagnostic_notice(status),
+        render_progress_warning_notice(status),
     )
     .ok();
 
-    if let Some(error) = status.last_sync_error.as_deref() {
+    if let Some(error) = status.last_paperless_error.as_deref() {
         writeln!(
             &mut body,
-            "<div class=\"error compact\" data-sync-error>{}</div>",
+            "<div class=\"error compact\" data-paperless-error>{}</div>",
             escape_html(error)
         )
         .ok();
     } else {
-        body.push_str("<div class=\"error compact hidden\" data-sync-error></div>");
+        body.push_str("<div class=\"error compact hidden\" data-paperless-error></div>");
     }
 
     body.push_str("</article>");
@@ -2518,13 +4097,26 @@ fn render_account_card(view: &DashboardAccountView) -> String {
 fn account_status(
     account: &AccountRecord,
     index_state: IndexState,
+    counts: &AccountProgressCounts,
+    sync_diagnostic: Option<&SyncDiagnostic>,
 ) -> (&'static str, &'static str) {
     match account.last_sync_status.as_deref() {
-        Some("running") => ("pending", "running"),
-        Some("error") => ("error", "error"),
-        Some("ok") if index_state == IndexState::Indexed => ("ok", "ok"),
-        _ if index_state != IndexState::Indexed => ("unindexed", "unindexed"),
-        _ => ("idle", "idle"),
+        Some("running") => ("pending", "syncing"),
+        Some("error")
+            if sync_diagnostic
+                .as_ref()
+                .and_then(|value| value.phase)
+                .is_some_and(|phase| matches!(phase, SyncPhase::Index | SyncPhase::Reconcile))
+                && counts.pending_index_count > 0 =>
+        {
+            ("pending", "index behind")
+        }
+        Some("error") => ("error", "sync failed"),
+        Some("ok") if counts.pending_index_count > 0 => ("pending", "index behind"),
+        Some("ok") if index_state == IndexState::Indexed => ("ok", "healthy"),
+        _ if index_state != IndexState::Indexed => ("unindexed", "needs index"),
+        _ if counts.pending_index_count > 0 => ("pending", "index behind"),
+        _ => ("idle", "healthy"),
     }
 }
 
@@ -2596,6 +4188,7 @@ fn render_account_form(
             <textarea name=\"folder_patterns\" placeholder=\"One IMAP pattern per line\">{}</textarea>
           </label>
           <label><input type=\"checkbox\" name=\"sync_enabled\" {}> Enable scheduled background sync</label>
+          <label><input type=\"checkbox\" name=\"paperless_enabled\" {}> Send document attachments to Paperless for filing</label>
           <div class=\"actions\">
             <button type=\"submit\">{}</button>
             <a class=\"button-link secondary\" href=\"/\">Cancel</a>
@@ -2603,6 +4196,7 @@ fn render_account_form(
           <ul class=\"muted-list\">
             <li>Gmail defaults to append-only archive folders.</li>
             <li>Generic IMAP keeps TLS on port 993 by default.</li>
+            <li>Paperless filing stays opt-in per mailbox and only sends qualifying attachments.</li>
             <li>This remains archive and search infrastructure, not a browser mail client.</li>
           </ul>
         </form>",
@@ -2627,6 +4221,11 @@ fn render_account_form(
             .unwrap_or_default(),
         escape_html(&form.folder_patterns),
         if form.sync_enabled.is_some() { "checked" } else { "" },
+        if form.paperless_enabled.is_some() {
+            "checked"
+        } else {
+            ""
+        },
         escape_html(submit_label),
     )
     .ok();
@@ -3077,6 +4676,8 @@ mod tests {
         let store_root = tempdir.path().join("store");
         let runtime_dir = tempdir.path().join("runtime");
         let lock_dir = tempdir.path().join("locks");
+        let paperless_consume_root = tempdir.path().join("paperless-consume");
+        let paperless_staging_dir = tempdir.path().join("paperless-staging");
 
         AppConfig {
             address: Arc::<str>::from("127.0.0.1"),
@@ -3085,6 +4686,12 @@ mod tests {
             store_root: Arc::<str>::from(store_root.to_string_lossy().to_string()),
             runtime_dir: Arc::<str>::from(runtime_dir.to_string_lossy().to_string()),
             lock_dir: Arc::<str>::from(lock_dir.to_string_lossy().to_string()),
+            paperless_consume_root: Some(Arc::<str>::from(
+                paperless_consume_root.to_string_lossy().to_string(),
+            )),
+            paperless_staging_dir: Some(Arc::<str>::from(
+                paperless_staging_dir.to_string_lossy().to_string(),
+            )),
             default_tags: Arc::from(vec!["new".to_string()]),
         }
     }
@@ -3108,12 +4715,58 @@ mod tests {
             folder_patterns_json: serde_json::to_string(&gmail_default_patterns()).expect("json"),
             encrypted_secret: "ignored".to_string(),
             sync_enabled: true,
+            paperless_enabled: false,
             created_at: String::new(),
             updated_at: String::new(),
             last_sync_started_at: None,
             last_sync_finished_at: None,
             last_sync_status: None,
             last_sync_error: None,
+            last_sync_phase: None,
+            last_sync_code: None,
+            last_sync_summary: None,
+            last_sync_detail: None,
+            paperless_last_export_started_at: None,
+            paperless_last_export_finished_at: None,
+            paperless_last_export_status: None,
+            paperless_last_export_error: None,
+        }
+    }
+
+    fn sample_status_payload() -> AccountStatusPayload {
+        AccountStatusPayload {
+            id: 42,
+            status_class: "error".to_string(),
+            status_label: "sync failed".to_string(),
+            index_label: "Indexed".to_string(),
+            last_activity: "2026-04-25T21:37:55Z".to_string(),
+            downloaded_message_count: 8_002,
+            indexed_message_count: 6_668,
+            pending_index_count: 1_334,
+            index_coverage_percent: 83,
+            progress_note: "Downloaded mail is ahead of search. Run Reindex to catch up."
+                .to_string(),
+            last_sync_error: Some("mbsync: authentication failed".to_string()),
+            diagnostic_phase: Some("download".to_string()),
+            diagnostic_code: Some("download_failed".to_string()),
+            diagnostic_summary: Some(
+                "Mailbox download failed before new mail could be indexed.".to_string(),
+            ),
+            diagnostic_detail: Some("mbsync: authentication failed".to_string()),
+            diagnostic_impact: Some(
+                "The sync did not reach the indexing step, so newly downloaded mail may still be missing."
+                    .to_string(),
+            ),
+            recommended_action: Some(
+                "Check the mailbox credentials and archive paths, then run Sync now again."
+                    .to_string(),
+            ),
+            progress_warning: None,
+            progress_warning_detail: None,
+            progress_warning_action: None,
+            paperless_label: "Paperless off".to_string(),
+            paperless_note: "Attachment filing is disabled for this mailbox.".to_string(),
+            last_paperless_error: None,
         }
     }
 
@@ -3148,6 +4801,16 @@ mod tests {
     }
 
     fn seed_account(config: &AppConfig, username: &str, secret: &str) -> i64 {
+        seed_account_with_flags(config, username, secret, true, false)
+    }
+
+    fn seed_account_with_flags(
+        config: &AppConfig,
+        username: &str,
+        secret: &str,
+        sync_enabled: bool,
+        paperless_enabled: bool,
+    ) -> i64 {
         insert_account(
             config,
             username,
@@ -3160,7 +4823,8 @@ mod tests {
                 folder_mode: "gmail_default".to_string(),
                 folder_patterns: gmail_default_patterns(),
                 secret: Some(secret.to_string()),
-                sync_enabled: true,
+                sync_enabled,
+                paperless_enabled,
             },
         )
         .expect("insert account");
@@ -3179,6 +4843,80 @@ mod tests {
         let paths = ensure_account_paths(config, account).expect("paths");
         ensure_notmuch_config(config, account, &paths).expect("config");
         fs::read_to_string(paths.notmuch_config).expect("notmuch config")
+    }
+
+    fn write_maildir_message(
+        account_paths: &AccountPaths,
+        relative_path: &str,
+        contents: &str,
+    ) -> PathBuf {
+        let path = account_paths.maildir.join(relative_path);
+        fs::create_dir_all(path.parent().expect("mail parent")).expect("maildir parent");
+        write_private_file(&path, contents.as_bytes()).expect("mail message");
+        path
+    }
+
+    fn paperless_consume_root(config: &AppConfig) -> PathBuf {
+        PathBuf::from(
+            config
+                .paperless_consume_root
+                .as_deref()
+                .expect("paperless consume root"),
+        )
+    }
+
+    fn count_paperless_handoff_files(config: &AppConfig) -> usize {
+        collect_regular_files(&paperless_consume_root(config))
+            .expect("paperless consume files")
+            .len()
+    }
+
+    fn count_attachment_export_rows(config: &AppConfig) -> i64 {
+        let connection = open_db(config).expect("db");
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM paperless_attachment_exports",
+                [],
+                |row| row.get(0),
+            )
+            .expect("attachment export rows")
+    }
+
+    fn count_attachment_export_rows_for_outcome(config: &AppConfig, outcome: &str) -> i64 {
+        let connection = open_db(config).expect("db");
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM paperless_attachment_exports WHERE outcome = ?1",
+                params![outcome],
+                |row| row.get(0),
+            )
+            .expect("attachment export rows by outcome")
+    }
+
+    fn read_notmuch_stub_tag_file(account_paths: &AccountPaths, name: &str) -> String {
+        fs::read_to_string(account_paths.state_dir.join(".notmuch-stub").join(name))
+            .unwrap_or_default()
+    }
+
+    fn mail_export_stub_commands() -> [(&'static str, &'static str); 4] {
+        [
+            (
+                "mbsync",
+                "exit 0\n",
+            ),
+            (
+                "notmuch",
+                "STATE_DIR=\"$HOME/.notmuch-stub\"\nMAILDIR=\"$(dirname \"$NOTMUCH_CONFIG\")/../maildir\"\nmkdir -p \"$STATE_DIR\"\ncmd=\"${1:-}\"\nshift || true\ncase \"$cmd\" in\n  new)\n    mkdir -p \"$MAILDIR/.notmuch\"\n    ;;\n  count)\n    find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | wc -l | tr -d ' '\n    ;;\n  search)\n    if printf '%s ' \"$@\" | grep -q -- '--format=json'; then\n      printf '[]'\n      exit 0\n    fi\n    reviewed=\"$STATE_DIR/reviewed\"\n    touch \"$reviewed\"\n    while IFS= read -r path; do\n      rel=\"${path#${MAILDIR}/}\"\n      if grep -Fxq \"$rel\" \"$reviewed\"; then\n        continue\n      fi\n      printf '%s\\n' \"$path\"\n    done < <(find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | sort)\n    ;;\n  tag)\n    tag_spec=\"$1\"\n    shift\n    if [[ \"${1:-}\" == '--' ]]; then\n      shift\n    fi\n    query=\"${1:-}\"\n    rel=\"${query#path:\\\"}\"\n    rel=\"${rel%\\\"}\"\n    rel=\"${rel//\\\\\\\"/\\\"}\"\n    rel=\"${rel//\\\\\\\\/\\\\}\"\n    case \"$tag_spec\" in\n      +paperless-reviewed)\n        touch \"$STATE_DIR/reviewed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/reviewed\"\n        sort -u \"$STATE_DIR/reviewed\" -o \"$STATE_DIR/reviewed\"\n        ;;\n      +paperless-filed)\n        touch \"$STATE_DIR/filed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/filed\"\n        sort -u \"$STATE_DIR/filed\" -o \"$STATE_DIR/filed\"\n        ;;\n      *)\n        echo \"unsupported tag command: $tag_spec\" >&2\n        exit 1\n        ;;\n    esac\n    ;;\n  *)\n    echo \"unsupported notmuch command: $cmd\" >&2\n    exit 1\n    ;;\nesac\n",
+            ),
+            (
+                "ripmime",
+                "input=''\noutput=''\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    -i)\n      input=\"$2\"\n      shift 2\n      ;;\n    -d)\n      output=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nmkdir -p \"$output\"\ncontents=\"$(cat \"$input\")\"\nif [[ \"$contents\" == *'ATTACH:none'* ]]; then\n  exit 0\nfi\nif [[ \"$contents\" == *'ATTACH:duplicate-pdf'* ]]; then\n  printf 'duplicate payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:text'* ]]; then\n  printf 'plain text payload\\n' > \"$output/note.txt\"\nfi\nif [[ \"$contents\" == *'ATTACH:tiny-image'* ]]; then\n  printf 'tiny' > \"$output/logo.png\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files-bad'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.bin\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.docx\"\nfi\n",
+            ),
+            (
+                "file",
+                "target=\"${@: -1}\"\ncase \"$target\" in\n  *.pdf)\n    printf 'application/pdf\\n'\n    ;;\n  *.txt)\n    printf 'text/plain\\n'\n    ;;\n  *.docx)\n    printf 'application/vnd.openxmlformats-officedocument.wordprocessingml.document\\n'\n    ;;\n  *.png)\n    printf 'image/png\\n'\n    ;;\n  *.bin)\n    echo 'unknown binary attachment' >&2\n    exit 1\n    ;;\n  *)\n    printf 'application/octet-stream\\n'\n    ;;\nesac\n",
+            ),
+        ]
     }
 
     #[test]
@@ -3443,9 +5181,72 @@ mod tests {
         assert_eq!(account.last_sync_status.as_deref(), Some("error"));
         assert_eq!(
             account.last_sync_error.as_deref(),
-            Some("Mailbox sync was interrupted before completion.")
+            Some("The account was marked running but no active sync lock remained.")
+        );
+        assert_eq!(account.last_sync_phase.as_deref(), Some("reconcile"));
+        assert_eq!(account.last_sync_code.as_deref(), Some("interrupted"));
+        assert_eq!(
+            account.last_sync_summary.as_deref(),
+            Some("A previous sync stopped before indexing finished.")
         );
         assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn sync_failure_classifies_download_phase() {
+        with_stubbed_path(
+            &[
+                ("mbsync", "echo 'authentication failed' >&2\nexit 1\n"),
+                ("notmuch", "exit 0\n"),
+            ],
+            |_| {
+                let tempdir = TempDir::new().expect("tempdir");
+                let config = test_config(&tempdir);
+                prepare_test_layout(&config);
+                let account_id = seed_account(&config, "alice", "secret");
+
+                let error =
+                    run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                        .expect_err("sync should fail");
+
+                assert_eq!(error.phase, Some(SyncPhase::Download));
+                assert_eq!(error.code, "download_failed");
+                assert_eq!(
+                    error.summary,
+                    "Mailbox download failed before new mail could be indexed."
+                );
+                assert!(error.detail.contains("authentication failed"));
+
+                let account = read_account(&config, "alice", account_id);
+                assert_eq!(account.last_sync_phase.as_deref(), Some("download"));
+                assert_eq!(account.last_sync_code.as_deref(), Some("download_failed"));
+            },
+        );
+    }
+
+    #[test]
+    fn sync_failure_classifies_index_phase() {
+        with_stubbed_path(
+            &[
+                ("mbsync", "exit 0\n"),
+                ("notmuch", "echo 'database locked' >&2\nexit 1\n"),
+            ],
+            |_| {
+                let tempdir = TempDir::new().expect("tempdir");
+                let config = test_config(&tempdir);
+                prepare_test_layout(&config);
+                let account_id = seed_account(&config, "alice", "secret");
+
+                let error =
+                    run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                        .expect_err("sync should fail");
+
+                assert_eq!(error.phase, Some(SyncPhase::Index));
+                assert_eq!(error.code, "index_failed");
+                assert!(error.summary.contains("indexing failed"));
+                assert!(error.detail.contains("database locked"));
+            },
+        );
     }
 
     #[test]
@@ -3471,6 +5272,102 @@ mod tests {
             response.headers().get("X-Frame-Options").expect("header"),
             "DENY"
         );
+    }
+
+    #[test]
+    fn dashboard_card_renders_structured_sync_notice() {
+        let view = DashboardAccountView {
+            account: example_account(),
+            status: sample_status_payload(),
+        };
+
+        let html = render_account_card(&view);
+        assert!(html.contains("Mailbox download failed before new mail could be indexed."));
+        assert!(html.contains("Technical detail"));
+        assert!(html.contains("Check the mailbox credentials and archive paths"));
+    }
+
+    #[test]
+    fn metrics_progress_warning_is_exposed_in_status_payload() {
+        with_stubbed_path(
+            &[(
+                "notmuch",
+                "if [[ \"$1\" == 'count' ]]; then echo 'database unavailable' >&2; exit 1; fi\nexit 0\n",
+            )],
+            |_| {
+                let tempdir = TempDir::new().expect("tempdir");
+                let config = test_config(&tempdir);
+                prepare_test_layout(&config);
+                let account_id = seed_account(&config, "alice", "secret");
+                let account = read_account(&config, "alice", account_id);
+                let paths = ensure_account_paths(&config, &account).expect("paths");
+                fs::create_dir_all(paths.maildir.join(".notmuch")).expect("db");
+
+                let view = build_dashboard_account_view(&config, account);
+
+                assert_eq!(
+                    view.status.progress_warning.as_deref(),
+                    Some("Archive counts could not be verified for this mailbox.")
+                );
+                assert!(view
+                    .status
+                    .progress_warning_detail
+                    .as_deref()
+                    .expect("warning detail")
+                    .contains("database unavailable"));
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_last_sync_error_still_renders_reasonable_summary() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_account(&config, "alice", "secret");
+        let connection = open_db(&config).expect("db");
+        connection
+            .execute(
+                r#"
+                UPDATE accounts
+                SET
+                    last_sync_status = 'error',
+                    last_sync_error = 'legacy failure detail',
+                    last_sync_phase = NULL,
+                    last_sync_code = NULL,
+                    last_sync_summary = NULL,
+                    last_sync_detail = NULL
+                WHERE id = ?1
+                "#,
+                params![account_id],
+            )
+            .expect("update");
+
+        let view = build_dashboard_account_view(&config, read_account(&config, "alice", account_id));
+        assert_eq!(
+            view.status.diagnostic_summary.as_deref(),
+            Some("The last sync reported an error.")
+        );
+        assert_eq!(
+            view.status.diagnostic_detail.as_deref(),
+            Some("legacy failure detail")
+        );
+    }
+
+    #[test]
+    fn dashboard_status_payload_serializes_diagnostic_fields() {
+        let payload = DashboardStatusPayload {
+            generated_at: "2026-04-26T00:00:00Z".to_string(),
+            totals: DashboardTotals::default(),
+            accounts: vec![sample_status_payload()],
+        };
+
+        let json = serde_json::to_value(payload).expect("json");
+        let account = &json["accounts"][0];
+        assert!(account.get("diagnostic_summary").is_some());
+        assert!(account.get("diagnostic_detail").is_some());
+        assert!(account.get("recommended_action").is_some());
+        assert!(account.get("progress_warning").is_some());
     }
 
     #[test]
@@ -3510,6 +5407,7 @@ mod tests {
                 folder_patterns: gmail_default_patterns(),
                 secret: None,
                 sync_enabled: false,
+                paperless_enabled: false,
             },
         )
         .expect("update");
@@ -3541,6 +5439,7 @@ mod tests {
                 folder_patterns: gmail_default_patterns(),
                 secret: Some("new-secret".to_string()),
                 sync_enabled: true,
+                paperless_enabled: false,
             },
         )
         .expect("update");
@@ -3591,6 +5490,7 @@ mod tests {
                 folder_patterns: gmail_default_patterns(),
                 secret: None,
                 sync_enabled: true,
+                paperless_enabled: false,
             },
         )
         .expect("update");
@@ -3598,6 +5498,232 @@ mod tests {
         let updated = read_account(&config, "alice", account_id);
         let reconciled = read_notmuch_config(&config, &updated);
         assert!(reconciled.contains("primary_email=archive@example.com"));
+    }
+
+    #[test]
+    fn paperless_flag_round_trips_through_account_storage_and_forms() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
+
+        let account = read_account(&config, "alice", account_id);
+        let form = account_form_from_account(&account);
+
+        assert!(account.paperless_enabled);
+        assert_eq!(form.paperless_enabled.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn paperless_export_skips_mailboxes_when_disabled() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <skip-disabled@example.com>\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            assert_eq!(count_paperless_handoff_files(&config), 0);
+            assert_eq!(count_attachment_export_rows(&config), 0);
+        });
+    }
+
+    #[test]
+    fn paperless_backfills_once_then_stops_reprocessing_reviewed_messages() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <backfill@example.com>\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("first sync");
+            assert_eq!(count_paperless_handoff_files(&config), 1);
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "exported"),
+                1
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("second sync");
+            assert_eq!(count_paperless_handoff_files(&config), 1);
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "exported"),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn paperless_marks_attachmentless_messages_reviewed_without_importing() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-no-attachments",
+                "Message-ID: <no-attachments@example.com>\n\nATTACH:none\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            assert_eq!(count_paperless_handoff_files(&config), 0);
+            assert!(read_notmuch_stub_tag_file(&account_paths, "reviewed")
+                .contains("Inbox/cur/msg-no-attachments"));
+        });
+    }
+
+    #[test]
+    fn paperless_deduplicates_identical_attachments_across_messages() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <duplicate-a@example.com>\n\nATTACH:duplicate-pdf\n",
+            );
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-2",
+                "Message-ID: <duplicate-b@example.com>\n\nATTACH:duplicate-pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            assert_eq!(count_paperless_handoff_files(&config), 1);
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "exported"),
+                1
+            );
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "duplicate"),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn paperless_retry_avoids_reexporting_successful_attachments_after_partial_failure() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            let message_path = write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <partial-failure@example.com>\n\nATTACH:two-files-bad\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("first sync");
+            assert_eq!(count_paperless_handoff_files(&config), 1);
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "exported"),
+                1
+            );
+            let account = read_account(&config, "alice", account_id);
+            assert_eq!(
+                account.paperless_last_export_status.as_deref(),
+                Some("error")
+            );
+            assert!(
+                account
+                    .paperless_last_export_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("unknown binary attachment"))
+            );
+
+            write_private_file(
+                &message_path,
+                b"Message-ID: <partial-failure@example.com>\n\nATTACH:two-files\n",
+            )
+            .expect("rewrite mail message");
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("retry sync");
+
+            assert_eq!(count_paperless_handoff_files(&config), 2);
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "exported"),
+                2
+            );
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "duplicate"),
+                0
+            );
+        });
+    }
+
+    #[test]
+    fn maildir_renames_do_not_trigger_duplicate_paperless_handoffs() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            let original_path = write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <rename@example.com>\n\nATTACH:duplicate-pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("first sync");
+            assert_eq!(count_paperless_handoff_files(&config), 1);
+
+            let renamed_path = account_paths.maildir.join("Inbox/cur/msg-1:2,S");
+            fs::rename(&original_path, &renamed_path).expect("rename maildir file");
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("second sync after rename");
+
+            assert_eq!(count_paperless_handoff_files(&config), 1);
+            assert_eq!(count_attachment_export_rows(&config), 1);
+        });
+    }
+
+    #[test]
+    fn visible_notmuch_tags_hide_internal_paperless_state() {
+        assert_eq!(
+            visible_notmuch_tags(vec![
+                "inbox".to_string(),
+                PAPERLESS_REVIEWED_TAG.to_string(),
+                PAPERLESS_FILED_TAG.to_string(),
+                "unread".to_string(),
+            ]),
+            vec!["inbox".to_string(), "unread".to_string()]
+        );
     }
 
     #[test]
@@ -3773,6 +5899,7 @@ mod tests {
             secret: String::new(),
             folder_patterns: String::new(),
             sync_enabled: Some("on".to_string()),
+            paperless_enabled: None,
         };
 
         assert!(validate_account_form(&form, true).is_err());

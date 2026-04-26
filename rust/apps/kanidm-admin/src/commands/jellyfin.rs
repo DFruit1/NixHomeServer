@@ -98,6 +98,8 @@ fn write_password_hash_atomic(
     path: &Path,
     password_hash: &str,
 ) -> Result<(), AppError> {
+    ensure_safe_directory_path(directory)?;
+
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     builder.mode(0o700);
@@ -108,53 +110,148 @@ fn write_password_hash_atomic(
         ),
     })?;
 
-    let temp_path = directory.join(format!(
-        ".{}.pbkdf2.tmp-{}",
-        path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("jellyfin"),
-        std::process::id()
-    ));
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temp_path)
-        .map_err(|error| AppError::Io {
+    let metadata = fs::metadata(directory).map_err(|error| AppError::Io {
+        message: format!(
+            "failed to inspect Jellyfin password state directory '{}': {error}",
+            directory.display()
+        ),
+    })?;
+    if !metadata.is_dir() {
+        return Err(AppError::Io {
             message: format!(
-                "failed to open temporary Jellyfin password state file '{}' in '{}': {error}",
-                temp_path.display(),
+                "Jellyfin password state directory path '{}' exists but is not a directory",
                 directory.display()
             ),
-        })?;
+        });
+    }
 
-    file.write_all(password_hash.as_bytes())
+    let (temp_path, mut file) = create_temp_file(directory, path)?;
+
+    if let Err(error) = file
+        .write_all(password_hash.as_bytes())
         .and_then(|_| file.write_all(b"\n"))
-        .map_err(|error| AppError::Io {
+    {
+        cleanup_temp_file(&temp_path);
+        return Err(AppError::Io {
             message: format!(
                 "failed to write temporary Jellyfin password state file '{}': {error}",
                 temp_path.display()
             ),
-        })?;
+        });
+    }
 
-    file.sync_all().map_err(|error| AppError::Io {
-        message: format!(
-            "failed to fsync temporary Jellyfin password state file '{}': {error}",
-            temp_path.display()
-        ),
-    })?;
+    if let Err(error) = file.sync_all() {
+        cleanup_temp_file(&temp_path);
+        return Err(AppError::Io {
+            message: format!(
+                "failed to fsync temporary Jellyfin password state file '{}': {error}",
+                temp_path.display()
+            ),
+        });
+    }
     drop(file);
 
-    fs::rename(&temp_path, path).map_err(|error| AppError::Io {
-        message: format!(
-            "failed to atomically replace Jellyfin password state file '{}' with '{}': {error}",
-            path.display(),
-            temp_path.display()
-        ),
-    })?;
+    if let Err(error) = fs::rename(&temp_path, path) {
+        cleanup_temp_file(&temp_path);
+        return Err(AppError::Io {
+            message: format!(
+                "failed to atomically replace Jellyfin password state file '{}' with '{}': {error}",
+                path.display(),
+                temp_path.display()
+            ),
+        });
+    }
 
     best_effort_directory_sync(directory);
     Ok(())
+}
+
+fn ensure_safe_directory_path(directory: &Path) -> Result<(), AppError> {
+    let mut current = PathBuf::new();
+
+    for component in directory.components() {
+        current.push(component.as_os_str());
+
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(AppError::Io {
+                    message: format!(
+                        "failed to inspect Jellyfin password path component '{}': {error}",
+                        current.display()
+                    ),
+                });
+            }
+        };
+
+        if metadata.file_type().is_symlink() {
+            return Err(AppError::Io {
+                message: format!(
+                    "Jellyfin password state directory path '{}' resolves through symlinked component '{}'",
+                    directory.display(),
+                    current.display()
+                ),
+            });
+        }
+
+        if current != directory && !metadata.is_dir() {
+            return Err(AppError::Io {
+                message: format!(
+                    "Jellyfin password path component '{}' exists but is not a directory",
+                    current.display()
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn create_temp_file(directory: &Path, path: &Path) -> Result<(PathBuf, File), AppError> {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("jellyfin");
+
+    for _ in 0..32 {
+        let temp_path = directory.join(format!(".{stem}.pbkdf2.tmp-{}", random_suffix()));
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(AppError::Io {
+                    message: format!(
+                        "failed to open temporary Jellyfin password state file '{}' in '{}': {error}",
+                        temp_path.display(),
+                        directory.display()
+                    ),
+                });
+            }
+        }
+    }
+
+    Err(AppError::Io {
+        message: format!(
+            "failed to allocate a unique temporary Jellyfin password state file in '{}'",
+            directory.display()
+        ),
+    })
+}
+
+fn random_suffix() -> String {
+    let mut bytes = [0u8; 8];
+    OsRng.fill_bytes(&mut bytes);
+    hex_upper(&bytes)
+}
+
+fn cleanup_temp_file(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 fn best_effort_directory_sync(directory: &Path) {
@@ -179,8 +276,7 @@ mod tests {
         env::set_var(PASSWORD_HASH_DIR_ENV, temp.path());
         env::set_var("TEST_JELLYFIN_PASSWORD", "super-secret");
 
-        let output =
-            set_jellyfin_password("dsaw", "TEST_JELLYFIN_PASSWORD").expect("set password");
+        let output = set_jellyfin_password("dsaw", "TEST_JELLYFIN_PASSWORD").expect("set password");
 
         let hash_path = temp.path().join("dsaw.pbkdf2");
         let stored = fs::read_to_string(&hash_path).expect("hash file");
@@ -202,10 +298,26 @@ mod tests {
 
         let stored = fs::read_to_string(&path).expect("read");
         assert_eq!(stored, "new-value\n");
-        assert!(temp
-            .path()
-            .read_dir()
-            .expect("read_dir")
-            .all(|entry| !entry.expect("entry").file_name().to_string_lossy().contains(".tmp-")));
+        assert!(temp.path().read_dir().expect("read_dir").all(|entry| !entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp-")));
+    }
+
+    #[test]
+    fn rejects_symlinked_directory_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let real = temp.path().join("real");
+        fs::create_dir(&real).expect("real dir");
+        let symlink = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &symlink).expect("symlink");
+
+        let error = write_password_hash_atomic(&symlink, &symlink.join("dsaw.pbkdf2"), "new-value")
+            .expect_err("symlink rejection");
+
+        assert!(error
+            .to_string()
+            .contains("resolves through symlinked component"));
     }
 }

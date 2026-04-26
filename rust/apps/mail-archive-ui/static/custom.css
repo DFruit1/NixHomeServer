@@ -340,6 +340,56 @@ textarea {
   margin-bottom: 0;
 }
 
+.notice {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.95rem 1.1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(29, 31, 28, 0.12);
+  background: rgba(15, 107, 92, 0.06);
+}
+
+.notice.sync {
+  background: var(--danger-soft);
+  border-color: rgba(141, 45, 28, 0.18);
+}
+
+.notice.warning {
+  background: var(--warning-soft);
+  border-color: rgba(113, 93, 17, 0.18);
+}
+
+.notice-title,
+.notice-copy {
+  margin: 0;
+}
+
+.notice-title {
+  font-weight: 700;
+}
+
+.notice-meta {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
+.notice-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.notice-details pre {
+  margin: 0.65rem 0 0;
+  padding: 0.8rem 0.9rem;
+  border-radius: 14px;
+  background: rgba(29, 31, 28, 0.06);
+  border: 1px solid rgba(29, 31, 28, 0.08);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  color: inherit;
+}
+
 .muted-list {
   margin: 0;
   padding-left: 1.1rem;

@@ -1,8 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use kanidm_admin::{
     commands::{
-        access::{grant_access, revoke_access, set_access, show_access, why_denied, SetAccessOptions},
-        auth::{auth_login, auth_reauth, auth_status},
+        access::{
+            grant_access, revoke_access, set_access, show_access, why_denied, SetAccessOptions,
+        },
+        auth::{auth_login, auth_reauth, auth_status, ensure_interactive_auth_allowed},
         config::show_config,
         jellyfin::set_jellyfin_password,
         users::{
@@ -190,8 +192,14 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
     match cli.command {
         Commands::Auth(command) => match command.command {
             AuthSubcommand::Status => auth_status(&kanidm).map(Some),
-            AuthSubcommand::Login => auth_login(&kanidm).map(Some),
-            AuthSubcommand::Reauth => auth_reauth(&kanidm).map(Some),
+            AuthSubcommand::Login => {
+                ensure_interactive_auth_allowed(format)?;
+                auth_login(&kanidm).map(Some)
+            }
+            AuthSubcommand::Reauth => {
+                ensure_interactive_auth_allowed(format)?;
+                auth_reauth(&kanidm).map(Some)
+            }
         },
         Commands::Users(command) => match command.command {
             UsersSubcommand::List => list_users(&kanidm).map(Some),

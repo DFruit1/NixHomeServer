@@ -28,6 +28,7 @@ Functional scope:
 - stores mailbox credentials encrypted at rest
 - generates `mbsync` config on demand
 - updates or repairs per-account `notmuch` indexes
+- optionally extracts qualifying document attachments and hands them to Paperless through the filesystem consume flow
 - indexes supported document attachment text for search, including `pdf`, `doc`, `docx`, `odt`, `rtf`, and `text/plain`
 - exposes metadata-only search results
 - supports mailbox edit, schedule toggle, manual sync, and reindex actions
@@ -38,6 +39,13 @@ Health behavior:
 - `/healthz` returns JSON
 - `200 OK` means the DB, writable runtime paths, store root, and tool discovery checks passed
 - `503` means the app is degraded before mailbox traffic is attempted
+
+Paperless filing model:
+- filing stays opt-in per mailbox through the UI checkbox
+- the first run after enabling Paperless filing backfills already-downloaded mail for that mailbox
+- later runs only inspect messages that have not been marked with the internal `paperless-reviewed` notmuch tag
+- extracted attachments are deduplicated by SHA-256 before they are moved into `Paperless` under `documents/inbox/mail-archive/`
+- internal `paperless-*` notmuch tags are hidden from the search UI
 
 ## Development
 

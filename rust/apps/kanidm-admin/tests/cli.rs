@@ -87,7 +87,9 @@ exit 1
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("Warnings:"))
-        .stdout(predicate::str::contains("skipped malformed Kanidm person list entry"));
+        .stdout(predicate::str::contains(
+            "skipped malformed Kanidm person list entry",
+        ));
 }
 
 #[test]
@@ -146,57 +148,38 @@ printf 'not-json'
 }
 
 #[test]
-fn auth_login_verifies_session_after_success() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let state_path = dir.path().join("logged-in");
-    let script_body = format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-if [[ "$1" == "login" ]]; then
-  touch "{state_path}"
-  exit 0
-fi
-if [[ "$1" == "session" && "$2" == "list" ]]; then
-  if [[ -e "{state_path}" ]]; then
-    printf 'session active\n'
-    exit 0
-  fi
-fi
-echo "unexpected args: $*" >&2
-exit 1
-"#,
-        state_path = state_path.display()
-    );
-    let script = dir.path().join("kanidm-stub.sh");
-    write_script(&script, &script_body);
-
-    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
-    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script).args([
-        "--server-url",
-        "https://id.example.test",
-        "--admin-name",
-        "admindsaw",
-        "auth",
-        "login",
-    ]);
-
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Authentication succeeded"));
-}
-
-#[test]
-fn auth_login_fails_when_session_never_appears() {
+fn auth_login_rejects_json_output_before_spawn() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$1" == "login" ]]; then
-  exit 0
-fi
-if [[ "$1" == "session" && "$2" == "list" ]]; then
-  printf 'No valid auth tokens found\n' >&2
-  exit 1
-fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "--format",
+            "json",
+            "auth",
+            "login",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("only support --format human"));
+}
+
+#[test]
+fn auth_login_requires_tty() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
 echo "unexpected args: $*" >&2
 exit 1
 "#,
@@ -213,19 +196,16 @@ exit 1
             "login",
         ]);
 
-    cmd.assert()
-        .code(8)
-        .stderr(predicate::str::contains("no active session was detected"));
+    cmd.assert().code(2).stderr(predicate::str::contains(
+        "require a terminal on stdin and stdout",
+    ));
 }
 
 #[test]
-fn auth_reauth_reports_command_completion() {
+fn auth_reauth_rejects_json_output_before_spawn() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$1" == "reauth" ]]; then
-  exit 0
-fi
 echo "unexpected args: $*" >&2
 exit 1
 "#,
@@ -238,14 +218,15 @@ exit 1
             "https://id.example.test",
             "--admin-name",
             "admindsaw",
+            "--format",
+            "json",
             "auth",
             "reauth",
         ]);
 
     cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("reauthentication command completed"))
-        .stdout(predicate::str::contains("Privileged state will be confirmed"));
+        .code(2)
+        .stderr(predicate::str::contains("only support --format human"));
 }
 
 #[test]
@@ -282,6 +263,41 @@ exit 1
             "Reset URL: https://id.example.test/ui/reset?token=abc123",
         ))
         .stdout(predicate::str::contains("Token: abc123"));
+}
+
+#[test]
+fn users_reset_token_warns_when_output_is_partial() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "person" && "$2" == "credential" && "$3" == "create-reset-token" ]]; then
+  printf 'Reset token: abc123\n'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "users",
+            "reset-token",
+            "dsaw",
+            "--ttl",
+            "3600",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Token: abc123"))
+        .stdout(predicate::str::contains("Warnings:"))
+        .stdout(predicate::str::contains("did not contain a reset URL"));
 }
 
 #[test]
@@ -544,7 +560,9 @@ fn jellyfin_set_password_writes_hash_file() {
 
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("Staged the desired Jellyfin password hash"))
+        .stdout(predicate::str::contains(
+            "Staged the desired Jellyfin password hash",
+        ))
         .stdout(predicate::str::contains("still needs to apply"));
 
     let written = fs::read_to_string(dir.path().join("dsaw.pbkdf2")).expect("hash file");

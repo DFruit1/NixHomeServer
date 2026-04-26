@@ -18,7 +18,7 @@ use crate::{
     config::ResolvedConfig,
     groups::{ManagedGroup, MANAGED_GROUPS},
     kanidm_cli::{KanidmCli, SessionState},
-    models::{parse_group_list, parse_person_list, PersonSummary},
+    models::{parse_group_list, parse_person_list, Parsed, PersonSummary},
     output::CommandOutput,
     AppError,
 };
@@ -350,7 +350,31 @@ fn edit_groups_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         }
     };
 
-    if available_groups.is_empty() {
+    if !available_groups.warnings.is_empty() {
+        render::print_note(
+            "Managed Groups Inventory Incomplete",
+            &format!(
+                "Authoritative managed-group editing is blocked because the Kanidm group list contained parse warnings.\n\nWarnings:\n{}",
+                render_bullets(&available_groups.warnings)
+            ),
+        );
+        forms::pause("Press Enter to continue")?;
+        return Ok(());
+    }
+
+    if !available_groups.missing_managed.is_empty() {
+        render::print_note(
+            "Managed Groups Inventory Incomplete",
+            &format!(
+                "Authoritative managed-group editing is blocked because the backend group inventory is incomplete.\n\nMissing managed groups:\n{}",
+                render_bullets(&available_groups.missing_managed)
+            ),
+        );
+        forms::pause("Press Enter to continue")?;
+        return Ok(());
+    }
+
+    if available_groups.groups.is_empty() {
         render::print_note(
             "Managed Groups",
             "None of the repo-managed groups were returned by Kanidm.",
@@ -370,10 +394,12 @@ fn edit_groups_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
 
     let current_groups = extract_groups(&current_access);
     let items = available_groups
+        .groups
         .iter()
         .map(|group| format!("{} ({})", group.name, group.description))
         .collect::<Vec<_>>();
     let defaults = available_groups
+        .groups
         .iter()
         .map(|group| current_groups.iter().any(|current| current == group.name))
         .collect::<Vec<_>>();
@@ -384,7 +410,7 @@ fn edit_groups_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     )?;
     let selected_groups = selected_indexes
         .into_iter()
-        .map(|index| available_groups[index].name.to_string())
+        .map(|index| available_groups.groups[index].name.to_string())
         .collect::<Vec<_>>();
 
     render::print_output(
@@ -475,14 +501,24 @@ fn choose_account_id(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>,
         None => return Ok(None),
     };
 
-    if people.is_empty() {
+    if !people.warnings.is_empty() {
+        render::print_note(
+            "User Inventory Warning",
+            &format!(
+                "The listed users may be incomplete because the Kanidm user list contained parse warnings.\nManual account-id entry is safer if the target user is missing.\n\nWarnings:\n{}",
+                render_bullets(&people.warnings)
+            ),
+        );
+    }
+
+    if people.value.is_empty() {
         let manual =
             forms::input_optional("No users were listed. Enter an account id manually", None)?;
         return Ok(manual);
     }
 
     let mut items = vec!["Enter an account id manually".to_string()];
-    items.extend(people.iter().map(|person| {
+    items.extend(people.value.iter().map(|person| {
         format!(
             "{} | {} | {}",
             person.account_id,
@@ -496,15 +532,22 @@ fn choose_account_id(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>,
         return forms::input_optional("Enter the Kanidm account id to manage", None);
     }
 
-    Ok(Some(people[selection - 1].account_id.clone()))
+    Ok(Some(people.value[selection - 1].account_id.clone()))
 }
 
-fn load_people(kanidm: &KanidmCli) -> Result<Vec<PersonSummary>, AppError> {
+fn load_people(kanidm: &KanidmCli) -> Result<Parsed<Vec<PersonSummary>>, AppError> {
     let value = kanidm.person_list::<Value>()?;
-    Ok(parse_person_list(&value)?.value)
+    parse_person_list(&value)
 }
 
-fn load_available_groups(kanidm: &KanidmCli) -> Result<Vec<ManagedGroup>, AppError> {
+#[derive(Debug, Clone)]
+struct AvailableGroups {
+    groups: Vec<ManagedGroup>,
+    warnings: Vec<String>,
+    missing_managed: Vec<String>,
+}
+
+fn load_available_groups(kanidm: &KanidmCli) -> Result<AvailableGroups, AppError> {
     let value = kanidm.group_list::<Value>()?;
     let existing = parse_group_list(&value)?;
     let existing_names = existing
@@ -513,11 +556,22 @@ fn load_available_groups(kanidm: &KanidmCli) -> Result<Vec<ManagedGroup>, AppErr
         .map(|group| group.name.as_str())
         .collect::<HashSet<_>>();
 
-    Ok(MANAGED_GROUPS
+    let groups = MANAGED_GROUPS
         .iter()
         .copied()
         .filter(|group| existing_names.contains(group.name))
-        .collect())
+        .collect::<Vec<_>>();
+    let missing_managed = MANAGED_GROUPS
+        .iter()
+        .map(|group| group.name.to_string())
+        .filter(|name| !existing_names.contains(name.as_str()))
+        .collect::<Vec<_>>();
+
+    Ok(AvailableGroups {
+        groups,
+        warnings: existing.warnings,
+        missing_managed,
+    })
 }
 
 fn prepare_privileged_action(kanidm: &KanidmCli) -> Result<bool, AppError> {
@@ -558,7 +612,7 @@ where
     loop {
         match action() {
             Ok(value) => return Ok(Some(value)),
-            Err(AppError::SessionRequired { message }) if !retried_login => {
+            Err(AppError::SessionRequired { message, .. }) if !retried_login => {
                 render::print_note("Authentication Required", &message);
                 if !forms::confirm("Open kanidm login now?", true)? {
                     return Ok(None);
@@ -567,7 +621,7 @@ where
                 render::print_output("Authenticate", &output.render_human());
                 retried_login = true;
             }
-            Err(AppError::ReauthRequired { message }) if !retried_reauth => {
+            Err(AppError::ReauthRequired { message, .. }) if !retried_reauth => {
                 render::print_note("Reauthentication Required", &message);
                 if !forms::confirm("Open kanidm reauth now?", true)? {
                     return Ok(None);
@@ -593,4 +647,92 @@ fn extract_groups(output: &CommandOutput) -> Vec<String> {
         .filter_map(Value::as_str)
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn render_bullets(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
+
+    use super::*;
+    use crate::config::ResolvedConfig;
+
+    fn write_script(path: &Path, body: &str) {
+        let shell = ProcessCommand::new("bash")
+            .args(["-lc", "command -v bash"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.trim().to_string())
+            .filter(|stdout| !stdout.is_empty())
+            .unwrap_or_else(|| "/bin/sh".to_string());
+        let rewritten = body.replacen("#!/usr/bin/env bash", &format!("#!{shell}"), 1);
+        fs::write(path, rewritten).expect("write script");
+        let mut permissions = fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod");
+    }
+
+    fn test_cli(script: &Path) -> KanidmCli {
+        KanidmCli::new(&ResolvedConfig {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.as_os_str().to_os_string(),
+        })
+    }
+
+    #[test]
+    fn load_people_retains_parser_warnings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+if [[ "$1" == "person" && "$2" == "list" ]]; then
+  printf '[{"name":["dsaw"]},{"displayname":["Missing name"]}]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+
+        let people = load_people(&test_cli(&script)).expect("people");
+        assert_eq!(people.value.len(), 1);
+        assert_eq!(people.warnings.len(), 1);
+    }
+
+    #[test]
+    fn load_available_groups_reports_missing_managed_groups() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+if [[ "$1" == "group" && "$2" == "list" ]]; then
+  printf '[{"name":["users"]},{"name":["paperless-users"]}]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+
+        let groups = load_available_groups(&test_cli(&script)).expect("groups");
+        assert!(groups.warnings.is_empty());
+        assert!(groups.groups.iter().any(|group| group.name == "users"));
+        assert!(groups
+            .missing_managed
+            .iter()
+            .any(|group| group == "immich-users"));
+    }
 }
