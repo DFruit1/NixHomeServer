@@ -107,5 +107,15 @@ in
       preferShortUsername = true;
       scopeMaps."mail-archive-users" = [ "openid" "profile" "email" "groups_name" ];
     };
+
+    systems.oauth2.kiwix-web = {
+      displayName = "Kiwix";
+      imageFile = ./assets/books.svg;
+      originUrl = "https://${vars.kiwixDomain}/oauth2/callback";
+      originLanding = "https://${vars.kiwixDomain}";
+      basicSecretFile = config.age.secrets.kiwixOauth2ProxyClientSecret.path;
+      preferShortUsername = true;
+      scopeMaps.users = [ "openid" "profile" "email" "groups" ];
+    };
   };
 }

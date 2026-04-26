@@ -6,6 +6,7 @@ let
   dataDir = "/var/lib/jellyfin";
   managedDir = "${dataDir}/.nixos-managed";
   personalJellyfinLibrariesJson = builtins.toJSON vars.personalJellyfinLibraries;
+  sharedJellyfinLibrariesJson = builtins.toJSON vars.sharedJellyfinLibraries;
   syncScript = pkgs.writeShellScript "jellyfin-library-sync-v1" ''
     set -euo pipefail
 
@@ -102,6 +103,18 @@ let
 
     cat "$login_users_file" "$admin_users_file" | ${pkgs.coreutils}/bin/sort -u > "$desired_users_file"
 
+    format_personal_library_name() {
+      local username="$1"
+      local label="$2"
+
+      printf '%s (%s)\n' "$label" "$username"
+    }
+    format_shared_library_name() {
+      local label="$1"
+
+      printf '%s (Shared)\n' "$label"
+    }
+
     add_desired_library() {
       local name="$1"
       local collection_type="$2"
@@ -112,14 +125,23 @@ let
       printf '%s\n' "$name" >> "$desired_library_names_file"
     }
 
-    add_desired_library 'Shared Movies' 'movies' '${vars.sharedMoviesRoot}'
-    add_desired_library 'Shared Shows' 'tvshows' '${vars.sharedShowsRoot}'
-    add_desired_library 'Shared Home Videos' 'homevideos' '${vars.sharedHomeVideosRoot}'
+    while IFS=$'\t' read -r dir label collection_type; do
+      add_desired_library \
+        "$(format_shared_library_name "$label")" \
+        "$collection_type" \
+        "${vars.sharedVideosRoot}/$dir"
+    done < <(
+      printf '%s' '${sharedJellyfinLibrariesJson}' \
+        | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, .collectionType ] | @tsv'
+    )
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
       while IFS=$'\t' read -r dir label collection_type; do
-        add_desired_library "$username $label" "$collection_type" "${vars.usersWorkspaceRoot}/$username/videos/$dir"
+        add_desired_library \
+          "$(format_personal_library_name "$username" "$label")" \
+          "$collection_type" \
+          "${vars.usersWorkspaceRoot}/$username/videos/$dir"
       done < <(
         printf '%s' '${personalJellyfinLibrariesJson}' \
           | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, .collectionType ] | @tsv'
@@ -273,9 +295,18 @@ PY
       [[ -n "$username" ]] || continue
       allowed_json="$(
         {
-          printf '%s\n' "Shared Movies" "Shared Shows" "Shared Home Videos"
+          printf '%s' '${sharedJellyfinLibrariesJson}' \
+            | ${pkgs.jq}/bin/jq -r '.[] | .label' \
+            | while IFS= read -r label; do
+              [[ -n "$label" ]] || continue
+              format_shared_library_name "$label"
+            done
           printf '%s' '${personalJellyfinLibrariesJson}' \
-            | ${pkgs.jq}/bin/jq -r --arg username "$username" '.[] | "\($username) \(.label)"'
+            | ${pkgs.jq}/bin/jq -r '.[] | .label' \
+            | while IFS= read -r label; do
+              [[ -n "$label" ]] || continue
+              format_personal_library_name "$username" "$label"
+            done
         } | while IFS= read -r library_name; do
           [[ -n "$library_name" ]] || continue
           library_id="''${library_ids["$library_name"]:-}"

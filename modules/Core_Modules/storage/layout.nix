@@ -25,6 +25,8 @@ let
   );
   sharedBooksDirs = map (name: "${vars.sharedBooksRoot}/${name}") vars.sharedBooksSubdirs;
   sharedVideoDirs = map (name: "${vars.sharedVideosRoot}/${name}") vars.sharedVideoSubdirs;
+  sharedKavitaDirs = map (library: "${vars.sharedBooksRoot}/${library.dir}") vars.sharedKavitaLibraries;
+  sharedJellyfinDirs = map (library: "${vars.sharedVideosRoot}/${library.dir}") vars.sharedJellyfinLibraries;
 
   mkDirCmd =
     {
@@ -310,8 +312,8 @@ let
     }
 
     apply_media_acl audiobookshelf-media '${vars.sharedAudiobooksRoot}'
-    apply_media_acl kavita-media '${vars.sharedEbooksRoot}' '${vars.sharedComicsRoot}' '${vars.sharedMangaRoot}'
-    apply_media_acl jellyfin-media '${vars.sharedMoviesRoot}' '${vars.sharedShowsRoot}' '${vars.sharedHomeVideosRoot}'
+    apply_media_acl kavita-media ${lib.escapeShellArgs sharedKavitaDirs}
+    apply_media_acl jellyfin-media ${lib.escapeShellArgs sharedJellyfinDirs}
 
     apply_readonly_acl() {
       local group_name="$1"

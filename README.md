@@ -9,7 +9,7 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 - Public exposure: Cloudflare Tunnel
 - Private remote access: NetBird
 - Private DNS: Unbound
-- Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kavita, Jellyfin
+- Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kiwix, Kavita, Jellyfin
 - Mail archive and search: `mail-archive-ui`, `mbsync`, `notmuch`
 - Storage: Btrfs system SSD, single mirrored ZFS data pool, manual cold-storage pools
 - Validation: `nix flake check --no-build`, `scripts/check-repo.sh`, `scripts/runtime-readiness.sh`

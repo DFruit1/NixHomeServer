@@ -153,6 +153,7 @@ Normal onboarding sequence:
 
 - `files.<domain>`: browser access is enforced by OAuth2 Proxy and `fileshare_users`.
 - `emails.<domain>`: private-only access is enforced by `mail-archive-users`.
+- `wiki.<domain>`: browser access is enforced by OAuth2 Proxy; baseline `users` membership is sufficient.
 - Immich: first successful OIDC login creates the local user row.
 - Paperless: first successful OIDC login creates or links the local user row.
 - Audiobookshelf: OIDC is configured, but the local bootstrap or root flow still exists.

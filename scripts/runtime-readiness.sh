@@ -195,6 +195,7 @@ dns_mode="$(nix_var 'vars.dnsMode')"
 files_domain="$(nix_var 'vars.filesDomain')"
 media_root="$(nix_var 'vars.mediaRoot')"
 lan_dns_domain="$(nix_var 'vars.lanDnsDomain')"
+kiwix_domain="$(nix_var 'vars.kiwixDomain')"
 photos_domain="$(nix_var 'vars.photosDomain')"
 audiobooks_domain="$(nix_var 'vars.audiobooksDomain')"
 kavita_domain="$(nix_var 'vars.kavitaDomain')"
@@ -243,6 +244,8 @@ required_units=(
   unbound.service \
   copyparty.service \
   immich-server.service \
+  kiwix.service \
+  kiwix-oauth2-proxy.service \
   paperless-web.service \
   audiobookshelf.service \
   kavita.service \
@@ -256,6 +259,7 @@ echo
 echo "== HTTPS endpoints =="
 check_http "https://${kanidm_domain}/" 200 303
 check_http "https://${files_domain}/" 200 302 303 401 403
+check_http "https://${kiwix_domain}/" 200 302
 check_http "https://${photos_domain}/" 200 302
 check_http "https://paperless.${domain}/" 200 302
 check_http "https://${audiobooks_domain}/" 200 302
@@ -284,6 +288,7 @@ else
   check_public_dns "${files_domain}" "${nb_ip}"
 fi
 check_private_dns "paperless.${domain}" "${local_dns_private_answer}"
+check_private_dns "${kiwix_domain}" "${local_dns_private_answer}"
 check_private_dns "${photos_domain}" "${local_dns_private_answer}"
 check_private_dns "${audiobooks_domain}" "${local_dns_private_answer}"
 check_private_dns "${kavita_domain}" "${local_dns_private_answer}"

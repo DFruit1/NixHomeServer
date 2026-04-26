@@ -94,8 +94,16 @@ require_json_equal "$(nix_eval_json 'vars.sharedEmailsRoot')" '"/mnt/data/shared
   "Shared mail archives must resolve through the shared content root."
 require_json_equal "$(nix_eval_json 'vars.sharedEbooksRoot')" '"/mnt/data/shared/books/ebooks"' \
   "Shared ebooks must resolve through the shared public upload tree."
+require_json_equal "$(nix_eval_json 'vars.sharedOtherBooksRoot')" '"/mnt/data/shared/books/other"' \
+  "Shared other books must resolve through the shared public upload tree."
 require_json_equal "$(nix_eval_json 'vars.sharedMoviesRoot')" '"/mnt/data/shared/videos/movies"' \
   "Shared movies must resolve through the shared public upload tree."
+require_json_equal "$(nix_eval_json 'vars.sharedMusicVideosRoot')" '"/mnt/data/shared/videos/music-videos"' \
+  "Shared music videos must resolve through the shared public upload tree."
+require_json_equal "$(nix_eval_json 'vars.sharedYouTubeRoot')" '"/mnt/data/shared/videos/youtube"' \
+  "Shared YouTube videos must resolve through the shared public upload tree."
+require_json_equal "$(nix_eval_json 'vars.sharedOtherVideosRoot')" '"/mnt/data/shared/videos/other"' \
+  "Shared other videos must resolve through the shared public upload tree."
 require_json_contains "$(nix_eval_json 'vars.userBooksSubdirs')" "ebooks" \
   "Per-user book roots must include ebooks."
 require_json_contains "$(nix_eval_json 'vars.userBooksSubdirs')" "other" \
@@ -108,14 +116,14 @@ require_json_contains "$(nix_eval_json 'vars.userVideoSubdirs')" "youtube" \
   "Per-user video roots must include YouTube."
 require_json_contains "$(nix_eval_json 'vars.userVideoSubdirs')" "other" \
   "Per-user video roots must include the fixed other category."
-forbid_json_contains "$(nix_eval_json 'vars.sharedBooksSubdirs')" "other" \
-  "Shared book roots must remain unchanged."
-forbid_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "music-videos" \
-  "Shared video roots must not gain personal-only categories."
-forbid_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "youtube" \
-  "Shared video roots must remain unchanged."
-forbid_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "other" \
-  "Shared video roots must remain unchanged."
+require_json_contains "$(nix_eval_json 'vars.sharedBooksSubdirs')" "other" \
+  "Shared book roots must include the fixed other category."
+require_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "music-videos" \
+  "Shared video roots must include music videos."
+require_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "youtube" \
+  "Shared video roots must include YouTube."
+require_json_contains "$(nix_eval_json 'vars.sharedVideoSubdirs')" "other" \
+  "Shared video roots must include the fixed other category."
 require_json_equal "$(nix_eval_config_json 'services.mail-archive-ui.storeRoot')" '"/mnt/data/users"' \
   "Mail archive storage must resolve through the per-user content root."
 restic_paths_json="$(nix_eval_config_json 'services.restic.backups.system-state.paths')"

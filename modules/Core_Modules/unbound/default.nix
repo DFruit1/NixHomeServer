@@ -54,6 +54,7 @@ let
       "\"paperless.${vars.domain}       A ${targetIp}\""
       "\"${vars.audiobooksDomain}       A ${targetIp}\""
       "\"${vars.emailsDomain}           A ${targetIp}\""
+      "\"${vars.kiwixDomain}            A ${targetIp}\""
       "\"${vars.photosDomain}           A ${targetIp}\""
       "\"${vars.kavitaDomain}           A ${targetIp}\""
       "\"${vars.jellyfinDomain}         A ${targetIp}\""

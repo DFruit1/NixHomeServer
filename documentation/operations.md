@@ -257,6 +257,7 @@ Public endpoints:
 
 Private endpoints:
 - `https://emails.<domain>`
+- `https://wiki.<domain>`
 - `https://paperless.<domain>`
 - `https://photos.<domain>`
 - `https://audiobooks.<domain>`

@@ -111,28 +111,26 @@ rec {
       label = "Other Videos";
     }
   ];
+  sharedKavitaLibraries = personalKavitaLibraries;
+  sharedJellyfinLibraries = personalJellyfinLibraries;
   userBooksSubdirs = map (library: library.dir) personalKavitaLibraries;
   userVideoSubdirs = map (library: library.dir) personalJellyfinLibraries;
-  sharedBooksSubdirs = [
-    "ebooks"
-    "comics"
-    "manga"
-  ];
-  sharedVideoSubdirs = [
-    "movies"
-    "shows"
-    "home"
-  ];
+  sharedBooksSubdirs = map (library: library.dir) sharedKavitaLibraries;
+  sharedVideoSubdirs = map (library: library.dir) sharedJellyfinLibraries;
   sharedAudiobooksRoot = "${sharedPublicRoot}/audiobooks";
   sharedBooksRoot = "${sharedPublicRoot}/books";
   sharedEbooksRoot = "${sharedBooksRoot}/ebooks";
   sharedComicsRoot = "${sharedBooksRoot}/comics";
   sharedMangaRoot = "${sharedBooksRoot}/manga";
+  sharedOtherBooksRoot = "${sharedBooksRoot}/other";
   sharedEmailsRoot = "${sharedPublicRoot}/emails";
   sharedVideosRoot = "${sharedPublicRoot}/videos";
   sharedMoviesRoot = "${sharedVideosRoot}/movies";
   sharedShowsRoot = "${sharedVideosRoot}/shows";
   sharedHomeVideosRoot = "${sharedVideosRoot}/home";
+  sharedMusicVideosRoot = "${sharedVideosRoot}/music-videos";
+  sharedYouTubeRoot = "${sharedVideosRoot}/youtube";
+  sharedOtherVideosRoot = "${sharedVideosRoot}/other";
   userContentSubdirs = [
     "documents"
     "photos"
@@ -160,6 +158,8 @@ rec {
   audiobooksDomain = "audiobooks.${domain}";
   filesDomain = "files.${domain}";
   emailsDomain = "emails.${domain}";
+  kiwixDomain = "wiki.${domain}";
+  kiwixLibraryRoot = "${dataRoot}/kiwix";
   kavitaDomain = "books.${domain}";
   jellyfinDomain = "videos.${domain}";
 }

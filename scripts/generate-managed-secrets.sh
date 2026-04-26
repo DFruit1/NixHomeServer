@@ -21,6 +21,8 @@ generated_secret_specs=(
   "oauth2ProxyCookieSecret:32"
   "mailArchiveOauth2ProxyClientSecret:32"
   "mailArchiveOauth2ProxyCookieSecret:32"
+  "kiwixOauth2ProxyClientSecret:32"
+  "kiwixOauth2ProxyCookieSecret:32"
   "copypartyClientSecret:32"
   "kavitaClientSecret:32"
   "kavitaTokenKey:64"
@@ -31,7 +33,7 @@ generate_secret_value() {
   local name="$1"
   local bytes="$2"
 
-  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" ]]; then
+  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" ]]; then
     openssl rand -hex 16
   else
     openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))"

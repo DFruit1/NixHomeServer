@@ -6,6 +6,7 @@ let
   dataDir = "/var/lib/kavita";
   managedDir = "${dataDir}/.nixos-managed";
   personalKavitaLibrariesJson = builtins.toJSON vars.personalKavitaLibraries;
+  sharedKavitaLibrariesJson = builtins.toJSON vars.sharedKavitaLibraries;
   syncScript = pkgs.writeShellScript "kavita-library-sync-v1" ''
     set -euo pipefail
 
@@ -57,6 +58,17 @@ let
     auth_header="Authorization: Bearer $token"
     api_url() {
       printf 'http://127.0.0.1:%s%s' '${toString kavitaPort}' "$1"
+    }
+    format_personal_library_name() {
+      local username="$1"
+      local label="$2"
+
+      printf '%s (%s)\n' "$label" "$username"
+    }
+    format_shared_library_name() {
+      local label="$1"
+
+      printf '%s (Shared)\n' "$label"
     }
     load_libraries_json() {
       ${pkgs.sqlite}/bin/sqlite3 -readonly "${dataDir}/config/kavita.db" <<'SQL'
@@ -130,14 +142,25 @@ SQL
       printf '%s\n' "$name" >> "$managed_library_names_file"
     }
 
-    add_desired_library 'Shared Ebooks' '2' '${vars.sharedEbooksRoot}' '[2,3,1]'
-    add_desired_library 'Shared Comics' '1' '${vars.sharedComicsRoot}' '[1,4,3]'
-    add_desired_library 'Shared Manga' '0' '${vars.sharedMangaRoot}' '[1,4]'
+    while IFS=$'\t' read -r dir label type file_groups_json; do
+      add_desired_library \
+        "$(format_shared_library_name "$label")" \
+        "$type" \
+        "${vars.sharedBooksRoot}/$dir" \
+        "$file_groups_json"
+    done < <(
+      printf '%s' '${sharedKavitaLibrariesJson}' \
+        | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, (.type | tostring), (.fileGroupTypes | tojson) ] | @tsv'
+    )
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
       while IFS=$'\t' read -r dir label type file_groups_json; do
-        add_desired_library "$username $label" "$type" "${vars.usersWorkspaceRoot}/$username/books/$dir" "$file_groups_json"
+        add_desired_library \
+          "$(format_personal_library_name "$username" "$label")" \
+          "$type" \
+          "${vars.usersWorkspaceRoot}/$username/books/$dir" \
+          "$file_groups_json"
       done < <(
         printf '%s' '${personalKavitaLibrariesJson}' \
           | ${pkgs.jq}/bin/jq -r '.[] | [ .dir, .label, (.type | tostring), (.fileGroupTypes | tojson) ] | @tsv'
@@ -168,6 +191,22 @@ SQL
         printf '%s' "$libraries_json" \
           | ${pkgs.jq}/bin/jq -c --arg name "$library_name" '.[] | select(.name == $name)'
       )"
+
+      if [[ -z "$current" ]]; then
+        current="$(
+          printf '%s' "$libraries_json" \
+            | ${pkgs.jq}/bin/jq -c --arg path "$library_path" '
+              def decode_array:
+                if . == null then []
+                elif type == "string" then fromjson
+                else .
+                end;
+              .[]
+              | select((.folders | decode_array) == [$path])
+            ' \
+            | ${pkgs.coreutils}/bin/head -n 1
+        )"
+      fi
 
       create_payload="$(${pkgs.jq}/bin/jq -cn \
         --arg name "$library_name" \
@@ -351,9 +390,18 @@ SQL
 
       allowed_names_json="$(
         {
-          printf '%s\n' "Shared Ebooks" "Shared Comics" "Shared Manga"
+          printf '%s' '${sharedKavitaLibrariesJson}' \
+            | ${pkgs.jq}/bin/jq -r '.[] | .label' \
+            | while IFS= read -r label; do
+              [[ -n "$label" ]] || continue
+              format_shared_library_name "$label"
+            done
           printf '%s' '${personalKavitaLibrariesJson}' \
-            | ${pkgs.jq}/bin/jq -r --arg username "$username" '.[] | "\($username) \(.label)"'
+            | ${pkgs.jq}/bin/jq -r '.[] | .label' \
+            | while IFS= read -r label; do
+              [[ -n "$label" ]] || continue
+              format_personal_library_name "$username" "$label"
+            done
         } \
           | ${pkgs.jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
       )"

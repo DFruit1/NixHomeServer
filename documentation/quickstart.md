@@ -93,9 +93,9 @@ Video categories under `videos/`:
 - `youtube`: downloaded YouTube-style videos exposed as Jellyfin `homevideos`
 - `other`: catch-all video material exposed as Jellyfin `homevideos`
 
-Shared media roots remain narrower and unchanged:
-- shared books: `ebooks`, `comics`, `manga`
-- shared videos: `movies`, `shows`, `home`
+Shared media roots mirror the same category layout:
+- shared books: `ebooks`, `comics`, `manga`, `other`
+- shared videos: `movies`, `shows`, `home`, `music-videos`, `youtube`, `other`
 
 ## Destructive Storage Command Matrix
 
