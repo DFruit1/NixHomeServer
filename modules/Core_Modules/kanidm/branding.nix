@@ -2,6 +2,7 @@
 
 let
   kanidmPort = 8443;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
 in
 {
   systemd.services.kanidm-branding = {
@@ -18,20 +19,17 @@ in
       export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
 
       kanidm login \
-        -H https://localhost:${toString kanidmPort} \
-        -D admin \
-        --accept-invalid-certs >/dev/null
+        -H ${kanidmCliUrl} \
+        -D admin >/dev/null
 
       kanidm system domain set-displayname \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D admin \
-        --accept-invalid-certs \
         "Sydney Basin Services"
 
       kanidm system domain set-image \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D admin \
-        --accept-invalid-certs \
         ${./assets/portal.svg} \
         svg
     '';

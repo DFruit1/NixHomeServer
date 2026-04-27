@@ -3,6 +3,7 @@
 let
   kavitaPort = 5000;
   kanidmPort = 8443;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   dataDir = "/var/lib/kavita";
   managedDir = "${dataDir}/.nixos-managed";
   personalKavitaLibrariesJson = builtins.toJSON vars.personalKavitaLibraries;
@@ -16,24 +17,21 @@ let
 
     login_group_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm login \
-        -H https://localhost:${toString kanidmPort} \
-        -D admin \
-        --accept-invalid-certs >/dev/null
+        -H ${kanidmCliUrl} \
+        -D admin >/dev/null
 
       ${pkgs.kanidm_1_9}/bin/kanidm group get \
         kavita-login \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D admin \
-        --accept-invalid-certs \
         -o json
     )"
 
     admin_group_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm group get \
         kavita-admin \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D admin \
-        --accept-invalid-certs \
         -o json
     )"
 
@@ -159,7 +157,7 @@ SQL
         add_desired_library \
           "$(format_personal_library_name "$username" "$label")" \
           "$type" \
-          "${vars.usersWorkspaceRoot}/$username/books/$dir" \
+          "${vars.usersRoot}/$username/books/$dir" \
           "$file_groups_json"
       done < <(
         printf '%s' '${personalKavitaLibrariesJson}' \
@@ -456,14 +454,14 @@ in
       "kavita.service"
       "kavita-oidc-bootstrap.service"
       "data-pool-layout.service"
-      "fileshare-workspace-sync.service"
+      "fileshare-user-root-sync.service"
       "kanidm.service"
     ];
     after = [
       "kavita.service"
       "kavita-oidc-bootstrap.service"
       "data-pool-layout.service"
-      "fileshare-workspace-sync.service"
+      "fileshare-user-root-sync.service"
       "kanidm.service"
     ];
     unitConfig.ConditionPathIsMountPoint = vars.dataRoot;

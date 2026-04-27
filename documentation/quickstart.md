@@ -92,12 +92,14 @@ Upload shared video content through the files app or the admin-only SMB share in
 - `shows`: episodic TV or series content
 - `home`: personal videos and recordings
 - `music-videos`: music video collections using Jellyfin's dedicated Music Videos type
-- `youtube`: downloaded YouTube-style videos exposed as Jellyfin `homevideos`
+- `youtube`: downloaded YouTube-style videos exposed as Jellyfin `homevideos`, including MeTube downloads written directly into the shared library tree
 - `other`: catch-all video material exposed as Jellyfin `homevideos`
 
 Shared media roots:
 - shared books: `ebooks`, `comics`, `manga`, `other`
 - shared videos: `movies`, `shows`, `home`, `music-videos`, `youtube`, `other`
+
+Private MeTube downloads are available at `https://ytdownload.<domain>` on LAN or over NetBird only.
 
 ## Destructive Storage Command Matrix
 

@@ -66,6 +66,13 @@ let
       notes = "Library database, local users, and server settings.";
     }
     {
+      app = "metube";
+      component = "app";
+      stateRoot = "/var/lib/metube";
+      payloadRoots = [ vars.sharedYouTubeRoot ];
+      notes = "Queue history, temporary state, and downloader config.";
+    }
+    {
       app = "paperless";
       component = "app";
       stateRoot = "/var/lib/paperless";
@@ -98,8 +105,8 @@ let
       component = "app";
       stateRoot = "/var/lib/copyparty";
       payloadRoots = [
-        vars.usersWorkspaceRoot
-        vars.sharedPublicRoot
+        vars.usersRoot
+        vars.sharedRoot
         "${vars.mediaRoot}/documents"
         "${vars.mediaRoot}/audio"
         "${vars.mediaRoot}/books"
@@ -112,7 +119,7 @@ let
       component = "app";
       stateRoot = "/persist/appdata/mail-archive-ui";
       payloadRoots = [
-        vars.usersWorkspaceRoot
+        vars.usersRoot
         vars.sharedEmailsRoot
       ];
       notes = "SQLite state, locks, and the app master key.";
@@ -135,8 +142,8 @@ let
     "${vars.mediaRoot}/audio"
     "${vars.mediaRoot}/books"
     "${vars.mediaRoot}/video"
-    vars.usersWorkspaceRoot
-    vars.sharedPublicRoot
+    vars.usersRoot
+    vars.sharedRoot
     vars.sharedEmailsRoot
   ];
 in
@@ -277,8 +284,8 @@ in
         for spec in ${
           lib.escapeShellArgs [
             "media:${vars.mediaRoot}"
-            "users:${vars.usersWorkspaceRoot}"
-            "shared:${vars.sharedPublicRoot}"
+            "users:${vars.usersRoot}"
+            "shared:${vars.sharedRoot}"
           ]
         }; do
           IFS=: read -r label root_path <<< "$spec"

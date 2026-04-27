@@ -63,6 +63,7 @@ Key state roots:
 - Jellyfin: `/var/lib/jellyfin`
 - Audiobookshelf: `/var/lib/audiobookshelf`
 - Kavita: `/var/lib/kavita`
+- MeTube: `/var/lib/metube`
 - Paperless: `/var/lib/paperless` and `/var/lib/redis-paperless`
 - Immich: `/var/lib/postgresql/16` and `/var/lib/redis-immich`, plus `dumps/postgresql.sql` in the backup metadata
 - Copyparty: `/var/lib/copyparty`

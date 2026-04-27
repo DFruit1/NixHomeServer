@@ -23,6 +23,8 @@ generated_secret_specs=(
   "mailArchiveOauth2ProxyCookieSecret:32"
   "kiwixOauth2ProxyClientSecret:32"
   "kiwixOauth2ProxyCookieSecret:32"
+  "metubeOauth2ProxyClientSecret:32"
+  "metubeOauth2ProxyCookieSecret:32"
   "copypartyClientSecret:32"
   "kavitaClientSecret:32"
   "kavitaTokenKey:64"

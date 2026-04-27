@@ -30,7 +30,7 @@ Use Operations when any of these are true:
 | Symptom | First commands | Next document or section |
 | --- | --- | --- |
 | Public endpoint down | `systemctl status caddy cloudflared-tunnel-metro` and `journalctl -u caddy -u cloudflared-tunnel-metro -n 100 --no-pager` | Stay in [Service Failure Entry Points](#service-failure-entry-points). |
-| Private hostname resolves incorrectly | `systemctl status unbound netbird-main`, `host paperless.<domain> 127.0.0.1`, and `resolvectl query paperless.<domain>` | Stay in [Access And DNS Model](#access-and-dns-model) and [Service Failure Entry Points](#service-failure-entry-points). |
+| Private hostname resolves incorrectly | `systemctl status unbound netbird-main`, `host ytdownload.<domain> 127.0.0.1`, and `resolvectl query ytdownload.<domain>` | Stay in [Access And DNS Model](#access-and-dns-model) and [Service Failure Entry Points](#service-failure-entry-points). |
 | User reaches sign-in but app still denies access | Confirm the app and user in [Kanidm Guide](./kanidm.md#troubleshooting-flow). | Continue in [Kanidm Guide](./kanidm.md#troubleshooting-flow). |
 | Deploy succeeded but the new generation is bad | Start with the rollback path that matches your current access: SSH, bootloader, or local console. | Use [Rollback After A Bad Generation](#rollback-after-a-bad-generation). |
 | `/mnt/data` is missing or datasets do not mount | `findmnt -R /mnt`, `sudo zpool status data`, and `sudo zfs list -r data` | Continue in [Restore And Recovery](./restore-and-recovery.md). |
@@ -258,6 +258,7 @@ Public endpoints:
 Private endpoints:
 - `https://emails.<domain>`
 - `https://wiki.<domain>`
+- `https://ytdownload.<domain>`
 - `https://paperless.<domain>`
 - `https://photos.<domain>`
 - `https://audiobooks.<domain>`
@@ -269,6 +270,7 @@ Expected behavior:
 - Over NetBird, private app hostnames should resolve to `vars.nbIP`.
 - `id.<domain>` and `files.<domain>` should stay on the normal public path.
 - Off the home LAN, the private apps require NetBird.
+- If `dnscrypt-proxy` is down, Unbound may still resolve through plaintext fallback upstreams by design; check `systemctl status dnscrypt-proxy unbound` first for privacy-sensitive DNS incidents.
 
 Recommended LAN DNS model:
 - DHCP advertises only the router as DNS.

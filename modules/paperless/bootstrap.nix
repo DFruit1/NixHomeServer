@@ -93,6 +93,7 @@ in
                     secret: $secret,
                     settings: {
                       server_url: $discoveryUrl,
+                      oauth_pkce_enabled: true,
                       scope: ["openid", "profile", "email"]
                     }
                   }

@@ -31,7 +31,7 @@ in
         DefaultAgeRestriction = 0;
         DefaultIncludeUnknowns = false;
         AutoLogin = false;
-        DisablePasswordAuthentication = false;
+        DisablePasswordAuthentication = true;
         ProviderName = "Kanidm";
       };
     };
@@ -117,7 +117,7 @@ in
           | .DefaultIncludeUnknowns = false
           | .Enabled = true
           | .AutoLogin = false
-          | .DisablePasswordAuthentication = false
+          | .DisablePasswordAuthentication = true
           | .ProviderName = "Kanidm"
         ')"
 

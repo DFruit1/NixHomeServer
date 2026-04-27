@@ -34,8 +34,8 @@ rec {
     ];
     datasets = [
       "media"
-      "workspaces"
-      "mail-archive"
+      "users"
+      "shared"
     ];
   };
 
@@ -51,8 +51,8 @@ rec {
 
   dataRoot = zfsDataPool.mountPoint;
   mediaRoot = "${dataRoot}/media";
-  usersWorkspaceRoot = "${dataRoot}/users";
-  sharedPublicRoot = "${dataRoot}/shared";
+  usersRoot = "${dataRoot}/users";
+  sharedRoot = "${dataRoot}/shared";
   personalKavitaLibraries = [
     {
       dir = "ebooks";
@@ -117,14 +117,14 @@ rec {
   userVideoSubdirs = map (library: library.dir) personalJellyfinLibraries;
   sharedBooksSubdirs = map (library: library.dir) sharedKavitaLibraries;
   sharedVideoSubdirs = map (library: library.dir) sharedJellyfinLibraries;
-  sharedAudiobooksRoot = "${sharedPublicRoot}/audiobooks";
-  sharedBooksRoot = "${sharedPublicRoot}/books";
+  sharedAudiobooksRoot = "${sharedRoot}/audiobooks";
+  sharedBooksRoot = "${sharedRoot}/books";
   sharedEbooksRoot = "${sharedBooksRoot}/ebooks";
   sharedComicsRoot = "${sharedBooksRoot}/comics";
   sharedMangaRoot = "${sharedBooksRoot}/manga";
   sharedOtherBooksRoot = "${sharedBooksRoot}/other";
-  sharedEmailsRoot = "${sharedPublicRoot}/emails";
-  sharedVideosRoot = "${sharedPublicRoot}/videos";
+  sharedEmailsRoot = "${sharedRoot}/emails";
+  sharedVideosRoot = "${sharedRoot}/videos";
   sharedMoviesRoot = "${sharedVideosRoot}/movies";
   sharedShowsRoot = "${sharedVideosRoot}/shows";
   sharedHomeVideosRoot = "${sharedVideosRoot}/home";
@@ -162,4 +162,5 @@ rec {
   kiwixLibraryRoot = "${dataRoot}/kiwix";
   kavitaDomain = "books.${domain}";
   jellyfinDomain = "videos.${domain}";
+  metubeDomain = "ytdownload.${domain}";
 }

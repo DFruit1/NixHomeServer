@@ -3,11 +3,45 @@
 let
   dnscryptListenAddress = "127.0.0.1";
   dnscryptListenPort = 5053;
-  fallbackNameServers = [ "9.9.9.9" "1.1.1.1" ];
+  # Keep plaintext recursive fallback for availability if dnscrypt-proxy is
+  # unhealthy. DNS privacy depends on dnscrypt-proxy staying up.
+  plaintextFallbackNameServers = [ "9.9.9.9" "1.1.1.1" ];
   splitDnsMode = vars.dnsMode == "split-horizon";
   netbirdIface = "nb0";
   netbirdCidr = "100.64.0.0/10";
   listenAddresses = [ "127.0.0.1" vars.nbIP ] ++ lib.optional splitDnsMode vars.serverLanIP;
+  mod = value: divisor: value - ((builtins.div value divisor) * divisor);
+  ipv4ToInt =
+    ip:
+    lib.foldl'
+      (acc: octet: (acc * 256) + (builtins.fromJSON octet))
+      0
+      (lib.splitString "." ip);
+  intToIpv4 =
+    value:
+    let
+      octet0 = builtins.div value 16777216;
+      rem0 = mod value 16777216;
+      octet1 = builtins.div rem0 65536;
+      rem1 = mod rem0 65536;
+      octet2 = builtins.div rem1 256;
+      octet3 = mod rem1 256;
+    in
+    lib.concatStringsSep "." (map toString [
+      octet0
+      octet1
+      octet2
+      octet3
+    ]);
+  pow2 = exponent: if exponent == 0 then 1 else 2 * (pow2 (exponent - 1));
+  cidrMask =
+    prefixLength:
+    if prefixLength == 0 then
+      0
+    else
+      ((pow2 prefixLength) - 1) * (pow2 (32 - prefixLength));
+  lanNetworkAddress = intToIpv4 (builtins.bitAnd (ipv4ToInt vars.serverLanIP) (cidrMask vars.serverLanPrefixLength));
+  lanCidr = "${lanNetworkAddress}/${toString vars.serverLanPrefixLength}";
   normaliseDnsName =
     name:
     if lib.hasSuffix "." name then
@@ -55,6 +89,7 @@ let
       "\"${vars.audiobooksDomain}       A ${targetIp}\""
       "\"${vars.emailsDomain}           A ${targetIp}\""
       "\"${vars.kiwixDomain}            A ${targetIp}\""
+      "\"${vars.metubeDomain}           A ${targetIp}\""
       "\"${vars.photosDomain}           A ${targetIp}\""
       "\"${vars.kavitaDomain}           A ${targetIp}\""
       "\"${vars.jellyfinDomain}         A ${targetIp}\""
@@ -116,7 +151,7 @@ in
           {
             interface = listenAddresses;
             access-control = [
-              "192.168.0.0/16 allow"
+              "${lanCidr} allow"
               "${netbirdCidr} allow"
               "127.0.0.0/8 allow"
             ];
@@ -132,7 +167,7 @@ in
             if splitDnsMode then
               {
                 access-control-view = [
-                  "192.168.0.0/16 lan"
+                  "${lanCidr} lan"
                   "127.0.0.0/8 lan"
                   "${netbirdCidr} netbird"
                 ];
@@ -151,7 +186,7 @@ in
             name = ".";
             forward-addr =
               [ "${dnscryptListenAddress}@${toString dnscryptListenPort}" ]
-              ++ fallbackNameServers;
+              ++ plaintextFallbackNameServers;
           }
         ];
       }

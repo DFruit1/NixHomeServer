@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools nix jq rg
+ensure_tools nix jq rg python3
 
 hostname="$(nix_eval_var 'vars.hostname')"
 mail_archive_port="$(nix_eval_config_json 'services.mail-archive-ui.port')"
@@ -62,10 +62,14 @@ require_json_equal "$(nix_eval_json 'builtins.length vars.zfsDataPool.datasets')
   "vars.zfsDataPool must keep the expected child datasets."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'media' \
   "vars.zfsDataPool must keep the media dataset."
-require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'workspaces' \
-  "vars.zfsDataPool must keep the workspaces backing dataset."
-require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'mail-archive' \
-  "vars.zfsDataPool must include the dedicated mail-archive dataset."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'users' \
+  "vars.zfsDataPool must keep the direct users dataset."
+require_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'shared' \
+  "vars.zfsDataPool must keep the direct shared dataset."
+forbid_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'workspaces' \
+  "vars.zfsDataPool must retire the legacy workspaces dataset from steady-state config."
+forbid_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'mail-archive' \
+  "vars.zfsDataPool must retire the legacy mail-archive dataset from steady-state config."
 forbid_json_contains "$(nix_eval_json 'vars.zfsDataPool.datasets')" 'appdata' \
   "vars.zfsDataPool must not retain the removed appdata dataset."
 require_json_contains "$(nix_eval_json 'vars.zfsDataPoolDiskIds')" "ata-HGST_HUS726T4TALA6L4_V1JAKPNH" \
@@ -84,9 +88,9 @@ require_json_equal "$(nix_eval_json 'vars.coldStorageMountPoint')" '"/mnt/cold-s
   "vars.coldStorageMountPoint must keep the reserved optional mountpoint."
 require_json_equal "$(nix_eval_json 'builtins.length vars.monitoredStorageDiskIds')" "2" \
   "The monitored storage disk list must include only the active mirror pair."
-require_json_equal "$(nix_eval_json 'vars.usersWorkspaceRoot')" '"/mnt/data/users"' \
+require_json_equal "$(nix_eval_json 'vars.usersRoot')" '"/mnt/data/users"' \
   "Per-user content roots must resolve directly under the ZFS data pool."
-require_json_equal "$(nix_eval_json 'vars.sharedPublicRoot')" '"/mnt/data/shared"' \
+require_json_equal "$(nix_eval_json 'vars.sharedRoot')" '"/mnt/data/shared"' \
   "The shared content root must resolve directly under the ZFS data pool."
 require_json_equal "$(nix_eval_json 'vars.sharedAudiobooksRoot')" '"/mnt/data/shared/audiobooks"' \
   "Shared audiobooks must resolve through the shared public upload tree."
@@ -129,6 +133,8 @@ require_json_contains "$restic_paths_json" "/persist/appdata" \
   "The system-state backup must include /persist/appdata for SSD-backed app state."
 require_json_equal "$(nix_eval_json 'vars.sharePhotosDomain')" "\"sharephotos.$(nix_eval_var 'vars.domain')\"" \
   "vars.sharePhotosDomain must define the public share-proxy hostname."
+require_json_equal "$(nix_eval_json 'vars.metubeDomain')" "\"ytdownload.$(nix_eval_var 'vars.domain')\"" \
+  "vars.metubeDomain must define the private MeTube hostname."
 require_fixed modules/immich/service.nix '"${vars.mediaRoot}/photos/managed"' \
   "Immich must derive its managed library under vars.mediaRoot."
 require_json_equal "$(nix_eval_config_json 'services.immich.settings.server.externalDomain')" "\"https://$(nix_eval_var 'vars.sharePhotosDomain')\"" \
@@ -162,10 +168,14 @@ require_json_equal "$(nix_eval_config_json 'fileSystems."/mnt/data".fsType')" '"
   "The data pool must be mounted at /mnt/data as ZFS."
 require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/media"')" "true" \
   "The media dataset mount must exist."
-require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/workspaces"')" "true" \
-  "The workspaces backing dataset mount must exist."
-require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/mail-archive"')" "true" \
-  "The mail-archive dataset mount must exist."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/users"')" "true" \
+  "The users dataset mount must exist."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/shared"')" "true" \
+  "The shared dataset mount must exist."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/workspaces"')" "false" \
+  "The legacy workspaces dataset mount must not remain in steady-state config."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.fileSystems ? "/mnt/data/mail-archive"')" "false" \
+  "The legacy mail-archive dataset mount must not remain in steady-state config."
 require_json_equal "$(nix_eval_config_json 'networking.hostId')" '"84e8c12a"' \
   "networking.hostId must be set for ZFS imports."
 require_json_equal "$(nix_eval_config_json 'services.smartd.enable')" "true" \
@@ -226,6 +236,8 @@ require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.photosDomain')" \
   "Caddy must serve the private Immich hostname."
 require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.sharePhotosDomain')" \
   "Caddy must serve the public Immich share-proxy hostname."
+require_json_contains "$caddy_hosts" "$(nix_eval_var 'vars.metubeDomain')" \
+  "Caddy must serve the private MeTube hostname."
 forbid_json_contains "$caddy_hosts" "photo.$(nix_eval_var 'vars.domain')" \
   "Caddy must not retain the legacy photo hostname."
 forbid_json_contains "$caddy_hosts" "audiobook.$(nix_eval_var 'vars.domain')" \
@@ -239,6 +251,8 @@ require_json_contains "$cloudflared_ingress_hosts" "$(nix_eval_var 'vars.sharePh
   "Cloudflared must publish the public share-proxy hostname."
 forbid_json_contains "$cloudflared_ingress_hosts" "$(nix_eval_var 'vars.photosDomain')" \
   "Cloudflared must not publish the private Immich hostname."
+forbid_json_contains "$cloudflared_ingress_hosts" "$(nix_eval_var 'vars.metubeDomain')" \
+  "Cloudflared must not publish the private MeTube hostname."
 if ! rg -F 'privateHostedRecords vars.serverLanIP' modules/Core_Modules/unbound/default.nix >/dev/null; then
   echo "❌ Unbound must still derive split-horizon LAN records from vars.serverLanIP."
   exit 1
@@ -259,9 +273,42 @@ require_json_contains "$(jq -Rs . <<<"$lan_view_local_data")" "$(nix_eval_var 'v
   "The LAN Unbound view must publish the server LAN hostname."
 require_json_contains "$(jq -Rs . <<<"$lan_view_local_data")" "router.$(nix_eval_var 'vars.lanDnsDomain')" \
   "The LAN Unbound view must publish the router LAN hostname."
+require_json_contains "$(jq -Rs . <<<"$lan_view_local_data")" "$(nix_eval_var 'vars.metubeDomain')" \
+  "The LAN Unbound view must publish the private MeTube hostname."
 require_json_contains "$(jq -Rs . <<<"$lan_view_local_data")" 'PTR' \
   "The LAN Unbound view must include reverse DNS records for LAN hosts."
 lan_prefix_length="$(nix_eval_var 'toString vars.serverLanPrefixLength')"
+server_lan_ip="$(nix_eval_var 'vars.serverLanIP')"
+expected_lan_cidr="$(
+  python3 - "$server_lan_ip" "$lan_prefix_length" <<'PY'
+import ipaddress
+import sys
+
+server_ip = sys.argv[1]
+prefix = int(sys.argv[2])
+network = ipaddress.ip_network(f"{server_ip}/{prefix}", strict=False)
+print(network.with_prefixlen)
+PY
+)"
+unbound_access_control="$(nix_eval_config_json 'services.unbound.settings.server.access-control')"
+require_json_contains "$unbound_access_control" "${expected_lan_cidr} allow" \
+  "Unbound must only trust the configured LAN subnet."
+forbid_json_contains "$unbound_access_control" "192.168.0.0/16 allow" \
+  "Unbound must not trust the whole RFC1918 /16 by default."
+unbound_access_control_view="$(nix_eval_config_json 'services.unbound.settings.server.access-control-view')"
+require_json_contains "$unbound_access_control_view" "${expected_lan_cidr} lan" \
+  "Unbound split-horizon access-control views must follow the configured LAN subnet."
+forbid_json_contains "$unbound_access_control_view" "192.168.0.0/16 lan" \
+  "Unbound split-horizon views must not trust the whole RFC1918 /16 by default."
+unbound_forward_addresses="$(nix_eval_config_json 'services.unbound.settings."forward-zone"' | jq -c '.[0]["forward-addr"]')"
+require_json_contains "$unbound_forward_addresses" '127.0.0.1@5053' \
+  "Unbound must prefer the local dnscrypt-proxy listener for recursive forwarding."
+require_json_contains "$unbound_forward_addresses" '9.9.9.9' \
+  "Unbound must retain the explicit plaintext availability fallback resolver."
+require_json_contains "$unbound_forward_addresses" '1.1.1.1' \
+  "Unbound must retain the secondary plaintext availability fallback resolver."
+require_fixed modules/Core_Modules/unbound/default.nix 'plaintextFallbackNameServers' \
+  "The Unbound module must keep the explicit plaintext fallback identifier."
 samba_settings_json="$(nix_eval_config_json 'services.samba.settings')"
 samba_settings_keys="$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in builtins.attrNames flake.nixosConfigurations.${hostname}.config.services.samba.settings')"
 samba_interfaces="$(printf '%s\n' "$samba_settings_json" | jq -c '.global.interfaces')"
@@ -290,6 +337,48 @@ require_json_contains "$immich_proxy_quadlet_json" 'NoNewPrivileges=true' \
   "The Immich share proxy quadlet must disable privilege escalation."
 require_json_contains "$immich_proxy_quadlet_json" 'ReadOnly=true' \
   "The Immich share proxy quadlet must mount the container root filesystem read-only."
+
+echo "ℹ️ Checking rootless MeTube downloader…"
+require_json_equal "$(nix_eval_config_json 'users.users."metube".isSystemUser')" "true" \
+  "MeTube must run under a dedicated system user."
+require_json_equal "$(nix_eval_config_json 'users.users."metube".linger')" "true" \
+  "The MeTube user must linger so its user manager starts at boot."
+require_json_contains "$(nix_eval_config_json 'users.users."metube".extraGroups')" 'users' \
+  "The MeTube user must keep shared-media group access."
+require_json_equal "$(nix_eval_json 'let flake = builtins.getFlake (toString ./.); hostname = vars.hostname; in flake.nixosConfigurations.${hostname}.config.environment.etc ? "containers/systemd/users/3002/metube.container"')" "true" \
+  "The MeTube quadlet must be installed declaratively under /etc/containers/systemd/users/3002."
+metube_quadlet_json="$(nix_eval_config_json 'environment.etc."containers/systemd/users/3002/metube.container".text')"
+require_json_contains "$metube_quadlet_json" 'DOWNLOAD_DIR=/downloads' \
+  "The MeTube quadlet must mount the shared video library as /downloads."
+require_json_contains "$metube_quadlet_json" 'STATE_DIR=/state' \
+  "The MeTube quadlet must keep queue state outside the shared media tree."
+require_json_contains "$metube_quadlet_json" 'TEMP_DIR=/tmp-downloads' \
+  "The MeTube quadlet must keep temporary files outside the shared media tree."
+require_json_contains "$metube_quadlet_json" 'CUSTOM_DIRS=false' \
+  "The MeTube quadlet must disable custom download directories."
+require_json_contains "$metube_quadlet_json" 'CREATE_CUSTOM_DIRS=false' \
+  "The MeTube quadlet must prevent users from creating arbitrary directories."
+require_json_contains "$metube_quadlet_json" 'ALLOW_YTDL_OPTIONS_OVERRIDES=false' \
+  "The MeTube quadlet must disable arbitrary per-download yt-dlp overrides."
+require_json_contains "$metube_quadlet_json" 'UMASK=002' \
+  "The MeTube quadlet must keep shared-library group write semantics."
+require_json_contains "$metube_quadlet_json" 'CHOWN_DIRS=false' \
+  "The MeTube quadlet must not chown the shared library root."
+require_json_contains "$metube_quadlet_json" 'OUTPUT_TEMPLATE=%%(channel,uploader,creator|Unknown Channel)S/%%(upload_date>%%Y,release_date>%%Y|Unknown Year)s/%%(upload_date>%%Y-%%m-%%d,release_date>%%Y-%%m-%%d|Unknown Date)s - %%(title|Unknown Title)S [%%(id|NOID)s].%%(ext)s' \
+  "The MeTube quadlet must write completed videos into the channel/year/title layout."
+require_json_contains "$metube_quadlet_json" '\"format\":\"bestvideo[vcodec*=avc1]+bestaudio[acodec*=mp4a]/best\"' \
+  "The MeTube quadlet must prefer AVC video and AAC audio."
+require_json_contains "$metube_quadlet_json" '\"merge_output_format\":\"mkv\"' \
+  "The MeTube quadlet must merge downloads into MKV."
+require_json_contains "$metube_quadlet_json" '\"writethumbnail\":true' \
+  "The MeTube quadlet must enable thumbnail fetching."
+require_json_contains "$metube_quadlet_json" '\"key\":\"FFmpegMetadata\"' \
+  "The MeTube quadlet must embed metadata via yt-dlp postprocessors."
+require_json_contains "$metube_quadlet_json" '\"key\":\"EmbedThumbnail\"' \
+  "The MeTube quadlet must embed thumbnails via yt-dlp postprocessors."
+metube_scope_map_json="$(nix_eval_config_json 'services.kanidm.provision.systems.oauth2."metube-web".scopeMaps."metube-users"')"
+require_json_contains "$metube_scope_map_json" "groups_name" \
+  "Kanidm must grant the groups_name scope to the MeTube oauth2 client."
 require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data["valid users"]')" "\"$(nix_eval_var 'vars.kanidmAdminUser')\"" \
   "The admin SMB share must be gated to the delegated admin user."
 require_json_equal "$(printf '%s\n' "$samba_settings_json" | jq -c '.data["admin users"]')" "\"$(nix_eval_var 'vars.kanidmAdminUser')\"" \
@@ -321,9 +410,9 @@ require_match modules/copyparty/default.nix '"shr-who" = "auth";' \
   "Copyparty share creation must be limited to authenticated users."
 require_match modules/copyparty/default.nix 'rwmda: @acct' \
   "Writable shared volumes must require authenticated Copyparty accounts."
-require_match modules/copyparty/default.nix "\\$\\{vars\\.usersWorkspaceRoot\\}/''\\$\\{u\\}" \
+require_match modules/copyparty/default.nix "\\$\\{vars\\.usersRoot\\}/''\\$\\{u\\}" \
   "Copyparty per-user roots must point at each user's top-level content directory."
-require_fixed modules/copyparty/default.nix '${vars.sharedPublicRoot}' \
+require_fixed modules/copyparty/default.nix '${vars.sharedRoot}' \
   "Copyparty /shared must point at the shared content root."
 require_match modules/copyparty/default.nix '\[/shared/videos\]' \
   "Copyparty must expose a dedicated shared-videos subtree."
@@ -361,8 +450,22 @@ forbid_match modules/copyparty/default.nix '\[/shared/photos\]' \
   "Copyparty must not retain the photos subdirectory."
 
 echo "ℹ️ Checking cold-storage tooling…"
+require_fixed modules/Core_Modules/storage/default.nix './import-fix.nix' \
+  "The storage module must import the deterministic ZFS data-pool import override."
+require_fixed modules/Core_Modules/storage/import-fix.nix '/dev/disk/by-id/${diskId}-part1' \
+  "The ZFS data-pool import override must scope discovery to the configured member partitions."
+require_fixed modules/Core_Modules/storage/import-fix.nix 'Pool $pool in state $state, waiting' \
+  "The ZFS data-pool import override must keep the existing readiness loop semantics."
 require_fixed modules/Core_Modules/storage/layout.nix 'coldStorageMountPoint' \
   "Storage tmpfiles must create the cold-storage mountpoint."
+require_fixed modules/Core_Modules/storage/layout.nix 'data-pool-layout-migration-v2' \
+  "Storage layout must define the one-time legacy layout migration unit."
+require_fixed modules/Core_Modules/storage/layout.nix "retire_legacy_dataset_if_empty '\${vars.zfsDataPool.name}/workspaces'" \
+  "Storage layout must retire the legacy workspaces dataset when it is empty."
+require_fixed modules/Core_Modules/storage/layout.nix "retire_legacy_dataset_if_empty '\${vars.zfsDataPool.name}/mail-archive'" \
+  "Storage layout must retire the legacy mail-archive dataset when it is empty."
+forbid_match modules/Core_Modules/storage/layout.nix 'materialize_root_from_legacy|migrate_dir_to_symlink' \
+  "Storage layout must not retain the old compatibility scaffolding helpers."
 require_fixed scripts/cold-storage.sh 'Usage: scripts/cold-storage.sh <status|mount|unmount> [pool-name]' \
   "The cold-storage helper must expose named status, mount, and unmount commands."
 require_fixed scripts/cold-storage.sh 'vars.coldStoragePools' \
@@ -486,8 +589,13 @@ require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLES
   "Paperless must recurse into the mail archive consume subtree."
 require_json_equal "$(nix_eval_config_json 'services.paperless.settings.PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS')" '"true"' \
   "Paperless must tag imported mail attachments from consume subdirectories."
+paperless_oidc_env_script="$(nix_eval_config_json 'systemd.services.paperless-oidc-env.script')"
+require_json_contains "$paperless_oidc_env_script" 'oauth_pkce_enabled' \
+  "Paperless OIDC provider generation must explicitly enable PKCE."
 require_json_equal "$(nix_eval_config_json 'services.kavita.dataDir')" '"/var/lib/kavita"' \
   "Kavita state must live under /var/lib."
+require_json_equal "$(nix_eval_config_json 'services.kavita.settings.OpenIdConnectSettings.DisablePasswordAuthentication')" 'true' \
+  "Kavita must disable non-admin local password authentication when OIDC is enabled."
 require_json_equal "$(nix_eval_config_json 'services.jellyfin.dataDir')" '"/var/lib/jellyfin"' \
   "Jellyfin state must live under /var/lib."
 require_json_equal "$(nix_eval_config_json 'users.users.audiobookshelf.extraGroups')" '["audiobookshelf-media"]' \
@@ -502,8 +610,12 @@ require_fixed modules/audiobookshelf/oidc-bootstrap.nix '["audiobookshelf://oaut
   "Audiobookshelf must allow both the official app and Lissen mobile redirect URIs."
 forbid_match modules/audiobookshelf/oidc-bootstrap.nix 'audiobookshelf-oidc-bootstrap-v1\.done|marker_file=' \
   "Audiobookshelf OIDC bootstrap must keep converging instead of persisting a done-marker gate."
+require_fixed modules/kavita/default.nix 'DisablePasswordAuthentication = true;' \
+  "Kavita declarative settings must disable non-admin local password authentication."
 forbid_match modules/kavita/default.nix 'media-library' \
   "Kavita must not retain the removed broad media-library group."
+forbid_match modules/Core_Modules/kanidm/provision.nix 'allowInsecureClientDisablePkce = true;' \
+  "Kanidm must not keep the Paperless PKCE disable override."
 forbid_match modules/jellyfin/service.nix 'media-library' \
   "Jellyfin must not retain the removed broad media-library group."
 require_json_equal "$(nix_eval_config_json 'systemd.timers.audiobookshelf-library-sync-v1.timerConfig.OnCalendar')" '"*-*-* *:*:00"' \
@@ -516,6 +628,10 @@ require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | 
   "Kanidm must not provision a Jellyfin login group."
 require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.groups' | jq -c 'has("jellyfin-admin")')" 'false' \
   "Kanidm must not provision a Jellyfin admin-intent group."
+require_json_equal "$(nix_eval_config_json 'services.kanidm.provision.instanceUrl')" "\"https://$(nix_eval_var 'vars.kanidmDomain'):8443\"" \
+  "Kanidm provisioning must use the real hostname on the loopback-bound Kanidm port."
+forbid_match modules 'acceptInvalidCerts = true;|--accept-invalid-certs' \
+  "Repo-managed Kanidm automation must not bypass TLS validation."
 require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf.serviceConfig.WorkingDirectory')" '"/var/lib/audiobookshelf"' \
   "Audiobookshelf state must live under /var/lib."
 require_json_equal "$(nix_eval_config_json 'systemd.services.audiobookshelf-library-sync-v1.unitConfig.ConditionPathIsMountPoint')" '"/mnt/data"' \

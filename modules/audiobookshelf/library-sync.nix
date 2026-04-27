@@ -3,6 +3,7 @@
 let
   audiobookshelfPort = 13378;
   kanidmPort = 8443;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   dataDir = "/var/lib/audiobookshelf";
   managedDir = "/var/lib/audiobookshelf/.nixos-managed";
   syncScript = pkgs.writeShellScript "audiobookshelf-library-sync-v1" ''
@@ -14,24 +15,21 @@ let
 
     login_group_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm login \
-        -H https://localhost:${toString kanidmPort} \
-        -D admin \
-        --accept-invalid-certs >/dev/null
+        -H ${kanidmCliUrl} \
+        -D admin >/dev/null
 
       ${pkgs.kanidm_1_9}/bin/kanidm group get \
         audiobookshelf-users \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D admin \
-        --accept-invalid-certs \
         -o json
     )"
 
     admin_group_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm group get \
         audiobookshelf-admin \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D admin \
-        --accept-invalid-certs \
         -o json
     )"
 
@@ -62,7 +60,7 @@ let
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
       printf '%s\n' "$username" >> "$desired_users_file"
-      personal_path="${vars.usersWorkspaceRoot}/$username/audiobooks"
+      personal_path="${vars.usersRoot}/$username/audiobooks"
       if [[ -d "$personal_path" ]]; then
         printf '%s Audiobooks\t%s\n' "$username" "$personal_path" >> "$library_spec_file"
         printf '%s Audiobooks\n' "$username" >> "$library_names_file"
@@ -278,7 +276,7 @@ in
       "audiobookshelf-oidc-bootstrap-v1.service"
       "audiobookshelf-root-bootstrap-v1.service"
       "data-pool-layout.service"
-      "fileshare-workspace-sync.service"
+      "fileshare-user-root-sync.service"
       "kanidm.service"
     ];
     after = [
@@ -286,7 +284,7 @@ in
       "audiobookshelf-oidc-bootstrap-v1.service"
       "audiobookshelf-root-bootstrap-v1.service"
       "data-pool-layout.service"
-      "fileshare-workspace-sync.service"
+      "fileshare-user-root-sync.service"
       "kanidm.service"
     ];
     unitConfig.ConditionPathIsMountPoint = vars.dataRoot;

@@ -35,7 +35,7 @@ in
     volumes = { };
     globalExtraConfig = ''
       [/''${u}]
-      ${vars.usersWorkspaceRoot}/''${u}
+      ${vars.usersRoot}/''${u}
       accs:
         rwmda: ''${u}
       flags:
@@ -47,7 +47,7 @@ in
         unlistcw: true
 
       [/''${u}/emails]
-      ${vars.usersWorkspaceRoot}/''${u}/emails
+      ${vars.usersRoot}/''${u}/emails
       accs:
         r: ''${u}
       flags:
@@ -90,7 +90,7 @@ in
         unlistcw: true
 
       [/shared]
-      ${vars.sharedPublicRoot}
+      ${vars.sharedRoot}
       accs:
         rwmda: @acct
       flags:
@@ -111,16 +111,16 @@ in
 
   systemd.services.copyparty = {
     wants = [
-      "fileshare-workspace-sync.service"
+      "fileshare-user-root-sync.service"
       "paperless-storage-layout-v1.service"
     ];
     after = [
-      "fileshare-workspace-sync.service"
+      "fileshare-user-root-sync.service"
       "paperless-storage-layout-v1.service"
     ];
     serviceConfig.BindPaths = lib.mkAfter [
-      vars.usersWorkspaceRoot
-      vars.sharedPublicRoot
+      vars.usersRoot
+      vars.sharedRoot
       "${vars.mediaRoot}/documents/archive"
     ];
   };

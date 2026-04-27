@@ -251,7 +251,7 @@ PY
 
     managed_current_names="$(
       printf '%s' "$libraries_json" \
-        | ${pkgs.jq}/bin/jq -r --arg shared_root '${vars.sharedVideosRoot}' --arg users_root '${vars.usersWorkspaceRoot}' '
+        | ${pkgs.jq}/bin/jq -r --arg shared_root '${vars.sharedVideosRoot}' --arg users_root '${vars.usersRoot}' '
           .[]
           | select(
               ((.Locations // []) | length == 1)

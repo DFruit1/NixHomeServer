@@ -2,6 +2,7 @@
 
 let
   kanidmPort = 8443;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   oauth2ProxyClientSecretPath = "/run/oauth2-proxy/client-secret";
   mkManualGroup =
     members:
@@ -15,8 +16,7 @@ in
     enable = true;
     idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;
     adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;
-    instanceUrl = "https://localhost:${toString kanidmPort}";
-    acceptInvalidCerts = true;
+    instanceUrl = kanidmCliUrl;
 
     persons.${vars.kanidmAdminUser} = {
       displayName = vars.kanidmAdminUser;
@@ -33,6 +33,7 @@ in
     groups."audiobookshelf-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."kavita-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."kavita-login" = mkManualGroup [ ];
+    groups."metube-users" = mkManualGroup [ vars.kanidmAdminUser ];
     groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
     systems.oauth2.immich-web = {
@@ -56,7 +57,6 @@ in
       originUrl = "https://paperless.${vars.domain}/accounts/oidc/kanidm/login/callback/";
       originLanding = "https://paperless.${vars.domain}";
       basicSecretFile = config.age.secrets.paperlessClientSecret.path;
-      allowInsecureClientDisablePkce = true;
       preferShortUsername = true;
       scopeMaps."paperless-users" = [ "openid" "profile" "email" ];
       scopeMaps."paperless-admin" = [ "openid" "profile" "email" ];
@@ -118,6 +118,16 @@ in
       basicSecretFile = config.age.secrets.kiwixOauth2ProxyClientSecret.path;
       preferShortUsername = true;
       scopeMaps.users = [ "openid" "profile" "email" "groups_name" ];
+    };
+
+    systems.oauth2.metube-web = {
+      displayName = "Downloads";
+      imageFile = ./assets/videos.svg;
+      originUrl = "https://${vars.metubeDomain}/oauth2/callback";
+      originLanding = "https://${vars.metubeDomain}";
+      basicSecretFile = config.age.secrets.metubeOauth2ProxyClientSecret.path;
+      preferShortUsername = true;
+      scopeMaps."metube-users" = [ "openid" "profile" "email" "groups_name" ];
     };
   };
 }

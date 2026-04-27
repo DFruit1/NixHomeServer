@@ -2,6 +2,7 @@
 
 let
   kanidmPort = 8443;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
 in
 {
   systemd.services.kanidm-account-policy = {
@@ -18,14 +19,12 @@ in
       export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
 
       kanidm login \
-        -H https://localhost:${toString kanidmPort} \
-        -D idm_admin \
-        --accept-invalid-certs >/dev/null
+        -H ${kanidmCliUrl} \
+        -D idm_admin >/dev/null
 
       kanidm group account-policy auth-expiry \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D idm_admin \
-        --accept-invalid-certs \
         idm_all_persons \
         ${toString vars.kanidmAuthSessionExpirySeconds}
     '';

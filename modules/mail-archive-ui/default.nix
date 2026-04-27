@@ -6,7 +6,7 @@ let
   group = "mail-archive-ui";
   defaultTags = [ "new" ];
   mailArchiveUiPort = 9011;
-  mailArchiveStoreRoot = vars.usersWorkspaceRoot;
+  mailArchiveStoreRoot = vars.usersRoot;
   dataDirDefault = "/persist/appdata/mail-archive-ui";
   runtimeDirDefault = "/run/mail-archive-ui";
   lockDirDefault = "${dataDirDefault}/locks";

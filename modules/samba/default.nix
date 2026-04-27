@@ -2,15 +2,15 @@
 
 let
   kanidmPort = 8443;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
   kavitaWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
-  prepareUserWorkspace = pkgs.writeShellScript "prepare-samba-user-workspace" ''
+  prepareUserRoot = pkgs.writeShellScript "prepare-samba-user-root" ''
     set -euo pipefail
 
     username="$1"
-    root="${vars.usersWorkspaceRoot}/$username"
-    legacy_mail_root="${vars.dataRoot}/mail-archive/users/$username"
+    root="${vars.usersRoot}/$username"
     emails="$root/emails"
 
     install -d -m 2770 -g users "$root"
@@ -39,9 +39,6 @@ let
       install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails"
     fi
 
-    if [[ -d "$legacy_mail_root" ]]; then
-      ${pkgs.rsync}/bin/rsync -a --ignore-existing "$legacy_mail_root"/ "$emails"/
-    fi
     chown -R mail-archive-ui:mail-archive-ui "$emails"
 
     ${pkgs.acl}/bin/setfacl \
@@ -91,7 +88,7 @@ let
     apply_readonly_acl paperless "$root/documents"
   '';
 
-  syncFileshareWorkspaces = pkgs.writeShellScript "sync-fileshare-workspaces" ''
+  syncFileshareUserRoots = pkgs.writeShellScript "sync-fileshare-user-roots" ''
     set -euo pipefail
 
     export HOME="$(mktemp -d)"
@@ -100,21 +97,19 @@ let
 
     members_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm login \
-        -H https://localhost:${toString kanidmPort} \
-        -D admin \
-        --accept-invalid-certs >/dev/null
+        -H ${kanidmCliUrl} \
+        -D admin >/dev/null
 
       ${pkgs.kanidm_1_9}/bin/kanidm group get \
         fileshare_users \
-        -H https://localhost:${toString kanidmPort} \
+        -H ${kanidmCliUrl} \
         -D admin \
-        --accept-invalid-certs \
         -o json
     )"
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
-      ${prepareUserWorkspace} "$username"
+      ${prepareUserRoot} "$username"
     done < <(
       printf '%s' "$members_json" \
         | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]'
@@ -159,17 +154,17 @@ in
 
   networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts = [ 139 445 ];
 
-  systemd.services.fileshare-workspace-sync = {
+  systemd.services.fileshare-user-root-sync = {
     description = "Create per-user fileshare content roots from Kanidm group membership";
     wantedBy = [ "multi-user.target" ];
-    wants = [ "kanidm.service" "local-fs.target" ];
-    after = [ "kanidm.service" "local-fs.target" ];
+    wants = [ "data-pool-layout.service" "kanidm.service" "local-fs.target" ];
+    after = [ "data-pool-layout.service" "kanidm.service" "local-fs.target" ];
     before = [ "copyparty.service" ];
     serviceConfig = {
       Type = "oneshot";
     };
     script = ''
-      ${syncFileshareWorkspaces}
+      ${syncFileshareUserRoots}
     '';
   };
 }

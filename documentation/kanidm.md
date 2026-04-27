@@ -23,7 +23,7 @@ If the problem is DNS, routing, TLS, or a dead service, start with [Operations](
 ## Conventions
 
 - Placeholders such as `<domain>`, `KANIDM_URL`, `ADMIN_USER`, `NEW_USER`, and `EMAIL` are examples. Replace them with the actual operator values before running commands.
-- Group names such as `users`, `immich-users`, `paperless-users`, `fileshare_users`, and `*-admin` are literal names managed by this repo. Do not rename them in commands.
+- Group names such as `users`, `immich-users`, `paperless-users`, `metube-users`, `fileshare_users`, and `*-admin` are literal names managed by this repo. Do not rename them in commands.
 - Command blocks use the same context format:
   - Run from: where to execute the commands
   - Privileges: whether `sudo` is required
@@ -49,6 +49,7 @@ Login access groups:
 - `immich-users`
 - `paperless-users`
 - `audiobookshelf-users`
+- `metube-users`
 - `kavita-login`
 
 Admin intent groups:
@@ -152,10 +153,11 @@ Normal onboarding sequence:
 - `files.<domain>`: browser access is enforced by OAuth2 Proxy and `fileshare_users`.
 - `emails.<domain>`: private-only access is enforced by `mail-archive-users`.
 - `wiki.<domain>`: browser access is enforced by OAuth2 Proxy; baseline `users` membership is sufficient.
+- `ytdownload.<domain>`: browser access is enforced by OAuth2 Proxy and `metube-users`; downloads land directly in `/mnt/data/shared/videos/youtube`.
 - Immich: first successful OIDC login creates the local user row.
 - Paperless: first successful OIDC login creates or links the local user row.
 - Audiobookshelf: OIDC is configured, but the local bootstrap or root flow still exists.
-- Kavita: OIDC handles auth and provisioning, but admin roles remain app-local.
+- Kavita: OIDC handles auth and provisioning, non-admin local password login is disabled, and admin recovery remains app-local.
 - Jellyfin is a local-auth-only exception and is not access-controlled through Kanidm groups.
 
 Expected result after first login:
@@ -216,6 +218,8 @@ Grant or remove access:
 ```bash
 kanidm group add-members paperless-users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
 kanidm group remove-members paperless-users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
+kanidm group add-members metube-users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
+kanidm group remove-members metube-users "$NEW_USER" --url "$KANIDM_URL" --name "$ADMIN_USER"
 ```
 
 Expected result:

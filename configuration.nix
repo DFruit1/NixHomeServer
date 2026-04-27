@@ -64,6 +64,7 @@
     ./modules/mail-archive
     ./modules/mail-archive-paperless
     ./modules/mail-archive-ui
+    ./modules/metube
     ./modules/paperless
     ./modules/power-management
     ./modules/samba
