@@ -18,6 +18,7 @@ for required_path in \
   disko.nix \
   disko-system.nix \
   scripts/check-repo.sh \
+  scripts/backup-target.sh \
   scripts/cold-storage.sh \
   scripts/deploy-validated.sh \
   scripts/encrypt-staged-secrets.sh \
@@ -31,6 +32,7 @@ for required_path in \
   scripts/lib-secrets.sh \
   scripts/power-audit.sh \
   scripts/runtime-readiness.sh \
+  scripts/audit-storage-layout.sh \
   documentation/quickstart.md \
   documentation/restore-and-recovery.md \
   documentation/operations.md \
@@ -49,19 +51,14 @@ for required_path in \
   modules/Core_Modules/kanidm/account-policy.nix \
   modules/Core_Modules/kanidm/user-tui.nix \
   modules/Core_Modules/storage/layout.nix \
-  modules/Core_Modules/storage/migrations.nix \
   modules/audiobookshelf/service.nix \
-  modules/audiobookshelf/storage-migration.nix \
   modules/audiobookshelf/oidc-bootstrap.nix \
   modules/audiobookshelf/root-bootstrap.nix \
-  modules/audiobookshelf/library-sync.nix \
-  modules/kavita/library-sync.nix \
   modules/paperless/package.nix \
   modules/paperless/service.nix \
   modules/paperless/bootstrap.nix \
   modules/jellyfin/service.nix \
   modules/jellyfin/network-config.nix \
-  modules/jellyfin/reconcile.nix \
   secrets/agenix.nix
 do
   if [[ ! -e "$required_path" ]]; then
@@ -144,8 +141,8 @@ require_fixed documentation/operations.md 'nix flake check --no-build' \
   "Operations must own the flake validation command."
 require_fixed documentation/operations.md 'scripts/check-repo.sh' \
   "Operations must own the repo validation helper."
-require_fixed documentation/operations.md 'tests/run-all.sh' \
-  "Operations must explain that the repo helper runs the full test suite."
+require_fixed documentation/operations.md 'scripts/check-repo.sh --full' \
+  "Operations must document the exhaustive repo validation mode."
 require_fixed documentation/operations.md 'scripts/deploy-validated.sh' \
   "Operations must document the guarded deploy helper."
 require_fixed documentation/operations.md 'TARGET_SERVER_IP' \
@@ -184,8 +181,10 @@ require_fixed AGENTS.md 'TARGET_SERVER_IP' \
   "AGENTS.md must document the intended reserved LAN IP variable."
 require_fixed AGENTS.md 'CURRENT_SERVER_IP' \
   "AGENTS.md must document the current reachable IP override."
+require_fixed scripts/check-repo.sh 'tests/run-changed.sh' \
+  "Repository validation must use the change-aware test entrypoint by default."
 require_fixed scripts/check-repo.sh 'tests/run-all.sh' \
-  "Repository validation must use the slim test entrypoint."
+  "Repository validation must keep the exhaustive test entrypoint available."
 require_fixed documentation/restore-and-recovery.md './scripts/format-data-disks.sh' \
   "Restore-and-recovery must use the safer data-disk wrapper."
 require_fixed documentation/restore-and-recovery.md 'restic-backups-system-state.service' \

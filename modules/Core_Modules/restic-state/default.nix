@@ -1,18 +1,46 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  backupRoot = "/persist/backups/restic";
+  impermanenceCfg = config.repo.impermanence;
+  repoRoot = ../../..;
+  backupTargetScript = "${repoRoot}/scripts/backup-target.sh";
+  backupTargetCommand = pkgs.writeShellApplication {
+    name = "backup-target";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.jq
+      pkgs.nix
+      pkgs.util-linux
+    ];
+    text = ''
+      export BACKUP_TARGET_REPO_ROOT=${repoRoot}
+      exec ${pkgs.bash}/bin/bash ${backupTargetScript} "$@"
+    '';
+  };
+  selectionStateDir = "/persist/appdata/.nixos-managed/system-state-backup-target";
+  selectionFile = "${selectionStateDir}/selected-device";
+  mountPoint = "/mnt/backup-system-state";
+  backupRoot = "${mountPoint}/restic";
   repository = "${backupRoot}/system-state";
   stagingRoot = "/persist/appdata/system-state-backup";
   metadataRoot = "${stagingRoot}/metadata";
   dumpsRoot = "${stagingRoot}/dumps";
   inventoryRoot = "${metadataRoot}/inventories";
   zfsPoolName = vars.zfsDataPool.name;
+  persistBackedStateRoot =
+    stateRoot:
+    if lib.hasPrefix "/persist/" stateRoot then
+      stateRoot
+    else if impermanenceCfg.enablePersistence then
+      "/persist${stateRoot}"
+    else
+      "-";
   appStateEntries = [
     {
       app = "kanidm";
       component = "server";
       stateRoot = "/var/lib/kanidm";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/kanidm";
       payloadRoots = [ ];
       notes = "Identity directory state.";
     }
@@ -20,6 +48,7 @@ let
       app = "caddy";
       component = "acme";
       stateRoot = "/var/lib/acme";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/acme";
       payloadRoots = [ ];
       notes = "ACME certificate state.";
     }
@@ -27,6 +56,7 @@ let
       app = "cloudflared";
       component = "service";
       stateRoot = "/var/lib/cloudflared";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/cloudflared";
       payloadRoots = [ ];
       notes = "Tunnel credentials and local service state.";
     }
@@ -34,6 +64,7 @@ let
       app = "netbird";
       component = "service";
       stateRoot = "/var/lib/netbird-main";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/netbird-main";
       payloadRoots = [ ];
       notes = "Mesh client identity and local state.";
     }
@@ -41,6 +72,7 @@ let
       app = "unbound";
       component = "service";
       stateRoot = "/var/lib/unbound";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/unbound";
       payloadRoots = [ ];
       notes = "Resolver trust-anchor state.";
     }
@@ -48,27 +80,40 @@ let
       app = "audiobookshelf";
       component = "app";
       stateRoot = "/var/lib/audiobookshelf";
-      payloadRoots = [ "${vars.mediaRoot}/audio" ];
+      persistentStateRoot = persistBackedStateRoot "/var/lib/audiobookshelf";
+      payloadRoots = [
+        vars.sharedAudiobooksRoot
+        vars.usersRoot
+      ];
       notes = "Local users, metadata, and server config.";
     }
     {
       app = "jellyfin";
       component = "app";
       stateRoot = "/var/lib/jellyfin";
-      payloadRoots = [ "${vars.mediaRoot}/video" ];
+      persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
+      payloadRoots = [
+        vars.sharedVideosRoot
+        vars.usersRoot
+      ];
       notes = "Local users, libraries, and server config.";
     }
     {
       app = "kavita";
       component = "app";
       stateRoot = "/var/lib/kavita";
-      payloadRoots = [ "${vars.mediaRoot}/books" ];
+      persistentStateRoot = persistBackedStateRoot "/var/lib/kavita";
+      payloadRoots = [
+        vars.sharedBooksRoot
+        vars.usersRoot
+      ];
       notes = "Library database, local users, and server settings.";
     }
     {
       app = "metube";
       component = "app";
       stateRoot = "/var/lib/metube";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/metube";
       payloadRoots = [ vars.sharedYouTubeRoot ];
       notes = "Queue history, temporary state, and downloader config.";
     }
@@ -76,6 +121,7 @@ let
       app = "paperless";
       component = "app";
       stateRoot = "/var/lib/paperless";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/paperless";
       payloadRoots = [ "${vars.mediaRoot}/documents" ];
       notes = "Application state and local metadata.";
     }
@@ -83,6 +129,7 @@ let
       app = "paperless";
       component = "redis";
       stateRoot = config.services.redis.servers.paperless.settings.dir;
+      persistentStateRoot = persistBackedStateRoot config.services.redis.servers.paperless.settings.dir;
       payloadRoots = [ "${vars.mediaRoot}/documents" ];
       notes = "Paperless Redis persistence.";
     }
@@ -90,6 +137,7 @@ let
       app = "immich";
       component = "postgresql";
       stateRoot = config.services.postgresql.dataDir;
+      persistentStateRoot = persistBackedStateRoot config.services.postgresql.dataDir;
       payloadRoots = [ "${vars.mediaRoot}/photos/managed" ];
       notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
     }
@@ -97,6 +145,7 @@ let
       app = "immich";
       component = "redis";
       stateRoot = config.services.redis.servers.immich.settings.dir;
+      persistentStateRoot = persistBackedStateRoot config.services.redis.servers.immich.settings.dir;
       payloadRoots = [ "${vars.mediaRoot}/photos/managed" ];
       notes = "Immich Redis persistence.";
     }
@@ -104,13 +153,11 @@ let
       app = "copyparty";
       component = "app";
       stateRoot = "/var/lib/copyparty";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/copyparty";
       payloadRoots = [
         vars.usersRoot
         vars.sharedRoot
         "${vars.mediaRoot}/documents"
-        "${vars.mediaRoot}/audio"
-        "${vars.mediaRoot}/books"
-        "${vars.mediaRoot}/video"
       ];
       notes = "Local state directory for Copyparty.";
     }
@@ -118,6 +165,7 @@ let
       app = "mail-archive-ui";
       component = "app";
       stateRoot = "/persist/appdata/mail-archive-ui";
+      persistentStateRoot = persistBackedStateRoot "/persist/appdata/mail-archive-ui";
       payloadRoots = [
         vars.usersRoot
         vars.sharedEmailsRoot
@@ -125,32 +173,37 @@ let
       notes = "SQLite state, locks, and the app master key.";
     }
   ];
-  appStateSpec = lib.concatMapStringsSep "\n" (
-    entry:
-    lib.concatStringsSep "\t" [
-      entry.app
-      entry.component
-      entry.stateRoot
-      (lib.concatStringsSep ";" entry.payloadRoots)
-      entry.notes
-    ]
-  ) appStateEntries;
+  appStateSpec = lib.concatMapStringsSep "\n"
+    (
+      entry:
+      lib.concatStringsSep "\t" [
+        entry.app
+        entry.component
+        entry.stateRoot
+        entry.persistentStateRoot
+        (lib.concatStringsSep ";" entry.payloadRoots)
+        entry.notes
+      ]
+    )
+    appStateEntries;
   criticalPaths = [
     vars.dataRoot
     vars.mediaRoot
     "${vars.mediaRoot}/documents"
-    "${vars.mediaRoot}/audio"
-    "${vars.mediaRoot}/books"
-    "${vars.mediaRoot}/video"
+    "${vars.mediaRoot}/photos/managed"
     vars.usersRoot
     vars.sharedRoot
     vars.sharedEmailsRoot
   ];
 in
 {
+  boot.supportedFilesystems = [ "exfat" ];
+  system.fsPackages = [ pkgs.exfatprogs ];
+  environment.systemPackages = [ backupTargetCommand ];
+
   systemd.tmpfiles.rules = [
-    "d ${backupRoot} 0700 root root -"
-    "d ${repository} 0700 root root -"
+    "d ${mountPoint} 0700 root root -"
+    "d ${selectionStateDir} 0755 root root -"
     "d ${stagingRoot} 0700 root root -"
     "d ${metadataRoot} 0700 root root -"
     "d ${dumpsRoot} 0700 root root -"
@@ -161,13 +214,17 @@ in
     initialize = true;
     repository = repository;
     passwordFile = config.age.secrets.resticSystemStatePassword.path;
-    paths = [
-      "/var/lib"
-      "/persist/appdata"
-      "/etc/ssh"
-      "/etc/agenix"
-      "/etc/machine-id"
-    ];
+    paths =
+      if impermanenceCfg.enablePersistence then
+        [ "/persist" ]
+      else
+        [
+          "/var/lib"
+          "/persist/appdata"
+          "/etc/ssh"
+          "/etc/agenix"
+          "/etc/machine-id"
+        ];
     dynamicFilesFrom = ''
       if [[ -d /etc/nixos ]]; then
         printf '%s\n' /etc/nixos
@@ -201,7 +258,41 @@ in
         ]
       }
 
-      install -d -m 0700 "${metadataRoot}" "${dumpsRoot}" "${inventoryRoot}"
+      if [[ ! -r "${selectionFile}" ]]; then
+        echo "Missing backup target selection: ${selectionFile}" >&2
+        exit 1
+      fi
+
+      selected_device="$(tr -d '\n' < "${selectionFile}")"
+      if [[ -z "$selected_device" ]]; then
+        echo "Backup target selection file is empty: ${selectionFile}" >&2
+        exit 1
+      fi
+
+      mounted_source="$(findmnt -rn -o SOURCE --target "${mountPoint}" || true)"
+      mounted_fstype="$(findmnt -rn -o FSTYPE --target "${mountPoint}" || true)"
+      if [[ -z "$mounted_source" ]]; then
+        echo "Backup target mount missing: ${mountPoint}" >&2
+        exit 1
+      fi
+
+      selected_real="$(readlink -f "$selected_device" 2>/dev/null || true)"
+      mounted_real="$(readlink -f "$mounted_source" 2>/dev/null || printf '%s' "$mounted_source")"
+      if [[ -z "$selected_real" || "$mounted_real" != "$selected_real" ]]; then
+        echo "Backup target mismatch: selected=$selected_device mounted=$mounted_source" >&2
+        exit 1
+      fi
+
+      case "$mounted_fstype" in
+        exfat|ext4|btrfs)
+          ;;
+        *)
+          echo "Unsupported backup target filesystem: ''${mounted_fstype:-missing}" >&2
+          exit 1
+          ;;
+      esac
+
+      install -d -m 0700 "${backupRoot}" "${repository}" "${metadataRoot}" "${dumpsRoot}" "${inventoryRoot}"
 
       timestamp_file="${metadataRoot}/timestamp.txt"
       app_state_file="${metadataRoot}/app-state-roots.tsv"
@@ -214,8 +305,8 @@ in
 
       date --iso-8601=seconds > "$timestamp_file"
 
-      printf 'app\tcomponent\tstate_root\tstate_status\tstate_type\towner\tgroup\tmode\tpayload_roots\tpayload_status\tnotes\n' > "$app_state_file"
-      while IFS=$'\t' read -r app component state_root payload_roots notes; do
+      printf 'app\tcomponent\tstate_root\tpersistent_state_root\tstate_status\tstate_type\towner\tgroup\tmode\tpayload_roots\tpayload_status\tnotes\n' > "$app_state_file"
+      while IFS=$'\t' read -r app component state_root persistent_state_root payload_roots notes; do
         if [[ -e "$state_root" ]]; then
           state_status="present"
           IFS=$'\t' read -r state_type owner group mode < <(stat -c '%F\t%U\t%G\t%a' "$state_root")
@@ -246,10 +337,11 @@ in
           fi
         fi
 
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$app" \
           "$component" \
           "$state_root" \
+          "$persistent_state_root" \
           "$state_status" \
           "$state_type" \
           "$owner" \
@@ -324,5 +416,14 @@ in
   systemd.services.restic-backups-system-state = {
     wants = [ "local-fs.target" "data-pool-layout.service" ];
     after = [ "local-fs.target" "data-pool-layout.service" ];
+    path = [
+      backupTargetCommand
+    ];
+    preStart = ''
+      ${lib.getExe backupTargetCommand} mount
+    '';
+    postStop = ''
+      ${lib.getExe backupTargetCommand} unmount
+    '';
   };
 }

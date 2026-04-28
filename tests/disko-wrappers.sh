@@ -9,8 +9,11 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools nix jq rg readlink
 
 echo "ℹ️ Checking destructive Disko wrapper previews…"
-system_output="$(./scripts/format-system-disk.sh --print-only)"
-data_output="$(./scripts/format-data-disks.sh --print-only)"
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+system_output="$(REPO_NIX_EVAL_CACHE_DIR="$tmpdir/nix-cache" ./scripts/format-system-disk.sh --print-only)"
+data_output="$(REPO_NIX_EVAL_CACHE_DIR="$tmpdir/nix-cache" ./scripts/format-data-disks.sh --print-only)"
 
 main_disk="$(nix_eval_var 'vars.mainDisk')"
 pool_name="$(nix_eval_var 'vars.zfsDataPool.name')"
@@ -70,5 +73,57 @@ forbid_match documentation/restore-and-recovery.md 'nix run github:nix-community
   "Restore-and-recovery must not present direct Disko invocation as the normal destructive path."
 forbid_match documentation/quickstart.md 'sgdisk --zap-all|wipefs -a' \
   "Quickstart must not recommend manual zap commands as the normal path."
+
+echo "ℹ️ Checking shared Nix eval cache behavior…"
+mkdir -p "$tmpdir/cache-bin" "$tmpdir/cache-dir"
+counter_file="$tmpdir/nix-counter"
+
+cat >"$tmpdir/cache-bin/nix" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '1' >>"$CACHE_TEST_COUNTER_FILE"
+
+if [[ "$1" == "eval" && "$2" == "--json" ]]; then
+  printf '{"value":1}\n'
+  exit 0
+fi
+
+if [[ "$1" == "eval" && "$2" == "--raw" ]]; then
+  printf 'cached-value'
+  exit 0
+fi
+
+exit 1
+EOF
+chmod +x "$tmpdir/cache-bin/nix"
+
+PATH="$tmpdir/cache-bin:$PATH" \
+  CACHE_TEST_COUNTER_FILE="$counter_file" \
+  bash -c '
+    source scripts/lib-repo.sh
+    init_repo_root
+    ensure_default_nix_config
+    nix_json "{ value = 1; }" >/dev/null
+    nix_json "{ value = 1; }" >/dev/null
+  '
+require_json_equal "$(wc -c < "$counter_file" | tr -d " ")" "2" \
+  "Without REPO_NIX_EVAL_CACHE_DIR, repeated nix_json calls must evaluate twice."
+
+: >"$counter_file"
+PATH="$tmpdir/cache-bin:$PATH" \
+  CACHE_TEST_COUNTER_FILE="$counter_file" \
+  REPO_NIX_EVAL_CACHE_DIR="$tmpdir/cache-dir" \
+  bash -c '
+    source scripts/lib-repo.sh
+    init_repo_root
+    ensure_default_nix_config
+    nix_json "{ value = 1; }" >/dev/null
+    nix_json "{ value = 1; }" >/dev/null
+    nix_var "builtins.toString 1" >/dev/null
+    nix_var "builtins.toString 1" >/dev/null
+  '
+require_json_equal "$(wc -c < "$counter_file" | tr -d " ")" "2" \
+  "With REPO_NIX_EVAL_CACHE_DIR, repeated nix_json and nix_var calls must be cached per expression and mode."
 
 echo "✅ Disko wrapper tests passed."

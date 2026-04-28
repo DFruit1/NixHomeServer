@@ -14,16 +14,8 @@ in
   users.users.audiobookshelf.extraGroups = lib.mkAfter [ "audiobookshelf-media" ];
 
   systemd.services.audiobookshelf = {
-    after = [
-      "app-state-migration-v1.service"
-      "audiobookshelf-storage-migration-v1.service"
-      "data-pool-layout.service"
-    ];
-    wants = [
-      "app-state-migration-v1.service"
-      "audiobookshelf-storage-migration-v1.service"
-      "data-pool-layout.service"
-    ];
+    after = [ "data-pool-layout.service" ];
+    wants = [ "data-pool-layout.service" ];
     serviceConfig.WorkingDirectory = lib.mkForce dataDir;
   };
 

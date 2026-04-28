@@ -5,8 +5,6 @@ let
   dataDir = "/var/lib/kavita";
 in
 {
-  imports = [ ./library-sync.nix ];
-
   services.kavita = {
     enable = true;
     package = pkgsUnstable.kavita;
@@ -46,8 +44,8 @@ in
   '';
 
   systemd.services.kavita = {
-    after = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
-    wants = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
+    after = [ "data-pool-layout.service" ];
+    wants = [ "data-pool-layout.service" ];
   };
 
   systemd.services.kavita-oidc-bootstrap = {

@@ -8,11 +8,13 @@
     crane.url = "github:ipetkov/crane";
     agenix.url = "github:ryantm/agenix";
     disko.url = "github:nix-community/disko";
+    impermanence.url = "github:nix-community/impermanence";
+    impermanence.inputs.nixpkgs.follows = "nixpkgs";
     copyparty.url = "github:9001/copyparty";
     copyparty.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, crane, agenix, disko, copyparty, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, crane, agenix, disko, impermanence, copyparty, ... }:
     let
       system = "x86_64-linux";
       lib = nixpkgs.lib;
@@ -54,6 +56,7 @@
           ./configuration.nix
           agenix.nixosModules.default
           disko.nixosModules.disko
+          impermanence.nixosModules.impermanence
         ];
         specialArgs = {
           inherit self vars disko copyparty pkgsUnstable;

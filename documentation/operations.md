@@ -41,8 +41,11 @@ Use Operations when any of these are true:
 ## Common Commands
 
 - Validation gate: `nix flake check --no-build` then `scripts/check-repo.sh`
+- Exhaustive local gate: `scripts/check-repo.sh --full`
 - Guarded deploy: `./scripts/deploy-validated.sh`
 - Runtime readiness: `sudo ./scripts/runtime-readiness.sh`
+- Strict runtime readiness: `sudo ./scripts/runtime-readiness.sh --require-online-zpool`
+- Backup target selection: `backup-target list` then `sudo backup-target select ...`
 - Power audit: `./scripts/power-audit.sh`
 - Failed units: `systemctl --failed --no-pager`
 
@@ -67,7 +70,7 @@ If it fails:
 - fix the reported Nix evaluation error first
 - rerun the command until it completes cleanly
 
-Run the repo policy and test gate second.
+Run the change-aware repo policy and test gate second.
 
 - Run from: `workstation repo root`
 - Privileges: `sudo not required`
@@ -77,17 +80,29 @@ Run the repo policy and test gate second.
 scripts/check-repo.sh
 ```
 
-`scripts/check-repo.sh` already runs `tests/run-all.sh`, including `tests/core-config.sh`. It also builds and runs the packaged `mail-archive-ui` test derivation so Rust app regressions cannot slip past the repo gate.
+Default `scripts/check-repo.sh` behavior:
+- reruns `nix flake check --no-build`
+- runs the smoke suite plus targeted shell tests through `tests/run-changed.sh`
+- builds Rust check derivations only when relevant paths changed
+
+Use the exhaustive local gate when you want the full shell suite and all explicit Rust derivation checks regardless of the diff.
+
+```bash
+scripts/check-repo.sh --full
+```
+
+`scripts/check-repo.sh --full` runs `tests/run-all.sh`, including `tests/core-config-base.sh`, `tests/core-config-storage.sh`, and `tests/core-config-apps.sh`. Guarded deploys also use the exhaustive mode, but skip the duplicate flake check because the deploy helper already ran it first.
 
 Expected result:
-- repository policy tests pass
-- the packaged `mail-archive-ui` test derivation builds and runs
+- the change-aware shell suite passes in default mode
+- `--full` runs the exhaustive shell suite when requested
+- targeted or exhaustive Rust derivation builds pass for the touched apps
 - the script exits with `Repository checks passed.`
 
 If it fails:
 - stop before deploying anything
 - fix the failing test, policy check, or build error
-- rerun the full script instead of assuming a partial fix is enough
+- rerun `scripts/check-repo.sh --full` before a deploy if you only iterated with the selective default path
 
 ## Guarded Deploy
 
@@ -111,7 +126,7 @@ export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
 Expected result:
 - the helper reruns validation before the remote rebuild
 - remote `nixos-rebuild test` completes
-- the helper checks failed units and runs remote runtime readiness successfully
+- the helper checks failed units and runs remote runtime readiness successfully in strict `--require-online-zpool` mode
 - any transition notice is advisory only and still ends with a clean validation result
 
 If it fails:
@@ -143,6 +158,46 @@ If it fails:
 - otherwise fix the reported rebuild or connectivity problem and rerun the guarded test path first
 
 Use `./scripts/deploy-validated.sh --help` for argument details.
+
+## Backup Target Selection
+
+The `system-state` Restic job writes to `/mnt/backup-system-state/restic/system-state`, but the backing USB partition is selected at runtime instead of being hardcoded in `vars.nix` or `disko`.
+
+- Run from: `target server shell`
+- Privileges: `sudo required for select, mount, unmount, and clear`
+- Environment: `plain shell`
+
+Inspect the currently eligible USB backup partitions first.
+
+```bash
+backup-target list
+backup-target status
+```
+
+Select the partition you want the next backup runs to use.
+
+```bash
+sudo backup-target select /dev/disk/by-id/<usb-backup>-part1
+backup-target status
+```
+
+Normal manual verification flow:
+
+```bash
+sudo backup-target mount
+sudo systemctl start restic-backups-system-state.service
+sudo backup-target unmount
+```
+
+Expected result:
+- `list` shows only eligible external USB partitions with stable `by-id` names
+- `select` persists the chosen partition under `/persist/appdata/.nixos-managed/system-state-backup-target/selected-device`
+- the backup service mounts the selected USB partition at start and auto-unmounts it after the run
+
+If it fails:
+- if `select` reports ambiguity, choose the exact `/dev/disk/by-id/...-partN` path instead of `LABEL=...`
+- if `mount` or the backup service reports the device is missing, attach the selected USB disk again or choose a different one
+- if the selected filesystem is unsupported, reselect an `exfat`, `ext4`, or `btrfs` partition
 
 ## Rollback After A Bad Generation
 
@@ -227,12 +282,45 @@ Expected result:
 - HTTP checks return one of the expected status codes
 - DNS answers match the configured public or split-horizon model
 - the ZFS pool and expected datasets are mounted
+- `DEGRADED` mirrored-pool health still passes in the default manual mode when the datasets are mounted and accessible
 - SMART checks do not report hard failures
 
 If it fails:
 - use [Service Failure Entry Points](#service-failure-entry-points) for service and DNS issues
 - use [Kanidm Guide](./kanidm.md#troubleshooting-flow) if the failure is app access after successful sign-in
 - use [Restore And Recovery](./restore-and-recovery.md) if the failure is mount- or storage-related
+
+Operational note:
+- manual `sudo ./scripts/runtime-readiness.sh` reflects runtime survivability and allows a mirrored pool to remain `DEGRADED` while still serving data
+- guarded deploys stay stricter and run `runtime-readiness.sh --require-online-zpool`, so deploy promotion remains blocked until mirror redundancy is restored
+
+## Storage Layout Audit
+
+Use this when you need to confirm the current on-disk layout matches the intended steady-state model before or after impermanence preparation.
+
+- Run from: `target server shell`
+- Privileges: `sudo recommended`
+- Environment: `plain shell`
+
+```bash
+sudo ./scripts/audit-storage-layout.sh
+```
+
+The audit reports:
+- active payload roots that should remain in steady state
+- retired legacy roots that should be absent or empty
+- active SSD-backed app-state roots
+
+Expected result:
+- `media/documents`, `media/photos`, `users`, `shared`, and `kiwix` report as the active steady-state roots
+- retired roots such as `/mnt/data/appdata`, `/mnt/data/media/audio`, `/mnt/data/media/books`, and `/mnt/data/media/video` are absent or empty
+- the script exits successfully
+
+If it fails:
+- stop before enabling impermanence persistence or root rollback
+- remove only the retired roots that the audit confirms are empty
+- do not remove `media/documents`, `media/photos`, `kiwix`, or anything under `users` or `shared`
+- rerun the audit and [Runtime Validation](#runtime-validation) after any cleanup
 
 Additional read-only audits:
 
@@ -266,16 +354,22 @@ Private endpoints:
 - `https://videos.<domain>`
 
 Expected behavior:
-- On the home LAN in `split-horizon` mode, only the private app hostnames should resolve to `vars.serverLanIP` through router forwarding.
+- On the home LAN in `split-horizon` mode, the private app hostnames plus `id.<domain>` and `files.<domain>` resolve to `vars.serverLanIP` through router forwarding.
 - Over NetBird, private app hostnames should resolve to `vars.nbIP`.
 - `id.<domain>` and `files.<domain>` should stay on the normal public path.
 - Off the home LAN, the private apps require NetBird.
-- If `dnscrypt-proxy` is down, Unbound may still resolve through plaintext fallback upstreams by design; check `systemctl status dnscrypt-proxy unbound` first for privacy-sensitive DNS incidents.
+- Upstream recursive DNS stays encrypted-only. If `dnscrypt-proxy` is down or cannot bootstrap, recursive DNS should fail closed instead of silently downgrading to plaintext.
 
 Recommended LAN DNS model:
 - DHCP advertises only the router as DNS.
 - The router forwards only the private app hostnames to the server.
 - Do not forward the whole public zone to the server.
+
+Offsite NetBird requirements:
+- Configure a NetBird nameserver group in the NetBird admin plane that points private app match domains at `100.72.113.237:53`.
+- Match only the private app hostnames. Do not include the zone apex, `id.<domain>`, or `files.<domain>`.
+- Keep NetBird DNS management enabled for the peer groups that need private app access.
+- Linux peers need `systemd-resolved` for NetBird match-domain split DNS. macOS, Windows, iOS, and Android can use NetBird-managed DNS directly.
 
 ## Power Management
 
@@ -320,6 +414,8 @@ sudo jq . /var/lib/storage-monitoring/latest.json
 Expected result:
 - the timers appear active
 - the latest report exists and reflects the current pool and monitored disks
+- `latest.json` reports `.zfs.healthState` as the raw pool state and `.zfs.runtimeState` as `operational`, `degraded`, or `failed`
+- a `DEGRADED` mirrored pool remains an operationally critical alert, even when runtime is still available
 
 If it fails:
 - inspect the service status and latest report output
@@ -368,6 +464,11 @@ sudo ./scripts/runtime-readiness.sh
 ```
 
 If `/mnt/data` or a configured dataset is missing, move to [Restore And Recovery](./restore-and-recovery.md).
+
+If `sudo zpool status data` shows `DEGRADED` but the datasets are still mounted:
+- treat that as runtime-survivable but operationally critical
+- use `sudo ./scripts/runtime-readiness.sh` to confirm the host is still serving from the surviving mirror member
+- keep guarded deploys blocked until the failed member is replaced and the pool returns to `ONLINE`
 
 Mail archive service checks:
 

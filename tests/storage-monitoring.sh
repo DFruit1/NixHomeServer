@@ -227,6 +227,10 @@ require_json_equal "$(jq -r '.coldStorage.pools[0].monitored' "$state_dir/latest
   "Configured cold-storage pools must stay in automated monitoring."
 require_json_equal "$(jq -r '.zfs.statusSeverity' "$state_dir/latest.json")" 'OK' \
   "Healthy ZFS pool state must be reported as OK."
+require_json_equal "$(jq -r '.zfs.healthState' "$state_dir/latest.json")" 'ONLINE' \
+  "Healthy ZFS pool state must keep the raw ONLINE health value."
+require_json_equal "$(jq -r '.zfs.runtimeState' "$state_dir/latest.json")" 'operational' \
+  "Healthy ZFS pool state must report an operational runtime."
 
 echo "ℹ️ Checking alert de-duplication…"
 curl_log_dedupe="${tmpdir}/curl.dedupe.log"
@@ -237,6 +241,18 @@ if [[ -f "$curl_log_dedupe" ]]; then
 fi
 require_json_equal "$dedupe_bytes" "0" \
   "An unchanged degraded state must not resend the same ntfy alert."
+
+echo "ℹ️ Checking degraded pool reporting…"
+curl_log_degraded="${tmpdir}/curl.degraded.log"
+STORAGE_MONITORING_ZPOOL_HEALTH=DEGRADED run_report "$config_file" "$curl_log_degraded"
+require_json_equal "$(jq -r '.overallSeverity' "$state_dir/latest.json")" 'CRITICAL' \
+  "A degraded ZFS pool must escalate the report to CRITICAL."
+require_json_equal "$(jq -r '.zfs.statusSeverity' "$state_dir/latest.json")" 'CRITICAL' \
+  "A degraded ZFS pool must keep CRITICAL storage severity."
+require_json_equal "$(jq -r '.zfs.healthState' "$state_dir/latest.json")" 'DEGRADED' \
+  "A degraded ZFS pool must preserve the raw DEGRADED health state."
+require_json_equal "$(jq -r '.zfs.runtimeState' "$state_dir/latest.json")" 'degraded' \
+  "A degraded ZFS pool must report degraded runtime rather than failed runtime."
 
 echo "ℹ️ Checking critical transport escalation…"
 touch "$dev_dir/transport"
@@ -251,6 +267,7 @@ PATH="$bin_dir:$PATH" \
   STORAGE_MONITORING_FINDMNT_FIXTURE="$tmpdir/findmnt.clean" \
   STORAGE_MONITORING_SYSTEMCTL_FIXTURE="$tmpdir/systemctl.clean" \
   STORAGE_MONITORING_JOURNAL_FIXTURE="$TESTS_REPO_ROOT/tests/fixtures/storage-health/transport.journal" \
+  STORAGE_MONITORING_ZPOOL_HEALTH=ONLINE \
   STORAGE_MONITORING_ZFS_LIST_FIXTURE="$tmpdir/zfs-list.clean" \
   STORAGE_ALERT_WEBHOOK_FILE="$tmpdir/webhook-url" \
   STORAGE_MONITORING_CURL_LOG="${tmpdir}/curl.critical.log" \

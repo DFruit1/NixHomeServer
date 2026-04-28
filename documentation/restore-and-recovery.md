@@ -57,7 +57,7 @@ Stop conditions:
 
 ## SSD-Backed App State Coverage
 
-The local `system-state` Restic job snapshots `/var/lib` and `/persist/appdata`, so the app-local state that must survive data-pool recreation is expected to be captured there before any destructive storage work.
+Before explicit impermanence persistence is enabled, the local `system-state` Restic job snapshots `/var/lib` and `/persist/appdata`. After persistence is enabled, it snapshots `/persist` as the canonical SSD-backed state root. In both cases, the app-local state that must survive data-pool recreation is expected to be captured there before any destructive storage work.
 
 Key state roots:
 - Jellyfin: `/var/lib/jellyfin`
@@ -71,6 +71,12 @@ Key state roots:
 - Kanidm: `/var/lib/kanidm`
 
 The backup metadata file `/persist/appdata/system-state-backup/metadata/app-state-roots.tsv` records the expected local state roots, their ownership and mode, and the related data-pool payload roots for each service.
+
+Canonical ZFS content layout:
+- `media/documents` and `media/photos` are active app-managed payload roots
+- `users` and `shared` are the canonical user-facing library roots
+- `kiwix` remains a dedicated top-level content root at `/mnt/data/kiwix`
+- `media/audio`, `media/books`, and `media/video` are historical migration roots only and should be absent or empty in steady state
 
 ## How The Mirrored Data Pool Works
 
@@ -87,6 +93,11 @@ Operational implications:
 - after replacing a failed member, wait for resilvering to finish before treating the pool as healthy again
 - whenever a mirror member changes permanently, update [`vars.nix`](../vars.nix) so monitoring, future wrapper previews, and recovery workflows match reality
 - if you ever choose to move beyond a single mirrored vdev, treat that as a deliberate topology redesign and update the repo expectations first rather than assuming the current runbooks still apply unchanged
+
+Current live host inventory:
+- active mirror members: `ata-HGST_HUS726T4TALA6L4_V1JAKPNH` and `ata-HGST_HUS726T4TALA6L4_V1J9PKDH`
+- currently faulted member: `ata-HGST_HUS726T4TALA6L4_V1J9PKDH-part1` which presented as `sdd` during the observed I/O errors
+- other attached HGST disks `V6G7R6MS` and `V1G5K8YC` are not part of the current `data` pool and must not be auto-promoted during recovery
 
 ## ZFS Pool Do's And Don'ts
 
@@ -265,6 +276,11 @@ sudo zpool list -v
 
 2. Confirm the replacement disk's stable by-id path and make sure it is not one of the currently declared SSD, cold-storage, or unrelated data-pool disks.
 
+For the current host inventory:
+- the failed member is `ata-HGST_HUS726T4TALA6L4_V1J9PKDH-part1`
+- `ata-HGST_HUS726T4TALA6L4_V6G7R6MS` and `ata-HGST_HUS726T4TALA6L4_V1G5K8YC` are attached but are not current pool members
+- do not repartition, attach, or replace against those unrelated disks unless you are intentionally performing a separate topology change
+
 3. Partition only the replacement disk so it matches the layout declared in [`disko.nix`](../disko.nix): one GPT partition spanning the disk, with the future ZFS member on `-part1`.
 
 4. If the replacement disk ID is new, update [`vars.nix`](../vars.nix) so the sole `zfsDataPool.mirrorPairs` entry uses the new disk ID, then run the normal [Validation Gate](./operations.md#validation-gate) and [Guarded Deploy](./operations.md#guarded-deploy) so monitoring and future destructive-wrapper previews match the actual hardware.
@@ -291,6 +307,7 @@ Expected Result:
 - the pool remains available during the replacement workflow
 - `zpool status data` eventually reports the resilver as complete and the pool as `ONLINE`
 - runtime readiness passes once the replacement has finished
+- until the pool returns to `ONLINE`, expect manual runtime readiness to confirm survivability while guarded deploys remain blocked
 
 Stop Conditions:
 - you cannot confidently identify which mirror member is failed
@@ -353,14 +370,15 @@ Next Document If The Problem Is Elsewhere:
 ## Scenario: Restore SSD-Backed App State
 
 Goal:
-- inspect or restore SSD-backed state from the local Restic repository at `/persist/backups/restic/system-state`
+- inspect or restore SSD-backed state from the selected external Restic repository mounted at `/mnt/backup-system-state/restic/system-state`
 
 Do Not Touch:
 - the mirrored `data` pool payloads under `/mnt/data`
 - manual cold-storage pool contents
 
 Preconditions:
-- the local repository exists on the SSD
+- a backup target is already selected with `backup-target select ...`
+- the selected external backup disk is available to mount
 - you know whether you only need an inspection restore into a scratch directory or a manual targeted file restore afterward
 
 Command Context:
@@ -373,6 +391,7 @@ Steps:
 
 ```bash
 systemctl status restic-backups-system-state.timer
+sudo backup-target mount
 sudo systemctl start restic-backups-system-state.service
 sudo restic-system-state snapshots
 sudo column -t -s $'\t' /persist/appdata/system-state-backup/metadata/app-state-roots.tsv
@@ -389,6 +408,7 @@ sudo restic-system-state restore latest --target /tmp/system-state-restore
 ```bash
 sudo column -t -s $'\t' /tmp/system-state-restore/persist/appdata/system-state-backup/metadata/app-state-roots.tsv
 sudo ls -1 /tmp/system-state-restore/persist/appdata/system-state-backup/dumps
+sudo backup-target unmount
 ```
 
 4. Use the restored metadata and files to decide what must be copied back before returning to [Guarded Deploy](./operations.md#guarded-deploy) and [Runtime Validation](./operations.md#runtime-validation).
@@ -397,6 +417,7 @@ Expected Result:
 - the snapshot list is readable
 - the restore command recreates the backed-up tree under `/tmp/system-state-restore`
 - metadata about the pool layout, app-state roots, and critical managed paths is available for inspection
+- the selected external backup disk unmounts cleanly when you are done with it
 
 Stop Conditions:
 - the snapshot list is empty when you expected local backups

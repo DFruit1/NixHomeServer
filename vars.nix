@@ -14,6 +14,7 @@ rec {
   serverLanGateway = "192.168.8.1"; # Default IPv4 gateway for the LAN uplink.
   nbIP = "100.72.113.237";
   dnsMode = "split-horizon"; # Either "split-horizon" or "netbird-only".
+  dnsPrivacyMode = "encrypted-only"; # Keep recursive upstream DNS on encrypted transports only.
   lanDnsDomain = "home.arpa";
   lanDnsHosts = { # LAN-only forward and reverse records served by Unbound.
     "${hostname}" = serverLanIP;

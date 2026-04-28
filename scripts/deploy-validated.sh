@@ -156,7 +156,7 @@ echo "ℹ️ Running flake checks (no build)…"
 nix flake check --no-build
 
 echo "ℹ️ Running repository checks…"
-"$repo_root/scripts/check-repo.sh"
+"$repo_root/scripts/check-repo.sh" --full --skip-flake-check
 
 print_transition_notice_if_needed
 
@@ -178,7 +178,7 @@ if [[ -x "$repo_root/scripts/runtime-readiness.sh" ]]; then
     trap 'rm -rf \"\$tmpdir\" /tmp/runtime-readiness.tar' EXIT
     tar -C \"\$tmpdir\" -xf /tmp/runtime-readiness.tar
     chmod +x \"\$tmpdir/scripts/runtime-readiness.sh\"
-    sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\"
+    sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\" --require-online-zpool
   "
   rm -f "$readiness_archive"
   trap - EXIT
@@ -193,4 +193,4 @@ fi
 
 echo "✅ Deploy validation completed."
 echo "Next verification command:"
-echo "  readiness_archive=\$(mktemp) && tar -C $repo_root --exclude=.git --exclude='./result' --exclude='./result-*' --exclude='./rust/apps/mail-archive-ui/target' --exclude='./rust/apps/kanidm-admin/target' -cf \"\$readiness_archive\" . && scp \"\$readiness_archive\" $target_host:/tmp/runtime-readiness.tar && ssh -tt $target_host 'tmpdir=\$(mktemp -d); trap \"rm -rf \\\"\$tmpdir\\\" /tmp/runtime-readiness.tar\" EXIT; tar -C \"\$tmpdir\" -xf /tmp/runtime-readiness.tar; chmod +x \"\$tmpdir/scripts/runtime-readiness.sh\"; sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\"' && rm -f \"\$readiness_archive\""
+echo "  readiness_archive=\$(mktemp) && tar -C $repo_root --exclude=.git --exclude='./result' --exclude='./result-*' --exclude='./rust/apps/mail-archive-ui/target' --exclude='./rust/apps/kanidm-admin/target' -cf \"\$readiness_archive\" . && scp \"\$readiness_archive\" $target_host:/tmp/runtime-readiness.tar && ssh -tt $target_host 'tmpdir=\$(mktemp -d); trap \"rm -rf \\\"\$tmpdir\\\" /tmp/runtime-readiness.tar\" EXIT; tar -C \"\$tmpdir\" -xf /tmp/runtime-readiness.tar; chmod +x \"\$tmpdir/scripts/runtime-readiness.sh\"; sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\" --require-online-zpool' && rm -f \"\$readiness_archive\""

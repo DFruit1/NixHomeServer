@@ -49,6 +49,7 @@
     ./modules/Core_Modules/caddy
     ./modules/Core_Modules/cloudflared
     ./modules/Core_Modules/data-disks
+    ./modules/Core_Modules/impermanence
     ./modules/Core_Modules/kanidm
     ./modules/Core_Modules/netbird
     ./modules/Core_Modules/oauth2-proxy

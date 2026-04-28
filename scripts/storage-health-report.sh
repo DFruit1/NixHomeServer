@@ -14,19 +14,20 @@ load_config_json() {
   if [[ -n "${STORAGE_MONITORING_CONFIG_JSON_FILE:-}" ]]; then
     cat "$STORAGE_MONITORING_CONFIG_JSON_FILE"
   else
-    nix eval --json --impure --expr "
+    local nix_expr
+    nix_expr="$(cat <<'EOF'
       let
-        flake = builtins.getFlake (toString ${repo_root});
+        flake = builtins.getFlake (toString __REPO_ROOT__);
         lib = flake.inputs.nixpkgs.lib;
-        vars = import ${repo_root}/vars.nix { inherit lib; };
+        vars = import __REPO_ROOT__/vars.nix { inherit lib; };
         cfg = (builtins.getAttr vars.hostname flake.nixosConfigurations).config;
-        dataLabels = builtins.genList (idx: \"disk\${toString (idx + 1)}\") (builtins.length vars.monitoredDataDiskIds);
+        dataLabels = builtins.genList (idx: "disk${toString (idx + 1)}") (builtins.length vars.monitoredDataDiskIds);
         coldLabels = map (pool: pool.name) vars.coldStoragePools;
         labels = dataLabels ++ coldLabels;
         diskIds = vars.monitoredDataDiskIds ++ vars.monitoredColdStorageDiskIds;
         mkDisk = idx: {
           label = builtins.elemAt labels idx;
-          device = \"/dev/disk/by-id/\${builtins.elemAt diskIds idx}\";
+          device = "/dev/disk/by-id/${builtins.elemAt diskIds idx}";
         };
       in
       {
@@ -46,7 +47,10 @@ load_config_json() {
           }) vars.coldStoragePools;
         };
       }
-      "
+EOF
+)"
+    nix_expr="${nix_expr//__REPO_ROOT__/${repo_root}}"
+    nix eval --json --impure --expr "$nix_expr"
   fi
 }
 
@@ -143,11 +147,15 @@ zfs_status_json() {
     --arg statusSeverity "$2" \
     --arg datasetSummary "$3" \
     --arg datasetSeverity "$4" \
+    --arg healthState "$5" \
+    --arg runtimeState "$6" \
     '{
       statusSummary: $statusSummary,
       statusSeverity: $statusSeverity,
       datasetSummary: $datasetSummary,
-      datasetSeverity: $datasetSeverity
+      datasetSeverity: $datasetSeverity,
+      healthState: $healthState,
+      runtimeState: $runtimeState
     }'
 }
 
@@ -195,13 +203,21 @@ zpool_health="$(
 if [[ "$zpool_health" == "ONLINE" ]]; then
   zpool_status_severity="OK"
   zpool_status_summary="ONLINE"
+  zfs_health_state="ONLINE"
+elif [[ "$zpool_health" == "DEGRADED" ]]; then
+  zpool_status_severity="CRITICAL"
+  zpool_status_summary="DEGRADED"
+  zfs_health_state="DEGRADED"
+  echo "ZFS pool health for ${data_pool_name}: ${zpool_health}" >>"$alerts_file"
 elif [[ -n "$zpool_health" ]]; then
   zpool_status_severity="CRITICAL"
   zpool_status_summary="$zpool_health"
+  zfs_health_state="$zpool_health"
   echo "ZFS pool health for ${data_pool_name}: ${zpool_health}" >>"$alerts_file"
 else
   zpool_status_severity="CRITICAL"
   zpool_status_summary="pool missing"
+  zfs_health_state="pool missing"
   echo "ZFS pool ${data_pool_name} is not importable." >>"$alerts_file"
 fi
 
@@ -218,6 +234,14 @@ while IFS= read -r mount; do
     echo "Missing expected ZFS dataset mount in zfs list output: ${mount}" >>"$alerts_file"
   fi
 done < <(jq -r '.dataPool.datasetMounts[]' <<<"$config_json")
+
+if [[ "$zfs_health_state" == "ONLINE" && "$mounts_ok" == true && "$zfs_dataset_severity" == "OK" ]]; then
+  zfs_runtime_state="operational"
+elif [[ "$zfs_health_state" == "DEGRADED" && "$mounts_ok" == true && "$zfs_dataset_severity" == "OK" ]]; then
+  zfs_runtime_state="degraded"
+else
+  zfs_runtime_state="failed"
+fi
 
 append_lines "$timers_file" \
   "$(timer_state_json "storage-health-report.timer")"
@@ -240,7 +264,7 @@ done < <(jq -r 'select(.severity != "OK") | "\(.unit): \(.detail)"' "$timers_fil
 mounts_json="$(jq -s '.' "$mounts_file")"
 timers_json="$(jq -s '.' "$timers_file")"
 alerts_json="$(sort -u "$alerts_file" | sed '/^$/d' | jq -R . | jq -s '.')"
-zfs_json="$(zfs_status_json "$zpool_status_summary" "$zpool_status_severity" "$zfs_dataset_summary" "$zfs_dataset_severity")"
+zfs_json="$(zfs_status_json "$zpool_status_summary" "$zpool_status_severity" "$zfs_dataset_summary" "$zfs_dataset_severity" "$zfs_health_state" "$zfs_runtime_state")"
 
 overall_severity="$(
   jq -nr \
@@ -311,7 +335,7 @@ cp "$latest_json" "$history_json"
   jq -r '.disks[] | "- \(.label) \(.severity): \(.detail) [self-test=\(.lastSelfTestStatus)]"' "$latest_json"
   echo
   echo "ZFS:"
-  jq -r '"- pool: \(.zfs.statusSeverity) (\(.zfs.statusSummary))\n- datasets: \(.zfs.datasetSeverity) (\(.zfs.datasetSummary))"' "$latest_json"
+  jq -r '"- pool: \(.zfs.statusSeverity) (\(.zfs.statusSummary))\n- health-state: \(.zfs.healthState)\n- runtime-state: \(.zfs.runtimeState)\n- datasets: \(.zfs.datasetSeverity) (\(.zfs.datasetSummary))"' "$latest_json"
   echo
   echo "Timers:"
   jq -r '.timers[] | "- \(.unit): \(.severity) (\(.detail))"' "$latest_json"

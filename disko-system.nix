@@ -1,4 +1,12 @@
-{ vars, ... }:
+{ config, vars, ... }:
+
+let
+  rootSubvolume =
+    if config.repo.impermanence.enableRootRollback then
+      config.repo.impermanence.rootSubvolume
+    else
+      "/";
+in
 
 {
   disko.devices = {
@@ -27,7 +35,7 @@
               content = {
                 type = "btrfs";
                 subvolumes = {
-                  "/" = {
+                  ${rootSubvolume} = {
                     mountpoint = "/";
                     mountOptions = [ "compress=zstd" "noatime" ];
                   };

@@ -97,13 +97,11 @@ in
       description = "Mail archive UI";
       wantedBy = [ "multi-user.target" ];
       wants = [
-        "app-state-migration-v1.service"
         "data-pool-layout.service"
         "network-online.target"
         "local-fs.target"
       ];
       after = [
-        "app-state-migration-v1.service"
         "data-pool-layout.service"
         "network-online.target"
         "local-fs.target"

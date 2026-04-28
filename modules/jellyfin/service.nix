@@ -19,8 +19,8 @@ in
   ];
 
   systemd.services.jellyfin = {
-    after = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
-    wants = [ "app-state-migration-v1.service" "data-pool-layout.service" ];
+    after = [ "data-pool-layout.service" ];
+    wants = [ "data-pool-layout.service" ];
     serviceConfig.SupplementaryGroups = [ "jellyfin-media" ];
   };
 }

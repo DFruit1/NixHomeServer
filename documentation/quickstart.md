@@ -77,6 +77,12 @@ Use `/dev/disk/by-id/*`, not transient `/dev/sdX` names.
 
 ## Media Categories
 
+Steady-state storage model:
+- `media/*` holds app-managed payload trees. In current steady state that means `media/documents` for Paperless and `media/photos` for Immich-managed photo payloads.
+- `users/*` and `shared/*` hold the canonical user-facing content libraries.
+- `kiwix` intentionally remains its own top-level content root at `/mnt/data/kiwix`.
+- `media/audio`, `media/books`, and `media/video` are historical migration roots only and must not be treated as steady-state library locations.
+
 Per-user book roots are created automatically under `/mnt/data/users/<user>/books/`.
 
 Books categories:
@@ -98,8 +104,15 @@ Upload shared video content through the files app or the admin-only SMB share in
 Shared media roots:
 - shared books: `ebooks`, `comics`, `manga`, `other`
 - shared videos: `movies`, `shows`, `home`, `music-videos`, `youtube`, `other`
+- shared audiobooks: `/mnt/data/shared/audiobooks`
+- app-managed payloads: `/mnt/data/media/documents`, `/mnt/data/media/photos`
 
 Private MeTube downloads are available at `https://ytdownload.<domain>` on LAN or over NetBird only.
+
+Offsite NetBird DNS expectations:
+- Private app hostnames resolve over NetBird only after a NetBird nameserver group is configured in the NetBird admin plane to send those match domains to `100.72.113.237:53`.
+- Match only the private app hostnames. Keep `id.<domain>`, `files.<domain>`, and the zone apex on the normal public path.
+- Linux peers need `systemd-resolved` for NetBird match-domain split DNS. macOS, Windows, iOS, and Android can use NetBird-managed DNS directly.
 
 ## Destructive Storage Command Matrix
 

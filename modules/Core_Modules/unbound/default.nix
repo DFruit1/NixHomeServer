@@ -3,10 +3,8 @@
 let
   dnscryptListenAddress = "127.0.0.1";
   dnscryptListenPort = 5053;
-  # Keep plaintext recursive fallback for availability if dnscrypt-proxy is
-  # unhealthy. DNS privacy depends on dnscrypt-proxy staying up.
-  plaintextFallbackNameServers = [ "9.9.9.9" "1.1.1.1" ];
   splitDnsMode = vars.dnsMode == "split-horizon";
+  encryptedOnlyUpstreams = vars.dnsPrivacyMode == "encrypted-only";
   netbirdIface = "nb0";
   netbirdCidr = "100.64.0.0/10";
   listenAddresses = [ "127.0.0.1" vars.nbIP ] ++ lib.optional splitDnsMode vars.serverLanIP;
@@ -114,12 +112,15 @@ in
     enable = true;
     settings = {
       listen_addresses = [ "${dnscryptListenAddress}:${toString dnscryptListenPort}" ];
+      bootstrap_resolvers = [ "9.9.9.9:53" "1.1.1.1:53" ];
+      ignore_system_dns = true;
       require_nolog = true;
       require_nofilter = true;
       require_dnssec = true;
       doh_servers = true;
       ipv4_servers = true;
       ipv6_servers = true;
+      netprobe_timeout = 60;
       sources = {
         "public-resolvers" = {
           urls = [
@@ -127,14 +128,6 @@ in
             "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md"
           ];
           cache_file = "public-resolvers.md";
-          minisign_key = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
-        };
-        "relays" = {
-          urls = [
-            "https://download.dnscrypt.info/resolvers-list/v3/relays.md"
-            "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/relays.md"
-          ];
-          cache_file = "relays.md";
           minisign_key = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
         };
       };
@@ -162,6 +155,7 @@ in
             prefetch = "yes";
             rrset-roundrobin = "yes";
             auto-trust-anchor-file = "/var/lib/unbound/root.key";
+            do-not-query-localhost = "no";
           }
           // (
             if splitDnsMode then
@@ -182,12 +176,15 @@ in
               }
           );
         forward-zone = [
-          {
+          ({
             name = ".";
-            forward-addr =
-              [ "${dnscryptListenAddress}@${toString dnscryptListenPort}" ]
-              ++ plaintextFallbackNameServers;
+            forward-addr = [ "${dnscryptListenAddress}@${toString dnscryptListenPort}" ];
           }
+          // lib.optionalAttrs encryptedOnlyUpstreams {
+            # Encrypted-only recursive DNS should fail closed rather than
+            # silently downgrade to a plaintext upstream.
+            forward-first = "no";
+          })
         ];
       }
       // lib.optionalAttrs splitDnsMode {

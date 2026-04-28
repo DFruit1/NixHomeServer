@@ -180,13 +180,11 @@ in
         "paperless-storage-layout-v1.service"
       ];
       after = [
-        "app-state-migration-v1.service"
         "data-pool-layout.service"
         "paperless-oidc-env.service"
         "paperless-storage-layout-v1.service"
       ];
       wants = [
-        "app-state-migration-v1.service"
         "data-pool-layout.service"
         "paperless-storage-layout-v1.service"
       ];

@@ -13,6 +13,22 @@ let
   metubeStateDir = "${metubeHome}/state";
   metubeTempDir = "${metubeHome}/tmp";
   metubeImage = "ghcr.io/alexta69/metube@sha256:ee9a49b477215d33a8c330e9b9bb5c70588e265637cba9ff3888b75b87c00bf0";
+  metubeVersion = "2026.04.26";
+  metubePatchedMain = pkgs.stdenvNoCC.mkDerivation {
+    pname = "metube-patched-main";
+    version = metubeVersion;
+    src = pkgs.fetchFromGitHub {
+      owner = "alexta69";
+      repo = "metube";
+      rev = metubeVersion;
+      hash = "sha256-WTirLBPCOZQod0GasJl+LvM2FzQKbep3SEx5996X5wA=";
+    };
+    patches = [ ./patches/ignore-url-t-clip-start.patch ];
+    installPhase = ''
+      mkdir -p $out
+      cp app/main.py $out/main.py
+    '';
+  };
   outputTemplate = "%(channel,uploader,creator|Unknown Channel)S/%(upload_date>%Y,release_date>%Y|Unknown Year)s/%(upload_date>%Y-%m-%d,release_date>%Y-%m-%d|Unknown Date)s - %(title|Unknown Title)S [%(id|NOID)s].%(ext)s";
   outputTemplateChapter = "%(channel,uploader,creator|Unknown Channel)S/%(upload_date>%Y,release_date>%Y|Unknown Year)s/%(upload_date>%Y-%m-%d,release_date>%Y-%m-%d|Unknown Date)s - %(title|Unknown Title)S [%(id|NOID)s] - %(section_number)02d %(section_title|Chapter)S.%(ext)s";
   escapedOutputTemplate = builtins.replaceStrings [ "%" ] [ "%%" ] outputTemplate;
@@ -78,6 +94,7 @@ in
     Volume=${vars.sharedYouTubeRoot}:/downloads:rw
     Volume=${metubeStateDir}:/state:rw
     Volume=${metubeTempDir}:/tmp-downloads:rw
+    Volume=${metubePatchedMain}/main.py:/app/app/main.py:ro
     Environment=DOWNLOAD_DIR=/downloads
     Environment=STATE_DIR=/state
     Environment=TEMP_DIR=/tmp-downloads

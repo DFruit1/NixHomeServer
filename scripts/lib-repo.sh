@@ -30,9 +30,60 @@ need() {
   done
 }
 
+nix_cache_hash() {
+  local payload="$1"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$payload" | sha256sum | awk '{ print $1 }'
+    return 0
+  fi
+
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$payload" | shasum -a 256 | awk '{ print $1 }'
+    return 0
+  fi
+
+  return 1
+}
+
+nix_eval_with_optional_cache() {
+  local mode="$1"
+  local expr="$2"
+  local cache_dir="${REPO_NIX_EVAL_CACHE_DIR:-}"
+
+  if [[ -n "$cache_dir" ]]; then
+    local cache_key cache_file tmp_file
+    cache_key="$(nix_cache_hash "${mode}"$'\n'"${repo_root}"$'\n'"${expr}")" || cache_key=""
+    if [[ -n "$cache_key" ]]; then
+      mkdir -p "$cache_dir"
+      cache_file="${cache_dir}/${cache_key}.${mode}"
+      if [[ -f "$cache_file" ]]; then
+        cat "$cache_file"
+        return 0
+      fi
+
+      tmp_file="${cache_file}.tmp.$$"
+      if [[ "$mode" == "raw" ]]; then
+        nix eval --raw --impure --expr "$expr" >"$tmp_file"
+      else
+        nix eval --json --impure --expr "$expr" >"$tmp_file"
+      fi
+      mv "$tmp_file" "$cache_file"
+      cat "$cache_file"
+      return 0
+    fi
+  fi
+
+  if [[ "$mode" == "raw" ]]; then
+    nix eval --raw --impure --expr "$expr"
+  else
+    nix eval --json --impure --expr "$expr"
+  fi
+}
+
 nix_var() {
   local expr="$1"
-  nix eval --raw --impure --expr "
+  nix_eval_with_optional_cache raw "
     let
       flake = builtins.getFlake (toString ${repo_root});
       lib = flake.inputs.nixpkgs.lib;
@@ -45,7 +96,7 @@ nix_var() {
 
 nix_json() {
   local expr="$1"
-  nix eval --json --impure --expr "
+  nix_eval_with_optional_cache json "
     let
       flake = builtins.getFlake (toString ${repo_root});
       lib = flake.inputs.nixpkgs.lib;

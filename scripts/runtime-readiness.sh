@@ -11,7 +11,7 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/runtime-readiness.sh
+Usage: scripts/runtime-readiness.sh [--require-online-zpool]
 
 Read-only runtime validation for the active host. It checks core units, HTTPS
 entrypoints, Unbound answers, ZFS mounts, and SMART health against vars.nix.
@@ -21,18 +21,23 @@ Example:
 EOF
 }
 
-case "${1:-}" in
-  "")
-    ;;
-  -h|--help)
-    usage
-    exit 0
-    ;;
-  *)
-    usage >&2
-    exit 1
-    ;;
-esac
+require_online_zpool=0
+while (($# > 0)); do
+  case "$1" in
+    --require-online-zpool)
+      require_online_zpool=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 check_unit() {
   local unit="$1"
@@ -140,6 +145,24 @@ check_mount() {
   fi
 }
 
+check_persist_binding() {
+  local path="$1"
+  local source
+
+  if [[ ! -e "$path" ]]; then
+    echo "⚠️  persistence target missing: ${path}"
+    return
+  fi
+
+  source="$(findmnt -nro SOURCE --target "$path" 2>/dev/null || true)"
+  if [[ "$source" == *"[/persist/"* ]]; then
+    echo "✅ persistent binding: ${path}"
+  else
+    echo "❌ persistent binding unexpected for ${path}: ${source:-missing}"
+    failed=1
+  fi
+}
+
 run_as_copyparty() {
   if (( EUID == 0 )); then
     runuser -u copyparty -- "$@"
@@ -205,6 +228,7 @@ kanidm_domain="$(nix_var 'vars.kanidmDomain')"
 cloudflared_unit="cloudflared-tunnel-$(nix_var 'vars.cloudflareTunnelName').service"
 data_pool_name="$(nix_var 'vars.zfsDataPool.name')"
 data_pool_mount="$(nix_var 'vars.zfsDataPool.mountPoint')"
+impermanence_enabled="$(nix_var 'if cfg.repo.impermanence.enablePersistence then "true" else "false"')"
 
 failed=0
 storage_failed=0
@@ -231,6 +255,14 @@ mapfile -t monitored_disk_devices < <(
 )
 mapfile -t cold_storage_pool_names < <(
   nix_json 'map (pool: pool.name) vars.coldStoragePools' \
+    | jq -r '.[]'
+)
+mapfile -t persistence_directories < <(
+  nix_json 'cfg.repo.impermanence.inventory.persistenceDirectories' \
+    | jq -r '.[]'
+)
+mapfile -t persistence_files < <(
+  nix_json 'cfg.repo.impermanence.inventory.persistenceFiles' \
     | jq -r '.[]'
 )
 
@@ -299,6 +331,9 @@ check_private_dns "${jellyfin_domain}" "${local_dns_private_answer}"
 
 echo
 echo "== Storage =="
+if [[ "$impermanence_enabled" == "true" ]]; then
+  check_mount "/persist" "btrfs"
+fi
 check_mount "$data_pool_mount" "zfs"
 
 for dataset_mount in "${data_dataset_mounts[@]}"; do
@@ -336,6 +371,15 @@ echo "== ZFS =="
 zpool_health="$("${sudo_cmd[@]}" zpool list -H -o health "$data_pool_name" 2>&1 || true)"
 if [[ "$zpool_health" == "ONLINE" ]]; then
   echo "✅ zpool health ONLINE: ${data_pool_name}"
+elif [[ "$zpool_health" == "DEGRADED" ]]; then
+  echo "⚠️  zpool health DEGRADED: ${data_pool_name}"
+  "${sudo_cmd[@]}" zpool status "$data_pool_name" 2>&1 | sed -n '1,80p'
+  if (( require_online_zpool != 0 )); then
+    echo "❌ strict mode requires ONLINE zpool health."
+    failed=1
+  else
+    echo "⚠️  continuing because the mirrored pool is still available, but redundancy is lost."
+  fi
 else
   echo "❌ zpool health unexpected for ${data_pool_name}: ${zpool_health}"
   "${sudo_cmd[@]}" zpool status "$data_pool_name" 2>&1 | sed -n '1,80p'
@@ -354,6 +398,18 @@ else
       failed=1
     fi
   done
+fi
+
+echo
+if [[ "$impermanence_enabled" == "true" ]]; then
+  echo "== Persistence =="
+  for path in "${persistence_directories[@]}"; do
+    check_persist_binding "$path"
+  done
+  for path in "${persistence_files[@]}"; do
+    check_persist_binding "$path"
+  done
+  echo
 fi
 
 echo
