@@ -106,6 +106,8 @@ snapshot="$(nix_eval_host_snapshot_json '
         paperlessIgnorePatterns = cfg.services.paperless.settings.PAPERLESS_CONSUMER_IGNORE_PATTERNS;
         paperlessConsumerRecursive = cfg.services.paperless.settings.PAPERLESS_CONSUMER_RECURSIVE;
         paperlessConsumerSubdirsAsTags = cfg.services.paperless.settings.PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS;
+        paperlessSocialAccountDefaultGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS;
+        hasLegacyPaperlessSocialDefaultGroups = cfg.services.paperless.settings ? PAPERLESS_SOCIAL_DEFAULT_GROUPS;
         paperlessOidcEnvScript = cfg.systemd.services.paperless-oidc-env.script;
         kavitaDataDir = cfg.services.kavita.dataDir;
         kavitaDisablePasswordAuthentication = cfg.services.kavita.settings.OpenIdConnectSettings.DisablePasswordAuthentication;
@@ -588,6 +590,10 @@ require_json_equal "$(snapshot_query '.config.paperlessConsumerRecursive')" '"tr
   "Paperless must recurse into the mail archive consume subtree."
 require_json_equal "$(snapshot_query '.config.paperlessConsumerSubdirsAsTags')" '"true"' \
   "Paperless must tag imported mail attachments from consume subdirectories."
+require_json_equal "$(snapshot_query '.config.paperlessSocialAccountDefaultGroups')" '"Users"' \
+  "Paperless social signup must attach first-login users to the local Users group."
+require_json_equal "$(snapshot_query '.config.hasLegacyPaperlessSocialDefaultGroups')" 'false' \
+  "Paperless must not expose the legacy typoed social default-groups setting."
 require_json_contains "$(snapshot_query '.config.paperlessOidcEnvScript')" 'oauth_pkce_enabled' \
   "Paperless OIDC provider generation must explicitly enable PKCE."
 

@@ -78,7 +78,7 @@ in
       PAPERLESS_SOCIAL_LOGIN_ENABLED = "true";
       PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS = "true";
       PAPERLESS_SOCIAL_AUTO_SIGNUP = "true";
-      PAPERLESS_SOCIAL_DEFAULT_GROUPS = "Users";
+      PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS = "Users";
       PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
       PAPERLESS_URL = "https://paperless.${vars.domain}";
       PAPERLESS_ALLOWED_HOSTS = "paperless.${vars.domain}";
