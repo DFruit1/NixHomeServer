@@ -16,6 +16,7 @@ let
       "MAIL_ARCHIVE_UI_PORT=${toString cfg.port}"
       "MAIL_ARCHIVE_UI_DATA_DIR=${cfg.dataDir}"
       "MAIL_ARCHIVE_UI_STORE_ROOT=${cfg.storeRoot}"
+      "MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT=${cfg.accountStateRoot}"
       "MAIL_ARCHIVE_UI_RUNTIME_DIR=${cfg.runtimeDir}"
       "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
@@ -58,6 +59,12 @@ in
       description = "Writable root containing per-user content directories for downloaded mail archives.";
     };
 
+    accountStateRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${cfg.dataDir}/accounts";
+      description = "Writable root for per-account derived sync and indexing state.";
+    };
+
     runtimeDir = lib.mkOption {
       type = lib.types.str;
       default = runtimeDirDefault;
@@ -89,6 +96,7 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${cfg.dataDir} 0750 ${user} ${group} -"
+      "d ${cfg.accountStateRoot} 0750 ${user} ${group} -"
       "d ${cfg.runtimeDir} 0750 ${user} ${group} -"
       "d ${cfg.lockDir} 0750 ${user} ${group} -"
     ];
@@ -126,6 +134,7 @@ in
         ReadWritePaths = [
           cfg.dataDir
           cfg.storeRoot
+          cfg.accountStateRoot
           cfg.runtimeDir
           cfg.lockDir
         ];

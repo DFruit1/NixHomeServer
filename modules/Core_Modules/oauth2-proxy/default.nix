@@ -12,7 +12,7 @@ in
     provider = "oidc";
     approvalPrompt = "auto";
     oidcIssuerUrl = vars.kanidmIssuer "oauth2-proxy";
-    scope = "openid profile email";
+    scope = "openid profile email groups";
     email.domains = [ "*" ];
     upstream = [ "http://127.0.0.1:${toString config.services.copyparty.settings.p}" ];
     redirectURL = "https://${vars.filesDomain}/oauth2/callback";
@@ -22,6 +22,11 @@ in
     reverseProxy = true;
     setXauthrequest = true;
     extraConfig = {
+      "allowed-group" = [
+        "user-files"
+        "shared-files-ro"
+        "shared-files-rw"
+      ];
       "code-challenge-method" = "S256";
       "pass-user-headers" = true;
       "provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";

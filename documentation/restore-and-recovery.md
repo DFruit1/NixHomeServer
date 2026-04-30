@@ -21,7 +21,7 @@ If the problem is ordinary validation, deployment, or runtime triage, use [Opera
 ## Conventions
 
 - Placeholders such as `<new-disk-a>`, `<new-disk-b>`, `<pool-name>`, and `/path/to/agenix.key` are examples. Replace them with the actual operator values before running commands.
-- Group names such as `users`, `immich-users`, `paperless-users`, `fileshare_users`, and `*-admin` are literal names managed by this repo.
+- Group names such as `users`, `user-files`, `shared-files-ro`, `shared-files-rw`, `immich-users`, `paperless-users`, and `*-admin` are literal names managed by this repo.
 - Command blocks use the same context format:
   - Run from: where to execute the commands
   - Privileges: whether `sudo` is required
@@ -67,16 +67,23 @@ Key state roots:
 - Paperless: `/var/lib/paperless` and `/var/lib/redis-paperless`
 - Immich: `/var/lib/postgresql/16` and `/var/lib/redis-immich`, plus `dumps/postgresql.sql` in the backup metadata
 - Copyparty: `/var/lib/copyparty`
-- Mail Archive UI: `/persist/appdata/mail-archive-ui`
+- Mail Archive UI: `/persist/appdata/mail-archive-ui` for global app state, plus `/persist/appdata/mail-archive-ui/accounts` for per-account derived sync and index state
 - Kanidm: `/var/lib/kanidm`
+
+Files-surface contract:
+- personal filesystem access is granted only by `user-files`
+- `shared-files-ro` and `shared-files-rw` do not imply personal access
+- Copyparty shared roots are read-only for both shared groups
+- Samba is the authoritative shared-write surface for `/mnt/data/shared/{files,audiobooks,books,emails,videos}`
 
 The backup metadata file `/persist/appdata/system-state-backup/metadata/app-state-roots.tsv` records the expected local state roots, their ownership and mode, and the related data-pool payload roots for each service.
 
 Canonical ZFS content layout:
-- `media/documents` and `media/photos` are active app-managed payload roots
+- `paperless` and `immich` are the active app-managed payload roots
 - `users` and `shared` are the canonical user-facing library roots
 - `kiwix` remains a dedicated top-level content root at `/mnt/data/kiwix`
-- `media/audio`, `media/books`, and `media/video` are historical migration roots only and should be absent or empty in steady state
+- mail payload lives under `/mnt/data/users/<user>/emails/accounts/<account-id>/maildir`
+- `/mnt/data/media`, `/mnt/data/shared/documents`, and `/mnt/data/shared/photos` are retired roots and should be absent or empty in steady state
 
 ## How The Mirrored Data Pool Works
 

@@ -9,8 +9,8 @@ let
       "/etc/agenix"
       "/var/lib/acme"
       "/var/lib/audiobookshelf"
-      "/var/lib/cloudflared"
       "/var/lib/copyparty"
+      "/var/lib/immich"
       "/var/lib/immich-public-proxy"
       "/var/lib/jellyfin"
       "/var/lib/kanidm"
@@ -33,8 +33,8 @@ let
   persistenceFiles = [ "/etc/machine-id" ];
 
   activePayloadRoots = [
-    "${vars.mediaRoot}/documents"
-    "${vars.mediaRoot}/photos"
+    vars.paperlessRoot
+    vars.immichRoot
     vars.kiwixLibraryRoot
     vars.usersRoot
     vars.sharedRoot
@@ -42,17 +42,17 @@ let
 
   retiredRoots = [
     "${vars.dataRoot}/appdata"
-    "${vars.mediaRoot}/audio"
-    "${vars.mediaRoot}/books"
-    "${vars.mediaRoot}/video"
+    "${vars.dataRoot}/media"
+    "${vars.sharedRoot}/documents"
+    "${vars.sharedRoot}/photos"
   ];
 
   activeAppStateRoots = [
     "/persist/appdata/mail-archive-ui"
     "/var/lib/acme"
     "/var/lib/audiobookshelf"
-    "/var/lib/cloudflared"
     "/var/lib/copyparty"
+    "/var/lib/immich"
     "/var/lib/immich-public-proxy"
     "/var/lib/jellyfin"
     "/var/lib/kanidm"

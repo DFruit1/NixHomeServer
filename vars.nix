@@ -34,7 +34,6 @@ rec {
       ]
     ];
     datasets = [
-      "media"
       "users"
       "shared"
     ];
@@ -51,9 +50,22 @@ rec {
   monitoredStorageDiskIds = monitoredDataDiskIds ++ monitoredColdStorageDiskIds;
 
   dataRoot = zfsDataPool.mountPoint;
-  mediaRoot = "${dataRoot}/media";
+  paperlessRoot = "${dataRoot}/paperless";
+  paperlessInboxRoot = "${paperlessRoot}/inbox";
+  paperlessArchiveRoot = "${paperlessRoot}/archive";
+  paperlessExportRoot = "${paperlessRoot}/export";
+  paperlessMailArchiveConsumeRoot = "${paperlessInboxRoot}/mail-archive";
+  paperlessMailArchiveStagingRoot = "${paperlessRoot}/.mail-archive-paperless-staging";
+  immichRoot = "${dataRoot}/immich";
+  immichManagedRoot = "${immichRoot}/managed";
+  immichExternalRoot = "${immichRoot}/external";
   usersRoot = "${dataRoot}/users";
   sharedRoot = "${dataRoot}/shared";
+  fileAccessPosixGids = {
+    "user-files" = 2001;
+    "shared-files-ro" = 2002;
+    "shared-files-rw" = 2003;
+  };
   personalKavitaLibraries = [
     {
       dir = "ebooks";
@@ -141,8 +153,6 @@ rec {
     "files"
   ];
   sharedContentSubdirs = [
-    "documents"
-    "photos"
     "audiobooks"
     "books"
     "emails"

@@ -80,6 +80,7 @@ run_smoke_suite() {
   run_test tests/deploy-wrapper.sh
   run_test tests/secrets.sh
   run_test tests/runtime-readiness.sh
+  run_test tests/storage-monitoring.sh
   run_test tests/core-config-base.sh
 }
 
@@ -102,38 +103,20 @@ fi
 
 run_smoke_suite
 
-if matches_changed_files "$changed_files" '^(README\.md|AGENTS\.md|documentation/|flake\.(nix|lock)$|tests/bootstrap-readiness\.sh$|tests/run-(all|changed)\.sh$|scripts/check-repo\.sh$|scripts/deploy-validated\.sh$)'; then
-  run_test tests/bootstrap-readiness.sh
-fi
-
-if matches_changed_files "$changed_files" '^(scripts/backup-target\.sh$|modules/Core_Modules/restic-state/|vars\.nix$|tests/backup-target\.sh$)'; then
-  run_test tests/backup-target.sh
-fi
-
-if matches_changed_files "$changed_files" '^documentation/restore-and-recovery\.md$'; then
-  run_test tests/backup-target.sh
-fi
-
-if matches_changed_files "$changed_files" '^(disko\.nix$|disko-system\.nix$|scripts/format-system-disk\.sh$|scripts/format-data-disks\.sh$|scripts/lib-destructive-wrapper\.sh$|vars\.nix$|tests/disko-wrappers\.sh$)'; then
-  run_test tests/disko-wrappers.sh
-fi
-
-if matches_changed_files "$changed_files" '^(scripts/audit-storage-layout\.sh$|scripts/storage-health-report\.sh$|scripts/lib-storage-health\.sh$|scripts/runtime-readiness\.sh$|modules/Core_Modules/storage/|modules/Core_Modules/impermanence/|modules/Core_Modules/restic-state/|vars\.nix$|tests/storage-layout-audit\.sh$|tests/storage-monitoring\.sh$)'; then
+if matches_changed_files "$changed_files" '^(scripts/audit-storage-layout\.sh$|modules/Core_Modules/storage/layout\.nix$|tests/storage-layout-audit\.sh$)'; then
   run_test tests/storage-layout-audit.sh
-  run_test tests/storage-monitoring.sh
 fi
 
-if matches_changed_files "$changed_files" '^documentation/restore-and-recovery\.md$'; then
-  run_test tests/storage-layout-audit.sh
-  run_test tests/storage-monitoring.sh
+if matches_changed_files "$changed_files" '^(scripts/(runtime-readiness|runtime-health-report|storage-health-report|lib-runtime-health)\.sh$|modules/Core_Modules/storage-monitoring/default\.nix$|tests/(runtime-readiness|runtime-health-report|storage-monitoring)\.sh$)'; then
+  run_test tests/runtime-health-report.sh
 fi
 
-if matches_changed_files "$changed_files" '^(configuration\.nix$|vars\.nix$|flake\.nix$|disko(\-system)?\.nix$|scripts/backup-target\.sh$|scripts/format-(system|data)-disk[s]?\.sh$|scripts/lib-storage-health\.sh$|modules/Core_Modules/(storage|impermanence|restic-state)/|tests/core-config-storage\.sh$)'; then
+if matches_changed_files "$changed_files" '^(configuration\.nix$|vars\.nix$|flake\.nix$|scripts/lib-storage-health\.sh$|modules/Core_Modules/(storage|impermanence|restic-state)/|tests/core-config-storage\.sh$)'; then
   run_test tests/core-config-storage.sh
 fi
 
-if matches_changed_files "$changed_files" '^documentation/restore-and-recovery\.md$'; then
-  run_test tests/core-config-storage.sh
+if matches_changed_files "$changed_files" '^(scripts/check-repo\.sh$|tests/run-(all|changed)\.sh$|tests/check-repo-runner\.sh$|scripts/check-docs\.sh$|tests/manual-docs\.sh$)'; then
+  run_test tests/check-repo-runner.sh
 fi
 
 if matches_changed_files "$changed_files" '^(configuration\.nix$|vars\.nix$|flake\.nix$|modules/|rust/apps/(mail-archive-ui|kanidm-admin)/|tests/core-config-apps\.sh$)'; then

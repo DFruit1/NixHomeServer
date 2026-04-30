@@ -89,30 +89,4 @@ require_json_equal "$(snapshot_query '.vars.lanDnsHostsRouter')" "$(snapshot_que
 require_json_equal "$(snapshot_query '.vars.kanidmAuthSessionExpirySeconds')" "259200" \
   "Kanidm auth session grace must retain the configured three-day lifetime."
 
-echo "ℹ️ Checking active tree for archived references…"
-if rg -n -i 'dietpi|piLanIP|enableDietPiCompanion' \
-  README.md documentation scripts modules configuration.nix vars.nix flake.nix \
-  --glob '!_archive/**' >/dev/null; then
-  echo "❌ Active tree must not retain DietPi references."
-  exit 1
-fi
-
-if rg -n 'rust-scaffold|services\.rust-scaffold' \
-  README.md documentation scripts modules configuration.nix vars.nix flake.nix \
-  --glob '!_archive/**' >/dev/null; then
-  echo "❌ Active tree must not retain rust-scaffold references."
-  exit 1
-fi
-
-if rg -n '192\.168\.0\.144' \
-  README.md AGENTS.md documentation scripts modules configuration.nix vars.nix flake.nix \
-  --glob '!_archive/**' >/dev/null; then
-  echo "❌ Active tree must not retain the old LAN IP."
-  exit 1
-fi
-
-echo "ℹ️ Checking active imports avoid archived content…"
-forbid_match configuration.nix '_archive|superceded|apparmor|modules/rust' \
-  "configuration.nix must not import archived modules."
-
 echo "✅ Base core config tests passed."

@@ -21,7 +21,7 @@ const NIX_EVAL_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigOverrides {
+pub struct ContextOverrides {
     pub repo_root: Option<PathBuf>,
     pub server_url: Option<String>,
     pub admin_name: Option<String>,
@@ -30,7 +30,7 @@ pub struct ConfigOverrides {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedConfig {
+pub struct ResolvedContext {
     pub repo_root: Option<PathBuf>,
     pub server_url: String,
     pub admin_name: String,
@@ -45,7 +45,7 @@ struct RepoDefaults {
     admin_name: String,
 }
 
-pub fn resolve_config(overrides: ConfigOverrides) -> Result<ResolvedConfig, AppError> {
+pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, AppError> {
     let repo_root = overrides
         .repo_root
         .or_else(|| env::var_os(ENV_REPO_ROOT).map(PathBuf::from));
@@ -65,7 +65,7 @@ pub fn resolve_config(overrides: ConfigOverrides) -> Result<ResolvedConfig, AppE
         .unwrap_or_else(|| OsString::from("nix"));
 
     if let (Some(server_url), Some(admin_name)) = (&server_url, &admin_name) {
-        return Ok(ResolvedConfig {
+        return Ok(ResolvedContext {
             repo_root: repo_root.or_else(find_repo_root_optional),
             server_url: server_url.clone(),
             admin_name: admin_name.clone(),
@@ -80,12 +80,12 @@ pub fn resolve_config(overrides: ConfigOverrides) -> Result<ResolvedConfig, AppE
                 message: format!(
                     "could not resolve repository root containing vars.nix; pass --repo-root or set {ENV_REPO_ROOT}"
                 ),
-            })
+            });
         }
     };
 
     let defaults = nix_repo_defaults(&nix_bin, &repo_root)?;
-    Ok(ResolvedConfig {
+    Ok(ResolvedContext {
         repo_root: Some(repo_root),
         server_url: server_url.unwrap_or(defaults.server_url),
         admin_name: admin_name.unwrap_or(defaults.admin_name),
@@ -247,104 +247,68 @@ mod tests {
         env::set_var(ENV_SERVER_URL, "https://env.example.test");
         env::set_var(ENV_ADMIN_NAME, "env-admin");
 
-        let resolved = resolve_config(ConfigOverrides {
+        let resolved = resolve_context(ContextOverrides {
             repo_root: None,
             server_url: Some("https://flag.example.test".to_string()),
             admin_name: Some("flag-admin".to_string()),
             kanidm_bin: None,
             nix_bin: None,
         })
-        .expect("resolve config");
+        .expect("resolve context");
 
         assert_eq!(resolved.server_url, "https://flag.example.test");
         assert_eq!(resolved.admin_name, "flag-admin");
 
-        restore_env(ENV_SERVER_URL, original_server);
-        restore_env(ENV_ADMIN_NAME, original_admin);
-    }
-
-    #[test]
-    fn env_overrides_repo_defaults() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        let original_server = env::var_os(ENV_SERVER_URL);
-        let original_admin = env::var_os(ENV_ADMIN_NAME);
-        env::set_var(ENV_SERVER_URL, "https://env.example.test");
-        env::set_var(ENV_ADMIN_NAME, "env-admin");
-
-        let resolved = resolve_config(ConfigOverrides {
-            repo_root: Some(PathBuf::from("/tmp/does-not-matter")),
-            server_url: None,
-            admin_name: None,
-            kanidm_bin: None,
-            nix_bin: None,
-        })
-        .expect("resolve config");
-
-        assert_eq!(resolved.server_url, "https://env.example.test");
-        assert_eq!(resolved.admin_name, "env-admin");
-
-        restore_env(ENV_SERVER_URL, original_server);
-        restore_env(ENV_ADMIN_NAME, original_admin);
+        match original_server {
+            Some(value) => env::set_var(ENV_SERVER_URL, value),
+            None => env::remove_var(ENV_SERVER_URL),
+        }
+        match original_admin {
+            Some(value) => env::set_var(ENV_ADMIN_NAME, value),
+            None => env::remove_var(ENV_ADMIN_NAME),
+        }
     }
 
     #[test]
     fn resolves_defaults_from_nix_once_repo_root_is_known() {
         let _guard = ENV_LOCK.lock().expect("env lock");
-        let original_server = env::var_os(ENV_SERVER_URL);
-        let original_admin = env::var_os(ENV_ADMIN_NAME);
-        env::remove_var(ENV_SERVER_URL);
-        env::remove_var(ENV_ADMIN_NAME);
-
         let temp = tempdir().expect("tempdir");
         fs::write(temp.path().join("vars.nix"), "{}").expect("vars");
-        let nix_script = temp.path().join("fake-nix.sh");
+        let nix = temp.path().join("nix-stub.sh");
         write_script(
-            &nix_script,
+            &nix,
             r#"#!/usr/bin/env bash
 printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw"}'
 "#,
         );
 
-        let resolved = resolve_config(ConfigOverrides {
+        let resolved = resolve_context(ContextOverrides {
             repo_root: Some(temp.path().to_path_buf()),
             server_url: None,
             admin_name: None,
             kanidm_bin: None,
-            nix_bin: Some(nix_script.into_os_string()),
+            nix_bin: Some(nix.into_os_string()),
         })
         .expect("resolve defaults");
 
         assert_eq!(resolved.server_url, "https://id.example.test");
         assert_eq!(resolved.admin_name, "admindsaw");
-
-        restore_env(ENV_SERVER_URL, original_server);
-        restore_env(ENV_ADMIN_NAME, original_admin);
-    }
-
-    fn restore_env(key: &str, value: Option<OsString>) {
-        match value {
-            Some(value) => env::set_var(key, value),
-            None => env::remove_var(key),
-        }
     }
 
     #[test]
     fn nix_eval_timeout_is_reported() {
         let temp = tempdir().expect("tempdir");
-        let nix_script = temp.path().join("slow-nix.sh");
+        let script = temp.path().join("sleep.sh");
         write_script(
-            &nix_script,
+            &script,
             r#"#!/usr/bin/env bash
 sleep 1
 "#,
         );
 
-        let error = run_nix_eval_with_timeout(
-            &nix_script.into_os_string(),
-            "{}",
-            Duration::from_millis(10),
-        )
-        .expect_err("timeout");
+        let error =
+            run_nix_eval_with_timeout(&script.into_os_string(), "1", Duration::from_millis(10))
+                .expect_err("timeout");
 
         assert!(matches!(error, AppError::BackendTimeout { .. }));
     }

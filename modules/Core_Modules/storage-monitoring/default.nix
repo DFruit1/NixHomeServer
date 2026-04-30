@@ -3,6 +3,7 @@
 let
   repoRoot = ../../..;
   reportScript = "${repoRoot}/scripts/storage-health-report.sh";
+  runtimeReportScript = "${repoRoot}/scripts/runtime-health-report.sh";
   alertSendScript = "${repoRoot}/scripts/storage-alert-send.sh";
 
   dataLabels = lib.imap0 (idx: _: "disk${toString (idx + 1)}") vars.monitoredDataDiskIds;
@@ -77,6 +78,7 @@ in
     gnused
     jq
     nix
+    bind
     smartmontools
     systemd
     util-linux
@@ -87,6 +89,9 @@ in
     "d /var/lib/storage-monitoring 0750 root root -"
     "d /var/lib/storage-monitoring/history 0750 root root -"
     "e /var/lib/storage-monitoring/history - - - 90d"
+    "d /var/lib/runtime-monitoring 0750 root root -"
+    "d /var/lib/runtime-monitoring/history 0750 root root -"
+    "e /var/lib/runtime-monitoring/history - - - 90d"
   ];
 
   systemd.services =
@@ -106,6 +111,7 @@ in
           gnused
           jq
           nix
+          bind
           smartmontools
           systemd
           util-linux
@@ -123,12 +129,48 @@ in
           ];
         };
       };
+      runtime-health-report = {
+        description = "Generate runtime health monitoring report";
+        path = with pkgs; [
+          bash
+          bind
+          coreutils
+          curl
+          findutils
+          gawk
+          gnugrep
+          gnused
+          jq
+          nix
+          smartmontools
+          systemd
+          util-linux
+          zfs
+        ];
+        script = ''
+          exec ${pkgs.bash}/bin/bash ${runtimeReportScript}
+        '';
+        serviceConfig = {
+          Type = "oneshot";
+          Environment = [
+            "RUNTIME_HEALTH_REPO_ROOT=${repoRoot}"
+            "RUNTIME_HEALTH_STATE_DIR=/var/lib/runtime-monitoring"
+          ];
+        };
+      };
     };
 
   systemd.timers =
     builtins.listToAttrs (shortTimers ++ longTimers)
     // {
       storage-health-report = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnCalendar = "*:0/30";
+          Persistent = true;
+        };
+      };
+      runtime-health-report = {
         wantedBy = [ "timers.target" ];
         timerConfig = {
           OnCalendar = "*:0/30";

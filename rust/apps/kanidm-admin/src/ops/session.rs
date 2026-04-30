@@ -8,24 +8,22 @@ use crate::{
     AppError,
 };
 
-pub fn ensure_interactive_auth_allowed(format: OutputFormat) -> Result<(), AppError> {
+pub fn ensure_interactive_session_allowed(format: OutputFormat) -> Result<(), AppError> {
     if format != OutputFormat::Human {
         return Err(AppError::Config {
-            message: "interactive Kanidm authentication commands only support --format human"
-                .to_string(),
+            message: "interactive session commands only support --output human".to_string(),
         });
     }
     if !stdin().is_terminal() || !stdout().is_terminal() {
         return Err(AppError::Config {
-            message:
-                "interactive Kanidm authentication commands require a terminal on stdin and stdout"
-                    .to_string(),
+            message: "interactive session commands require a terminal on stdin and stdout"
+                .to_string(),
         });
     }
     Ok(())
 }
 
-pub fn auth_status(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
+pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     let status = cli.session_status()?;
     Ok(match status {
         SessionState::Authenticated { stdout } => CommandOutput {
@@ -63,7 +61,7 @@ pub fn auth_status(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
     })
 }
 
-pub fn auth_login(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
+pub fn session_login(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     cli.login()?;
     let session_stdout = verify_with_retry(
         &format!(
@@ -113,7 +111,7 @@ pub fn auth_login(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
     })
 }
 
-pub fn auth_reauth(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
+pub fn session_reauth(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     cli.reauth()?;
     Ok(CommandOutput {
         message: "Kanidm reauthentication command completed".to_string(),
@@ -130,5 +128,19 @@ pub fn auth_reauth(cli: &KanidmCli) -> Result<CommandOutput, crate::AppError> {
         warnings: vec![
             "Privileged access is not independently verified here; the next privileged command will confirm it.".to_string(),
         ],
+    })
+}
+
+pub fn session_logout(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
+    cli.logout()?;
+    Ok(CommandOutput {
+        message: "logged out of the Kanidm CLI session".to_string(),
+        human: "Logged out of the current Kanidm CLI session.".to_string(),
+        details: json!({
+            "logged_out": true,
+            "server_url": cli.server_url(),
+            "admin_name": cli.admin_name(),
+        }),
+        warnings: Vec::new(),
     })
 }

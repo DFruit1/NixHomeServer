@@ -4,7 +4,7 @@ let
   mailArchiveCfg = config.services.mail-archive-ui;
   paperlessCfg = config.services.paperless;
   paperlessConsumeRoot = "${paperlessCfg.consumptionDir}/mail-archive";
-  paperlessStagingDir = "${vars.mediaRoot}/documents/.mail-archive-paperless-staging";
+  paperlessStagingDir = vars.paperlessMailArchiveStagingRoot;
 in
 {
   config = lib.mkIf (mailArchiveCfg.enable && paperlessCfg.enable) {

@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::{config::ResolvedConfig, AppError};
+use crate::{context::ResolvedContext, AppError};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -45,11 +45,11 @@ pub enum VerificationCheck<T> {
 }
 
 impl KanidmCli {
-    pub fn new(config: &ResolvedConfig) -> Self {
+    pub fn new(context: &ResolvedContext) -> Self {
         Self {
-            program: config.kanidm_bin.clone(),
-            server_url: config.server_url.clone(),
-            admin_name: config.admin_name.clone(),
+            program: context.kanidm_bin.clone(),
+            server_url: context.server_url.clone(),
+            admin_name: context.admin_name.clone(),
         }
     }
 
@@ -83,63 +83,83 @@ impl KanidmCli {
     }
 
     pub fn person_list<T: DeserializeOwned>(&self) -> Result<T, AppError> {
-        let args = self.base_args(["person", "list", "-o", "json"]);
-        self.run_json(args, "failed to list Kanidm users")
-    }
-
-    pub fn group_list<T: DeserializeOwned>(&self) -> Result<T, AppError> {
-        let args = self.base_args(["group", "list", "-o", "json"]);
-        self.run_json(args, "failed to list Kanidm groups")
+        self.run_json(
+            self.json_args(["person", "list"]),
+            "failed to list Kanidm users",
+        )
     }
 
     pub fn person_get<T: DeserializeOwned>(&self, account_id: &str) -> Result<T, AppError> {
-        let context = format!("failed to load Kanidm user '{account_id}'");
-        let args = self.base_args(["person", "get", account_id, "-o", "json"]);
-        let output = match self.run_raw(args, &context)? {
-            Ok(output) => output,
-            Err(failure) => {
-                return Err(self.classify_person_get_failure(account_id, &context, failure))
-            }
-        };
+        self.run_named_json(
+            self.json_args(["person", "get", account_id]),
+            &format!("failed to load Kanidm user '{account_id}'"),
+            "user",
+            account_id,
+        )
+    }
 
-        serde_json::from_str(&output.stdout).map_err(|error| AppError::Json {
-            message: format!("{context}: invalid JSON from kanidm backend"),
-            details: json!({
-                "error": error.to_string(),
-                "stdout": output.stdout,
-            }),
-        })
+    pub fn group_list<T: DeserializeOwned>(&self) -> Result<T, AppError> {
+        self.run_json(
+            self.json_args(["group", "list"]),
+            "failed to list Kanidm groups",
+        )
+    }
+
+    pub fn group_get<T: DeserializeOwned>(&self, group: &str) -> Result<T, AppError> {
+        self.run_named_json(
+            self.json_args(["group", "get", group]),
+            &format!("failed to load Kanidm group '{group}'"),
+            "group",
+            group,
+        )
+    }
+
+    pub fn group_list_members<T: DeserializeOwned>(&self, group: &str) -> Result<T, AppError> {
+        self.run_json(
+            self.json_args(["group", "list-members", group]),
+            &format!("failed to list members of Kanidm group '{group}'"),
+        )
+    }
+
+    pub fn oauth2_list<T: DeserializeOwned>(&self) -> Result<T, AppError> {
+        self.run_json(
+            self.json_args(["system", "oauth2", "list"]),
+            "failed to list Kanidm oauth2 clients",
+        )
+    }
+
+    pub fn oauth2_get<T: DeserializeOwned>(&self, client: &str) -> Result<T, AppError> {
+        self.run_named_json(
+            self.json_args(["system", "oauth2", "get", client]),
+            &format!("failed to load Kanidm oauth2 client '{client}'"),
+            "oauth2_client",
+            client,
+        )
     }
 
     pub fn person_create(&self, account_id: &str, display_name: &str) -> Result<(), AppError> {
-        let args = self.base_args(["person", "create", account_id, display_name]);
         self.run_unit(
-            args,
+            self.base_args(["person", "create", account_id, display_name]),
             &format!("failed to create Kanidm user '{account_id}'"),
         )
     }
 
     pub fn person_disable(&self, account_id: &str) -> Result<(), AppError> {
-        let args = self.base_args(["person", "validity", "expire-at", account_id, "now"]);
         self.run_unit(
-            args,
+            self.base_args(["person", "validity", "expire-at", account_id, "now"]),
             &format!("failed to disable Kanidm user '{account_id}'"),
         )
     }
 
     pub fn person_enable(&self, account_id: &str) -> Result<(), AppError> {
-        let clear_expiry = self.base_args(["person", "validity", "expire-at", account_id, "clear"]);
         self.run_unit(
-            clear_expiry,
+            self.base_args(["person", "validity", "expire-at", account_id, "clear"]),
             &format!(
                 "failed to clear expiry for Kanidm user '{account_id}' while enabling the account"
             ),
         )?;
-
-        let clear_valid_from =
-            self.base_args(["person", "validity", "begin-from", account_id, "clear"]);
         self.run_unit(
-            clear_valid_from,
+            self.base_args(["person", "validity", "begin-from", account_id, "clear"]),
             &format!(
                 "failed to clear valid-from restriction for Kanidm user '{account_id}' while enabling the account"
             ),
@@ -147,33 +167,29 @@ impl KanidmCli {
     }
 
     pub fn person_delete(&self, account_id: &str) -> Result<(), AppError> {
-        let args = self.base_args(["person", "delete", account_id]);
         self.run_unit(
-            args,
+            self.base_args(["person", "delete", account_id]),
             &format!("failed to delete Kanidm user '{account_id}'"),
         )
     }
 
     pub fn clear_expiry(&self, account_id: &str) -> Result<(), AppError> {
-        let args = self.base_args(["person", "validity", "expire-at", account_id, "clear"]);
         self.run_unit(
-            args,
+            self.base_args(["person", "validity", "expire-at", account_id, "clear"]),
             &format!("failed to clear expiry for Kanidm user '{account_id}'"),
         )
     }
 
     pub fn clear_valid_from(&self, account_id: &str) -> Result<(), AppError> {
-        let args = self.base_args(["person", "validity", "begin-from", account_id, "clear"]);
         self.run_unit(
-            args,
+            self.base_args(["person", "validity", "begin-from", account_id, "clear"]),
             &format!("failed to clear valid-from restriction for Kanidm user '{account_id}'"),
         )
     }
 
     pub fn update_mail(&self, account_id: &str, email: &str) -> Result<(), AppError> {
-        let args = self.base_args(["person", "update", account_id, "--mail", email]);
         self.run_unit(
-            args,
+            self.base_args(["person", "update", account_id, "--mail", email]),
             &format!("failed to set primary email for Kanidm user '{account_id}'"),
         )
     }
@@ -181,35 +197,136 @@ impl KanidmCli {
     pub fn person_create_reset_token(
         &self,
         account_id: &str,
-        ttl: u64,
+        ttl_seconds: u64,
     ) -> Result<String, AppError> {
-        let ttl_string = ttl.to_string();
-        let args = self.base_args([
-            "person",
-            "credential",
-            "create-reset-token",
-            account_id,
-            ttl_string.as_str(),
-        ]);
         self.run_stdout(
-            args,
+            self.base_args([
+                "person",
+                "credential",
+                "create-reset-token",
+                account_id,
+                &ttl_seconds.to_string(),
+            ]),
             &format!("failed to create a password reset token for Kanidm user '{account_id}'"),
         )
     }
 
     pub fn group_add_members(&self, group: &str, account_id: &str) -> Result<(), AppError> {
-        let args = self.base_args(["group", "add-members", group, account_id]);
         self.run_unit(
-            args,
+            self.base_args(["group", "add-members", group, account_id]),
             &format!("failed to add '{account_id}' to group '{group}'"),
         )
     }
 
     pub fn group_remove_members(&self, group: &str, account_id: &str) -> Result<(), AppError> {
-        let args = self.base_args(["group", "remove-members", group, account_id]);
         self.run_unit(
-            args,
+            self.base_args(["group", "remove-members", group, account_id]),
             &format!("failed to remove '{account_id}' from group '{group}'"),
+        )
+    }
+
+    pub fn oauth2_show_basic_secret(&self, client: &str) -> Result<String, AppError> {
+        self.run_stdout(
+            self.base_args(["system", "oauth2", "show-basic-secret", client]),
+            &format!("failed to show the basic secret for oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn oauth2_reset_basic_secret(&self, client: &str) -> Result<String, AppError> {
+        self.run_stdout(
+            self.base_args(["system", "oauth2", "reset-basic-secret", client]),
+            &format!("failed to reset the basic secret for oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn oauth2_add_redirect_url(&self, client: &str, url: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["system", "oauth2", "add-redirect-url", client, url]),
+            &format!("failed to add redirect URL '{url}' to oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn oauth2_remove_redirect_url(&self, client: &str, url: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["system", "oauth2", "remove-redirect-url", client, url]),
+            &format!("failed to remove redirect URL '{url}' from oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn oauth2_enable_pkce(&self, client: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["system", "oauth2", "enable-pkce", client]),
+            &format!("failed to enable PKCE for oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn oauth2_disable_pkce(&self, client: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args([
+                "system",
+                "oauth2",
+                "warning-insecure-client-disable-pkce",
+                client,
+            ]),
+            &format!("failed to disable PKCE for oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn oauth2_enable_consent(&self, client: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["system", "oauth2", "enable-consent-prompt", client]),
+            &format!("failed to enable the consent prompt for oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn oauth2_disable_consent(&self, client: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["system", "oauth2", "disable-consent-prompt", client]),
+            &format!("failed to disable the consent prompt for oauth2 client '{client}'"),
+        )
+    }
+
+    pub fn group_policy_auth_expiry_set(&self, group: &str, seconds: u64) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args([
+                "group",
+                "account-policy",
+                "auth-expiry",
+                group,
+                &seconds.to_string(),
+            ]),
+            &format!("failed to set auth-expiry for group '{group}'"),
+        )
+    }
+
+    pub fn group_policy_auth_expiry_reset(&self, group: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["group", "account-policy", "reset-auth-expiry", group]),
+            &format!("failed to reset auth-expiry for group '{group}'"),
+        )
+    }
+
+    pub fn group_policy_privilege_expiry_set(
+        &self,
+        group: &str,
+        seconds: u64,
+    ) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args([
+                "group",
+                "account-policy",
+                "privilege-expiry",
+                group,
+                &seconds.to_string(),
+            ]),
+            &format!("failed to set privilege-expiry for group '{group}'"),
+        )
+    }
+
+    pub fn group_policy_privilege_expiry_reset(&self, group: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["group", "account-policy", "reset-privilege-expiry", group]),
+            &format!("failed to reset privilege-expiry for group '{group}'"),
         )
     }
 
@@ -231,6 +348,35 @@ impl KanidmCli {
             "--name",
             &self.admin_name,
         ])
+    }
+
+    pub fn logout(&self) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["logout"]),
+            "failed to log out of the current Kanidm session",
+        )
+    }
+
+    fn run_named_json<T: DeserializeOwned>(
+        &self,
+        args: Vec<String>,
+        context: &str,
+        resource: &str,
+        name: &str,
+    ) -> Result<T, AppError> {
+        let output = match self.run_raw(args, context)? {
+            Ok(output) => output,
+            Err(failure) => {
+                return Err(self.classify_named_failure(resource, name, context, failure))
+            }
+        };
+        serde_json::from_str(&output.stdout).map_err(|error| AppError::Json {
+            message: format!("{context}: invalid JSON from kanidm backend"),
+            details: json!({
+                "error": error.to_string(),
+                "stdout": output.stdout,
+            }),
+        })
     }
 
     fn run_json<T: DeserializeOwned>(
@@ -311,7 +457,6 @@ impl KanidmCli {
         context: &str,
     ) -> Result<Result<BackendSuccess, BackendFailure>, AppError> {
         let output = run_captured_command(&self.program, &args, context, COMMAND_TIMEOUT)?;
-
         if output.status.success() {
             Ok(Ok(BackendSuccess {
                 stdout: output.stdout,
@@ -354,23 +499,25 @@ impl KanidmCli {
         }
     }
 
-    fn classify_person_get_failure(
+    fn classify_named_failure(
         &self,
-        account_id: &str,
+        resource: &str,
+        name: &str,
         context: &str,
         failure: BackendFailure,
     ) -> AppError {
         let diagnostic = preferred_diagnostic(&failure);
-        if is_user_not_found(&normalized(&diagnostic)) {
-            return AppError::UserNotFound {
-                account_id: account_id.to_string(),
+        if is_not_found(&normalized(&diagnostic)) {
+            return AppError::NotFound {
+                message: format!("{resource} '{name}' was not found"),
+                resource: resource.to_string(),
+                name: name.to_string(),
                 details: json!({
                     "diagnostic": diagnostic,
                     "backend": backend_failure_payload(&failure),
                 }),
             };
         }
-
         self.classify_failure(context, failure)
     }
 
@@ -385,6 +532,12 @@ impl KanidmCli {
             "--name".to_string(),
             self.admin_name.clone(),
         ]);
+        args
+    }
+
+    fn json_args<'a>(&self, prefix: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let mut args = self.base_args(prefix);
+        args.extend(["-o".to_string(), "json".to_string()]);
         args
     }
 }
@@ -615,7 +768,7 @@ fn is_reauth_required(text: &str) -> bool {
         || text.contains("privileged session has expired")
 }
 
-fn is_user_not_found(text: &str) -> bool {
+fn is_not_found(text: &str) -> bool {
     text.contains("not found")
         || text.contains("no matching entries")
         || text.contains("does not exist")
@@ -628,7 +781,6 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
 
     use super::*;
-    use crate::config::ResolvedConfig;
 
     fn write_script(path: &Path, body: &str) {
         let shell = ProcessCommand::new("bash")
@@ -697,7 +849,7 @@ sleep 1
     }
 
     #[test]
-    fn person_get_normalizes_supported_not_found_diagnostics() {
+    fn named_json_normalizes_not_found_diagnostics() {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = dir.path().join("kanidm-stub.sh");
         write_script(
@@ -707,7 +859,7 @@ printf 'No matching entries were found\n' >&2
 exit 1
 "#,
         );
-        let cli = KanidmCli::new(&ResolvedConfig {
+        let cli = KanidmCli::new(&ResolvedContext {
             repo_root: None,
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
@@ -715,6 +867,6 @@ exit 1
         });
 
         let error = cli.person_get::<Value>("dsaw").expect_err("not found");
-        assert!(matches!(error, AppError::UserNotFound { .. }));
+        assert!(matches!(error, AppError::NotFound { .. }));
     }
 }

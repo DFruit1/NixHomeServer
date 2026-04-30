@@ -20,7 +20,11 @@ in
     enableClient = true;
     clientSettings.uri = vars.kanidmBaseUrl;
     enablePam = true;
-    unixSettings.pam_allowed_login_groups = [ "fileshare_users" ];
+    unixSettings.pam_allowed_login_groups = [
+      "user-files"
+      "shared-files-ro"
+      "shared-files-rw"
+    ];
     package = pkgs.kanidmWithSecretProvisioning_1_9;
 
     serverSettings = {

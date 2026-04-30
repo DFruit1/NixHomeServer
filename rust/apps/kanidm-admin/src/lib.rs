@@ -1,9 +1,9 @@
-pub mod commands;
-pub mod config;
-pub mod groups;
+pub mod context;
 pub mod interactive;
+pub mod inventory;
 pub mod kanidm_cli;
 pub mod models;
+pub mod ops;
 pub mod output;
 
 use serde_json::{json, Value};
@@ -25,11 +25,13 @@ pub enum AppError {
         failure: Box<BackendFailure>,
     },
 
-    #[error("invalid managed group: {group}")]
-    InvalidManagedGroup { group: String },
-
-    #[error("user not found: {account_id}")]
-    UserNotFound { account_id: String, details: Value },
+    #[error("{message}")]
+    NotFound {
+        message: String,
+        resource: String,
+        name: String,
+        details: Value,
+    },
 
     #[error("{message}")]
     Verification { message: String, details: Value },
@@ -47,6 +49,12 @@ pub enum AppError {
     BackendTimeout { message: String, details: Value },
 
     #[error("{message}")]
+    InventoryIncomplete { message: String, details: Value },
+
+    #[error("{message}")]
+    Unsupported { message: String, details: Value },
+
+    #[error("{message}")]
     Io { message: String },
 }
 
@@ -55,8 +63,7 @@ impl AppError {
         match self {
             Self::Config { .. } => 2,
             Self::MissingDependency { .. } => 3,
-            Self::InvalidManagedGroup { .. } => 4,
-            Self::UserNotFound { .. } => 5,
+            Self::NotFound { .. } => 5,
             Self::SessionRequired { .. } => 6,
             Self::ReauthRequired { .. } => 7,
             Self::Verification { .. } => 8,
@@ -64,6 +71,8 @@ impl AppError {
             Self::Backend { .. } => 10,
             Self::Io { .. } => 11,
             Self::BackendTimeout { .. } => 12,
+            Self::InventoryIncomplete { .. } => 13,
+            Self::Unsupported { .. } => 14,
         }
     }
 
@@ -82,7 +91,12 @@ impl AppError {
             }
             Self::Verification { message, details }
             | Self::Json { message, details }
-            | Self::BackendTimeout { message, details } => {
+            | Self::BackendTimeout { message, details }
+            | Self::InventoryIncomplete { message, details }
+            | Self::Unsupported { message, details }
+            | Self::NotFound {
+                message, details, ..
+            } => {
                 let rendered =
                     serde_json::to_string_pretty(details).unwrap_or_else(|_| details.to_string());
                 format!("{message}\n\nDetails:\n{rendered}")
@@ -125,14 +139,13 @@ impl AppError {
                 "stdout": failure.stdout,
                 "stderr": failure.stderr,
             }),
-            Self::InvalidManagedGroup { group } => {
-                json!({ "kind": "invalid_managed_group", "group": group })
-            }
-            Self::UserNotFound {
-                account_id,
+            Self::NotFound {
+                resource,
+                name,
                 details,
+                ..
             } => {
-                json!({ "kind": "user_not_found", "account_id": account_id, "details": details })
+                json!({ "kind": "not_found", "resource": resource, "name": name, "details": details })
             }
             Self::Verification { details, .. } => {
                 json!({ "kind": "verification", "details": details })
@@ -146,6 +159,12 @@ impl AppError {
             Self::Json { details, .. } => json!({ "kind": "json", "details": details }),
             Self::BackendTimeout { details, .. } => {
                 json!({ "kind": "backend_timeout", "details": details })
+            }
+            Self::InventoryIncomplete { details, .. } => {
+                json!({ "kind": "inventory_incomplete", "details": details })
+            }
+            Self::Unsupported { details, .. } => {
+                json!({ "kind": "unsupported", "details": details })
             }
             Self::Io { message } => json!({ "kind": "io", "message": message }),
         }

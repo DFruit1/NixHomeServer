@@ -3,9 +3,6 @@
 let
   paperlessPort = 8000;
   dataDir = "/var/lib/paperless";
-  paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
-  paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
-  paperlessExportDir = "${vars.mediaRoot}/documents/export";
   blockedOfficeExtensions = lib.optionals (!vars.paperlessEnableDangerousMacroOfficeParsing) [
     "doc"
     "dot"
@@ -67,13 +64,13 @@ in
     enable = true;
     configureTika = true;
     dataDir = dataDir;
-    mediaDir = paperlessArchiveDir;
-    consumptionDir = paperlessInboxDir;
+    mediaDir = vars.paperlessArchiveRoot;
+    consumptionDir = vars.paperlessInboxRoot;
     address = "127.0.0.1";
     port = paperlessPort;
     exporter = {
       enable = true;
-      directory = paperlessExportDir;
+      directory = vars.paperlessExportRoot;
       onCalendar = "02:00";
     };
 
@@ -85,7 +82,7 @@ in
       PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
       PAPERLESS_URL = "https://paperless.${vars.domain}";
       PAPERLESS_ALLOWED_HOSTS = "paperless.${vars.domain}";
-      PAPERLESS_EXPORT_DIR = paperlessExportDir;
+      PAPERLESS_EXPORT_DIR = vars.paperlessExportRoot;
       PAPERLESS_OCR_LANGUAGE = vars.paperlessOcrLanguage;
       PAPERLESS_OCR_CLEAN = "clean";
       PAPERLESS_OCR_OUTPUT_TYPE = "pdfa";

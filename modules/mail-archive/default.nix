@@ -10,6 +10,7 @@ let
       "MAIL_ARCHIVE_UI_PORT=${toString cfg.port}"
       "MAIL_ARCHIVE_UI_DATA_DIR=${cfg.dataDir}"
       "MAIL_ARCHIVE_UI_STORE_ROOT=${cfg.storeRoot}"
+      "MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT=${cfg.accountStateRoot}"
       "MAIL_ARCHIVE_UI_RUNTIME_DIR=${cfg.runtimeDir}"
       "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
@@ -43,6 +44,7 @@ in
       ReadWritePaths = [
         cfg.dataDir
         cfg.storeRoot
+        cfg.accountStateRoot
         cfg.runtimeDir
         cfg.lockDir
       ];

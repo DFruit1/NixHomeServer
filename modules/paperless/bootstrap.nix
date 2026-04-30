@@ -2,8 +2,7 @@
 
 let
   dataDir = "/var/lib/paperless";
-  paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
-  paperlessLegacyConsumeDir = "${vars.mediaRoot}/documents/consume";
+  paperlessLegacyConsumeDir = "${vars.dataRoot}/media/documents/consume";
   paperlessUserPermissionCodenames = [
     "view_uisettings"
     "add_uisettings"
@@ -46,8 +45,8 @@ in
           set -euo pipefail
 
           legacy_dir='${paperlessLegacyConsumeDir}'
-          inbox_dir='${paperlessInboxDir}'
-          archive_dir='${vars.mediaRoot}/documents/archive'
+          inbox_dir='${vars.paperlessInboxRoot}'
+          archive_dir='${vars.paperlessArchiveRoot}'
 
           if [[ -L "$legacy_dir" ]]; then
             rm -f "$legacy_dir"

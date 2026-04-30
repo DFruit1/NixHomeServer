@@ -1,27 +1,42 @@
 use clap::{Args, Parser, Subcommand};
 use kanidm_admin::{
-    commands::{
-        access::{
-            grant_access, revoke_access, set_access, show_access, why_denied, SetAccessOptions,
+    context::{resolve_context, ContextOverrides},
+    interactive,
+    kanidm_cli::KanidmCli,
+    ops::{
+        client::{
+            client_consent_disable, client_consent_enable, client_pkce_disable, client_pkce_enable,
+            client_redirect_add, client_redirect_remove, client_secret_reset, client_secret_show,
+            list_clients, show_client,
         },
-        auth::{auth_login, auth_reauth, auth_status, ensure_interactive_auth_allowed},
-        config::show_config,
-        jellyfin::set_jellyfin_password,
-        users::{
+        context::{doctor, show_context},
+        group::{group_members, list_groups, search_groups, show_group},
+        local::stage_jellyfin_password,
+        membership::{
+            add_membership, remove_membership, set_membership, show_membership,
+            SetMembershipOptions,
+        },
+        policy::{
+            reset_group_auth_expiry, reset_group_privilege_expiry, set_group_auth_expiry,
+            set_group_privilege_expiry, show_group_policy,
+        },
+        session::{
+            ensure_interactive_session_allowed, session_login, session_logout, session_reauth,
+            session_status,
+        },
+        user::{
             create_user, delete_user, disable_user, enable_user, list_users, reset_token,
             show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
-    config::{resolve_config, ConfigOverrides},
-    groups::AppAccessTarget,
-    interactive,
-    kanidm_cli::KanidmCli,
     output::{render_error, render_output, OutputFormat},
 };
 
 #[derive(Debug, Parser)]
 #[command(name = "kanidm-admin")]
-#[command(about = "Focused Kanidm operator CLI for users and access groups.")]
+#[command(
+    about = "Live-discovery Kanidm operator CLI for sessions, users, groups, clients, and policy."
+)]
 struct Cli {
     #[arg(long, global = true)]
     repo_root: Option<std::path::PathBuf>,
@@ -33,47 +48,70 @@ struct Cli {
     admin_name: Option<String>,
 
     #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Human)]
-    format: OutputFormat,
+    output: OutputFormat,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Auth(AuthCommand),
-    Users(UsersCommand),
-    Access(AccessCommand),
-    Jellyfin(JellyfinCommand),
-    Config(ConfigCommand),
-    #[command(alias = "tui")]
-    Interactive,
+    Doctor,
+    Context(ContextCommand),
+    Session(SessionCommand),
+    User(UserCommand),
+    Group(GroupCommand),
+    Membership(MembershipCommand),
+    Client(ClientCommand),
+    Policy(PolicyCommand),
+    Local(LocalCommand),
 }
 
 #[derive(Debug, Args)]
-struct AuthCommand {
+struct ContextCommand {
     #[command(subcommand)]
-    command: AuthSubcommand,
+    command: ContextSubcommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum AuthSubcommand {
+enum ContextSubcommand {
+    Show,
+}
+
+#[derive(Debug, Args)]
+struct SessionCommand {
+    #[command(subcommand)]
+    command: SessionSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionSubcommand {
     Status,
     Login,
     Reauth,
+    Logout,
 }
 
 #[derive(Debug, Args)]
-struct UsersCommand {
+struct UserCommand {
     #[command(subcommand)]
-    command: UsersSubcommand,
+    command: UserSubcommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum UsersSubcommand {
+enum UserSubcommand {
     List,
     Show {
         account_id: String,
+    },
+    Create {
+        account_id: String,
+        #[arg(long)]
+        display_name: String,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long, default_value_t = true)]
+        clear_validity: bool,
     },
     Disable {
         account_id: String,
@@ -86,15 +124,6 @@ enum UsersSubcommand {
         #[arg(long)]
         confirm: String,
     },
-    Create {
-        account_id: String,
-        #[arg(long)]
-        display_name: String,
-        #[arg(long)]
-        email: Option<String>,
-        #[arg(long, default_value_t = true)]
-        clear_validity: bool,
-    },
     ResetToken {
         account_id: String,
         #[arg(long, default_value_t = 3600)]
@@ -103,121 +132,229 @@ enum UsersSubcommand {
 }
 
 #[derive(Debug, Args)]
-struct AccessCommand {
+struct GroupCommand {
     #[command(subcommand)]
-    command: AccessSubcommand,
+    command: GroupSubcommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum AccessSubcommand {
+enum GroupSubcommand {
+    List,
+    Search { query: String },
+    Show { group: String },
+    Members { group: String },
+}
+
+#[derive(Debug, Args)]
+struct MembershipCommand {
+    #[command(subcommand)]
+    command: MembershipSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum MembershipSubcommand {
     Show {
         account_id: String,
     },
-    Grant {
+    Add {
         account_id: String,
-        group: String,
+        groups: Vec<String>,
     },
-    Revoke {
+    Remove {
         account_id: String,
-        group: String,
+        groups: Vec<String>,
     },
     Set {
         account_id: String,
-        #[arg(long = "group")]
         groups: Vec<String>,
         #[arg(long, default_value_t = false)]
         allow_empty: bool,
     },
-    WhyDenied {
-        #[arg(long)]
-        app: AppAccessTarget,
-        #[arg(long)]
-        user: String,
-    },
 }
 
 #[derive(Debug, Args)]
-struct JellyfinCommand {
+struct ClientCommand {
     #[command(subcommand)]
-    command: JellyfinSubcommand,
+    command: ClientSubcommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum JellyfinSubcommand {
-    SetPassword {
+enum ClientSubcommand {
+    List,
+    Show { client: String },
+    Secret(ClientSecretCommand),
+    Redirect(ClientRedirectCommand),
+    Pkce(ClientPkceCommand),
+    Consent(ClientConsentCommand),
+}
+
+#[derive(Debug, Args)]
+struct ClientSecretCommand {
+    #[command(subcommand)]
+    command: ClientSecretSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClientSecretSubcommand {
+    Show { client: String },
+    Reset { client: String },
+}
+
+#[derive(Debug, Args)]
+struct ClientRedirectCommand {
+    #[command(subcommand)]
+    command: ClientRedirectSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClientRedirectSubcommand {
+    Add { client: String, url: String },
+    Remove { client: String, url: String },
+}
+
+#[derive(Debug, Args)]
+struct ClientPkceCommand {
+    #[command(subcommand)]
+    command: ClientPkceSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClientPkceSubcommand {
+    Enable { client: String },
+    Disable { client: String },
+}
+
+#[derive(Debug, Args)]
+struct ClientConsentCommand {
+    #[command(subcommand)]
+    command: ClientConsentSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClientConsentSubcommand {
+    Enable { client: String },
+    Disable { client: String },
+}
+
+#[derive(Debug, Args)]
+struct PolicyCommand {
+    #[command(subcommand)]
+    command: PolicySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicySubcommand {
+    Group(PolicyGroupCommand),
+}
+
+#[derive(Debug, Args)]
+struct PolicyGroupCommand {
+    #[command(subcommand)]
+    command: PolicyGroupSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyGroupSubcommand {
+    Show { group: String },
+    AuthExpiry(PolicyValueCommand),
+    PrivilegeExpiry(PolicyValueCommand),
+}
+
+#[derive(Debug, Args)]
+struct PolicyValueCommand {
+    #[command(subcommand)]
+    command: PolicyValueSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum PolicyValueSubcommand {
+    Set { group: String, seconds: u64 },
+    Reset { group: String },
+}
+
+#[derive(Debug, Args)]
+struct LocalCommand {
+    #[command(subcommand)]
+    command: LocalSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalSubcommand {
+    JellyfinPassword(LocalJellyfinPasswordCommand),
+}
+
+#[derive(Debug, Args)]
+struct LocalJellyfinPasswordCommand {
+    #[command(subcommand)]
+    command: LocalJellyfinPasswordSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalJellyfinPasswordSubcommand {
+    Stage {
         account_id: String,
         #[arg(long, default_value = "JELLYFIN_PASSWORD")]
         password_env: String,
     },
 }
 
-#[derive(Debug, Args)]
-struct ConfigCommand {
-    #[command(subcommand)]
-    command: ConfigSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum ConfigSubcommand {
-    Show,
-}
-
 fn main() {
     let cli = Cli::parse();
-    let format = cli.format;
+    let output = cli.output;
 
     match run(cli) {
-        Ok(Some(output)) => {
-            println!("{}", render_output(format, &output));
+        Ok(Some(command_output)) => {
+            println!("{}", render_output(output, &command_output));
         }
         Ok(None) => {}
         Err(error) => {
-            eprintln!("{}", render_error(format, &error));
+            eprintln!("{}", render_error(output, &error));
             std::process::exit(error.exit_code());
         }
     }
 }
 
 fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_admin::AppError> {
-    let format = cli.format;
-    let config = resolve_config(ConfigOverrides {
+    let output = cli.output;
+    let context = resolve_context(ContextOverrides {
         repo_root: cli.repo_root,
         server_url: cli.server_url,
         admin_name: cli.admin_name,
         kanidm_bin: None,
         nix_bin: None,
     })?;
-    let kanidm = KanidmCli::new(&config);
+    let kanidm = KanidmCli::new(&context);
 
     match cli.command {
-        Commands::Auth(command) => match command.command {
-            AuthSubcommand::Status => auth_status(&kanidm).map(Some),
-            AuthSubcommand::Login => {
-                ensure_interactive_auth_allowed(format)?;
-                auth_login(&kanidm).map(Some)
+        None => {
+            if output != OutputFormat::Human {
+                return Err(kanidm_admin::AppError::Config {
+                    message: "interactive mode only supports --output human".to_string(),
+                });
             }
-            AuthSubcommand::Reauth => {
-                ensure_interactive_auth_allowed(format)?;
-                auth_reauth(&kanidm).map(Some)
-            }
+            interactive::run(&context, &kanidm)?;
+            Ok(None)
+        }
+        Some(Commands::Doctor) => doctor(&context, &kanidm).map(Some),
+        Some(Commands::Context(command)) => match command.command {
+            ContextSubcommand::Show => Ok(Some(show_context(&context))),
         },
-        Commands::Users(command) => match command.command {
-            UsersSubcommand::List => list_users(&kanidm).map(Some),
-            UsersSubcommand::Show { account_id } => show_user(&kanidm, &account_id).map(Some),
-            UsersSubcommand::Disable { account_id } => disable_user(&kanidm, &account_id).map(Some),
-            UsersSubcommand::Enable { account_id } => enable_user(&kanidm, &account_id).map(Some),
-            UsersSubcommand::Delete {
-                account_id,
-                confirm,
-            } => delete_user(
-                &kanidm,
-                DeleteUserOptions {
-                    account_id,
-                    confirm,
-                },
-            )
-            .map(Some),
-            UsersSubcommand::Create {
+        Some(Commands::Session(command)) => match command.command {
+            SessionSubcommand::Status => session_status(&kanidm).map(Some),
+            SessionSubcommand::Login => {
+                ensure_interactive_session_allowed(output)?;
+                session_login(&kanidm).map(Some)
+            }
+            SessionSubcommand::Reauth => {
+                ensure_interactive_session_allowed(output)?;
+                session_reauth(&kanidm).map(Some)
+            }
+            SessionSubcommand::Logout => session_logout(&kanidm).map(Some),
+        },
+        Some(Commands::User(command)) => match command.command {
+            UserSubcommand::List => list_users(&kanidm).map(Some),
+            UserSubcommand::Show { account_id } => show_user(&kanidm, &account_id).map(Some),
+            UserSubcommand::Create {
                 account_id,
                 display_name,
                 email,
@@ -232,7 +369,20 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                 },
             )
             .map(Some),
-            UsersSubcommand::ResetToken { account_id, ttl } => reset_token(
+            UserSubcommand::Disable { account_id } => disable_user(&kanidm, &account_id).map(Some),
+            UserSubcommand::Enable { account_id } => enable_user(&kanidm, &account_id).map(Some),
+            UserSubcommand::Delete {
+                account_id,
+                confirm,
+            } => delete_user(
+                &kanidm,
+                DeleteUserOptions {
+                    account_id,
+                    confirm,
+                },
+            )
+            .map(Some),
+            UserSubcommand::ResetToken { account_id, ttl } => reset_token(
                 &kanidm,
                 ResetTokenOptions {
                     account_id,
@@ -241,47 +391,103 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             )
             .map(Some),
         },
-        Commands::Access(command) => match command.command {
-            AccessSubcommand::Show { account_id } => show_access(&kanidm, &account_id).map(Some),
-            AccessSubcommand::Grant { account_id, group } => {
-                grant_access(&kanidm, &account_id, &group).map(Some)
+        Some(Commands::Group(command)) => match command.command {
+            GroupSubcommand::List => list_groups(&kanidm).map(Some),
+            GroupSubcommand::Search { query } => search_groups(&kanidm, &query).map(Some),
+            GroupSubcommand::Show { group } => show_group(&kanidm, &group).map(Some),
+            GroupSubcommand::Members { group } => group_members(&kanidm, &group).map(Some),
+        },
+        Some(Commands::Membership(command)) => match command.command {
+            MembershipSubcommand::Show { account_id } => {
+                show_membership(&kanidm, &account_id).map(Some)
             }
-            AccessSubcommand::Revoke { account_id, group } => {
-                revoke_access(&kanidm, &account_id, &group).map(Some)
+            MembershipSubcommand::Add { account_id, groups } => {
+                add_membership(&kanidm, &account_id, &groups).map(Some)
             }
-            AccessSubcommand::Set {
+            MembershipSubcommand::Remove { account_id, groups } => {
+                remove_membership(&kanidm, &account_id, &groups).map(Some)
+            }
+            MembershipSubcommand::Set {
                 account_id,
                 groups,
                 allow_empty,
-            } => set_access(
+            } => set_membership(
                 &kanidm,
-                SetAccessOptions {
+                SetMembershipOptions {
                     account_id,
                     groups,
                     allow_empty,
                 },
             )
             .map(Some),
-            AccessSubcommand::WhyDenied { app, user } => why_denied(&kanidm, &user, app).map(Some),
         },
-        Commands::Jellyfin(command) => match command.command {
-            JellyfinSubcommand::SetPassword {
-                account_id,
-                password_env,
-            } => set_jellyfin_password(&account_id, &password_env).map(Some),
+        Some(Commands::Client(command)) => match command.command {
+            ClientSubcommand::List => list_clients(&kanidm).map(Some),
+            ClientSubcommand::Show { client } => show_client(&kanidm, &client).map(Some),
+            ClientSubcommand::Secret(secret) => match secret.command {
+                ClientSecretSubcommand::Show { client } => {
+                    client_secret_show(&kanidm, &client).map(Some)
+                }
+                ClientSecretSubcommand::Reset { client } => {
+                    client_secret_reset(&kanidm, &client).map(Some)
+                }
+            },
+            ClientSubcommand::Redirect(redirect) => match redirect.command {
+                ClientRedirectSubcommand::Add { client, url } => {
+                    client_redirect_add(&kanidm, &client, &url).map(Some)
+                }
+                ClientRedirectSubcommand::Remove { client, url } => {
+                    client_redirect_remove(&kanidm, &client, &url).map(Some)
+                }
+            },
+            ClientSubcommand::Pkce(pkce) => match pkce.command {
+                ClientPkceSubcommand::Enable { client } => {
+                    client_pkce_enable(&kanidm, &client).map(Some)
+                }
+                ClientPkceSubcommand::Disable { client } => {
+                    client_pkce_disable(&kanidm, &client).map(Some)
+                }
+            },
+            ClientSubcommand::Consent(consent) => match consent.command {
+                ClientConsentSubcommand::Enable { client } => {
+                    client_consent_enable(&kanidm, &client).map(Some)
+                }
+                ClientConsentSubcommand::Disable { client } => {
+                    client_consent_disable(&kanidm, &client).map(Some)
+                }
+            },
         },
-        Commands::Config(command) => match command.command {
-            ConfigSubcommand::Show => Ok(Some(show_config(&config))),
+        Some(Commands::Policy(command)) => match command.command {
+            PolicySubcommand::Group(group) => match group.command {
+                PolicyGroupSubcommand::Show { group } => {
+                    show_group_policy(&kanidm, &group).map(Some)
+                }
+                PolicyGroupSubcommand::AuthExpiry(policy) => match policy.command {
+                    PolicyValueSubcommand::Set { group, seconds } => {
+                        set_group_auth_expiry(&kanidm, &group, seconds).map(Some)
+                    }
+                    PolicyValueSubcommand::Reset { group } => {
+                        reset_group_auth_expiry(&kanidm, &group).map(Some)
+                    }
+                },
+                PolicyGroupSubcommand::PrivilegeExpiry(policy) => match policy.command {
+                    PolicyValueSubcommand::Set { group, seconds } => {
+                        set_group_privilege_expiry(&kanidm, &group, seconds).map(Some)
+                    }
+                    PolicyValueSubcommand::Reset { group } => {
+                        reset_group_privilege_expiry(&kanidm, &group).map(Some)
+                    }
+                },
+            },
         },
-        Commands::Interactive => {
-            if format != OutputFormat::Human {
-                return Err(kanidm_admin::AppError::Config {
-                    message: "interactive mode only supports --format human".to_string(),
-                });
-            }
-            interactive::run(&config, &kanidm)?;
-            Ok(None)
-        }
+        Some(Commands::Local(command)) => match command.command {
+            LocalSubcommand::JellyfinPassword(command) => match command.command {
+                LocalJellyfinPasswordSubcommand::Stage {
+                    account_id,
+                    password_env,
+                } => stage_jellyfin_password(&account_id, &password_env).map(Some),
+            },
+        },
     }
 }
 
@@ -292,130 +498,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_auth_login() {
-        let cli = Cli::try_parse_from([
-            "kanidm-admin",
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "auth",
-            "login",
-        ])
-        .expect("parse");
+    fn parses_default_tui_without_subcommand() {
+        let cli = Cli::try_parse_from(["kanidm-admin"]).expect("parse");
+        assert!(cli.command.is_none());
+    }
 
+    #[test]
+    fn parses_session_login() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "session", "login"]).expect("parse");
         assert!(matches!(
             cli.command,
-            Commands::Auth(AuthCommand {
-                command: AuthSubcommand::Login
-            })
+            Some(Commands::Session(SessionCommand {
+                command: SessionSubcommand::Login
+            }))
         ));
     }
 
     #[test]
-    fn parses_auth_reauth() {
+    fn parses_membership_set() {
         let cli = Cli::try_parse_from([
             "kanidm-admin",
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "auth",
-            "reauth",
-        ])
-        .expect("parse");
-
-        assert!(matches!(
-            cli.command,
-            Commands::Auth(AuthCommand {
-                command: AuthSubcommand::Reauth
-            })
-        ));
-    }
-
-    #[test]
-    fn parses_jellyfin_set_password() {
-        let cli = Cli::try_parse_from([
-            "kanidm-admin",
-            "jellyfin",
-            "set-password",
-            "dsaw",
-            "--password-env",
-            "CUSTOM_JF_PASSWORD",
-        ])
-        .expect("parse");
-
-        assert!(matches!(
-            cli.command,
-            Commands::Jellyfin(JellyfinCommand {
-                command: JellyfinSubcommand::SetPassword {
-                    account_id,
-                    password_env
-                }
-            }) if account_id == "dsaw" && password_env == "CUSTOM_JF_PASSWORD"
-        ));
-    }
-
-    #[test]
-    fn parses_users_reset_token() {
-        let cli = Cli::try_parse_from([
-            "kanidm-admin",
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "users",
-            "reset-token",
-            "dsaw",
-            "--ttl",
-            "7200",
-        ])
-        .expect("parse");
-
-        assert!(matches!(
-            cli.command,
-            Commands::Users(UsersCommand {
-                command: UsersSubcommand::ResetToken {
-                    account_id,
-                    ttl: 7200
-                }
-            }) if account_id == "dsaw"
-        ));
-    }
-
-    #[test]
-    fn parses_users_delete() {
-        let cli = Cli::try_parse_from([
-            "kanidm-admin",
-            "users",
-            "delete",
-            "dsaw",
-            "--confirm",
-            "dsaw",
-        ])
-        .expect("parse");
-
-        assert!(matches!(
-            cli.command,
-            Commands::Users(UsersCommand {
-                command: UsersSubcommand::Delete {
-                    account_id,
-                    confirm
-                }
-            }) if account_id == "dsaw" && confirm == "dsaw"
-        ));
-    }
-
-    #[test]
-    fn parses_access_set() {
-        let cli = Cli::try_parse_from([
-            "kanidm-admin",
-            "access",
+            "membership",
             "set",
             "dsaw",
-            "--group",
             "users",
-            "--group",
             "paperless-users",
             "--allow-empty",
         ])
@@ -423,28 +529,78 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            Commands::Access(AccessCommand {
-                command: AccessSubcommand::Set {
+            Some(Commands::Membership(MembershipCommand {
+                command: MembershipSubcommand::Set {
                     account_id,
                     groups,
                     allow_empty: true
                 }
-            }) if account_id == "dsaw" && groups == vec!["users".to_string(), "paperless-users".to_string()]
+            })) if account_id == "dsaw" && groups == vec!["users".to_string(), "paperless-users".to_string()]
         ));
     }
 
     #[test]
-    fn parses_interactive_alias() {
+    fn parses_client_pkce_disable() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "client", "pkce", "disable", "files"])
+            .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Client(ClientCommand {
+                command: ClientSubcommand::Pkce(ClientPkceCommand {
+                    command: ClientPkceSubcommand::Disable { client }
+                })
+            })) if client == "files"
+        ));
+    }
+
+    #[test]
+    fn parses_policy_privilege_expiry_reset() {
         let cli = Cli::try_parse_from([
             "kanidm-admin",
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "tui",
+            "policy",
+            "group",
+            "privilege-expiry",
+            "reset",
+            "idm_all_persons",
         ])
         .expect("parse");
 
-        assert!(matches!(cli.command, Commands::Interactive));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Policy(PolicyCommand {
+                command: PolicySubcommand::Group(PolicyGroupCommand {
+                    command: PolicyGroupSubcommand::PrivilegeExpiry(PolicyValueCommand {
+                        command: PolicyValueSubcommand::Reset { group }
+                    })
+                })
+            })) if group == "idm_all_persons"
+        ));
+    }
+
+    #[test]
+    fn parses_local_jellyfin_stage() {
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "local",
+            "jellyfin-password",
+            "stage",
+            "dsaw",
+            "--password-env",
+            "CUSTOM_PASSWORD",
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Local(LocalCommand {
+                command: LocalSubcommand::JellyfinPassword(LocalJellyfinPasswordCommand {
+                    command: LocalJellyfinPasswordSubcommand::Stage {
+                        account_id,
+                        password_env
+                    }
+                })
+            })) if account_id == "dsaw" && password_env == "CUSTOM_PASSWORD"
+        ));
     }
 }

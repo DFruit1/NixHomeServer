@@ -12,11 +12,11 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 - Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kiwix, Kavita, Jellyfin
 - Mail archive and search: `mail-archive-ui`, `mbsync`, `notmuch`
 - Storage: Btrfs system SSD, single mirrored ZFS data pool, manual cold-storage pools
-- Validation: `nix flake check --no-build`, `scripts/check-repo.sh`, `scripts/check-repo.sh --full`, `scripts/runtime-readiness.sh`
+- Validation: `nix flake check --no-build`, `scripts/check-repo.sh`, `scripts/check-repo.sh --full`, `scripts/check-docs.sh`, `scripts/runtime-readiness.sh`
 
 ## Conventions
 - Placeholders such as `<domain>`, `TARGET_SERVER_IP`, `CURRENT_SERVER_IP`, `ADMIN_USER`, and `NEW_USER` are examples. Replace them with your operator values before running commands.
-- Group names such as `users`, `immich-users`, `paperless-users`, `fileshare_users`, and `*-admin` are literal names managed by this repo. Do not rename them in commands.
+- Group names such as `users`, `user-files`, `shared-files-ro`, `shared-files-rw`, `immich-users`, `paperless-users`, and `*-admin` are literal names managed by this repo. Do not rename them in commands.
 
 ## Start Here
 

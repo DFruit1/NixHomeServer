@@ -24,7 +24,7 @@ If the host already exists and you only need validation, deployment, or runtime 
 ## Conventions
 
 - Placeholders such as `<domain>`, `CURRENT_SERVER_IP`, `SERVER_USER`, and `/path/to/agenix.key` are examples. Replace them with the actual operator values before running commands.
-- Group names such as `users`, `immich-users`, `paperless-users`, `fileshare_users`, and `*-admin` are literal names managed by this repo.
+- Group names such as `users`, `user-files`, `shared-files-ro`, `shared-files-rw`, `immich-users`, `paperless-users`, and `*-admin` are literal names managed by this repo.
 - Command blocks use the same context format:
   - Run from: where to execute the commands
   - Privileges: whether `sudo` is required
@@ -78,10 +78,10 @@ Use `/dev/disk/by-id/*`, not transient `/dev/sdX` names.
 ## Media Categories
 
 Steady-state storage model:
-- `media/*` holds app-managed payload trees. In current steady state that means `media/documents` for Paperless and `media/photos` for Immich-managed photo payloads.
+- `paperless` and `immich` hold the app-managed payload trees for Paperless and Immich.
 - `users/*` and `shared/*` hold the canonical user-facing content libraries.
 - `kiwix` intentionally remains its own top-level content root at `/mnt/data/kiwix`.
-- `media/audio`, `media/books`, and `media/video` are historical migration roots only and must not be treated as steady-state library locations.
+- `/mnt/data/media` is a retired migration root and must not be treated as a steady-state library location.
 
 Per-user book roots are created automatically under `/mnt/data/users/<user>/books/`.
 
@@ -93,7 +93,7 @@ Books categories:
 
 All Jellyfin-visible video content is shared-only under `/mnt/data/shared/videos/`.
 There are no per-user Jellyfin video folders.
-Upload shared video content through the files app or the admin-only SMB share into these categories:
+Upload shared video content through the shared SMB share when the user has `shared-files-rw` access into these categories:
 - `movies`: standard movie collections
 - `shows`: episodic TV or series content
 - `home`: personal videos and recordings
@@ -101,11 +101,17 @@ Upload shared video content through the files app or the admin-only SMB share in
 - `youtube`: downloaded YouTube-style videos exposed as Jellyfin `homevideos`, including MeTube downloads written directly into the shared library tree
 - `other`: catch-all video material exposed as Jellyfin `homevideos`
 
+Files access model:
+- `user-files` is required separately for personal Copyparty and SMB access
+- `shared-files-ro` grants read-only access to `/shared/*`
+- `shared-files-rw` grants shared-write access through Samba only
+- Copyparty shared roots are read-only for both shared groups
+
 Shared media roots:
 - shared books: `ebooks`, `comics`, `manga`, `other`
 - shared videos: `movies`, `shows`, `home`, `music-videos`, `youtube`, `other`
 - shared audiobooks: `/mnt/data/shared/audiobooks`
-- app-managed payloads: `/mnt/data/media/documents`, `/mnt/data/media/photos`
+- app-managed payloads: `/mnt/data/paperless`, `/mnt/data/immich`
 
 Private MeTube downloads are available at `https://ytdownload.<domain>` on LAN or over NetBird only.
 

@@ -1,7 +1,83 @@
-{ lib, vars, copyparty, ... }:
+{ lib, pkgs, config, vars, copyparty, ... }:
 
 let
+  kanidmPort = 8443;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
+  userFilesGroup = "user-files";
   copypartyPort = 3923;
+  sharedFilesRoot = "${vars.sharedRoot}/files";
+  appendPersonalVolumes = pkgs.writeShellScript "append-copyparty-personal-volumes" ''
+    set -euo pipefail
+
+    runtime_conf="/run/copyparty/copyparty.conf"
+    export HOME="$(${pkgs.coreutils}/bin/mktemp -d)"
+    trap '${pkgs.coreutils}/bin/rm -rf "$HOME"' EXIT
+    export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
+
+    ${pkgs.kanidm_1_9}/bin/kanidm login \
+      -H ${kanidmCliUrl} \
+      -D admin >/dev/null
+
+    ${pkgs.kanidm_1_9}/bin/kanidm group get \
+      ${lib.escapeShellArg userFilesGroup} \
+      -H ${kanidmCliUrl} \
+      -D admin \
+      -o json \
+      | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]' \
+      | ${pkgs.coreutils}/bin/sort -u \
+      | while IFS= read -r username; do
+          [[ -n "$username" ]] || continue
+
+          ${pkgs.coreutils}/bin/cat >>"$runtime_conf" <<EOF
+
+[$username/files]
+${vars.usersRoot}/$username/files
+accs:
+  rwmda: $username
+flags:
+  fk: 4
+  e2d: true
+  chmod_d: 770
+  chmod_f: 660
+  unlistcr: true
+  unlistcw: true
+
+[$username/audiobooks]
+${vars.usersRoot}/$username/audiobooks
+accs:
+  rwmda: $username
+flags:
+  fk: 4
+  e2d: true
+  chmod_d: 770
+  chmod_f: 660
+  unlistcr: true
+  unlistcw: true
+
+[$username/books]
+${vars.usersRoot}/$username/books
+accs:
+  rwmda: $username
+flags:
+  fk: 4
+  e2d: true
+  chmod_d: 770
+  chmod_f: 660
+  unlistcr: true
+  unlistcw: true
+
+[$username/emails]
+${vars.usersRoot}/$username/emails
+accs:
+  r: $username
+flags:
+  fk: 4
+  e2d: true
+  unlistcr: true
+  unlistcw: true
+EOF
+        done
+  '';
 in
 
 {
@@ -34,53 +110,10 @@ in
     };
     volumes = { };
     globalExtraConfig = ''
-      [/''${u}]
-      ${vars.usersRoot}/''${u}
+      [/shared/files]
+      ${sharedFilesRoot}
       accs:
-        rwmda: ''${u}
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 770
-        chmod_f: 660
-        unlistcr: true
-        unlistcw: true
-
-      [/''${u}/emails]
-      ${vars.usersRoot}/''${u}/emails
-      accs:
-        r: ''${u}
-      flags:
-        fk: 4
-        e2d: true
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/documents]
-      ${vars.mediaRoot}/documents/archive
-      accs:
-        r: @acct
-      flags:
-        fk: 4
-        e2d: true
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/emails]
-      ${vars.sharedEmailsRoot}
-      accs:
-        r: @acct
-      flags:
-        fk: 4
-        e2d: true
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/videos]
-      ${vars.sharedVideosRoot}
-      accs:
-        rw: @acct
-        rwmda: ${vars.kanidmAdminUser}
+        r: @shared-files-ro, @shared-files-rw
       flags:
         fk: 4
         e2d: true
@@ -89,10 +122,46 @@ in
         unlistcr: true
         unlistcw: true
 
-      [/shared]
-      ${vars.sharedRoot}
+      [/shared/audiobooks]
+      ${vars.sharedAudiobooksRoot}
       accs:
-        rwmda: @acct
+        r: @shared-files-ro, @shared-files-rw
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
+        unlistcr: true
+        unlistcw: true
+
+      [/shared/books]
+      ${vars.sharedBooksRoot}
+      accs:
+        r: @shared-files-ro, @shared-files-rw
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
+        unlistcr: true
+        unlistcw: true
+
+      [/shared/emails]
+      ${vars.sharedEmailsRoot}
+      accs:
+        r: @shared-files-ro, @shared-files-rw
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
+        unlistcr: true
+        unlistcw: true
+
+      [/shared/videos]
+      ${vars.sharedVideosRoot}
+      accs:
+        r: @shared-files-ro, @shared-files-rw
       flags:
         fk: 4
         e2d: true
@@ -105,23 +174,25 @@ in
 
   users.users.copyparty.extraGroups = lib.mkAfter [
     "users"
-    "paperless"
     "mail-archive-ui"
   ];
 
   systemd.services.copyparty = {
     wants = [
       "fileshare-user-root-sync.service"
-      "paperless-storage-layout-v1.service"
+      "kanidm-files-posix-groups.service"
     ];
     after = [
       "fileshare-user-root-sync.service"
-      "paperless-storage-layout-v1.service"
+      "kanidm-files-posix-groups.service"
     ];
+    preStart = lib.mkAfter ''
+      ${appendPersonalVolumes}
+    '';
     serviceConfig.BindPaths = lib.mkAfter [
       vars.usersRoot
       vars.sharedRoot
-      "${vars.mediaRoot}/documents/archive"
     ];
+    serviceConfig.PermissionsStartOnly = true;
   };
 }

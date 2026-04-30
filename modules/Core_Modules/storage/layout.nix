@@ -4,13 +4,6 @@ let
   zfsBin = "${pkgs.zfs}/bin/zfs";
   canonicalUsersDataset = "${vars.zfsDataPool.name}/users";
   canonicalSharedDataset = "${vars.zfsDataPool.name}/shared";
-  immichManagedPhotosRoot = "${vars.mediaRoot}/photos/managed";
-  immichExternalPhotosRoot = "${vars.mediaRoot}/photos/external";
-  paperlessInboxDir = "${vars.mediaRoot}/documents/inbox";
-  paperlessMailArchiveConsumeRoot = "${vars.mediaRoot}/documents/inbox/mail-archive";
-  paperlessMailArchiveStagingDir = "${vars.mediaRoot}/documents/.mail-archive-paperless-staging";
-  paperlessArchiveDir = "${vars.mediaRoot}/documents/archive";
-  paperlessExportDir = "${vars.mediaRoot}/documents/export";
   genericSharedContentDirs = map (name: "${vars.sharedRoot}/${name}") (
     builtins.filter (name: name != "emails") vars.sharedContentSubdirs
   );
@@ -56,7 +49,13 @@ let
       group = "root";
     }
     {
-      path = vars.mediaRoot;
+      path = vars.paperlessRoot;
+      mode = "0755";
+      user = "root";
+      group = "root";
+    }
+    {
+      path = vars.immichRoot;
       mode = "0755";
       user = "root";
       group = "root";
@@ -74,79 +73,79 @@ let
       group = "users";
     }
     {
-      path = immichManagedPhotosRoot;
+      path = vars.immichManagedRoot;
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = "${immichManagedPhotosRoot}/backups";
+      path = "${vars.immichManagedRoot}/backups";
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = "${immichManagedPhotosRoot}/encoded-video";
+      path = "${vars.immichManagedRoot}/encoded-video";
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = "${immichManagedPhotosRoot}/library";
+      path = "${vars.immichManagedRoot}/library";
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = "${immichManagedPhotosRoot}/profile";
+      path = "${vars.immichManagedRoot}/profile";
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = "${immichManagedPhotosRoot}/thumbs";
+      path = "${vars.immichManagedRoot}/thumbs";
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = "${immichManagedPhotosRoot}/upload";
+      path = "${vars.immichManagedRoot}/upload";
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = immichExternalPhotosRoot;
+      path = vars.immichExternalRoot;
       mode = "2770";
       user = "root";
       group = "immich";
     }
     {
-      path = paperlessInboxDir;
-      mode = "2770";
-      user = "root";
-      group = "paperless";
-    }
-    {
-      path = paperlessMailArchiveConsumeRoot;
+      path = vars.paperlessInboxRoot;
       mode = "2770";
       user = "root";
       group = "paperless";
     }
     {
-      path = paperlessMailArchiveStagingDir;
+      path = vars.paperlessMailArchiveConsumeRoot;
+      mode = "2770";
+      user = "root";
+      group = "paperless";
+    }
+    {
+      path = vars.paperlessMailArchiveStagingRoot;
       mode = "0770";
       user = "mail-archive-ui";
       group = "mail-archive-ui";
     }
     {
-      path = paperlessArchiveDir;
+      path = vars.paperlessArchiveRoot;
       mode = "0750";
       user = "paperless";
       group = "paperless";
     }
     {
-      path = paperlessExportDir;
+      path = vars.paperlessExportRoot;
       mode = "0750";
       user = "paperless";
       group = "paperless";
@@ -177,8 +176,6 @@ let
   sharedMediaAclScript = ''
     ${pkgs.acl}/bin/setfacl \
       -m 'g:mail-archive-ui:--x' \
-      -m 'g:immich:--x' \
-      -m 'g:paperless:--x' \
       '${vars.sharedRoot}'
 
     apply_recursive_acl() {
@@ -212,24 +209,22 @@ let
       apply_recursive_acl "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
     }
 
-    apply_readonly_acl immich '${vars.sharedRoot}/photos'
-    apply_readonly_acl paperless '${vars.sharedRoot}/documents'
     apply_recursive_acl \
       "u:mail-archive-ui:rwX" \
       "d:u:mail-archive-ui:rwx" \
-      '${paperlessMailArchiveConsumeRoot}'
+      '${vars.paperlessMailArchiveConsumeRoot}'
   '';
 
   zfsContentLayoutScript = lib.concatStringsSep "\n" (
     (map mkDirCmd zfsContentDirs)
     ++ [ sharedMediaAclScript ]
     ++ map mkImmichSentinelCmd [
-      "${immichManagedPhotosRoot}/backups/.immich"
-      "${immichManagedPhotosRoot}/encoded-video/.immich"
-      "${immichManagedPhotosRoot}/library/.immich"
-      "${immichManagedPhotosRoot}/profile/.immich"
-      "${immichManagedPhotosRoot}/thumbs/.immich"
-      "${immichManagedPhotosRoot}/upload/.immich"
+      "${vars.immichManagedRoot}/backups/.immich"
+      "${vars.immichManagedRoot}/encoded-video/.immich"
+      "${vars.immichManagedRoot}/library/.immich"
+      "${vars.immichManagedRoot}/profile/.immich"
+      "${vars.immichManagedRoot}/thumbs/.immich"
+      "${vars.immichManagedRoot}/upload/.immich"
     ]
   );
 in

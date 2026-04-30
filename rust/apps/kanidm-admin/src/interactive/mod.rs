@@ -1,80 +1,74 @@
 pub mod forms;
 pub mod render;
 
-use std::collections::HashSet;
-
 use serde_json::Value;
 
 use crate::{
-    commands::{
-        access::{set_access, show_access, SetAccessOptions},
-        auth::{auth_login, auth_reauth, auth_status},
-        config::show_config,
-        users::{
+    context::ResolvedContext,
+    inventory::{
+        clients::{parse_client_list, ClientSummary},
+        groups::{parse_group_list, GroupSummary},
+        users::{parse_user_list, UserSummary},
+        Parsed,
+    },
+    kanidm_cli::{KanidmCli, SessionState},
+    ops::{
+        client::{
+            client_consent_disable, client_consent_enable, client_pkce_disable, client_pkce_enable,
+            client_redirect_add, client_redirect_remove, client_secret_reset, client_secret_show,
+            list_clients, show_client,
+        },
+        context::{doctor, show_context},
+        group::{group_members, list_groups, search_groups, show_group},
+        local::stage_jellyfin_password,
+        membership::{
+            add_membership, prepare_membership_picker_inventory, remove_membership, set_membership,
+            show_membership, SetMembershipOptions,
+        },
+        policy::{
+            reset_group_auth_expiry, reset_group_privilege_expiry, set_group_auth_expiry,
+            set_group_privilege_expiry, show_group_policy,
+        },
+        session::{session_login, session_logout, session_reauth, session_status},
+        user::{
             create_user, delete_user, disable_user, enable_user, list_users, reset_token,
             show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
-    config::ResolvedConfig,
-    groups::{ManagedGroup, MANAGED_GROUPS},
-    kanidm_cli::{KanidmCli, SessionState},
-    models::{parse_group_list, parse_person_list, Parsed, PersonSummary},
     output::CommandOutput,
     AppError,
 };
 
 enum MenuAction {
-    Authenticate,
-    Reauthenticate,
-    AuthStatus,
-    CreateUser,
-    ListUsers,
-    ViewUser,
-    DisableUser,
-    EnableUser,
-    DeleteUser,
-    EditGroups,
-    ResetToken,
-    Settings,
+    Sessions,
+    Users,
+    Groups,
+    Memberships,
+    Clients,
+    Policy,
+    Context,
+    LocalHelpers,
     Exit,
 }
 
-pub fn run(config: &ResolvedConfig, kanidm: &KanidmCli) -> Result<(), AppError> {
+pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     loop {
-        let authenticated = match kanidm.session_status() {
-            Ok(SessionState::Authenticated { .. }) => true,
-            Ok(SessionState::Missing { .. }) => false,
-            Err(error) => {
-                render::print_error(&error);
-                forms::pause("Press Enter to continue")?;
-                false
-            }
-        };
+        let home = load_home(kanidm);
+        render::print_output("Kanidm Admin", &home.render(context));
+        if !home.warnings.is_empty() {
+            render::print_note("Warnings", &render_bullets(&home.warnings));
+        }
 
-        let action = select_menu_action(authenticated)?;
+        let action = select_main_menu()?;
         match action {
-            MenuAction::Authenticate => run_simple_command("Authenticate", || auth_login(kanidm))?,
-            MenuAction::Reauthenticate => {
-                run_simple_command("Reauthenticate", || auth_reauth(kanidm))?
-            }
-            MenuAction::AuthStatus => {
-                run_simple_command("Authentication Status", || auth_status(kanidm))?
-            }
-            MenuAction::CreateUser => create_user_flow(kanidm)?,
-            MenuAction::ListUsers => {
-                run_retryable_command("Kanidm Users", kanidm, || list_users(kanidm))?
-            }
-            MenuAction::ViewUser => view_user_flow(kanidm)?,
-            MenuAction::DisableUser => disable_user_flow(kanidm)?,
-            MenuAction::EnableUser => enable_user_flow(kanidm)?,
-            MenuAction::DeleteUser => delete_user_flow(kanidm)?,
-            MenuAction::EditGroups => edit_groups_flow(kanidm)?,
-            MenuAction::ResetToken => reset_token_flow(kanidm)?,
-            MenuAction::Settings => {
-                let output = show_config(config);
-                render::print_output("Current Settings", &output.render_human());
-                forms::pause("Press Enter to continue")?;
-            }
+            MenuAction::Sessions => sessions_menu(kanidm)?,
+            MenuAction::Users => users_menu(kanidm)?,
+            MenuAction::Groups => groups_menu(kanidm)?,
+            MenuAction::Memberships => memberships_menu(kanidm)?,
+            MenuAction::Clients => clients_menu(kanidm)?,
+            MenuAction::Policy => policy_menu(kanidm)?,
+            MenuAction::Context => context_menu(context, kanidm)?,
+            MenuAction::LocalHelpers => local_helpers_menu()?,
             MenuAction::Exit => break,
         }
     }
@@ -82,95 +76,320 @@ pub fn run(config: &ResolvedConfig, kanidm: &KanidmCli) -> Result<(), AppError> 
     Ok(())
 }
 
-fn select_menu_action(authenticated: bool) -> Result<MenuAction, AppError> {
-    let items = if authenticated {
-        vec![
-            "Authenticate / replace current session".to_string(),
-            "Reauthenticate privileged access".to_string(),
-            "Show authentication status".to_string(),
-            "Create user".to_string(),
+struct HomeSummary {
+    authenticated: bool,
+    diagnostic: String,
+    user_count: Option<usize>,
+    group_count: Option<usize>,
+    client_count: Option<usize>,
+    warnings: Vec<String>,
+}
+
+impl HomeSummary {
+    fn render(&self, context: &ResolvedContext) -> String {
+        format!(
+            "Server URL: {}\nAdmin Name: {}\nSession Active: {}\nDiagnostic: {}\nUsers: {}\nGroups: {}\nOAuth2 Clients: {}",
+            context.server_url,
+            context.admin_name,
+            if self.authenticated { "yes" } else { "no" },
+            self.diagnostic,
+            render_count(self.user_count),
+            render_count(self.group_count),
+            render_count(self.client_count),
+        )
+    }
+}
+
+fn load_home(kanidm: &KanidmCli) -> HomeSummary {
+    let mut warnings = Vec::new();
+
+    let (authenticated, diagnostic) = match kanidm.session_status() {
+        Ok(SessionState::Authenticated { stdout }) => (true, stdout.trim().to_string()),
+        Ok(SessionState::Missing { diagnostic }) => (false, diagnostic.trim().to_string()),
+        Err(error) => {
+            warnings.push(error.human_message());
+            (false, "session state unavailable".to_string())
+        }
+    };
+
+    let user_count = load_count(|| {
+        let parsed = parse_user_list(&kanidm.person_list::<Value>()?)?;
+        warnings.extend(parsed.warnings.clone());
+        Ok(parsed.value.len())
+    });
+    let group_count = load_count(|| {
+        let parsed = parse_group_list(&kanidm.group_list::<Value>()?)?;
+        warnings.extend(parsed.warnings.clone());
+        Ok(parsed.value.len())
+    });
+    let client_count = load_count(|| {
+        let parsed = parse_client_list(&kanidm.oauth2_list::<Value>()?)?;
+        warnings.extend(parsed.warnings.clone());
+        Ok(parsed.value.len())
+    });
+
+    warnings.sort();
+    warnings.dedup();
+
+    HomeSummary {
+        authenticated,
+        diagnostic,
+        user_count,
+        group_count,
+        client_count,
+        warnings,
+    }
+}
+
+fn load_count<F>(loader: F) -> Option<usize>
+where
+    F: FnOnce() -> Result<usize, AppError>,
+{
+    loader().ok()
+}
+
+fn select_main_menu() -> Result<MenuAction, AppError> {
+    let items = vec![
+        "Sessions".to_string(),
+        "Users".to_string(),
+        "Groups".to_string(),
+        "Memberships".to_string(),
+        "OAuth2 Clients".to_string(),
+        "Group Policy".to_string(),
+        "Context".to_string(),
+        "Local Helpers".to_string(),
+        "Exit".to_string(),
+    ];
+    let selection = forms::select("Select an area", &items, 0)?;
+    Ok(match selection {
+        0 => MenuAction::Sessions,
+        1 => MenuAction::Users,
+        2 => MenuAction::Groups,
+        3 => MenuAction::Memberships,
+        4 => MenuAction::Clients,
+        5 => MenuAction::Policy,
+        6 => MenuAction::Context,
+        7 => MenuAction::LocalHelpers,
+        _ => MenuAction::Exit,
+    })
+}
+
+fn sessions_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
+    loop {
+        let items = vec![
+            "Status".to_string(),
+            "Login".to_string(),
+            "Reauthenticate".to_string(),
+            "Logout".to_string(),
+            "Back".to_string(),
+        ];
+        match forms::select("Sessions", &items, 0)? {
+            0 => run_command("Session Status", || session_status(kanidm))?,
+            1 => run_command("Login", || session_login(kanidm))?,
+            2 => run_command("Reauthenticate", || session_reauth(kanidm))?,
+            3 => run_command("Logout", || session_logout(kanidm))?,
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+fn users_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
+    loop {
+        let items = vec![
             "List users".to_string(),
+            "Create user".to_string(),
             "View user".to_string(),
             "Disable user".to_string(),
             "Enable user".to_string(),
             "Delete user".to_string(),
-            "Set managed access groups".to_string(),
-            "Create password reset token".to_string(),
-            "Show settings".to_string(),
-            "Exit".to_string(),
-        ]
-    } else {
-        vec![
-            "Authenticate".to_string(),
-            "Show authentication status".to_string(),
-            "Show settings".to_string(),
-            "Exit".to_string(),
-        ]
-    };
-
-    let selection = forms::select(
-        if authenticated {
-            "Kanidm Admin"
-        } else {
-            "Kanidm Admin (login required for write operations)"
-        },
-        &items,
-        0,
-    )?;
-
-    if authenticated {
-        Ok(match selection {
-            0 => MenuAction::Authenticate,
-            1 => MenuAction::Reauthenticate,
-            2 => MenuAction::AuthStatus,
-            3 => MenuAction::CreateUser,
-            4 => MenuAction::ListUsers,
-            5 => MenuAction::ViewUser,
-            6 => MenuAction::DisableUser,
-            7 => MenuAction::EnableUser,
-            8 => MenuAction::DeleteUser,
-            9 => MenuAction::EditGroups,
-            10 => MenuAction::ResetToken,
-            11 => MenuAction::Settings,
-            _ => MenuAction::Exit,
-        })
-    } else {
-        Ok(match selection {
-            0 => MenuAction::Authenticate,
-            1 => MenuAction::AuthStatus,
-            2 => MenuAction::Settings,
-            _ => MenuAction::Exit,
-        })
-    }
-}
-
-fn run_simple_command<F>(title: &str, action: F) -> Result<(), AppError>
-where
-    F: FnOnce() -> Result<CommandOutput, AppError>,
-{
-    match action() {
-        Ok(output) => {
-            render::print_output(title, &output.render_human());
-            forms::pause("Press Enter to continue")?;
-        }
-        Err(error) => {
-            render::print_error(&error);
-            forms::pause("Press Enter to continue")?;
+            "Reset token".to_string(),
+            "Edit memberships".to_string(),
+            "Back".to_string(),
+        ];
+        match forms::select("Users", &items, 0)? {
+            0 => run_command("Kanidm Users", || list_users(kanidm))?,
+            1 => create_user_flow(kanidm)?,
+            2 => user_target_flow(kanidm, "Select a user to inspect", |account_id| {
+                show_user(kanidm, account_id)
+            })?,
+            3 => user_target_flow(kanidm, "Select a user to disable", |account_id| {
+                disable_user(kanidm, account_id)
+            })?,
+            4 => user_target_flow(kanidm, "Select a user to enable", |account_id| {
+                enable_user(kanidm, account_id)
+            })?,
+            5 => delete_user_flow(kanidm)?,
+            6 => reset_token_flow(kanidm)?,
+            7 => edit_membership_flow(kanidm)?,
+            _ => break,
         }
     }
-
     Ok(())
 }
 
-fn run_retryable_command<F>(title: &str, kanidm: &KanidmCli, action: F) -> Result<(), AppError>
-where
-    F: FnMut() -> Result<CommandOutput, AppError>,
-{
-    match run_with_auth_retry(kanidm, action)? {
-        Some(output) => render::print_output(title, &output.render_human()),
-        None => render::print_note("Cancelled", "No changes were made."),
+fn groups_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
+    loop {
+        let items = vec![
+            "List groups".to_string(),
+            "Search groups".to_string(),
+            "Show group".to_string(),
+            "List group members".to_string(),
+            "Back".to_string(),
+        ];
+        match forms::select("Groups", &items, 0)? {
+            0 => run_command("Groups", || list_groups(kanidm))?,
+            1 => {
+                let query = forms::input_required("Search query", None)?;
+                run_command("Group Search", || search_groups(kanidm, &query))?;
+            }
+            2 => group_target_flow(kanidm, "Select a group to inspect", |group| {
+                show_group(kanidm, group)
+            })?,
+            3 => group_target_flow(kanidm, "Select a group to inspect members", |group| {
+                group_members(kanidm, group)
+            })?,
+            _ => break,
+        }
     }
-    forms::pause("Press Enter to continue")?;
+    Ok(())
+}
+
+fn memberships_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
+    loop {
+        let items = vec![
+            "Show user memberships".to_string(),
+            "Add memberships".to_string(),
+            "Remove memberships".to_string(),
+            "Set exact memberships".to_string(),
+            "Back".to_string(),
+        ];
+        match forms::select("Memberships", &items, 0)? {
+            0 => user_target_flow(
+                kanidm,
+                "Select a user to inspect memberships",
+                |account_id| show_membership(kanidm, account_id),
+            )?,
+            1 => membership_change_flow(kanidm, MembershipChange::Add)?,
+            2 => membership_change_flow(kanidm, MembershipChange::Remove)?,
+            3 => edit_membership_flow(kanidm)?,
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+fn clients_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
+    loop {
+        let items = vec![
+            "List clients".to_string(),
+            "Show client".to_string(),
+            "Show client secret".to_string(),
+            "Reset client secret".to_string(),
+            "Enable PKCE".to_string(),
+            "Disable PKCE".to_string(),
+            "Enable consent prompt".to_string(),
+            "Disable consent prompt".to_string(),
+            "Add redirect URL".to_string(),
+            "Remove redirect URL".to_string(),
+            "Back".to_string(),
+        ];
+        match forms::select("OAuth2 Clients", &items, 0)? {
+            0 => run_command("OAuth2 Clients", || list_clients(kanidm))?,
+            1 => client_target_flow(kanidm, "Select an oauth2 client to inspect", |client| {
+                show_client(kanidm, client)
+            })?,
+            2 => client_target_flow(kanidm, "Select an oauth2 client secret to show", |client| {
+                client_secret_show(kanidm, client)
+            })?,
+            3 => client_target_flow(
+                kanidm,
+                "Select an oauth2 client secret to reset",
+                |client| client_secret_reset(kanidm, client),
+            )?,
+            4 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+                client_pkce_enable(kanidm, client)
+            })?,
+            5 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+                client_pkce_disable(kanidm, client)
+            })?,
+            6 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+                client_consent_enable(kanidm, client)
+            })?,
+            7 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+                client_consent_disable(kanidm, client)
+            })?,
+            8 => redirect_flow(kanidm, true)?,
+            9 => redirect_flow(kanidm, false)?,
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+fn policy_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
+    loop {
+        let items = vec![
+            "Show group policy".to_string(),
+            "Set auth expiry".to_string(),
+            "Reset auth expiry".to_string(),
+            "Set privilege expiry".to_string(),
+            "Reset privilege expiry".to_string(),
+            "Back".to_string(),
+        ];
+        match forms::select("Group Policy", &items, 0)? {
+            0 => group_target_flow(kanidm, "Select a group to inspect", |group| {
+                show_group_policy(kanidm, group)
+            })?,
+            1 => policy_set_flow(kanidm, true)?,
+            2 => group_target_flow(kanidm, "Select a group", |group| {
+                reset_group_auth_expiry(kanidm, group)
+            })?,
+            3 => policy_set_flow(kanidm, false)?,
+            4 => group_target_flow(kanidm, "Select a group", |group| {
+                reset_group_privilege_expiry(kanidm, group)
+            })?,
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+fn context_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
+    loop {
+        let items = vec![
+            "Show context".to_string(),
+            "Doctor".to_string(),
+            "Back".to_string(),
+        ];
+        match forms::select("Context", &items, 0)? {
+            0 => {
+                render_output("Context", show_context(context))?;
+            }
+            1 => {
+                run_command("Doctor", || doctor(context, kanidm))?;
+            }
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+fn local_helpers_menu() -> Result<(), AppError> {
+    loop {
+        let items = vec!["Stage Jellyfin password".to_string(), "Back".to_string()];
+        match forms::select("Local Helpers", &items, 0)? {
+            0 => {
+                let account_id = forms::input_required("Jellyfin account id", None)?;
+                let password_env =
+                    forms::input_required("Password env var", Some("JELLYFIN_PASSWORD"))?;
+                run_command("Jellyfin Password", || {
+                    stage_jellyfin_password(&account_id, &password_env)
+                })?;
+            }
+            _ => break,
+        }
+    }
     Ok(())
 }
 
@@ -181,342 +400,250 @@ fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         Some(&account_id),
     )?;
     let email = forms::input_optional("Primary email (leave blank to skip)", None)?;
-
-    render::print_output(
-        "Create User Summary",
-        &format!(
-            "Server URL: {}\nAdmin username: {}\nAccount id: {}\nDisplay name: {}\nPrimary email: {}",
-            kanidm.server_url(),
-            kanidm.admin_name(),
-            account_id,
-            display_name,
-            email.as_deref().unwrap_or("(none)"),
-        ),
-    );
-
-    let confirmation = forms::input_optional(
-        &format!("Type CREATE to create '{account_id}'. Leave blank to cancel"),
-        None,
-    )?;
-    if confirmation.as_deref() != Some("CREATE") {
-        render::print_note("Cancelled", "User creation was cancelled.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    if !prepare_privileged_action(kanidm)? {
-        render::print_note("Cancelled", "User creation was cancelled.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    match create_user(
-        kanidm,
-        CreateUserOptions {
-            account_id,
-            display_name,
-            email,
-            clear_validity: true,
-        },
-    ) {
-        Ok(output) => render::print_output("User Created", &output.render_human()),
-        Err(error) => render::print_error(&error),
-    }
-    forms::pause("Press Enter to continue")?;
-    Ok(())
-}
-
-fn view_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
-    let Some(account_id) = choose_account_id(kanidm, "Select a user to inspect")? else {
-        render::print_note("Cancelled", "No user was selected.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    };
-
-    match run_with_auth_retry(kanidm, || show_user(kanidm, &account_id))? {
-        Some(output) => render::print_output("User Detail", &output.render_human()),
-        None => render::print_note("Cancelled", "No user was selected."),
-    }
-    forms::pause("Press Enter to continue")?;
-    Ok(())
-}
-
-fn disable_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
-    let Some(account_id) = choose_account_id(kanidm, "Select a user to disable")? else {
-        render::print_note("Cancelled", "No user was selected.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    };
-
-    if !forms::confirm(&format!("Disable '{account_id}' now?"), false)? {
-        render::print_note("Cancelled", "No user was disabled.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    if !prepare_privileged_action(kanidm)? {
-        render::print_note("Cancelled", "No user was disabled.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    match disable_user(kanidm, &account_id) {
-        Ok(output) => render::print_output("User Disabled", &output.render_human()),
-        Err(error) => render::print_error(&error),
-    }
-    forms::pause("Press Enter to continue")?;
-    Ok(())
-}
-
-fn enable_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
-    let Some(account_id) = choose_account_id(kanidm, "Select a user to enable")? else {
-        render::print_note("Cancelled", "No user was selected.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    };
-
-    if !forms::confirm(&format!("Enable '{account_id}' now?"), true)? {
-        render::print_note("Cancelled", "No user was enabled.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    if !prepare_privileged_action(kanidm)? {
-        render::print_note("Cancelled", "No user was enabled.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    match enable_user(kanidm, &account_id) {
-        Ok(output) => render::print_output("User Enabled", &output.render_human()),
-        Err(error) => render::print_error(&error),
-    }
-    forms::pause("Press Enter to continue")?;
-    Ok(())
+    let clear_validity = forms::confirm("Clear validity restrictions after creation?", true)?;
+    run_command("Create User", || {
+        create_user(
+            kanidm,
+            CreateUserOptions {
+                account_id: account_id.clone(),
+                display_name: display_name.clone(),
+                email: email.clone(),
+                clear_validity,
+            },
+        )
+    })
 }
 
 fn delete_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     let Some(account_id) = choose_account_id(kanidm, "Select a user to delete")? else {
-        render::print_note("Cancelled", "No user was selected.");
-        forms::pause("Press Enter to continue")?;
         return Ok(());
     };
-
-    let confirmation = forms::input_optional(
-        &format!("Type {account_id} to permanently delete the user. Leave blank to cancel"),
+    let confirmation = forms::input_required(
+        &format!("Type {account_id} to permanently delete the user"),
         None,
     )?;
-    if confirmation.as_deref() != Some(account_id.as_str()) {
-        render::print_note("Cancelled", "No user was deleted.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    if !prepare_privileged_action(kanidm)? {
-        render::print_note("Cancelled", "No user was deleted.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    match delete_user(
-        kanidm,
-        DeleteUserOptions {
-            confirm: account_id.clone(),
-            account_id,
-        },
-    ) {
-        Ok(output) => render::print_output("User Deleted", &output.render_human()),
-        Err(error) => render::print_error(&error),
-    }
-    forms::pause("Press Enter to continue")?;
-    Ok(())
-}
-
-fn edit_groups_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
-    let Some(account_id) =
-        choose_account_id(kanidm, "Select a user to set managed group membership for")?
-    else {
-        render::print_note("Cancelled", "No user was selected.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    };
-
-    let available_groups = match run_with_auth_retry(kanidm, || load_available_groups(kanidm))? {
-        Some(groups) => groups,
-        None => {
-            render::print_note("Cancelled", "No groups were loaded.");
-            forms::pause("Press Enter to continue")?;
-            return Ok(());
-        }
-    };
-
-    if !available_groups.warnings.is_empty() {
-        render::print_note(
-            "Managed Groups Inventory Incomplete",
-            &format!(
-                "Authoritative managed-group editing is blocked because the Kanidm group list contained parse warnings.\n\nWarnings:\n{}",
-                render_bullets(&available_groups.warnings)
-            ),
-        );
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    if !available_groups.missing_managed.is_empty() {
-        render::print_note(
-            "Managed Groups Inventory Incomplete",
-            &format!(
-                "Authoritative managed-group editing is blocked because the backend group inventory is incomplete.\n\nMissing managed groups:\n{}",
-                render_bullets(&available_groups.missing_managed)
-            ),
-        );
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    if available_groups.groups.is_empty() {
-        render::print_note(
-            "Managed Groups",
-            "None of the repo-managed groups were returned by Kanidm.",
-        );
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    let current_access = match run_with_auth_retry(kanidm, || show_access(kanidm, &account_id))? {
-        Some(output) => output,
-        None => {
-            render::print_note("Cancelled", "Could not load the current user state.");
-            forms::pause("Press Enter to continue")?;
-            return Ok(());
-        }
-    };
-
-    let current_groups = extract_groups(&current_access);
-    let items = available_groups
-        .groups
-        .iter()
-        .map(|group| format!("{} ({})", group.name, group.description))
-        .collect::<Vec<_>>();
-    let defaults = available_groups
-        .groups
-        .iter()
-        .map(|group| current_groups.iter().any(|current| current == group.name))
-        .collect::<Vec<_>>();
-    let selected_indexes = forms::multiselect(
-        &format!("Select managed groups for '{account_id}'"),
-        &items,
-        &defaults,
-    )?;
-    let selected_groups = selected_indexes
-        .into_iter()
-        .map(|index| available_groups.groups[index].name.to_string())
-        .collect::<Vec<_>>();
-
-    render::print_output(
-        "Managed Groups Summary",
-        &format!(
-            "Authoritative managed groups for '{account_id}':\n{}",
-            if selected_groups.is_empty() {
-                "(none)".to_string()
-            } else {
-                selected_groups
-                    .iter()
-                    .map(|group| format!("- {group}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
-        ),
-    );
-
-    if !forms::confirm("Apply this authoritative managed-group set?", true)? {
-        render::print_note("Cancelled", "No group membership changes were applied.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    if !prepare_privileged_action(kanidm)? {
-        render::print_note("Cancelled", "No group membership changes were applied.");
-        forms::pause("Press Enter to continue")?;
-        return Ok(());
-    }
-
-    match set_access(
-        kanidm,
-        SetAccessOptions {
-            account_id: account_id.clone(),
-            groups: selected_groups,
-            allow_empty: true,
-        },
-    ) {
-        Ok(output) => render::print_output("Managed Groups", &output.render_human()),
-        Err(error) => {
-            render::print_error(&error);
-            if let Ok(final_output) = show_access(kanidm, &account_id) {
-                render::print_output("Current Managed Access", &final_output.render_human());
-            }
-        }
-    }
-    forms::pause("Press Enter to continue")?;
-    Ok(())
+    run_command("Delete User", || {
+        delete_user(
+            kanidm,
+            DeleteUserOptions {
+                account_id: account_id.clone(),
+                confirm: confirmation.clone(),
+            },
+        )
+    })
 }
 
 fn reset_token_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     let Some(account_id) =
         choose_account_id(kanidm, "Select a user to generate a reset token for")?
     else {
-        render::print_note("Cancelled", "No user was selected.");
-        forms::pause("Press Enter to continue")?;
         return Ok(());
     };
-
     let ttl_text = forms::input_required("Reset token lifetime in seconds", Some("3600"))?;
     let ttl_seconds = ttl_text.parse::<u64>().map_err(|error| AppError::Config {
         message: format!("invalid reset token TTL '{ttl_text}': {error}"),
     })?;
+    run_command("Password Reset Token", || {
+        reset_token(
+            kanidm,
+            ResetTokenOptions {
+                account_id: account_id.clone(),
+                ttl_seconds,
+            },
+        )
+    })
+}
 
-    if !prepare_privileged_action(kanidm)? {
-        render::print_note("Cancelled", "No reset token was created.");
-        forms::pause("Press Enter to continue")?;
+fn policy_set_flow(kanidm: &KanidmCli, auth: bool) -> Result<(), AppError> {
+    let prompt = if auth {
+        "Select a group for auth-expiry"
+    } else {
+        "Select a group for privilege-expiry"
+    };
+    let Some(group) = choose_group_name(kanidm, prompt)? else {
         return Ok(());
+    };
+    let seconds_text = forms::input_required("Expiry in seconds", Some("3600"))?;
+    let seconds = seconds_text
+        .parse::<u64>()
+        .map_err(|error| AppError::Config {
+            message: format!("invalid expiry '{seconds_text}': {error}"),
+        })?;
+    if auth {
+        run_command("Group Policy", || {
+            set_group_auth_expiry(kanidm, &group, seconds)
+        })
+    } else {
+        run_command("Group Policy", || {
+            set_group_privilege_expiry(kanidm, &group, seconds)
+        })
+    }
+}
+
+fn redirect_flow(kanidm: &KanidmCli, add: bool) -> Result<(), AppError> {
+    let Some(client) = choose_client_name(kanidm, "Select an oauth2 client")? else {
+        return Ok(());
+    };
+    let url = forms::input_required("Redirect URL", None)?;
+    if add {
+        run_command("OAuth2 Redirect", || {
+            client_redirect_add(kanidm, &client, &url)
+        })
+    } else {
+        run_command("OAuth2 Redirect", || {
+            client_redirect_remove(kanidm, &client, &url)
+        })
+    }
+}
+
+fn edit_membership_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+    let Some(account_id) = choose_account_id(
+        kanidm,
+        "Select a user to authoritatively set direct memberships for",
+    )?
+    else {
+        return Ok(());
+    };
+    let inventory = prepare_membership_picker_inventory(kanidm)?;
+    if !inventory.warnings.is_empty() {
+        render::print_note(
+            "Membership Inventory Incomplete",
+            &format!(
+                "Authoritative membership editing is blocked because the live discovery set is incomplete.\n\nWarnings:\n{}",
+                render_bullets(&inventory.warnings)
+            ),
+        );
+        return forms::pause("Press Enter to continue");
     }
 
-    match reset_token(
-        kanidm,
-        ResetTokenOptions {
-            account_id,
-            ttl_seconds,
-        },
-    ) {
-        Ok(output) => render::print_output("Password Reset Token", &output.render_human()),
-        Err(error) => render::print_error(&error),
+    let current = show_membership(kanidm, &account_id)?;
+    let defaults = extract_groups(&current)
+        .iter()
+        .map(|current_group| current_group.to_string())
+        .collect::<Vec<_>>();
+    let items = inventory
+        .groups
+        .iter()
+        .map(|group| {
+            if inventory
+                .referenced_groups
+                .iter()
+                .any(|candidate| candidate == &group.name)
+            {
+                format!("{} (oauth2-referenced)", group.name)
+            } else {
+                group.name.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    let item_defaults = inventory
+        .groups
+        .iter()
+        .map(|group| defaults.iter().any(|current| current == &group.name))
+        .collect::<Vec<_>>();
+    let selected = forms::multiselect(
+        &format!("Select direct memberships for '{account_id}'"),
+        &items,
+        &item_defaults,
+    )?;
+    let groups = selected
+        .into_iter()
+        .map(|index| inventory.groups[index].name.clone())
+        .collect::<Vec<_>>();
+
+    run_command("Memberships", || {
+        set_membership(
+            kanidm,
+            SetMembershipOptions {
+                account_id: account_id.clone(),
+                groups,
+                allow_empty: true,
+            },
+        )
+    })
+}
+
+fn membership_change_flow(kanidm: &KanidmCli, mode: MembershipChange) -> Result<(), AppError> {
+    let Some(account_id) = choose_account_id(kanidm, "Select a user")? else {
+        return Ok(());
+    };
+    let group_text =
+        forms::input_required("Enter one or more group names separated by spaces", None)?;
+    let groups = group_text
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    match mode {
+        MembershipChange::Add => run_command("Memberships", || {
+            add_membership(kanidm, &account_id, &groups)
+        }),
+        MembershipChange::Remove => run_command("Memberships", || {
+            remove_membership(kanidm, &account_id, &groups)
+        }),
     }
-    forms::pause("Press Enter to continue")?;
-    Ok(())
+}
+
+fn user_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
+where
+    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
+{
+    let Some(account_id) = choose_account_id(kanidm, prompt)? else {
+        return Ok(());
+    };
+    run_command("User", || action(&account_id))
+}
+
+fn group_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
+where
+    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
+{
+    let Some(group) = choose_group_name(kanidm, prompt)? else {
+        return Ok(());
+    };
+    run_command("Group", || action(&group))
+}
+
+fn client_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
+where
+    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
+{
+    let Some(client) = choose_client_name(kanidm, prompt)? else {
+        return Ok(());
+    };
+    run_command("OAuth2 Client", || action(&client))
 }
 
 fn choose_account_id(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>, AppError> {
-    let people = match run_with_auth_retry(kanidm, || load_people(kanidm))? {
-        Some(people) => people,
-        None => return Ok(None),
-    };
+    let people = parse_user_list(&kanidm.person_list::<Value>()?)?;
+    choose_from_users(prompt, &people)
+}
 
+fn choose_group_name(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>, AppError> {
+    let groups = parse_group_list(&kanidm.group_list::<Value>()?)?;
+    choose_from_groups(prompt, &groups)
+}
+
+fn choose_client_name(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>, AppError> {
+    let clients = parse_client_list(&kanidm.oauth2_list::<Value>()?)?;
+    choose_from_clients(prompt, &clients)
+}
+
+fn choose_from_users(
+    prompt: &str,
+    people: &Parsed<Vec<UserSummary>>,
+) -> Result<Option<String>, AppError> {
     if !people.warnings.is_empty() {
         render::print_note(
             "User Inventory Warning",
             &format!(
-                "The listed users may be incomplete because the Kanidm user list contained parse warnings.\nManual account-id entry is safer if the target user is missing.\n\nWarnings:\n{}",
+                "The listed users may be incomplete because the Kanidm user list contained parse warnings.\n\nWarnings:\n{}",
                 render_bullets(&people.warnings)
             ),
         );
     }
-
     if people.value.is_empty() {
-        let manual =
-            forms::input_optional("No users were listed. Enter an account id manually", None)?;
-        return Ok(manual);
+        return forms::input_optional("No users were listed. Enter an account id manually", None);
     }
-
     let mut items = vec!["Enter an account id manually".to_string()];
     items.extend(people.value.iter().map(|person| {
         format!(
@@ -527,126 +654,101 @@ fn choose_account_id(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>,
         )
     }));
     let selection = forms::select(prompt, &items, 0)?;
-
     if selection == 0 {
         return forms::input_optional("Enter the Kanidm account id to manage", None);
     }
-
     Ok(Some(people.value[selection - 1].account_id.clone()))
 }
 
-fn load_people(kanidm: &KanidmCli) -> Result<Parsed<Vec<PersonSummary>>, AppError> {
-    let value = kanidm.person_list::<Value>()?;
-    parse_person_list(&value)
-}
-
-#[derive(Debug, Clone)]
-struct AvailableGroups {
-    groups: Vec<ManagedGroup>,
-    warnings: Vec<String>,
-    missing_managed: Vec<String>,
-}
-
-fn load_available_groups(kanidm: &KanidmCli) -> Result<AvailableGroups, AppError> {
-    let value = kanidm.group_list::<Value>()?;
-    let existing = parse_group_list(&value)?;
-    let existing_names = existing
-        .value
-        .iter()
-        .map(|group| group.name.as_str())
-        .collect::<HashSet<_>>();
-
-    let groups = MANAGED_GROUPS
-        .iter()
-        .copied()
-        .filter(|group| existing_names.contains(group.name))
-        .collect::<Vec<_>>();
-    let missing_managed = MANAGED_GROUPS
-        .iter()
-        .map(|group| group.name.to_string())
-        .filter(|name| !existing_names.contains(name.as_str()))
-        .collect::<Vec<_>>();
-
-    Ok(AvailableGroups {
-        groups,
-        warnings: existing.warnings,
-        missing_managed,
-    })
-}
-
-fn prepare_privileged_action(kanidm: &KanidmCli) -> Result<bool, AppError> {
-    match kanidm.session_status()? {
-        SessionState::Authenticated { .. } => {}
-        SessionState::Missing { diagnostic } => {
-            render::print_note(
-                "Authentication Required",
-                &format!(
-                    "A valid Kanidm CLI session is required before continuing.\n\nDiagnostic:\n{}",
-                    diagnostic.trim()
-                ),
-            );
-            if !forms::confirm("Open kanidm login now?", true)? {
-                return Ok(false);
-            }
-            let login = auth_login(kanidm)?;
-            render::print_output("Authenticate", &login.render_human());
-        }
+fn choose_from_groups(
+    prompt: &str,
+    groups: &Parsed<Vec<GroupSummary>>,
+) -> Result<Option<String>, AppError> {
+    if !groups.warnings.is_empty() {
+        render::print_note(
+            "Group Inventory Warning",
+            &format!(
+                "The listed groups may be incomplete because the Kanidm group list contained parse warnings.\n\nWarnings:\n{}",
+                render_bullets(&groups.warnings)
+            ),
+        );
     }
-
-    render::print_note(
-        "Reauthenticate",
-        "This action may require privileged Kanidm admin access.",
-    );
-    let reauth = auth_reauth(kanidm)?;
-    render::print_output("Reauthenticate", &reauth.render_human());
-    Ok(true)
+    if groups.value.is_empty() {
+        return forms::input_optional("No groups were listed. Enter a group name manually", None);
+    }
+    let mut items = vec!["Enter a group name manually".to_string()];
+    items.extend(groups.value.iter().map(|group| {
+        format!(
+            "{} | {}",
+            group.name,
+            group.description.as_deref().unwrap_or("-")
+        )
+    }));
+    let selection = forms::select(prompt, &items, 0)?;
+    if selection == 0 {
+        return forms::input_optional("Enter the group name to manage", None);
+    }
+    Ok(Some(groups.value[selection - 1].name.clone()))
 }
 
-fn run_with_auth_retry<T, F>(kanidm: &KanidmCli, mut action: F) -> Result<Option<T>, AppError>
+fn choose_from_clients(
+    prompt: &str,
+    clients: &Parsed<Vec<ClientSummary>>,
+) -> Result<Option<String>, AppError> {
+    if !clients.warnings.is_empty() {
+        render::print_note(
+            "OAuth2 Client Inventory Warning",
+            &format!(
+                "The listed oauth2 clients may be incomplete because discovery contained parse warnings.\n\nWarnings:\n{}",
+                render_bullets(&clients.warnings)
+            ),
+        );
+    }
+    if clients.value.is_empty() {
+        return forms::input_optional(
+            "No oauth2 clients were listed. Enter a client name manually",
+            None,
+        );
+    }
+    let mut items = vec!["Enter an oauth2 client name manually".to_string()];
+    items.extend(clients.value.iter().map(|client| {
+        format!(
+            "{} | {} | {}",
+            client.name,
+            client.display_name.as_deref().unwrap_or("-"),
+            client.landing_url.as_deref().unwrap_or("-")
+        )
+    }));
+    let selection = forms::select(prompt, &items, 0)?;
+    if selection == 0 {
+        return forms::input_optional("Enter the oauth2 client name to manage", None);
+    }
+    Ok(Some(clients.value[selection - 1].name.clone()))
+}
+
+fn run_command<F>(title: &str, action: F) -> Result<(), AppError>
 where
-    F: FnMut() -> Result<T, AppError>,
+    F: FnOnce() -> Result<CommandOutput, AppError>,
 {
-    let mut retried_login = false;
-    let mut retried_reauth = false;
-
-    loop {
-        match action() {
-            Ok(value) => return Ok(Some(value)),
-            Err(AppError::SessionRequired { message, .. }) if !retried_login => {
-                render::print_note("Authentication Required", &message);
-                if !forms::confirm("Open kanidm login now?", true)? {
-                    return Ok(None);
-                }
-                let output = auth_login(kanidm)?;
-                render::print_output("Authenticate", &output.render_human());
-                retried_login = true;
-            }
-            Err(AppError::ReauthRequired { message, .. }) if !retried_reauth => {
-                render::print_note("Reauthentication Required", &message);
-                if !forms::confirm("Open kanidm reauth now?", true)? {
-                    return Ok(None);
-                }
-                let output = auth_reauth(kanidm)?;
-                render::print_output("Reauthenticate", &output.render_human());
-                retried_reauth = true;
-            }
-            Err(error) => return Err(error),
+    match action() {
+        Ok(output) => render_output(title, output),
+        Err(error) => {
+            render::print_error(&error);
+            forms::pause("Press Enter to continue")?;
+            Ok(())
         }
     }
 }
 
-fn extract_groups(output: &CommandOutput) -> Vec<String> {
-    output
-        .details
-        .get("user")
-        .and_then(|user| user.get("access_groups"))
-        .and_then(|groups| groups.get("all_managed"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(ToOwned::to_owned)
-        .collect()
+fn render_output(title: &str, output: CommandOutput) -> Result<(), AppError> {
+    render::print_output(title, &output.render_human());
+    forms::pause("Press Enter to continue")
+}
+
+fn render_count(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unavailable".to_string())
 }
 
 fn render_bullets(items: &[String]) -> String {
@@ -657,82 +759,22 @@ fn render_bullets(items: &[String]) -> String {
         .join("\n")
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
-
-    use super::*;
-    use crate::config::ResolvedConfig;
-
-    fn write_script(path: &Path, body: &str) {
-        let shell = ProcessCommand::new("bash")
-            .args(["-lc", "command -v bash"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|stdout| stdout.trim().to_string())
-            .filter(|stdout| !stdout.is_empty())
-            .unwrap_or_else(|| "/bin/sh".to_string());
-        let rewritten = body.replacen("#!/usr/bin/env bash", &format!("#!{shell}"), 1);
-        fs::write(path, rewritten).expect("write script");
-        let mut permissions = fs::metadata(path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).expect("chmod");
-    }
-
-    fn test_cli(script: &Path) -> KanidmCli {
-        KanidmCli::new(&ResolvedConfig {
-            repo_root: None,
-            server_url: "https://id.example.test".to_string(),
-            admin_name: "admindsaw".to_string(),
-            kanidm_bin: script.as_os_str().to_os_string(),
+fn extract_groups(output: &CommandOutput) -> Vec<String> {
+    output
+        .details
+        .get("groups")
+        .and_then(Value::as_array)
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
         })
-    }
+        .unwrap_or_default()
+}
 
-    #[test]
-    fn load_people_retains_parser_warnings() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let script = dir.path().join("kanidm-stub.sh");
-        write_script(
-            &script,
-            r#"#!/usr/bin/env bash
-if [[ "$1" == "person" && "$2" == "list" ]]; then
-  printf '[{"name":["dsaw"]},{"displayname":["Missing name"]}]'
-  exit 0
-fi
-echo "unexpected args: $*" >&2
-exit 1
-"#,
-        );
-
-        let people = load_people(&test_cli(&script)).expect("people");
-        assert_eq!(people.value.len(), 1);
-        assert_eq!(people.warnings.len(), 1);
-    }
-
-    #[test]
-    fn load_available_groups_reports_missing_managed_groups() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let script = dir.path().join("kanidm-stub.sh");
-        write_script(
-            &script,
-            r#"#!/usr/bin/env bash
-if [[ "$1" == "group" && "$2" == "list" ]]; then
-  printf '[{"name":["users"]},{"name":["paperless-users"]}]'
-  exit 0
-fi
-echo "unexpected args: $*" >&2
-exit 1
-"#,
-        );
-
-        let groups = load_available_groups(&test_cli(&script)).expect("groups");
-        assert!(groups.warnings.is_empty());
-        assert!(groups.groups.iter().any(|group| group.name == "users"));
-        assert!(groups
-            .missing_managed
-            .iter()
-            .any(|group| group == "immich-users"));
-    }
+enum MembershipChange {
+    Add,
+    Remove,
 }

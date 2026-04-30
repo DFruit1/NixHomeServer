@@ -11,8 +11,9 @@ Access model:
 - users should reach `https://emails.<domain>` over NetBird or on the LAN through the split-DNS path
 
 Storage model:
-- app state and the app-local encryption key live under `/persist/appdata/mail-archive-ui`
-- downloaded mail lives under `/mnt/data/users/<user>/emails/accounts/<account-id>/`
+- global app state and the app-local encryption key live under `/persist/appdata/mail-archive-ui`
+- per-account derived sync and indexing state lives under `/persist/appdata/mail-archive-ui/accounts/<user>/<account-id>/`
+- downloaded mail payload lives under `/mnt/data/users/<user>/emails/accounts/<account-id>/maildir/`
 - mailbox credentials are not stored in agenix
 - temporary sync material lives only under `/run/mail-archive-ui`
 
@@ -28,6 +29,7 @@ Functional scope:
 - stores mailbox credentials encrypted at rest
 - generates `mbsync` config on demand
 - updates or repairs per-account `notmuch` indexes
+- keeps mailbox payload portable by separating downloaded mail from derived sync and index state
 - optionally extracts qualifying document attachments and hands them to Paperless through the filesystem consume flow
 - indexes supported document attachment text for search, including `pdf`, `doc`, `docx`, `odt`, `rtf`, and `text/plain`
 - exposes metadata-only search results

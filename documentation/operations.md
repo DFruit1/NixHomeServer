@@ -19,7 +19,7 @@ Use Operations when any of these are true:
 ## Conventions
 
 - Placeholders such as `<domain>`, `TARGET_SERVER_IP`, and `CURRENT_SERVER_IP` are examples. Replace them with your operator values before running commands.
-- Group names such as `users`, `immich-users`, `paperless-users`, `fileshare_users`, and `*-admin` are literal names managed by this repo.
+- Group names such as `users`, `user-files`, `shared-files-ro`, `shared-files-rw`, `immich-users`, `paperless-users`, and `*-admin` are literal names managed by this repo.
 - Command blocks use the same context format:
   - Run from: where to execute the commands
   - Privileges: whether `sudo` is required
@@ -42,12 +42,27 @@ Use Operations when any of these are true:
 
 - Validation gate: `nix flake check --no-build` then `scripts/check-repo.sh`
 - Exhaustive local gate: `scripts/check-repo.sh --full`
+- Manual docs audit: `scripts/check-docs.sh`
 - Guarded deploy: `./scripts/deploy-validated.sh`
-- Runtime readiness: `sudo ./scripts/runtime-readiness.sh`
-- Strict runtime readiness: `sudo ./scripts/runtime-readiness.sh --require-online-zpool`
+- Runtime readiness: `sudo ./scripts/runtime-readiness.sh --profile manual`
+- Strict runtime readiness: `sudo ./scripts/runtime-readiness.sh --profile deploy`
 - Backup target selection: `backup-target list` then `sudo backup-target select ...`
 - Power audit: `./scripts/power-audit.sh`
 - Failed units: `systemctl --failed --no-pager`
+
+## Files Access Model
+
+Use these roles when checking files access incidents:
+- `user-files`: personal Copyparty and SMB access only
+- `shared-files-ro`: read-only access to `/shared/*`
+- `shared-files-rw`: shared-write access through Samba only
+
+Important behavior:
+- `shared-files-ro` and `shared-files-rw` do not imply `user-files`
+- Copyparty shared roots are read-only for both shared groups
+- Samba is the authoritative shared-write surface
+- `shared-files-rw` on Samba means upload new files, rename own files, and read peer files, but not peer overwrite or peer delete
+- Samba cannot cleanly block an owner from removing their own shared entry once it exists; if that becomes unacceptable later, move to a moderated ingest workflow instead of direct shared writes
 
 ## Validation Gate
 
@@ -84,6 +99,7 @@ Default `scripts/check-repo.sh` behavior:
 - reruns `nix flake check --no-build`
 - runs the smoke suite plus targeted shell tests through `tests/run-changed.sh`
 - builds Rust check derivations only when relevant paths changed
+- does not run documentation churn checks; use `scripts/check-docs.sh` manually when you want the repo-audit pass
 
 Use the exhaustive local gate when you want the full shell suite and all explicit Rust derivation checks regardless of the diff.
 
@@ -126,7 +142,7 @@ export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
 Expected result:
 - the helper reruns validation before the remote rebuild
 - remote `nixos-rebuild test` completes
-- the helper checks failed units and runs remote runtime readiness successfully in strict `--require-online-zpool` mode
+- the helper checks failed units and runs remote runtime readiness successfully in strict `--profile deploy` mode
 - any transition notice is advisory only and still ends with a clean validation result
 
 If it fails:
@@ -276,6 +292,16 @@ The readiness check validates:
 - server-local Unbound answers
 - ZFS mounts derived from `vars.zfsDataPool.datasets`
 - SMART health for `vars.monitoredStorageDiskIds`
+- required app-state roots and critical payload paths derived from the evaluated host config
+- backup timer state and the recency of the system-state backup metadata
+
+Useful profiles:
+
+```bash
+sudo ./scripts/runtime-readiness.sh --profile manual
+sudo ./scripts/runtime-readiness.sh --profile deploy
+sudo ./scripts/runtime-readiness.sh --profile manual --deep
+```
 
 Expected result:
 - all required units report active
@@ -284,6 +310,8 @@ Expected result:
 - the ZFS pool and expected datasets are mounted
 - `DEGRADED` mirrored-pool health still passes in the default manual mode when the datasets are mounted and accessible
 - SMART checks do not report hard failures
+- stale backups only hard-fail when the selected removable target is actually attached
+- `--deep` adds sqlite integrity probes plus PostgreSQL connectivity and dump-artifact checks
 
 If it fails:
 - use [Service Failure Entry Points](#service-failure-entry-points) for service and DNS issues
@@ -292,7 +320,7 @@ If it fails:
 
 Operational note:
 - manual `sudo ./scripts/runtime-readiness.sh` reflects runtime survivability and allows a mirrored pool to remain `DEGRADED` while still serving data
-- guarded deploys stay stricter and run `runtime-readiness.sh --require-online-zpool`, so deploy promotion remains blocked until mirror redundancy is restored
+- guarded deploys stay stricter and run `runtime-readiness.sh --profile deploy`, so deploy promotion remains blocked until mirror redundancy is restored
 
 ## Storage Layout Audit
 
@@ -312,14 +340,14 @@ The audit reports:
 - active SSD-backed app-state roots
 
 Expected result:
-- `media/documents`, `media/photos`, `users`, `shared`, and `kiwix` report as the active steady-state roots
-- retired roots such as `/mnt/data/appdata`, `/mnt/data/media/audio`, `/mnt/data/media/books`, and `/mnt/data/media/video` are absent or empty
+- `paperless`, `immich`, `users`, `shared`, and `kiwix` report as the active steady-state roots
+- retired roots such as `/mnt/data/appdata`, `/mnt/data/media`, `/mnt/data/shared/documents`, and `/mnt/data/shared/photos` are absent or empty
 - the script exits successfully
 
 If it fails:
 - stop before enabling impermanence persistence or root rollback
 - remove only the retired roots that the audit confirms are empty
-- do not remove `media/documents`, `media/photos`, `kiwix`, or anything under `users` or `shared`
+- do not remove `paperless`, `immich`, `kiwix`, or anything under `users` or `shared`
 - rerun the audit and [Runtime Validation](#runtime-validation) after any cleanup
 
 Additional read-only audits:
@@ -398,6 +426,7 @@ What runs automatically:
 - `storage-smart-short@*.timer`
 - `storage-smart-long@*.timer`
 - `storage-health-report.timer`
+- `runtime-health-report.timer`
 
 - Run from: `target server shell`
 - Privileges: `sudo required for on-demand report generation and report reads`
@@ -406,9 +435,13 @@ What runs automatically:
 ```bash
 systemctl list-timers 'storage-*'
 systemctl status storage-health-report.timer
+systemctl status runtime-health-report.timer
 sudo systemctl start storage-health-report.service
+sudo systemctl start runtime-health-report.service
 sudo cat /var/lib/storage-monitoring/latest.txt
 sudo jq . /var/lib/storage-monitoring/latest.json
+sudo cat /var/lib/runtime-monitoring/latest.txt
+sudo jq . /var/lib/runtime-monitoring/latest.json
 ```
 
 Expected result:
@@ -416,6 +449,7 @@ Expected result:
 - the latest report exists and reflects the current pool and monitored disks
 - `latest.json` reports `.zfs.healthState` as the raw pool state and `.zfs.runtimeState` as `operational`, `degraded`, or `failed`
 - a `DEGRADED` mirrored pool remains an operationally critical alert, even when runtime is still available
+- the runtime monitor report reflects unit, HTTP, DNS, mount, SMART, ZFS, and backup-recency state in one machine-readable snapshot
 
 If it fails:
 - inspect the service status and latest report output
@@ -487,3 +521,4 @@ Mailbox repair notes:
 - Use `Sync now` when the mailbox needs a fresh IMAP pull before reindexing.
 - Enable `Send attachments to Paperless for filing` per mailbox when qualifying attachments should flow into Paperless.
 - The first run after enabling Paperless filing backfills the existing downloaded mailbox once; later runs only process newly reviewed mail.
+- Downloaded mail payload lives under `/mnt/data/users/<user>/emails/accounts/<account-id>/maildir`, while per-account derived sync and index state lives under `/persist/appdata/mail-archive-ui/accounts/<user>/<account-id>`.

@@ -6,35 +6,23 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools rg mktemp
+ensure_tools jq mktemp rg
 
-echo "ℹ️ Checking runtime-readiness topology handling…"
-require_fixed scripts/runtime-readiness.sh 'source "$script_dir/lib-repo.sh"' \
-  "runtime-readiness.sh must source the shared repo helper."
+echo "ℹ️ Checking runtime-readiness interface…"
+require_fixed scripts/runtime-readiness.sh 'source "$script_dir/lib-runtime-health.sh"' \
+  "runtime-readiness.sh must source the shared runtime-health helper."
 require_fixed scripts/runtime-readiness.sh 'source "$script_dir/lib-storage-health.sh"' \
   "runtime-readiness.sh must source the shared SMART helper."
-require_fixed scripts/runtime-readiness.sh 'echo "== SMART =="' \
-  "runtime-readiness.sh must report a dedicated SMART section."
-require_fixed scripts/runtime-readiness.sh 'vars.zfsDataPool.datasets' \
-  "runtime-readiness.sh must derive dataset mount checks from vars.zfsDataPool.datasets."
-require_fixed scripts/runtime-readiness.sh 'vars.monitoredStorageDiskIds' \
-  "runtime-readiness.sh must derive SMART devices from vars.monitoredStorageDiskIds."
-require_fixed scripts/runtime-readiness.sh 'copyparty.service' \
-  "runtime-readiness.sh must require the Copyparty unit."
-require_fixed scripts/runtime-readiness.sh 'check_http "http://127.0.0.1:3923/" 200 302 401 403' \
-  "runtime-readiness.sh must probe the direct Copyparty upstream."
-require_fixed scripts/runtime-readiness.sh 'check_mount "$data_pool_mount" "zfs"' \
-  "runtime-readiness.sh must verify the ZFS data pool mount."
-require_fixed scripts/runtime-readiness.sh 'echo "== ZFS =="' \
-  "runtime-readiness.sh must report a dedicated ZFS section."
+require_fixed scripts/runtime-readiness.sh '--profile manual|deploy|monitor' \
+  "runtime-readiness.sh must expose explicit runtime-health profiles."
+require_fixed scripts/runtime-readiness.sh '--format text|json' \
+  "runtime-readiness.sh must support text and JSON output."
+require_fixed scripts/runtime-readiness.sh '--deep' \
+  "runtime-readiness.sh must expose deep runtime probes."
 require_fixed scripts/runtime-readiness.sh '--require-online-zpool' \
-  "runtime-readiness.sh must expose a strict ZFS health mode for deploy gates."
-require_fixed scripts/runtime-readiness.sh 'cfg.repo.impermanence.inventory.persistenceDirectories' \
-  "runtime-readiness.sh must derive persistence checks from the impermanence inventory."
-require_fixed scripts/runtime-readiness.sh 'echo "== Persistence =="' \
-  "runtime-readiness.sh must report a dedicated persistence section when impermanence is enabled."
-forbid_match scripts/runtime-readiness.sh 'mnt-backup|backup_mount_point|backup_disk_enabled' \
-  "runtime-readiness.sh must not retain the removed local backup-mount workflow."
+  "runtime-readiness.sh must keep the strict deploy compatibility alias."
+require_fixed scripts/runtime-readiness.sh 'runtime_health_load_snapshot' \
+  "runtime-readiness.sh must evaluate one shared runtime-health snapshot per run."
 
 echo "ℹ️ Checking SMART helper fixture behavior…"
 fixture_dir="$TESTS_REPO_ROOT/tests/fixtures/storage-health"
@@ -62,6 +50,9 @@ chmod +x "$tmpdir/journalctl"
 cat >"$tmpdir/sudo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "-u" ]]; then
+  shift 2
+fi
 "$@"
 EOF
 chmod +x "$tmpdir/sudo"
@@ -108,104 +99,137 @@ require_match <(printf '%s\n' "$transport_output") '^CRITICAL[[:space:]]+transpo
 require_match <(printf '%s\n' "$transport_output") 'recent kernel transport errors' \
   "SMART helper must explain transport-related critical results."
 
-echo "ℹ️ Checking degraded ZFS readiness behavior…"
+echo "ℹ️ Checking runtime-readiness profiles with snapshot fixtures…"
 runtime_root="${tmpdir}/runtime"
 runtime_bin="${runtime_root}/bin"
-runtime_mount_root="${runtime_root}/mounts"
-mkdir -p "$runtime_bin" \
-  "${runtime_mount_root}/data/media/documents/archive/.hist" \
-  "${runtime_mount_root}/data/users" \
-  "${runtime_mount_root}/data/shared"
+mount_root="${runtime_root}/mounts"
+metadata_root="${runtime_root}/metadata"
+dumps_root="${runtime_root}/dumps"
+db_root="${runtime_root}/db"
+snapshot_file="${runtime_root}/snapshot.json"
+mkdir -p \
+  "$runtime_bin" \
+  "${mount_root}/data/paperless/archive/.hist" \
+  "${mount_root}/data/shared/app-state" \
+  "${mount_root}/data/users" \
+  "$metadata_root" \
+  "$dumps_root" \
+  "$db_root"
+touch "${db_root}/mail-archive-ui.sqlite3"
 
-cat >"$runtime_bin/nix" <<EOF
+cat >"$snapshot_file" <<EOF
+{
+  "host": {
+    "hostname": "server",
+    "domain": "example.test",
+    "lanDnsDomain": "home.arpa",
+    "dnsMode": "split-horizon",
+    "serverLanIP": "192.168.8.12",
+    "nbIP": "100.64.0.10",
+    "localDnsPrivateAnswer": "192.168.8.12"
+  },
+  "services": {
+    "requiredUnits": ["copyparty.service"],
+    "edgeHttp": [
+      { "name": "files", "url": "https://files.example.test/", "expected": [200, 302, 303, 401, 403] }
+    ],
+    "internalHttp": [
+      { "name": "copyparty", "url": "http://127.0.0.1:3923/", "expected": [200, 302, 401, 403] }
+    ],
+    "dns": {
+      "resolve": ["example.com"],
+      "private": [
+        { "host": "files.example.test", "expected": "192.168.8.12" }
+      ],
+      "splitHorizon": {
+        "private": [
+          { "host": "server.home.arpa", "expected": "192.168.8.12" }
+        ],
+        "ptr": [
+          { "ip": "192.168.8.12", "expected": "server.home.arpa" }
+        ]
+      },
+      "netbirdOnly": {
+        "public": []
+      }
+    }
+  },
+  "storage": {
+    "dataPool": {
+      "name": "data",
+      "mountPoint": "${mount_root}/data",
+      "datasetMounts": [
+        "${mount_root}/data/users",
+        "${mount_root}/data/shared"
+      ]
+    },
+    "monitoredDisks": [
+      { "label": "disk1", "device": "/dev/disk/by-id/disk1" }
+    ],
+    "coldStoragePoolNames": []
+  },
+  "persistence": {
+    "enabled": false,
+    "directories": [],
+    "files": []
+  },
+  "backup": {
+    "service": "restic-backups-system-state.service",
+    "timer": "restic-backups-system-state.timer",
+    "selectionFile": "${runtime_root}/selected-device",
+    "mountPoint": "${mount_root}/backup",
+    "repositoryPath": "${mount_root}/backup/restic/system-state",
+    "metadataRoot": "${metadata_root}",
+    "timestampFile": "${metadata_root}/timestamp.txt",
+    "appStateFile": "${metadata_root}/app-state-roots.tsv",
+    "criticalPathsFile": "${metadata_root}/critical-paths.tsv",
+    "zpoolStatusFile": "${metadata_root}/zpool-status.txt",
+    "zpoolListFile": "${metadata_root}/zpool-list.txt",
+    "zfsListFile": "${metadata_root}/zfs-list.txt",
+    "postgresqlDumpFile": "${dumps_root}/postgresql.sql",
+    "maxAgeSeconds": 129600
+  },
+  "appState": {
+    "entries": [
+      {
+        "app": "copyparty",
+        "component": "app",
+        "stateRoot": "${mount_root}/data/shared/app-state",
+        "payloadRoots": ["${mount_root}/data/shared"]
+      }
+    ],
+    "criticalPaths": [
+      "${mount_root}/data",
+      "${mount_root}/data/shared"
+    ],
+    "requiredPaths": [
+      {
+        "label": "copyparty-archive-metadata",
+        "path": "${mount_root}/data/paperless/archive/.hist"
+      }
+    ]
+  },
+  "databases": {
+    "sqliteBinary": "${runtime_bin}/sqlite3",
+    "sqlite": [
+      { "name": "mail-archive-ui", "path": "${db_root}/mail-archive-ui.sqlite3" }
+    ],
+    "postgresql": {
+      "enabled": true,
+      "dataDir": "/var/lib/postgresql",
+      "pgIsReadyBinary": "${runtime_bin}/pg_isready"
+    }
+  }
+}
+EOF
+
+printf '%s\n' '/dev/disk/by-id/backup-target' >"${runtime_root}/selected-device"
+printf '%s\n' '2026-01-01T00:00:00Z' >"${metadata_root}/timestamp.txt"
+
+cat >"$runtime_bin/nix" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-
-expr="\${!#}"
-mount_root="${runtime_mount_root}"
-query="\$(printf '%s\n' "\$expr" | awk 'NF { line = \$0 } END { sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line); print line }')"
-
-case "\$query" in
-  vars.hostname)
-    printf 'server\n'
-    ;;
-  vars.domain)
-    printf 'example.test\n'
-    ;;
-  vars.nbIP)
-    printf '100.64.0.10\n'
-    ;;
-  vars.serverLanIP)
-    printf '192.168.8.12\n'
-    ;;
-  vars.dnsMode)
-    printf 'split-horizon\n'
-    ;;
-  vars.filesDomain)
-    printf 'files.example.test\n'
-    ;;
-  vars.mediaRoot)
-    printf '%s/data/media\n' "\$mount_root"
-    ;;
-  vars.lanDnsDomain)
-    printf 'home.arpa\n'
-    ;;
-  vars.kiwixDomain)
-    printf 'wiki.example.test\n'
-    ;;
-  vars.photosDomain)
-    printf 'photos.example.test\n'
-    ;;
-  vars.sharePhotosDomain)
-    printf 'sharephotos.example.test\n'
-    ;;
-  vars.audiobooksDomain)
-    printf 'audiobooks.example.test\n'
-    ;;
-  vars.kavitaDomain)
-    printf 'books.example.test\n'
-    ;;
-  vars.jellyfinDomain)
-    printf 'videos.example.test\n'
-    ;;
-  vars.kanidmDomain)
-    printf 'id.example.test\n'
-    ;;
-  vars.cloudflareTunnelName)
-    printf 'metro\n'
-    ;;
-  'vars.zfsDataPool.name')
-    printf 'data\n'
-    ;;
-  'vars.zfsDataPool.mountPoint')
-    printf '%s/data\n' "\$mount_root"
-    ;;
-  'if cfg.repo.impermanence.enablePersistence then "true" else "false"')
-    printf 'false\n'
-    ;;
-  'toString (builtins.length vars.monitoredDataDiskIds)')
-    printf '2\n'
-    ;;
-  'map (dataset: "\${vars.zfsDataPool.mountPoint}/\${dataset}") vars.zfsDataPool.datasets')
-    printf '["%s/data/media","%s/data/users","%s/data/shared"]\n' "\$mount_root" "\$mount_root" "\$mount_root"
-    ;;
-  'map (diskId: "/dev/disk/by-id/\${diskId}") vars.monitoredStorageDiskIds')
-    printf '["/dev/disk/by-id/disk1","/dev/disk/by-id/disk2"]\n'
-    ;;
-  'map (pool: pool.name) vars.coldStoragePools')
-    printf '[]\n'
-    ;;
-  'cfg.repo.impermanence.inventory.persistenceDirectories')
-    printf '[]\n'
-    ;;
-  'cfg.repo.impermanence.inventory.persistenceFiles')
-    printf '[]\n'
-    ;;
-  *)
-    printf 'unexpected nix expr: %s\n' "\$query" >&2
-    exit 1
-    ;;
-esac
+exit 0
 EOF
 chmod +x "$runtime_bin/nix"
 
@@ -225,11 +249,14 @@ case "$name" in
   example.com)
     printf '%s has address 93.184.216.34\n' "$name"
     ;;
+  files.example.test|server.home.arpa)
+    printf '%s has address 192.168.8.12\n' "$name"
+    ;;
   192.168.8.12)
     printf '12.8.168.192.in-addr.arpa domain name pointer server.home.arpa.\n'
     ;;
   *)
-    printf '%s has address 192.168.8.12\n' "$name"
+    exit 1
     ;;
 esac
 EOF
@@ -238,7 +265,36 @@ chmod +x "$runtime_bin/host"
 cat >"$runtime_bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-exit 0
+
+cmd="$1"
+case "$cmd" in
+  is-active)
+    case "$2" in
+      copyparty.service|restic-backups-system-state.timer)
+        printf 'active\n'
+        ;;
+      *)
+        printf 'inactive\n'
+        ;;
+    esac
+    ;;
+  is-enabled)
+    case "$2" in
+      restic-backups-system-state.timer)
+        printf 'enabled\n'
+        ;;
+      *)
+        printf 'disabled\n'
+        ;;
+    esac
+    ;;
+  show)
+    printf 'success\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
 EOF
 chmod +x "$runtime_bin/systemctl"
 
@@ -247,17 +303,23 @@ cat >"$runtime_bin/findmnt" <<EOF
 set -euo pipefail
 
 target="\${!#}"
-case "\$target" in
-  "${runtime_mount_root}/data"|\
-  "${runtime_mount_root}/data/media"|\
-  "${runtime_mount_root}/data/users"|\
-  "${runtime_mount_root}/data/shared")
-    printf 'zfs\n'
-    ;;
-  *)
-    exit 1
-    ;;
-esac
+if printf '%s\n' "\$*" | grep -q 'FSTYPE'; then
+  case "\$target" in
+    "${mount_root}/data"|\
+    "${mount_root}/data/media"|\
+    "${mount_root}/data/users"|\
+    "${mount_root}/data/shared")
+      printf 'zfs\n'
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+elif printf '%s\n' "\$*" | grep -q 'SOURCE'; then
+  exit 1
+else
+  exit 1
+fi
 EOF
 chmod +x "$runtime_bin/findmnt"
 
@@ -298,10 +360,10 @@ cat >"$runtime_bin/zfs" <<EOF
 set -euo pipefail
 
 if [[ "\$1" == "list" ]]; then
-  printf 'data\t%s/data\n' "${runtime_mount_root}"
-  printf 'data/media\t%s/data/media\n' "${runtime_mount_root}"
-  printf 'data/users\t%s/data/users\n' "${runtime_mount_root}"
-  printf 'data/shared\t%s/data/shared\n' "${runtime_mount_root}"
+  printf 'data\t%s/data\n' "${mount_root}"
+  printf 'data/media\t%s/data/media\n' "${mount_root}"
+  printf 'data/users\t%s/data/users\n' "${mount_root}"
+  printf 'data/shared\t%s/data/shared\n' "${mount_root}"
   exit 0
 fi
 
@@ -312,51 +374,90 @@ chmod +x "$runtime_bin/zfs"
 cat >"$runtime_bin/runuser" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-shift 2
+shift 3
 exec "$@"
 EOF
 chmod +x "$runtime_bin/runuser"
 
-cat >"$runtime_bin/sudo" <<'EOF'
+cat >"$runtime_bin/sqlite3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-
-if [[ "${1:-}" == "-u" ]]; then
-  shift 2
-fi
-
-exec "$@"
+printf 'ok\n'
 EOF
-chmod +x "$runtime_bin/sudo"
+chmod +x "$runtime_bin/sqlite3"
+
+cat >"$runtime_bin/pg_isready" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+chmod +x "$runtime_bin/pg_isready"
+
+manual_env=(
+  "PATH=$runtime_bin:$tmpdir:$PATH"
+  "RUNTIME_READINESS_REPO_ROOT=$TESTS_REPO_ROOT"
+  "RUNTIME_HEALTH_SNAPSHOT_JSON_FILE=$snapshot_file"
+)
 
 set +e
-degraded_output="$(
-  PATH="$runtime_bin:$PATH" \
-    RUNTIME_READINESS_REPO_ROOT="$TESTS_REPO_ROOT" \
+manual_output="$(
+  env "${manual_env[@]}" \
     RUNTIME_READINESS_ZPOOL_HEALTH=DEGRADED \
     scripts/runtime-readiness.sh 2>&1
 )"
-degraded_status=$?
+manual_status=$?
 set -e
-require_json_equal "$degraded_status" "0" \
+require_json_equal "$manual_status" "0" \
   "runtime-readiness.sh must pass by default when a mirrored pool is DEGRADED but mounted."
-require_match <(printf '%s\n' "$degraded_output") '^⚠️  zpool health DEGRADED:' \
+require_match <(printf '%s\n' "$manual_output") '^⚠️  zpool health DEGRADED:' \
   "runtime-readiness.sh must surface degraded ZFS health in operator output."
-require_match <(printf '%s\n' "$degraded_output") 'continuing because the mirrored pool is still available, but redundancy is lost' \
+require_match <(printf '%s\n' "$manual_output") 'continuing because the mirrored pool is still available, but redundancy is lost' \
   "runtime-readiness.sh must explain why degraded mirrored storage still passes by default."
+require_match <(printf '%s\n' "$manual_output") 'backup state: backup metadata is stale, but the removable target is absent' \
+  "runtime-readiness.sh must warn when backups are stale but the removable target is absent."
+
+monitor_json="$(
+  env "${manual_env[@]}" \
+    RUNTIME_READINESS_ZPOOL_HEALTH=DEGRADED \
+    scripts/runtime-readiness.sh --profile monitor --format json
+)"
+require_json_equal "$(jq -r '.profile' <<<"$monitor_json")" "monitor" \
+  "runtime-readiness.sh JSON output must report the selected profile."
+require_json_equal "$(jq -r '.backup.severity' <<<"$monitor_json")" "WARN" \
+  "runtime-readiness.sh must downgrade stale removable-backup state to WARN when the target is absent."
+require_json_equal "$(jq -r '.zfs.runtimeState' <<<"$monitor_json")" "degraded" \
+  "runtime-readiness.sh monitor output must preserve the degraded runtime state."
 
 set +e
-strict_output="$(
-  PATH="$runtime_bin:$PATH" \
-    RUNTIME_READINESS_REPO_ROOT="$TESTS_REPO_ROOT" \
+deploy_output="$(
+  env "${manual_env[@]}" \
     RUNTIME_READINESS_ZPOOL_HEALTH=DEGRADED \
-    scripts/runtime-readiness.sh --require-online-zpool 2>&1
+    scripts/runtime-readiness.sh --profile deploy 2>&1
 )"
-strict_status=$?
+deploy_status=$?
 set -e
-require_json_equal "$strict_status" "1" \
-  "runtime-readiness.sh strict mode must fail when the mirrored pool is DEGRADED."
-require_match <(printf '%s\n' "$strict_output") 'strict mode requires ONLINE zpool health' \
-  "runtime-readiness.sh strict mode must explain the ONLINE-only guardrail."
+require_json_equal "$deploy_status" "1" \
+  "runtime-readiness.sh deploy profile must fail when the mirrored pool is DEGRADED."
+require_match <(printf '%s\n' "$deploy_output") 'deploy profile requires ONLINE zpool health' \
+  "runtime-readiness.sh deploy profile must explain the ONLINE-only guardrail."
+
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${metadata_root}/timestamp.txt"
+touch "${metadata_root}/app-state-roots.tsv" \
+  "${metadata_root}/critical-paths.tsv" \
+  "${metadata_root}/zpool-status.txt" \
+  "${metadata_root}/zpool-list.txt" \
+  "${metadata_root}/zfs-list.txt" \
+  "${dumps_root}/postgresql.sql"
+
+deep_json="$(
+  env "${manual_env[@]}" \
+    scripts/runtime-readiness.sh --profile manual --deep --format json
+)"
+require_json_equal "$(jq -r '.overallSeverity' <<<"$deep_json")" "OK" \
+  "runtime-readiness.sh deep checks must pass when database and backup fixtures are healthy."
+require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "sqlite" and .severity == "OK")] | length' <<<"$deep_json")" "1" \
+  "runtime-readiness.sh deep mode must run sqlite quick_check probes."
+require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "postgresql" and .severity == "OK")] | length' <<<"$deep_json")" "2" \
+  "runtime-readiness.sh deep mode must validate PostgreSQL connectivity and dump freshness."
 
 echo "✅ Runtime readiness tests passed."

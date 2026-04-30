@@ -53,14 +53,6 @@ let
       notes = "ACME certificate state.";
     }
     {
-      app = "cloudflared";
-      component = "service";
-      stateRoot = "/var/lib/cloudflared";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/cloudflared";
-      payloadRoots = [ ];
-      notes = "Tunnel credentials and local service state.";
-    }
-    {
       app = "netbird";
       component = "service";
       stateRoot = "/var/lib/netbird-main";
@@ -86,6 +78,14 @@ let
         vars.usersRoot
       ];
       notes = "Local users, metadata, and server config.";
+    }
+    {
+      app = "immich";
+      component = "app";
+      stateRoot = "/var/lib/immich";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/immich";
+      payloadRoots = [ vars.immichRoot ];
+      notes = "Immich service state directory.";
     }
     {
       app = "jellyfin";
@@ -122,7 +122,7 @@ let
       component = "app";
       stateRoot = "/var/lib/paperless";
       persistentStateRoot = persistBackedStateRoot "/var/lib/paperless";
-      payloadRoots = [ "${vars.mediaRoot}/documents" ];
+      payloadRoots = [ vars.paperlessRoot ];
       notes = "Application state and local metadata.";
     }
     {
@@ -130,7 +130,7 @@ let
       component = "redis";
       stateRoot = config.services.redis.servers.paperless.settings.dir;
       persistentStateRoot = persistBackedStateRoot config.services.redis.servers.paperless.settings.dir;
-      payloadRoots = [ "${vars.mediaRoot}/documents" ];
+      payloadRoots = [ vars.paperlessRoot ];
       notes = "Paperless Redis persistence.";
     }
     {
@@ -138,7 +138,7 @@ let
       component = "postgresql";
       stateRoot = config.services.postgresql.dataDir;
       persistentStateRoot = persistBackedStateRoot config.services.postgresql.dataDir;
-      payloadRoots = [ "${vars.mediaRoot}/photos/managed" ];
+      payloadRoots = [ vars.immichManagedRoot ];
       notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
     }
     {
@@ -146,7 +146,7 @@ let
       component = "redis";
       stateRoot = config.services.redis.servers.immich.settings.dir;
       persistentStateRoot = persistBackedStateRoot config.services.redis.servers.immich.settings.dir;
-      payloadRoots = [ "${vars.mediaRoot}/photos/managed" ];
+      payloadRoots = [ vars.immichManagedRoot ];
       notes = "Immich Redis persistence.";
     }
     {
@@ -157,7 +157,7 @@ let
       payloadRoots = [
         vars.usersRoot
         vars.sharedRoot
-        "${vars.mediaRoot}/documents"
+        vars.paperlessRoot
       ];
       notes = "Local state directory for Copyparty.";
     }
@@ -188,9 +188,9 @@ let
     appStateEntries;
   criticalPaths = [
     vars.dataRoot
-    vars.mediaRoot
-    "${vars.mediaRoot}/documents"
-    "${vars.mediaRoot}/photos/managed"
+    vars.paperlessRoot
+    vars.immichRoot
+    vars.immichManagedRoot
     vars.usersRoot
     vars.sharedRoot
     vars.sharedEmailsRoot
@@ -375,7 +375,8 @@ in
 
         for spec in ${
           lib.escapeShellArgs [
-            "media:${vars.mediaRoot}"
+            "immich:${vars.immichRoot}"
+            "paperless:${vars.paperlessRoot}"
             "users:${vars.usersRoot}"
             "shared:${vars.sharedRoot}"
           ]

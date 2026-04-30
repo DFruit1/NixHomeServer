@@ -22,6 +22,8 @@ snapshot="$(nix_eval_host_snapshot_json '
       monitoredStorageDiskCount = builtins.length vars.monitoredStorageDiskIds;
       usersRoot = vars.usersRoot;
       sharedRoot = vars.sharedRoot;
+      paperlessRoot = vars.paperlessRoot;
+      immichRoot = vars.immichRoot;
       sharedAudiobooksRoot = vars.sharedAudiobooksRoot;
       sharedEmailsRoot = vars.sharedEmailsRoot;
       sharedEbooksRoot = vars.sharedEbooksRoot;
@@ -34,6 +36,8 @@ snapshot="$(nix_eval_host_snapshot_json '
       userVideoSubdirs = vars.userVideoSubdirs;
       sharedBooksSubdirs = vars.sharedBooksSubdirs;
       sharedVideoSubdirs = vars.sharedVideoSubdirs;
+      sharedContentSubdirs = vars.sharedContentSubdirs;
+      fileAccessPosixGids = vars.fileAccessPosixGids;
       sharePhotosDomain = vars.sharePhotosDomain;
       metubeDomain = vars.metubeDomain;
       domain = vars.domain;
@@ -41,12 +45,12 @@ snapshot="$(nix_eval_host_snapshot_json '
     };
     config = {
       mailArchiveStoreRoot = cfg.services.mail-archive-ui.storeRoot;
+      mailArchiveAccountStateRoot = cfg.services.mail-archive-ui.accountStateRoot;
       resticPaths = cfg.services.restic.backups.system-state.paths;
       resticRepository = cfg.services.restic.backups.system-state.repository;
       exfatSupport = cfg.boot.supportedFilesystems.exfat;
       fsPackages = cfg.system.fsPackages;
       dataFsType = cfg.fileSystems."/mnt/data".fsType;
-      hasMediaMount = cfg.fileSystems ? "/mnt/data/media";
       hasUsersMount = cfg.fileSystems ? "/mnt/data/users";
       hasSharedMount = cfg.fileSystems ? "/mnt/data/shared";
       hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
@@ -107,14 +111,14 @@ require_json_equal "$(snapshot_query '.vars.zfsDataPoolName')" '"data"' \
   "vars.zfsDataPool must keep the canonical pool name."
 require_json_equal "$(snapshot_query '.vars.zfsDataPoolMirrorPairCount')" '1' \
   "vars.zfsDataPool must define one active mirror pair."
-require_json_equal "$(snapshot_query '.vars.zfsDataPoolDatasets | length')" '3' \
+require_json_equal "$(snapshot_query '.vars.zfsDataPoolDatasets | length')" '2' \
   "vars.zfsDataPool must keep the expected child datasets."
-require_json_contains "$(snapshot_query '.vars.zfsDataPoolDatasets')" 'media' \
-  "vars.zfsDataPool must keep the media dataset."
 require_json_contains "$(snapshot_query '.vars.zfsDataPoolDatasets')" 'users' \
   "vars.zfsDataPool must keep the direct users dataset."
 require_json_contains "$(snapshot_query '.vars.zfsDataPoolDatasets')" 'shared' \
   "vars.zfsDataPool must keep the direct shared dataset."
+forbid_json_contains "$(snapshot_query '.vars.zfsDataPoolDatasets')" 'media' \
+  "vars.zfsDataPool must retire the legacy media dataset from steady-state config."
 forbid_json_contains "$(snapshot_query '.vars.zfsDataPoolDatasets')" 'workspaces' \
   "vars.zfsDataPool must retire the legacy workspaces dataset from steady-state config."
 forbid_json_contains "$(snapshot_query '.vars.zfsDataPoolDatasets')" 'mail-archive' \
@@ -141,6 +145,10 @@ require_json_equal "$(snapshot_query '.vars.usersRoot')" '"/mnt/data/users"' \
   "Per-user content roots must resolve directly under the ZFS data pool."
 require_json_equal "$(snapshot_query '.vars.sharedRoot')" '"/mnt/data/shared"' \
   "The shared content root must resolve directly under the ZFS data pool."
+require_json_equal "$(snapshot_query '.vars.paperlessRoot')" '"/mnt/data/paperless"' \
+  "Paperless payloads must move to their own top-level managed root."
+require_json_equal "$(snapshot_query '.vars.immichRoot')" '"/mnt/data/immich"' \
+  "Immich payloads must move to their own top-level managed root."
 require_json_equal "$(snapshot_query '.vars.sharedAudiobooksRoot')" '"/mnt/data/shared/audiobooks"' \
   "Shared audiobooks must resolve through the shared public upload tree."
 require_json_equal "$(snapshot_query '.vars.sharedEmailsRoot')" '"/mnt/data/shared/emails"' \
@@ -173,8 +181,24 @@ require_json_contains "$(snapshot_query '.vars.sharedVideoSubdirs')" "youtube" \
   "Shared video roots must include YouTube."
 require_json_contains "$(snapshot_query '.vars.sharedVideoSubdirs')" "other" \
   "Shared video roots must include the fixed other category."
+require_json_contains "$(snapshot_query '.vars.sharedContentSubdirs')" "files" \
+  "Shared content roots must include the generic files subtree."
+require_json_contains "$(snapshot_query '.vars.sharedContentSubdirs')" "emails" \
+  "Shared content roots must include the shared emails subtree."
+forbid_json_contains "$(snapshot_query '.vars.sharedContentSubdirs')" "documents" \
+  "Shared content roots must retire the shared documents subtree."
+forbid_json_contains "$(snapshot_query '.vars.sharedContentSubdirs')" "photos" \
+  "Shared content roots must retire the shared photos subtree."
+require_json_equal "$(snapshot_query '.vars.fileAccessPosixGids["user-files"]')" '2001' \
+  "The personal file-access group must keep a portable fixed GID."
+require_json_equal "$(snapshot_query '.vars.fileAccessPosixGids["shared-files-ro"]')" '2002' \
+  "The shared read-only file-access group must keep a portable fixed GID."
+require_json_equal "$(snapshot_query '.vars.fileAccessPosixGids["shared-files-rw"]')" '2003' \
+  "The shared read-write file-access group must keep a portable fixed GID."
 require_json_equal "$(snapshot_query '.config.mailArchiveStoreRoot')" '"/mnt/data/users"' \
   "Mail archive storage must resolve through the per-user content root."
+require_json_equal "$(snapshot_query '.config.mailArchiveAccountStateRoot')" '"/persist/appdata/mail-archive-ui/accounts"' \
+  "Mail archive derived per-account state must stay on the SSD-backed persist volume."
 
 restic_paths_json="$(snapshot_query '.config.resticPaths')"
 require_json_contains "$restic_paths_json" "/var/lib" \
@@ -216,8 +240,6 @@ require_fixed configuration.nix './disko-system.nix' \
   "configuration.nix must import the SSD Disko layout separately from the data migration layout."
 require_json_equal "$(snapshot_query '.config.dataFsType')" '"zfs"' \
   "The data pool must be mounted at /mnt/data as ZFS."
-require_json_equal "$(snapshot_query '.config.hasMediaMount')" 'true' \
-  "The media dataset mount must exist."
 require_json_equal "$(snapshot_query '.config.hasUsersMount')" 'true' \
   "The users dataset mount must exist."
 require_json_equal "$(snapshot_query '.config.hasSharedMount')" 'true' \
@@ -265,8 +287,8 @@ phase1_expected_directories_json="$(jq -cn '[
   "/home/dsaw",
   "/var/lib/acme",
   "/var/lib/audiobookshelf",
-  "/var/lib/cloudflared",
   "/var/lib/copyparty",
+  "/var/lib/immich",
   "/var/lib/immich-public-proxy",
   "/var/lib/jellyfin",
   "/var/lib/kanidm",

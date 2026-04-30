@@ -1,10 +1,12 @@
 use serde_json::{json, Value};
 
 use crate::{
-    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
-    models::{
-        parse_person_list, parse_person_record, parse_reset_token_summary, Parsed, PersonRecord,
+    inventory::{
+        users::{parse_user_list, parse_user_record, UserRecord},
+        Parsed,
     },
+    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
+    models::parse_reset_token_summary,
     output::CommandOutput,
     AppError,
 };
@@ -30,8 +32,7 @@ pub struct DeleteUserOptions {
 }
 
 pub fn list_users(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
-    let value = cli.person_list::<Value>()?;
-    let people = parse_person_list(&value)?;
+    let people = parse_user_list(&cli.person_list::<Value>()?)?;
     let human = if people.value.is_empty() {
         "No Kanidm users found.".to_string()
     } else {
@@ -59,12 +60,10 @@ pub fn list_users(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
 }
 
 pub fn show_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
-    let person = load_person(cli, account_id)?;
-    let human = human_user_summary(&person.value);
-
+    let person = load_user(cli, account_id)?;
     Ok(CommandOutput {
         message: format!("loaded Kanidm user '{}'", person.value.account_id),
-        human,
+        human: human_user_summary(&person.value),
         details: json!({ "user": person.value }),
         warnings: person.warnings,
     })
@@ -116,7 +115,11 @@ pub fn create_user(cli: &KanidmCli, options: CreateUserOptions) -> Result<Comman
 
     Ok(CommandOutput {
         message: format!("created Kanidm user '{}'", person.value.account_id),
-        human: human_created_user_summary(&person.value),
+        human: format!(
+            "Created Kanidm user '{}'.\n\n{}",
+            person.value.account_id,
+            human_user_summary(&person.value)
+        ),
         details: json!({
             "user": person.value,
             "completed_steps": completed_steps,
@@ -127,14 +130,10 @@ pub fn create_user(cli: &KanidmCli, options: CreateUserOptions) -> Result<Comman
 
 pub fn disable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
     cli.person_disable(account_id)?;
-
     let person = verify_user_state(
         cli,
         account_id,
-        json!({
-            "account_id": account_id,
-            "expiry": "set",
-        }),
+        json!({ "account_id": account_id, "expiry": "set" }),
         &format!(
             "disabled Kanidm user '{}' but post-change verification did not converge",
             account_id
@@ -150,31 +149,27 @@ pub fn disable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, 
             person.value.account_id,
             human_user_summary(&person.value)
         ),
-        details: json!({
-            "user": person.value,
-            "action": "disable",
-        }),
+        details: json!({ "user": person.value, "action": "disable" }),
         warnings: person.warnings,
     })
 }
 
 pub fn enable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
     cli.person_enable(account_id)?;
-
     let person = verify_user_state(
         cli,
         account_id,
         json!({
             "account_id": account_id,
-            "expiry": Value::Null,
             "valid_from": Value::Null,
+            "expiry": Value::Null,
         }),
         &format!(
             "enabled Kanidm user '{}' but post-change verification did not converge",
             account_id
         ),
         true,
-        |person| person.expiry.is_none() && person.valid_from.is_none(),
+        |person| person.valid_from.is_none() && person.expiry.is_none(),
     )?;
 
     Ok(CommandOutput {
@@ -184,10 +179,7 @@ pub fn enable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, A
             person.value.account_id,
             human_user_summary(&person.value)
         ),
-        details: json!({
-            "user": person.value,
-            "action": "enable",
-        }),
+        details: json!({ "user": person.value, "action": "enable" }),
         warnings: person.warnings,
     })
 }
@@ -203,19 +195,15 @@ pub fn delete_user(cli: &KanidmCli, options: DeleteUserOptions) -> Result<Comman
     }
 
     cli.person_delete(&options.account_id)?;
-
     verify_with_retry(
         &format!(
             "deleted Kanidm user '{}' but post-delete verification did not converge",
             options.account_id
         ),
-        json!({
-            "account_id": options.account_id,
-            "deleted": true,
-        }),
+        json!({ "account_id": options.account_id, "deleted": true }),
         true,
-        || match load_person(cli, &options.account_id) {
-            Err(AppError::UserNotFound { .. }) => Ok(VerificationCheck::Matched {
+        || match load_user(cli, &options.account_id) {
+            Err(AppError::NotFound { .. }) => Ok(VerificationCheck::Matched {
                 observed: json!({
                     "deleted": true,
                     "account_id": options.account_id,
@@ -284,6 +272,10 @@ pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<Comman
     })
 }
 
+pub fn load_user(cli: &KanidmCli, account_id: &str) -> Result<Parsed<UserRecord>, AppError> {
+    parse_user_record(&cli.person_get::<Value>(account_id)?, account_id)
+}
+
 fn finish_create(
     cli: &KanidmCli,
     options: &CreateUserOptions,
@@ -311,21 +303,21 @@ fn verify_user_state<F>(
     context: &str,
     write_completed: bool,
     predicate: F,
-) -> Result<Parsed<PersonRecord>, AppError>
+) -> Result<Parsed<UserRecord>, AppError>
 where
-    F: Fn(&PersonRecord) -> bool,
+    F: Fn(&UserRecord) -> bool,
 {
     verify_with_retry(context, expected_state, write_completed, || {
-        let person = load_person(cli, account_id)?;
-        let matched = predicate(&person.value);
+        let user = load_user(cli, account_id)?;
+        let matched = predicate(&user.value);
         let observed = json!({
-            "user": &person.value,
-            "warnings": &person.warnings,
+            "user": &user.value,
+            "warnings": &user.warnings,
         });
         if matched {
             Ok(VerificationCheck::Matched {
                 observed,
-                value: person,
+                value: user,
             })
         } else {
             Ok(VerificationCheck::Mismatch { observed })
@@ -333,34 +325,17 @@ where
     })
 }
 
-fn load_person(cli: &KanidmCli, account_id: &str) -> Result<Parsed<PersonRecord>, AppError> {
-    let value = cli.person_get::<Value>(account_id)?;
-    parse_person_record(&value, account_id)
-}
-
-fn human_user_summary(person: &PersonRecord) -> String {
+pub fn human_user_summary(user: &UserRecord) -> String {
     format!(
-        "Account ID: {}\nDisplay Name: {}\nPrimary Email: {}\nSPN: {}\nUUID: {}\nValid From: {}\nExpiry Date: {}\n\nManaged Login Groups:\n{}\n\nManaged Admin-Intent Groups:\n{}",
-        person.account_id,
-        person.display_name.as_deref().unwrap_or("-"),
-        person.primary_email.as_deref().unwrap_or("-"),
-        person.spn.as_deref().unwrap_or("-"),
-        person.uuid.as_deref().unwrap_or("-"),
-        person.valid_from.as_deref().unwrap_or("not set"),
-        person.expiry.as_deref().unwrap_or("not set"),
-        render_group_block(&person.access_groups.login),
-        render_group_block(&person.access_groups.admin_intent),
-    )
-}
-
-fn human_created_user_summary(person: &PersonRecord) -> String {
-    format!(
-        "Created Kanidm user '{}'.\nDisplay Name: {}\nPrimary Email: {}\n\nManaged Login Groups:\n{}\n\nManaged Admin-Intent Groups:\n{}",
-        person.account_id,
-        person.display_name.as_deref().unwrap_or("-"),
-        person.primary_email.as_deref().unwrap_or("-"),
-        render_group_block(&person.access_groups.login),
-        render_group_block(&person.access_groups.admin_intent),
+        "Account ID: {}\nDisplay Name: {}\nPrimary Email: {}\nSPN: {}\nUUID: {}\nValid From: {}\nExpiry Date: {}\n\nDirect Groups:\n{}",
+        user.account_id,
+        user.display_name.as_deref().unwrap_or("-"),
+        user.primary_email.as_deref().unwrap_or("-"),
+        user.spn.as_deref().unwrap_or("-"),
+        user.uuid.as_deref().unwrap_or("-"),
+        user.valid_from.as_deref().unwrap_or("not set"),
+        user.expiry.as_deref().unwrap_or("not set"),
+        render_group_block(&user.groups),
     )
 }
 

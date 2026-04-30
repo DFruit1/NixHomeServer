@@ -4,5 +4,7 @@
   imports = [
     ./import-fix.nix
     ./layout.nix
+    ./media-retirement.nix
+    ./retired-roots-cleanup.nix
   ];
 }

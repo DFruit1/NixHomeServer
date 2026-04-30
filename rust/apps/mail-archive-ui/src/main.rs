@@ -277,6 +277,7 @@ struct AppConfig {
     port: u16,
     data_dir: Arc<str>,
     store_root: Arc<str>,
+    account_state_root: Arc<str>,
     runtime_dir: Arc<str>,
     lock_dir: Arc<str>,
     paperless_consume_root: Option<Arc<str>>,
@@ -345,9 +346,10 @@ struct SearchResult {
 #[derive(Debug)]
 struct AccountPaths {
     maildir: PathBuf,
-    state_dir: PathBuf,
+    account_state_root: PathBuf,
     notmuch_config: PathBuf,
     sync_state_dir: PathBuf,
+    notmuch_db_root: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -1169,6 +1171,8 @@ fn load_config() -> AppConfig {
         env::var("MAIL_ARCHIVE_UI_DATA_DIR").unwrap_or_else(|_| DEFAULT_DATA_DIR.to_string());
     let store_root =
         env::var("MAIL_ARCHIVE_UI_STORE_ROOT").unwrap_or_else(|_| DEFAULT_STORE_ROOT.to_string());
+    let account_state_root = env::var("MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT")
+        .unwrap_or_else(|_| format!("{data_dir}/accounts"));
     let runtime_dir =
         env::var("MAIL_ARCHIVE_UI_RUNTIME_DIR").unwrap_or_else(|_| DEFAULT_RUNTIME_DIR.to_string());
     let lock_dir =
@@ -1201,6 +1205,7 @@ fn load_config() -> AppConfig {
         port,
         data_dir: Arc::<str>::from(data_dir),
         store_root: Arc::<str>::from(store_root),
+        account_state_root: Arc::<str>::from(account_state_root),
         runtime_dir: Arc::<str>::from(runtime_dir),
         lock_dir: Arc::<str>::from(lock_dir),
         paperless_consume_root,
@@ -1212,6 +1217,7 @@ fn load_config() -> AppConfig {
 fn ensure_app_layout(config: &AppConfig) -> Result<(), String> {
     for directory in [
         config.data_dir.as_ref(),
+        config.account_state_root.as_ref(),
         config.runtime_dir.as_ref(),
         config.lock_dir.as_ref(),
     ] {
@@ -1289,6 +1295,7 @@ fn landlock_roots(config: &AppConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let read_write_roots = dedupe_paths([
         Some(PathBuf::from(config.data_dir.as_ref())),
         Some(PathBuf::from(config.store_root.as_ref())),
+        Some(PathBuf::from(config.account_state_root.as_ref())),
         Some(PathBuf::from(config.runtime_dir.as_ref())),
         Some(PathBuf::from(config.lock_dir.as_ref())),
         config.paperless_consume_root.as_deref().map(PathBuf::from),
@@ -2237,7 +2244,10 @@ fn run_account_action(
                     "Mailbox download failed before new mail could be indexed.",
                     "mbsync",
                     &["-c", temp_config.path.to_string_lossy().as_ref(), "--all"],
-                    &[("HOME", account_paths.state_dir.to_string_lossy().as_ref())],
+                    &[(
+                        "HOME",
+                        account_paths.account_state_root.to_string_lossy().as_ref(),
+                    )],
                 )?;
 
                 run_sync_command(
@@ -2247,7 +2257,10 @@ fn run_account_action(
                     "notmuch",
                     &["new"],
                     &[
-                        ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+                        (
+                            "HOME",
+                            account_paths.account_state_root.to_string_lossy().as_ref(),
+                        ),
                         (
                             "NOTMUCH_CONFIG",
                             account_paths.notmuch_config.to_string_lossy().as_ref(),
@@ -2277,7 +2290,10 @@ fn run_account_action(
                     "notmuch",
                     &["new"],
                     &[
-                        ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+                        (
+                            "HOME",
+                            account_paths.account_state_root.to_string_lossy().as_ref(),
+                        ),
                         (
                             "NOTMUCH_CONFIG",
                             account_paths.notmuch_config.to_string_lossy().as_ref(),
@@ -2418,31 +2434,53 @@ fn ensure_account_paths(
         return Err("mail archive store root is not a directory".to_string());
     }
 
-    let root = store_root
+    let payload_root = store_root
         .join(&account.username)
         .join("emails")
         .join("accounts")
         .join(account.id.to_string());
-    let maildir = root.join("maildir");
-    let state_dir = root.join("state");
-    let sync_state_dir = state_dir.join("mbsync-state");
-    let notmuch_config = state_dir.join("notmuch-config");
+    let maildir = payload_root.join("maildir");
+    let legacy_state_dir = payload_root.join("state");
+    let legacy_notmuch_db_root = maildir.join(".notmuch");
+    let account_state_root = PathBuf::from(config.account_state_root.as_ref())
+        .join(&account.username)
+        .join(account.id.to_string());
+    let sync_state_dir = account_state_root.join("mbsync-state");
+    let notmuch_config = account_state_root.join("notmuch-config");
+    let notmuch_db_root = account_state_root.join("notmuch-db");
 
-    for directory in [&maildir, &state_dir, &sync_state_dir] {
+    for directory in [&maildir, &account_state_root] {
         fs::create_dir_all(directory)
             .map_err(|error| format!("failed to create {}: {error}", directory.display()))?;
     }
 
-    Ok(AccountPaths {
+    let account_paths = AccountPaths {
         maildir,
-        state_dir,
+        account_state_root,
         notmuch_config,
         sync_state_dir,
-    })
+        notmuch_db_root,
+    };
+
+    migrate_legacy_account_state(
+        &legacy_state_dir,
+        &legacy_notmuch_db_root,
+        &account_paths,
+    )?;
+    migrate_account_state_root_layout(&account_paths)?;
+
+    fs::create_dir_all(&account_paths.sync_state_dir).map_err(|error| {
+        format!(
+            "failed to create {}: {error}",
+            account_paths.sync_state_dir.display()
+        )
+    })?;
+
+    Ok(account_paths)
 }
 
 fn account_notmuch_db_exists(account_paths: &AccountPaths) -> bool {
-    account_paths.maildir.join(".notmuch").exists()
+    account_paths.notmuch_db_root.exists()
 }
 
 fn account_index_state(account_paths: &AccountPaths) -> IndexState {
@@ -2463,8 +2501,9 @@ fn ensure_notmuch_config(
     let tags = config.default_tags.join(";");
     let attachment_text_patterns = ATTACHMENT_TEXT_MIME_PATTERNS.join(";");
     let contents = format!(
-        "[database]\npath={}\n\n[user]\nname={}\nprimary_email={}\n\n[new]\ntags={}\nignore=\n\n[search]\nexclude_tags=\n\n[index]\nas_text={}\n\n[maildir]\nsynchronize_flags=true\n",
+        "[database]\nmail_root={}\npath={}\n\n[user]\nname={}\nprimary_email={}\n\n[new]\ntags={}\nignore=\n\n[search]\nexclude_tags=\n\n[index]\nas_text={}\n\n[maildir]\nsynchronize_flags=true\n",
         account_paths.maildir.display(),
+        account_paths.notmuch_db_root.display(),
         account.username,
         account.imap_username,
         tags,
@@ -2480,6 +2519,165 @@ fn ensure_notmuch_config(
     }
 
     write_private_file(&account_paths.notmuch_config, contents.as_bytes())
+}
+
+fn migrate_legacy_account_state(
+    legacy_state_dir: &FsPath,
+    legacy_notmuch_db_root: &FsPath,
+    account_paths: &AccountPaths,
+) -> Result<(), String> {
+    move_or_prune_legacy_path(
+        &legacy_state_dir.join("mbsync-state"),
+        &account_paths.sync_state_dir,
+    )?;
+    move_prefixed_files_if_missing_or_stale(
+        legacy_state_dir,
+        "mbsync-state",
+        &account_paths.sync_state_dir,
+        "state",
+    )?;
+    move_or_prune_legacy_path(
+        &legacy_state_dir.join("notmuch-config"),
+        &account_paths.notmuch_config,
+    )?;
+    move_or_prune_legacy_path(legacy_notmuch_db_root, &account_paths.notmuch_db_root)?;
+    remove_dir_if_empty(legacy_state_dir)?;
+    Ok(())
+}
+
+fn migrate_account_state_root_layout(account_paths: &AccountPaths) -> Result<(), String> {
+    move_prefixed_files_if_missing_or_stale(
+        &account_paths.account_state_root,
+        "mbsync-state",
+        &account_paths.sync_state_dir,
+        "state",
+    )
+}
+
+fn move_or_prune_legacy_path(src: &FsPath, dst: &FsPath) -> Result<(), String> {
+    if !src.exists() {
+        return Ok(());
+    }
+
+    if dst.exists() {
+        return remove_path_recursive(src);
+    }
+
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+
+    copy_path_recursive(src, dst)?;
+    remove_path_recursive(src)?;
+    Ok(())
+}
+
+fn move_prefixed_files_if_missing_or_stale(
+    src_dir: &FsPath,
+    src_prefix: &str,
+    dst_dir: &FsPath,
+    dst_prefix: &str,
+) -> Result<(), String> {
+    if !src_dir.is_dir() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(dst_dir)
+        .map_err(|error| format!("failed to create {}: {error}", dst_dir.display()))?;
+
+    let entries = fs::read_dir(src_dir)
+        .map_err(|error| format!("failed to read {}: {error}", src_dir.display()))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("failed to read {}: {error}", src_dir.display()))?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !file_name.starts_with(src_prefix) {
+            continue;
+        }
+        if file_name == src_prefix {
+            continue;
+        }
+
+        let suffix = &file_name[src_prefix.len()..];
+        let dst = dst_dir.join(format!("{dst_prefix}{suffix}"));
+        let src = entry.path();
+        if dst.exists() {
+            remove_path_recursive(&src)?;
+            continue;
+        }
+
+        copy_path_recursive(&src, &dst)?;
+        remove_path_recursive(&src)?;
+    }
+
+    Ok(())
+}
+
+fn copy_path_recursive(src: &FsPath, dst: &FsPath) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(src)
+        .map_err(|error| format!("failed to inspect {}: {error}", src.display()))?;
+
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "refusing to migrate symlinked legacy state path: {}",
+            src.display()
+        ));
+    }
+
+    if metadata.is_dir() {
+        fs::create_dir_all(dst)
+            .map_err(|error| format!("failed to create {}: {error}", dst.display()))?;
+        fs::set_permissions(dst, metadata.permissions())
+            .map_err(|error| format!("failed to chmod {}: {error}", dst.display()))?;
+        let entries = fs::read_dir(src)
+            .map_err(|error| format!("failed to read {}: {error}", src.display()))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|error| format!("failed to read {}: {error}", src.display()))?;
+            copy_path_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+
+    if !metadata.is_file() {
+        return Err(format!(
+            "refusing to migrate unsupported legacy state path: {}",
+            src.display()
+        ));
+    }
+
+    fs::copy(src, dst)
+        .map_err(|error| format!("failed to copy {} to {}: {error}", src.display(), dst.display()))?;
+    fs::set_permissions(dst, metadata.permissions())
+        .map_err(|error| format!("failed to chmod {}: {error}", dst.display()))?;
+    Ok(())
+}
+
+fn remove_path_recursive(path: &FsPath) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("failed to remove {}: {error}", path.display()))
+    } else {
+        fs::remove_file(path)
+            .map_err(|error| format!("failed to remove {}: {error}", path.display()))
+    }
+}
+
+fn remove_dir_if_empty(path: &FsPath) -> Result<(), String> {
+    if !path.is_dir() {
+        return Ok(());
+    }
+
+    match fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to remove {}: {error}", path.display())),
+    }
 }
 
 fn write_temp_secret(
@@ -2560,7 +2758,7 @@ fn write_temp_mbsyncrc(
     writeln!(
         &mut rendered,
         "SyncState {}",
-        account_paths.sync_state_dir.display()
+        account_paths.sync_state_dir.join("state").display()
     )
     .map_err(|error| format!("failed to render config: {error}"))?;
 
@@ -3011,7 +3209,10 @@ fn list_paperless_candidate_messages(
             &format!("not tag:{PAPERLESS_REVIEWED_TAG}"),
         ],
         &[
-            ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+            (
+                "HOME",
+                account_paths.account_state_root.to_string_lossy().as_ref(),
+            ),
             (
                 "NOTMUCH_CONFIG",
                 account_paths.notmuch_config.to_string_lossy().as_ref(),
@@ -3382,7 +3583,10 @@ fn tag_notmuch_message(
         "notmuch",
         &["tag", &format!("+{tag}"), "--", query.as_str()],
         &[
-            ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+            (
+                "HOME",
+                account_paths.account_state_root.to_string_lossy().as_ref(),
+            ),
             (
                 "NOTMUCH_CONFIG",
                 account_paths.notmuch_config.to_string_lossy().as_ref(),
@@ -3469,7 +3673,10 @@ fn search_mail(
             "notmuch",
             &["search", "--format=json", "--output=summary", query],
             &[
-                ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+                (
+                    "HOME",
+                    account_paths.account_state_root.to_string_lossy().as_ref(),
+                ),
                 (
                     "NOTMUCH_CONFIG",
                     account_paths.notmuch_config.to_string_lossy().as_ref(),
@@ -3656,7 +3863,10 @@ fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String>
         "notmuch",
         &["count", "*"],
         &[
-            ("HOME", account_paths.state_dir.to_string_lossy().as_ref()),
+            (
+                "HOME",
+                account_paths.account_state_root.to_string_lossy().as_ref(),
+            ),
             (
                 "NOTMUCH_CONFIG",
                 account_paths.notmuch_config.to_string_lossy().as_ref(),
@@ -4760,6 +4970,7 @@ mod tests {
     fn test_config(tempdir: &TempDir) -> AppConfig {
         let data_dir = tempdir.path().join("data");
         let store_root = tempdir.path().join("store");
+        let account_state_root = data_dir.join("accounts");
         let runtime_dir = tempdir.path().join("runtime");
         let lock_dir = tempdir.path().join("locks");
         let paperless_consume_root = tempdir.path().join("paperless-consume");
@@ -4770,6 +4981,7 @@ mod tests {
             port: 9011,
             data_dir: Arc::<str>::from(data_dir.to_string_lossy().to_string()),
             store_root: Arc::<str>::from(store_root.to_string_lossy().to_string()),
+            account_state_root: Arc::<str>::from(account_state_root.to_string_lossy().to_string()),
             runtime_dir: Arc::<str>::from(runtime_dir.to_string_lossy().to_string()),
             lock_dir: Arc::<str>::from(lock_dir.to_string_lossy().to_string()),
             paperless_consume_root: Some(Arc::<str>::from(
@@ -4799,6 +5011,7 @@ mod tests {
         assert!(read_only.contains(&PathBuf::from("/etc")));
         assert!(read_write.contains(&PathBuf::from(config.data_dir.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.store_root.as_ref())));
+        assert!(read_write.contains(&PathBuf::from(config.account_state_root.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.runtime_dir.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.lock_dir.as_ref())));
         assert!(read_write.contains(&PathBuf::from(
@@ -5001,7 +5214,12 @@ mod tests {
     }
 
     fn read_notmuch_stub_tag_file(account_paths: &AccountPaths, name: &str) -> String {
-        fs::read_to_string(account_paths.state_dir.join(".notmuch-stub").join(name))
+        fs::read_to_string(
+            account_paths
+                .account_state_root
+                .join(".notmuch-stub")
+                .join(name),
+        )
             .unwrap_or_default()
     }
 
@@ -5013,7 +5231,7 @@ mod tests {
             ),
             (
                 "notmuch",
-                "STATE_DIR=\"$HOME/.notmuch-stub\"\nMAILDIR=\"$(dirname \"$NOTMUCH_CONFIG\")/../maildir\"\nmkdir -p \"$STATE_DIR\"\ncmd=\"${1:-}\"\nshift || true\ncase \"$cmd\" in\n  new)\n    mkdir -p \"$MAILDIR/.notmuch\"\n    ;;\n  count)\n    find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | wc -l | tr -d ' '\n    ;;\n  search)\n    if printf '%s ' \"$@\" | grep -q -- '--format=json'; then\n      printf '[]'\n      exit 0\n    fi\n    reviewed=\"$STATE_DIR/reviewed\"\n    touch \"$reviewed\"\n    while IFS= read -r path; do\n      rel=\"${path#${MAILDIR}/}\"\n      if grep -Fxq \"$rel\" \"$reviewed\"; then\n        continue\n      fi\n      printf '%s\\n' \"$path\"\n    done < <(find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | sort)\n    ;;\n  tag)\n    tag_spec=\"$1\"\n    shift\n    if [[ \"${1:-}\" == '--' ]]; then\n      shift\n    fi\n    query=\"${1:-}\"\n    rel=\"${query#path:\\\"}\"\n    rel=\"${rel%\\\"}\"\n    rel=\"${rel//\\\\\\\"/\\\"}\"\n    rel=\"${rel//\\\\\\\\/\\\\}\"\n    case \"$tag_spec\" in\n      +paperless-reviewed)\n        touch \"$STATE_DIR/reviewed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/reviewed\"\n        sort -u \"$STATE_DIR/reviewed\" -o \"$STATE_DIR/reviewed\"\n        ;;\n      +paperless-filed)\n        touch \"$STATE_DIR/filed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/filed\"\n        sort -u \"$STATE_DIR/filed\" -o \"$STATE_DIR/filed\"\n        ;;\n      *)\n        echo \"unsupported tag command: $tag_spec\" >&2\n        exit 1\n        ;;\n    esac\n    ;;\n  *)\n    echo \"unsupported notmuch command: $cmd\" >&2\n    exit 1\n    ;;\nesac\n",
+                "parse_notmuch_value() {\n  key=\"$1\"\n  awk -F= -v key=\"$key\" '\n    /^\\[database\\]$/ { in_db = 1; next }\n    /^\\[/ { in_db = 0 }\n    in_db && $1 == key { print substr($0, index($0, \"=\") + 1); exit }\n  ' \"$NOTMUCH_CONFIG\"\n}\nSTATE_DIR=\"$HOME/.notmuch-stub\"\nMAILDIR=\"$(parse_notmuch_value mail_root)\"\nDB_DIR=\"$(parse_notmuch_value path)\"\nmkdir -p \"$STATE_DIR\"\ncmd=\"${1:-}\"\nshift || true\ncase \"$cmd\" in\n  new)\n    mkdir -p \"$DB_DIR\"\n    ;;\n  count)\n    find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | wc -l | tr -d ' '\n    ;;\n  search)\n    if printf '%s ' \"$@\" | grep -q -- '--format=json'; then\n      printf '[]'\n      exit 0\n    fi\n    reviewed=\"$STATE_DIR/reviewed\"\n    touch \"$reviewed\"\n    while IFS= read -r path; do\n      rel=\"${path#${MAILDIR}/}\"\n      if grep -Fxq \"$rel\" \"$reviewed\"; then\n        continue\n      fi\n      printf '%s\\n' \"$path\"\n    done < <(find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | sort)\n    ;;\n  tag)\n    tag_spec=\"$1\"\n    shift\n    if [[ \"${1:-}\" == '--' ]]; then\n      shift\n    fi\n    query=\"${1:-}\"\n    rel=\"${query#path:\\\"}\"\n    rel=\"${rel%\\\"}\"\n    rel=\"${rel//\\\\\\\"/\\\"}\"\n    rel=\"${rel//\\\\\\\\/\\\\}\"\n    case \"$tag_spec\" in\n      +paperless-reviewed)\n        touch \"$STATE_DIR/reviewed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/reviewed\"\n        sort -u \"$STATE_DIR/reviewed\" -o \"$STATE_DIR/reviewed\"\n        ;;\n      +paperless-filed)\n        touch \"$STATE_DIR/filed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/filed\"\n        sort -u \"$STATE_DIR/filed\" -o \"$STATE_DIR/filed\"\n        ;;\n      *)\n        echo \"unsupported tag command: $tag_spec\" >&2\n        exit 1\n        ;;\n    esac\n    ;;\n  *)\n    echo \"unsupported notmuch command: $cmd\" >&2\n    exit 1\n    ;;\nesac\n",
             ),
             (
                 "ripmime",
@@ -5047,16 +5265,94 @@ mod tests {
                 .join("maildir")
         );
         assert_eq!(
-            paths.state_dir,
+            paths.account_state_root,
             tempdir
                 .path()
-                .join("store")
-                .join("alice")
-                .join("emails")
+                .join("data")
                 .join("accounts")
+                .join("alice")
                 .join("42")
-                .join("state")
         );
+    }
+
+    #[test]
+    fn account_path_migration_moves_legacy_state_off_the_mail_payload_tree() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account = example_account();
+        let legacy_root = tempdir
+            .path()
+            .join("store")
+            .join("alice")
+            .join("emails")
+            .join("accounts")
+            .join("42");
+        let legacy_sync_state = legacy_root.join("state/mbsync-state/state.dat");
+        let legacy_notmuch_config = legacy_root.join("state/notmuch-config");
+        let legacy_notmuch_db = legacy_root.join("maildir/.notmuch/metadata");
+        fs::create_dir_all(legacy_sync_state.parent().expect("legacy sync parent"))
+            .expect("legacy sync dir");
+        fs::create_dir_all(legacy_notmuch_db.parent().expect("legacy db parent"))
+            .expect("legacy db dir");
+        write_private_file(&legacy_sync_state, b"sync").expect("legacy sync state");
+        write_private_file(&legacy_notmuch_config, b"config").expect("legacy config");
+        write_private_file(&legacy_notmuch_db, b"db").expect("legacy db");
+
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+
+        assert!(paths.sync_state_dir.join("state.dat").exists());
+        assert!(paths.notmuch_config.exists());
+        assert!(paths.notmuch_db_root.join("metadata").exists());
+        assert!(!legacy_root.join("state").exists());
+        assert!(!legacy_root.join("maildir/.notmuch").exists());
+    }
+
+    #[test]
+    fn account_path_migration_moves_flat_legacy_mbsync_state_files_into_the_state_dir() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account = example_account();
+        let legacy_root = tempdir
+            .path()
+            .join("store")
+            .join("alice")
+            .join("emails")
+            .join("accounts")
+            .join("42");
+        let legacy_state_dir = legacy_root.join("state");
+        fs::create_dir_all(&legacy_state_dir).expect("legacy state dir");
+        write_private_file(&legacy_state_dir.join("mbsync-stateINBOX"), b"sync")
+            .expect("legacy sync state");
+
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+
+        assert!(paths.sync_state_dir.join("stateINBOX").exists());
+        assert!(!legacy_state_dir.join("mbsync-stateINBOX").exists());
+        assert!(!legacy_state_dir.exists());
+    }
+
+    #[test]
+    fn account_path_migration_moves_flat_ssd_mbsync_state_files_into_the_state_dir() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account = example_account();
+        let account_state_root = tempdir
+            .path()
+            .join("data")
+            .join("accounts")
+            .join("alice")
+            .join("42");
+        fs::create_dir_all(&account_state_root).expect("account state root");
+        write_private_file(&account_state_root.join("mbsync-stateINBOX"), b"sync")
+            .expect("wrong-root sync state");
+
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+
+        assert!(paths.sync_state_dir.join("stateINBOX").exists());
+        assert!(!account_state_root.join("mbsync-stateINBOX").exists());
     }
 
     #[test]
@@ -5158,6 +5454,14 @@ mod tests {
         assert!(rendered.contains("Host imap.gmail.com"));
         assert!(rendered.contains("\"[Gmail]/All Mail\""));
         assert!(rendered.contains("Sync Pull New Flags"));
+        assert!(rendered.contains(&format!(
+            "Path {}/",
+            paths.maildir.display()
+        )));
+        assert!(rendered.contains(&format!(
+            "SyncState {}",
+            paths.sync_state_dir.join("state").display()
+        )));
     }
 
     #[test]
@@ -5182,6 +5486,10 @@ mod tests {
         let rendered = fs::read_to_string(&mbsyncrc.path).expect("read mbsyncrc");
 
         assert!(rendered.contains("Host imap.example.com"));
+        assert!(rendered.contains(&format!(
+            "SyncState {}",
+            paths.sync_state_dir.join("state").display()
+        )));
         assert!(rendered.contains("\"Archive\""));
     }
 
@@ -5408,7 +5716,7 @@ mod tests {
                 let account_id = seed_account(&config, "alice", "secret");
                 let account = read_account(&config, "alice", account_id);
                 let paths = ensure_account_paths(&config, &account).expect("paths");
-                fs::create_dir_all(paths.maildir.join(".notmuch")).expect("db");
+                fs::create_dir_all(&paths.notmuch_db_root).expect("db");
 
                 let view = build_dashboard_account_view(&config, account);
 
@@ -5576,7 +5884,16 @@ mod tests {
         let account_id = seed_account(&config, "alice", "secret");
         let account = read_account(&config, "alice", account_id);
         let initial = read_notmuch_config(&config, &account);
+        let paths = ensure_account_paths(&config, &account).expect("paths");
         assert!(initial.contains("primary_email=alice@gmail.com"));
+        assert!(initial.contains(&format!(
+            "mail_root={}",
+            paths.maildir.display()
+        )));
+        assert!(initial.contains(&format!(
+            "path={}",
+            paths.notmuch_db_root.display()
+        )));
         assert!(initial.contains("[index]\nas_text="));
         assert!(initial.contains("^application/pdf$"));
         assert!(initial.contains(
@@ -5839,7 +6156,7 @@ mod tests {
             &[
                 (
                     "notmuch",
-                    "mkdir -p \"$HOME/.reindex-log\"\nprintf '%s\n' \"$*\" >> \"$HOME/.reindex-log/commands\"\nmkdir -p \"$(dirname \"$NOTMUCH_CONFIG\")/../maildir/.notmuch\"\n",
+                    "mkdir -p \"$HOME/.reindex-log\"\nprintf '%s\n' \"$*\" >> \"$HOME/.reindex-log/commands\"\nawk -F= '\n  /^\\[database\\]$/ { in_db = 1; next }\n  /^\\[/ { in_db = 0 }\n  in_db && $1 == \"path\" { print substr($0, index($0, \"=\") + 1); exit }\n' \"$NOTMUCH_CONFIG\" | xargs -r mkdir -p\n",
                 ),
                 (
                     "mbsync",
@@ -5858,9 +6175,14 @@ mod tests {
                 run_account_action_for_user(&config, "alice", account_id, AccountAction::Reindex)
                     .expect("reindex");
 
-                let log = fs::read_to_string(paths.state_dir.join(".reindex-log/commands")).expect("log");
+                let log = fs::read_to_string(
+                    paths
+                        .account_state_root
+                        .join(".reindex-log/commands"),
+                )
+                .expect("log");
                 assert!(log.contains("new"));
-                assert!(paths.maildir.join(".notmuch").exists());
+                assert!(paths.notmuch_db_root.exists());
             },
         );
     }
@@ -5892,7 +6214,7 @@ mod tests {
             account_index_state(&paths),
             IndexState::ConfiguredNoDatabase
         );
-        fs::create_dir_all(paths.maildir.join(".notmuch")).expect("db");
+        fs::create_dir_all(&paths.notmuch_db_root).expect("db");
         assert_eq!(account_index_state(&paths), IndexState::Indexed);
     }
 
@@ -5948,7 +6270,7 @@ mod tests {
                 let account = read_account(&config, "alice", account_id);
                 let paths = ensure_account_paths(&config, &account).expect("paths");
                 ensure_notmuch_config(&config, &account, &paths).expect("config");
-                fs::create_dir_all(paths.maildir.join(".notmuch")).expect("db");
+                fs::create_dir_all(&paths.notmuch_db_root).expect("db");
 
                 let results =
                     search_mail(&config, "alice", Some(account_id), "subject:invoice").expect("search");

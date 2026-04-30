@@ -8,6 +8,15 @@ cd "$TESTS_REPO_ROOT"
 
 ensure_tools jq mktemp
 
+require_fixed scripts/storage-health-report.sh 'source "$script_dir/lib-runtime-health.sh"' \
+  "storage-health-report.sh must reuse the shared runtime-health helper."
+require_fixed modules/Core_Modules/storage-monitoring/default.nix 'runtime-health-report' \
+  "storage-monitoring module must define the runtime-health-report service and timer."
+require_fixed modules/Core_Modules/storage-monitoring/default.nix '/var/lib/runtime-monitoring' \
+  "storage-monitoring module must provision the runtime-monitoring state directory."
+require_fixed modules/Core_Modules/storage-monitoring/default.nix 'RUNTIME_HEALTH_STATE_DIR=/var/lib/runtime-monitoring' \
+  "storage-monitoring module must wire the runtime-health-report state directory explicitly."
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 

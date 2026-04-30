@@ -2,14 +2,13 @@
 
 let
   immichPort = 2283;
-  immichManagedPhotosRoot = "${vars.mediaRoot}/photos/managed";
 in
 {
   services.immich = {
     enable = true;
     host = "127.0.0.1";
     port = immichPort;
-    mediaLocation = immichManagedPhotosRoot;
+    mediaLocation = vars.immichManagedRoot;
     user = "immich";
     group = "immich";
     settings.server.externalDomain = "https://${vars.sharePhotosDomain}";

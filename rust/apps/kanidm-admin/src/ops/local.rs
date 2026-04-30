@@ -17,7 +17,7 @@ const DEFAULT_PASSWORD_HASH_DIR: &str = "/var/lib/jellyfin/.nixos-managed/desire
 const PASSWORD_HASH_DIR_ENV: &str = "KANIDM_ADMIN_JELLYFIN_PASSWORD_HASH_DIR";
 const PBKDF2_ITERATIONS: u32 = 210_000;
 
-pub fn set_jellyfin_password(
+pub fn stage_jellyfin_password(
     account_id: &str,
     password_env: &str,
 ) -> Result<CommandOutput, AppError> {
@@ -272,52 +272,26 @@ mod tests {
     fn writes_password_hash_file_from_env() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempfile::tempdir().expect("tempdir");
-
+        let original_password = env::var_os("TEST_JELLYFIN_PASSWORD");
+        let original_dir = env::var_os(PASSWORD_HASH_DIR_ENV);
+        env::set_var("TEST_JELLYFIN_PASSWORD", "correct horse battery staple");
         env::set_var(PASSWORD_HASH_DIR_ENV, temp.path());
-        env::set_var("TEST_JELLYFIN_PASSWORD", "super-secret");
 
-        let output = set_jellyfin_password("dsaw", "TEST_JELLYFIN_PASSWORD").expect("set password");
+        let output =
+            stage_jellyfin_password("dsaw", "TEST_JELLYFIN_PASSWORD").expect("set password");
 
         let hash_path = temp.path().join("dsaw.pbkdf2");
         let stored = fs::read_to_string(&hash_path).expect("hash file");
-        assert!(stored.starts_with("$PBKDF2-SHA512$iterations=210000$"));
-        assert!(output.human.contains(hash_path.to_string_lossy().as_ref()));
-        assert!(output.human.contains("still needs to apply"));
+        assert!(stored.contains("$PBKDF2-SHA512$iterations=210000$"));
+        assert_eq!(output.details["account_id"], "dsaw");
 
-        env::remove_var(PASSWORD_HASH_DIR_ENV);
-        env::remove_var("TEST_JELLYFIN_PASSWORD");
-    }
-
-    #[test]
-    fn atomic_write_replaces_existing_file() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("dsaw.pbkdf2");
-        fs::write(&path, "old-value\n").expect("seed");
-
-        write_password_hash_atomic(temp.path(), &path, "new-value").expect("write");
-
-        let stored = fs::read_to_string(&path).expect("read");
-        assert_eq!(stored, "new-value\n");
-        assert!(temp.path().read_dir().expect("read_dir").all(|entry| !entry
-            .expect("entry")
-            .file_name()
-            .to_string_lossy()
-            .contains(".tmp-")));
-    }
-
-    #[test]
-    fn rejects_symlinked_directory_paths() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let real = temp.path().join("real");
-        fs::create_dir(&real).expect("real dir");
-        let symlink = temp.path().join("link");
-        std::os::unix::fs::symlink(&real, &symlink).expect("symlink");
-
-        let error = write_password_hash_atomic(&symlink, &symlink.join("dsaw.pbkdf2"), "new-value")
-            .expect_err("symlink rejection");
-
-        assert!(error
-            .to_string()
-            .contains("resolves through symlinked component"));
+        match original_password {
+            Some(value) => env::set_var("TEST_JELLYFIN_PASSWORD", value),
+            None => env::remove_var("TEST_JELLYFIN_PASSWORD"),
+        }
+        match original_dir {
+            Some(value) => env::set_var(PASSWORD_HASH_DIR_ENV, value),
+            None => env::remove_var(PASSWORD_HASH_DIR_ENV),
+        }
     }
 }

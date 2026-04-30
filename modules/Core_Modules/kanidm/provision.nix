@@ -23,7 +23,9 @@ in
       mailAddresses = [ vars.kanidmAdminEmail ];
     };
 
-    groups.fileshare_users = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."user-files" = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."shared-files-ro" = mkManualGroup [ ];
+    groups."shared-files-rw" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."mail-archive-users" = mkManualGroup [ ];
     groups."immich-users" = mkManualGroup [ ];
     groups."immich-admin" = mkManualGroup [ vars.kanidmAdminUser ];
@@ -97,7 +99,9 @@ in
       originLanding = "https://${vars.filesDomain}";
       basicSecretFile = oauth2ProxyClientSecretPath;
       preferShortUsername = true;
-      scopeMaps.fileshare_users = [ "openid" "profile" "email" "groups" ];
+      scopeMaps."user-files" = [ "openid" "profile" "email" "groups" ];
+      scopeMaps."shared-files-ro" = [ "openid" "profile" "email" "groups" ];
+      scopeMaps."shared-files-rw" = [ "openid" "profile" "email" "groups" ];
     };
 
     systems.oauth2.mail-archive-web = {

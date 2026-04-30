@@ -47,18 +47,19 @@ run_selection_case \
   require "tests/deploy-wrapper.sh" \
   require "tests/secrets.sh" \
   require "tests/runtime-readiness.sh" \
+  require "tests/storage-monitoring.sh" \
   require "tests/core-config-base.sh" \
-  require "tests/bootstrap-readiness.sh" \
   forbid "tests/backup-target.sh" \
   forbid "tests/disko-wrappers.sh" \
   forbid "tests/storage-layout-audit.sh" \
-  forbid "tests/storage-monitoring.sh" \
   forbid "tests/core-config-storage.sh" \
-  forbid "tests/core-config-apps.sh"
+  forbid "tests/core-config-apps.sh" \
+  forbid "tests/check-repo-runner.sh"
 
 run_selection_case \
   "Paperless module changes" \
   "modules/paperless/service.nix" \
+  require "tests/storage-monitoring.sh" \
   require "tests/core-config-apps.sh" \
   forbid "tests/backup-target.sh" \
   forbid "tests/disko-wrappers.sh" \
@@ -68,36 +69,50 @@ run_selection_case \
   "Storage and Disko changes" \
   "modules/Core_Modules/storage/default.nix
 disko.nix" \
-  require "tests/disko-wrappers.sh" \
-  require "tests/storage-layout-audit.sh" \
   require "tests/storage-monitoring.sh" \
   require "tests/core-config-storage.sh" \
-  forbid "tests/backup-target.sh"
+  forbid "tests/storage-layout-audit.sh" \
+  forbid "tests/backup-target.sh" \
+  forbid "tests/disko-wrappers.sh"
 
 run_selection_case \
   "Backup target changes" \
   "scripts/backup-target.sh" \
-  require "tests/backup-target.sh" \
-  require "tests/core-config-storage.sh" \
+  require "tests/storage-monitoring.sh" \
+  forbid "tests/core-config-storage.sh" \
+  forbid "tests/backup-target.sh" \
   forbid "tests/disko-wrappers.sh"
 
 run_selection_case \
   "Restore guide changes" \
   "documentation/restore-and-recovery.md" \
-  require "tests/bootstrap-readiness.sh" \
-  require "tests/backup-target.sh" \
-  require "tests/storage-layout-audit.sh" \
   require "tests/storage-monitoring.sh" \
-  require "tests/core-config-storage.sh" \
   forbid "tests/disko-wrappers.sh" \
-  forbid "tests/core-config-apps.sh"
+  forbid "tests/core-config-apps.sh" \
+  forbid "tests/check-repo-runner.sh"
+
+run_selection_case \
+  "Runtime monitoring changes" \
+  "scripts/runtime-health-report.sh
+modules/Core_Modules/storage-monitoring/default.nix" \
+  require "tests/storage-monitoring.sh" \
+  require "tests/runtime-health-report.sh" \
+  forbid "tests/backup-target.sh" \
+  forbid "tests/disko-wrappers.sh"
 
 run_selection_case \
   "Configuration changes" \
   "configuration.nix" \
+  require "tests/storage-monitoring.sh" \
   require "tests/core-config-storage.sh" \
   require "tests/core-config-apps.sh" \
-  forbid "tests/backup-target.sh"
+  forbid "tests/backup-target.sh" \
+  forbid "tests/disko-wrappers.sh"
+
+run_selection_case \
+  "Runner changes" \
+  "scripts/check-repo.sh" \
+  require "tests/check-repo-runner.sh"
 
 echo "ℹ️ Checking run-changed fallback behavior…"
 cat >"${tmpdir}/bin-git" <<'EOF'
