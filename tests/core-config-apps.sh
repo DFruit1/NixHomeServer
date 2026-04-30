@@ -447,13 +447,15 @@ forbid_match modules/copyparty/default.nix 'w: @shared-files-rw|m: @shared-files
   "Copyparty shared volumes must not grant write, move, delete, or admin rights to shared groups."
 require_match modules/copyparty/default.nix 'kanidm group get' \
   "Copyparty must derive personal roots from live user-files membership."
+require_match modules/copyparty/default.nix 'build-copyparty-runtime-config' \
+  "Copyparty must build its runtime config through a dedicated helper script."
 require_match modules/copyparty/default.nix 'copyparty-runtime-config-sync' \
   "Copyparty must build its runtime config in a dedicated oneshot service."
-require_match modules/copyparty/default.nix '\[\$username/files\]' \
+require_match modules/copyparty/default.nix '\[/\$username/files\]' \
   "Copyparty must generate per-user writable files subtrees at runtime."
-require_match modules/copyparty/default.nix '\[\$username/audiobooks\]' \
+require_match modules/copyparty/default.nix '\[/\$username/audiobooks\]' \
   "Copyparty must generate per-user writable audiobooks subtrees at runtime."
-require_match modules/copyparty/default.nix '\[\$username/books\]' \
+require_match modules/copyparty/default.nix '\[/\$username/books\]' \
   "Copyparty must generate per-user writable books subtrees at runtime."
 require_match modules/copyparty/default.nix '\[/shared/files\]' \
   "Copyparty must expose a dedicated shared-files subtree."
@@ -483,7 +485,7 @@ forbid_json_contains "$(snapshot_query '.vars.sharedContentSubdirs')" "photos" \
   "Shared content roots must retire the shared photos directory."
 require_match modules/copyparty/default.nix '\[/shared/emails\]' \
   "Copyparty must expose shared mail archives as a dedicated subtree."
-require_match modules/copyparty/default.nix '\[\$username/emails\]' \
+require_match modules/copyparty/default.nix '\[/\$username/emails\]' \
   "Copyparty must generate each user's mail archive as a read-only subtree."
 forbid_match modules/copyparty/default.nix "\\[/''\\$\\{u\\}\\]" \
   "Copyparty must not expose each user's broad top-level root."

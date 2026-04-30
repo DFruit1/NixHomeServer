@@ -90,6 +90,10 @@ The TUI covers:
 - OAuth2 client inspection plus selected runtime toggles
 - group account-policy inspection plus auth-expiry and privilege-expiry changes
 
+Interactive navigation notes:
+- `Esc` acts as back/cancel in menu-style screens so you can unwind menus quickly without selecting `Back`.
+- The guided membership picker intentionally hides internal Kanidm groups such as `idm_*`, `ext_*`, and `domain_admins`. Use the normal Kanidm CLI if you need to manage uncommon internal groups directly.
+
 Expected result:
 - the interactive tool shows the user, group, membership, client, and policy workflows you need without using break-glass credentials
 - live discovery is used for selectable groups and OAuth2 clients

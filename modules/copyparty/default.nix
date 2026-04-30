@@ -5,6 +5,8 @@ let
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   userFilesGroup = "user-files";
   copypartyPort = 3923;
+  runtimeConfigDir = "/var/lib/copyparty/runtime";
+  runtimeConfigPath = "${runtimeConfigDir}/copyparty.conf";
   sharedFilesRoot = "${vars.sharedRoot}/files";
   staticRuntimeConfig = pkgs.writeText "copyparty-runtime.conf" ''
     [global]
@@ -93,7 +95,7 @@ let
   appendPersonalVolumes = pkgs.writeShellScript "append-copyparty-personal-volumes" ''
     set -euo pipefail
 
-    runtime_conf="/run/copyparty/copyparty.conf"
+    runtime_conf="${runtimeConfigPath}"
     export HOME="$(${pkgs.coreutils}/bin/mktemp -d)"
     trap '${pkgs.coreutils}/bin/rm -rf "$HOME"' EXIT
     export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
@@ -114,7 +116,7 @@ let
 
           ${pkgs.coreutils}/bin/cat >>"$runtime_conf" <<EOF
 
-[$username/files]
+[/$username/files]
 ${vars.usersRoot}/$username/files
 accs:
   rwmda: $username
@@ -126,7 +128,7 @@ flags:
   unlistcr: true
   unlistcw: true
 
-[$username/audiobooks]
+[/$username/audiobooks]
 ${vars.usersRoot}/$username/audiobooks
 accs:
   rwmda: $username
@@ -138,7 +140,7 @@ flags:
   unlistcr: true
   unlistcw: true
 
-[$username/books]
+[/$username/books]
 ${vars.usersRoot}/$username/books
 accs:
   rwmda: $username
@@ -150,7 +152,7 @@ flags:
   unlistcr: true
   unlistcw: true
 
-[$username/emails]
+[/$username/emails]
 ${vars.usersRoot}/$username/emails
 accs:
   r: $username
@@ -161,6 +163,14 @@ flags:
   unlistcw: true
 EOF
         done
+  '';
+  buildRuntimeConfig = pkgs.writeShellScript "build-copyparty-runtime-config" ''
+    set -euo pipefail
+
+    install -d -m 0700 -o copyparty -g copyparty ${runtimeConfigDir}
+    install -m 0600 ${staticRuntimeConfig} ${runtimeConfigPath}
+    ${appendPersonalVolumes}
+    chown copyparty:copyparty ${runtimeConfigPath}
   '';
 in
 
@@ -276,6 +286,7 @@ in
       vars.usersRoot
       vars.sharedRoot
     ];
+    serviceConfig.ExecStart = lib.mkForce "${pkgs.copyparty}/bin/copyparty -c ${runtimeConfigPath}";
     serviceConfig.ExecStartPre = lib.mkForce [ ];
   };
 
@@ -295,8 +306,6 @@ in
     before = [ "copyparty.service" ];
     serviceConfig = {
       Type = "oneshot";
-      RuntimeDirectory = [ "copyparty" ];
-      RuntimeDirectoryMode = "0700";
     };
     path = [
       pkgs.coreutils
@@ -304,10 +313,7 @@ in
       pkgs.jq
     ];
     script = ''
-      install -d -m 0700 -o copyparty -g copyparty /run/copyparty
-      install -m 0600 ${staticRuntimeConfig} /run/copyparty/copyparty.conf
-      ${appendPersonalVolumes}
-      chown copyparty:copyparty /run/copyparty/copyparty.conf
+      ${buildRuntimeConfig}
     '';
   };
 }

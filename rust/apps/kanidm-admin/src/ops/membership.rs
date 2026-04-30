@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::{
     inventory::{
         clients::{parse_client_list, parse_client_record},
-        groups::{parse_group_list, GroupSummary},
+        groups::{category_sort_rank, parse_group_list, GroupSummary},
     },
     kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
     output::CommandOutput,
@@ -191,14 +191,27 @@ pub fn prepare_membership_picker_inventory(
     referenced_groups.sort();
     referenced_groups.dedup();
 
-    let mut ordered = groups.value.clone();
-    ordered.sort_by_key(|group| {
-        (
+    let mut ordered = groups
+        .value
+        .into_iter()
+        .filter(|group| is_guided_picker_group(&group.name))
+        .collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        let left_key = (
+            category_sort_rank(&left.name),
             !referenced_groups
                 .iter()
-                .any(|candidate| candidate == &group.name),
-            group.name.clone(),
-        )
+                .any(|candidate| candidate == &left.name),
+            left.name.clone(),
+        );
+        let right_key = (
+            category_sort_rank(&right.name),
+            !referenced_groups
+                .iter()
+                .any(|candidate| candidate == &right.name),
+            right.name.clone(),
+        );
+        left_key.cmp(&right_key)
     });
 
     warnings.sort();
@@ -209,6 +222,10 @@ pub fn prepare_membership_picker_inventory(
         referenced_groups,
         warnings,
     })
+}
+
+fn is_guided_picker_group(name: &str) -> bool {
+    !(name.starts_with("idm_") || name.starts_with("ext_") || name == "domain_admins")
 }
 
 fn verify_membership(
@@ -312,9 +329,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prioritizes_client_referenced_groups_first() {
+    fn guided_picker_filters_internal_groups() {
         let inventory = MembershipPickerInventory {
             groups: vec![
+                GroupSummary {
+                    name: "idm_admins".to_string(),
+                    description: None,
+                },
+                GroupSummary {
+                    name: "ext_radius_servers".to_string(),
+                    description: None,
+                },
+                GroupSummary {
+                    name: "domain_admins".to_string(),
+                    description: None,
+                },
                 GroupSummary {
                     name: "shared-files-rw".to_string(),
                     description: None,
@@ -328,6 +357,46 @@ mod tests {
             warnings: Vec::new(),
         };
 
-        assert_eq!(inventory.groups[0].name, "shared-files-rw");
+        let visible = inventory
+            .groups
+            .into_iter()
+            .filter(|group| is_guided_picker_group(&group.name))
+            .map(|group| group.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible, vec!["shared-files-rw".to_string(), "users".to_string()]);
+    }
+
+    #[test]
+    fn guided_picker_keeps_common_groups_ahead_of_unknown_groups() {
+        let mut groups = [
+            GroupSummary {
+                name: "custom-group".to_string(),
+                description: None,
+            },
+            GroupSummary {
+                name: "users".to_string(),
+                description: None,
+            },
+            GroupSummary {
+                name: "immich-admin".to_string(),
+                description: None,
+            },
+            GroupSummary {
+                name: "immich-users".to_string(),
+                description: None,
+            },
+        ];
+
+        groups.sort_by(|left, right| {
+            let left_key = (category_sort_rank(&left.name), left.name.clone());
+            let right_key = (category_sort_rank(&right.name), right.name.clone());
+            left_key.cmp(&right_key)
+        });
+
+        assert_eq!(groups[0].name, "users");
+        assert_eq!(groups[1].name, "immich-users");
+        assert_eq!(groups[2].name, "immich-admin");
+        assert_eq!(groups[3].name, "custom-group");
     }
 }

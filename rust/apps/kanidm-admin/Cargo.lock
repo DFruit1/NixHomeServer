@@ -372,6 +372,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "console",
  "dialoguer",
  "pbkdf2",
  "predicates",

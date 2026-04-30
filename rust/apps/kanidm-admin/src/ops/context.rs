@@ -38,10 +38,22 @@ pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutpu
     let session = match cli.session_status()? {
         SessionState::Authenticated { stdout } => json!({
             "authenticated": true,
+            "state": "authenticated",
             "diagnostic": stdout.trim(),
+        }),
+        SessionState::Expired { diagnostic } => json!({
+            "authenticated": false,
+            "state": "expired",
+            "diagnostic": diagnostic.trim(),
         }),
         SessionState::Missing { diagnostic } => json!({
             "authenticated": false,
+            "state": "missing",
+            "diagnostic": diagnostic.trim(),
+        }),
+        SessionState::ReauthRequired { diagnostic } => json!({
+            "authenticated": true,
+            "state": "reauth_required",
             "diagnostic": diagnostic.trim(),
         }),
     };

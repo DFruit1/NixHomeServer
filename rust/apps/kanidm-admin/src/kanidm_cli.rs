@@ -27,7 +27,9 @@ pub struct BackendFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionState {
     Authenticated { stdout: String },
+    Expired { diagnostic: String },
     Missing { diagnostic: String },
+    ReauthRequired { diagnostic: String },
 }
 
 #[derive(Debug, Clone)]
@@ -65,18 +67,15 @@ impl KanidmCli {
         let context = "failed to inspect the current Kanidm session";
         let args = self.base_args(["session", "list"]);
         match self.run_raw(args, context)? {
-            Ok(output) => Ok(SessionState::Authenticated {
-                stdout: output.stdout,
-            }),
+            Ok(output) => Ok(classify_session_state(output.stdout.trim())),
             Err(failure) => {
                 let diagnostic = preferred_diagnostic(&failure);
-                if is_session_missing(&normalized(&diagnostic)) {
-                    Ok(SessionState::Missing { diagnostic })
-                } else {
-                    Err(AppError::Backend {
+                match classify_session_state(&diagnostic) {
+                    SessionState::Authenticated { .. } => Err(AppError::Backend {
                         message: context.to_string(),
                         failure: Box::new(failure),
-                    })
+                    }),
+                    state => Ok(state),
                 }
             }
         }
@@ -475,7 +474,7 @@ impl KanidmCli {
     fn classify_failure(&self, context: &str, failure: BackendFailure) -> AppError {
         let diagnostic = preferred_diagnostic(&failure);
         let normalized_diagnostic = normalized(&diagnostic);
-        if is_session_missing(&normalized_diagnostic) {
+        if is_session_expired(&normalized_diagnostic) || is_session_missing(&normalized_diagnostic) {
             return AppError::SessionRequired {
                 message: format!(
                     "{context}. Run `kanidm login --url {} --name {}` first.",
@@ -752,12 +751,39 @@ fn normalized(text: &str) -> String {
     text.trim().to_lowercase()
 }
 
+fn classify_session_state(diagnostic: &str) -> SessionState {
+    let normalized_diagnostic = normalized(diagnostic);
+    if is_reauth_required(&normalized_diagnostic) {
+        SessionState::ReauthRequired {
+            diagnostic: diagnostic.trim().to_string(),
+        }
+    } else if is_session_expired(&normalized_diagnostic) {
+        SessionState::Expired {
+            diagnostic: diagnostic.trim().to_string(),
+        }
+    } else if is_session_missing(&normalized_diagnostic) {
+        SessionState::Missing {
+            diagnostic: diagnostic.trim().to_string(),
+        }
+    } else {
+        SessionState::Authenticated {
+            stdout: diagnostic.trim().to_string(),
+        }
+    }
+}
+
+fn is_session_expired(text: &str) -> bool {
+    text.contains("session has expired")
+        || text.contains("expired auth token")
+        || text.contains("token has expired")
+        || text.contains("login again")
+}
+
 fn is_session_missing(text: &str) -> bool {
     text.contains("no valid auth tokens found")
-        || text.contains("session has expired")
-        || text.contains("login again")
         || text.contains("not authenticated")
         || text.contains("authentication required")
+        || text.contains("no session")
 }
 
 fn is_reauth_required(text: &str) -> bool {
@@ -846,6 +872,30 @@ sleep 1
             "documentation mentions reauthentication flow"
         ));
         assert!(is_reauth_required("privileges have expired"));
+    }
+
+    #[test]
+    fn classifies_expired_session_diagnostics() {
+        assert!(matches!(
+            classify_session_state("Session has expired; login again"),
+            SessionState::Expired { .. }
+        ));
+    }
+
+    #[test]
+    fn classifies_missing_session_diagnostics() {
+        assert!(matches!(
+            classify_session_state("No valid auth tokens found"),
+            SessionState::Missing { .. }
+        ));
+    }
+
+    #[test]
+    fn classifies_reauth_required_diagnostics() {
+        assert!(matches!(
+            classify_session_state("Privileges have expired"),
+            SessionState::ReauthRequired { .. }
+        ));
     }
 
     #[test]

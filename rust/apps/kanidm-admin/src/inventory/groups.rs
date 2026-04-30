@@ -15,6 +15,28 @@ pub struct GroupSummary {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum GroupCategory {
+    Foundation,
+    AppUser,
+    AppAdmin,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct GroupHelp {
+    pub summary: &'static str,
+    pub detail: &'static str,
+    pub category: GroupCategory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResolvedGroupHelp {
+    pub summary: String,
+    pub detail: String,
+    pub category: GroupCategory,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GroupRecord {
     pub name: String,
@@ -58,6 +80,43 @@ pub fn parse_group_list(value: &Value) -> Result<Parsed<Vec<GroupSummary>>, AppE
         value: groups,
         warnings,
     })
+}
+
+pub fn resolve_group_help(name: &str, description: Option<&str>) -> ResolvedGroupHelp {
+    if let Some(help) = curated_group_help(name) {
+        return ResolvedGroupHelp {
+            summary: help.summary.to_string(),
+            detail: help.detail.to_string(),
+            category: help.category,
+        };
+    }
+
+    match description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+    {
+        Some(description) => ResolvedGroupHelp {
+            summary: description,
+            detail: "This live group is visible in the guided picker, but it is not part of the common curated operator guidance set.".to_string(),
+            category: inferred_category(name),
+        },
+        None => ResolvedGroupHelp {
+            summary: "No curated guidance is available for this group.".to_string(),
+            detail: "This live group is not part of the common operator guidance set."
+                .to_string(),
+            category: inferred_category(name),
+        },
+    }
+}
+
+pub fn category_sort_rank(name: &str) -> usize {
+    match resolve_group_help(name, None).category {
+        GroupCategory::Foundation => 0,
+        GroupCategory::AppUser => 1,
+        GroupCategory::AppAdmin => 2,
+        GroupCategory::Other => 3,
+    }
 }
 
 pub fn parse_group_record(
@@ -139,6 +198,93 @@ fn parse_members(value: Option<&Value>, warnings: &mut Vec<String>) -> Vec<Strin
     members
 }
 
+fn curated_group_help(name: &str) -> Option<GroupHelp> {
+    Some(match name {
+        "users" => GroupHelp {
+            summary: "Baseline identity membership for a normal user account.",
+            detail: "Use this for most people first. It means the person exists in Kanidm and can access baseline services that only require general membership.",
+            category: GroupCategory::Foundation,
+        },
+        "user-files" => GroupHelp {
+            summary: "Grants personal Copyparty and SMB file access.",
+            detail: "Add this when the user needs their own personal files area. It does not grant shared storage access by itself.",
+            category: GroupCategory::Foundation,
+        },
+        "shared-files-ro" => GroupHelp {
+            summary: "Grants read-only access to shared storage.",
+            detail: "Use this when someone should browse or download shared files but not upload or modify them. It does not imply personal file access.",
+            category: GroupCategory::Foundation,
+        },
+        "shared-files-rw" => GroupHelp {
+            summary: "Grants shared-write access through Samba.",
+            detail: "Use this for trusted users who need to upload or update shared content. It still does not imply personal file access.",
+            category: GroupCategory::Foundation,
+        },
+        "mail-archive-users" => GroupHelp {
+            summary: "Grants access to the mail archive web app.",
+            detail: "Add this only for users who should sign in to the mail archive. It provides application access rather than broader platform authority.",
+            category: GroupCategory::AppUser,
+        },
+        "immich-users" => GroupHelp {
+            summary: "Grants Immich sign-in access.",
+            detail: "Add this when the user should use the Photos app. First successful OIDC login provisions the local Immich account.",
+            category: GroupCategory::AppUser,
+        },
+        "immich-admin" => GroupHelp {
+            summary: "Grants elevated authority in Immich.",
+            detail: "Reserve this for trusted operators of the Photos app. It carries application-level administrative power beyond normal user access.",
+            category: GroupCategory::AppAdmin,
+        },
+        "paperless-users" => GroupHelp {
+            summary: "Grants Paperless sign-in access.",
+            detail: "Add this when the user should use the Documents app. First successful OIDC login creates or links the local Paperless account.",
+            category: GroupCategory::AppUser,
+        },
+        "paperless-admin" => GroupHelp {
+            summary: "Grants elevated authority in Paperless.",
+            detail: "Reserve this for trusted operators of the Documents app. It allows administrative actions inside Paperless in addition to normal access.",
+            category: GroupCategory::AppAdmin,
+        },
+        "audiobookshelf-users" => GroupHelp {
+            summary: "Grants Audiobookshelf sign-in access.",
+            detail: "Add this when the user should access the Audiobooks app. It is for normal app use rather than administration.",
+            category: GroupCategory::AppUser,
+        },
+        "audiobookshelf-admin" => GroupHelp {
+            summary: "Grants elevated authority in Audiobookshelf.",
+            detail: "Reserve this for trusted operators of the Audiobooks app. It provides administrative control inside Audiobookshelf.",
+            category: GroupCategory::AppAdmin,
+        },
+        "kavita-login" => GroupHelp {
+            summary: "Grants Kavita sign-in access.",
+            detail: "Add this when the user should access the Books app. It enables normal use without granting app-level administrative control.",
+            category: GroupCategory::AppUser,
+        },
+        "kavita-admin" => GroupHelp {
+            summary: "Grants Kavita administrative authority.",
+            detail: "Reserve this for trusted operators of the Books app. It provides administrative control beyond normal login access.",
+            category: GroupCategory::AppAdmin,
+        },
+        "metube-users" => GroupHelp {
+            summary: "Grants access to the MeTube downloads web app.",
+            detail: "Add this when the user should access the Downloads app. It is a normal application-access grant rather than a platform-wide role.",
+            category: GroupCategory::AppUser,
+        },
+        _ => return None,
+    })
+}
+
+fn inferred_category(name: &str) -> GroupCategory {
+    match name {
+        "users" | "user-files" | "shared-files-ro" | "shared-files-rw" => {
+            GroupCategory::Foundation
+        }
+        _ if name.ends_with("-admin") => GroupCategory::AppAdmin,
+        _ if name.ends_with("-users") || name.ends_with("-login") => GroupCategory::AppUser,
+        _ => GroupCategory::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -156,5 +302,29 @@ mod tests {
         assert_eq!(groups.value[0].name, "immich-users");
         assert_eq!(groups.value[1].name, "users");
         assert!(groups.warnings.is_empty());
+    }
+
+    #[test]
+    fn curated_help_prefers_known_groups() {
+        let help = resolve_group_help("shared-files-rw", Some("ignored"));
+
+        assert_eq!(help.category, GroupCategory::Foundation);
+        assert!(help.summary.contains("shared-write"));
+    }
+
+    #[test]
+    fn fallback_help_uses_live_description() {
+        let help = resolve_group_help("custom-app-users", Some("Custom app access."));
+
+        assert_eq!(help.category, GroupCategory::AppUser);
+        assert_eq!(help.summary, "Custom app access.");
+    }
+
+    #[test]
+    fn fallback_help_uses_default_copy_without_description() {
+        let help = resolve_group_help("custom-group", None);
+
+        assert_eq!(help.category, GroupCategory::Other);
+        assert!(help.summary.contains("No curated guidance"));
     }
 }

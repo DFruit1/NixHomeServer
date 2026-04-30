@@ -104,8 +104,28 @@ fn load_home(kanidm: &KanidmCli) -> HomeSummary {
     let mut warnings = Vec::new();
 
     let (authenticated, diagnostic) = match kanidm.session_status() {
-        Ok(SessionState::Authenticated { stdout }) => (true, stdout.trim().to_string()),
-        Ok(SessionState::Missing { diagnostic }) => (false, diagnostic.trim().to_string()),
+        Ok(SessionState::Authenticated { .. }) => (
+            true,
+            format!(
+                "Authenticated session is active for '{}'.",
+                kanidm.admin_name()
+            ),
+        ),
+        Ok(SessionState::Expired { .. }) => (
+            false,
+            format!("Session for '{}' has expired.", kanidm.admin_name()),
+        ),
+        Ok(SessionState::Missing { .. }) => (
+            false,
+            format!("No Kanidm session is active for '{}'.", kanidm.admin_name()),
+        ),
+        Ok(SessionState::ReauthRequired { .. }) => (
+            false,
+            format!(
+                "Session for '{}' is authenticated, but privileged reauthentication is required.",
+                kanidm.admin_name()
+            ),
+        ),
         Err(error) => {
             warnings.push(error.human_message());
             (false, "session state unavailable".to_string())
@@ -160,7 +180,9 @@ fn select_main_menu() -> Result<MenuAction, AppError> {
         "Local Helpers".to_string(),
         "Exit".to_string(),
     ];
-    let selection = forms::select("Select an area", &items, 0)?;
+    let Some(selection) = forms::select("Select an area", &items, 0)? else {
+        return Ok(MenuAction::Exit);
+    };
     Ok(match selection {
         0 => MenuAction::Sessions,
         1 => MenuAction::Users,
@@ -184,10 +206,10 @@ fn sessions_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
             "Back".to_string(),
         ];
         match forms::select("Sessions", &items, 0)? {
-            0 => run_command("Session Status", || session_status(kanidm))?,
-            1 => run_command("Login", || session_login(kanidm))?,
-            2 => run_command("Reauthenticate", || session_reauth(kanidm))?,
-            3 => run_command("Logout", || session_logout(kanidm))?,
+            Some(0) => session_status_flow(kanidm)?,
+            Some(1) => run_command("Login", kanidm, || session_login(kanidm))?,
+            Some(2) => run_command("Reauthenticate", kanidm, || session_reauth(kanidm))?,
+            Some(3) => run_command("Logout", kanidm, || session_logout(kanidm))?,
             _ => break,
         }
     }
@@ -208,20 +230,20 @@ fn users_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
             "Back".to_string(),
         ];
         match forms::select("Users", &items, 0)? {
-            0 => run_command("Kanidm Users", || list_users(kanidm))?,
-            1 => create_user_flow(kanidm)?,
-            2 => user_target_flow(kanidm, "Select a user to inspect", |account_id| {
+            Some(0) => run_command("Kanidm Users", kanidm, || list_users(kanidm))?,
+            Some(1) => create_user_flow(kanidm)?,
+            Some(2) => user_target_flow(kanidm, "Select a user to inspect", |account_id| {
                 show_user(kanidm, account_id)
             })?,
-            3 => user_target_flow(kanidm, "Select a user to disable", |account_id| {
+            Some(3) => user_target_flow(kanidm, "Select a user to disable", |account_id| {
                 disable_user(kanidm, account_id)
             })?,
-            4 => user_target_flow(kanidm, "Select a user to enable", |account_id| {
+            Some(4) => user_target_flow(kanidm, "Select a user to enable", |account_id| {
                 enable_user(kanidm, account_id)
             })?,
-            5 => delete_user_flow(kanidm)?,
-            6 => reset_token_flow(kanidm)?,
-            7 => edit_membership_flow(kanidm)?,
+            Some(5) => delete_user_flow(kanidm)?,
+            Some(6) => reset_token_flow(kanidm)?,
+            Some(7) => edit_membership_flow(kanidm)?,
             _ => break,
         }
     }
@@ -238,15 +260,15 @@ fn groups_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
             "Back".to_string(),
         ];
         match forms::select("Groups", &items, 0)? {
-            0 => run_command("Groups", || list_groups(kanidm))?,
-            1 => {
+            Some(0) => run_command("Groups", kanidm, || list_groups(kanidm))?,
+            Some(1) => {
                 let query = forms::input_required("Search query", None)?;
-                run_command("Group Search", || search_groups(kanidm, &query))?;
+                run_command("Group Search", kanidm, || search_groups(kanidm, &query))?;
             }
-            2 => group_target_flow(kanidm, "Select a group to inspect", |group| {
+            Some(2) => group_target_flow(kanidm, "Select a group to inspect", |group| {
                 show_group(kanidm, group)
             })?,
-            3 => group_target_flow(kanidm, "Select a group to inspect members", |group| {
+            Some(3) => group_target_flow(kanidm, "Select a group to inspect members", |group| {
                 group_members(kanidm, group)
             })?,
             _ => break,
@@ -265,14 +287,14 @@ fn memberships_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
             "Back".to_string(),
         ];
         match forms::select("Memberships", &items, 0)? {
-            0 => user_target_flow(
+            Some(0) => user_target_flow(
                 kanidm,
                 "Select a user to inspect memberships",
                 |account_id| show_membership(kanidm, account_id),
             )?,
-            1 => membership_change_flow(kanidm, MembershipChange::Add)?,
-            2 => membership_change_flow(kanidm, MembershipChange::Remove)?,
-            3 => edit_membership_flow(kanidm)?,
+            Some(1) => membership_change_flow(kanidm, MembershipChange::Add)?,
+            Some(2) => membership_change_flow(kanidm, MembershipChange::Remove)?,
+            Some(3) => edit_membership_flow(kanidm)?,
             _ => break,
         }
     }
@@ -295,32 +317,32 @@ fn clients_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
             "Back".to_string(),
         ];
         match forms::select("OAuth2 Clients", &items, 0)? {
-            0 => run_command("OAuth2 Clients", || list_clients(kanidm))?,
-            1 => client_target_flow(kanidm, "Select an oauth2 client to inspect", |client| {
+            Some(0) => run_command("OAuth2 Clients", kanidm, || list_clients(kanidm))?,
+            Some(1) => client_target_flow(kanidm, "Select an oauth2 client to inspect", |client| {
                 show_client(kanidm, client)
             })?,
-            2 => client_target_flow(kanidm, "Select an oauth2 client secret to show", |client| {
+            Some(2) => client_target_flow(kanidm, "Select an oauth2 client secret to show", |client| {
                 client_secret_show(kanidm, client)
             })?,
-            3 => client_target_flow(
+            Some(3) => client_target_flow(
                 kanidm,
                 "Select an oauth2 client secret to reset",
                 |client| client_secret_reset(kanidm, client),
             )?,
-            4 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+            Some(4) => client_target_flow(kanidm, "Select an oauth2 client", |client| {
                 client_pkce_enable(kanidm, client)
             })?,
-            5 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+            Some(5) => client_target_flow(kanidm, "Select an oauth2 client", |client| {
                 client_pkce_disable(kanidm, client)
             })?,
-            6 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+            Some(6) => client_target_flow(kanidm, "Select an oauth2 client", |client| {
                 client_consent_enable(kanidm, client)
             })?,
-            7 => client_target_flow(kanidm, "Select an oauth2 client", |client| {
+            Some(7) => client_target_flow(kanidm, "Select an oauth2 client", |client| {
                 client_consent_disable(kanidm, client)
             })?,
-            8 => redirect_flow(kanidm, true)?,
-            9 => redirect_flow(kanidm, false)?,
+            Some(8) => redirect_flow(kanidm, true)?,
+            Some(9) => redirect_flow(kanidm, false)?,
             _ => break,
         }
     }
@@ -338,15 +360,15 @@ fn policy_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
             "Back".to_string(),
         ];
         match forms::select("Group Policy", &items, 0)? {
-            0 => group_target_flow(kanidm, "Select a group to inspect", |group| {
+            Some(0) => group_target_flow(kanidm, "Select a group to inspect", |group| {
                 show_group_policy(kanidm, group)
             })?,
-            1 => policy_set_flow(kanidm, true)?,
-            2 => group_target_flow(kanidm, "Select a group", |group| {
+            Some(1) => policy_set_flow(kanidm, true)?,
+            Some(2) => group_target_flow(kanidm, "Select a group", |group| {
                 reset_group_auth_expiry(kanidm, group)
             })?,
-            3 => policy_set_flow(kanidm, false)?,
-            4 => group_target_flow(kanidm, "Select a group", |group| {
+            Some(3) => policy_set_flow(kanidm, false)?,
+            Some(4) => group_target_flow(kanidm, "Select a group", |group| {
                 reset_group_privilege_expiry(kanidm, group)
             })?,
             _ => break,
@@ -363,11 +385,11 @@ fn context_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), App
             "Back".to_string(),
         ];
         match forms::select("Context", &items, 0)? {
-            0 => {
+            Some(0) => {
                 render_output("Context", show_context(context))?;
             }
-            1 => {
-                run_command("Doctor", || doctor(context, kanidm))?;
+            Some(1) => {
+                run_command("Doctor", kanidm, || doctor(context, kanidm))?;
             }
             _ => break,
         }
@@ -379,11 +401,11 @@ fn local_helpers_menu() -> Result<(), AppError> {
     loop {
         let items = vec!["Stage Jellyfin password".to_string(), "Back".to_string()];
         match forms::select("Local Helpers", &items, 0)? {
-            0 => {
+            Some(0) => {
                 let account_id = forms::input_required("Jellyfin account id", None)?;
                 let password_env =
                     forms::input_required("Password env var", Some("JELLYFIN_PASSWORD"))?;
-                run_command("Jellyfin Password", || {
+                run_local_command("Jellyfin Password", || {
                     stage_jellyfin_password(&account_id, &password_env)
                 })?;
             }
@@ -400,8 +422,11 @@ fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         Some(&account_id),
     )?;
     let email = forms::input_optional("Primary email (leave blank to skip)", None)?;
-    let clear_validity = forms::confirm("Clear validity restrictions after creation?", true)?;
-    run_command("Create User", || {
+    let Some(clear_validity) = forms::confirm("Clear validity restrictions after creation?", true)?
+    else {
+        return Ok(());
+    };
+    run_command("Create User", kanidm, || {
         create_user(
             kanidm,
             CreateUserOptions {
@@ -422,7 +447,7 @@ fn delete_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         &format!("Type {account_id} to permanently delete the user"),
         None,
     )?;
-    run_command("Delete User", || {
+    run_command("Delete User", kanidm, || {
         delete_user(
             kanidm,
             DeleteUserOptions {
@@ -443,7 +468,7 @@ fn reset_token_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     let ttl_seconds = ttl_text.parse::<u64>().map_err(|error| AppError::Config {
         message: format!("invalid reset token TTL '{ttl_text}': {error}"),
     })?;
-    run_command("Password Reset Token", || {
+    run_command("Password Reset Token", kanidm, || {
         reset_token(
             kanidm,
             ResetTokenOptions {
@@ -470,11 +495,11 @@ fn policy_set_flow(kanidm: &KanidmCli, auth: bool) -> Result<(), AppError> {
             message: format!("invalid expiry '{seconds_text}': {error}"),
         })?;
     if auth {
-        run_command("Group Policy", || {
+        run_command("Group Policy", kanidm, || {
             set_group_auth_expiry(kanidm, &group, seconds)
         })
     } else {
-        run_command("Group Policy", || {
+        run_command("Group Policy", kanidm, || {
             set_group_privilege_expiry(kanidm, &group, seconds)
         })
     }
@@ -486,11 +511,11 @@ fn redirect_flow(kanidm: &KanidmCli, add: bool) -> Result<(), AppError> {
     };
     let url = forms::input_required("Redirect URL", None)?;
     if add {
-        run_command("OAuth2 Redirect", || {
+        run_command("OAuth2 Redirect", kanidm, || {
             client_redirect_add(kanidm, &client, &url)
         })
     } else {
-        run_command("OAuth2 Redirect", || {
+        run_command("OAuth2 Redirect", kanidm, || {
             client_redirect_remove(kanidm, &client, &url)
         })
     }
@@ -513,7 +538,7 @@ fn edit_membership_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
                 render_bullets(&inventory.warnings)
             ),
         );
-        return forms::pause("Press Enter to continue");
+        return forms::pause("Press Enter or Esc to continue");
     }
 
     let current = show_membership(kanidm, &account_id)?;
@@ -521,37 +546,24 @@ fn edit_membership_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         .iter()
         .map(|current_group| current_group.to_string())
         .collect::<Vec<_>>();
-    let items = inventory
-        .groups
-        .iter()
-        .map(|group| {
-            if inventory
-                .referenced_groups
-                .iter()
-                .any(|candidate| candidate == &group.name)
-            {
-                format!("{} (oauth2-referenced)", group.name)
-            } else {
-                group.name.clone()
-            }
-        })
-        .collect::<Vec<_>>();
     let item_defaults = inventory
         .groups
         .iter()
         .map(|group| defaults.iter().any(|current| current == &group.name))
         .collect::<Vec<_>>();
-    let selected = forms::multiselect(
+    let Some(selected) = forms::membership_picker(
         &format!("Select direct memberships for '{account_id}'"),
-        &items,
+        &inventory.groups,
         &item_defaults,
-    )?;
+    )? else {
+        return Ok(());
+    };
     let groups = selected
         .into_iter()
         .map(|index| inventory.groups[index].name.clone())
         .collect::<Vec<_>>();
 
-    run_command("Memberships", || {
+    run_command("Memberships", kanidm, || {
         set_membership(
             kanidm,
             SetMembershipOptions {
@@ -574,10 +586,10 @@ fn membership_change_flow(kanidm: &KanidmCli, mode: MembershipChange) -> Result<
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     match mode {
-        MembershipChange::Add => run_command("Memberships", || {
+        MembershipChange::Add => run_command("Memberships", kanidm, || {
             add_membership(kanidm, &account_id, &groups)
         }),
-        MembershipChange::Remove => run_command("Memberships", || {
+        MembershipChange::Remove => run_command("Memberships", kanidm, || {
             remove_membership(kanidm, &account_id, &groups)
         }),
     }
@@ -590,7 +602,7 @@ where
     let Some(account_id) = choose_account_id(kanidm, prompt)? else {
         return Ok(());
     };
-    run_command("User", || action(&account_id))
+    run_command("User", kanidm, || action(&account_id))
 }
 
 fn group_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
@@ -600,7 +612,7 @@ where
     let Some(group) = choose_group_name(kanidm, prompt)? else {
         return Ok(());
     };
-    run_command("Group", || action(&group))
+    run_command("Group", kanidm, || action(&group))
 }
 
 fn client_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
@@ -610,7 +622,7 @@ where
     let Some(client) = choose_client_name(kanidm, prompt)? else {
         return Ok(());
     };
-    run_command("OAuth2 Client", || action(&client))
+    run_command("OAuth2 Client", kanidm, || action(&client))
 }
 
 fn choose_account_id(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>, AppError> {
@@ -653,7 +665,9 @@ fn choose_from_users(
             person.primary_email.as_deref().unwrap_or("-")
         )
     }));
-    let selection = forms::select(prompt, &items, 0)?;
+    let Some(selection) = forms::select(prompt, &items, 0)? else {
+        return Ok(None);
+    };
     if selection == 0 {
         return forms::input_optional("Enter the Kanidm account id to manage", None);
     }
@@ -684,7 +698,9 @@ fn choose_from_groups(
             group.description.as_deref().unwrap_or("-")
         )
     }));
-    let selection = forms::select(prompt, &items, 0)?;
+    let Some(selection) = forms::select(prompt, &items, 0)? else {
+        return Ok(None);
+    };
     if selection == 0 {
         return forms::input_optional("Enter the group name to manage", None);
     }
@@ -719,14 +735,33 @@ fn choose_from_clients(
             client.landing_url.as_deref().unwrap_or("-")
         )
     }));
-    let selection = forms::select(prompt, &items, 0)?;
+    let Some(selection) = forms::select(prompt, &items, 0)? else {
+        return Ok(None);
+    };
     if selection == 0 {
         return forms::input_optional("Enter the oauth2 client name to manage", None);
     }
     Ok(Some(clients.value[selection - 1].name.clone()))
 }
 
-fn run_command<F>(title: &str, action: F) -> Result<(), AppError>
+fn run_command<F>(title: &str, kanidm: &KanidmCli, action: F) -> Result<(), AppError>
+where
+    F: FnOnce() -> Result<CommandOutput, AppError>,
+{
+    match action() {
+        Ok(output) => render_output(title, output),
+        Err(error) => {
+            if prompt_for_session_recovery(kanidm, &error)? {
+                return Ok(());
+            }
+            render::print_error(&error);
+            forms::pause("Press Enter or Esc to continue")?;
+            Ok(())
+        }
+    }
+}
+
+fn run_local_command<F>(title: &str, action: F) -> Result<(), AppError>
 where
     F: FnOnce() -> Result<CommandOutput, AppError>,
 {
@@ -734,7 +769,7 @@ where
         Ok(output) => render_output(title, output),
         Err(error) => {
             render::print_error(&error);
-            forms::pause("Press Enter to continue")?;
+            forms::pause("Press Enter or Esc to continue")?;
             Ok(())
         }
     }
@@ -742,7 +777,90 @@ where
 
 fn render_output(title: &str, output: CommandOutput) -> Result<(), AppError> {
     render::print_output(title, &output.render_human());
-    forms::pause("Press Enter to continue")
+    forms::pause("Press Enter or Esc to continue")
+}
+
+fn session_status_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+    match kanidm.session_status()? {
+        SessionState::Expired { .. } => {
+            render::print_note(
+                "Session Status",
+                &format!(
+                    "Session for '{}' has expired. Would you like to reauthenticate?",
+                    kanidm.admin_name()
+                ),
+            );
+            match forms::confirm("Reauthenticate now?", true)? {
+                Some(true) => run_command("Reauthenticate", kanidm, || session_reauth(kanidm)),
+                _ => Ok(()),
+            }
+        }
+        SessionState::Missing { .. } => {
+            render::print_note(
+                "Session Status",
+                &format!(
+                    "Session for '{}' is unavailable. Would you like to authenticate now?",
+                    kanidm.admin_name()
+                ),
+            );
+            match forms::confirm("Authenticate now?", true)? {
+                Some(true) => run_command("Login", kanidm, || session_login(kanidm)),
+                _ => Ok(()),
+            }
+        }
+        SessionState::ReauthRequired { .. } => {
+            render::print_note(
+                "Session Status",
+                &format!(
+                    "Session for '{}' requires privileged reauthentication. Would you like to reauthenticate now?",
+                    kanidm.admin_name()
+                ),
+            );
+            match forms::confirm("Reauthenticate now?", true)? {
+                Some(true) => run_command("Reauthenticate", kanidm, || session_reauth(kanidm)),
+                _ => Ok(()),
+            }
+        }
+        _ => run_command("Session Status", kanidm, || session_status(kanidm)),
+    }
+}
+
+fn prompt_for_session_recovery(kanidm: &KanidmCli, error: &AppError) -> Result<bool, AppError> {
+    match error {
+        AppError::SessionRequired { .. } => {
+            render::print_note(
+                "Session Required",
+                &format!(
+                    "Session for '{}' has expired or is unavailable. Would you like to authenticate now?",
+                    kanidm.admin_name()
+                ),
+            );
+            match forms::confirm("Authenticate now?", true)? {
+                Some(true) => {
+                    run_command("Login", kanidm, || session_login(kanidm))?;
+                    Ok(true)
+                }
+                _ => Ok(true),
+            }
+        }
+        AppError::ReauthRequired { .. } => {
+            render::print_note(
+                "Reauthentication Required",
+                &format!(
+                    "Session for '{}' requires reauthentication. Would you like to reauthenticate now?",
+                    kanidm.admin_name()
+                ),
+            );
+            match forms::confirm("Reauthenticate now?", true)? {
+                Some(true) => {
+                    run_command("Reauthenticate", kanidm, || session_reauth(kanidm))?;
+                    Ok(true)
+                }
+                _ => Ok(true),
+            }
+        }
+        _ => Ok(false),
+    }
 }
 
 fn render_count(value: Option<usize>) -> String {
