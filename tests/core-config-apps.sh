@@ -125,6 +125,7 @@ snapshot="$(nix_eval_host_snapshot_json '
         hasAppStateMigrationService = cfg.systemd.services ? "app-state-migration-v1";
         hasKanidmFilesPosixGroupsService = cfg.systemd.services ? "kanidm-files-posix-groups";
         hasSharedFilesAccessSyncService = cfg.systemd.services ? "shared-files-access-sync";
+        hasCopypartyRuntimeConfigSyncService = cfg.systemd.services ? "copyparty-runtime-config-sync";
         kanidmFilesPosixGroupsScript = cfg.systemd.services.kanidm-files-posix-groups.script;
         sharedFilesAccessSyncScript = cfg.systemd.services.shared-files-access-sync.script;
         mailArchiveSyncConditionMount = cfg.systemd.services.mail-archive-sync.unitConfig.ConditionPathIsMountPoint;
@@ -136,8 +137,6 @@ snapshot="$(nix_eval_host_snapshot_json '
         kanidmPamAllowedLoginGroups = cfg.services.kanidm.unixSettings.pam_allowed_login_groups;
         oauth2ProxyScope = cfg.services.oauth2-proxy.scope;
         oauth2ProxyAllowedGroups = cfg.services.oauth2-proxy.extraConfig."allowed-group";
-        copypartyPreStart = cfg.systemd.services.copyparty.preStart;
-        copypartyPermissionsStartOnly = cfg.systemd.services.copyparty.serviceConfig.PermissionsStartOnly;
       };
     }
 ')"
@@ -446,6 +445,8 @@ forbid_match modules/copyparty/default.nix 'w: @shared-files-rw|m: @shared-files
   "Copyparty shared volumes must not grant write, move, delete, or admin rights to shared groups."
 require_match modules/copyparty/default.nix 'kanidm group get' \
   "Copyparty must derive personal roots from live user-files membership."
+require_match modules/copyparty/default.nix 'copyparty-runtime-config-sync' \
+  "Copyparty must build its runtime config in a dedicated oneshot service."
 require_match modules/copyparty/default.nix '\[\$username/files\]' \
   "Copyparty must generate per-user writable files subtrees at runtime."
 require_match modules/copyparty/default.nix '\[\$username/audiobooks\]' \
@@ -502,10 +503,8 @@ forbid_match modules/copyparty/default.nix '\[/shared/exchange\]' \
   "Copyparty must not retain the exchange subdirectory."
 forbid_match modules/copyparty/default.nix '\[/shared/photos\]' \
   "Copyparty must not retain the photos subdirectory."
-require_json_equal "$(snapshot_query '.config.copypartyPermissionsStartOnly')" 'true' \
-  "Copyparty must run its personal-volume generation preStart with access to the Kanidm admin secret."
-require_json_contains "$(snapshot_query '.config.copypartyPreStart')" 'append-copyparty-personal-volumes' \
-  "Copyparty must append runtime personal volumes from the user-files group."
+require_json_equal "$(snapshot_query '.config.hasCopypartyRuntimeConfigSyncService')" 'true' \
+  "The host must declare the dedicated Copyparty runtime-config sync service."
 
 require_json_equal "$(snapshot_query '.config.powerGovernor')" '"powersave"' \
   "Power management must retain the powersave governor."
@@ -652,6 +651,8 @@ require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')"
   "The POSIX-group convergence service must assign fixed GIDs through the Kanidm CLI."
 require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')" '--gidnumber' \
   "The POSIX-group convergence service must pass explicit gidnumber values."
+require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')" '-D idm_admin' \
+  "The POSIX-group convergence service must authenticate as idm_admin."
 require_match modules/samba/default.nix 'collect_group_members' \
   "Personal fileshare roots must be provisioned from explicit Kanidm group membership."
 require_match modules/samba/default.nix 'collect_group_members \$\{lib\.escapeShellArg userFilesGroup\}' \

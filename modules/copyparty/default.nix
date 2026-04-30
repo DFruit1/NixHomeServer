@@ -6,6 +6,90 @@ let
   userFilesGroup = "user-files";
   copypartyPort = 3923;
   sharedFilesRoot = "${vars.sharedRoot}/files";
+  staticRuntimeConfig = pkgs.writeText "copyparty-runtime.conf" ''
+    [global]
+    auth-ord: idp
+    i: 127.0.0.1
+    idp-h-grp: x-forwarded-groups
+    idp-h-usr: x-forwarded-preferred-username
+    idp-login: /oauth2/start?rd={dst}
+    idp-login-t: Continue with Kanidm
+    idp-logout: /oauth2/sign_out?rd=/oauth2/start?rd=%2F
+    idp-store: 3
+    no-bauth
+    no-reload
+    p: ${toString copypartyPort}
+    rproxy: 1
+    shr: /shares
+    shr-site: https://${vars.filesDomain}
+    shr-who: auth
+    xff-hdr: x-forwarded-for
+    xff-src: 127.0.0.1/32
+
+    [accounts]
+
+    [groups]
+
+    [/shared/files]
+    ${sharedFilesRoot}
+    accs:
+      r: @shared-files-ro, @shared-files-rw
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 775
+      chmod_f: 664
+      unlistcr: true
+      unlistcw: true
+
+    [/shared/audiobooks]
+    ${vars.sharedAudiobooksRoot}
+    accs:
+      r: @shared-files-ro, @shared-files-rw
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 775
+      chmod_f: 664
+      unlistcr: true
+      unlistcw: true
+
+    [/shared/books]
+    ${vars.sharedBooksRoot}
+    accs:
+      r: @shared-files-ro, @shared-files-rw
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 775
+      chmod_f: 664
+      unlistcr: true
+      unlistcw: true
+
+    [/shared/emails]
+    ${vars.sharedEmailsRoot}
+    accs:
+      r: @shared-files-ro, @shared-files-rw
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 775
+      chmod_f: 664
+      unlistcr: true
+      unlistcw: true
+
+    [/shared/videos]
+    ${vars.sharedVideosRoot}
+    accs:
+      r: @shared-files-ro, @shared-files-rw
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 775
+      chmod_f: 664
+      unlistcr: true
+      unlistcw: true
+  '';
   appendPersonalVolumes = pkgs.writeShellScript "append-copyparty-personal-volumes" ''
     set -euo pipefail
 
@@ -16,12 +100,12 @@ let
 
     ${pkgs.kanidm_1_9}/bin/kanidm login \
       -H ${kanidmCliUrl} \
-      -D admin >/dev/null
+      -D idm_admin >/dev/null
 
     ${pkgs.kanidm_1_9}/bin/kanidm group get \
       ${lib.escapeShellArg userFilesGroup} \
       -H ${kanidmCliUrl} \
-      -D admin \
+      -D idm_admin \
       -o json \
       | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]' \
       | ${pkgs.coreutils}/bin/sort -u \
@@ -179,20 +263,51 @@ in
 
   systemd.services.copyparty = {
     wants = [
+      "copyparty-runtime-config-sync.service"
       "fileshare-user-root-sync.service"
       "kanidm-files-posix-groups.service"
     ];
     after = [
+      "copyparty-runtime-config-sync.service"
       "fileshare-user-root-sync.service"
       "kanidm-files-posix-groups.service"
     ];
-    preStart = lib.mkAfter ''
-      ${appendPersonalVolumes}
-    '';
     serviceConfig.BindPaths = lib.mkAfter [
       vars.usersRoot
       vars.sharedRoot
     ];
-    serviceConfig.PermissionsStartOnly = true;
+    serviceConfig.ExecStartPre = lib.mkForce [ ];
+  };
+
+  systemd.services.copyparty-runtime-config-sync = {
+    description = "Build Copyparty runtime config with live user-files membership";
+    wantedBy = [ "multi-user.target" ];
+    wants = [
+      "fileshare-user-root-sync.service"
+      "kanidm-files-posix-groups.service"
+      "local-fs.target"
+    ];
+    after = [
+      "fileshare-user-root-sync.service"
+      "kanidm-files-posix-groups.service"
+      "local-fs.target"
+    ];
+    before = [ "copyparty.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RuntimeDirectory = [ "copyparty" ];
+      RuntimeDirectoryMode = "0700";
+    };
+    path = [
+      pkgs.coreutils
+      pkgs.kanidm_1_9
+      pkgs.jq
+    ];
+    script = ''
+      install -d -m 0700 -o copyparty -g copyparty /run/copyparty
+      install -m 0600 ${staticRuntimeConfig} /run/copyparty/copyparty.conf
+      ${appendPersonalVolumes}
+      chown copyparty:copyparty /run/copyparty/copyparty.conf
+    '';
   };
 }

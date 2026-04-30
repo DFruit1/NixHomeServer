@@ -111,7 +111,7 @@ let
     members_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm login \
         -H ${kanidmCliUrl} \
-        -D admin >/dev/null
+        -D idm_admin >/dev/null
 
       collect_group_members() {
         local group_name="$1"
@@ -119,7 +119,7 @@ let
         ${pkgs.kanidm_1_9}/bin/kanidm group get \
           "$group_name" \
           -H ${kanidmCliUrl} \
-          -D admin \
+          -D idm_admin \
           -o json \
           | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]'
       }
