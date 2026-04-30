@@ -40,7 +40,7 @@ Use Operations when any of these are true:
 
 ## Common Commands
 
-- Validation gate: `nix flake check --no-build` then `scripts/check-repo.sh`
+- Validation gate: `nix flake check --no-build` then `scripts/check-repo.sh --run-flake-check`
 - Exhaustive local gate: `scripts/check-repo.sh --full`
 - Manual docs audit: `scripts/check-docs.sh`
 - Guarded deploy: `./scripts/deploy-validated.sh`
@@ -96,10 +96,15 @@ scripts/check-repo.sh
 ```
 
 Default `scripts/check-repo.sh` behavior:
-- reruns `nix flake check --no-build`
-- runs the smoke suite plus targeted shell tests through `tests/run-changed.sh`
+- does not rerun `nix flake check --no-build` by default
+- runs docs checks when docs are the only changed files, otherwise runs smoke suite plus targeted tests through `tests/run-changed.sh`
 - builds Rust check derivations only when relevant paths changed
 - does not run documentation churn checks; use `scripts/check-docs.sh` manually when you want the repo-audit pass
+
+To include flake checks in the same pass as default mode:
+```bash
+scripts/check-repo.sh --run-flake-check
+```
 
 Use the exhaustive local gate when you want the full shell suite and all explicit Rust derivation checks regardless of the diff.
 

@@ -12,7 +12,7 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 - Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kiwix, Kavita, Jellyfin
 - Mail archive and search: `mail-archive-ui`, `mbsync`, `notmuch`
 - Storage: Btrfs system SSD, single mirrored ZFS data pool, manual cold-storage pools
-- Validation: `nix flake check --no-build`, `scripts/check-repo.sh`, `scripts/check-repo.sh --full`, `scripts/check-docs.sh`, `scripts/runtime-readiness.sh`
+- Validation: `nix flake check --no-build`, `scripts/check-repo.sh --run-flake-check`, `scripts/check-repo.sh --full`, `scripts/check-docs.sh`, `scripts/runtime-readiness.sh`
 
 ## Conventions
 - Placeholders such as `<domain>`, `TARGET_SERVER_IP`, `CURRENT_SERVER_IP`, `ADMIN_USER`, and `NEW_USER` are examples. Replace them with your operator values before running commands.
@@ -29,7 +29,7 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 | Rollback after a bad deploy | [Operations](./documentation/operations.md#rollback-after-a-bad-generation) | A deploy completed, but the current generation is bad and you need SSH, bootloader, or local-console rollback steps. | Re-run [Runtime Validation](./documentation/operations.md#runtime-validation) after rollback. |
 | SSD, data-pool, or cold-storage recovery | [Restore And Recovery](./documentation/restore-and-recovery.md) | You need scenario recipes for SSD replacement, single-mirror data-pool recreation, cold-storage mounting, or SSD-backed state restoration. | Use [Quickstart](./documentation/quickstart.md) only when the rebuilt host still needs bootstrap inputs or agenix key installation. |
 
-Validation gate: see [Operations](./documentation/operations.md#validation-gate) for the canonical `nix flake check --no-build`, `scripts/check-repo.sh`, and `scripts/check-repo.sh --full` workflow.
+Validation gate: see [Operations](./documentation/operations.md#validation-gate) for the canonical `nix flake check --no-build`, `scripts/check-repo.sh --run-flake-check`, and `scripts/check-repo.sh --full` workflow.
 
 Deploy entry point: `./scripts/deploy-validated.sh --help`
 

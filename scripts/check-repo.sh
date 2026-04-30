@@ -10,14 +10,16 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/check-repo.sh [--full] [--skip-flake-check] [--base-ref <rev>]
+Usage: scripts/check-repo.sh [--full] [--run-flake-check] [--skip-flake-check] [--base-ref <rev>]
 
 Run the local repository validation gate.
 
 Default mode:
-  - runs `nix flake check --no-build`
   - runs change-aware shell tests through tests/run-changed.sh
   - builds targeted Rust checks only when relevant files changed
+  - does not run the flake check by default
+
+  Use --run-flake-check to include `nix flake check --no-build`.
 
 Full mode:
   - runs `nix flake check --no-build` unless --skip-flake-check is used
@@ -26,6 +28,7 @@ Full mode:
 
 Examples:
   scripts/check-repo.sh
+  scripts/check-repo.sh --run-flake-check
   scripts/check-repo.sh --full
   scripts/check-repo.sh --full --skip-flake-check
   scripts/check-repo.sh --base-ref origin/main
@@ -33,6 +36,7 @@ EOF
 }
 
 full_mode=false
+run_flake_check=false
 skip_flake_check=false
 base_ref=""
 tests_dir="${CHECK_REPO_TESTS_DIR:-$repo_root/tests}"
@@ -41,6 +45,10 @@ while (($# > 0)); do
   case "$1" in
     --full)
       full_mode=true
+      shift
+      ;;
+    --run-flake-check)
+      run_flake_check=true
       shift
       ;;
     --skip-flake-check)
@@ -157,8 +165,10 @@ run_shell_tests() {
 }
 
 if [[ "$skip_flake_check" == false ]]; then
-  echo "ℹ️ Running flake checks (no build)…"
-  nix flake check --no-build
+  if [[ "$full_mode" == true || "$run_flake_check" == true ]]; then
+    echo "ℹ️ Running flake checks (no build)…"
+    nix flake check --no-build
+  fi
 fi
 
 changed_files=""

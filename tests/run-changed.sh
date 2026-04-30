@@ -22,7 +22,8 @@ while (($# > 0)); do
       cat <<'EOF'
 Usage: tests/run-changed.sh [--base-ref <rev>]
 
-Run the local smoke suite plus targeted tests based on changed files.
+Run documentation checks for docs-only changes; otherwise run the local smoke
+suite plus targeted tests based on changed files.
 Falls back to tests/run-all.sh when change detection is unavailable.
 EOF
       exit 0
@@ -84,10 +85,31 @@ run_smoke_suite() {
   run_test tests/core-config-base.sh
 }
 
+run_docs_suite() {
+  run_test tests/check-docs.sh
+}
+
 matches_changed_files() {
   local changed_files="$1"
   local pattern="$2"
   rg -q "$pattern" <<<"$changed_files"
+}
+
+docs_only_changes() {
+  local changed_files="$1"
+  local candidate
+
+  if [[ -z "$changed_files" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    if [[ "$candidate" != *.md ]]; then
+      return 1
+    fi
+  done <<<"$changed_files"
+  return 0
 }
 
 changed_files=""
@@ -98,6 +120,12 @@ if ! changed_files="$(collect_changed_files)"; then
     exit 0
   fi
   tests/run-all.sh
+  exit 0
+fi
+
+if docs_only_changes "$changed_files"; then
+  echo "ℹ️ Docs-only changes detected; running documentation checks."
+  run_docs_suite
   exit 0
 fi
 

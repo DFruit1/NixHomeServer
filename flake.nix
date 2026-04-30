@@ -87,6 +87,31 @@
           export HOME="$TMPDIR"
           export NIX_CONFIG="experimental-features = nix-command flakes"
           cd ${self}
+          bash tests/module-imports.sh
+          bash tests/core-config-base.sh
+          bash tests/core-config-storage.sh
+          bash tests/core-config-apps.sh
+          bash tests/storage-monitoring.sh
+          bash tests/runtime-readiness.sh
+          touch "$out"
+        '';
+
+        repo-policy-full = pkgs.runCommand "repo-policy-full"
+          {
+            nativeBuildInputs = with pkgs; [
+              bash
+              coreutils
+              findutils
+              gnugrep
+              gnused
+              jq
+              nix
+              ripgrep
+            ];
+          } ''
+          export HOME="$TMPDIR"
+          export NIX_CONFIG="experimental-features = nix-command flakes"
+          cd ${self}
           bash tests/run-all.sh
           touch "$out"
         '';

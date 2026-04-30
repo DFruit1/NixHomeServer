@@ -43,12 +43,13 @@ run_selection_case() {
 run_selection_case \
   "Docs-only changes" \
   "documentation/operations.md" \
-  require "tests/module-imports.sh" \
-  require "tests/deploy-wrapper.sh" \
-  require "tests/secrets.sh" \
-  require "tests/runtime-readiness.sh" \
-  require "tests/storage-monitoring.sh" \
-  require "tests/core-config-base.sh" \
+  require "tests/check-docs.sh" \
+  forbid "tests/module-imports.sh" \
+  forbid "tests/deploy-wrapper.sh" \
+  forbid "tests/secrets.sh" \
+  forbid "tests/runtime-readiness.sh" \
+  forbid "tests/storage-monitoring.sh" \
+  forbid "tests/core-config-base.sh" \
   forbid "tests/backup-target.sh" \
   forbid "tests/disko-wrappers.sh" \
   forbid "tests/storage-layout-audit.sh" \
@@ -86,7 +87,7 @@ run_selection_case \
 run_selection_case \
   "Restore guide changes" \
   "documentation/restore-and-recovery.md" \
-  require "tests/storage-monitoring.sh" \
+  require "tests/check-docs.sh" \
   forbid "tests/disko-wrappers.sh" \
   forbid "tests/core-config-apps.sh" \
   forbid "tests/check-repo-runner.sh"
@@ -183,8 +184,8 @@ chmod +x "${tmpdir}/bin-check-repo/git"
 PATH="${tmpdir}/bin-check-repo:$PATH" \
   CHECK_REPO_TESTS_DIR="$runner_dir" \
   scripts/check-repo.sh >/tmp/check-repo-default.out
-require_fixed "$runner_log" 'nix flake check --no-build' \
-  "Default check-repo mode must run flake checks."
+forbid_match "$runner_log" 'nix flake check --no-build' \
+  "Default check-repo mode should not run flake checks."
 require_fixed "$runner_log" 'nix build .#checks.x86_64-linux.mail-archive-ui-test --print-build-logs' \
   "Default check-repo mode must build the targeted mail-archive UI test derivation."
 forbid_match "$runner_log" 'kanidm-admin-(clippy|test)' \
@@ -193,6 +194,17 @@ require_fixed "$runner_log" 'run-changed ' \
   "Default check-repo mode must invoke tests/run-changed.sh."
 forbid_match "$runner_log" '^run-all$' \
   "Default check-repo mode must not invoke the exhaustive shell suite."
+
+: >"$runner_log"
+PATH="${tmpdir}/bin-check-repo:$PATH" \
+  CHECK_REPO_TESTS_DIR="$runner_dir" \
+  scripts/check-repo.sh --run-flake-check >/tmp/check-repo-run-flake.out
+require_fixed "$runner_log" 'nix flake check --no-build' \
+  "Run-flake-check mode should execute flake checks."
+require_fixed "$runner_log" 'run-changed ' \
+  "Run-flake-check mode should still use change-aware tests."
+forbid_match "$runner_log" '^run-all$' \
+  "Run-flake-check mode should still be change-aware."
 
 : >"$runner_log"
 PATH="${tmpdir}/bin-check-repo:$PATH" \
