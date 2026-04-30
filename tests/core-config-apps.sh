@@ -657,8 +657,10 @@ require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')"
   "The POSIX-group convergence service must assign fixed GIDs through the Kanidm CLI."
 require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')" '--gidnumber' \
   "The POSIX-group convergence service must pass explicit gidnumber values."
-require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')" '-D idm_admin' \
-  "The POSIX-group convergence service must authenticate as idm_admin."
+require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')" 'kanidmSysAdminPass' \
+  "The POSIX-group convergence service must use the system admin secret."
+require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')" '-D admin' \
+  "The POSIX-group convergence service must authenticate as admin."
 require_match modules/samba/default.nix 'collect_group_members' \
   "Personal fileshare roots must be provisioned from explicit Kanidm group membership."
 require_match modules/samba/default.nix 'collect_group_members \$\{lib\.escapeShellArg userFilesGroup\}' \

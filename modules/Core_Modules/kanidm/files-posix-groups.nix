@@ -30,7 +30,7 @@ in
 
       kanidm login \
         -H ${kanidmCliUrl} \
-        -D idm_admin >/dev/null
+        -D admin >/dev/null
 
       ensure_posix_group() {
         local group_name="$1"
@@ -39,13 +39,13 @@ in
         kanidm group get \
           "$group_name" \
           -H ${kanidmCliUrl} \
-          -D idm_admin >/dev/null
+          -D admin >/dev/null
 
         kanidm group posix set \
           "$group_name" \
           --gidnumber "$gid" \
           -H ${kanidmCliUrl} \
-          -D idm_admin >/dev/null
+          -D admin >/dev/null
       }
 
       ${lib.concatMapStringsSep "\n      " (group: ''

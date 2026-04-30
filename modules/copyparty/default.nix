@@ -96,7 +96,7 @@ let
     runtime_conf="/run/copyparty/copyparty.conf"
     export HOME="$(${pkgs.coreutils}/bin/mktemp -d)"
     trap '${pkgs.coreutils}/bin/rm -rf "$HOME"' EXIT
-    export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
+    export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
 
     ${pkgs.kanidm_1_9}/bin/kanidm login \
       -H ${kanidmCliUrl} \
