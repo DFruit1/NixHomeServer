@@ -26,11 +26,11 @@ in
 
       export HOME="$(mktemp -d)"
       trap 'rm -rf "$HOME"' EXIT
-      export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
+      export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
 
       kanidm login \
         -H ${kanidmCliUrl} \
-        -D admin >/dev/null
+        -D idm_admin >/dev/null
 
       ensure_posix_group() {
         local group_name="$1"
@@ -39,13 +39,13 @@ in
         kanidm group get \
           "$group_name" \
           -H ${kanidmCliUrl} \
-          -D admin >/dev/null
+          -D idm_admin >/dev/null
 
         kanidm group posix set \
           "$group_name" \
           --gidnumber "$gid" \
           -H ${kanidmCliUrl} \
-          -D admin >/dev/null
+          -D idm_admin >/dev/null
       }
 
       ${lib.concatMapStringsSep "\n      " (group: ''
