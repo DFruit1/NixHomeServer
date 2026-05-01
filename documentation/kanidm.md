@@ -2,10 +2,9 @@
 
 Use this as the single operator guide for:
 - delegated operator sessions
-- user creation and lifecycle changes
-- live group discovery and membership changes
-- OAuth2 client inspection and runtime tuning
-- reset tokens
+- guided user creation and access assignment
+- password-reset help for users
+- advanced Kanidm inspection and runtime tuning when needed
 - post-login access troubleshooting
 
 Validation, service health, DNS checks, and guarded deploys live in [Operations](./operations.md).
@@ -82,20 +81,22 @@ Preferred server-side path:
 kanidm-admin
 ```
 
-The TUI covers:
-- session login, reauthentication, and logout
-- user creation, inspection, disable, enable, delete, and reset-token flows
-- live group inspection
-- authoritative membership editing backed by live group discovery
-- OAuth2 client inspection plus selected runtime toggles
-- group account-policy inspection plus auth-expiry and privilege-expiry changes
+The default TUI now centers the day-to-day tasks a new admin is most likely to need:
+- create a user
+- manage that user's normal and admin access groups
+- inspect a user and understand their current access
+- disable or re-enable a user
+- help a user reset their password
+
+Everything more specialized lives under `Advanced`.
 
 Interactive navigation notes:
 - `Esc` acts as back/cancel in menu-style screens so you can unwind menus quickly without selecting `Back`.
-- The guided membership picker intentionally hides internal Kanidm groups such as `idm_*`, `ext_*`, and `domain_admins`. Use the normal Kanidm CLI if you need to manage uncommon internal groups directly.
+- The guided access picker intentionally hides internal Kanidm groups such as `idm_*`. Other visible groups keep their explanations in a contextual help pane that updates when the highlighted option changes.
+- `Advanced` contains explicit session tools, raw membership tools, group inspection, OAuth2 clients, group policy, context/doctor, local helpers, and permanent user deletion.
 
 Expected result:
-- the interactive tool shows the user, group, membership, client, and policy workflows you need without using break-glass credentials
+- the interactive tool keeps the normal workflow focused on user administration instead of general Kanidm internals
 - live discovery is used for selectable groups and OAuth2 clients
 - unsafe authoritative writes are blocked when discovery is partial or malformed
 
@@ -127,13 +128,13 @@ Delete a user:
 kanidm-admin user delete "$NEW_USER" --confirm "$NEW_USER"
 ```
 
-Create a password reset token:
+Help a user reset their password:
 
 ```bash
 kanidm-admin user reset-token "$NEW_USER" --ttl 3600
 ```
 
-Reset-token note:
+Password-reset note:
 - `kanidm-admin user reset-token` always preserves the raw backend output.
 - If the wrapper cannot parse a reset URL or token cleanly, it emits warnings instead of pretending the structured fields are complete.
 
@@ -163,9 +164,10 @@ kanidm-admin membership set "$NEW_USER" --allow-empty
 ```
 
 File-access group model:
-- `user-files` is required separately for personal Copyparty and SMB access.
-- `shared-files-ro` grants read-only access to `/shared/*`.
-- `shared-files-rw` grants shared-write access through Samba only.
+- `user-files` grants access to personal Copyparty and WebDAV roots.
+- `shared-files-ro` grants read-only access to `/shared/*` in Copyparty and WebDAV.
+- `shared-files-rw` grants read, write, and move access to `/shared/*` in Copyparty and WebDAV.
+- `domain_admins` is the only shared-files override that grants full `rwmda` access on `/shared/*`.
 - `shared-files-ro` and `shared-files-rw` do not imply `user-files`.
 
 Expected result:
@@ -179,7 +181,13 @@ Normal onboarding sequence:
 3. Add only the live groups they need for file, app, or admin access.
 4. For personal file access, add `user-files` explicitly.
 5. Add `shared-files-ro` or `shared-files-rw` only if they need `/shared/*` access.
-6. Have them sign into the target app so first-login provisioning can happen.
+6. Only use `domain_admins` when they should be able to delete or fully administer shared files.
+7. Have them sign into the target app so first-login provisioning can happen.
+
+Interactive guidance note:
+- The default `Manage User Access` flow uses an exact-set group picker with a contextual help pane.
+- The list shows only group names; each highlighted group explains what access or authority it grants.
+- Low-level `membership add` and `membership remove` style operations remain under `Advanced`.
 
 ## OAuth2 Clients
 
@@ -232,7 +240,7 @@ Expected result:
 
 ## App-Specific First Login Notes
 
-- `files.<domain>`: browser access is enforced by OAuth2 Proxy. Personal roots require `user-files`; shared roots require `shared-files-ro` or `shared-files-rw`.
+- `files.<domain>`: browser and WebDAV access are enforced by OAuth2 Proxy. Personal roots require `user-files`; shared roots require `shared-files-ro`, `shared-files-rw`, or `domain_admins`.
 - `emails.<domain>`: browser access is enforced by `mail-archive-users`.
 - `wiki.<domain>`: baseline `users` membership is sufficient.
 - `ytdownload.<domain>`: browser access is enforced by `metube-users`.

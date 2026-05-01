@@ -28,6 +28,9 @@ build_host=""
 action="test"
 hostname="$(nix_var 'vars.hostname')"
 expected_lan_ip="$(nix_var 'vars.serverLanIP')"
+min_build_host_free_bytes=$((10 * 1024 * 1024 * 1024))
+min_remote_tmp_free_bytes=$((1 * 1024 * 1024 * 1024))
+repo_archive=""
 
 while (($# > 0)); do
   case "$1" in
@@ -71,6 +74,14 @@ if [[ "$action" != "test" && "$action" != "switch" ]]; then
   echo "❌ --action must be 'test' or 'switch'." >&2
   exit 1
 fi
+
+cleanup_local_archive() {
+  if [[ -n "$repo_archive" && -f "$repo_archive" ]]; then
+    rm -f "$repo_archive"
+  fi
+}
+
+trap cleanup_local_archive EXIT
 
 host_part() {
   local host_spec="$1"
@@ -132,6 +143,7 @@ print_transition_notice_if_needed() {
 
 run_rebuild() {
   local rebuild_action="$1"
+  check_remote_build_host_storage "$build_host"
   nix run nixpkgs#nixos-rebuild -- "$rebuild_action" \
     --flake ".#${hostname}" \
     --target-host "$target_host" \
@@ -140,7 +152,7 @@ run_rebuild() {
     --ask-sudo-password
 }
 
-create_runtime_readiness_archive() {
+create_repo_archive() {
   local archive_path="$1"
 
   tar -C "$repo_root" \
@@ -152,13 +164,108 @@ create_runtime_readiness_archive() {
     -cf "$archive_path" .
 }
 
-echo "ℹ️ Running flake checks (no build)…"
-nix flake check --no-build
+stage_archive_on_remote() {
+  local archive_path="$1"
+  local remote_host="$2"
+  local archive_label="$3"
+  local remote_archive
 
-echo "ℹ️ Running repository checks…"
-"$repo_root/scripts/check-repo.sh" --full --skip-flake-check
+  remote_archive="$(ssh "$remote_host" "mktemp /tmp/${archive_label}.XXXXXX.tar")"
+  scp "$archive_path" "$remote_host:$remote_archive"
+  printf '%s\n' "$remote_archive"
+}
+
+check_remote_build_host_storage() {
+  local remote_host="$1"
+
+  echo "ℹ️ Checking build host free space on ${remote_host}…"
+  ssh "$remote_host" \
+    "MIN_BUILD_FREE_BYTES=${min_build_host_free_bytes} MIN_TMP_FREE_BYTES=${min_remote_tmp_free_bytes} bash -s" <<'EOF'
+set -euo pipefail
+
+human_bytes() {
+  local bytes="$1"
+  awk -v bytes="$bytes" 'BEGIN { printf "%.2f GiB", bytes / 1073741824 }'
+}
+
+sandbox_build_dir="$(nix config show 2>/dev/null | sed -n 's/^sandbox-build-dir = //p' | head -n 1)"
+if [[ -z "$sandbox_build_dir" ]]; then
+  sandbox_build_dir="/build"
+fi
+
+build_backing_path="$sandbox_build_dir"
+while [[ ! -e "$build_backing_path" && "$build_backing_path" != "/" ]]; do
+  build_backing_path="$(dirname "$build_backing_path")"
+done
+
+build_available_bytes="$(df -B1 --output=avail "$build_backing_path" | awk 'NR==2 { print $1 }')"
+tmp_available_bytes="$(df -B1 --output=avail /tmp | awk 'NR==2 { print $1 }')"
+
+echo "ℹ️ Build host storage summary: sandbox-build-dir=${sandbox_build_dir}, backing-path=${build_backing_path}, available=$(human_bytes "$build_available_bytes"), /tmp=$(human_bytes "$tmp_available_bytes")"
+
+if (( build_available_bytes < MIN_BUILD_FREE_BYTES )); then
+  echo "❌ Insufficient free space on build host"
+  echo "   sandbox-build-dir: ${sandbox_build_dir}"
+  echo "   backing path: ${build_backing_path}"
+  echo "   available: ${build_available_bytes} bytes ($(human_bytes "$build_available_bytes"))"
+  echo "   required: ${MIN_BUILD_FREE_BYTES} bytes ($(human_bytes "$MIN_BUILD_FREE_BYTES"))"
+  exit 1
+fi
+
+if (( tmp_available_bytes < MIN_TMP_FREE_BYTES )); then
+  echo "❌ Insufficient free space on build host"
+  echo "   sandbox-build-dir: /tmp"
+  echo "   backing path: /tmp"
+  echo "   available: ${tmp_available_bytes} bytes ($(human_bytes "$tmp_available_bytes"))"
+  echo "   required: ${MIN_TMP_FREE_BYTES} bytes ($(human_bytes "$MIN_TMP_FREE_BYTES"))"
+  exit 1
+fi
+EOF
+}
+
+run_remote_repo_checks() {
+  local remote_host="$1"
+  local remote_archive
+
+  remote_archive="$(stage_archive_on_remote "$repo_archive" "$remote_host" "deploy-validated-repo")"
+
+  ssh "$remote_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
+set -euo pipefail
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
+tar -C "$tmpdir" -xf "$REMOTE_ARCHIVE"
+chmod +x "$tmpdir/scripts/check-repo.sh"
+cd "$tmpdir"
+nix shell nixpkgs#ripgrep nixpkgs#python3 -c ./scripts/check-repo.sh --full --skip-flake-check
+EOF
+}
+
+run_remote_runtime_readiness() {
+  local remote_host="$1"
+  local remote_archive
+
+  remote_archive="$(stage_archive_on_remote "$repo_archive" "$remote_host" "runtime-readiness")"
+
+  ssh -tt "$remote_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
+set -euo pipefail
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
+tar -C "$tmpdir" -xf "$REMOTE_ARCHIVE"
+chmod +x "$tmpdir/scripts/runtime-readiness.sh"
+cd "$tmpdir"
+sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/runtime-readiness.sh --profile deploy
+EOF
+}
+
+repo_archive="$(mktemp /tmp/deploy-validated-repo.XXXXXX.tar)"
+create_repo_archive "$repo_archive"
 
 print_transition_notice_if_needed
+
+check_remote_build_host_storage "$build_host"
+
+echo "ℹ️ Running repository checks on ${build_host}…"
+run_remote_repo_checks "$build_host"
 
 echo "ℹ️ Running remote nixos-rebuild test…"
 run_rebuild test
@@ -168,20 +275,7 @@ ssh -t "$target_host" "sudo systemctl --failed --no-pager"
 
 if [[ -x "$repo_root/scripts/runtime-readiness.sh" ]]; then
   echo "ℹ️ Running runtime readiness checks on ${target_host}…"
-  readiness_archive="$(mktemp)"
-  trap 'rm -f "$readiness_archive"' EXIT
-  create_runtime_readiness_archive "$readiness_archive"
-  scp "$readiness_archive" "$target_host:/tmp/runtime-readiness.tar"
-  ssh -tt "$target_host" "
-    set -euo pipefail
-    tmpdir=\$(mktemp -d)
-    trap 'rm -rf \"\$tmpdir\" /tmp/runtime-readiness.tar' EXIT
-    tar -C \"\$tmpdir\" -xf /tmp/runtime-readiness.tar
-    chmod +x \"\$tmpdir/scripts/runtime-readiness.sh\"
-    sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\" --profile deploy
-  "
-  rm -f "$readiness_archive"
-  trap - EXIT
+  run_remote_runtime_readiness "$target_host"
 else
   echo "ℹ️ Local runtime readiness script not found at $repo_root/scripts/runtime-readiness.sh"
 fi
@@ -193,4 +287,15 @@ fi
 
 echo "✅ Deploy validation completed."
 echo "Next verification command:"
-echo "  readiness_archive=\$(mktemp) && tar -C $repo_root --exclude=.git --exclude='./result' --exclude='./result-*' --exclude='./rust/apps/mail-archive-ui/target' --exclude='./rust/apps/kanidm-admin/target' -cf \"\$readiness_archive\" . && scp \"\$readiness_archive\" $target_host:/tmp/runtime-readiness.tar && ssh -tt $target_host 'tmpdir=\$(mktemp -d); trap \"rm -rf \\\"\$tmpdir\\\" /tmp/runtime-readiness.tar\" EXIT; tar -C \"\$tmpdir\" -xf /tmp/runtime-readiness.tar; chmod +x \"\$tmpdir/scripts/runtime-readiness.sh\"; sudo env RUNTIME_READINESS_REPO_ROOT=\"\$tmpdir\" \"\$tmpdir/scripts/runtime-readiness.sh\" --profile deploy' && rm -f \"\$readiness_archive\""
+cat <<EOF
+  repo_archive=\$(mktemp /tmp/runtime-readiness.XXXXXX.tar) && tar -C $repo_root --exclude=.git --exclude='./result' --exclude='./result-*' --exclude='./rust/apps/mail-archive-ui/target' --exclude='./rust/apps/kanidm-admin/target' -cf "\$repo_archive" . && remote_archive=\$(ssh $target_host 'mktemp /tmp/runtime-readiness.XXXXXX.tar') && scp "\$repo_archive" $target_host:"\$remote_archive" && ssh -tt $target_host "REMOTE_ARCHIVE=\"\$remote_archive\" bash -s" <<'REMOTE_EOF'
+set -euo pipefail
+tmpdir=\$(mktemp -d)
+trap 'rm -rf "\$tmpdir" "\$REMOTE_ARCHIVE"' EXIT
+tar -C "\$tmpdir" -xf "\$REMOTE_ARCHIVE"
+chmod +x "\$tmpdir/scripts/runtime-readiness.sh"
+cd "\$tmpdir"
+sudo env RUNTIME_READINESS_REPO_ROOT="\$PWD" ./scripts/runtime-readiness.sh --profile deploy
+REMOTE_EOF
+rm -f "\$repo_archive"
+EOF

@@ -84,6 +84,7 @@ in
             --arg discoveryUrl "${vars.kanidmDiscoveryUrl "paperless-web"}" \
             '{
               openid_connect: {
+                SCOPE: ["openid", "profile", "email", "groups_name"],
                 APPS: [
                   {
                     provider_id: "kanidm",
@@ -92,8 +93,7 @@ in
                     secret: $secret,
                     settings: {
                       server_url: $discoveryUrl,
-                      oauth_pkce_enabled: true,
-                      scope: ["openid", "profile", "email"]
+                      oauth_pkce_enabled: true
                     }
                   }
                 ]
@@ -133,9 +133,15 @@ in
           ${pkgs.sqlite}/bin/sqlite3 "$db" <<'SQL'
           BEGIN;
           INSERT INTO auth_group (name)
-          SELECT 'Users'
+          SELECT 'paperless-users'
           WHERE NOT EXISTS (
-            SELECT 1 FROM auth_group WHERE name = 'Users'
+            SELECT 1 FROM auth_group WHERE name = 'paperless-users'
+          );
+
+          INSERT INTO auth_group (name)
+          SELECT 'paperless-admin'
+          WHERE NOT EXISTS (
+            SELECT 1 FROM auth_group WHERE name = 'paperless-admin'
           );
 
           INSERT INTO auth_group_permissions (group_id, permission_id)
@@ -143,7 +149,7 @@ in
           FROM auth_group AS g
           JOIN auth_permission AS p
             ON p.codename IN (${paperlessUserPermissionsSql})
-          WHERE g.name = 'Users'
+          WHERE g.name IN ('paperless-users', 'paperless-admin')
             AND NOT EXISTS (
               SELECT 1
               FROM auth_group_permissions AS gp
@@ -152,16 +158,21 @@ in
             );
 
           INSERT INTO auth_user_groups (user_id, group_id)
-          SELECT u.id, g.id
-          FROM auth_user AS u
-          JOIN auth_group AS g
-            ON g.name = 'Users'
+          SELECT u.id, target.id
+          FROM auth_user_groups AS ug
+          JOIN auth_user AS u
+            ON u.id = ug.user_id
+          JOIN auth_group AS legacy
+            ON legacy.id = ug.group_id
+           AND legacy.name = 'Users'
+          JOIN auth_group AS target
+            ON target.name = 'paperless-users'
           WHERE u.username NOT IN ('consumer', 'AnonymousUser')
             AND NOT EXISTS (
               SELECT 1
-              FROM auth_user_groups AS ug
-              WHERE ug.user_id = u.id
-                AND ug.group_id = g.id
+              FROM auth_user_groups AS existing
+              WHERE existing.user_id = u.id
+                AND existing.group_id = target.id
             );
           COMMIT;
           SQL

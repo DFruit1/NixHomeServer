@@ -25,11 +25,17 @@ use kanidm_admin::{
             session_status,
         },
         user::{
-            create_user, delete_user, disable_user, enable_user, list_users, reset_token,
-            show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
+            assign_system_admin, create_user, delete_user, disable_user, enable_user, list_users,
+            reset_token, show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
     output::{render_error, render_output, OutputFormat},
+    validation::{
+        validate_account_id, validate_display_name, validate_email, validate_identifier_field,
+        validate_redirect_url, validate_seconds_field, AUTH_EXPIRY_MAX_SECONDS,
+        AUTH_EXPIRY_MIN_SECONDS, PRIVILEGE_EXPIRY_MAX_SECONDS, PRIVILEGE_EXPIRY_MIN_SECONDS,
+        RESET_TOKEN_TTL_MAX_SECONDS, RESET_TOKEN_TTL_MIN_SECONDS,
+    },
 };
 
 #[derive(Debug, Parser)]
@@ -128,6 +134,9 @@ enum UserSubcommand {
         account_id: String,
         #[arg(long, default_value_t = 3600)]
         ttl: u64,
+    },
+    AssignSystemAdmin {
+        account_id: String,
     },
 }
 
@@ -353,106 +362,165 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         },
         Some(Commands::User(command)) => match command.command {
             UserSubcommand::List => list_users(&kanidm).map(Some),
-            UserSubcommand::Show { account_id } => show_user(&kanidm, &account_id).map(Some),
+            UserSubcommand::Show { account_id } => {
+                let account_id = validate_account_id(&account_id)?;
+                show_user(&kanidm, &account_id).map(Some)
+            }
             UserSubcommand::Create {
                 account_id,
                 display_name,
                 email,
                 clear_validity,
-            } => create_user(
-                &kanidm,
-                CreateUserOptions {
-                    account_id,
-                    display_name,
-                    email,
-                    clear_validity,
-                },
-            )
-            .map(Some),
-            UserSubcommand::Disable { account_id } => disable_user(&kanidm, &account_id).map(Some),
-            UserSubcommand::Enable { account_id } => enable_user(&kanidm, &account_id).map(Some),
+            } => {
+                let account_id = validate_account_id(&account_id)?;
+                let display_name = validate_display_name(&display_name)?;
+                let email = email.as_deref().map(validate_email).transpose()?;
+                create_user(
+                    &kanidm,
+                    CreateUserOptions {
+                        account_id,
+                        display_name,
+                        email,
+                        clear_validity,
+                    },
+                )
+                .map(Some)
+            }
+            UserSubcommand::Disable { account_id } => {
+                let account_id = validate_account_id(&account_id)?;
+                disable_user(&kanidm, &account_id).map(Some)
+            }
+            UserSubcommand::Enable { account_id } => {
+                let account_id = validate_account_id(&account_id)?;
+                enable_user(&kanidm, &account_id).map(Some)
+            }
             UserSubcommand::Delete {
                 account_id,
                 confirm,
-            } => delete_user(
-                &kanidm,
-                DeleteUserOptions {
-                    account_id,
-                    confirm,
-                },
-            )
-            .map(Some),
-            UserSubcommand::ResetToken { account_id, ttl } => reset_token(
-                &kanidm,
-                ResetTokenOptions {
-                    account_id,
-                    ttl_seconds: ttl,
-                },
-            )
-            .map(Some),
+            } => {
+                let account_id = validate_account_id(&account_id)?;
+                delete_user(
+                    &kanidm,
+                    DeleteUserOptions {
+                        account_id,
+                        confirm,
+                    },
+                )
+                .map(Some)
+            }
+            UserSubcommand::ResetToken { account_id, ttl } => {
+                let account_id = validate_account_id(&account_id)?;
+                let ttl = validate_seconds_field(
+                    "reset token TTL",
+                    ttl,
+                    RESET_TOKEN_TTL_MIN_SECONDS,
+                    RESET_TOKEN_TTL_MAX_SECONDS,
+                )?;
+                reset_token(
+                    &kanidm,
+                    ResetTokenOptions {
+                        account_id,
+                        ttl_seconds: ttl,
+                    },
+                )
+                .map(Some)
+            }
+            UserSubcommand::AssignSystemAdmin { account_id } => {
+                let account_id = validate_account_id(&account_id)?;
+                assign_system_admin(&kanidm, &account_id).map(Some)
+            }
         },
         Some(Commands::Group(command)) => match command.command {
             GroupSubcommand::List => list_groups(&kanidm).map(Some),
             GroupSubcommand::Search { query } => search_groups(&kanidm, &query).map(Some),
-            GroupSubcommand::Show { group } => show_group(&kanidm, &group).map(Some),
-            GroupSubcommand::Members { group } => group_members(&kanidm, &group).map(Some),
+            GroupSubcommand::Show { group } => {
+                let group = validate_identifier_field("group name", &group)?;
+                show_group(&kanidm, &group).map(Some)
+            }
+            GroupSubcommand::Members { group } => {
+                let group = validate_identifier_field("group name", &group)?;
+                group_members(&kanidm, &group).map(Some)
+            }
         },
         Some(Commands::Membership(command)) => match command.command {
             MembershipSubcommand::Show { account_id } => {
+                let account_id = validate_account_id(&account_id)?;
                 show_membership(&kanidm, &account_id).map(Some)
             }
             MembershipSubcommand::Add { account_id, groups } => {
+                let account_id = validate_account_id(&account_id)?;
+                let groups = validate_identifier_list("group name", groups)?;
                 add_membership(&kanidm, &account_id, &groups).map(Some)
             }
             MembershipSubcommand::Remove { account_id, groups } => {
+                let account_id = validate_account_id(&account_id)?;
+                let groups = validate_identifier_list("group name", groups)?;
                 remove_membership(&kanidm, &account_id, &groups).map(Some)
             }
             MembershipSubcommand::Set {
                 account_id,
                 groups,
                 allow_empty,
-            } => set_membership(
-                &kanidm,
-                SetMembershipOptions {
-                    account_id,
-                    groups,
-                    allow_empty,
-                },
-            )
-            .map(Some),
+            } => {
+                let account_id = validate_account_id(&account_id)?;
+                let groups = validate_identifier_list("group name", groups)?;
+                set_membership(
+                    &kanidm,
+                    SetMembershipOptions {
+                        account_id,
+                        groups,
+                        preserve_groups: Vec::new(),
+                        allow_empty,
+                    },
+                )
+                .map(Some)
+            }
         },
         Some(Commands::Client(command)) => match command.command {
             ClientSubcommand::List => list_clients(&kanidm).map(Some),
-            ClientSubcommand::Show { client } => show_client(&kanidm, &client).map(Some),
+            ClientSubcommand::Show { client } => {
+                let client = validate_identifier_field("oauth2 client name", &client)?;
+                show_client(&kanidm, &client).map(Some)
+            }
             ClientSubcommand::Secret(secret) => match secret.command {
                 ClientSecretSubcommand::Show { client } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
                     client_secret_show(&kanidm, &client).map(Some)
                 }
                 ClientSecretSubcommand::Reset { client } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
                     client_secret_reset(&kanidm, &client).map(Some)
                 }
             },
             ClientSubcommand::Redirect(redirect) => match redirect.command {
                 ClientRedirectSubcommand::Add { client, url } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
+                    let url = validate_redirect_url(&url)?;
                     client_redirect_add(&kanidm, &client, &url).map(Some)
                 }
                 ClientRedirectSubcommand::Remove { client, url } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
+                    let url = validate_redirect_url(&url)?;
                     client_redirect_remove(&kanidm, &client, &url).map(Some)
                 }
             },
             ClientSubcommand::Pkce(pkce) => match pkce.command {
                 ClientPkceSubcommand::Enable { client } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
                     client_pkce_enable(&kanidm, &client).map(Some)
                 }
                 ClientPkceSubcommand::Disable { client } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
                     client_pkce_disable(&kanidm, &client).map(Some)
                 }
             },
             ClientSubcommand::Consent(consent) => match consent.command {
                 ClientConsentSubcommand::Enable { client } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
                     client_consent_enable(&kanidm, &client).map(Some)
                 }
                 ClientConsentSubcommand::Disable { client } => {
+                    let client = validate_identifier_field("oauth2 client name", &client)?;
                     client_consent_disable(&kanidm, &client).map(Some)
                 }
             },
@@ -460,21 +528,38 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         Some(Commands::Policy(command)) => match command.command {
             PolicySubcommand::Group(group) => match group.command {
                 PolicyGroupSubcommand::Show { group } => {
+                    let group = validate_identifier_field("group name", &group)?;
                     show_group_policy(&kanidm, &group).map(Some)
                 }
                 PolicyGroupSubcommand::AuthExpiry(policy) => match policy.command {
                     PolicyValueSubcommand::Set { group, seconds } => {
+                        let group = validate_identifier_field("group name", &group)?;
+                        let seconds = validate_seconds_field(
+                            "auth expiry",
+                            seconds,
+                            AUTH_EXPIRY_MIN_SECONDS,
+                            AUTH_EXPIRY_MAX_SECONDS,
+                        )?;
                         set_group_auth_expiry(&kanidm, &group, seconds).map(Some)
                     }
                     PolicyValueSubcommand::Reset { group } => {
+                        let group = validate_identifier_field("group name", &group)?;
                         reset_group_auth_expiry(&kanidm, &group).map(Some)
                     }
                 },
                 PolicyGroupSubcommand::PrivilegeExpiry(policy) => match policy.command {
                     PolicyValueSubcommand::Set { group, seconds } => {
+                        let group = validate_identifier_field("group name", &group)?;
+                        let seconds = validate_seconds_field(
+                            "privilege expiry",
+                            seconds,
+                            PRIVILEGE_EXPIRY_MIN_SECONDS,
+                            PRIVILEGE_EXPIRY_MAX_SECONDS,
+                        )?;
                         set_group_privilege_expiry(&kanidm, &group, seconds).map(Some)
                     }
                     PolicyValueSubcommand::Reset { group } => {
+                        let group = validate_identifier_field("group name", &group)?;
                         reset_group_privilege_expiry(&kanidm, &group).map(Some)
                     }
                 },
@@ -485,10 +570,23 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                 LocalJellyfinPasswordSubcommand::Stage {
                     account_id,
                     password_env,
-                } => stage_jellyfin_password(&account_id, &password_env).map(Some),
+                } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    stage_jellyfin_password(&account_id, &password_env).map(Some)
+                }
             },
         },
     }
+}
+
+fn validate_identifier_list(
+    field_name: &str,
+    values: Vec<String>,
+) -> Result<Vec<String>, kanidm_admin::AppError> {
+    values
+        .into_iter()
+        .map(|value| validate_identifier_field(field_name, &value))
+        .collect()
 }
 
 #[cfg(test)]
@@ -551,6 +649,19 @@ mod tests {
                     command: ClientPkceSubcommand::Disable { client }
                 })
             })) if client == "files"
+        ));
+    }
+
+    #[test]
+    fn parses_assign_system_admin() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "user", "assign-system-admin", "dsaw"])
+            .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::User(UserCommand {
+                command: UserSubcommand::AssignSystemAdmin { account_id }
+            })) if account_id == "dsaw"
         ));
     }
 

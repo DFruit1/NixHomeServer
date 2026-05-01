@@ -29,7 +29,9 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         SessionState::Authenticated { stdout } => CommandOutput {
             message: "authenticated Kanidm CLI session is active".to_string(),
             human: format!(
-                "Authenticated session is active for '{}'.\n\n{}",
+                "Authenticated base session is active for '{}'.\nPrivileged write commands may still require `kanidm reauth --url {} --name {}`.\n\n{}",
+                cli.admin_name(),
+                cli.server_url(),
                 cli.admin_name(),
                 stdout.trim()
             ),
@@ -45,7 +47,9 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         SessionState::Expired { diagnostic } => CommandOutput {
             message: "Kanidm CLI session has expired".to_string(),
             human: format!(
-                "Session for '{}' has expired. Would you like to reauthenticate?\n\nDiagnostic:\n{}",
+                "Session for '{}' has expired.\nRun `kanidm login --url {} --name {}` first.\n\nDiagnostic:\n{}",
+                cli.admin_name(),
+                cli.server_url(),
                 cli.admin_name(),
                 diagnostic.trim()
             ),
@@ -228,7 +232,10 @@ printf 'active token for admindsaw\n'
         });
 
         let output = session_status(&cli).expect("session status");
-        assert!(output.human.contains("Authenticated session is active"));
+        assert!(output
+            .human
+            .contains("Authenticated base session is active"));
+        assert!(output.human.contains("kanidm reauth"));
         assert_eq!(output.details["state"], "authenticated");
     }
 
@@ -252,7 +259,7 @@ exit 1
 
         let output = session_status(&cli).expect("session status");
         assert!(output.human.contains("has expired"));
-        assert!(output.human.contains("reauthenticate"));
+        assert!(output.human.contains("kanidm login"));
         assert_eq!(output.details["state"], "expired");
     }
 }

@@ -175,11 +175,18 @@
 
   services.btrfs.autoScrub.enable = true;
 
-  environment.systemPackages = [ pkgs.jq ];
+  environment.systemPackages = with pkgs; [
+    jq
+    ripgrep
+  ];
 
   nix = {
     package = pkgs.nixVersions.latest;
     settings = {
+      substituters = [
+        "https://cache.nixos.org"
+        "https://nix-community.cachix.org"
+      ];
       experimental-features = [ "nix-command" "flakes" ];
       trusted-users = [ "root" "dsaw" ];
     };

@@ -3,7 +3,9 @@ use serde_json::{json, Value};
 use crate::{
     inventory::clients::{parse_client_list, parse_client_record, ClientRecord},
     kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
+    ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
     output::CommandOutput,
+    validation::{validate_identifier_field, validate_redirect_url},
     AppError,
 };
 
@@ -70,17 +72,48 @@ pub fn client_redirect_add(
     client: &str,
     url: &str,
 ) -> Result<CommandOutput, AppError> {
-    cli.oauth2_add_redirect_url(client, url)?;
-    let client = verify_redirect_presence(cli, client, url, true)?;
+    let client = validate_identifier_field("oauth2 client name", client)?;
+    let url = validate_redirect_url(url)?;
+    let mut warnings = Vec::new();
+    if let Err(error) = cli.oauth2_add_redirect_url(&client, &url) {
+        let ReconciledWrite { value, warning } = reconcile_failed_write(
+            FailedWriteContext {
+                resource: "oauth2 client",
+                name: &client,
+                requested_state: json!({
+                    "client": client,
+                    "redirect_url": url,
+                    "expected_present": true,
+                }),
+                completed_steps: &[],
+                failed_step: "add_redirect_url",
+                error,
+                next_actions: client_next_actions(&client),
+            },
+            || verify_redirect_presence(cli, &client, &url, true),
+            |_| true,
+            client_observed_state,
+        )?;
+        warnings.push(warning);
+        warnings.extend(value.warnings.iter().cloned());
+    }
+    let verified = verify_redirect_presence(cli, &client, &url, true)?;
     Ok(CommandOutput {
-        message: format!("added oauth2 redirect URL to '{}'", client.value.name),
+        message: format!("added oauth2 redirect URL to '{}'", verified.value.name),
         human: format!(
             "Added redirect URL to '{}'.\n\n{}",
-            client.value.name,
-            human_client_summary(&client.value)
+            verified.value.name,
+            human_client_summary(&verified.value)
         ),
-        details: json!({ "client": client.value, "changed_redirect_url": url }),
-        warnings: client.warnings,
+        details: json!({
+            "client": verified.value,
+            "changed_redirect_url": url,
+            "requested_state": {
+                "redirect_url": url,
+                "expected_present": true,
+            }
+        }),
+        warnings: merge_warnings(warnings, verified.warnings),
     })
 }
 
@@ -89,44 +122,153 @@ pub fn client_redirect_remove(
     client: &str,
     url: &str,
 ) -> Result<CommandOutput, AppError> {
-    cli.oauth2_remove_redirect_url(client, url)?;
-    let client = verify_redirect_presence(cli, client, url, false)?;
+    let client = validate_identifier_field("oauth2 client name", client)?;
+    let url = validate_redirect_url(url)?;
+    let mut warnings = Vec::new();
+    if let Err(error) = cli.oauth2_remove_redirect_url(&client, &url) {
+        let ReconciledWrite { value, warning } = reconcile_failed_write(
+            FailedWriteContext {
+                resource: "oauth2 client",
+                name: &client,
+                requested_state: json!({
+                    "client": client,
+                    "redirect_url": url,
+                    "expected_present": false,
+                }),
+                completed_steps: &[],
+                failed_step: "remove_redirect_url",
+                error,
+                next_actions: client_next_actions(&client),
+            },
+            || verify_redirect_presence(cli, &client, &url, false),
+            |_| true,
+            client_observed_state,
+        )?;
+        warnings.push(warning);
+        warnings.extend(value.warnings.iter().cloned());
+    }
+    let verified = verify_redirect_presence(cli, &client, &url, false)?;
     Ok(CommandOutput {
-        message: format!("removed oauth2 redirect URL from '{}'", client.value.name),
+        message: format!("removed oauth2 redirect URL from '{}'", verified.value.name),
         human: format!(
             "Removed redirect URL from '{}'.\n\n{}",
-            client.value.name,
-            human_client_summary(&client.value)
+            verified.value.name,
+            human_client_summary(&verified.value)
         ),
-        details: json!({ "client": client.value, "changed_redirect_url": url }),
-        warnings: client.warnings,
+        details: json!({
+            "client": verified.value,
+            "changed_redirect_url": url,
+            "requested_state": {
+                "redirect_url": url,
+                "expected_present": false,
+            }
+        }),
+        warnings: merge_warnings(warnings, verified.warnings),
     })
 }
 
 pub fn client_pkce_enable(cli: &KanidmCli, client: &str) -> Result<CommandOutput, AppError> {
-    cli.oauth2_enable_pkce(client)?;
+    let mut warnings = Vec::new();
+    if let Err(error) = cli.oauth2_enable_pkce(client) {
+        let ReconciledWrite { value, warning } = reconcile_failed_write(
+            FailedWriteContext {
+                resource: "oauth2 client",
+                name: client,
+                requested_state: json!({
+                    "client": client,
+                    "field": "pkce_enabled",
+                    "expected": true,
+                }),
+                completed_steps: &[],
+                failed_step: "enable_pkce",
+                error,
+                next_actions: client_next_actions(client),
+            },
+            || verify_bool_flag(cli, client, "pkce_enabled", Some(true)),
+            |_| true,
+            client_observed_state,
+        )?;
+        warnings.push(warning);
+        warnings.extend(value.warnings.iter().cloned());
+    }
     let client = verify_bool_flag(cli, client, "pkce_enabled", Some(true))?;
     Ok(CommandOutput {
         message: format!("enabled PKCE for oauth2 client '{}'", client.value.name),
         human: human_client_summary(&client.value),
-        details: json!({ "client": client.value }),
-        warnings: client.warnings,
+        details: json!({
+            "client": client.value,
+            "requested_state": {
+                "field": "pkce_enabled",
+                "expected": true,
+            }
+        }),
+        warnings: merge_warnings(warnings, client.warnings),
     })
 }
 
 pub fn client_pkce_disable(cli: &KanidmCli, client: &str) -> Result<CommandOutput, AppError> {
-    cli.oauth2_disable_pkce(client)?;
+    let mut warnings = Vec::new();
+    if let Err(error) = cli.oauth2_disable_pkce(client) {
+        let ReconciledWrite { value, warning } = reconcile_failed_write(
+            FailedWriteContext {
+                resource: "oauth2 client",
+                name: client,
+                requested_state: json!({
+                    "client": client,
+                    "field": "pkce_enabled",
+                    "expected": false,
+                }),
+                completed_steps: &[],
+                failed_step: "disable_pkce",
+                error,
+                next_actions: client_next_actions(client),
+            },
+            || verify_bool_flag(cli, client, "pkce_enabled", Some(false)),
+            |_| true,
+            client_observed_state,
+        )?;
+        warnings.push(warning);
+        warnings.extend(value.warnings.iter().cloned());
+    }
     let client = verify_bool_flag(cli, client, "pkce_enabled", Some(false))?;
     Ok(CommandOutput {
         message: format!("disabled PKCE for oauth2 client '{}'", client.value.name),
         human: human_client_summary(&client.value),
-        details: json!({ "client": client.value }),
-        warnings: client.warnings,
+        details: json!({
+            "client": client.value,
+            "requested_state": {
+                "field": "pkce_enabled",
+                "expected": false,
+            }
+        }),
+        warnings: merge_warnings(warnings, client.warnings),
     })
 }
 
 pub fn client_consent_enable(cli: &KanidmCli, client: &str) -> Result<CommandOutput, AppError> {
-    cli.oauth2_enable_consent(client)?;
+    let mut warnings = Vec::new();
+    if let Err(error) = cli.oauth2_enable_consent(client) {
+        let ReconciledWrite { value, warning } = reconcile_failed_write(
+            FailedWriteContext {
+                resource: "oauth2 client",
+                name: client,
+                requested_state: json!({
+                    "client": client,
+                    "field": "consent_prompt_enabled",
+                    "expected": true,
+                }),
+                completed_steps: &[],
+                failed_step: "enable_consent_prompt",
+                error,
+                next_actions: client_next_actions(client),
+            },
+            || verify_bool_flag(cli, client, "consent_prompt_enabled", Some(true)),
+            |_| true,
+            client_observed_state,
+        )?;
+        warnings.push(warning);
+        warnings.extend(value.warnings.iter().cloned());
+    }
     let client = verify_bool_flag(cli, client, "consent_prompt_enabled", Some(true))?;
     Ok(CommandOutput {
         message: format!(
@@ -134,13 +276,41 @@ pub fn client_consent_enable(cli: &KanidmCli, client: &str) -> Result<CommandOut
             client.value.name
         ),
         human: human_client_summary(&client.value),
-        details: json!({ "client": client.value }),
-        warnings: client.warnings,
+        details: json!({
+            "client": client.value,
+            "requested_state": {
+                "field": "consent_prompt_enabled",
+                "expected": true,
+            }
+        }),
+        warnings: merge_warnings(warnings, client.warnings),
     })
 }
 
 pub fn client_consent_disable(cli: &KanidmCli, client: &str) -> Result<CommandOutput, AppError> {
-    cli.oauth2_disable_consent(client)?;
+    let mut warnings = Vec::new();
+    if let Err(error) = cli.oauth2_disable_consent(client) {
+        let ReconciledWrite { value, warning } = reconcile_failed_write(
+            FailedWriteContext {
+                resource: "oauth2 client",
+                name: client,
+                requested_state: json!({
+                    "client": client,
+                    "field": "consent_prompt_enabled",
+                    "expected": false,
+                }),
+                completed_steps: &[],
+                failed_step: "disable_consent_prompt",
+                error,
+                next_actions: client_next_actions(client),
+            },
+            || verify_bool_flag(cli, client, "consent_prompt_enabled", Some(false)),
+            |_| true,
+            client_observed_state,
+        )?;
+        warnings.push(warning);
+        warnings.extend(value.warnings.iter().cloned());
+    }
     let client = verify_bool_flag(cli, client, "consent_prompt_enabled", Some(false))?;
     Ok(CommandOutput {
         message: format!(
@@ -148,8 +318,14 @@ pub fn client_consent_disable(cli: &KanidmCli, client: &str) -> Result<CommandOu
             client.value.name
         ),
         human: human_client_summary(&client.value),
-        details: json!({ "client": client.value }),
-        warnings: client.warnings,
+        details: json!({
+            "client": client.value,
+            "requested_state": {
+                "field": "consent_prompt_enabled",
+                "expected": false,
+            }
+        }),
+        warnings: merge_warnings(warnings, client.warnings),
     })
 }
 
@@ -256,6 +432,27 @@ fn raw_client_command_output(message: String, human: String, details: Value) -> 
         details,
         warnings: Vec::new(),
     }
+}
+
+fn client_observed_state(client: &crate::inventory::Parsed<ClientRecord>) -> Value {
+    json!({
+        "client": &client.value,
+        "warnings": &client.warnings,
+    })
+}
+
+fn client_next_actions(client: &str) -> Vec<String> {
+    vec![
+        format!("Inspect the client with `kanidm-admin client show {client}`."),
+        "If the live settings are still wrong, rerun the change after confirming the client name and current redirects or flags.".to_string(),
+    ]
+}
+
+fn merge_warnings(mut left: Vec<String>, mut right: Vec<String>) -> Vec<String> {
+    left.append(&mut right);
+    left.sort();
+    left.dedup();
+    left
 }
 
 fn render_optional_bool(value: Option<bool>) -> &'static str {

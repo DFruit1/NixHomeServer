@@ -137,9 +137,11 @@ impl KanidmCli {
     }
 
     pub fn person_create(&self, account_id: &str, display_name: &str) -> Result<(), AppError> {
-        self.run_unit(
+        self.run_named_create_unit(
             self.base_args(["person", "create", account_id, display_name]),
             &format!("failed to create Kanidm user '{account_id}'"),
+            "user",
+            account_id,
         )
     }
 
@@ -397,6 +399,21 @@ impl KanidmCli {
         self.run_success(args, context).map(|_| ())
     }
 
+    fn run_named_create_unit(
+        &self,
+        args: Vec<String>,
+        context: &str,
+        resource: &str,
+        name: &str,
+    ) -> Result<(), AppError> {
+        match self.run_raw(args, context)? {
+            Ok(_) => Ok(()),
+            Err(failure) => {
+                Err(self.classify_named_create_failure(resource, name, context, failure))
+            }
+        }
+    }
+
     fn run_stdout(&self, args: Vec<String>, context: &str) -> Result<String, AppError> {
         self.run_success(args, context).map(|output| output.stdout)
     }
@@ -473,8 +490,9 @@ impl KanidmCli {
 
     fn classify_failure(&self, context: &str, failure: BackendFailure) -> AppError {
         let diagnostic = preferred_diagnostic(&failure);
-        let normalized_diagnostic = normalized(&diagnostic);
-        if is_session_expired(&normalized_diagnostic) || is_session_missing(&normalized_diagnostic) {
+        let normalized_diagnostic = normalized(&classification_diagnostic(&failure));
+        if is_session_expired(&normalized_diagnostic) || is_session_missing(&normalized_diagnostic)
+        {
             return AppError::SessionRequired {
                 message: format!(
                     "{context}. Run `kanidm login --url {} --name {}` first.",
@@ -486,7 +504,7 @@ impl KanidmCli {
         if is_reauth_required(&normalized_diagnostic) {
             return AppError::ReauthRequired {
                 message: format!(
-                    "{context}. Run `kanidm reauth --url {} --name {}` first.",
+                    "{context}. Run `kanidm reauth --url {} --name {}` first. The base session may still appear active, but privileged write access has expired.",
                     self.server_url, self.admin_name
                 ),
                 details: session_or_reauth_details(&diagnostic, &failure),
@@ -506,7 +524,8 @@ impl KanidmCli {
         failure: BackendFailure,
     ) -> AppError {
         let diagnostic = preferred_diagnostic(&failure);
-        if is_not_found(&normalized(&diagnostic)) {
+        let normalized_diagnostic = normalized(&classification_diagnostic(&failure));
+        if is_not_found(&normalized_diagnostic) {
             return AppError::NotFound {
                 message: format!("{resource} '{name}' was not found"),
                 resource: resource.to_string(),
@@ -518,6 +537,29 @@ impl KanidmCli {
             };
         }
         self.classify_failure(context, failure)
+    }
+
+    fn classify_named_create_failure(
+        &self,
+        resource: &str,
+        name: &str,
+        context: &str,
+        failure: BackendFailure,
+    ) -> AppError {
+        let normalized_diagnostic = normalized(&classification_diagnostic(&failure));
+        if is_already_exists(&normalized_diagnostic) {
+            return AppError::AlreadyExists {
+                message: format!("{resource} '{name}' already exists"),
+                resource: resource.to_string(),
+                name: name.to_string(),
+                details: json!({
+                    "resource": resource,
+                    "name": name,
+                    "backend": backend_failure_payload(&failure),
+                }),
+            };
+        }
+        self.classify_named_failure(resource, name, context, failure)
     }
 
     fn base_args<'a>(&self, prefix: impl IntoIterator<Item = &'a str>) -> Vec<String> {
@@ -747,8 +789,46 @@ fn preferred_diagnostic(failure: &BackendFailure) -> String {
     }
 }
 
+fn classification_diagnostic(failure: &BackendFailure) -> String {
+    [failure.stderr.as_str(), failure.stdout.as_str()]
+        .into_iter()
+        .map(strip_control_sequences)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn normalized(text: &str) -> String {
     text.trim().to_lowercase()
+}
+
+fn strip_control_sequences(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if matches!(chars.peek(), Some('[')) {
+                let _ = chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            continue;
+        }
+
+        if ch.is_control() && ch != '\n' && ch != '\r' && ch != '\t' {
+            continue;
+        }
+
+        result.push(ch);
+    }
+
+    result
 }
 
 fn classify_session_state(diagnostic: &str) -> SessionState {
@@ -800,6 +880,12 @@ fn is_not_found(text: &str) -> bool {
         || text.contains("does not exist")
         || text.contains("no entries were returned")
         || text.contains("cannot find")
+}
+
+fn is_already_exists(text: &str) -> bool {
+    text.contains("already exists")
+        || text.contains("duplicate")
+        || text.contains("already present")
 }
 
 #[cfg(test)]
@@ -918,5 +1004,37 @@ exit 1
 
         let error = cli.person_get::<Value>("dsaw").expect_err("not found");
         assert!(matches!(error, AppError::NotFound { .. }));
+    }
+
+    #[test]
+    fn strips_ansi_control_sequences_before_classification() {
+        assert!(matches!(
+            classify_session_state("\u{1b}[31mSession has expired; login again\u{1b}[0m"),
+            SessionState::Expired { .. }
+        ));
+    }
+
+    #[test]
+    fn named_create_classifies_duplicates_as_already_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+printf '\033[31muser already exists\033[0m\n' >&2
+exit 1
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+        });
+
+        let error = cli
+            .person_create("dsaw", "Dan")
+            .expect_err("already exists");
+        assert!(matches!(error, AppError::AlreadyExists { .. }));
     }
 }

@@ -79,6 +79,7 @@ run_test() {
 run_smoke_suite() {
   run_test tests/module-imports.sh
   run_test tests/deploy-wrapper.sh
+  run_test tests/deploy-wrapper-remote-preflight.sh
   run_test tests/secrets.sh
   run_test tests/runtime-readiness.sh
   run_test tests/storage-monitoring.sh

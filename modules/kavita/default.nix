@@ -20,11 +20,11 @@ in
         Secret = "@OIDC_SECRET@";
         ProvisionAccounts = true;
         RequireVerifiedEmail = true;
-        SyncUserSettings = false;
-        RolesPrefix = "kavita-";
-        RolesClaim = "groups";
-        CustomScopes = [ "groups" ];
-        DefaultRoles = [ "Login" ];
+        SyncUserSettings = true;
+        RolesPrefix = "";
+        RolesClaim = "kavita_roles";
+        CustomScopes = [ "kavita_roles" ];
+        DefaultRoles = [ ];
         DefaultLibraries = [ ];
         DefaultAgeRestriction = 0;
         DefaultIncludeUnknowns = false;
@@ -93,8 +93,6 @@ in
         "select Value from ServerSetting where Key = 40;" 2>/dev/null || true)"
       [[ -n "$current" ]] || exit 0
 
-      # Kavita 0.8.8.x rejects the lowercase Kanidm group-derived roles used
-      # in this repo, so keep OIDC for auth/linking and leave roles local.
       updated="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -c \
         --arg authority "${vars.kanidmIssuer "kavita-web"}" \
         --arg clientId "kavita-web" \
@@ -105,11 +103,11 @@ in
           | .Secret = $secret
           | .ProvisionAccounts = true
           | .RequireVerifiedEmail = true
-          | .SyncUserSettings = false
-          | .RolesPrefix = "kavita-"
-          | .RolesClaim = "groups"
-          | .CustomScopes = ["groups"]
-          | .DefaultRoles = ["Login"]
+          | .SyncUserSettings = true
+          | .RolesPrefix = ""
+          | .RolesClaim = "kavita_roles"
+          | .CustomScopes = ["kavita_roles"]
+          | .DefaultRoles = []
           | .DefaultLibraries = []
           | .DefaultAgeRestriction = 0
           | .DefaultIncludeUnknowns = false

@@ -4,6 +4,10 @@ use crate::{
     inventory::policy::{matches_policy_value, PolicyField},
     kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
     output::CommandOutput,
+    validation::{
+        validate_identifier_field, validate_seconds_field, AUTH_EXPIRY_MAX_SECONDS,
+        AUTH_EXPIRY_MIN_SECONDS, PRIVILEGE_EXPIRY_MAX_SECONDS, PRIVILEGE_EXPIRY_MIN_SECONDS,
+    },
     AppError,
 };
 
@@ -24,8 +28,15 @@ pub fn set_group_auth_expiry(
     group: &str,
     seconds: u64,
 ) -> Result<CommandOutput, AppError> {
-    cli.group_policy_auth_expiry_set(group, seconds)?;
-    let group = verify_policy_field(cli, group, PolicyField::AuthExpiry, Some(seconds))?;
+    let group = validate_identifier_field("group name", group)?;
+    let seconds = validate_seconds_field(
+        "auth expiry",
+        seconds,
+        AUTH_EXPIRY_MIN_SECONDS,
+        AUTH_EXPIRY_MAX_SECONDS,
+    )?;
+    cli.group_policy_auth_expiry_set(&group, seconds)?;
+    let group = verify_policy_field(cli, &group, PolicyField::AuthExpiry, Some(seconds))?;
     Ok(CommandOutput {
         message: format!("set auth-expiry for group '{}'", group.value.name),
         human: human_group_summary(&group.value),
@@ -50,8 +61,15 @@ pub fn set_group_privilege_expiry(
     group: &str,
     seconds: u64,
 ) -> Result<CommandOutput, AppError> {
-    cli.group_policy_privilege_expiry_set(group, seconds)?;
-    let group = verify_policy_field(cli, group, PolicyField::PrivilegeExpiry, Some(seconds))?;
+    let group = validate_identifier_field("group name", group)?;
+    let seconds = validate_seconds_field(
+        "privilege expiry",
+        seconds,
+        PRIVILEGE_EXPIRY_MIN_SECONDS,
+        PRIVILEGE_EXPIRY_MAX_SECONDS,
+    )?;
+    cli.group_policy_privilege_expiry_set(&group, seconds)?;
+    let group = verify_policy_field(cli, &group, PolicyField::PrivilegeExpiry, Some(seconds))?;
     Ok(CommandOutput {
         message: format!("set privilege-expiry for group '{}'", group.value.name),
         human: human_group_summary(&group.value),

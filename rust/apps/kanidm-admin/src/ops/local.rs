@@ -11,7 +11,7 @@ use rand::{rngs::OsRng, RngCore};
 use serde_json::json;
 use sha2::Sha512;
 
-use crate::{output::CommandOutput, AppError};
+use crate::{output::CommandOutput, validation::validate_account_id, AppError};
 
 const DEFAULT_PASSWORD_HASH_DIR: &str = "/var/lib/jellyfin/.nixos-managed/desired-password-hashes";
 const PASSWORD_HASH_DIR_ENV: &str = "KANIDM_ADMIN_JELLYFIN_PASSWORD_HASH_DIR";
@@ -21,7 +21,7 @@ pub fn stage_jellyfin_password(
     account_id: &str,
     password_env: &str,
 ) -> Result<CommandOutput, AppError> {
-    validate_account_id(account_id)?;
+    let account_id = validate_account_id(account_id)?;
 
     let password = env::var(password_env).map_err(|_| AppError::Config {
         message: format!("environment variable '{password_env}' is required"),
@@ -55,20 +55,6 @@ pub fn stage_jellyfin_password(
             "The Jellyfin reconcile timer or service must still converge before the password change is active.".to_string(),
         ],
     })
-}
-
-fn validate_account_id(account_id: &str) -> Result<(), AppError> {
-    let valid = !account_id.is_empty()
-        && account_id
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'));
-    if valid {
-        Ok(())
-    } else {
-        Err(AppError::Config {
-            message: format!("invalid Jellyfin account id for filename use: '{account_id}'"),
-        })
-    }
 }
 
 fn hash_password(password: &str) -> String {

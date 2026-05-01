@@ -94,7 +94,7 @@ in
           | .authOpenIDAutoRegister = true
           | .authOpenIDMatchExistingBy = "username"
           | .authOpenIDMobileRedirectURIs = ["audiobookshelf://oauth", "lissen://oauth"]
-          | .authOpenIDGroupClaim = ""
+          | .authOpenIDGroupClaim = "abs_role"
           | .authOpenIDAdvancedPermsClaim = ""
           | .authOpenIDSubfolderForRedirectURLs = $subfolder
         ')"

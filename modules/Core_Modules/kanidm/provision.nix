@@ -24,6 +24,9 @@ in
     };
 
     groups."user-files" = mkManualGroup [ vars.kanidmAdminUser ];
+    # Built into Kanidm; declared here so repo-managed oauth clients can
+    # reference it in scope maps without taking over membership.
+    groups.domain_admins = mkManualGroup [ ];
     groups."shared-files-ro" = mkManualGroup [ ];
     groups."shared-files-rw" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."mail-archive-users" = mkManualGroup [ ];
@@ -49,8 +52,9 @@ in
       originLanding = "https://${vars.photosDomain}";
       basicSecretFile = config.age.secrets.immichClientSecret.path;
       preferShortUsername = true;
-      scopeMaps."immich-users" = [ "openid" "profile" "email" ];
-      scopeMaps."immich-admin" = [ "openid" "profile" "email" ];
+      scopeMaps."immich-users" = [ "openid" "profile" "email" "immich_role" ];
+      scopeMaps."immich-admin" = [ "openid" "profile" "email" "immich_role" ];
+      claimMaps.immich_role.valuesByGroup."immich-admin" = [ "admin" ];
     };
 
     systems.oauth2.paperless-web = {
@@ -60,8 +64,8 @@ in
       originLanding = "https://paperless.${vars.domain}";
       basicSecretFile = config.age.secrets.paperlessClientSecret.path;
       preferShortUsername = true;
-      scopeMaps."paperless-users" = [ "openid" "profile" "email" ];
-      scopeMaps."paperless-admin" = [ "openid" "profile" "email" ];
+      scopeMaps."paperless-users" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."paperless-admin" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.abs-web = {
@@ -74,8 +78,13 @@ in
       originLanding = "https://${vars.audiobooksDomain}/audiobookshelf/";
       basicSecretFile = config.age.secrets.absClientSecret.path;
       preferShortUsername = true;
-      scopeMaps."audiobookshelf-users" = [ "openid" "profile" "email" ];
-      scopeMaps."audiobookshelf-admin" = [ "openid" "profile" "email" ];
+      scopeMaps."audiobookshelf-users" = [ "openid" "profile" "email" "abs_role" ];
+      scopeMaps."audiobookshelf-admin" = [ "openid" "profile" "email" "abs_role" ];
+      claimMaps.abs_role = {
+        joinType = "array";
+        valuesByGroup."audiobookshelf-users" = [ "user" ];
+        valuesByGroup."audiobookshelf-admin" = [ "admin" ];
+      };
     };
 
     systems.oauth2.kavita-web = {
@@ -88,8 +97,13 @@ in
       originLanding = "https://${vars.kavitaDomain}/";
       basicSecretFile = config.age.secrets.kavitaClientSecret.path;
       preferShortUsername = true;
-      scopeMaps."kavita-login" = [ "openid" "profile" "email" "groups" ];
-      scopeMaps."kavita-admin" = [ "openid" "profile" "email" "groups" ];
+      scopeMaps."kavita-login" = [ "openid" "profile" "email" "kavita_roles" ];
+      scopeMaps."kavita-admin" = [ "openid" "profile" "email" "kavita_roles" ];
+      claimMaps.kavita_roles = {
+        joinType = "array";
+        valuesByGroup."kavita-login" = [ "Login" ];
+        valuesByGroup."kavita-admin" = [ "Admin" "Login" ];
+      };
     };
 
     systems.oauth2.oauth2-proxy = {
@@ -99,9 +113,10 @@ in
       originLanding = "https://${vars.filesDomain}";
       basicSecretFile = oauth2ProxyClientSecretPath;
       preferShortUsername = true;
-      scopeMaps."user-files" = [ "openid" "profile" "email" "groups" ];
-      scopeMaps."shared-files-ro" = [ "openid" "profile" "email" "groups" ];
-      scopeMaps."shared-files-rw" = [ "openid" "profile" "email" "groups" ];
+      scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps.domain_admins = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."shared-files-ro" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."shared-files-rw" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.mail-archive-web = {

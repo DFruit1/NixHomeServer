@@ -11,6 +11,7 @@ for test_script in \
   tests/check-repo-runner.sh \
   tests/module-imports.sh \
   tests/deploy-wrapper.sh \
+  tests/deploy-wrapper-remote-preflight.sh \
   tests/disko-wrappers.sh \
   tests/runtime-readiness.sh \
   tests/runtime-health-report.sh \

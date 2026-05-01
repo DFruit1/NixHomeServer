@@ -4,6 +4,7 @@ let
   kanidmPort = 8443;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   userFilesGroup = "user-files";
+  sharedFilesAdminGroup = "domain_admins";
   copypartyPort = 3923;
   runtimeConfigDir = "/var/lib/copyparty/runtime";
   runtimeConfigPath = "${runtimeConfigDir}/copyparty.conf";
@@ -35,7 +36,9 @@ let
     [/shared/files]
     ${sharedFilesRoot}
     accs:
-      r: @shared-files-ro, @shared-files-rw
+      r: @shared-files-ro
+      rwm: @shared-files-rw
+      rwmda: @${sharedFilesAdminGroup}
     flags:
       fk: 4
       e2d: true
@@ -47,7 +50,9 @@ let
     [/shared/audiobooks]
     ${vars.sharedAudiobooksRoot}
     accs:
-      r: @shared-files-ro, @shared-files-rw
+      r: @shared-files-ro
+      rwm: @shared-files-rw
+      rwmda: @${sharedFilesAdminGroup}
     flags:
       fk: 4
       e2d: true
@@ -59,7 +64,9 @@ let
     [/shared/books]
     ${vars.sharedBooksRoot}
     accs:
-      r: @shared-files-ro, @shared-files-rw
+      r: @shared-files-ro
+      rwm: @shared-files-rw
+      rwmda: @${sharedFilesAdminGroup}
     flags:
       fk: 4
       e2d: true
@@ -71,7 +78,9 @@ let
     [/shared/emails]
     ${vars.sharedEmailsRoot}
     accs:
-      r: @shared-files-ro, @shared-files-rw
+      r: @shared-files-ro
+      rwm: @shared-files-rw
+      rwmda: @${sharedFilesAdminGroup}
     flags:
       fk: 4
       e2d: true
@@ -83,7 +92,9 @@ let
     [/shared/videos]
     ${vars.sharedVideosRoot}
     accs:
-      r: @shared-files-ro, @shared-files-rw
+      r: @shared-files-ro
+      rwm: @shared-files-rw
+      rwmda: @${sharedFilesAdminGroup}
     flags:
       fk: 4
       e2d: true
@@ -207,7 +218,9 @@ in
       [/shared/files]
       ${sharedFilesRoot}
       accs:
-        r: @shared-files-ro, @shared-files-rw
+        r: @shared-files-ro
+        rwm: @shared-files-rw
+        rwmda: @${sharedFilesAdminGroup}
       flags:
         fk: 4
         e2d: true
@@ -219,7 +232,9 @@ in
       [/shared/audiobooks]
       ${vars.sharedAudiobooksRoot}
       accs:
-        r: @shared-files-ro, @shared-files-rw
+        r: @shared-files-ro
+        rwm: @shared-files-rw
+        rwmda: @${sharedFilesAdminGroup}
       flags:
         fk: 4
         e2d: true
@@ -231,7 +246,9 @@ in
       [/shared/books]
       ${vars.sharedBooksRoot}
       accs:
-        r: @shared-files-ro, @shared-files-rw
+        r: @shared-files-ro
+        rwm: @shared-files-rw
+        rwmda: @${sharedFilesAdminGroup}
       flags:
         fk: 4
         e2d: true
@@ -243,7 +260,9 @@ in
       [/shared/emails]
       ${vars.sharedEmailsRoot}
       accs:
-        r: @shared-files-ro, @shared-files-rw
+        r: @shared-files-ro
+        rwm: @shared-files-rw
+        rwmda: @${sharedFilesAdminGroup}
       flags:
         fk: 4
         e2d: true
@@ -255,7 +274,9 @@ in
       [/shared/videos]
       ${vars.sharedVideosRoot}
       accs:
-        r: @shared-files-ro, @shared-files-rw
+        r: @shared-files-ro
+        rwm: @shared-files-rw
+        rwmda: @${sharedFilesAdminGroup}
       flags:
         fk: 4
         e2d: true
@@ -275,12 +296,10 @@ in
     wants = [
       "copyparty-runtime-config-sync.service"
       "fileshare-user-root-sync.service"
-      "kanidm-files-posix-groups.service"
     ];
     after = [
       "copyparty-runtime-config-sync.service"
       "fileshare-user-root-sync.service"
-      "kanidm-files-posix-groups.service"
     ];
     serviceConfig.BindPaths = lib.mkAfter [
       vars.usersRoot
@@ -295,12 +314,10 @@ in
     wantedBy = [ "multi-user.target" ];
     wants = [
       "fileshare-user-root-sync.service"
-      "kanidm-files-posix-groups.service"
       "local-fs.target"
     ];
     after = [
       "fileshare-user-root-sync.service"
-      "kanidm-files-posix-groups.service"
       "local-fs.target"
     ];
     before = [ "copyparty.service" ];

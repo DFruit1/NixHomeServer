@@ -132,6 +132,7 @@ Derive the intended target address from `vars.serverLanIP`, then keep any tempor
 - Run from: `workstation repo root`
 - Privileges: `sudo may be requested on the target host`
 - Environment: `plain shell`
+- Build ownership: `the workstation stages and orchestrates; all Rust and Nix builds run on --build-host`
 
 ```bash
 export TARGET_SERVER_IP="$(nix eval --raw --impure --expr 'let flake = builtins.getFlake (toString ./.); vars = import ./vars.nix { lib = flake.inputs.nixpkgs.lib; }; in vars.serverLanIP')"
@@ -146,6 +147,7 @@ export CURRENT_SERVER_IP="${CURRENT_SERVER_IP:-$TARGET_SERVER_IP}"
 
 Expected result:
 - the helper reruns validation before the remote rebuild
+- the helper uploads the current checkout and runs the exhaustive repo gate on `--build-host`
 - remote `nixos-rebuild test` completes
 - the helper checks failed units and runs remote runtime readiness successfully in strict `--profile deploy` mode
 - any transition notice is advisory only and still ends with a clean validation result
@@ -153,6 +155,7 @@ Expected result:
 If it fails:
 - do not proceed to `--action switch`
 - fix the reported validation, SSH, rebuild, unit, or runtime-readiness failure first
+- if it reports `Insufficient free space on build host`, free space on the filesystem backing the remote `sandbox-build-dir` and on remote `/tmp` before retrying
 - if the issue is storage- or recovery-related, move to [Restore And Recovery](./restore-and-recovery.md)
 
 Only switch after the guarded test path passes.
@@ -160,6 +163,7 @@ Only switch after the guarded test path passes.
 - Run from: `workstation repo root`
 - Privileges: `sudo may be requested on the target host`
 - Environment: `plain shell`
+- Build ownership: `the workstation stages and orchestrates; all Rust and Nix builds run on --build-host`
 
 ```bash
 ./scripts/deploy-validated.sh \

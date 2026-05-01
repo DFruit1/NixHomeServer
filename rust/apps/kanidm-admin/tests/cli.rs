@@ -409,3 +409,331 @@ exit 1
         "Run `kanidm login --url https://id.example.test --name admindsaw` first.",
     ));
 }
+
+#[test]
+fn membership_add_downgrades_duplicate_backend_failure_when_state_converged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("kanidm-stub.sh");
+    write_script(
+        &script,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "group" && "${args[1]}" == "get" && "${args[2]}" == "users" ]]; then
+  printf '{"attrs":{"name":["users"],"description":["Users"]}}'
+  exit 0
+fi
+if [[ "${args[0]}" == "group" && "${args[1]}" == "add-members" ]]; then
+  printf 'entry already present\n' >&2
+  exit 1
+fi
+if [[ "${args[0]}" == "person" && "${args[1]}" == "get" && "${args[2]}" == "dsaw" ]]; then
+  printf '{"attrs":{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["users@example.test"]}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script).args([
+        "--server-url",
+        "https://id.example.test",
+        "--admin-name",
+        "admindsaw",
+        "membership",
+        "add",
+        "dsaw",
+        "users",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Warnings:"))
+        .stdout(predicate::str::contains("group_add_members:users"));
+}
+
+#[test]
+fn membership_remove_downgrades_absent_backend_failure_when_state_converged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("kanidm-stub.sh");
+    write_script(
+        &script,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "group" && "${args[1]}" == "get" && "${args[2]}" == "users" ]]; then
+  printf '{"attrs":{"name":["users"],"description":["Users"]}}'
+  exit 0
+fi
+if [[ "${args[0]}" == "group" && "${args[1]}" == "remove-members" ]]; then
+  printf 'entry not present\n' >&2
+  exit 1
+fi
+if [[ "${args[0]}" == "person" && "${args[1]}" == "get" && "${args[2]}" == "dsaw" ]]; then
+  printf '{"attrs":{"name":["dsaw"],"displayname":["Dan"],"directmemberof":[]}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script).args([
+        "--server-url",
+        "https://id.example.test",
+        "--admin-name",
+        "admindsaw",
+        "membership",
+        "remove",
+        "dsaw",
+        "users",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Warnings:"))
+        .stdout(predicate::str::contains("group_remove_members:users"));
+}
+
+#[test]
+fn client_redirect_add_downgrades_backend_failure_when_state_converged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("redirects.txt"),
+        "https://files.example.test/oauth2/callback\n",
+    )
+    .expect("seed redirects");
+    let script = dir.path().join("kanidm-stub.sh");
+    write_script(
+        &script,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+state_dir={}
+redirects_file="$state_dir/redirects.txt"
+args=("$@")
+if [[ "${{args[0]}}" == "system" && "${{args[1]}}" == "oauth2" && "${{args[2]}}" == "add-redirect-url" ]]; then
+  printf 'redirect already present\n' >&2
+  exit 1
+fi
+if [[ "${{args[0]}}" == "system" && "${{args[1]}}" == "oauth2" && "${{args[2]}}" == "get" ]]; then
+  mapfile -t redirects < "$redirects_file"
+  printf '{{"attrs":{{"name":["files"],"displayname":["Files"],"landing":["https://files.example.test"]}},"redirect_urls":["%s"]}}' "${{redirects[0]}}"
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+            serde_json::to_string(&dir.path().display().to_string()).expect("json path"),
+        ),
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script).args([
+        "--server-url",
+        "https://id.example.test",
+        "--admin-name",
+        "admindsaw",
+        "client",
+        "redirect",
+        "add",
+        "files",
+        "https://files.example.test/oauth2/callback",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Warnings:"))
+        .stdout(predicate::str::contains("add_redirect_url"));
+}
+
+#[test]
+fn client_pkce_disable_downgrades_backend_failure_when_state_converged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("kanidm-stub.sh");
+    write_script(
+        &script,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "system" && "${args[1]}" == "oauth2" && "${args[2]}" == "warning-insecure-client-disable-pkce" ]]; then
+  printf 'pkce already disabled\n' >&2
+  exit 1
+fi
+if [[ "${args[0]}" == "system" && "${args[1]}" == "oauth2" && "${args[2]}" == "get" ]]; then
+  printf '{"attrs":{"name":["files"],"displayname":["Files"]},"disable_pkce":[true]}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script).args([
+        "--server-url",
+        "https://id.example.test",
+        "--admin-name",
+        "admindsaw",
+        "client",
+        "pkce",
+        "disable",
+        "files",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Warnings:"))
+        .stdout(predicate::str::contains("disable_pkce"));
+}
+
+#[test]
+fn user_create_rejects_invalid_account_id_before_backend() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "backend should not be called: $*" >&2
+exit 99
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "user",
+            "create",
+            "bad name",
+            "--display-name",
+            "Bad Name",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid account id"));
+}
+
+#[test]
+fn user_create_rejects_invalid_email_before_backend() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "backend should not be called: $*" >&2
+exit 99
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "user",
+            "create",
+            "dsaw",
+            "--display-name",
+            "Dan",
+            "--email",
+            "bad-email",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid email"));
+}
+
+#[test]
+fn client_redirect_add_rejects_relative_url_before_backend() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "backend should not be called: $*" >&2
+exit 99
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "client",
+            "redirect",
+            "add",
+            "files",
+            "/oauth2/callback",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid redirect URL"));
+}
+
+#[test]
+fn reset_token_rejects_out_of_range_ttl_before_backend() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "backend should not be called: $*" >&2
+exit 99
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "user",
+            "reset-token",
+            "dsaw",
+            "--ttl",
+            "30",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid reset token TTL '30'"));
+}
+
+#[test]
+fn policy_auth_expiry_rejects_out_of_range_value_before_backend() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "backend should not be called: $*" >&2
+exit 99
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "policy",
+            "group",
+            "auth-expiry",
+            "set",
+            "idm_all_persons",
+            "0",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid auth expiry '0'"));
+}

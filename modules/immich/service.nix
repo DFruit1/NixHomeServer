@@ -20,7 +20,8 @@ in
       mobileOverrideEnabled = true;
       mobileRedirectUri = "https://${vars.photosDomain}/api/oauth/mobile-redirect";
       signingAlgorithm = "ES256";
-      scope = "openid profile email";
+      scope = "openid profile email immich_role";
+      roleClaim = "immich_role";
       buttonText = "Login with Kanidm";
       autoRegister = true;
     };

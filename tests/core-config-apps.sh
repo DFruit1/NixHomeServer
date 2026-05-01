@@ -46,6 +46,9 @@ snapshot="$(nix_eval_host_snapshot_json '
         immichOauthMobileOverrideEnabled = cfg.services.immich.settings.oauth.mobileOverrideEnabled;
         immichOauthMobileRedirectUri = cfg.services.immich.settings.oauth.mobileRedirectUri;
         immichOauthOrigins = cfg.services.kanidm.provision.systems.oauth2.immich-web.originUrl;
+        immichOauthScope = cfg.services.immich.settings.oauth.scope;
+        immichOauthRoleClaim = cfg.services.immich.settings.oauth.roleClaim;
+        immichAdminRoleClaimMap = cfg.services.kanidm.provision.systems.oauth2.immich-web.claimMaps.immich_role.valuesByGroup."immich-admin";
         caddyHosts = builtins.attrNames cfg.services.caddy.virtualHosts;
         cloudflaredIngressHosts = builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
         unboundInterfaces = cfg.services.unbound.settings.server.interface;
@@ -84,6 +87,8 @@ snapshot="$(nix_eval_host_snapshot_json '
         hasMetubeQuadlet = cfg.environment.etc ? "containers/systemd/users/3002/metube.container";
         metubeQuadlet = cfg.environment.etc."containers/systemd/users/3002/metube.container".text;
         metubeScopeMap = cfg.services.kanidm.provision.systems.oauth2."metube-web".scopeMaps."metube-users";
+        paperlessUsersScopeMap = cfg.services.kanidm.provision.systems.oauth2."paperless-web".scopeMaps."paperless-users";
+        paperlessAdminScopeMap = cfg.services.kanidm.provision.systems.oauth2."paperless-web".scopeMaps."paperless-admin";
         lanAllowedTcpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts;
         netbirdIface = netbirdIface;
         netbirdAllowedTcpPorts = cfg.networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts;
@@ -106,13 +111,33 @@ snapshot="$(nix_eval_host_snapshot_json '
         paperlessIgnorePatterns = cfg.services.paperless.settings.PAPERLESS_CONSUMER_IGNORE_PATTERNS;
         paperlessConsumerRecursive = cfg.services.paperless.settings.PAPERLESS_CONSUMER_RECURSIVE;
         paperlessConsumerSubdirsAsTags = cfg.services.paperless.settings.PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS;
-        paperlessSocialAccountDefaultGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS;
+        paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
+        paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
+        hasPaperlessSocialAccountDefaultGroups = cfg.services.paperless.settings ? PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS;
+        paperlessSocialAccountDefaultGroups =
+          if cfg.services.paperless.settings ? PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS
+          then cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS
+          else null;
         hasLegacyPaperlessSocialDefaultGroups = cfg.services.paperless.settings ? PAPERLESS_SOCIAL_DEFAULT_GROUPS;
         paperlessOidcEnvScript = cfg.systemd.services.paperless-oidc-env.script;
         kavitaDataDir = cfg.services.kavita.dataDir;
         kavitaDisablePasswordAuthentication = cfg.services.kavita.settings.OpenIdConnectSettings.DisablePasswordAuthentication;
+        kavitaSyncUserSettings = cfg.services.kavita.settings.OpenIdConnectSettings.SyncUserSettings;
+        kavitaRolesClaim = cfg.services.kavita.settings.OpenIdConnectSettings.RolesClaim;
+        kavitaRolesPrefix = cfg.services.kavita.settings.OpenIdConnectSettings.RolesPrefix;
+        kavitaCustomScopes = cfg.services.kavita.settings.OpenIdConnectSettings.CustomScopes;
+        kavitaLoginScopeMap = cfg.services.kanidm.provision.systems.oauth2."kavita-web".scopeMaps."kavita-login";
+        kavitaAdminScopeMap = cfg.services.kanidm.provision.systems.oauth2."kavita-web".scopeMaps."kavita-admin";
+        kavitaRolesClaimJoin = cfg.services.kanidm.provision.systems.oauth2."kavita-web".claimMaps.kavita_roles.joinType;
+        kavitaLoginRoleClaimMap = cfg.services.kanidm.provision.systems.oauth2."kavita-web".claimMaps.kavita_roles.valuesByGroup."kavita-login";
+        kavitaAdminRoleClaimMap = cfg.services.kanidm.provision.systems.oauth2."kavita-web".claimMaps.kavita_roles.valuesByGroup."kavita-admin";
         jellyfinDataDir = cfg.services.jellyfin.dataDir;
         audiobookshelfExtraGroups = cfg.users.users.audiobookshelf.extraGroups;
+        audiobookshelfUsersScopeMap = cfg.services.kanidm.provision.systems.oauth2."abs-web".scopeMaps."audiobookshelf-users";
+        audiobookshelfAdminScopeMap = cfg.services.kanidm.provision.systems.oauth2."abs-web".scopeMaps."audiobookshelf-admin";
+        audiobookshelfRoleClaimJoin = cfg.services.kanidm.provision.systems.oauth2."abs-web".claimMaps.abs_role.joinType;
+        audiobookshelfUserRoleClaimMap = cfg.services.kanidm.provision.systems.oauth2."abs-web".claimMaps.abs_role.valuesByGroup."audiobookshelf-users";
+        audiobookshelfAdminRoleClaimMap = cfg.services.kanidm.provision.systems.oauth2."abs-web".claimMaps.abs_role.valuesByGroup."audiobookshelf-admin";
         kavitaExtraGroups = cfg.users.users.kavita.extraGroups;
         jellyfinExtraGroups = cfg.users.users.jellyfin.extraGroups;
         hasAudiobookshelfTimer = cfg.systemd.timers ? "audiobookshelf-library-sync-v1";
@@ -138,6 +163,7 @@ snapshot="$(nix_eval_host_snapshot_json '
         mailArchiveSyncTimer = cfg.systemd.timers.mail-archive-sync.timerConfig.OnCalendar;
         kanidmPamAllowedLoginGroups = cfg.services.kanidm.unixSettings.pam_allowed_login_groups;
         oauth2ProxyScope = cfg.services.oauth2-proxy.scope;
+        oauth2ProxyScopeMaps = cfg.services.kanidm.provision.systems.oauth2.oauth2-proxy.scopeMaps;
         oauth2ProxyAllowedGroups = cfg.services.oauth2-proxy.extraConfig."allowed-group";
       };
     }
@@ -212,6 +238,18 @@ require_json_contains "$(snapshot_query '.config.immichOauthOrigins')" "https://
   "Kanidm must allow Immich web account-linking redirects."
 require_json_contains "$(snapshot_query '.config.immichOauthOrigins')" "https://$(snapshot_query '.vars.photosDomain' | jq -r .)/api/oauth/mobile-redirect" \
   "Kanidm must allow the Immich HTTPS mobile redirect override."
+require_json_equal "$(snapshot_query '.config.immichOauthScope')" '"openid profile email immich_role"' \
+  "Immich must request its dedicated Kanidm role claim."
+require_json_equal "$(snapshot_query '.config.immichOauthRoleClaim')" '"immich_role"' \
+  "Immich must read admin intent from the immich_role claim."
+require_json_equal "$(snapshot_query '.config.immichAdminRoleClaimMap')" '["admin"]' \
+  "Kanidm must map immich-admin to the admin role claim value."
+require_match modules/immich/default.nix './admin-reconcile.nix' \
+  "Immich must import the admin reconciliation module for existing OIDC users."
+require_match modules/immich/admin-reconcile.nix 'grant-admin' \
+  "Immich admin reconciliation must grant admin for Kanidm immich-admin members."
+require_match modules/immich/admin-reconcile.nix 'revoke-admin' \
+  "Immich admin reconciliation must revoke admin when Kanidm membership is removed."
 require_fixed modules/immich/service.nix 'vars.immichManagedRoot' \
   "Immich must derive its managed library under vars.immichRoot."
 
@@ -429,6 +467,10 @@ require_json_contains "$(snapshot_query '.config.metubeQuadlet')" '\"key\":\"Emb
   "The MeTube quadlet must embed thumbnails via yt-dlp postprocessors."
 require_json_contains "$(snapshot_query '.config.metubeScopeMap')" 'groups_name' \
   "Kanidm must grant the groups_name scope to the MeTube oauth2 client."
+require_json_equal "$(snapshot_query '.config.paperlessUsersScopeMap')" '["openid","profile","email","groups_name"]' \
+  "Kanidm must grant the groups_name scope to the Paperless user oauth2 client."
+require_json_equal "$(snapshot_query '.config.paperlessAdminScopeMap')" '["openid","profile","email","groups_name"]' \
+  "Kanidm must grant the groups_name scope to the Paperless admin oauth2 client."
 
 echo "ℹ️ Checking Copyparty, mail archive, and app state…"
 require_match modules/Core_Modules/caddy/default.nix '@copyparty_shares path /shares /shares/\*' \
@@ -439,12 +481,16 @@ require_match modules/copyparty/default.nix '"shr-who" = "auth";' \
   "Copyparty share creation must be limited to authenticated users."
 require_match modules/copyparty/default.nix 'r: @shared-files-ro' \
   "Copyparty shared volumes must grant read-only access to the shared read-only group."
-require_match modules/copyparty/default.nix 'r: @shared-files-ro, @shared-files-rw' \
-  "Copyparty shared volumes must keep both shared groups read-only."
+require_match modules/copyparty/default.nix 'rwm: @shared-files-rw' \
+  "Copyparty shared volumes must grant read, write, and move access to the shared read-write group."
+require_match modules/copyparty/default.nix 'rwmda: @\$\{sharedFilesAdminGroup\}' \
+  "Copyparty shared volumes must reserve delete and admin rights for domain_admins."
+forbid_match modules/copyparty/default.nix 'r: @shared-files-ro, @shared-files-rw' \
+  "Copyparty shared volumes must not collapse the read-write group back to read-only access."
 forbid_match modules/copyparty/default.nix 'rwmda: @shared-files-rw' \
-  "Copyparty shared volumes must not grant shared write access."
-forbid_match modules/copyparty/default.nix 'w: @shared-files-rw|m: @shared-files-rw|d: @shared-files-rw|a: @shared-files-rw' \
-  "Copyparty shared volumes must not grant write, move, delete, or admin rights to shared groups."
+  "Copyparty shared volumes must not grant delete or admin rights to shared-files-rw."
+forbid_match modules/copyparty/default.nix 'd: @shared-files-rw|a: @shared-files-rw' \
+  "Copyparty shared volumes must not grant explicit delete or admin rights to shared-files-rw."
 require_match modules/copyparty/default.nix 'kanidm group get' \
   "Copyparty must derive personal roots from live user-files membership."
 require_match modules/copyparty/default.nix 'build-copyparty-runtime-config' \
@@ -592,21 +638,63 @@ require_json_equal "$(snapshot_query '.config.paperlessConsumerRecursive')" '"tr
   "Paperless must recurse into the mail archive consume subtree."
 require_json_equal "$(snapshot_query '.config.paperlessConsumerSubdirsAsTags')" '"true"' \
   "Paperless must tag imported mail attachments from consume subdirectories."
-require_json_equal "$(snapshot_query '.config.paperlessSocialAccountDefaultGroups')" '"Users"' \
-  "Paperless social signup must attach first-login users to the local Users group."
+require_json_equal "$(snapshot_query '.config.paperlessSocialAccountSyncGroups')" '"true"' \
+  "Paperless must sync social-login groups from Kanidm."
+require_json_equal "$(snapshot_query '.config.paperlessSocialAccountSyncGroupsClaim')" '"groups"' \
+  "Paperless must read synced Kanidm group membership from the groups claim."
+require_json_equal "$(snapshot_query '.config.hasPaperlessSocialAccountDefaultGroups')" 'false' \
+  "Paperless must not attach first-login users to a local default group."
+require_json_equal "$(snapshot_query '.config.paperlessSocialAccountDefaultGroups')" 'null' \
+  "Paperless must leave social-account default groups unset."
 require_json_equal "$(snapshot_query '.config.hasLegacyPaperlessSocialDefaultGroups')" 'false' \
   "Paperless must not expose the legacy typoed social default-groups setting."
 require_json_contains "$(snapshot_query '.config.paperlessOidcEnvScript')" 'oauth_pkce_enabled' \
   "Paperless OIDC provider generation must explicitly enable PKCE."
+require_json_contains "$(snapshot_query '.config.paperlessOidcEnvScript')" 'groups_name' \
+  "Paperless OIDC provider generation must request Kanidm group-name scopes."
+require_fixed modules/paperless/package.nix 'def pre_social_login(self, request, sociallogin):' \
+  "Paperless package patch must reconcile Kanidm roles on every social login."
+require_fixed modules/paperless/package.nix 'sociallogin.account.provider != \"kanidm\"' \
+  "Paperless package patch must scope automatic role reconciliation to the Kanidm provider."
+require_fixed modules/paperless/package.nix '\"paperless-admin\" in self._get_social_group_names(sociallogin)' \
+  "Paperless package patch must promote Paperless admins from Kanidm group membership."
 
 require_json_equal "$(snapshot_query '.config.kavitaDataDir')" '"/var/lib/kavita"' \
   "Kavita state must live under /var/lib."
 require_json_equal "$(snapshot_query '.config.kavitaDisablePasswordAuthentication')" 'true' \
   "Kavita must disable non-admin local password authentication when OIDC is enabled."
+require_json_equal "$(snapshot_query '.config.kavitaSyncUserSettings')" 'true' \
+  "Kavita must sync user settings and roles from OIDC claims."
+require_json_equal "$(snapshot_query '.config.kavitaRolesClaim')" '"kavita_roles"' \
+  "Kavita must read roles from the dedicated kavita_roles claim."
+require_json_equal "$(snapshot_query '.config.kavitaRolesPrefix')" '""' \
+  "Kavita must not prepend a role prefix when reading Kanidm-managed roles."
+require_json_equal "$(snapshot_query '.config.kavitaCustomScopes')" '["kavita_roles"]' \
+  "Kavita must request the dedicated kavita_roles scope."
+require_json_equal "$(snapshot_query '.config.kavitaLoginScopeMap')" '["openid","profile","email","kavita_roles"]' \
+  "Kanidm must grant the kavita_roles scope to normal Kavita users."
+require_json_equal "$(snapshot_query '.config.kavitaAdminScopeMap')" '["openid","profile","email","kavita_roles"]' \
+  "Kanidm must grant the kavita_roles scope to Kavita admins."
+require_json_equal "$(snapshot_query '.config.kavitaRolesClaimJoin')" '"array"' \
+  "Kanidm must emit Kavita roles as an array claim."
+require_json_equal "$(snapshot_query '.config.kavitaLoginRoleClaimMap')" '["Login"]' \
+  "Kanidm must map kavita-login to the Login role."
+require_json_equal "$(snapshot_query '.config.kavitaAdminRoleClaimMap')" '["Admin","Login"]' \
+  "Kanidm must map kavita-admin to both Admin and Login roles."
 require_json_equal "$(snapshot_query '.config.jellyfinDataDir')" '"/var/lib/jellyfin"' \
   "Jellyfin state must live under /var/lib."
 require_json_equal "$(snapshot_query '.config.audiobookshelfExtraGroups')" '["audiobookshelf-media"]' \
   "Audiobookshelf must use the app-specific media group."
+require_json_equal "$(snapshot_query '.config.audiobookshelfUsersScopeMap')" '["openid","profile","email","abs_role"]' \
+  "Kanidm must grant the abs_role scope to normal Audiobookshelf users."
+require_json_equal "$(snapshot_query '.config.audiobookshelfAdminScopeMap')" '["openid","profile","email","abs_role"]' \
+  "Kanidm must grant the abs_role scope to Audiobookshelf admins."
+require_json_equal "$(snapshot_query '.config.audiobookshelfRoleClaimJoin')" '"array"' \
+  "Kanidm must emit Audiobookshelf roles as an array claim."
+require_json_equal "$(snapshot_query '.config.audiobookshelfUserRoleClaimMap')" '["user"]' \
+  "Kanidm must map audiobookshelf-users to the user role."
+require_json_equal "$(snapshot_query '.config.audiobookshelfAdminRoleClaimMap')" '["admin"]' \
+  "Kanidm must map audiobookshelf-admin to the admin role."
 require_json_equal "$(snapshot_query '.config.kavitaExtraGroups')" '["kavita-media"]' \
   "Kavita must use the app-specific media group."
 require_json_equal "$(snapshot_query '.config.jellyfinExtraGroups')" '["jellyfin-media"]' \
@@ -615,6 +703,8 @@ forbid_match modules/audiobookshelf/service.nix 'media-library' \
   "Audiobookshelf must not retain the removed broad media-library group."
 require_fixed modules/audiobookshelf/oidc-bootstrap.nix '["audiobookshelf://oauth", "lissen://oauth"]' \
   "Audiobookshelf must allow both the official app and Lissen mobile redirect URIs."
+require_fixed modules/audiobookshelf/oidc-bootstrap.nix 'authOpenIDGroupClaim = "abs_role"' \
+  "Audiobookshelf must read user roles from the abs_role claim."
 forbid_match modules/audiobookshelf/oidc-bootstrap.nix 'audiobookshelf-oidc-bootstrap-v1\.done|marker_file=' \
   "Audiobookshelf OIDC bootstrap must keep converging instead of persisting a done-marker gate."
 require_fixed modules/kavita/default.nix 'DisablePasswordAuthentication = true;' \
@@ -639,6 +729,8 @@ require_json_equal "$(printf '%s\n' "$(snapshot_query '.config.kanidmProvisionGr
   "Kanidm must retire the old fileshare_users group."
 require_json_equal "$(printf '%s\n' "$(snapshot_query '.config.kanidmProvisionGroups')" | jq -c 'has("user-files")')" 'true' \
   "Kanidm must provision the personal file-access group."
+require_json_equal "$(printf '%s\n' "$(snapshot_query '.config.kanidmProvisionGroups')" | jq -c 'has("domain_admins")')" 'true' \
+  "Kanidm must declare domain_admins so OAuth scope maps can reference the built-in admin group."
 require_json_equal "$(printf '%s\n' "$(snapshot_query '.config.kanidmProvisionGroups')" | jq -c 'has("shared-files-ro")')" 'true' \
   "Kanidm must provision the shared read-only group."
 require_json_equal "$(printf '%s\n' "$(snapshot_query '.config.kanidmProvisionGroups')" | jq -c 'has("shared-files-rw")')" 'true' \
@@ -663,9 +755,11 @@ require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')"
   "The POSIX-group convergence service must use the IDM admin secret."
 require_json_contains "$(snapshot_query '.config.kanidmFilesPosixGroupsScript')" '-D idm_admin' \
   "The POSIX-group convergence service must authenticate as idm_admin."
-require_match modules/samba/default.nix 'collect_group_members' \
+require_fixed modules/Core_Modules/storage/default.nix './fileshare-user-roots.nix' \
+  "Storage must import the neutral fileshare-user-roots module."
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'kanidm group get' \
   "Personal fileshare roots must be provisioned from explicit Kanidm group membership."
-require_match modules/samba/default.nix 'collect_group_members \$\{lib\.escapeShellArg userFilesGroup\}' \
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'userFilesGroup' \
   "Personal fileshare roots must be provisioned only from the user-files group."
 require_match modules/samba/default.nix 'g:\$\{sharedFilesReadOnlyGroup\}:r-x' \
   "The shared-root ACL sync must grant read-only traversal to the shared read-only group."
@@ -679,10 +773,14 @@ require_json_contains "$(snapshot_query '.config.kanidmPamAllowedLoginGroups')" 
   "Kanidm PAM access must allow the shared read-only group."
 require_json_contains "$(snapshot_query '.config.kanidmPamAllowedLoginGroups')" "shared-files-rw" \
   "Kanidm PAM access must allow the shared read-write group."
-require_json_equal "$(snapshot_query '.config.oauth2ProxyScope')" '"openid profile email groups"' \
-  "The files OAuth2 Proxy must request group claims from Kanidm."
+require_json_equal "$(snapshot_query '.config.oauth2ProxyScope')" '"openid profile email groups_name"' \
+  "The files OAuth2 Proxy must request Kanidm group-name scopes."
+require_json_equal "$(snapshot_query '.config.oauth2ProxyScopeMaps["domain_admins"]')" '["openid","profile","email","groups_name"]' \
+  "Kanidm must grant group-name scopes to domain_admins for the files client."
 require_json_contains "$(snapshot_query '.config.oauth2ProxyAllowedGroups')" "user-files" \
   "The files OAuth2 Proxy must allow the personal file-access group."
+require_json_contains "$(snapshot_query '.config.oauth2ProxyAllowedGroups')" "domain_admins" \
+  "The files OAuth2 Proxy must allow full system admins into the files gateway."
 require_json_contains "$(snapshot_query '.config.oauth2ProxyAllowedGroups')" "shared-files-ro" \
   "The files OAuth2 Proxy must allow the shared read-only group."
 require_json_contains "$(snapshot_query '.config.oauth2ProxyAllowedGroups')" "shared-files-rw" \

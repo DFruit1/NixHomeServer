@@ -7,4 +7,5 @@ with pkgs; [
   rustfmt
   rust-analyzer
   cargo-nextest
+  ripgrep
 ]

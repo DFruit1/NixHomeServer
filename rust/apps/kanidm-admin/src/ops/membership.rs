@@ -6,9 +6,10 @@ use serde_json::{json, Value};
 use crate::{
     inventory::{
         clients::{parse_client_list, parse_client_record},
-        groups::{category_sort_rank, parse_group_list, GroupSummary},
+        groups::{category_sort_rank, is_operator_visible_group, parse_group_list, GroupSummary},
     },
     kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
+    ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
     output::CommandOutput,
     AppError,
 };
@@ -19,6 +20,7 @@ use super::{group::load_group, user::load_user};
 pub struct SetMembershipOptions {
     pub account_id: String,
     pub groups: Vec<String>,
+    pub preserve_groups: Vec<String>,
     pub allow_empty: bool,
 }
 
@@ -55,9 +57,40 @@ pub fn add_membership(
     groups: &[String],
 ) -> Result<CommandOutput, AppError> {
     let desired = normalize_groups(groups.to_vec());
+    let requested_state = json!({
+        "account_id": account_id,
+        "groups": desired,
+        "mode": MembershipMode::ContainsAll.as_str(),
+    });
+    let mut completed_steps = Vec::new();
+    let mut warnings = Vec::new();
     for group in &desired {
         let _ = load_group(cli, group)?;
-        cli.group_add_members(group, account_id)?;
+        match cli.group_add_members(group, account_id) {
+            Ok(()) => completed_steps.push(format!("group_add_members:{group}")),
+            Err(error) => {
+                let ReconciledWrite { value, warning } = reconcile_failed_write(
+                    FailedWriteContext {
+                        resource: "user membership",
+                        name: account_id,
+                        requested_state: requested_state.clone(),
+                        completed_steps: &completed_steps,
+                        failed_step: &format!("group_add_members:{group}"),
+                        error,
+                        next_actions: membership_next_actions(
+                            account_id,
+                            MembershipMode::ContainsAll,
+                        ),
+                    },
+                    || verify_membership(cli, account_id, &desired, MembershipMode::ContainsAll),
+                    |_| true,
+                    membership_observed_state,
+                )?;
+                warnings.push(warning);
+                warnings.extend(value.warnings.iter().cloned());
+                completed_steps.push(format!("group_add_members:{group}"));
+            }
+        }
     }
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ContainsAll)?;
 
@@ -71,9 +104,10 @@ pub fn add_membership(
         details: json!({
             "account_id": account_id,
             "groups_added": desired,
+            "requested_state": requested_state,
             "user": user.value,
         }),
-        warnings: user.warnings,
+        warnings: merge_warnings(warnings, user.warnings),
     })
 }
 
@@ -83,9 +117,40 @@ pub fn remove_membership(
     groups: &[String],
 ) -> Result<CommandOutput, AppError> {
     let desired = normalize_groups(groups.to_vec());
+    let requested_state = json!({
+        "account_id": account_id,
+        "groups": desired,
+        "mode": MembershipMode::ExcludesAll.as_str(),
+    });
+    let mut completed_steps = Vec::new();
+    let mut warnings = Vec::new();
     for group in &desired {
         let _ = load_group(cli, group)?;
-        cli.group_remove_members(group, account_id)?;
+        match cli.group_remove_members(group, account_id) {
+            Ok(()) => completed_steps.push(format!("group_remove_members:{group}")),
+            Err(error) => {
+                let ReconciledWrite { value, warning } = reconcile_failed_write(
+                    FailedWriteContext {
+                        resource: "user membership",
+                        name: account_id,
+                        requested_state: requested_state.clone(),
+                        completed_steps: &completed_steps,
+                        failed_step: &format!("group_remove_members:{group}"),
+                        error,
+                        next_actions: membership_next_actions(
+                            account_id,
+                            MembershipMode::ExcludesAll,
+                        ),
+                    },
+                    || verify_membership(cli, account_id, &desired, MembershipMode::ExcludesAll),
+                    |_| true,
+                    membership_observed_state,
+                )?;
+                warnings.push(warning);
+                warnings.extend(value.warnings.iter().cloned());
+                completed_steps.push(format!("group_remove_members:{group}"));
+            }
+        }
     }
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ExcludesAll)?;
 
@@ -99,9 +164,10 @@ pub fn remove_membership(
         details: json!({
             "account_id": account_id,
             "groups_removed": desired,
+            "requested_state": requested_state,
             "user": user.value,
         }),
-        warnings: user.warnings,
+        warnings: merge_warnings(warnings, user.warnings),
     })
 }
 
@@ -110,7 +176,17 @@ pub fn set_membership(
     options: SetMembershipOptions,
 ) -> Result<CommandOutput, AppError> {
     let desired_groups = normalize_groups(options.groups);
-    if desired_groups.is_empty() && !options.allow_empty {
+    let preserved_groups = normalize_groups(options.preserve_groups);
+    let effective_desired_groups =
+        normalize_groups([desired_groups.clone(), preserved_groups.clone()].concat());
+    let requested_state = json!({
+        "account_id": options.account_id,
+        "groups": effective_desired_groups,
+        "mode": MembershipMode::Exact.as_str(),
+    });
+    let mut completed_steps = Vec::new();
+    let mut warnings = Vec::new();
+    if effective_desired_groups.is_empty() && !options.allow_empty {
         return Err(AppError::Config {
             message: format!(
                 "setting direct memberships for '{}' to an empty set requires --allow-empty",
@@ -137,18 +213,78 @@ pub fn set_membership(
         let _ = load_group(cli, group)?;
     }
 
-    let diff = membership_diff(&current.value.groups, &desired_groups);
+    let diff = membership_diff(&current.value.groups, &effective_desired_groups);
     for group in &diff.added {
-        cli.group_add_members(group, &options.account_id)?;
+        completed_steps.push(format!("group_add_members:{group}"));
+        if let Err(error) = cli.group_add_members(group, &options.account_id) {
+            completed_steps.pop();
+            let ReconciledWrite { value, warning } = reconcile_failed_write(
+                FailedWriteContext {
+                    resource: "user membership",
+                    name: &options.account_id,
+                    requested_state: requested_state.clone(),
+                    completed_steps: &completed_steps,
+                    failed_step: &format!("group_add_members:{group}"),
+                    error,
+                    next_actions: membership_next_actions(
+                        &options.account_id,
+                        MembershipMode::Exact,
+                    ),
+                },
+                || {
+                    verify_membership(
+                        cli,
+                        &options.account_id,
+                        &effective_desired_groups,
+                        MembershipMode::Exact,
+                    )
+                },
+                |_| true,
+                membership_observed_state,
+            )?;
+            warnings.push(warning);
+            warnings.extend(value.warnings.iter().cloned());
+            completed_steps.push(format!("group_add_members:{group}"));
+        }
     }
     for group in &diff.removed {
-        cli.group_remove_members(group, &options.account_id)?;
+        completed_steps.push(format!("group_remove_members:{group}"));
+        if let Err(error) = cli.group_remove_members(group, &options.account_id) {
+            completed_steps.pop();
+            let ReconciledWrite { value, warning } = reconcile_failed_write(
+                FailedWriteContext {
+                    resource: "user membership",
+                    name: &options.account_id,
+                    requested_state: requested_state.clone(),
+                    completed_steps: &completed_steps,
+                    failed_step: &format!("group_remove_members:{group}"),
+                    error,
+                    next_actions: membership_next_actions(
+                        &options.account_id,
+                        MembershipMode::Exact,
+                    ),
+                },
+                || {
+                    verify_membership(
+                        cli,
+                        &options.account_id,
+                        &effective_desired_groups,
+                        MembershipMode::Exact,
+                    )
+                },
+                |_| true,
+                membership_observed_state,
+            )?;
+            warnings.push(warning);
+            warnings.extend(value.warnings.iter().cloned());
+            completed_steps.push(format!("group_remove_members:{group}"));
+        }
     }
 
     let user = verify_membership(
         cli,
         &options.account_id,
-        &desired_groups,
+        &effective_desired_groups,
         MembershipMode::Exact,
     )?;
 
@@ -164,11 +300,15 @@ pub fn set_membership(
         details: json!({
             "account_id": options.account_id,
             "desired_groups": desired_groups,
+            "preserved_groups": preserved_groups,
+            "effective_desired_groups": effective_desired_groups,
+            "requested_state": requested_state,
+            "completed_steps": completed_steps,
             "added": diff.added,
             "removed": diff.removed,
             "user": user.value,
         }),
-        warnings: user.warnings,
+        warnings: merge_warnings(warnings, user.warnings),
     })
 }
 
@@ -225,7 +365,7 @@ pub fn prepare_membership_picker_inventory(
 }
 
 fn is_guided_picker_group(name: &str) -> bool {
-    !(name.starts_with("idm_") || name.starts_with("ext_") || name == "domain_admins")
+    is_operator_visible_group(name)
 }
 
 fn verify_membership(
@@ -267,6 +407,35 @@ fn verify_membership(
             }
         },
     )
+}
+
+fn membership_observed_state(
+    user: &crate::inventory::Parsed<crate::inventory::users::UserRecord>,
+) -> Value {
+    json!({
+        "actual_groups": &user.value.groups,
+        "warnings": &user.warnings,
+    })
+}
+
+fn membership_next_actions(account_id: &str, mode: MembershipMode) -> Vec<String> {
+    let command = match mode {
+        MembershipMode::ContainsAll | MembershipMode::ExcludesAll => {
+            format!("kanidm-admin membership show {account_id}")
+        }
+        MembershipMode::Exact => format!("kanidm-admin membership show {account_id}"),
+    };
+    vec![
+        format!("Inspect the current memberships with `{command}`."),
+        "If the live state is still wrong, rerun the membership command after confirming the target groups.".to_string(),
+    ]
+}
+
+fn merge_warnings(mut left: Vec<String>, mut right: Vec<String>) -> Vec<String> {
+    left.append(&mut right);
+    left.sort();
+    left.dedup();
+    left
 }
 
 fn normalize_groups(groups: Vec<String>) -> Vec<String> {
@@ -364,7 +533,15 @@ mod tests {
             .map(|group| group.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(visible, vec!["shared-files-rw".to_string(), "users".to_string()]);
+        assert_eq!(
+            visible,
+            vec![
+                "ext_radius_servers".to_string(),
+                "domain_admins".to_string(),
+                "shared-files-rw".to_string(),
+                "users".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -398,5 +575,20 @@ mod tests {
         assert_eq!(groups[1].name, "immich-users");
         assert_eq!(groups[2].name, "immich-admin");
         assert_eq!(groups[3].name, "custom-group");
+    }
+
+    #[test]
+    fn membership_diff_preserves_hidden_groups_when_included_in_effective_target() {
+        let diff = membership_diff(
+            &[
+                "idm_all_persons".to_string(),
+                "users".to_string(),
+                "paperless-admin".to_string(),
+            ],
+            &["idm_all_persons".to_string(), "users".to_string()],
+        );
+
+        assert!(diff.added.is_empty());
+        assert_eq!(diff.removed, vec!["paperless-admin".to_string()]);
     }
 }

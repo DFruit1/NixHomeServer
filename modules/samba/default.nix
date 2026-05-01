@@ -250,30 +250,6 @@ in
 
   networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts = [ 139 445 ];
 
-  systemd.services.fileshare-user-root-sync = {
-    description = "Create per-user fileshare content roots from Kanidm group membership";
-    wantedBy = [ "multi-user.target" ];
-    wants = [
-      "data-pool-layout.service"
-      "kanidm.service"
-      "kanidm-files-posix-groups.service"
-      "local-fs.target"
-    ];
-    after = [
-      "data-pool-layout.service"
-      "kanidm.service"
-      "kanidm-files-posix-groups.service"
-      "local-fs.target"
-    ];
-    before = [ "copyparty.service" ];
-    serviceConfig = {
-      Type = "oneshot";
-    };
-    script = ''
-      ${syncFileshareUserRoots}
-    '';
-  };
-
   systemd.services.shared-files-access-sync = {
     description = "Converge shared-root ACLs for Samba shared access groups";
     wantedBy = [ "multi-user.target" ];

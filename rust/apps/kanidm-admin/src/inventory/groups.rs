@@ -110,6 +110,10 @@ pub fn resolve_group_help(name: &str, description: Option<&str>) -> ResolvedGrou
     }
 }
 
+pub fn is_operator_visible_group(name: &str) -> bool {
+    !name.starts_with("idm_")
+}
+
 pub fn category_sort_rank(name: &str) -> usize {
     match resolve_group_help(name, None).category {
         GroupCategory::Foundation => 0,
@@ -220,6 +224,16 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             detail: "Use this for trusted users who need to upload or update shared content. It still does not imply personal file access.",
             category: GroupCategory::Foundation,
         },
+        "system_admins" => GroupHelp {
+            summary: "Grants broad system administration authority.",
+            detail: "Reserve this for trusted operators who need high-level system administration rights. This is not a normal app-access group.",
+            category: GroupCategory::AppAdmin,
+        },
+        "domain_admins" => GroupHelp {
+            summary: "Grants local domain administration authority.",
+            detail: "Reserve this for trusted operators who need broad identity or domain-level control. This is a high-authority group and not part of normal user onboarding.",
+            category: GroupCategory::AppAdmin,
+        },
         "mail-archive-users" => GroupHelp {
             summary: "Grants access to the mail archive web app.",
             detail: "Add this only for users who should sign in to the mail archive. It provides application access rather than broader platform authority.",
@@ -270,15 +284,18 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             detail: "Add this when the user should access the Downloads app. It is a normal application-access grant rather than a platform-wide role.",
             category: GroupCategory::AppUser,
         },
+        _ if name.starts_with("ext_") => GroupHelp {
+            summary: "Grants access for an external or integration-specific service group.",
+            detail: "Use this only when you know the external integration that depends on it. These groups are more specialized than normal day-to-day app access roles.",
+            category: GroupCategory::Other,
+        },
         _ => return None,
     })
 }
 
 fn inferred_category(name: &str) -> GroupCategory {
     match name {
-        "users" | "user-files" | "shared-files-ro" | "shared-files-rw" => {
-            GroupCategory::Foundation
-        }
+        "users" | "user-files" | "shared-files-ro" | "shared-files-rw" => GroupCategory::Foundation,
         _ if name.ends_with("-admin") => GroupCategory::AppAdmin,
         _ if name.ends_with("-users") || name.ends_with("-login") => GroupCategory::AppUser,
         _ => GroupCategory::Other,
@@ -326,5 +343,12 @@ mod tests {
 
         assert_eq!(help.category, GroupCategory::Other);
         assert!(help.summary.contains("No curated guidance"));
+    }
+
+    #[test]
+    fn operator_visible_groups_hide_only_idm_entries() {
+        assert!(!is_operator_visible_group("idm_admins"));
+        assert!(is_operator_visible_group("domain_admins"));
+        assert!(is_operator_visible_group("ext_radius_servers"));
     }
 }
