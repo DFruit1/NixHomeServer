@@ -7,11 +7,11 @@ in
   assertions = [
     {
       assertion = config.age.secrets ? kanidmAdminPass;
-      message = "Missing kanidmAdminPass secret; run scripts/gen-all-secrets.sh";
+      message = "Missing kanidmAdminPass secret; run scripts/generate-all-secrets.sh";
     }
     {
       assertion = config.age.secrets ? kanidmSysAdminPass;
-      message = "Missing kanidmSysAdminPass secret; run scripts/gen-all-secrets.sh";
+      message = "Missing kanidmSysAdminPass secret; run scripts/generate-all-secrets.sh";
     }
   ];
 

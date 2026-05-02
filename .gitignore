@@ -8,5 +8,6 @@
 /.jj
 /ss
 /result
+/.cache/deploy-validation/
 /rust/apps/*/target/
 /secrets/

@@ -3,9 +3,9 @@
 let
   impermanenceCfg = config.repo.impermanence;
   repoRoot = ../../..;
-  backupTargetScript = "${repoRoot}/scripts/backup-target.sh";
+  backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
   backupTargetCommand = pkgs.writeShellApplication {
-    name = "backup-target";
+    name = "manage-backup-target";
     runtimeInputs = [
       pkgs.coreutils
       pkgs.jq
@@ -17,7 +17,7 @@ let
       exec ${pkgs.bash}/bin/bash ${backupTargetScript} "$@"
     '';
   };
-  selectionStateDir = "/persist/appdata/.nixos-managed/system-state-backup-target";
+  selectionStateDir = "/persist/appdata/.nixos-managed/system-state-backup-device-selection";
   selectionFile = "${selectionStateDir}/selected-device";
   mountPoint = "/mnt/backup-system-state";
   backupRoot = "${mountPoint}/restic";
@@ -269,8 +269,29 @@ in
         exit 1
       fi
 
-      mounted_source="$(findmnt -rn -o SOURCE --target "${mountPoint}" || true)"
-      mounted_fstype="$(findmnt -rn -o FSTYPE --target "${mountPoint}" || true)"
+      mount_info="$(findmnt -rn -o TARGET,SOURCE,FSTYPE --target "${mountPoint}" || true)"
+      mounted_source=""
+      mounted_fstype=""
+      if [[ -n "$mount_info" ]]; then
+        read -r mounted_target mounted_source mounted_fstype <<<"$mount_info"
+        if [[ "$mounted_target" != "${mountPoint}" ]]; then
+          mounted_source=""
+          mounted_fstype=""
+        fi
+      fi
+      if [[ -z "$mounted_source" ]]; then
+        ${lib.getExe backupTargetCommand} mount
+        mount_info="$(findmnt -rn -o TARGET,SOURCE,FSTYPE --target "${mountPoint}" || true)"
+        mounted_source=""
+        mounted_fstype=""
+        if [[ -n "$mount_info" ]]; then
+          read -r mounted_target mounted_source mounted_fstype <<<"$mount_info"
+          if [[ "$mounted_target" != "${mountPoint}" ]]; then
+            mounted_source=""
+            mounted_fstype=""
+          fi
+        fi
+      fi
       if [[ -z "$mounted_source" ]]; then
         echo "Backup target mount missing: ${mountPoint}" >&2
         exit 1
@@ -279,8 +300,17 @@ in
       selected_real="$(readlink -f "$selected_device" 2>/dev/null || true)"
       mounted_real="$(readlink -f "$mounted_source" 2>/dev/null || printf '%s' "$mounted_source")"
       if [[ -z "$selected_real" || "$mounted_real" != "$selected_real" ]]; then
-        echo "Backup target mismatch: selected=$selected_device mounted=$mounted_source" >&2
-        exit 1
+        selected_uuid="$(blkid -s UUID -o value "$selected_device" 2>/dev/null || true)"
+        mounted_uuid="$(blkid -s UUID -o value "$mounted_source" 2>/dev/null || true)"
+        selected_partuuid="$(blkid -s PARTUUID -o value "$selected_device" 2>/dev/null || true)"
+        mounted_partuuid="$(blkid -s PARTUUID -o value "$mounted_source" 2>/dev/null || true)"
+        if ! {
+          [[ -n "$selected_uuid" && "$selected_uuid" == "$mounted_uuid" ]] ||
+          [[ -n "$selected_partuuid" && "$selected_partuuid" == "$mounted_partuuid" ]]
+        }; then
+          echo "Backup target mismatch: selected=$selected_device mounted=$mounted_source" >&2
+          exit 1
+        fi
       fi
 
       case "$mounted_fstype" in

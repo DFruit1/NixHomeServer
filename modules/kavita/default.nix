@@ -1,8 +1,24 @@
 { config, lib, pkgs, vars, pkgsUnstable, ... }:
 
 let
+  libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   kavitaPort = 5000;
   dataDir = "/var/lib/kavita";
+  dbPath = "${dataDir}/config/kavita.db";
+  usersRootRegex = lib.escapeRegex vars.usersRoot;
+  sharedRootRegex = lib.escapeRegex vars.sharedBooksRoot;
+  watchRegex = "^(${sharedRootRegex}(/|$)|${usersRootRegex}/[^/]+/books(/|$))";
+  watcherScript = libraryWatchers.mkSettledWatcherScript {
+    name = "kavita-library-watch";
+    watchedRoots = [
+      vars.sharedBooksRoot
+      vars.usersRoot
+    ];
+    triggerUnit = "kavita-library-sync.service";
+    includeRegex = watchRegex;
+    settleSeconds = 20;
+    pollSeconds = 5;
+  };
 in
 {
   services.kavita = {
@@ -126,5 +142,207 @@ in
         "update ServerSetting set Value = '$escaped' where Key = 40;"
       /run/current-system/sw/bin/systemctl restart kavita.service
     '';
+  };
+
+  systemd.services.kavita-library-sync-config-v1 = {
+    description = "Disable Kavita native folder watchers in favor of settled scans";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "kavita.service" ];
+    wants = [ "kavita.service" ];
+    path = with pkgs; [ sqlite ];
+    script = ''
+      set -euo pipefail
+
+      db=${lib.escapeShellArg dbPath}
+
+      for _ in $(seq 1 30); do
+        [[ -f "$db" ]] && break
+        sleep 1
+      done
+      [[ -f "$db" ]] || exit 0
+
+      current="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+        "select count(*) from Library where FolderWatching != 0;" 2>/dev/null || true)"
+      [[ "$current" =~ ^[0-9]+$ ]] || exit 0
+
+      if [[ "$current" != "0" ]]; then
+        ${pkgs.sqlite}/bin/sqlite3 "$db" "update Library set FolderWatching = 0 where FolderWatching != 0;"
+        /run/current-system/sw/bin/systemctl restart kavita.service
+      fi
+    '';
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "5s";
+    };
+  };
+
+  systemd.services.kavita-library-sync = {
+    description = "Run settled Kavita library scans";
+    wantedBy = [ "multi-user.target" ];
+    after = [
+      "kavita.service"
+      "kavita-library-sync-config-v1.service"
+      "data-pool-layout.service"
+    ];
+    wants = [
+      "kavita.service"
+      "kavita-library-sync-config-v1.service"
+      "data-pool-layout.service"
+    ];
+    path = with pkgs; [
+      coreutils
+      curl
+      findutils
+      gnused
+      jq
+      sqlite
+    ];
+    script = ''
+      set -euo pipefail
+
+      db=${lib.escapeShellArg dbPath}
+
+      normalize_ebook_root_files() {
+        local root="$1"
+
+        [[ -d "$root" ]] || return 0
+
+        while IFS= read -r file; do
+          local filename stem target_dir target_path
+          filename="$(basename "$file")"
+          stem="''${filename%.*}"
+          [[ -n "$stem" && "$stem" != "$filename" ]] || continue
+
+          target_dir="$root/$stem"
+          target_path="$target_dir/$filename"
+
+          if [[ -e "$target_path" ]]; then
+            echo "Skipping Kavita root cleanup because target already exists: $target_path" >&2
+            continue
+          fi
+
+          mkdir -p "$target_dir"
+          mv -- "$file" "$target_path"
+          echo "Moved loose Kavita root file into its own folder: $file -> $target_path" >&2
+        done < <(
+          ${pkgs.findutils}/bin/find "$root" -maxdepth 1 -type f \
+            \( \
+              -iname '*.azw' -o \
+              -iname '*.azw3' -o \
+              -iname '*.cb7' -o \
+              -iname '*.cbr' -o \
+              -iname '*.cbt' -o \
+              -iname '*.cbz' -o \
+              -iname '*.chm' -o \
+              -iname '*.djv' -o \
+              -iname '*.djvu' -o \
+              -iname '*.doc' -o \
+              -iname '*.docx' -o \
+              -iname '*.epub' -o \
+              -iname '*.fb2' -o \
+              -iname '*.htm' -o \
+              -iname '*.html' -o \
+              -iname '*.mobi' -o \
+              -iname '*.pdb' -o \
+              -iname '*.pdf' -o \
+              -iname '*.rtf' -o \
+              -iname '*.txt' -o \
+              -iname '*.xps' -o \
+              -iname '*.zip' \
+            \) \
+            -print \
+            | ${pkgs.coreutils}/bin/sort
+        )
+      }
+
+      api_key="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+        "select ApiKey from AspNetUsers where ApiKey is not null and length(ApiKey) > 0 order by case when UserName = '${vars.kanidmAdminUser}' then 0 else 1 end, Id limit 1;" \
+        2>/dev/null || true)"
+      [[ -n "$api_key" ]] || {
+        echo "Kavita API key is not available yet; skipping scan"
+        exit 0
+      }
+
+      auth_json="$(${pkgs.curl}/bin/curl \
+        --silent \
+        --show-error \
+        --fail \
+        -X POST \
+        "http://127.0.0.1:${toString kavitaPort}/api/Plugin/authenticate?apiKey=$api_key&pluginName=nixos-kavita-library-sync-v1")"
+      token="$(printf '%s' "$auth_json" | ${pkgs.jq}/bin/jq -r '.token')"
+      [[ -n "$token" && "$token" != "null" ]] || {
+        echo "Kavita authentication token was not returned" >&2
+        exit 1
+      }
+
+      library_roots_json="$(${pkgs.sqlite}/bin/sqlite3 -readonly -json "$db" \
+        "select l.Type as Type, fp.Path as Path from FolderPath fp join Library l on l.Id = fp.LibraryId order by fp.Path;" \
+        2>/dev/null || true)"
+      if [[ -z "$library_roots_json" ]]; then
+        library_roots_json='[]'
+      fi
+
+      printf '%s' "$library_roots_json" | ${pkgs.jq}/bin/jq -c '.[] | select(.Type == 2) | .Path' | while IFS= read -r root_json; do
+        root="$(printf '%s' "$root_json" | ${pkgs.jq}/bin/jq -r '.')"
+        [[ -n "$root" && "$root" != "null" ]] || continue
+        normalize_ebook_root_files "$root"
+      done
+
+      if [[ "$library_roots_json" != "[]" ]]; then
+        invalid_roots="$(${pkgs.curl}/bin/curl \
+          --silent \
+          --show-error \
+          --fail \
+          -X POST \
+          -H "Authorization: Bearer $token" \
+          -H 'Content-Type: application/json' \
+          --data "$(printf '%s' "$library_roots_json" | ${pkgs.jq}/bin/jq -c '{ roots: [.[].Path] }')" \
+          "http://127.0.0.1:${toString kavitaPort}/api/Library/has-files-at-root")"
+        if [[ "$invalid_roots" != "[]" ]]; then
+          echo "Kavita root-file warning: supported files were uploaded directly at a library root" >&2
+          printf '%s' "$invalid_roots" | ${pkgs.jq}/bin/jq -r '.[]' | while IFS= read -r root; do
+            [[ -n "$root" ]] || continue
+            echo "Invalid Kavita library root: $root" >&2
+            ${pkgs.findutils}/bin/find "$root" -maxdepth 1 -type f | sed 's/^/  root file: /' >&2 || true
+          done
+        fi
+      fi
+
+      ${pkgs.curl}/bin/curl \
+        --silent \
+        --show-error \
+        --fail \
+        -X POST \
+        -H "Authorization: Bearer $token" \
+        "http://127.0.0.1:${toString kavitaPort}/api/Library/scan-all" \
+        >/dev/null
+    '';
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "5s";
+    };
+  };
+
+  systemd.services.kavita-library-watch = {
+    description = "Watch book roots and debounce Kavita scans";
+    wantedBy = [ "multi-user.target" ];
+    after = [
+      "kavita.service"
+      "kavita-library-sync.service"
+      "data-pool-layout.service"
+    ];
+    wants = [
+      "kavita.service"
+      "kavita-library-sync.service"
+      "data-pool-layout.service"
+    ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${watcherScript}";
+      Restart = "always";
+      RestartSec = "5s";
+    };
   };
 }

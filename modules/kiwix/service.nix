@@ -2,20 +2,29 @@
 
 let
   cfg = config.services.kiwixServe;
+  libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   kiwixStateDirDefault = "/var/lib/kiwix";
   kiwixPort = 8081;
   libraryFile = "${cfg.stateDir}/library.xml";
+  uploadUsers = lib.unique ([ cfg.uploadUser ] ++ cfg.extraUploadUsers);
+  dirWriterAclArgs = lib.concatStringsSep " " (
+    lib.concatMap (user: [
+      ''-m u:${user}:rwx''
+      ''-m d:u:${user}:rwx''
+    ]) uploadUsers
+  );
+  fileWriterAclArgs = lib.concatStringsSep " " (
+    map (user: ''-m u:${user}:rw'') uploadUsers
+  );
   prepareLibraryRootScript = pkgs.writeShellScript "kiwix-prepare-library-root" ''
     set -euo pipefail
 
     library_root=${lib.escapeShellArg cfg.libraryRoot}
-    upload_user=${lib.escapeShellArg cfg.uploadUser}
 
     ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
     ${pkgs.acl}/bin/setfacl \
-      -m "u:$upload_user:rwx" \
+      ${dirWriterAclArgs} \
       -m g:kiwix:rx \
-      -m "d:u:$upload_user:rwx" \
       -m d:g:kiwix:rx \
       "$library_root"
   '';
@@ -24,7 +33,6 @@ let
 
     library_root=${lib.escapeShellArg cfg.libraryRoot}
     library_file=${lib.escapeShellArg libraryFile}
-    upload_user=${lib.escapeShellArg cfg.uploadUser}
     tmp_library="$(mktemp)"
     trap 'rm -f "$tmp_library"' EXIT
 
@@ -37,7 +45,7 @@ EOF
 
     while IFS= read -r -d $'\0' zim_path; do
       ${pkgs.acl}/bin/setfacl \
-        -m "u:$upload_user:rw" \
+        ${fileWriterAclArgs} \
         -m g:kiwix:r \
         "$zim_path"
 
@@ -51,6 +59,13 @@ EOF
 
     ${pkgs.coreutils}/bin/install -D -m 0640 -o kiwix -g kiwix "$tmp_library" "$library_file"
   '';
+  watcherScript = libraryWatchers.mkSettledWatcherScript {
+    name = "kiwix-library-watch";
+    watchedRoots = [ cfg.libraryRoot ];
+    triggerUnit = "kiwix-library-sync.service";
+    settleSeconds = 20;
+    pollSeconds = 5;
+  };
 in
 {
   options.services.kiwixServe = {
@@ -99,6 +114,15 @@ in
       '';
     };
 
+    extraUploadUsers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Additional local Unix accounts that need direct write access to the
+        uploaded ZIM directory.
+      '';
+    };
+
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = kiwixStateDirDefault;
@@ -107,6 +131,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = map (user: {
+      assertion = builtins.hasAttr user config.users.users;
+      message = "services.kiwixServe.extraUploadUsers entry '${user}' must name a local Unix account.";
+    }) cfg.extraUploadUsers;
+
     users.users.kiwix = {
       isSystemUser = true;
       group = "kiwix";
@@ -146,16 +175,6 @@ in
       '';
     };
 
-    systemd.timers.kiwix-library-sync = {
-      description = "Periodically rescan uploaded ZIM files for Kiwix";
-      wantedBy = [ "multi-user.target" ];
-      timerConfig = {
-        OnBootSec = "30s";
-        OnUnitActiveSec = "30s";
-        Unit = "kiwix-library-sync.service";
-      };
-    };
-
     systemd.services.kiwix = {
       description = "Kiwix offline content server";
       wantedBy = [ "multi-user.target" ];
@@ -191,6 +210,25 @@ in
           cfg.libraryRoot
           cfg.stateDir
         ];
+      };
+    };
+
+    systemd.services.kiwix-library-watch = {
+      description = "Watch ZIM uploads and debounce Kiwix catalog sync";
+      wantedBy = [ "multi-user.target" ];
+      wants = [
+        "kiwix-library-sync.service"
+        "local-fs.target"
+      ];
+      after = [
+        "kiwix-library-sync.service"
+        "local-fs.target"
+      ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStart = "${watcherScript}";
+        Restart = "always";
+        RestartSec = "5s";
       };
     };
   };

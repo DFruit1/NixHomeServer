@@ -23,14 +23,14 @@ rec {
   netIface = "enp34s0";
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
 
-  mainDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # System SSD by-id value.
-  zfsDataPool = { # Active mirrored ZFS pool created by the data-disk wrapper.
+  mainDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # Live system SSD by-id value used for runtime protection and monitoring.
+  zfsDataPool = { # Active mirrored ZFS pool metadata. Member IDs are retained for bootstrap-era workflows only.
     name = "data";
     mountPoint = "/mnt/data";
     mirrorPairs = [
       [
-        "ata-HGST_HUS726T4TALA6L4_V1JAKPNH"
-        "ata-HGST_HUS726T4TALA6L4_V1J9PKDH"
+        "ata-ST8000VN002-2ZM188_WPV3997N"
+        "ata-ST8000VN002-2ZM188_WPV37712"
       ]
     ];
     datasets = [
@@ -43,11 +43,9 @@ rec {
   coldStoragePools = [ ]; # Optional manual-import pools kept outside the default Disko path.
 
   cloudflareTunnelName = "metro";
+  binaryCaches = [ ]; # Optional extra binary caches: [{ url = "https://example.cachix.org"; publicKey = "example.cachix.org-1:..."; }]
 
-  zfsDataPoolDiskIds = lib.flatten zfsDataPool.mirrorPairs;
-  monitoredDataDiskIds = zfsDataPoolDiskIds;
-  monitoredColdStorageDiskIds = map (pool: pool.disk) coldStoragePools;
-  monitoredStorageDiskIds = monitoredDataDiskIds ++ monitoredColdStorageDiskIds;
+  zfsDataPoolDiskIds = lib.flatten zfsDataPool.mirrorPairs; # Bootstrap-era pool member IDs retained for blank-machine provisioning metadata.
 
   dataRoot = zfsDataPool.mountPoint;
   paperlessRoot = "${dataRoot}/paperless";

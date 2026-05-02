@@ -25,8 +25,8 @@ in
 
   systemd.services.mail-archive-sync = lib.mkIf cfg.enable {
     description = "Synchronize mail archive UI accounts and refresh notmuch indexes";
-    wants = [ "mail-archive-ui.service" "local-fs.target" ];
-    after = [ "mail-archive-ui.service" "local-fs.target" ];
+    wants = [ "mail-archive-ui.service" "local-fs.target" "network-online.target" "unbound.service" ];
+    after = [ "mail-archive-ui.service" "local-fs.target" "network-online.target" "unbound.service" ];
     unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
     serviceConfig = {
       Type = "oneshot";

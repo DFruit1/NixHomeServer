@@ -23,7 +23,7 @@ let
       "/var/lib/postgresql/16"
       "/var/lib/redis-immich"
       "/var/lib/redis-paperless"
-      "/var/lib/storage-monitoring"
+      "/var/lib/system-health-monitoring"
       "/var/lib/systemd/timers"
       "/var/lib/unbound"
       "/var/log/journal"
@@ -31,42 +31,6 @@ let
     ++ lib.optionals cfg.persistDsawHome [ "/home/dsaw" ];
 
   persistenceFiles = [ "/etc/machine-id" ];
-
-  activePayloadRoots = [
-    vars.paperlessRoot
-    vars.immichRoot
-    vars.kiwixLibraryRoot
-    vars.usersRoot
-    vars.sharedRoot
-  ];
-
-  retiredRoots = [
-    "${vars.dataRoot}/appdata"
-    "${vars.dataRoot}/media"
-    "${vars.sharedRoot}/documents"
-    "${vars.sharedRoot}/photos"
-  ];
-
-  activeAppStateRoots = [
-    "/persist/appdata/mail-archive-ui"
-    "/var/lib/acme"
-    "/var/lib/audiobookshelf"
-    "/var/lib/copyparty"
-    "/var/lib/immich"
-    "/var/lib/immich-public-proxy"
-    "/var/lib/jellyfin"
-    "/var/lib/kanidm"
-    "/var/lib/kavita"
-    "/var/lib/kiwix"
-    "/var/lib/metube"
-    "/var/lib/netbird-main"
-    "/var/lib/paperless"
-    "/var/lib/postgresql/16"
-    "/var/lib/redis-immich"
-    "/var/lib/redis-paperless"
-    "/var/lib/storage-monitoring"
-    "/var/lib/unbound"
-  ];
 
   rollbackScript = ''
     set -eu
@@ -148,24 +112,6 @@ in
         readOnly = true;
         description = "Canonical list of files that impermanence persists under /persist.";
       };
-
-      activePayloadRoots = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        readOnly = true;
-        description = "Active ZFS payload roots that should remain in steady state.";
-      };
-
-      retiredRoots = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        readOnly = true;
-        description = "Legacy storage roots that should be retired before impermanence cutover.";
-      };
-
-      activeAppStateRoots = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        readOnly = true;
-        description = "Current active SSD-backed application state roots.";
-      };
     };
   };
 
@@ -181,9 +127,6 @@ in
       inherit
         persistenceDirectories
         persistenceFiles
-        activePayloadRoots
-        retiredRoots
-        activeAppStateRoots
         ;
     };
 

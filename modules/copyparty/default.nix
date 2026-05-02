@@ -9,6 +9,35 @@ let
   runtimeConfigDir = "/var/lib/copyparty/runtime";
   runtimeConfigPath = "${runtimeConfigDir}/copyparty.conf";
   sharedFilesRoot = "${vars.sharedRoot}/files";
+  sharedKiwixRoot = vars.kiwixLibraryRoot;
+  sharedBookVolumes = lib.concatMapStringsSep "\n\n" (library: ''
+    [/shared/${library.dir}]
+    ${vars.sharedBooksRoot}/${library.dir}
+    accs:
+      r: @shared-files-ro
+      rwm: @shared-files-rw
+      rwmda: @${sharedFilesAdminGroup}
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 775
+      chmod_f: 664
+      unlistcr: true
+      unlistcw: true
+  '') vars.sharedKavitaLibraries;
+  personalBookVolumes = lib.concatMapStringsSep "\n\n" (library: ''
+[/$username/${library.dir}]
+${vars.usersRoot}/$username/books/${library.dir}
+accs:
+  rwmda: $username
+flags:
+  fk: 4
+  e2d: true
+  chmod_d: 770
+  chmod_f: 660
+  unlistcr: true
+  unlistcw: true
+  '') vars.personalKavitaLibraries;
   staticRuntimeConfig = pkgs.writeText "copyparty-runtime.conf" ''
     [global]
     auth-ord: idp
@@ -61,19 +90,7 @@ let
       unlistcr: true
       unlistcw: true
 
-    [/shared/books]
-    ${vars.sharedBooksRoot}
-    accs:
-      r: @shared-files-ro
-      rwm: @shared-files-rw
-      rwmda: @${sharedFilesAdminGroup}
-    flags:
-      fk: 4
-      e2d: true
-      chmod_d: 775
-      chmod_f: 664
-      unlistcr: true
-      unlistcw: true
+    ${sharedBookVolumes}
 
     [/shared/emails]
     ${vars.sharedEmailsRoot}
@@ -94,6 +111,18 @@ let
     accs:
       r: @shared-files-ro
       rwm: @shared-files-rw
+      rwmda: @${sharedFilesAdminGroup}
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 775
+      chmod_f: 664
+      unlistcr: true
+      unlistcw: true
+
+    [/shared/kiwix]
+    ${sharedKiwixRoot}
+    accs:
       rwmda: @${sharedFilesAdminGroup}
     flags:
       fk: 4
@@ -151,17 +180,7 @@ flags:
   unlistcr: true
   unlistcw: true
 
-[/$username/books]
-${vars.usersRoot}/$username/books
-accs:
-  rwmda: $username
-flags:
-  fk: 4
-  e2d: true
-  chmod_d: 770
-  chmod_f: 660
-  unlistcr: true
-  unlistcw: true
+${personalBookVolumes}
 
 [/$username/emails]
 ${vars.usersRoot}/$username/emails
@@ -243,19 +262,7 @@ in
         unlistcr: true
         unlistcw: true
 
-      [/shared/books]
-      ${vars.sharedBooksRoot}
-      accs:
-        r: @shared-files-ro
-        rwm: @shared-files-rw
-        rwmda: @${sharedFilesAdminGroup}
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
+      ${sharedBookVolumes}
 
       [/shared/emails]
       ${vars.sharedEmailsRoot}
@@ -284,8 +291,22 @@ in
         chmod_f: 664
         unlistcr: true
         unlistcw: true
+
+      [/shared/kiwix]
+      ${sharedKiwixRoot}
+      accs:
+        rwmda: @${sharedFilesAdminGroup}
+      flags:
+        fk: 4
+        e2d: true
+        chmod_d: 775
+        chmod_f: 664
+        unlistcr: true
+        unlistcw: true
     '';
   };
+
+  services.kiwixServe.extraUploadUsers = lib.optionals config.services.kiwixServe.enable [ "copyparty" ];
 
   users.users.copyparty.extraGroups = lib.mkAfter [
     "users"
@@ -293,18 +314,21 @@ in
   ];
 
   systemd.services.copyparty = {
-    wants = [
+    wants = lib.optionals config.services.kiwixServe.enable [ "kiwix-library-sync.service" ] ++ [
       "copyparty-runtime-config-sync.service"
       "fileshare-user-root-sync.service"
     ];
-    after = [
+    after = lib.optionals config.services.kiwixServe.enable [ "kiwix-library-sync.service" ] ++ [
       "copyparty-runtime-config-sync.service"
       "fileshare-user-root-sync.service"
     ];
-    serviceConfig.BindPaths = lib.mkAfter [
-      vars.usersRoot
-      vars.sharedRoot
-    ];
+    serviceConfig.BindPaths = lib.mkAfter (
+      [
+        vars.usersRoot
+        vars.sharedRoot
+      ]
+      ++ lib.optionals config.services.kiwixServe.enable [ vars.kiwixLibraryRoot ]
+    );
     serviceConfig.ExecStart = lib.mkForce "${pkgs.copyparty}/bin/copyparty -c ${runtimeConfigPath}";
     serviceConfig.ExecStartPre = lib.mkForce [ ];
   };

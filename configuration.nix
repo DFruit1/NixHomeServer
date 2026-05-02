@@ -1,5 +1,9 @@
 { config, pkgs, lib, vars, disko, ... }:
 
+let
+  extraBinaryCacheUrls = map (cache: cache.url) vars.binaryCaches;
+  extraBinaryCachePublicKeys = map (cache: cache.publicKey) vars.binaryCaches;
+in
 {
   ###############################################################################
   #  Core system bits (unchanged)
@@ -39,7 +43,7 @@
   time.timeZone = "Australia/Sydney";
 
   ###############################################################################
-  #  Disko – layout + engine
+  #  Bootstrap layout declarations
   ###############################################################################
   imports = [
     ./disko-system.nix
@@ -175,9 +179,40 @@
 
   services.btrfs.autoScrub.enable = true;
 
+  security.sudo.extraRules = [
+    {
+      users = [ "dsaw" ];
+      commands = [
+        {
+          command = "ALL";
+          options = [ "NOPASSWD" ];
+        }
+      ];
+    }
+  ];
+
   environment.systemPackages = with pkgs; [
+    age
+    bind
+    cryptsetup
+    gitMinimal
+    gptfdisk
+    hdparm
     jq
+    lsof
+    lvm2
+    mdadm
+    ncdu
+    nvme-cli
+    nix-output-monitor
+    parted
+    pciutils
+    openssl
+    python3
     ripgrep
+    smartmontools
+    sqlite
+    usbutils
   ];
 
   nix = {
@@ -186,9 +221,14 @@
       substituters = [
         "https://cache.nixos.org"
         "https://nix-community.cachix.org"
-      ];
+      ] ++ extraBinaryCacheUrls;
       experimental-features = [ "nix-command" "flakes" ];
+      trusted-public-keys = [
+        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      ] ++ extraBinaryCachePublicKeys;
       trusted-users = [ "root" "dsaw" ];
+      auto-optimise-store = true;
+      builders-use-substitutes = true;
     };
   };
   nix.gc.automatic = true;

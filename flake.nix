@@ -20,6 +20,16 @@
       lib = nixpkgs.lib;
       pkgs = nixpkgs.legacyPackages.${system};
       pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
+      checkNativeBuildInputs = with pkgs; [
+        bash
+        coreutils
+        findutils
+        gnugrep
+        gnused
+        jq
+        nix
+        ripgrep
+      ];
       vars = import ./vars.nix { inherit lib; };
       rustLib = import ./rust/lib { inherit lib pkgs crane; };
       rustApps = import ./rust/apps { inherit lib pkgs rustLib; };
@@ -29,11 +39,26 @@
           rust = rustLib.mkRustShell {
             name = "rust";
           };
+          ops = pkgs.mkShell {
+            name = "ops-dev-shell";
+            packages = with pkgs; [
+              deadnix
+              gitMinimal
+              jq
+              nix-output-monitor
+              nix-tree
+              nixpkgs-fmt
+              nvd
+              python3
+              ripgrep
+              shellcheck
+              statix
+            ];
+          };
         }
         // lib.mapAttrs (_: app: app.devShell) rustApps;
       rustChecks = lib.concatMapAttrs
         (name: app: {
-          "${name}-build" = app.package;
           "${name}-fmt" = app.checks.fmt;
           "${name}-clippy" = app.checks.clippy;
           "${name}-test" = app.checks.test;
@@ -73,56 +98,17 @@
       checks.${system} = {
         repo-policy = pkgs.runCommand "repo-policy"
           {
-            nativeBuildInputs = with pkgs; [
-              bash
-              coreutils
-              findutils
-              gnugrep
-              gnused
-              jq
-              nix
-              ripgrep
-            ];
+            nativeBuildInputs = checkNativeBuildInputs;
           } ''
           export HOME="$TMPDIR"
           export NIX_CONFIG="experimental-features = nix-command flakes"
           cd ${self}
-          bash tests/module-imports.sh
-          bash tests/core-config-base.sh
-          bash tests/core-config-storage.sh
-          bash tests/core-config-apps.sh
-          bash tests/storage-monitoring.sh
-          bash tests/runtime-readiness.sh
-          touch "$out"
-        '';
-
-        repo-policy-full = pkgs.runCommand "repo-policy-full"
-          {
-            nativeBuildInputs = with pkgs; [
-              bash
-              coreutils
-              findutils
-              gnugrep
-              gnused
-              jq
-              nix
-              ripgrep
-            ];
-          } ''
-          export HOME="$TMPDIR"
-          export NIX_CONFIG="experimental-features = nix-command flakes"
-          cd ${self}
-          bash tests/run-all.sh
-          touch "$out"
-        '';
-
-        config-eval = pkgs.runCommand "config-eval"
-          {
-            nativeBuildInputs = [ pkgs.nix ];
-          } ''
-          export HOME="$TMPDIR"
-          export NIX_CONFIG="experimental-features = nix-command flakes"
-          nix eval --raw ${lib.escapeShellArg "${self}#nixosConfigurations.${vars.hostname}.config.system.build.toplevel.drvPath"} >/dev/null
+          bash scripts/tests/test-secret-definitions.sh
+          bash scripts/tests/test-deploy-with-validation-remote-preflight.sh
+          bash scripts/tests/test-storage-health-checks.sh
+          bash scripts/tests/test-runtime-readiness.sh
+          bash scripts/tests/test-system-health-report.sh
+          bash scripts/tests/test-evaluated-host-config.sh
           touch "$out"
         '';
       } // rustChecks;
@@ -136,7 +122,7 @@
           disko = {
             type = "app";
             program = "${disko.packages.${system}.disko}/bin/disko";
-            meta = { description = "Disko CLI helper"; };
+            meta = { description = "Disko CLI helper for blank-machine bootstrap only"; };
           };
         }
         // rustFlakeApps;
