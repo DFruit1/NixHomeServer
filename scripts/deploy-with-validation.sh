@@ -192,7 +192,7 @@ run_local_runtime_readiness() {
 
   remote_archive="$(stage_archive_on_remote "$archive_path" "$target_host" "check-runtime-readiness")"
 
-  ssh -tt "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
+  ssh -T "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
 set -euo pipefail
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
@@ -226,7 +226,7 @@ run_remote_deploy() {
   remote_env=("REMOTE_ARCHIVE=$(printf '%q' "$remote_archive")" "${remote_env[@]}")
   remote_command="$(printf '%s ' "${remote_env[@]}")bash -s"
 
-  ssh -tt "$build_host" "$remote_command" <<'EOF'
+  ssh -T "$build_host" "$remote_command" <<'EOF'
 set -euo pipefail
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
@@ -261,7 +261,7 @@ if [[ "$local_build" == true ]]; then
     --ask-sudo-password
 
   echo "ℹ️ Checking for failed units on ${target_host}…"
-  ssh -t "$target_host" "sudo systemctl --failed --no-pager"
+  ssh "$target_host" "sudo systemctl --failed --no-pager"
 
   echo "ℹ️ Running runtime readiness checks on ${target_host}…"
   repo_archive="$(mktemp /tmp/deploy-with-validation-repo.XXXXXX.tar)"

@@ -224,7 +224,7 @@ run_remote_runtime_readiness() {
   create_deploy_repo_archive "$repo_archive"
   remote_archive="$(stage_archive_on_remote "$repo_archive" "$target_host" "check-runtime-readiness")"
 
-  ssh -tt "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
+  ssh -T "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
 set -euo pipefail
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
@@ -334,7 +334,7 @@ deploy_main() {
     sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh --profile deploy
   else
     echo "ℹ️ Checking for failed units on ${target_host}…"
-    ssh -t "$target_host" "sudo systemctl --failed --no-pager"
+    ssh "$target_host" "sudo systemctl --failed --no-pager"
 
     echo "ℹ️ Running runtime readiness checks on ${target_host}…"
     run_remote_runtime_readiness "$target_host"

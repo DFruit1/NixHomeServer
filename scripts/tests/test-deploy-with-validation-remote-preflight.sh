@@ -102,7 +102,7 @@ set -euo pipefail
 host=""
 while (($# > 0)); do
   case "$1" in
-    -t|-tt)
+    -t|-tt|-T)
       shift
       ;;
     -o)
