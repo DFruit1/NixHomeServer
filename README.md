@@ -29,4 +29,8 @@ Validation gate: see [Operations](./documentation/operations.md#validation-gate)
 
 Deploy entry point: `./scripts/deploy-with-validation.sh --help`
 
+Immich sharing: the private app stays on `photos.sydneybasiniot.org`, while
+public share links use `sharephotos.sydneybasiniot.org`. See
+[Operations](./documentation/operations.md#app-hostnames).
+
 Mail archive control plane: see [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private UI, sync flow, and storage model.

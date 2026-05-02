@@ -22,6 +22,26 @@ bootstrap remains the installer-side exception.
 - Periodic report refresh: `sudo ./scripts/generate-system-health-report.sh`
 - Backup target selection: `manage-backup-target list` then `sudo manage-backup-target select ...`
 
+## App Hostnames
+
+Immich uses separate private and public hostnames on purpose:
+
+- Private Immich app: `https://photos.sydneybasiniot.org`
+- Public Immich share links: `https://sharephotos.sydneybasiniot.org`
+
+Use `photos.sydneybasiniot.org` for the owner's normal Immich login on LAN or
+NetBird. Use `sharephotos.sydneybasiniot.org` only for public album or photo
+links sent to other people.
+
+`photoshare.sydneybasiniot.org` is not a valid hostname in this config and
+should not be used.
+
+Immich sharing flow:
+
+1. Open Immich at `https://photos.sydneybasiniot.org`
+2. Create an album or photo share link
+3. Send the generated `https://sharephotos.sydneybasiniot.org/...` URL to recipients
+
 ## Validation Gate
 
 The documented day-2 validation path runs on the remote server and does not need

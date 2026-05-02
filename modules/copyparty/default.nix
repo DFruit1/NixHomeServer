@@ -10,34 +10,81 @@ let
   runtimeConfigPath = "${runtimeConfigDir}/copyparty.conf";
   sharedFilesRoot = "${vars.sharedRoot}/files";
   sharedKiwixRoot = vars.kiwixLibraryRoot;
-  sharedBookVolumes = lib.concatMapStringsSep "\n\n" (library: ''
-    [/shared/${library.dir}]
-    ${vars.sharedBooksRoot}/${library.dir}
-    accs:
-      r: @shared-files-ro
-      rwm: @shared-files-rw
-      rwmda: @${sharedFilesAdminGroup}
-    flags:
-      fk: 4
-      e2d: true
-      chmod_d: 775
-      chmod_f: 664
-      unlistcr: true
-      unlistcw: true
-  '') vars.sharedKavitaLibraries;
-  personalBookVolumes = lib.concatMapStringsSep "\n\n" (library: ''
-[/$username/${library.dir}]
-${vars.usersRoot}/$username/books/${library.dir}
-accs:
-  rwmda: $username
-flags:
-  fk: 4
-  e2d: true
-  chmod_d: 770
-  chmod_f: 660
-  unlistcr: true
-  unlistcw: true
-  '') vars.personalKavitaLibraries;
+  mkVolumeStanza =
+    {
+      route,
+      path,
+      accs,
+      chmodDir ? null,
+      chmodFile ? null,
+    }:
+    let
+      flags = [
+        "fk: 4"
+        "e2d: true"
+      ]
+      ++ lib.optional (chmodDir != null) "chmod_d: ${chmodDir}"
+      ++ lib.optional (chmodFile != null) "chmod_f: ${chmodFile}"
+      ++ [
+        "unlistcr: true"
+        "unlistcw: true"
+      ];
+    in
+    ''
+      [${route}]
+      ${path}
+      accs:
+      ${lib.concatMapStringsSep "\n" (line: "  ${line}") accs}
+      flags:
+      ${lib.concatMapStringsSep "\n" (line: "  ${line}") flags}
+    '';
+  mkSharedVolume = route: path: mkVolumeStanza {
+    inherit route path;
+    accs = [
+      "r: @shared-files-ro"
+      "rwm: @shared-files-rw"
+      "rwmda: @${sharedFilesAdminGroup}"
+    ];
+    chmodDir = "775";
+    chmodFile = "664";
+  };
+  mkSharedAdminVolume = route: path: mkVolumeStanza {
+    inherit route path;
+    accs = [ "rwmda: @${sharedFilesAdminGroup}" ];
+    chmodDir = "775";
+    chmodFile = "664";
+  };
+  mkPersonalWritableVolume = route: path: mkVolumeStanza {
+    inherit route path;
+    accs = [ "rwmda: $username" ];
+    chmodDir = "770";
+    chmodFile = "660";
+  };
+  mkPersonalReadonlyVolume = route: path: mkVolumeStanza {
+    inherit route path;
+    accs = [ "r: $username" ];
+  };
+  sharedBookVolumes = lib.concatMapStringsSep "\n\n" (library:
+    mkSharedVolume "/shared/${library.dir}" "${vars.sharedBooksRoot}/${library.dir}"
+  ) vars.sharedKavitaLibraries;
+  sharedBookAliasVolumes = lib.concatMapStringsSep "\n\n" (library:
+    mkSharedVolume "/books/shared/${library.dir}" "${vars.sharedBooksRoot}/${library.dir}"
+  ) vars.sharedKavitaLibraries;
+  personalBookVolumes = lib.concatMapStringsSep "\n\n" (library:
+    mkPersonalWritableVolume "/$username/${library.dir}" "${vars.usersRoot}/$username/books/${library.dir}"
+  ) vars.personalKavitaLibraries;
+  personalBookAliasVolumes = lib.concatMapStringsSep "\n\n" (library:
+    mkPersonalWritableVolume "/books/$username/${library.dir}" "${vars.usersRoot}/$username/books/${library.dir}"
+  ) vars.personalKavitaLibraries;
+  sharedRuntimeVolumes = lib.concatStringsSep "\n\n" [
+    (mkSharedVolume "/shared/files" sharedFilesRoot)
+    (mkSharedVolume "/shared/audiobooks" vars.sharedAudiobooksRoot)
+    sharedBookVolumes
+    sharedBookAliasVolumes
+    (mkSharedVolume "/shared/emails" vars.sharedEmailsRoot)
+    (mkSharedVolume "/shared/videos" vars.sharedVideosRoot)
+    (mkSharedAdminVolume "/shared/kiwix" sharedKiwixRoot)
+  ];
   staticRuntimeConfig = pkgs.writeText "copyparty-runtime.conf" ''
     [global]
     auth-ord: idp
@@ -62,77 +109,9 @@ flags:
 
     [groups]
 
-    [/shared/files]
-    ${sharedFilesRoot}
-    accs:
-      r: @shared-files-ro
-      rwm: @shared-files-rw
-      rwmda: @${sharedFilesAdminGroup}
-    flags:
-      fk: 4
-      e2d: true
-      chmod_d: 775
-      chmod_f: 664
-      unlistcr: true
-      unlistcw: true
-
-    [/shared/audiobooks]
-    ${vars.sharedAudiobooksRoot}
-    accs:
-      r: @shared-files-ro
-      rwm: @shared-files-rw
-      rwmda: @${sharedFilesAdminGroup}
-    flags:
-      fk: 4
-      e2d: true
-      chmod_d: 775
-      chmod_f: 664
-      unlistcr: true
-      unlistcw: true
-
-    ${sharedBookVolumes}
-
-    [/shared/emails]
-    ${vars.sharedEmailsRoot}
-    accs:
-      r: @shared-files-ro
-      rwm: @shared-files-rw
-      rwmda: @${sharedFilesAdminGroup}
-    flags:
-      fk: 4
-      e2d: true
-      chmod_d: 775
-      chmod_f: 664
-      unlistcr: true
-      unlistcw: true
-
-    [/shared/videos]
-    ${vars.sharedVideosRoot}
-    accs:
-      r: @shared-files-ro
-      rwm: @shared-files-rw
-      rwmda: @${sharedFilesAdminGroup}
-    flags:
-      fk: 4
-      e2d: true
-      chmod_d: 775
-      chmod_f: 664
-      unlistcr: true
-      unlistcw: true
-
-    [/shared/kiwix]
-    ${sharedKiwixRoot}
-    accs:
-      rwmda: @${sharedFilesAdminGroup}
-    flags:
-      fk: 4
-      e2d: true
-      chmod_d: 775
-      chmod_f: 664
-      unlistcr: true
-      unlistcw: true
+    ${sharedRuntimeVolumes}
   '';
-  appendPersonalVolumes = pkgs.writeShellScript "append-copyparty-personal-volumes" ''
+  appendPersonalVolumes = ''
     set -euo pipefail
 
     runtime_conf="${runtimeConfigPath}"
@@ -156,45 +135,19 @@ flags:
 
           ${pkgs.coreutils}/bin/cat >>"$runtime_conf" <<EOF
 
-[/$username/files]
-${vars.usersRoot}/$username/files
-accs:
-  rwmda: $username
-flags:
-  fk: 4
-  e2d: true
-  chmod_d: 770
-  chmod_f: 660
-  unlistcr: true
-  unlistcw: true
+${mkPersonalWritableVolume "/$username/files" "${vars.usersRoot}/$username/files"}
 
-[/$username/audiobooks]
-${vars.usersRoot}/$username/audiobooks
-accs:
-  rwmda: $username
-flags:
-  fk: 4
-  e2d: true
-  chmod_d: 770
-  chmod_f: 660
-  unlistcr: true
-  unlistcw: true
+${mkPersonalWritableVolume "/$username/audiobooks" "${vars.usersRoot}/$username/audiobooks"}
 
 ${personalBookVolumes}
 
-[/$username/emails]
-${vars.usersRoot}/$username/emails
-accs:
-  r: $username
-flags:
-  fk: 4
-  e2d: true
-  unlistcr: true
-  unlistcw: true
+${personalBookAliasVolumes}
+
+${mkPersonalReadonlyVolume "/$username/emails" "${vars.usersRoot}/$username/emails"}
 EOF
         done
   '';
-  buildRuntimeConfig = pkgs.writeShellScript "build-copyparty-runtime-config" ''
+  buildRuntimeConfig = ''
     set -euo pipefail
 
     install -d -m 0700 -o copyparty -g copyparty ${runtimeConfigDir}
@@ -234,75 +187,7 @@ in
     };
     volumes = { };
     globalExtraConfig = ''
-      [/shared/files]
-      ${sharedFilesRoot}
-      accs:
-        r: @shared-files-ro
-        rwm: @shared-files-rw
-        rwmda: @${sharedFilesAdminGroup}
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/audiobooks]
-      ${vars.sharedAudiobooksRoot}
-      accs:
-        r: @shared-files-ro
-        rwm: @shared-files-rw
-        rwmda: @${sharedFilesAdminGroup}
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
-
-      ${sharedBookVolumes}
-
-      [/shared/emails]
-      ${vars.sharedEmailsRoot}
-      accs:
-        r: @shared-files-ro
-        rwm: @shared-files-rw
-        rwmda: @${sharedFilesAdminGroup}
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/videos]
-      ${vars.sharedVideosRoot}
-      accs:
-        r: @shared-files-ro
-        rwm: @shared-files-rw
-        rwmda: @${sharedFilesAdminGroup}
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
-
-      [/shared/kiwix]
-      ${sharedKiwixRoot}
-      accs:
-        rwmda: @${sharedFilesAdminGroup}
-      flags:
-        fk: 4
-        e2d: true
-        chmod_d: 775
-        chmod_f: 664
-        unlistcr: true
-        unlistcw: true
+      ${sharedRuntimeVolumes}
     '';
   };
 
@@ -353,8 +238,6 @@ in
       pkgs.kanidm_1_9
       pkgs.jq
     ];
-    script = ''
-      ${buildRuntimeConfig}
-    '';
+    script = buildRuntimeConfig;
   };
 }

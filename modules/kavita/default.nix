@@ -5,6 +5,15 @@ let
   kavitaPort = 5000;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
+  kavitaPackage = pkgsUnstable.kavita.overrideAttrs (old: {
+    backend = old.backend.overrideAttrs (backendOld: {
+      patches = (backendOld.patches or [ ]) ++ [
+        ./patches/fix-epub-relative-resource-resolution.patch
+      ];
+    });
+  });
+  sharedKavitaDirs = map (library: "${vars.sharedBooksRoot}/${library.dir}") vars.sharedKavitaLibraries;
+  userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
   usersRootRegex = lib.escapeRegex vars.usersRoot;
   sharedRootRegex = lib.escapeRegex vars.sharedBooksRoot;
   watchRegex = "^(${sharedRootRegex}(/|$)|${usersRootRegex}/[^/]+/books(/|$))";
@@ -23,7 +32,7 @@ in
 {
   services.kavita = {
     enable = true;
-    package = pkgsUnstable.kavita;
+    package = kavitaPackage;
     dataDir = dataDir;
     tokenKeyFile = config.age.secrets.kavitaTokenKey.path;
     settings = {
@@ -177,16 +186,81 @@ in
     };
   };
 
+  systemd.services.kavita-media-acl-sync-v1 = {
+    description = "Converge Kavita media ACLs on book roots";
+    wantedBy = [ "multi-user.target" ];
+    after = [
+      "data-pool-layout.service"
+      "fileshare-user-root-sync.service"
+    ];
+    wants = [
+      "data-pool-layout.service"
+      "fileshare-user-root-sync.service"
+    ];
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "5s";
+    };
+    path = with pkgs; [
+      acl
+      coreutils
+      findutils
+    ];
+    script = ''
+      set -euo pipefail
+
+      apply_recursive_acl() {
+        local access_spec="$1"
+        local default_spec="$2"
+        shift
+        shift
+
+        for path in "$@"; do
+          [[ -d "$path" ]] || continue
+          ${pkgs.acl}/bin/setfacl -R -m "$access_spec" "$path"
+          ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl -m "$default_spec" '{}' +
+        done
+      }
+
+      apply_writable_acl() {
+        local group_name="$1"
+        shift
+
+        apply_recursive_acl "g:''${group_name}:rwX" "d:g:''${group_name}:rwx" "$@"
+      }
+
+      declare -a book_roots=(
+        ${lib.concatMapStringsSep "\n        " (path: ''"${path}"'') sharedKavitaDirs}
+      )
+
+      if [[ -d ${lib.escapeShellArg vars.usersRoot} ]]; then
+        while IFS= read -r books_root; do
+          book_roots+=("$books_root")
+          for name in ${userBooksSubdirs}; do
+            book_roots+=("$books_root/$name")
+          done
+        done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name books -print | ${pkgs.coreutils}/bin/sort)
+      fi
+
+      if ((''${#book_roots[@]} > 0)); then
+        apply_writable_acl kavita-media "''${book_roots[@]}"
+      fi
+    '';
+  };
+
   systemd.services.kavita-library-sync = {
     description = "Run settled Kavita library scans";
     wantedBy = [ "multi-user.target" ];
     after = [
       "kavita.service"
+      "kavita-media-acl-sync-v1.service"
       "kavita-library-sync-config-v1.service"
       "data-pool-layout.service"
     ];
     wants = [
       "kavita.service"
+      "kavita-media-acl-sync-v1.service"
       "kavita-library-sync-config-v1.service"
       "data-pool-layout.service"
     ];

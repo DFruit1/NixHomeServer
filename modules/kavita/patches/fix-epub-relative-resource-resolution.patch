@@ -1,0 +1,200 @@
+--- a/API/Services/BookService.cs
++++ b/API/Services/BookService.cs
+@@ -360,14 +360,14 @@
+         AnnotationHelper.InjectMultiElementAnnotations(doc, multiElementAnnotations);
+     }
+ 
+-    private static void ScopeImages(HtmlDocument doc, EpubBookRef book, string apiBase)
++    private static void ScopeImages(HtmlDocument doc, EpubBookRef book, string apiBase, string? contentFilePath = null)
+     {
+-        ScopeHtmlImageCollection(book, apiBase, doc.DocumentNode.SelectNodes("//img"));
+-        ScopeHtmlImageCollection(book, apiBase, doc.DocumentNode.SelectNodes("//image"));
+-        ScopeHtmlImageCollection(book, apiBase, doc.DocumentNode.SelectNodes("//svg"));
++        ScopeHtmlImageCollection(book, apiBase, contentFilePath, doc.DocumentNode.SelectNodes("//img"));
++        ScopeHtmlImageCollection(book, apiBase, contentFilePath, doc.DocumentNode.SelectNodes("//image"));
++        ScopeHtmlImageCollection(book, apiBase, contentFilePath, doc.DocumentNode.SelectNodes("//svg"));
+     }
+ 
+-    private static void ScopeHtmlImageCollection(EpubBookRef book, string apiBase, HtmlNodeCollection? images)
++    private static void ScopeHtmlImageCollection(EpubBookRef book, string apiBase, string? contentFilePath, HtmlNodeCollection? images)
+     {
+         if (images == null) return;
+ 
+@@ -388,7 +388,7 @@
+ 
+             if (string.IsNullOrEmpty(key)) continue;
+ 
+-            var imageFile = GetKeyForImage(book, image.Attributes[key].Value);
++            var imageFile = GetKeyForImage(book, image.Attributes[key].Value, contentFilePath);
+             image.Attributes.Remove(key);
+ 
+             if (!imageFile.StartsWith("http"))
+@@ -430,25 +430,13 @@
+     /// <param name="book"></param>
+     /// <param name="imageFile"></param>
+     /// <returns></returns>
+-    private static string GetKeyForImage(EpubBookRef book, string imageFile)
++    private static string GetKeyForImage(EpubBookRef book, string imageFile, string? contentFilePath)
+     {
+-        if (book.Content.Images.ContainsLocalFileRefWithKey(imageFile)) return imageFile;
+-
+-        var correctedKey = book.Content.Images.Local.Select(s => s.Key).SingleOrDefault(s => s.EndsWith(imageFile));
+-        if (correctedKey != null)
++        var correctedKey = ResolveLocalContentKey(book.Content.Images.Local.Select(s => s.Key), contentFilePath, imageFile);
++        if (!string.IsNullOrEmpty(correctedKey))
+         {
+             imageFile = correctedKey;
+         }
+-        else if (imageFile.StartsWith(".."))
+-        {
+-            // There are cases where the key is defined static like OEBPS/Images/1-4.jpg but reference is ../Images/1-4.jpg
+-            correctedKey =
+-                book.Content.Images.Local.Select(s => s.Key).SingleOrDefault(s => s.EndsWith(imageFile.Replace("..", string.Empty)));
+-            if (correctedKey != null)
+-            {
+-                imageFile = correctedKey;
+-            }
+-        }
+ 
+ 
+         return imageFile;
+@@ -482,7 +470,7 @@
+         }
+     }
+ 
+-    private async Task InlineStyles(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body)
++    private async Task InlineStyles(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body, string? contentFilePath = null)
+     {
+         var inlineStyles = doc.DocumentNode.SelectNodes("//style");
+         if (inlineStyles != null)
+@@ -499,19 +487,14 @@
+         {
+             foreach (var styleLinks in styleNodes)
+             {
+-                var key = CleanContentKeys(styleLinks.Attributes["href"].Value);
++                var key = ResolveLocalContentKey(book.Content.Css.Local.Select(s => s.Key), contentFilePath,
++                    styleLinks.Attributes["href"].Value);
+                 // Some epubs are malformed the key in content.opf might be: content/resources/filelist_0_0.xml but the actual html links to resources/filelist_0_0.xml
+                 // In this case, we will do a search for the key that ends with
+-                if (!book.Content.Css.ContainsLocalFileRefWithKey(key))
++                if (key == null)
+                 {
+-                    var correctedKey = book.Content.Css.Local.Select(s => s.Key).SingleOrDefault(s => s.EndsWith(key));
+-                    if (correctedKey == null)
+-                    {
+-                        _logger.LogError("Epub is Malformed, key: {Key} is not matching OPF file", key);
+-                        continue;
+-                    }
+-
+-                    key = correctedKey;
++                    _logger.LogError("Epub is Malformed, key: {Key} is not matching OPF file", styleLinks.Attributes["href"].Value);
++                    continue;
+                 }
+ 
+                 try
+@@ -915,6 +898,67 @@
+         return key.Replace("../", string.Empty);
+     }
+ 
++    private static string NormalizeContentKey(string key)
++    {
++        return key.Replace('\\', '/');
++    }
++
++    private static string? ResolveRelativeContentKey(string? contentFilePath, string key)
++    {
++        if (string.IsNullOrEmpty(contentFilePath) || string.IsNullOrEmpty(key) || Uri.TryCreate(key, UriKind.Absolute, out _))
++        {
++            return null;
++        }
++
++        var contentDirectory = Path.GetDirectoryName(contentFilePath)?.Replace('\\', '/');
++        if (string.IsNullOrEmpty(contentDirectory))
++        {
++            return null;
++        }
++
++        var contentUri = new Uri("https://kavita.invalid/" + contentDirectory.Trim('/') + "/");
++        return NormalizeContentKey(new Uri(contentUri, key).AbsolutePath.TrimStart('/'));
++    }
++
++    private static string? FindUniqueSuffixMatch(IEnumerable<string> keys, string suffix)
++    {
++        var normalizedSuffix = NormalizeContentKey(suffix);
++        var matches = keys
++            .Where(k => NormalizeContentKey(k).EndsWith(normalizedSuffix, StringComparison.Ordinal))
++            .Take(2)
++            .ToList();
++
++        return matches.Count == 1 ? matches[0] : null;
++    }
++
++    private static string? ResolveLocalContentKey(IEnumerable<string> keys, string? contentFilePath, string key)
++    {
++        var availableKeys = keys.ToList();
++        var normalizedKey = NormalizeContentKey(key);
++        var cleanedKey = NormalizeContentKey(CleanContentKeys(key));
++
++        var exactMatch = availableKeys.FirstOrDefault(k => NormalizeContentKey(k) == normalizedKey);
++        if (exactMatch != null) return exactMatch;
++
++        exactMatch = availableKeys.FirstOrDefault(k => NormalizeContentKey(k) == cleanedKey);
++        if (exactMatch != null) return exactMatch;
++
++        var relativeKey = ResolveRelativeContentKey(contentFilePath, key);
++        if (!string.IsNullOrEmpty(relativeKey))
++        {
++            exactMatch = availableKeys.FirstOrDefault(k => NormalizeContentKey(k) == relativeKey);
++            if (exactMatch != null) return exactMatch;
++
++            exactMatch = FindUniqueSuffixMatch(availableKeys, relativeKey);
++            if (exactMatch != null) return exactMatch;
++        }
++
++        exactMatch = FindUniqueSuffixMatch(availableKeys, normalizedKey);
++        if (exactMatch != null) return exactMatch;
++
++        return FindUniqueSuffixMatch(availableKeys, cleanedKey);
++    }
++
+     public async Task<Dictionary<string, int>> CreateKeyToPageMappingAsync(EpubBookRef book)
+     {
+         var dict = new Dictionary<string, int>();
+@@ -1028,7 +1072,7 @@
+             var imageSource = targetImage.Attributes[srcAttributeName].Value;
+
+             // Clean and get the correct key for the image
+-            var imageKey = CleanContentKeys(GetKeyForImage(book, imageSource));
++            var imageKey = CleanContentKeys(GetKeyForImage(book, imageSource, contentFileRef.FilePath));
+
+             // Check if it's an external URL
+             if (imageKey.StartsWith("http"))
+@@ -1244,15 +1288,16 @@
+     /// <param name="mappings">Epub mappings</param>
+     /// <param name="page">Page number we are loading</param>
+     /// <param name="ptocBookmarks">Ptoc (Text) Bookmarks to tie against</param>
++    /// <param name="contentFilePath">Current page content file path</param>
+     /// <returns></returns>
+     private async Task<string> ScopePage(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body,
+-        Dictionary<string, int> mappings, int page, List<PersonalToCDto> ptocBookmarks, List<AnnotationDto> annotations)
++        Dictionary<string, int> mappings, int page, List<PersonalToCDto> ptocBookmarks, List<AnnotationDto> annotations, string? contentFilePath = null)
+     {
+-        await InlineStyles(doc, book, apiBase, body);
++        await InlineStyles(doc, book, apiBase, body, contentFilePath);
+ 
+         RewriteAnchors(page, doc, mappings);
+ 
+-        ScopeImages(doc, book, apiBase);
++        ScopeImages(doc, book, apiBase, contentFilePath);
+ 
+         InjectImages(doc, book, apiBase);
+ 
+@@ -1509,7 +1554,7 @@
+                     body = doc.DocumentNode.SelectSingleNode("/html/body");
+                 }
+ 
+-                return await ScopePage(doc, book, apiBase, body!, mappings, page, ptocBookmarks, annotations);
++                return await ScopePage(doc, book, apiBase, body!, mappings, page, ptocBookmarks, annotations, contentFileRef.FilePath);
+             }
+         } catch (Exception ex)
+         {

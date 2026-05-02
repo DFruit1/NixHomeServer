@@ -39,6 +39,8 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
       serverLanIP = vars.serverLanIP;
       serverLanPrefixLength = vars.serverLanPrefixLength;
       netIface = vars.netIface;
+      photosDomain = vars.photosDomain;
+      sharePhotosDomain = vars.sharePhotosDomain;
     };
     config = {
       services = {
@@ -89,21 +91,32 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         hasRetiredRootsCleanupService = cfg.systemd.services ? "retired-content-roots-cleanup-v1";
       };
       apps = {
+        caddyHostNames = builtins.attrNames cfg.services.caddy.virtualHosts;
         caddyHostCount = builtins.length (builtins.attrNames cfg.services.caddy.virtualHosts);
+        cloudflaredIngressHostNames = builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
         cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
         oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
         mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
         hasCopypartyService = cfg.systemd.services ? "copyparty";
+        copypartyGlobalExtraConfig = cfg.services.copyparty.globalExtraConfig;
+        copypartyRuntimeConfigSyncScript = cfg.systemd.services.copyparty-runtime-config-sync.script;
         hasImmichServerService = cfg.systemd.services ? "immich-server";
         hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
         hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
         hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
         hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
         hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
+        hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
+        kavitaLibrarySyncAfter = cfg.systemd.services.kavita-library-sync.after;
+        kavitaLibrarySyncWants = cfg.systemd.services.kavita-library-sync.wants;
         hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
         hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
         hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
         hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
+        hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
+        jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
+        jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
+        hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
       };
     };
   }
@@ -190,10 +203,18 @@ assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiri
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf settled scan service must remain present."
 assert_json_true '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf watcher service must remain present."
 assert_json_true '.config.apps.hasKavitaLibrarySync' "Kavita settled scan service must remain present."
+assert_json_true '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence service must remain present."
 assert_json_true '.config.apps.hasKavitaLibraryWatch' "Kavita watcher service must remain present."
 assert_json_true '.config.apps.hasKiwixLibraryWatch' "Kiwix watcher service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryMonitor' "Jellyfin library monitor config service must remain present."
+assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan service must remain present."
+assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin watcher service must remain present."
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
+
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/shared/ebooks\]' \
+  "Copyparty must expose grouped shared-book aliases."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/books/\$username/ebooks\]' \
+  "Copyparty runtime config sync must emit grouped per-user book aliases."
 
 if [[ "$(snapshot_query '.config.apps.caddyHostCount')" == "0" ]]; then
   echo "❌ Caddy must expose at least one virtual host."
@@ -205,10 +226,64 @@ if [[ "$(snapshot_query '.config.apps.cloudflaredIngressCount')" == "0" ]]; then
   exit 1
 fi
 
+caddy_host_names="$(snapshot_query '.config.apps.caddyHostNames')"
+if ! jq -e --arg photos_host "$(snapshot_query '.vars.photosDomain' | jq -r '.')" 'index($photos_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must keep the private Immich hostname configured."
+  echo "   hosts: $caddy_host_names"
+  exit 1
+fi
+
+if ! jq -e --arg share_host "$(snapshot_query '.vars.sharePhotosDomain' | jq -r '.')" 'index($share_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must keep the public Immich share hostname configured."
+  echo "   hosts: $caddy_host_names"
+  exit 1
+fi
+
+cloudflared_ingress_host_names="$(snapshot_query '.config.apps.cloudflaredIngressHostNames')"
+if ! jq -e --arg share_host "$(snapshot_query '.vars.sharePhotosDomain' | jq -r '.')" 'index($share_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must publish the public Immich share hostname."
+  echo "   ingress hosts: $cloudflared_ingress_host_names"
+  exit 1
+fi
+
+if jq -e --arg photos_host "$(snapshot_query '.vars.photosDomain' | jq -r '.')" 'index($photos_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must not publish the private Immich app hostname."
+  echo "   ingress hosts: $cloudflared_ingress_host_names"
+  exit 1
+fi
+
 oauth_systems="$(snapshot_query '.config.apps.oauthSystemNames')"
 if ! jq -e 'index("oauth2-proxy") != null and index("immich-web") != null and index("paperless-web") != null and index("abs-web") != null' >/dev/null <<<"$oauth_systems"; then
   echo "❌ Expected OIDC-facing application registrations are missing from Kanidm provisioning."
   echo "   OAuth systems: $oauth_systems"
+  exit 1
+fi
+
+kavita_library_sync_after="$(snapshot_query '.config.apps.kavitaLibrarySyncAfter')"
+if ! jq -e 'index("kavita-media-acl-sync-v1.service") != null' >/dev/null <<<"$kavita_library_sync_after"; then
+  echo "❌ Kavita library sync must run after the Kavita media ACL convergence service."
+  echo "   after: $kavita_library_sync_after"
+  exit 1
+fi
+
+kavita_library_sync_wants="$(snapshot_query '.config.apps.kavitaLibrarySyncWants')"
+if ! jq -e 'index("kavita-media-acl-sync-v1.service") != null' >/dev/null <<<"$kavita_library_sync_wants"; then
+  echo "❌ Kavita library sync must want the Kavita media ACL convergence service."
+  echo "   wants: $kavita_library_sync_wants"
+  exit 1
+fi
+
+jellyfin_library_sync_after="$(snapshot_query '.config.apps.jellyfinLibrarySyncAfter')"
+if ! jq -e 'index("jellyfin-library-monitor-v1.service") != null and index("data-pool-layout.service") != null' >/dev/null <<<"$jellyfin_library_sync_after"; then
+  echo "❌ Jellyfin library sync must run after the Jellyfin monitor convergence and storage layout services."
+  echo "   after: $jellyfin_library_sync_after"
+  exit 1
+fi
+
+jellyfin_library_sync_wants="$(snapshot_query '.config.apps.jellyfinLibrarySyncWants')"
+if ! jq -e 'index("jellyfin-library-monitor-v1.service") != null and index("data-pool-layout.service") != null' >/dev/null <<<"$jellyfin_library_sync_wants"; then
+  echo "❌ Jellyfin library sync must want the Jellyfin monitor convergence and storage layout services."
+  echo "   wants: $jellyfin_library_sync_wants"
   exit 1
 fi
 
