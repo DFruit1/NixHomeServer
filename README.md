@@ -9,7 +9,7 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 - Public exposure: Cloudflare Tunnel
 - Private remote access: NetBird
 - Private DNS: Unbound
-- Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Kiwix, Kavita, Jellyfin
+- Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, FileBrowser Quantum, Kiwix, Kavita, Jellyfin
 - Mail archive and search: `mail-archive-ui`, `mbsync`, `notmuch`
 - Storage: Btrfs system SSD and a single mirrored ZFS data pool
 - Validation: `scripts/validate-repo-remote.sh --host ... --full`, `scripts/validate-repo.sh`, `scripts/validate-repo.sh --run-flake-check`, `scripts/validate-repo.sh --full`, `scripts/check-runtime-readiness.sh`
@@ -34,3 +34,5 @@ public share links use `sharephotos.sydneybasiniot.org`. See
 [Operations](./documentation/operations.md#app-hostnames).
 
 Mail archive control plane: see [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private UI, sync flow, and storage model.
+
+Private file manager trial: `https://file.sydneybasiniot.org` now runs FileBrowser Quantum alongside the existing Copyparty deployment. Copyparty remains unchanged and primary during evaluation. Kavita-managed book roots now only include `ebooks`, `comics`, and `manga`.

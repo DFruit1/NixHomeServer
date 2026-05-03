@@ -83,12 +83,6 @@ rec {
       fileGroupTypes = [ 1 4 ];
       label = "Manga";
     }
-    {
-      dir = "other";
-      type = 2;
-      fileGroupTypes = [ 2 3 1 ];
-      label = "Other";
-    }
   ];
   personalJellyfinLibraries = [ ];
   sharedJellyfinLibraries = [
@@ -133,7 +127,6 @@ rec {
   sharedEbooksRoot = "${sharedBooksRoot}/ebooks";
   sharedComicsRoot = "${sharedBooksRoot}/comics";
   sharedMangaRoot = "${sharedBooksRoot}/manga";
-  sharedOtherBooksRoot = "${sharedBooksRoot}/other";
   sharedEmailsRoot = "${sharedRoot}/emails";
   sharedVideosRoot = "${sharedRoot}/videos";
   sharedMoviesRoot = "${sharedVideosRoot}/movies";
@@ -165,6 +158,9 @@ rec {
   photosDomain = "photos.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
   sharePhotosDomain = "sharephotos.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.
   audiobooksDomain = "audiobooks.${domain}";
+  filebrowserDomain = "file.${domain}";
+  filebrowserPort = 8097;
+  filebrowserStateDir = "/var/lib/filebrowser-quantum";
   filesDomain = "files.${domain}";
   emailsDomain = "emails.${domain}";
   kiwixDomain = "wiki.${domain}";

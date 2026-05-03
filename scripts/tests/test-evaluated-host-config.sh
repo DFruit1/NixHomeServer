@@ -41,6 +41,9 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
       netIface = vars.netIface;
       photosDomain = vars.photosDomain;
       sharePhotosDomain = vars.sharePhotosDomain;
+      filebrowserDomain = vars.filebrowserDomain;
+      personalKavitaLibraries = vars.personalKavitaLibraries;
+      sharedBooksSubdirs = vars.sharedBooksSubdirs;
     };
     config = {
       services = {
@@ -100,6 +103,8 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
         mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
         hasCopypartyService = cfg.systemd.services ? "copyparty";
+        hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
+        hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
         copypartyGlobalExtraConfig = cfg.services.copyparty.globalExtraConfig;
         copypartyRuntimeConfigSyncScript = cfg.systemd.services.copyparty-runtime-config-sync.script;
         hasImmichServerService = cfg.systemd.services ? "immich-server";
@@ -248,6 +253,8 @@ forbid_match <(printf '%s\n' "$(snapshot_query '.config.storage.zfsImportScript'
 require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiEnable')" "true" \
   "Mail archive UI must remain enabled."
 assert_json_true '.config.apps.hasCopypartyService' "Copyparty service wiring must remain present."
+assert_json_true '.config.apps.hasFilebrowserQuantumService' "FileBrowser Quantum service wiring must remain present."
+assert_json_true '.config.apps.hasFilebrowserQuantumAccessSync' "FileBrowser Quantum access convergence must remain present."
 assert_json_true '.config.apps.hasImmichServerService' "Immich service wiring must remain present."
 assert_json_true '.config.apps.hasPaperlessWebService' "Paperless service wiring must remain present."
 assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiring must remain present."
@@ -266,10 +273,14 @@ require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExt
   "Copyparty must expose grouped shared-book aliases."
 forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/shared/ebooks\]' \
   "Copyparty must retire legacy shared-book routes in favour of /books/shared/*."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/shared/other\]' \
+  "Copyparty must not expose retired shared other-book aliases."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/books/\$username/ebooks\]' \
   "Copyparty runtime config sync must emit grouped per-user book aliases."
 forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/\$username/ebooks\]' \
   "Copyparty runtime config sync must retire legacy per-user book routes in favour of /books/\$username/*."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/books/\$username/other\]' \
+  "Copyparty runtime config sync must not emit retired per-user other-book aliases."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'copyparty -c .+ --exit cfg' \
   "Copyparty runtime config sync must validate the rendered config before startup."
 
@@ -298,6 +309,12 @@ if ! jq -e --arg photos_host "$(snapshot_query '.vars.photosDomain' | jq -r '.')
   exit 1
 fi
 
+if ! jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '.')" 'index($file_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must expose the private FileBrowser Quantum hostname."
+  echo "   hosts: $caddy_host_names"
+  exit 1
+fi
+
 if ! jq -e --arg share_host "$(snapshot_query '.vars.sharePhotosDomain' | jq -r '.')" 'index($share_host) != null' >/dev/null <<<"$caddy_host_names"; then
   echo "❌ Caddy must keep the public Immich share hostname configured."
   echo "   hosts: $caddy_host_names"
@@ -317,12 +334,33 @@ if jq -e --arg photos_host "$(snapshot_query '.vars.photosDomain' | jq -r '.')" 
   exit 1
 fi
 
+if jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '.')" 'index($file_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must not publish the private FileBrowser Quantum hostname."
+  echo "   ingress hosts: $cloudflared_ingress_host_names"
+  exit 1
+fi
+
 oauth_systems="$(snapshot_query '.config.apps.oauthSystemNames')"
-if ! jq -e 'index("oauth2-proxy") != null and index("immich-web") != null and index("paperless-web") != null and index("abs-web") != null' >/dev/null <<<"$oauth_systems"; then
+if ! jq -e 'index("oauth2-proxy") != null and index("filebrowser-quantum-web") != null and index("immich-web") != null and index("paperless-web") != null and index("abs-web") != null' >/dev/null <<<"$oauth_systems"; then
   echo "❌ Expected OIDC-facing application registrations are missing from Kanidm provisioning."
   echo "   OAuth systems: $oauth_systems"
   exit 1
 fi
+
+if jq -e 'map(.dir) | index("other") != null' >/dev/null <<<"$(snapshot_query '.vars.personalKavitaLibraries')"; then
+  echo "❌ Managed personal Kavita libraries must not include the retired other category."
+  exit 1
+fi
+
+if jq -e 'index("other") != null' >/dev/null <<<"$(snapshot_query '.vars.sharedBooksSubdirs')"; then
+  echo "❌ Managed shared book subdirectories must not include the retired other category."
+  exit 1
+fi
+
+require_match scripts/helpers/runtime-health-common.sh 'filebrowser-quantum\.service' \
+  "Runtime health inventory must require the FileBrowser Quantum service."
+require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.filebrowserDomain\}/' \
+  "Runtime health inventory must probe the FileBrowser Quantum edge hostname."
 
 kavita_library_sync_after="$(snapshot_query '.config.apps.kavitaLibrarySyncAfter')"
 if ! jq -e 'index("kavita-media-acl-sync-v1.service") != null' >/dev/null <<<"$kavita_library_sync_after"; then

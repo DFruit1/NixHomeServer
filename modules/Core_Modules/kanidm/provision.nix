@@ -119,6 +119,19 @@ in
       scopeMaps."shared-files-rw" = [ "openid" "profile" "email" "groups_name" ];
     };
 
+    systems.oauth2.filebrowser-quantum-web = {
+      displayName = "File";
+      imageFile = ./assets/files.svg;
+      originUrl = "https://${vars.filebrowserDomain}/api/auth/oidc/callback";
+      originLanding = "https://${vars.filebrowserDomain}/";
+      basicSecretFile = config.age.secrets.filebrowserQuantumClientSecret.path;
+      preferShortUsername = true;
+      scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps.domain_admins = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."shared-files-ro" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."shared-files-rw" = [ "openid" "profile" "email" "groups_name" ];
+    };
+
     systems.oauth2.mail-archive-web = {
       displayName = "Mail Archive";
       imageFile = ./assets/mail.svg;

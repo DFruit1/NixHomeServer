@@ -1,0 +1,443 @@
+{ config, lib, pkgs, pkgsUnstable, vars, ... }:
+
+let
+  stateDir = vars.filebrowserStateDir;
+  configFile = "${stateDir}/config.yaml";
+  managedDir = "${stateDir}/.nixos-managed";
+  accessSyncStamp = "${managedDir}/last-sync.json";
+  localAdminUsername = "local-admin";
+  filebrowserPackage = pkgsUnstable."filebrowser-quantum";
+  yamlFormat = pkgs.formats.yaml { };
+  configTemplate = yamlFormat.generate "filebrowser-quantum-config-template.yaml" {
+    server = {
+      listen = "127.0.0.1";
+      port = vars.filebrowserPort;
+      baseURL = "/";
+      database = "${stateDir}/database.db";
+      cacheDir = "${stateDir}/cache";
+      externalUrl = "https://${vars.filebrowserDomain}";
+      internalUrl = "http://127.0.0.1:${toString vars.filebrowserPort}";
+      disableUpdateCheck = true;
+      filesystem = {
+        createFilePermission = "660";
+        createDirectoryPermission = "2770";
+      };
+      logging = [
+        {
+          levels = "info|warning|error";
+          apiLevels = "info|warning|error";
+          output = "stdout";
+          noColors = true;
+          utc = false;
+        }
+      ];
+      sources = [
+        {
+          path = vars.usersRoot;
+          name = "Personal";
+          config = {
+            defaultEnabled = true;
+            createUserDir = true;
+            defaultUserScope = "/";
+          };
+        }
+        {
+          path = vars.sharedRoot;
+          name = "Shared";
+          config = {
+            defaultEnabled = false;
+            defaultUserScope = "/";
+            denyByDefault = true;
+          };
+        }
+        {
+          path = vars.kiwixLibraryRoot;
+          name = "Kiwix";
+          config = {
+            defaultEnabled = false;
+            defaultUserScope = "/";
+            denyByDefault = true;
+          };
+        }
+      ];
+    };
+    frontend = {
+      name = "File";
+      oidcLoginButtonText = "Login with Kanidm";
+    };
+    auth = {
+      key = "@JWT_KEY@";
+      adminUsername = localAdminUsername;
+      adminPassword = "@ADMIN_PASSWORD@";
+      methods = {
+        password = {
+          enabled = true;
+          signup = false;
+        };
+        oidc = {
+          enabled = true;
+          issuerUrl = vars.kanidmIssuer "filebrowser-quantum-web";
+          clientId = "filebrowser-quantum-web";
+          clientSecret = "@OIDC_CLIENT_SECRET@";
+          userIdentifier = "preferred_username";
+          groupsClaim = "groups";
+          userGroups = [
+            "user-files"
+            "shared-files-ro"
+            "shared-files-rw"
+            "domain_admins"
+          ];
+          adminGroup = "domain_admins";
+        };
+      };
+    };
+    userDefaults = {
+      permissions = {
+        admin = false;
+        api = false;
+        download = true;
+        share = true;
+        create = true;
+        modify = true;
+        delete = true;
+        realtime = false;
+      };
+    };
+  };
+in
+{
+  users.groups.filebrowser-quantum = { };
+  users.users.filebrowser-quantum = {
+    isSystemUser = true;
+    group = "filebrowser-quantum";
+    home = stateDir;
+    createHome = false;
+    extraGroups = [
+      "users"
+      "mail-archive-ui"
+      "audiobookshelf-media"
+      "kavita-media"
+      "jellyfin-media"
+      "shared-files-rw"
+      "kiwix"
+    ];
+  };
+
+  systemd.tmpfiles.rules = [
+    "d ${managedDir} 0750 filebrowser-quantum filebrowser-quantum -"
+  ];
+
+  systemd.services.filebrowser-quantum = {
+    description = "FileBrowser Quantum";
+    wantedBy = [ "multi-user.target" ];
+    wants = [
+      "data-pool-layout.service"
+      "fileshare-user-root-sync.service"
+      "network-online.target"
+    ];
+    after = [
+      "data-pool-layout.service"
+      "fileshare-user-root-sync.service"
+      "network-online.target"
+    ];
+    path = with pkgs; [
+      coreutils
+      replace-secret
+    ];
+    preStart = ''
+      install -d -m 0750 -o filebrowser-quantum -g filebrowser-quantum '${managedDir}'
+      cp ${configTemplate} '${configFile}'
+      chown filebrowser-quantum:filebrowser-quantum '${configFile}'
+      chmod 0400 '${configFile}'
+
+      ${pkgs.replace-secret}/bin/replace-secret \
+        '@OIDC_CLIENT_SECRET@' \
+        ${config.age.secrets.filebrowserQuantumClientSecret.path} \
+        '${configFile}'
+      ${pkgs.replace-secret}/bin/replace-secret \
+        '@ADMIN_PASSWORD@' \
+        ${config.age.secrets.filebrowserQuantumAdminPassword.path} \
+        '${configFile}'
+      ${pkgs.replace-secret}/bin/replace-secret \
+        '@JWT_KEY@' \
+        ${config.age.secrets.filebrowserQuantumJwtSecret.path} \
+        '${configFile}'
+    '';
+    serviceConfig = {
+      Type = "simple";
+      User = "filebrowser-quantum";
+      Group = "filebrowser-quantum";
+      PermissionsStartOnly = true;
+      WorkingDirectory = stateDir;
+      ExecStart = lib.getExe filebrowserPackage;
+      Restart = "on-failure";
+      RestartSec = "5s";
+      StateDirectory = "filebrowser-quantum";
+      StateDirectoryMode = "0750";
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ProtectProc = "invisible";
+      ProtectClock = true;
+      ProtectControlGroups = true;
+      ProtectKernelLogs = true;
+      ProtectKernelModules = true;
+      ProtectKernelTunables = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      RemoveIPC = true;
+      RestrictSUIDSGID = true;
+      RestrictRealtime = true;
+      ReadWritePaths = [
+        stateDir
+        vars.usersRoot
+        vars.sharedRoot
+        vars.kiwixLibraryRoot
+      ];
+      UMask = "0007";
+    };
+  };
+
+  systemd.services.filebrowser-quantum-access-sync-v1 = {
+    description = "Converge FileBrowser Quantum access rules and user scopes";
+    wantedBy = [ "multi-user.target" ];
+    wants = [
+      "filebrowser-quantum.service"
+      "fileshare-user-root-sync.service"
+      "data-pool-layout.service"
+      "kanidm.service"
+    ];
+    after = [
+      "filebrowser-quantum.service"
+      "fileshare-user-root-sync.service"
+      "data-pool-layout.service"
+      "kanidm.service"
+    ];
+    path = with pkgs; [
+      curl
+      coreutils
+      gnused
+      jq
+    ];
+    script = ''
+      set -euo pipefail
+
+      api_base="http://127.0.0.1:${toString vars.filebrowserPort}"
+      admin_username=${lib.escapeShellArg localAdminUsername}
+      admin_password="$(< ${config.age.secrets.filebrowserQuantumAdminPassword.path})"
+      admin_password_header="$(jq -nr --arg value "$admin_password" '$value|@uri')"
+      token=""
+
+      urlencode() {
+        jq -nr --arg value "$1" '$value|@uri'
+      }
+
+      api_get() {
+        local path="$1"
+        ${pkgs.curl}/bin/curl --silent --show-error --fail \
+          -H "Authorization: Bearer $token" \
+          "$api_base$path"
+      }
+
+      api_post() {
+        local path="$1"
+        local body="$2"
+        ${pkgs.curl}/bin/curl --silent --show-error --fail \
+          -X POST \
+          -H "Authorization: Bearer $token" \
+          -H 'Content-Type: application/json' \
+          --data "$body" \
+          "$api_base$path"
+      }
+
+      api_put() {
+        local path="$1"
+        local body="$2"
+        ${pkgs.curl}/bin/curl --silent --show-error --fail \
+          -X PUT \
+          -H "Authorization: Bearer $token" \
+          -H "X-Password: $admin_password_header" \
+          -H 'Content-Type: application/json' \
+          --data "$body" \
+          "$api_base$path"
+      }
+
+      wait_for_health() {
+        local health_json=""
+
+        for _ in $(seq 1 60); do
+          if health_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
+            "$api_base/health" 2>/dev/null)"; then
+            if jq -e '.message == "ok"' >/dev/null <<<"$health_json"; then
+              return 0
+            fi
+          fi
+          sleep 1
+        done
+
+        echo "FileBrowser Quantum health endpoint did not become ready" >&2
+        exit 1
+      }
+
+      login() {
+        local response
+
+        response="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
+          -X POST \
+          -H "X-Password: $admin_password" \
+          "$api_base/api/auth/login?username=$(urlencode "$admin_username")")"
+
+        token="$(jq -r 'if type == "string" then . else (.token // .jwt // .access_token // empty) end' <<<"$response")"
+        [[ -n "$token" ]] || {
+          echo "Failed to obtain FileBrowser Quantum API token" >&2
+          exit 1
+        }
+      }
+
+      ensure_group_membership() {
+        local group_name="$1"
+        local groups_json
+
+        groups_json="$(api_get "/api/access/groups?user=$(urlencode "$admin_username")" | jq -c '.groups // []')"
+        if ! jq -e --arg group_name "$group_name" 'index($group_name) != null' >/dev/null <<<"$groups_json"; then
+          api_post "/api/access/group?group=$(urlencode "$group_name")&user=$(urlencode "$admin_username")" '{}' >/dev/null
+        fi
+      }
+
+      ensure_allow_group() {
+        local source_name="$1"
+        local index_path="$2"
+        local group_name="$3"
+        local current_rule
+
+        current_rule="$(api_get "/api/access?source=$(urlencode "$source_name")&path=$(urlencode "$index_path")")"
+        if ! jq -e --arg group_name "$group_name" '.allow.groups // [] | index($group_name) != null' >/dev/null <<<"$current_rule"; then
+          api_post \
+            "/api/access?source=$(urlencode "$source_name")&path=$(urlencode "$index_path")" \
+            "$(jq -cn --arg value "$group_name" '{allow:true, ruleCategory:"group", value:$value}')" \
+            >/dev/null
+        fi
+      }
+
+      sync_user() {
+        local user_json="$1"
+        local username login_method groups_json desired_scopes desired_permissions updated_user
+
+        username="$(jq -r '.username' <<<"$user_json")"
+        login_method="$(jq -r '.loginMethod' <<<"$user_json")"
+
+        if [[ "$username" == "$admin_username" ]]; then
+          desired_scopes="$(jq -cn \
+            --arg users_root ${lib.escapeShellArg vars.usersRoot} \
+            --arg shared_root ${lib.escapeShellArg vars.sharedRoot} \
+            --arg kiwix_root ${lib.escapeShellArg vars.kiwixLibraryRoot} \
+            '[
+              {name:$users_root, scope:"/"},
+              {name:$shared_root, scope:"/"},
+              {name:$kiwix_root, scope:"/"}
+            ]')"
+          desired_permissions='{"api":false,"admin":true,"modify":true,"share":true,"realtime":false,"delete":true,"create":true,"download":true}'
+        else
+          [[ "$login_method" == "oidc" ]] || return 0
+          groups_json="$(api_get "/api/access/groups?user=$(urlencode "$username")" | jq -c '.groups // []')"
+
+          desired_scopes="$(jq -cn \
+            --arg users_root ${lib.escapeShellArg vars.usersRoot} \
+            --arg shared_root ${lib.escapeShellArg vars.sharedRoot} \
+            --arg kiwix_root ${lib.escapeShellArg vars.kiwixLibraryRoot} \
+            --arg username "$username" \
+            --argjson groups "$groups_json" '
+              def has_group($group_name): ($groups | index($group_name)) != null;
+              [
+                if has_group("user-files") or has_group("domain_admins") then
+                  {name:$users_root, scope:("/" + $username)}
+                else empty end,
+                if has_group("shared-files-ro") or has_group("shared-files-rw") or has_group("domain_admins") then
+                  {name:$shared_root, scope:"/"}
+                else empty end,
+                if has_group("domain_admins") then
+                  {name:$kiwix_root, scope:"/"}
+                else empty end
+              ]')"
+
+          # FileBrowser Quantum exposes per-user global permissions plus source access
+          # rules, but it does not provide per-path read/write ACLs. This keeps the
+          # service conservative for shared-read-only users while allowing normal
+          # personal and shared-rw workflows.
+          desired_permissions="$(jq -cn --argjson groups "$groups_json" '
+            def has_group($group_name): ($groups | index($group_name)) != null;
+            {
+              api: false,
+              admin: has_group("domain_admins"),
+              modify: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
+              share: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
+              realtime: false,
+              delete: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
+              create: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
+              download: true
+            }')"
+        fi
+
+        updated_user="$(jq -c \
+          --argjson scopes "$desired_scopes" \
+          --argjson permissions "$desired_permissions" \
+          '.scopes = $scopes | .permissions = $permissions' <<<"$user_json")"
+
+        if jq -e \
+          --argjson scopes "$desired_scopes" \
+          --argjson permissions "$desired_permissions" \
+          '.scopes == $scopes and .permissions == $permissions' >/dev/null <<<"$user_json"; then
+          return 0
+        fi
+
+        api_put \
+          "/api/users?username=$(urlencode "$username")" \
+          "$(jq -cn --argjson data "$updated_user" '{which:["Scopes","Permissions"], data:$data}')" \
+          >/dev/null
+      }
+
+      wait_for_health
+      login
+
+      for group_name in user-files shared-files-ro shared-files-rw domain_admins; do
+        ensure_group_membership "$group_name"
+      done
+
+      for group_name in shared-files-ro shared-files-rw domain_admins; do
+        ensure_allow_group "Shared" "/files" "$group_name"
+        ensure_allow_group "Shared" "/audiobooks" "$group_name"
+        ensure_allow_group "Shared" "/books" "$group_name"
+        ensure_allow_group "Shared" "/emails" "$group_name"
+        ensure_allow_group "Shared" "/videos" "$group_name"
+      done
+
+      ensure_allow_group "Kiwix" "/" "domain_admins"
+
+      api_get "/api/users" | jq -c '.[]' | while IFS= read -r user_json; do
+        sync_user "$user_json"
+      done
+
+      jq -cn --arg timestamp "$(date --iso-8601=seconds)" '{lastSync:$timestamp}' > ${lib.escapeShellArg accessSyncStamp}
+      chown filebrowser-quantum:filebrowser-quantum ${lib.escapeShellArg accessSyncStamp}
+      chmod 0640 ${lib.escapeShellArg accessSyncStamp}
+    '';
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "5s";
+      User = "root";
+    };
+  };
+
+  systemd.timers.filebrowser-quantum-access-sync-v1 = {
+    description = "Periodic FileBrowser Quantum access convergence";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "2m";
+      OnUnitActiveSec = "5m";
+      Unit = "filebrowser-quantum-access-sync-v1.service";
+    };
+  };
+}

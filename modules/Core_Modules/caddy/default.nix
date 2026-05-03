@@ -85,6 +85,16 @@ in
         '';
       };
 
+      "${vars.filebrowserDomain}" = {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          reverse_proxy http://127.0.0.1:${toString vars.filebrowserPort} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+          }
+        '';
+      };
+
       "${vars.emailsDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem

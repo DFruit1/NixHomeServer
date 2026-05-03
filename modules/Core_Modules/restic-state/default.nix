@@ -162,6 +162,18 @@ let
       notes = "Local state directory for Copyparty.";
     }
     {
+      app = "filebrowser-quantum";
+      component = "app";
+      stateRoot = vars.filebrowserStateDir;
+      persistentStateRoot = persistBackedStateRoot vars.filebrowserStateDir;
+      payloadRoots = [
+        vars.usersRoot
+        vars.sharedRoot
+        vars.kiwixLibraryRoot
+      ];
+      notes = "FileBrowser Quantum database, cache, and config state.";
+    }
+    {
       app = "mail-archive-ui";
       component = "app";
       stateRoot = "/persist/appdata/mail-archive-ui";
@@ -194,6 +206,7 @@ let
     vars.usersRoot
     vars.sharedRoot
     vars.sharedEmailsRoot
+    vars.kiwixLibraryRoot
   ];
 in
 {
@@ -409,6 +422,7 @@ in
             "paperless:${vars.paperlessRoot}"
             "users:${vars.usersRoot}"
             "shared:${vars.sharedRoot}"
+            "kiwix:${vars.kiwixLibraryRoot}"
           ]
         }; do
           IFS=: read -r label root_path <<< "$spec"

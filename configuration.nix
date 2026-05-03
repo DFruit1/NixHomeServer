@@ -62,6 +62,7 @@ in
     ./modules/Core_Modules/storage-monitoring
     ./modules/Core_Modules/unbound
     ./modules/copyparty
+    ./modules/filebrowser-quantum
     ./modules/immich
     ./modules/jellyfin
     ./modules/kiwix

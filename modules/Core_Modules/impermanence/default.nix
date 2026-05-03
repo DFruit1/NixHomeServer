@@ -10,6 +10,7 @@ let
       "/var/lib/acme"
       "/var/lib/audiobookshelf"
       "/var/lib/copyparty"
+      "/var/lib/filebrowser-quantum"
       "/var/lib/immich"
       "/var/lib/immich-public-proxy"
       "/var/lib/jellyfin"

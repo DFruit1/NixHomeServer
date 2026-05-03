@@ -122,6 +122,13 @@ let
       payloadRoots = [ vars.usersRoot vars.sharedRoot vars.paperlessRoot ];
     }
     {
+      app = "filebrowser-quantum";
+      component = "app";
+      stateRoot = vars.filebrowserStateDir;
+      persistentStateRoot = persistBackedStateRoot vars.filebrowserStateDir;
+      payloadRoots = [ vars.usersRoot vars.sharedRoot vars.kiwixLibraryRoot ];
+    }
+    {
       app = "mail-archive-ui";
       component = "app";
       stateRoot = cfg.services.mail-archive-ui.dataDir;
@@ -169,6 +176,7 @@ in
         "paperless-web.service"
         "audiobookshelf.service"
         "audiobookshelf-library-watch.service"
+        "filebrowser-quantum.service"
         "kavita.service"
         "kavita-library-watch.service"
         "jellyfin.service"
@@ -187,6 +195,7 @@ in
     edgeHttp = [
       { name = "kanidm"; url = "https://${vars.kanidmDomain}/"; expected = [ 200 303 ]; }
       { name = "files"; url = "https://${vars.filesDomain}/"; expected = [ 200 302 303 401 403 ]; }
+      { name = "file"; url = "https://${vars.filebrowserDomain}/"; expected = [ 200 302 303 ]; }
       { name = "paperless"; url = "https://paperless.${vars.domain}/"; expected = [ 200 302 ]; }
       { name = "photos"; url = "https://${vars.photosDomain}/"; expected = [ 200 302 ]; }
       { name = "sharephotos"; url = "https://${vars.sharePhotosDomain}/share/healthcheck"; expected = [ 200 ]; }
@@ -200,6 +209,7 @@ in
 
     internalHttp = [
       { name = "copyparty"; url = "http://127.0.0.1:${toString cfg.services.copyparty.settings.p}/"; expected = [ 200 302 401 403 ]; }
+      { name = "filebrowser-quantum-health"; url = "http://127.0.0.1:${toString vars.filebrowserPort}/health"; expected = [ 200 ]; }
       { name = "sharephotos"; url = "http://127.0.0.1:3300/share/healthcheck"; expected = [ 200 ]; }
     ]
     ++ optional mailArchiveEnabled { name = "mail-archive-ui-healthz"; url = "http://127.0.0.1:${toString cfg.services.mail-archive-ui.port}/healthz"; expected = [ 200 ]; }
@@ -211,6 +221,7 @@ in
         { host = "paperless.${vars.domain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.photosDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.audiobooksDomain}"; expected = localDnsPrivateAnswer; }
+        { host = "${vars.filebrowserDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.kavitaDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.jellyfinDomain}"; expected = localDnsPrivateAnswer; }
       ]
@@ -220,6 +231,7 @@ in
       splitHorizon = {
         private = [
           { host = "${vars.kanidmDomain}"; expected = vars.serverLanIP; }
+          { host = "${vars.filebrowserDomain}"; expected = vars.serverLanIP; }
           { host = "${vars.filesDomain}"; expected = vars.serverLanIP; }
           { host = "${vars.hostname}.${vars.lanDnsDomain}"; expected = vars.serverLanIP; }
         ];
@@ -281,6 +293,7 @@ in
       vars.usersRoot
       vars.sharedRoot
       vars.sharedEmailsRoot
+      vars.kiwixLibraryRoot
     ];
     requiredPaths = requiredPathEntries;
   };

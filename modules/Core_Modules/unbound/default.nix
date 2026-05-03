@@ -85,6 +85,7 @@ let
       "\"www.${vars.domain}             A ${targetIp}\""
       "\"paperless.${vars.domain}       A ${targetIp}\""
       "\"${vars.audiobooksDomain}       A ${targetIp}\""
+      "\"${vars.filebrowserDomain}      A ${targetIp}\""
       "\"${vars.emailsDomain}           A ${targetIp}\""
       "\"${vars.kiwixDomain}            A ${targetIp}\""
       "\"${vars.metubeDomain}           A ${targetIp}\""

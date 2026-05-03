@@ -28,10 +28,19 @@ Immich uses separate private and public hostnames on purpose:
 
 - Private Immich app: `https://photos.sydneybasiniot.org`
 - Public Immich share links: `https://sharephotos.sydneybasiniot.org`
+- Private FileBrowser Quantum trial: `https://file.sydneybasiniot.org`
 
 Use `photos.sydneybasiniot.org` for the owner's normal Immich login on LAN or
 NetBird. Use `sharephotos.sydneybasiniot.org` only for public album or photo
 links sent to other people.
+
+Use `file.sydneybasiniot.org` only on LAN or NetBird while evaluating the
+friendlier file-manager UI alongside Copyparty. `files.sydneybasiniot.org`
+remains the existing Copyparty entrypoint and is intentionally unchanged.
+
+Kavita-managed book roots are now aligned to the same simpler taxonomy used by
+the rest of the stack: `ebooks`, `comics`, and `manga`. The old `other`
+category is no longer part of the managed layout.
 
 `photoshare.sydneybasiniot.org` is not a valid hostname in this config and
 should not be used.
