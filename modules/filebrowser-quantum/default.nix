@@ -308,14 +308,28 @@ in
         local source_name="$1"
         local index_path="$2"
         local group_name="$3"
-        local current_rule
+        local current_rule response body status
 
         current_rule="$(api_get "/api/access?source=$(urlencode "$source_name")&path=$(urlencode "$index_path")")"
         if ! jq -e --arg group_name "$group_name" '.allow.groups // [] | index($group_name) != null' >/dev/null <<<"$current_rule"; then
-          api_post \
-            "/api/access?source=$(urlencode "$source_name")&path=$(urlencode "$index_path")" \
-            "$(jq -cn --arg value "$group_name" '{allow:true, ruleCategory:"group", value:$value}')" \
-            >/dev/null
+          response="$(${pkgs.curl}/bin/curl --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -cn --arg value "$group_name" '{allow:true, ruleCategory:"group", value:$value}')" \
+            --write-out $'\n%{http_code}' \
+            "$api_base/api/access?source=$(urlencode "$source_name")&path=$(urlencode "$index_path")")"
+          status="''${response##*$'\n'}"
+          body="''${response%$'\n'*}"
+
+          if [[ "$status" == "500" ]] && grep -Fq "already exists" <<<"$body"; then
+            return 0
+          fi
+
+          [[ "$status" == "200" ]] || {
+            printf '%s\n' "$body" >&2
+            return 1
+          }
         fi
       }
 
