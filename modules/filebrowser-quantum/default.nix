@@ -79,14 +79,9 @@ let
           issuerUrl = vars.kanidmIssuer "filebrowser-quantum-web";
           clientId = "filebrowser-quantum-web";
           clientSecret = "@OIDC_CLIENT_SECRET@";
+          scopes = "openid email profile groups_name";
           userIdentifier = "preferred_username";
           groupsClaim = "groups";
-          userGroups = [
-            "user-files"
-            "shared-files-ro"
-            "shared-files-rw"
-            "domain_admins"
-          ];
           adminGroup = "domain_admins";
         };
       };
