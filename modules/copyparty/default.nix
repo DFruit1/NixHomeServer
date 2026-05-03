@@ -65,22 +65,15 @@ let
     accs = [ "r: $username" ];
   };
   sharedBookVolumes = lib.concatMapStringsSep "\n\n" (library:
-    mkSharedVolume "/shared/${library.dir}" "${vars.sharedBooksRoot}/${library.dir}"
-  ) vars.sharedKavitaLibraries;
-  sharedBookAliasVolumes = lib.concatMapStringsSep "\n\n" (library:
     mkSharedVolume "/books/shared/${library.dir}" "${vars.sharedBooksRoot}/${library.dir}"
   ) vars.sharedKavitaLibraries;
   personalBookVolumes = lib.concatMapStringsSep "\n\n" (library:
-    mkPersonalWritableVolume "/$username/${library.dir}" "${vars.usersRoot}/$username/books/${library.dir}"
-  ) vars.personalKavitaLibraries;
-  personalBookAliasVolumes = lib.concatMapStringsSep "\n\n" (library:
     mkPersonalWritableVolume "/books/$username/${library.dir}" "${vars.usersRoot}/$username/books/${library.dir}"
   ) vars.personalKavitaLibraries;
   sharedRuntimeVolumes = lib.concatStringsSep "\n\n" [
     (mkSharedVolume "/shared/files" sharedFilesRoot)
     (mkSharedVolume "/shared/audiobooks" vars.sharedAudiobooksRoot)
     sharedBookVolumes
-    sharedBookAliasVolumes
     (mkSharedVolume "/shared/emails" vars.sharedEmailsRoot)
     (mkSharedVolume "/shared/videos" vars.sharedVideosRoot)
     (mkSharedAdminVolume "/shared/kiwix" sharedKiwixRoot)
@@ -141,8 +134,6 @@ ${mkPersonalWritableVolume "/$username/audiobooks" "${vars.usersRoot}/$username/
 
 ${personalBookVolumes}
 
-${personalBookAliasVolumes}
-
 ${mkPersonalReadonlyVolume "/$username/emails" "${vars.usersRoot}/$username/emails"}
 EOF
         done
@@ -154,6 +145,7 @@ EOF
     install -m 0600 ${staticRuntimeConfig} ${runtimeConfigPath}
     ${appendPersonalVolumes}
     chown copyparty:copyparty ${runtimeConfigPath}
+    ${pkgs.copyparty}/bin/copyparty -c ${runtimeConfigPath} --exit cfg
   '';
 in
 

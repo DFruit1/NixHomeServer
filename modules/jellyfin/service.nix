@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, vars, ... }:
 
 let
   dataDir = "/var/lib/jellyfin";
@@ -17,6 +17,11 @@ in
   systemd.tmpfiles.rules = [
     "d ${logDir} 0750 jellyfin jellyfin -"
   ];
+
+  networking.firewall.interfaces.${vars.netIface} = {
+    allowedTCPPorts = [ 8096 ];
+    allowedUDPPorts = [ 7359 ];
+  };
 
   systemd.services.jellyfin = {
     after = [ "data-pool-layout.service" ];

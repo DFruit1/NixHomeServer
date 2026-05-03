@@ -54,6 +54,8 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         gatewayAddress = cfg.networking.defaultGateway.address;
         lanUseDhcp = cfg.networking.interfaces.${vars.netIface}.useDHCP;
         lanAddresses = cfg.networking.interfaces.${vars.netIface}.ipv4.addresses;
+        lanAllowedTcpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts;
+        lanAllowedUdpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedUDPPorts;
         nameservers = cfg.networking.nameservers;
       };
       fileSystems = {
@@ -126,6 +128,41 @@ snapshot_query() {
   jq -c "$1" <<<"$CORE_CONFIG_SNAPSHOT_JSON"
 }
 
+copyparty_duplicate_book_paths() {
+  {
+    snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.'
+    snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.'
+  } | awk '
+    /^\[[^][]+\]$/ {
+      route = substr($0, 2, length($0) - 2)
+      next
+    }
+    route != "" && $0 ~ /^\// {
+      path = $0
+      if (path ~ /\/books\//) {
+        print path "\t" route
+      }
+      route = ""
+      next
+    }
+    {
+      route = ""
+    }
+  ' | awk -F '\t' '
+    {
+      routes[$1] = routes[$1] ? routes[$1] ", " $2 : $2
+      count[$1]++
+    }
+    END {
+      for (path in count) {
+        if (count[path] > 1) {
+          print path ": " routes[path]
+        }
+      }
+    }
+  ' | sort
+}
+
 assert_json_true() {
   local query="$1"
   local description="$2"
@@ -157,6 +194,20 @@ require_json_equal "$(snapshot_query '.config.networking.lanAddresses[0].prefixL
   "The evaluated LAN prefix length must follow vars.serverLanPrefixLength."
 require_json_equal "$(snapshot_query '.config.networking.nameservers')" '["127.0.0.1"]' \
   "The host must keep using the local resolver."
+
+lan_allowed_tcp_ports="$(snapshot_query '.config.networking.lanAllowedTcpPorts')"
+if ! jq -e 'index(8096) != null' >/dev/null <<<"$lan_allowed_tcp_ports"; then
+  echo "❌ The LAN firewall must allow Jellyfin direct access on TCP 8096."
+  echo "   allowed TCP ports: $lan_allowed_tcp_ports"
+  exit 1
+fi
+
+lan_allowed_udp_ports="$(snapshot_query '.config.networking.lanAllowedUdpPorts')"
+if ! jq -e 'index(7359) != null' >/dev/null <<<"$lan_allowed_udp_ports"; then
+  echo "❌ The LAN firewall must allow Jellyfin autodiscovery on UDP 7359."
+  echo "   allowed UDP ports: $lan_allowed_udp_ports"
+  exit 1
+fi
 
 assert_json_true '.config.fileSystems.hasDataMount' "The data mount must remain present."
 require_json_equal "$(snapshot_query '.config.fileSystems.dataFsType')" '"zfs"' \
@@ -213,8 +264,22 @@ assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix pollin
 
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/shared/ebooks\]' \
   "Copyparty must expose grouped shared-book aliases."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/shared/ebooks\]' \
+  "Copyparty must retire legacy shared-book routes in favour of /books/shared/*."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/books/\$username/ebooks\]' \
   "Copyparty runtime config sync must emit grouped per-user book aliases."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/\$username/ebooks\]' \
+  "Copyparty runtime config sync must retire legacy per-user book routes in favour of /books/\$username/*."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'copyparty -c .+ --exit cfg' \
+  "Copyparty runtime config sync must validate the rendered config before startup."
+
+copyparty_duplicate_book_paths="$(copyparty_duplicate_book_paths)"
+if [[ -n "$copyparty_duplicate_book_paths" ]]; then
+  echo "❌ Copyparty book routes must not map multiple public volumes onto the same backing path."
+  echo "   duplicates:"
+  printf '%s\n' "$copyparty_duplicate_book_paths"
+  exit 1
+fi
 
 if [[ "$(snapshot_query '.config.apps.caddyHostCount')" == "0" ]]; then
   echo "❌ Caddy must expose at least one virtual host."
