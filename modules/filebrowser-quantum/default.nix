@@ -284,7 +284,10 @@ in
           -H "X-Password: $admin_password" \
           "$api_base/api/auth/login?username=$(urlencode "$admin_username")")"
 
-        token="$(jq -r 'if type == "string" then . else (.token // .jwt // .access_token // empty) end' <<<"$response")"
+        token="$(jq -er 'if type == "string" then . else (.token // .jwt // .access_token // empty) end' <<<"$response" 2>/dev/null || true)"
+        if [[ -z "$token" ]]; then
+          token="$(printf '%s' "$response" | tr -d '\r\n')"
+        fi
         [[ -n "$token" ]] || {
           echo "Failed to obtain FileBrowser Quantum API token" >&2
           exit 1
