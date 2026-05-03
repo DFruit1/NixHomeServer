@@ -79,6 +79,7 @@ let
           issuerUrl = vars.kanidmIssuer "filebrowser-quantum-web";
           clientId = "filebrowser-quantum-web";
           clientSecret = "@OIDC_CLIENT_SECRET@";
+          createUser = true;
           scopes = "openid email profile groups_name";
           userIdentifier = "preferred_username";
           groupsClaim = "groups";
