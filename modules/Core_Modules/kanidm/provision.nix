@@ -125,6 +125,7 @@ in
       originUrl = "https://${vars.filebrowserDomain}/api/auth/oidc/callback";
       originLanding = "https://${vars.filebrowserDomain}/";
       basicSecretFile = config.age.secrets.filebrowserQuantumClientSecret.path;
+      allowInsecureClientDisablePkce = true;
       preferShortUsername = true;
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
       scopeMaps.domain_admins = [ "openid" "profile" "email" "groups_name" ];
