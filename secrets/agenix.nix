@@ -32,6 +32,8 @@
     kiwixOauth2ProxyCookieSecret = { file = ./kiwixOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     metubeOauth2ProxyClientSecret = { file = ./metubeOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     metubeOauth2ProxyCookieSecret = { file = ./metubeOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
+    glancesOauth2ProxyClientSecret = { file = ./glancesOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    glancesOauth2ProxyCookieSecret = { file = ./glancesOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     resticSystemStatePassword = { file = ./resticSystemStatePassword.age; owner = "root"; mode = "0400"; };
     serverBootstrapSudoPassword = { file = ./serverBootstrapSudoPassword.age; owner = "root"; mode = "0400"; };
     storageAlertWebhookUrl = { file = ./storageAlertWebhookUrl.age; owner = "root"; mode = "0400"; };

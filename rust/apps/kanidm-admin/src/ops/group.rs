@@ -4,6 +4,7 @@ use crate::{
     inventory::groups::{parse_group_list, parse_group_members, parse_group_record, GroupRecord},
     kanidm_cli::KanidmCli,
     output::CommandOutput,
+    validation::validate_search_query,
     AppError,
 };
 
@@ -32,11 +33,18 @@ pub fn list_groups(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
 }
 
 pub fn search_groups(cli: &KanidmCli, query: &str) -> Result<CommandOutput, AppError> {
+    let query = validate_search_query(query)?;
+    let normalized_query = query.to_ascii_lowercase();
     let groups = parse_group_list(&cli.group_list::<Value>()?)?;
     let filtered = groups
         .value
         .iter()
-        .filter(|group| group.name.contains(query))
+        .filter(|group| {
+            group.name.to_ascii_lowercase().contains(&normalized_query)
+                || group.description.as_deref().is_some_and(|description| {
+                    description.to_ascii_lowercase().contains(&normalized_query)
+                })
+        })
         .cloned()
         .collect::<Vec<_>>();
     let human = if filtered.is_empty() {

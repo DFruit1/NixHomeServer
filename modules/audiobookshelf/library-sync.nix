@@ -1,24 +1,9 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   audiobookshelfPort = 13378;
   dataDir = "/var/lib/audiobookshelf";
   dbPath = "${dataDir}/config/absdatabase.sqlite";
-  usersRootRegex = lib.escapeRegex vars.usersRoot;
-  sharedRootRegex = lib.escapeRegex vars.sharedAudiobooksRoot;
-  watchRegex = "^(${sharedRootRegex}(/|$)|${usersRootRegex}/[^/]+/audiobooks(/|$))";
-  watcherScript = libraryWatchers.mkSettledWatcherScript {
-    name = "audiobookshelf-library-watch";
-    watchedRoots = [
-      vars.sharedAudiobooksRoot
-      vars.usersRoot
-    ];
-    triggerUnit = "audiobookshelf-library-sync.service";
-    includeRegex = watchRegex;
-    settleSeconds = 20;
-    pollSeconds = 5;
-  };
 in
 {
   systemd.services.audiobookshelf-library-sync-config-v1 = {
@@ -87,8 +72,7 @@ in
   };
 
   systemd.services.audiobookshelf-library-sync = {
-    description = "Run settled Audiobookshelf library scans";
-    wantedBy = [ "multi-user.target" ];
+    description = "Run scheduled Audiobookshelf library scans";
     after = [
       "audiobookshelf.service"
       "audiobookshelf-library-sync-config-v1.service"
@@ -136,24 +120,13 @@ in
     };
   };
 
-  systemd.services.audiobookshelf-library-watch = {
-    description = "Watch audiobook roots and debounce Audiobookshelf scans";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "audiobookshelf.service"
-      "audiobookshelf-library-sync.service"
-      "data-pool-layout.service"
-    ];
-    wants = [
-      "audiobookshelf.service"
-      "audiobookshelf-library-sync.service"
-      "data-pool-layout.service"
-    ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${watcherScript}";
-      Restart = "always";
-      RestartSec = "5s";
+  systemd.timers.audiobookshelf-library-sync = {
+    description = "Run the Audiobookshelf library scan overnight";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "03:10";
+      Persistent = true;
+      AccuracySec = "1m";
     };
   };
 }

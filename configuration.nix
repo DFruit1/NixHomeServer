@@ -63,6 +63,7 @@ in
     ./modules/Core_Modules/unbound
     ./modules/copyparty
     ./modules/filebrowser-quantum
+    ./modules/goaccess
     ./modules/immich
     ./modules/jellyfin
     ./modules/kiwix
@@ -71,9 +72,9 @@ in
     ./modules/mail-archive-paperless
     ./modules/mail-archive-ui
     ./modules/metube
+    ./modules/glances
     ./modules/paperless
     ./modules/power-management
-    ./modules/samba
   ];
 
   disko.enableConfig = true;
@@ -83,6 +84,7 @@ in
     pools = [ vars.zfsDataPool.name ];
   };
   systemd.services.dbus.stopIfChanged = true;
+  services.goaccessDashboard.enable = true;
   services.mail-archive-ui.enable = true;
 
   systemd.tmpfiles.rules = [
@@ -154,9 +156,6 @@ in
   hardware.cpu.intel.updateMicrocode = true;
   hardware.cpu.amd.updateMicrocode = true;
 
-  hardware.enableAllFirmware = true;
-  nixpkgs.config.allowUnfree = true;
-
   networking.firewall.allowedTCPPorts = [ 22 ];
 
   services.openssh = {
@@ -179,6 +178,7 @@ in
   };
 
   services.btrfs.autoScrub.enable = true;
+  programs.atop.enable = true;
 
   security.sudo.extraRules = [
     {

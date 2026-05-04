@@ -115,6 +115,60 @@ exit 1
 }
 
 #[test]
+fn membership_add_requires_at_least_one_group() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "membership",
+            "add",
+            "dsaw",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("<GROUPS>..."));
+}
+
+#[test]
+fn membership_remove_requires_at_least_one_group() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "membership",
+            "remove",
+            "dsaw",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("<GROUPS>..."));
+}
+
+#[test]
 fn membership_add_accepts_brand_new_live_group() {
     let dir = tempfile::tempdir().expect("tempdir");
     fs::write(dir.path().join("groups.txt"), "").expect("seed groups");
@@ -384,6 +438,89 @@ exit 1
 }
 
 #[test]
+fn doctor_succeeds_with_partial_output_when_inventory_probe_fails() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  printf 'authenticated'
+  exit 0
+fi
+if [[ "$1" == "person" && "$2" == "list" ]]; then
+  printf 'backend exploded\n' >&2
+  exit 1
+fi
+if [[ "$1" == "group" && "$2" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+if [[ "$1" == "system" && "$2" == "oauth2" && "$3" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "doctor",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Users: unavailable"))
+        .stdout(predicate::str::contains("Errors:"));
+}
+
+#[test]
+fn doctor_surfaces_session_recovery_guidance() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  printf 'No valid auth tokens found\n' >&2
+  exit 1
+fi
+if [[ "$1" == "person" && "$2" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+if [[ "$1" == "group" && "$2" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+if [[ "$1" == "system" && "$2" == "oauth2" && "$3" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "doctor",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Run `kanidm-admin session login`"));
+}
+
+#[test]
 fn session_required_is_reported_on_group_show() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash
@@ -406,8 +543,124 @@ exit 1
         ]);
 
     cmd.assert().code(6).stderr(predicate::str::contains(
-        "Run `kanidm login --url https://id.example.test --name admindsaw` first.",
+        "Run `kanidm-admin session login` first.",
     ));
+}
+
+#[test]
+fn reauth_required_is_reported_on_group_show() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+printf 'must re-authenticate\n' >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "group",
+            "show",
+            "users",
+        ]);
+
+    cmd.assert().code(7).stderr(predicate::str::contains(
+        "Run `kanidm-admin session reauth` first.",
+    ));
+}
+
+#[test]
+fn group_search_rejects_whitespace_only_query_before_backend() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "group",
+            "search",
+            "   ",
+        ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("whitespace only"));
+}
+
+#[test]
+fn group_search_matches_description_only_queries() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "group" && "$2" == "list" ]]; then
+  printf '[{"name":["files-users"],"description":["Personal storage access"]}]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "group",
+            "search",
+            "storage",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("files-users"));
+}
+
+#[test]
+fn group_search_matches_case_insensitively() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "group" && "$2" == "list" ]]; then
+  printf '[{"name":["Files-Users"],"description":["Personal Storage Access"]}]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "group",
+            "search",
+            "storage",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Files-Users"));
 }
 
 #[test]

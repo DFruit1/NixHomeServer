@@ -15,6 +15,24 @@ pub struct ContextualItem {
     pub detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FilteredView {
+    indices: Vec<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct MembershipPickerView<'a> {
+    term: &'a Term,
+    prompt: &'a str,
+    groups: &'a [GroupSummary],
+    labels: &'a [String],
+    checked: &'a [bool],
+    cursor: usize,
+    current_groups: &'a [String],
+    visible: &'a FilteredView,
+    filter: Option<&'a str>,
+}
+
 pub fn select(prompt: &str, items: &[String], default: usize) -> Result<Option<usize>, AppError> {
     map_interactive_result(
         Select::with_theme(&theme())
@@ -84,13 +102,15 @@ pub fn membership_picker(
 
 pub fn group_picker(
     prompt: &str,
+    intro: Option<&str>,
     manual_label: &str,
+    manual_detail: &str,
     groups: &[GroupSummary],
 ) -> Result<Option<usize>, AppError> {
     let mut items = vec![ContextualItem {
         label: manual_label.to_string(),
         summary: "Enter a group name manually.".to_string(),
-        detail: "Use manual entry when the group is hidden from the guided picker or you already know the exact group name.".to_string(),
+        detail: manual_detail.to_string(),
     }];
     items.extend(groups.iter().map(|group| {
         let help = resolve_group_help(&group.name, group.description.as_deref());
@@ -100,7 +120,7 @@ pub fn group_picker(
             detail: help.detail,
         }
     }));
-    contextual_select(prompt, None, &items, 0)
+    contextual_select(prompt, intro, &items, 0)
 }
 
 pub fn contextual_select(
@@ -141,33 +161,53 @@ fn contextual_select_loop(
     items: &[ContextualItem],
     cursor: &mut usize,
 ) -> Result<Option<usize>, AppError> {
+    let mut filter = None;
+
     loop {
-        render_contextual_select(term, prompt, intro, items, *cursor)?;
+        let visible = contextual_filtered_view(items, filter.as_deref());
+        clamp_cursor(cursor, visible.indices.len());
+        render_contextual_select(
+            term,
+            prompt,
+            intro,
+            items,
+            *cursor,
+            &visible,
+            filter.as_deref(),
+        )?;
 
         match term.read_key().map_err(|error| AppError::Io {
             message: format!("interactive selection failed: {error}"),
         })? {
-            Key::ArrowDown | Key::Char('j') => {
-                *cursor = (*cursor + 1) % items.len();
+            Key::ArrowDown | Key::Char('j') if !visible.indices.is_empty() => {
+                *cursor = (*cursor + 1) % visible.indices.len();
             }
-            Key::ArrowUp | Key::Char('k') => {
+            Key::ArrowUp | Key::Char('k') if !visible.indices.is_empty() => {
                 *cursor = if *cursor == 0 {
-                    items.len() - 1
+                    visible.indices.len() - 1
                 } else {
                     *cursor - 1
                 };
             }
-            Key::PageDown => {
-                let page_size = contextual_page_size(term, items.len());
-                *cursor = (*cursor + page_size).min(items.len() - 1);
+            Key::PageDown if !visible.indices.is_empty() => {
+                let page_size = contextual_page_size(term, visible.indices.len());
+                *cursor = (*cursor + page_size).min(visible.indices.len() - 1);
             }
-            Key::PageUp => {
-                let page_size = contextual_page_size(term, items.len());
+            Key::PageUp if !visible.indices.is_empty() => {
+                let page_size = contextual_page_size(term, visible.indices.len());
                 *cursor = (*cursor).saturating_sub(page_size);
             }
             Key::Home => *cursor = 0,
-            Key::End => *cursor = items.len() - 1,
-            Key::Enter => return Ok(Some(*cursor)),
+            Key::End if !visible.indices.is_empty() => *cursor = visible.indices.len() - 1,
+            Key::Char('/') => {
+                filter = prompt_filter(term, filter.as_deref())?;
+                *cursor = 0;
+            }
+            Key::Enter => {
+                if let Some(selection) = selected_original_index(&visible, *cursor) {
+                    return Ok(Some(selection));
+                }
+            }
             Key::Escape | Key::Char('q') => return Ok(None),
             _ => {}
         }
@@ -183,44 +223,56 @@ fn membership_picker_loop(
     cursor: &mut usize,
     current_groups: &[String],
 ) -> Result<Option<Vec<usize>>, AppError> {
+    let mut filter = None;
+
     loop {
-        render_membership_picker(
+        let visible = membership_filtered_view(groups, filter.as_deref());
+        clamp_cursor(cursor, visible.indices.len());
+        render_membership_picker(MembershipPickerView {
             term,
             prompt,
             groups,
             labels,
             checked,
-            *cursor,
+            cursor: *cursor,
             current_groups,
-        )?;
+            visible: &visible,
+            filter: filter.as_deref(),
+        })?;
 
         match term.read_key().map_err(|error| AppError::Io {
             message: format!("interactive membership selection failed: {error}"),
         })? {
-            Key::ArrowDown | Key::Char('j') => {
-                *cursor = (*cursor + 1) % groups.len();
+            Key::ArrowDown | Key::Char('j') if !visible.indices.is_empty() => {
+                *cursor = (*cursor + 1) % visible.indices.len();
             }
-            Key::ArrowUp | Key::Char('k') => {
+            Key::ArrowUp | Key::Char('k') if !visible.indices.is_empty() => {
                 *cursor = if *cursor == 0 {
-                    groups.len() - 1
+                    visible.indices.len() - 1
                 } else {
                     *cursor - 1
                 };
             }
-            Key::PageDown => {
-                let page_size = membership_page_size(term, groups.len());
-                *cursor = (*cursor + page_size).min(groups.len() - 1);
+            Key::PageDown if !visible.indices.is_empty() => {
+                let page_size = membership_page_size(term, visible.indices.len());
+                *cursor = (*cursor + page_size).min(visible.indices.len() - 1);
             }
-            Key::PageUp => {
-                let page_size = membership_page_size(term, groups.len());
+            Key::PageUp if !visible.indices.is_empty() => {
+                let page_size = membership_page_size(term, visible.indices.len());
                 *cursor = (*cursor).saturating_sub(page_size);
             }
             Key::Home => *cursor = 0,
-            Key::End => *cursor = groups.len() - 1,
+            Key::End if !visible.indices.is_empty() => *cursor = visible.indices.len() - 1,
             Key::Char(' ') => {
-                checked[*cursor] = !checked[*cursor];
+                if let Some(selection) = selected_original_index(&visible, *cursor) {
+                    checked[selection] = !checked[selection];
+                }
             }
-            Key::Enter => {
+            Key::Char('/') => {
+                filter = prompt_filter(term, filter.as_deref())?;
+                *cursor = 0;
+            }
+            Key::Enter if !visible.indices.is_empty() => {
                 let selected = checked
                     .iter()
                     .enumerate()
@@ -234,49 +286,9 @@ fn membership_picker_loop(
     }
 }
 
-fn render_membership_picker(
-    term: &Term,
-    prompt: &str,
-    groups: &[GroupSummary],
-    labels: &[String],
-    checked: &[bool],
-    cursor: usize,
-    current_groups: &[String],
-) -> Result<(), AppError> {
-    let page_size = membership_page_size(term, groups.len());
-    let current_page = cursor / page_size;
-    let total_pages = groups.len().div_ceil(page_size);
-    let start = current_page * page_size;
-    let end = (start + page_size).min(groups.len());
-    let help = resolve_group_help(&groups[cursor].name, groups[cursor].description.as_deref());
-
-    let mut body = String::new();
-    body.push_str(&format!(
-        "{prompt}  [Page {}/{}]\n",
-        current_page + 1,
-        total_pages
-    ));
-    body.push_str("Keys: Space toggle | Enter save | Esc back\n\n");
-    body.push_str("Guidance:\n");
-    body.push_str(MEMBERSHIP_GUIDANCE);
-    body.push_str("\n\n");
-    body.push_str("Current direct groups:\n");
-    body.push_str(&render_selected_groups(current_groups));
-    body.push_str("\n\n");
-
-    for index in start..end {
-        let marker = if checked[index] { "[x]" } else { "[ ]" };
-        let pointer = if index == cursor { ">" } else { " " };
-        body.push_str(&format!("{pointer} {marker} {}\n", labels[index]));
-    }
-
-    body.push_str("\nSelected group help:\n");
-    body.push_str(&help.summary);
-    body.push('\n');
-    body.push_str(&help.detail);
-    body.push('\n');
-
-    render_screen(term, &body, "interactive membership selection failed")
+fn render_membership_picker(view: MembershipPickerView<'_>) -> Result<(), AppError> {
+    let body = build_membership_picker_body(view);
+    render_screen(view.term, &body, "interactive membership selection failed")
 }
 
 fn render_contextual_select(
@@ -285,12 +297,90 @@ fn render_contextual_select(
     intro: Option<&str>,
     items: &[ContextualItem],
     cursor: usize,
+    visible: &FilteredView,
+    filter: Option<&str>,
 ) -> Result<(), AppError> {
-    let page_size = contextual_page_size(term, items.len());
-    let current_page = cursor / page_size;
-    let total_pages = items.len().div_ceil(page_size);
+    let body = build_contextual_select_body(term, prompt, intro, items, cursor, visible, filter);
+    render_screen(term, &body, "interactive selection failed")
+}
+
+fn build_membership_picker_body(view: MembershipPickerView<'_>) -> String {
+    let page_size = membership_page_size(view.term, view.visible.indices.len());
+    let current_page = view.cursor / page_size;
+    let total_pages = view.visible.indices.len().max(1).div_ceil(page_size);
     let start = current_page * page_size;
-    let end = (start + page_size).min(items.len());
+    let end = (start + page_size).min(view.visible.indices.len());
+
+    let mut body = String::new();
+    body.push_str(&format!(
+        "{}  [Page {}/{}]\n",
+        view.prompt,
+        current_page + 1,
+        total_pages
+    ));
+    body.push_str("Keys: Space toggle | Enter review | / filter | Esc back\n");
+    if let Some(filter) = view.filter {
+        body.push_str(&format!("Filter: {filter}\n"));
+    }
+    body.push('\n');
+    body.push_str("Guidance:\n");
+    body.push_str(MEMBERSHIP_GUIDANCE);
+    body.push_str("\n\n");
+    body.push_str("Current direct groups:\n");
+    body.push_str(&render_selected_groups(view.current_groups));
+    body.push_str("\n\n");
+
+    if view.visible.indices.is_empty() {
+        body.push_str("No matches for current filter.\n");
+        return body;
+    }
+
+    for visible_index in start..end {
+        let original_index = view.visible.indices[visible_index];
+        let marker = if view.checked[original_index] {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        let pointer = if visible_index == view.cursor {
+            ">"
+        } else {
+            " "
+        };
+        body.push_str(&format!(
+            "{pointer} {marker} {}\n",
+            view.labels[original_index]
+        ));
+    }
+
+    let selected = view.visible.indices[view.cursor];
+    let help = resolve_group_help(
+        &view.groups[selected].name,
+        view.groups[selected].description.as_deref(),
+    );
+    body.push_str("\nSelected group help:\n");
+    body.push_str(&help.summary);
+    body.push('\n');
+    body.push_str(&help.detail);
+    body.push('\n');
+
+    body
+}
+
+fn build_contextual_select_body(
+    term: &Term,
+    prompt: &str,
+    intro: Option<&str>,
+    items: &[ContextualItem],
+    cursor: usize,
+    visible: &FilteredView,
+    filter: Option<&str>,
+) -> String {
+    let page_size = contextual_page_size(term, visible.indices.len());
+    let current_page = cursor / page_size;
+    let total_pages = visible.indices.len().max(1).div_ceil(page_size);
+    let start = current_page * page_size;
+    let end = (start + page_size).min(visible.indices.len());
 
     let mut body = String::new();
     body.push_str(&format!(
@@ -298,24 +388,35 @@ fn render_contextual_select(
         current_page + 1,
         total_pages
     ));
-    body.push_str("Keys: Enter select | Esc back\n\n");
+    body.push_str("Keys: Enter select | / filter | Esc back\n");
+    if let Some(filter) = filter {
+        body.push_str(&format!("Filter: {filter}\n"));
+    }
+    body.push('\n');
     if let Some(intro) = intro {
         body.push_str(intro);
         body.push_str("\n\n");
     }
 
-    for (index, item) in items.iter().enumerate().take(end).skip(start) {
-        let pointer = if index == cursor { ">" } else { " " };
-        body.push_str(&format!("{pointer} {}\n", item.label));
+    if visible.indices.is_empty() {
+        body.push_str("No matches for current filter.\n");
+        return body;
     }
 
+    for visible_index in start..end {
+        let original_index = visible.indices[visible_index];
+        let pointer = if visible_index == cursor { ">" } else { " " };
+        body.push_str(&format!("{pointer} {}\n", items[original_index].label));
+    }
+
+    let selected = visible.indices[cursor];
     body.push_str("\nSelected help:\n");
-    body.push_str(&items[cursor].summary);
+    body.push_str(&items[selected].summary);
     body.push('\n');
-    body.push_str(&items[cursor].detail);
+    body.push_str(&items[selected].detail);
     body.push('\n');
 
-    render_screen(term, &body, "interactive selection failed")
+    body
 }
 
 fn membership_page_size(term: &Term, total_groups: usize) -> usize {
@@ -344,6 +445,81 @@ fn render_selected_groups(groups: &[String]) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+fn prompt_filter(term: &Term, current: Option<&str>) -> Result<Option<String>, AppError> {
+    let _ = term.show_cursor();
+    let result = input_optional("Filter", current);
+    let _ = term.hide_cursor();
+    result
+}
+
+fn contextual_filtered_view(items: &[ContextualItem], filter: Option<&str>) -> FilteredView {
+    FilteredView {
+        indices: match filter {
+            Some(query) => items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    filter_matches(
+                        query,
+                        [
+                            item.label.as_str(),
+                            item.summary.as_str(),
+                            item.detail.as_str(),
+                        ],
+                    )
+                    .then_some(index)
+                })
+                .collect(),
+            None => (0..items.len()).collect(),
+        },
+    }
+}
+
+fn membership_filtered_view(groups: &[GroupSummary], filter: Option<&str>) -> FilteredView {
+    FilteredView {
+        indices: match filter {
+            Some(query) => groups
+                .iter()
+                .enumerate()
+                .filter_map(|(index, group)| {
+                    let help = resolve_group_help(&group.name, group.description.as_deref());
+                    let description = group.description.as_deref().unwrap_or("");
+                    filter_matches(
+                        query,
+                        [
+                            group.name.as_str(),
+                            description,
+                            help.summary.as_str(),
+                            help.detail.as_str(),
+                        ],
+                    )
+                    .then_some(index)
+                })
+                .collect(),
+            None => (0..groups.len()).collect(),
+        },
+    }
+}
+
+fn filter_matches<'a>(query: &str, fields: impl IntoIterator<Item = &'a str>) -> bool {
+    let normalized_query = query.to_lowercase();
+    fields
+        .into_iter()
+        .any(|field| field.to_lowercase().contains(&normalized_query))
+}
+
+fn clamp_cursor(cursor: &mut usize, visible_len: usize) {
+    if visible_len == 0 {
+        *cursor = 0;
+    } else {
+        *cursor = (*cursor).min(visible_len - 1);
+    }
+}
+
+fn selected_original_index(visible: &FilteredView, cursor: usize) -> Option<usize> {
+    visible.indices.get(cursor).copied()
 }
 
 fn render_screen(term: &Term, body: &str, context: &str) -> Result<(), AppError> {
@@ -517,6 +693,10 @@ fn theme() -> ColorfulTheme {
 mod tests {
     use super::*;
 
+    fn test_term() -> Term {
+        Term::buffered_stderr()
+    }
+
     #[test]
     fn map_interactive_result_preserves_cancel() {
         let result = map_interactive_result::<usize>(Ok(None), "selection failed").expect("ok");
@@ -555,5 +735,149 @@ mod tests {
         let labels = membership_picker_labels(&groups);
 
         assert_eq!(labels[0], "users");
+    }
+
+    #[test]
+    fn filter_matches_case_insensitively() {
+        assert!(filter_matches("StoRage", ["Personal storage access"]));
+        assert!(!filter_matches("admin", ["Personal storage access"]));
+    }
+
+    #[test]
+    fn contextual_filter_matches_label() {
+        let items = vec![
+            ContextualItem {
+                label: "Create User".to_string(),
+                summary: "Create".to_string(),
+                detail: "Create a user".to_string(),
+            },
+            ContextualItem {
+                label: "Delete User".to_string(),
+                summary: "Delete".to_string(),
+                detail: "Delete a user".to_string(),
+            },
+        ];
+
+        let visible = contextual_filtered_view(&items, Some("delete"));
+        assert_eq!(visible.indices, vec![1]);
+    }
+
+    #[test]
+    fn contextual_filter_matches_summary_and_detail() {
+        let items = vec![
+            ContextualItem {
+                label: "One".to_string(),
+                summary: "Paperless access".to_string(),
+                detail: "Grants document access".to_string(),
+            },
+            ContextualItem {
+                label: "Two".to_string(),
+                summary: "Immich access".to_string(),
+                detail: "Grants photo access".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            contextual_filtered_view(&items, Some("document")).indices,
+            vec![0]
+        );
+        assert_eq!(
+            contextual_filtered_view(&items, Some("PHOTO")).indices,
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn membership_filter_matches_name_description_and_help() {
+        let groups = vec![
+            GroupSummary {
+                name: "users".to_string(),
+                description: Some("Standard access".to_string()),
+            },
+            GroupSummary {
+                name: "paperless-users".to_string(),
+                description: Some("Document archive access".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            membership_filtered_view(&groups, Some("paperless")).indices,
+            vec![1]
+        );
+        assert_eq!(
+            membership_filtered_view(&groups, Some("document")).indices,
+            vec![1]
+        );
+        assert_eq!(
+            membership_filtered_view(&groups, Some("baseline")).indices,
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn filtered_selection_returns_original_index() {
+        let items = vec![
+            ContextualItem {
+                label: "One".to_string(),
+                summary: "Alpha".to_string(),
+                detail: "First".to_string(),
+            },
+            ContextualItem {
+                label: "Two".to_string(),
+                summary: "Beta".to_string(),
+                detail: "Second".to_string(),
+            },
+        ];
+
+        let visible = contextual_filtered_view(&items, Some("second"));
+        assert_eq!(selected_original_index(&visible, 0), Some(1));
+    }
+
+    #[test]
+    fn zero_match_contextual_state_renders_safely() {
+        let term = test_term();
+        let items = vec![ContextualItem {
+            label: "One".to_string(),
+            summary: "Alpha".to_string(),
+            detail: "First".to_string(),
+        }];
+        let visible = contextual_filtered_view(&items, Some("missing"));
+        let body = build_contextual_select_body(
+            &term,
+            "Prompt",
+            Some("Intro"),
+            &items,
+            0,
+            &visible,
+            Some("missing"),
+        );
+
+        assert!(body.contains("No matches for current filter."));
+        assert!(body.contains("Filter: missing"));
+    }
+
+    #[test]
+    fn zero_match_membership_state_renders_safely() {
+        let term = test_term();
+        let groups = vec![GroupSummary {
+            name: "users".to_string(),
+            description: None,
+        }];
+        let labels = membership_picker_labels(&groups);
+        let visible = membership_filtered_view(&groups, Some("missing"));
+        let body = build_membership_picker_body(MembershipPickerView {
+            term: &term,
+            prompt: "Prompt",
+            groups: &groups,
+            labels: &labels,
+            checked: &[false],
+            cursor: 0,
+            current_groups: &[],
+            visible: &visible,
+            filter: Some("missing"),
+        });
+
+        assert!(body.contains("No matches for current filter."));
+        assert!(body.contains("Filter: missing"));
     }
 }

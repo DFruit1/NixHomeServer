@@ -494,18 +494,14 @@ impl KanidmCli {
         if is_session_expired(&normalized_diagnostic) || is_session_missing(&normalized_diagnostic)
         {
             return AppError::SessionRequired {
-                message: format!(
-                    "{context}. Run `kanidm login --url {} --name {}` first.",
-                    self.server_url, self.admin_name
-                ),
+                message: format!("{context}. Run `kanidm-admin session login` first.",),
                 details: session_or_reauth_details(&diagnostic, &failure),
             };
         }
         if is_reauth_required(&normalized_diagnostic) {
             return AppError::ReauthRequired {
                 message: format!(
-                    "{context}. Run `kanidm reauth --url {} --name {}` first. The base session may still appear active, but privileged write access has expired.",
-                    self.server_url, self.admin_name
+                    "{context}. Run `kanidm-admin session reauth` first. The base session may still appear active, but privileged write access has expired.",
                 ),
                 details: session_or_reauth_details(&diagnostic, &failure),
             };

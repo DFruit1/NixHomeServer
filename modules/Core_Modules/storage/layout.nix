@@ -23,7 +23,6 @@ let
     "paperless-scheduler.service"
     "paperless-task-queue.service"
     "paperless-web.service"
-    "samba-smbd.service"
   ];
 
   mkDirCmd =

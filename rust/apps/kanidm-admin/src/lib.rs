@@ -103,20 +103,26 @@ impl AppError {
                     message.clone()
                 }
             }
-            Self::Verification { message, details }
-            | Self::AlreadyExists {
+            Self::AlreadyExists {
                 message, details, ..
             }
-            | Self::Json { message, details }
-            | Self::BackendTimeout { message, details }
-            | Self::InventoryIncomplete { message, details }
-            | Self::Unsupported { message, details }
             | Self::NotFound {
                 message, details, ..
             } => {
                 if matches!(self, Self::AlreadyExists { .. }) {
                     return render_already_exists(message, details);
                 }
+                let rendered =
+                    serde_json::to_string_pretty(details).unwrap_or_else(|_| details.to_string());
+                format!("{message}\n\nDetails:\n{rendered}")
+            }
+            Self::Verification { message, details } => render_verification(message, details),
+            Self::Json { message, details } => render_json_error(message, details),
+            Self::BackendTimeout { message, details } => render_backend_timeout(message, details),
+            Self::InventoryIncomplete { message, details } => {
+                render_inventory_incomplete(message, details)
+            }
+            Self::Unsupported { message, details } => {
                 let rendered =
                     serde_json::to_string_pretty(details).unwrap_or_else(|_| details.to_string());
                 format!("{message}\n\nDetails:\n{rendered}")
@@ -253,6 +259,105 @@ fn render_partial_success(message: &str, details: &Value) -> String {
     body.join("\n\n")
 }
 
+fn render_verification(message: &str, details: &Value) -> String {
+    let mut body = vec![
+        "The command may have started, but the final state did not confirm in time.".to_string(),
+        format!("What happened:\n{message}"),
+    ];
+
+    if let Some(expected) = details.get("expected_state") {
+        body.push(format!("Expected state:\n{}", render_json_block(expected)));
+    }
+
+    if let Some(observed) = last_observed_state(details) {
+        body.push(format!(
+            "Last observed state:\n{}",
+            render_json_block(&observed)
+        ));
+    }
+
+    if let Some(next_actions) = render_actions(details) {
+        body.push(format!("Next action:\n{next_actions}"));
+    } else {
+        body.push(
+            "Next action:\n- Inspect the live state before retrying the command.".to_string(),
+        );
+    }
+
+    if let Some(diagnostic) = extract_diagnostic(details) {
+        body.push(format!("Backend diagnostic:\n{diagnostic}"));
+    }
+
+    body.join("\n\n")
+}
+
+fn render_inventory_incomplete(message: &str, details: &Value) -> String {
+    let mut body = vec![
+        "This action was blocked because live discovery was incomplete, so the tool could not safely confirm the current state.".to_string(),
+        format!("What happened:\n{message}"),
+    ];
+
+    if let Some(warnings) = render_step_list(details.get("warnings")) {
+        body.push(format!("Warnings:\n{warnings}"));
+    }
+
+    if let Some(next_actions) = render_actions(details) {
+        body.push(format!("Next action:\n{next_actions}"));
+    } else {
+        body.push(
+            "Next action:\n- Re-run `kanidm-admin doctor` and fix discovery or session issues before retrying.".to_string(),
+        );
+    }
+
+    body.join("\n\n")
+}
+
+fn render_backend_timeout(message: &str, details: &Value) -> String {
+    let elapsed_ms = details.get("elapsed_ms").and_then(Value::as_u64);
+    let mut body = vec![
+        format!(
+            "The Kanidm command did not finish within {} second(s).",
+            elapsed_ms.map(|value| value.div_ceil(1000)).unwrap_or(20)
+        ),
+        format!("What happened:\n{message}"),
+    ];
+
+    if let Some(command) = render_command_summary(details) {
+        body.push(format!("Command:\n{command}"));
+    }
+
+    body.push(
+        "Next action:\n- Retry once if the server was temporarily busy.\n- If it times out again, run `kanidm-admin doctor` and inspect server responsiveness.".to_string(),
+    );
+
+    if let Some(diagnostic) = extract_diagnostic(details) {
+        body.push(format!("Backend diagnostic:\n{diagnostic}"));
+    }
+
+    body.join("\n\n")
+}
+
+fn render_json_error(message: &str, details: &Value) -> String {
+    let mut body = vec![
+        "The Kanidm backend responded, but the output format did not match what this tool expected.".to_string(),
+        format!("What happened:\n{message}"),
+    ];
+
+    if let Some(error) = details.get("error").and_then(Value::as_str) {
+        body.push(format!("Parser error:\n- {error}"));
+    }
+
+    body.push(
+        "Next action:\n- Confirm the `kanidm` CLI version is compatible.\n- If the issue persists, inspect the raw backend output below.".to_string(),
+    );
+
+    if let Some(diagnostic) = extract_diagnostic(details) {
+        body.push(format!("Raw output:\n{diagnostic}"));
+    }
+
+    body.join("\n\n")
+}
+
 fn render_actions(details: &Value) -> Option<String> {
     render_step_list(details.get("next_actions"))
 }
@@ -269,6 +374,35 @@ fn render_step_list(value: Option<&Value>) -> Option<String> {
 
 fn render_json_block(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn last_observed_state(details: &Value) -> Option<Value> {
+    details
+        .get("attempts")
+        .and_then(Value::as_array)?
+        .iter()
+        .rev()
+        .find_map(|attempt| attempt.get("observed").cloned())
+}
+
+fn render_command_summary(details: &Value) -> Option<String> {
+    let program = details.get("program").and_then(Value::as_str)?;
+    let args = details
+        .get("args")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    Some(if args.is_empty() {
+        program.to_string()
+    } else {
+        format!("{program} {args}")
+    })
 }
 
 fn extract_diagnostic(value: &Value) -> Option<String> {
@@ -306,4 +440,61 @@ fn extract_diagnostic(value: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn verification_errors_lead_with_plain_language_summary() {
+        let error = AppError::Verification {
+            message: "verification failed".to_string(),
+            details: json!({
+                "expected_state": { "enabled": true },
+                "attempts": [
+                    { "observed": { "enabled": false } }
+                ]
+            }),
+        };
+
+        let rendered = error.human_message();
+        assert!(rendered.contains("final state did not confirm in time"));
+        assert!(rendered.contains("Expected state"));
+        assert!(rendered.contains("Last observed state"));
+    }
+
+    #[test]
+    fn inventory_incomplete_errors_suggest_doctor() {
+        let error = AppError::InventoryIncomplete {
+            message: "inventory incomplete".to_string(),
+            details: json!({
+                "warnings": ["parse warning"],
+            }),
+        };
+
+        let rendered = error.human_message();
+        assert!(rendered.contains("live discovery was incomplete"));
+        assert!(rendered.contains("kanidm-admin doctor"));
+    }
+
+    #[test]
+    fn backend_timeout_errors_render_command_summary() {
+        let error = AppError::BackendTimeout {
+            message: "timed out".to_string(),
+            details: json!({
+                "program": "kanidm",
+                "args": ["person", "list"],
+                "elapsed_ms": 20000,
+                "stderr": "slow backend",
+            }),
+        };
+
+        let rendered = error.human_message();
+        assert!(rendered.contains("did not finish within"));
+        assert!(rendered.contains("kanidm person list"));
+        assert!(rendered.contains("slow backend"));
+    }
 }

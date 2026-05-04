@@ -25,6 +25,8 @@ generated_secret_specs=(
   "kiwixOauth2ProxyCookieSecret:32"
   "metubeOauth2ProxyClientSecret:32"
   "metubeOauth2ProxyCookieSecret:32"
+  "glancesOauth2ProxyClientSecret:32"
+  "glancesOauth2ProxyCookieSecret:32"
   "copypartyClientSecret:32"
   "filebrowserQuantumClientSecret:32"
   "filebrowserQuantumAdminPassword:32"
@@ -38,7 +40,7 @@ generate_secret_value() {
   local name="$1"
   local bytes="$2"
 
-  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "metubeOauth2ProxyCookieSecret" ]]; then
+  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "metubeOauth2ProxyCookieSecret" || "$name" == "glancesOauth2ProxyCookieSecret" ]]; then
     openssl rand -hex 16
   else
     openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))"

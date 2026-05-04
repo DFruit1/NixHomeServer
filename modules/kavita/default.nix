@@ -1,7 +1,6 @@
 { config, lib, pkgs, vars, pkgsUnstable, ... }:
 
 let
-  libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   kavitaPort = 5000;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
@@ -14,20 +13,6 @@ let
   });
   sharedKavitaDirs = map (library: "${vars.sharedBooksRoot}/${library.dir}") vars.sharedKavitaLibraries;
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
-  usersRootRegex = lib.escapeRegex vars.usersRoot;
-  sharedRootRegex = lib.escapeRegex vars.sharedBooksRoot;
-  watchRegex = "^(${sharedRootRegex}(/|$)|${usersRootRegex}/[^/]+/books(/|$))";
-  watcherScript = libraryWatchers.mkSettledWatcherScript {
-    name = "kavita-library-watch";
-    watchedRoots = [
-      vars.sharedBooksRoot
-      vars.usersRoot
-    ];
-    triggerUnit = "kavita-library-sync.service";
-    includeRegex = watchRegex;
-    settleSeconds = 20;
-    pollSeconds = 5;
-  };
 in
 {
   services.kavita = {
@@ -250,8 +235,7 @@ in
   };
 
   systemd.services.kavita-library-sync = {
-    description = "Run settled Kavita library scans";
-    wantedBy = [ "multi-user.target" ];
+    description = "Run scheduled Kavita library scans";
     after = [
       "kavita.service"
       "kavita-media-acl-sync-v1.service"
@@ -399,24 +383,13 @@ in
     };
   };
 
-  systemd.services.kavita-library-watch = {
-    description = "Watch book roots and debounce Kavita scans";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "kavita.service"
-      "kavita-library-sync.service"
-      "data-pool-layout.service"
-    ];
-    wants = [
-      "kavita.service"
-      "kavita-library-sync.service"
-      "data-pool-layout.service"
-    ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${watcherScript}";
-      Restart = "always";
-      RestartSec = "5s";
+  systemd.timers.kavita-library-sync = {
+    description = "Run the Kavita library scan overnight";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "03:25";
+      Persistent = true;
+      AccuracySec = "1m";
     };
   };
 }

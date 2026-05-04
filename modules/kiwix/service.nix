@@ -13,15 +13,14 @@ let
       ''-m d:u:${user}:rwx''
     ]) uploadUsers
   );
-  fileWriterAclArgs = lib.concatStringsSep " " (
-    map (user: ''-m u:${user}:rw'') uploadUsers
-  );
   prepareLibraryRootScript = pkgs.writeShellScript "kiwix-prepare-library-root" ''
     set -euo pipefail
 
     library_root=${lib.escapeShellArg cfg.libraryRoot}
 
-    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
+    if [[ ! -d "$library_root" ]]; then
+      ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
+    fi
     ${pkgs.acl}/bin/setfacl \
       ${dirWriterAclArgs} \
       -m g:kiwix:rx \
@@ -33,10 +32,9 @@ let
 
     library_root=${lib.escapeShellArg cfg.libraryRoot}
     library_file=${lib.escapeShellArg libraryFile}
-    tmp_library="$(mktemp)"
+    state_dir=${lib.escapeShellArg cfg.stateDir}
+    tmp_library="$(${pkgs.coreutils}/bin/mktemp "$state_dir/library.XXXXXX.xml")"
     trap 'rm -f "$tmp_library"' EXIT
-
-    ${prepareLibraryRootScript}
 
     cat >"$tmp_library" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,11 +42,6 @@ let
 EOF
 
     while IFS= read -r -d $'\0' zim_path; do
-      ${pkgs.acl}/bin/setfacl \
-        ${fileWriterAclArgs} \
-        -m g:kiwix:r \
-        "$zim_path"
-
       if ! ${cfg.package}/bin/kiwix-manage "$tmp_library" add "$zim_path"; then
         echo "Skipping invalid or incomplete ZIM file: $zim_path" >&2
       fi

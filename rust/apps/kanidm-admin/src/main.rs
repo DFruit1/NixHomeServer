@@ -32,28 +32,51 @@ use kanidm_admin::{
     output::{render_error, render_output, OutputFormat},
     validation::{
         validate_account_id, validate_display_name, validate_email, validate_identifier_field,
-        validate_redirect_url, validate_seconds_field, AUTH_EXPIRY_MAX_SECONDS,
-        AUTH_EXPIRY_MIN_SECONDS, PRIVILEGE_EXPIRY_MAX_SECONDS, PRIVILEGE_EXPIRY_MIN_SECONDS,
-        RESET_TOKEN_TTL_MAX_SECONDS, RESET_TOKEN_TTL_MIN_SECONDS,
+        validate_redirect_url, validate_search_query, validate_seconds_field,
+        AUTH_EXPIRY_MAX_SECONDS, AUTH_EXPIRY_MIN_SECONDS, PRIVILEGE_EXPIRY_MAX_SECONDS,
+        PRIVILEGE_EXPIRY_MIN_SECONDS, RESET_TOKEN_TTL_MAX_SECONDS, RESET_TOKEN_TTL_MIN_SECONDS,
     },
 };
+
+const ROOT_AFTER_HELP: &str =
+    "Examples:\n  kanidm-admin\n  kanidm-admin context show\n  kanidm-admin doctor";
+const SESSION_LOGIN_AFTER_HELP: &str =
+    "Example:\n  kanidm-admin session login\n\nThis command requires a terminal on stdin and stdout and only supports --output human.";
+const GROUP_SEARCH_AFTER_HELP: &str =
+    "Example:\n  kanidm-admin group search storage\n\nMatches are case-insensitive and search both group names and descriptions.";
+const USER_CREATE_AFTER_HELP: &str =
+    "Examples:\n  kanidm-admin user create alice --display-name \"Alice\" --email alice@example.com\n  kanidm-admin user create service-user --display-name \"Service User\" --preserve-validity";
+const MEMBERSHIP_SET_AFTER_HELP: &str =
+    "Examples:\n  kanidm-admin membership set alice users paperless-users\n  kanidm-admin membership set alice --allow-empty";
+const DELETE_USER_AFTER_HELP: &str = "Example:\n  kanidm-admin user delete alice --confirm alice";
 
 #[derive(Debug, Parser)]
 #[command(name = "kanidm-admin")]
 #[command(
     about = "Live-discovery Kanidm operator CLI for sessions, users, groups, clients, and policy."
 )]
+#[command(after_help = ROOT_AFTER_HELP)]
 struct Cli {
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Override repository root used for context discovery."
+    )]
     repo_root: Option<std::path::PathBuf>,
 
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Override the Kanidm server URL.")]
     server_url: Option<String>,
 
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Override the Kanidm admin account name.")]
     admin_name: Option<String>,
 
-    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Human)]
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        default_value_t = OutputFormat::Human,
+        help = "Select human-readable or JSON output."
+    )]
     output: OutputFormat,
 
     #[command(subcommand)]
@@ -62,14 +85,23 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    #[command(about = "Run basic environment and connectivity checks.")]
     Doctor,
+    #[command(about = "Inspect the resolved repo and Kanidm connection context.")]
     Context(ContextCommand),
+    #[command(about = "Inspect or manage the current Kanidm CLI session.")]
     Session(SessionCommand),
+    #[command(about = "Manage Kanidm users and password reset flows.")]
     User(UserCommand),
+    #[command(about = "Inspect live Kanidm groups.")]
     Group(GroupCommand),
+    #[command(about = "Inspect or change direct group memberships.")]
     Membership(MembershipCommand),
+    #[command(about = "Inspect or adjust live OAuth2 clients.")]
     Client(ClientCommand),
+    #[command(about = "Inspect or tune live Kanidm group policy.")]
     Policy(PolicyCommand),
+    #[command(about = "Run local helper utilities outside normal Kanidm operations.")]
     Local(LocalCommand),
 }
 
@@ -92,9 +124,13 @@ struct SessionCommand {
 
 #[derive(Debug, Subcommand)]
 enum SessionSubcommand {
+    #[command(about = "Show whether the current Kanidm CLI session is active.")]
     Status,
+    #[command(about = "Start a new delegated operator session.", after_help = SESSION_LOGIN_AFTER_HELP)]
     Login,
+    #[command(about = "Refresh privileged write access for the current session.", after_help = SESSION_LOGIN_AFTER_HELP)]
     Reauth,
+    #[command(about = "Log out of the current Kanidm CLI session.")]
     Logout,
 }
 
@@ -106,38 +142,52 @@ struct UserCommand {
 
 #[derive(Debug, Subcommand)]
 enum UserSubcommand {
+    #[command(about = "List Kanidm users discovered from the live runtime.")]
     List,
-    Show {
-        account_id: String,
-    },
+    #[command(about = "Show one Kanidm user and their current state.")]
+    Show { account_id: String },
+    #[command(
+        about = "Create a Kanidm user, clearing validity restrictions by default.",
+        after_help = USER_CREATE_AFTER_HELP
+    )]
     Create {
         account_id: String,
-        #[arg(long)]
+        #[arg(long, help = "Set the display name shown for this user.")]
         display_name: String,
-        #[arg(long)]
+        #[arg(long, help = "Set the primary email address during creation.")]
         email: Option<String>,
-        #[arg(long, default_value_t = true)]
-        clear_validity: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Preserve any backend validity restrictions instead of clearing them after creation."
+        )]
+        preserve_validity: bool,
     },
-    Disable {
-        account_id: String,
-    },
-    Enable {
-        account_id: String,
-    },
+    #[command(about = "Disable a user without deleting their identity.")]
+    Disable { account_id: String },
+    #[command(about = "Re-enable a disabled or restricted user.")]
+    Enable { account_id: String },
+    #[command(
+        about = "Permanently delete a Kanidm user.",
+        after_help = DELETE_USER_AFTER_HELP
+    )]
     Delete {
         account_id: String,
-        #[arg(long)]
+        #[arg(long, help = "Repeat the account id exactly to confirm deletion.")]
         confirm: String,
     },
+    #[command(about = "Create a temporary password reset link or token.")]
     ResetToken {
         account_id: String,
-        #[arg(long, default_value_t = 3600)]
+        #[arg(
+            long,
+            default_value_t = 3600,
+            help = "Password reset lifetime in seconds."
+        )]
         ttl: u64,
     },
-    AssignSystemAdmin {
-        account_id: String,
-    },
+    #[command(about = "Grant the default built-in Kanidm administration roles to a user.")]
+    AssignSystemAdmin { account_id: String },
 }
 
 #[derive(Debug, Args)]
@@ -148,9 +198,16 @@ struct GroupCommand {
 
 #[derive(Debug, Subcommand)]
 enum GroupSubcommand {
+    #[command(about = "List live Kanidm groups.")]
     List,
+    #[command(
+        about = "Search groups by case-insensitive name or description.",
+        after_help = GROUP_SEARCH_AFTER_HELP
+    )]
     Search { query: String },
+    #[command(about = "Show one Kanidm group in detail.")]
     Show { group: String },
+    #[command(about = "List the current members of one group.")]
     Members { group: String },
 }
 
@@ -162,21 +219,33 @@ struct MembershipCommand {
 
 #[derive(Debug, Subcommand)]
 enum MembershipSubcommand {
-    Show {
-        account_id: String,
-    },
+    #[command(about = "Show a user's current direct groups.")]
+    Show { account_id: String },
+    #[command(about = "Add one or more direct groups without replacing the rest.")]
     Add {
         account_id: String,
+        #[arg(required = true, num_args = 1.., help = "One or more group names to add.")]
         groups: Vec<String>,
     },
+    #[command(about = "Remove one or more direct groups without changing the rest.")]
     Remove {
         account_id: String,
+        #[arg(required = true, num_args = 1.., help = "One or more group names to remove.")]
         groups: Vec<String>,
     },
+    #[command(
+        about = "Replace the user's full direct-group set.",
+        after_help = MEMBERSHIP_SET_AFTER_HELP
+    )]
     Set {
         account_id: String,
+        #[arg(help = "The exact direct groups the user should keep after the change.")]
         groups: Vec<String>,
-        #[arg(long, default_value_t = false)]
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Allow replacing memberships with an empty set."
+        )]
         allow_empty: bool,
     },
 }
@@ -370,7 +439,7 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                 account_id,
                 display_name,
                 email,
-                clear_validity,
+                preserve_validity,
             } => {
                 let account_id = validate_account_id(&account_id)?;
                 let display_name = validate_display_name(&display_name)?;
@@ -381,7 +450,7 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                         account_id,
                         display_name,
                         email,
-                        clear_validity,
+                        clear_validity: !preserve_validity,
                     },
                 )
                 .map(Some)
@@ -432,7 +501,10 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         },
         Some(Commands::Group(command)) => match command.command {
             GroupSubcommand::List => list_groups(&kanidm).map(Some),
-            GroupSubcommand::Search { query } => search_groups(&kanidm, &query).map(Some),
+            GroupSubcommand::Search { query } => {
+                let query = validate_search_query(&query)?;
+                search_groups(&kanidm, &query).map(Some)
+            }
             GroupSubcommand::Show { group } => {
                 let group = validate_identifier_field("group name", &group)?;
                 show_group(&kanidm, &group).map(Some)
@@ -591,9 +663,15 @@ fn validate_identifier_list(
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::*;
+
+    fn render_help(mut command: clap::Command) -> String {
+        let mut buffer = Vec::new();
+        command.write_long_help(&mut buffer).expect("write help");
+        String::from_utf8(buffer).expect("utf8 help")
+    }
 
     #[test]
     fn parses_default_tui_without_subcommand() {
@@ -634,6 +712,32 @@ mod tests {
                     allow_empty: true
                 }
             })) if account_id == "dsaw" && groups == vec!["users".to_string(), "paperless-users".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parses_user_create_with_preserve_validity() {
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "user",
+            "create",
+            "alice",
+            "--display-name",
+            "Alice",
+            "--preserve-validity",
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::User(UserCommand {
+                command: UserSubcommand::Create {
+                    account_id,
+                    display_name,
+                    email: None,
+                    preserve_validity: true,
+                }
+            })) if account_id == "alice" && display_name == "Alice"
         ));
     }
 
@@ -713,5 +817,23 @@ mod tests {
                 })
             })) if account_id == "dsaw" && password_env == "CUSTOM_PASSWORD"
         ));
+    }
+
+    #[test]
+    fn help_mentions_new_examples() {
+        let help = render_help(Cli::command());
+        assert!(help.contains("kanidm-admin"));
+        assert!(help.contains("kanidm-admin doctor"));
+    }
+
+    #[test]
+    fn user_create_help_mentions_preserve_validity() {
+        let mut root = Cli::command();
+        let user = root.find_subcommand_mut("user").expect("user command");
+        let create = user.find_subcommand_mut("create").expect("create command");
+        let help = render_help(create.clone());
+
+        assert!(help.contains("--preserve-validity"));
+        assert!(help.contains("Service User"));
     }
 }

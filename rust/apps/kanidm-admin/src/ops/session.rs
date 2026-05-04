@@ -29,9 +29,7 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         SessionState::Authenticated { stdout } => CommandOutput {
             message: "authenticated Kanidm CLI session is active".to_string(),
             human: format!(
-                "Authenticated base session is active for '{}'.\nPrivileged write commands may still require `kanidm reauth --url {} --name {}`.\n\n{}",
-                cli.admin_name(),
-                cli.server_url(),
+                "Authenticated base session is active for '{}'.\nPrivileged write commands may still require `kanidm-admin session reauth`.\n\n{}",
                 cli.admin_name(),
                 stdout.trim()
             ),
@@ -47,9 +45,7 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         SessionState::Expired { diagnostic } => CommandOutput {
             message: "Kanidm CLI session has expired".to_string(),
             human: format!(
-                "Session for '{}' has expired.\nRun `kanidm login --url {} --name {}` first.\n\nDiagnostic:\n{}",
-                cli.admin_name(),
-                cli.server_url(),
+                "Session for '{}' has expired.\nRun `kanidm-admin session login` first.\n\nDiagnostic:\n{}",
                 cli.admin_name(),
                 diagnostic.trim()
             ),
@@ -65,9 +61,7 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         SessionState::Missing { diagnostic } => CommandOutput {
             message: "no valid Kanidm CLI session is active".to_string(),
             human: format!(
-                "No valid Kanidm CLI session is active for '{}'.\nRun `kanidm login --url {} --name {}` first.\n\nDiagnostic:\n{}",
-                cli.admin_name(),
-                cli.server_url(),
+                "No valid Kanidm CLI session is active for '{}'.\nRun `kanidm-admin session login` first.\n\nDiagnostic:\n{}",
                 cli.admin_name(),
                 diagnostic.trim()
             ),
@@ -83,9 +77,7 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         SessionState::ReauthRequired { diagnostic } => CommandOutput {
             message: "Kanidm CLI session requires privileged reauthentication".to_string(),
             human: format!(
-                "Session for '{}' is authenticated, but privileged reauthentication is required.\nRun `kanidm reauth --url {} --name {}` first.\n\nDiagnostic:\n{}",
-                cli.admin_name(),
-                cli.server_url(),
+                "Session for '{}' is authenticated, but privileged reauthentication is required.\nRun `kanidm-admin session reauth` first.\n\nDiagnostic:\n{}",
                 cli.admin_name(),
                 diagnostic.trim()
             ),
@@ -235,7 +227,7 @@ printf 'active token for admindsaw\n'
         assert!(output
             .human
             .contains("Authenticated base session is active"));
-        assert!(output.human.contains("kanidm reauth"));
+        assert!(output.human.contains("kanidm-admin session reauth"));
         assert_eq!(output.details["state"], "authenticated");
     }
 
@@ -259,7 +251,7 @@ exit 1
 
         let output = session_status(&cli).expect("session status");
         assert!(output.human.contains("has expired"));
-        assert!(output.human.contains("kanidm login"));
+        assert!(output.human.contains("kanidm-admin session login"));
         assert_eq!(output.details["state"], "expired");
     }
 }

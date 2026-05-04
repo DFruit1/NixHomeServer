@@ -57,6 +57,14 @@ pub fn add_membership(
     groups: &[String],
 ) -> Result<CommandOutput, AppError> {
     let desired = normalize_groups(groups.to_vec());
+    if desired.is_empty() {
+        return Err(AppError::Config {
+            message: format!(
+                "adding memberships for '{}' requires at least one group name",
+                account_id
+            ),
+        });
+    }
     let requested_state = json!({
         "account_id": account_id,
         "groups": desired,
@@ -117,6 +125,14 @@ pub fn remove_membership(
     groups: &[String],
 ) -> Result<CommandOutput, AppError> {
     let desired = normalize_groups(groups.to_vec());
+    if desired.is_empty() {
+        return Err(AppError::Config {
+            message: format!(
+                "removing memberships for '{}' requires at least one group name",
+                account_id
+            ),
+        });
+    }
     let requested_state = json!({
         "account_id": account_id,
         "groups": desired,
@@ -438,7 +454,7 @@ fn merge_warnings(mut left: Vec<String>, mut right: Vec<String>) -> Vec<String> 
     left
 }
 
-fn normalize_groups(groups: Vec<String>) -> Vec<String> {
+pub(crate) fn normalize_groups(groups: Vec<String>) -> Vec<String> {
     let mut normalized = groups
         .into_iter()
         .map(|group| group.trim().to_string())
@@ -478,13 +494,19 @@ impl MembershipMode {
     }
 }
 
-#[derive(Debug, Clone)]
-struct MembershipDiff {
-    added: Vec<String>,
-    removed: Vec<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MembershipDiff {
+    pub(crate) added: Vec<String>,
+    pub(crate) removed: Vec<String>,
 }
 
-fn membership_diff(current: &[String], desired: &[String]) -> MembershipDiff {
+impl MembershipDiff {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+pub(crate) fn membership_diff(current: &[String], desired: &[String]) -> MembershipDiff {
     let current = current.iter().cloned().collect::<BTreeSet<_>>();
     let desired = desired.iter().cloned().collect::<BTreeSet<_>>();
     MembershipDiff {

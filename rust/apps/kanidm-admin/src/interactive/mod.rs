@@ -16,14 +16,14 @@ use crate::{
         client::{
             client_consent_disable, client_consent_enable, client_pkce_disable, client_pkce_enable,
             client_redirect_add, client_redirect_remove, client_secret_reset, client_secret_show,
-            list_clients, show_client,
+            list_clients, load_client, show_client,
         },
         context::{doctor, show_context},
-        group::{group_members, list_groups, search_groups, show_group},
+        group::{group_members, list_groups, load_group, search_groups, show_group},
         local::stage_jellyfin_password,
         membership::{
-            add_membership, prepare_membership_picker_inventory, remove_membership, set_membership,
-            show_membership, SetMembershipOptions,
+            add_membership, membership_diff, normalize_groups, prepare_membership_picker_inventory,
+            remove_membership, set_membership, show_membership, SetMembershipOptions,
         },
         policy::{
             reset_group_auth_expiry, reset_group_privilege_expiry, set_group_auth_expiry,
@@ -56,6 +56,58 @@ enum SimpleMenuAction {
     Exit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupPickerScope {
+    OperatorVisibleOnly,
+    AllGroups,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HomeBaseSessionStatus {
+    Active,
+    Missing,
+    Expired,
+    Unavailable,
+}
+
+impl HomeBaseSessionStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Missing => "missing",
+            Self::Expired => "expired",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HomePrivilegedWriteStatus {
+    Ready,
+    ReauthRequired,
+    Unavailable,
+}
+
+impl HomePrivilegedWriteStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::ReauthRequired => "reauth required",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupPickerInventory {
+    intro: &'static str,
+    no_matching_groups_prompt: &'static str,
+    manual_prompt: &'static str,
+    manual_label: &'static str,
+    manual_detail: &'static str,
+    groups: Vec<GroupSummary>,
+}
+
 pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     loop {
         let home = load_home(kanidm);
@@ -75,7 +127,8 @@ pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError
 }
 
 struct HomeSummary {
-    authenticated: bool,
+    base_session: HomeBaseSessionStatus,
+    privileged_writes: HomePrivilegedWriteStatus,
     diagnostic: String,
     user_count: Option<usize>,
     group_count: Option<usize>,
@@ -86,10 +139,11 @@ struct HomeSummary {
 impl HomeSummary {
     fn render(&self, context: &ResolvedContext) -> String {
         format!(
-            "Server URL: {}\nAdmin Name: {}\nSession Active: {}\nDiagnostic: {}\nUsers: {}\nGroups: {}\nOAuth2 Clients: {}",
+            "Server URL: {}\nAdmin Name: {}\nBase Session: {}\nPrivileged Writes: {}\nDiagnostic: {}\nUsers: {}\nGroups: {}\nOAuth2 Clients: {}",
             context.server_url,
             context.admin_name,
-            if self.authenticated { "yes" } else { "no" },
+            self.base_session.label(),
+            self.privileged_writes.label(),
             self.diagnostic,
             render_count(self.user_count),
             render_count(self.group_count),
@@ -101,32 +155,15 @@ impl HomeSummary {
 fn load_home(kanidm: &KanidmCli) -> HomeSummary {
     let mut warnings = Vec::new();
 
-    let (authenticated, diagnostic) = match kanidm.session_status() {
-        Ok(SessionState::Authenticated { .. }) => (
-            true,
-            format!(
-                "Authenticated base session is active for '{}'. Privileged write commands may still require reauthentication.",
-                kanidm.admin_name()
-            ),
-        ),
-        Ok(SessionState::Expired { .. }) => (
-            false,
-            format!("Session for '{}' has expired.", kanidm.admin_name()),
-        ),
-        Ok(SessionState::Missing { .. }) => (
-            false,
-            format!("No Kanidm session is active for '{}'.", kanidm.admin_name()),
-        ),
-        Ok(SessionState::ReauthRequired { .. }) => (
-            false,
-            format!(
-                "Session for '{}' is authenticated, but privileged reauthentication is required.",
-                kanidm.admin_name()
-            ),
-        ),
+    let (base_session, privileged_writes, diagnostic) = match kanidm.session_status() {
+        Ok(session_state) => summarize_home_session_state(kanidm.admin_name(), &session_state),
         Err(error) => {
             warnings.push(error.human_message());
-            (false, "session state unavailable".to_string())
+            (
+                HomeBaseSessionStatus::Unavailable,
+                HomePrivilegedWriteStatus::Unavailable,
+                "session state unavailable".to_string(),
+            )
         }
     };
 
@@ -150,7 +187,8 @@ fn load_home(kanidm: &KanidmCli) -> HomeSummary {
     warnings.dedup();
 
     HomeSummary {
-        authenticated,
+        base_session,
+        privileged_writes,
         diagnostic,
         user_count,
         group_count,
@@ -227,6 +265,40 @@ fn advanced_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), Ap
     Ok(())
 }
 
+fn summarize_home_session_state(
+    admin_name: &str,
+    state: &SessionState,
+) -> (HomeBaseSessionStatus, HomePrivilegedWriteStatus, String) {
+    match state {
+        SessionState::Authenticated { .. } => (
+            HomeBaseSessionStatus::Active,
+            HomePrivilegedWriteStatus::Ready,
+            format!(
+                "Authenticated base session is active for '{}'. Privileged write commands are ready.",
+                admin_name
+            ),
+        ),
+        SessionState::Expired { .. } => (
+            HomeBaseSessionStatus::Expired,
+            HomePrivilegedWriteStatus::Unavailable,
+            format!("Session for '{}' has expired.", admin_name),
+        ),
+        SessionState::Missing { .. } => (
+            HomeBaseSessionStatus::Missing,
+            HomePrivilegedWriteStatus::Unavailable,
+            format!("No Kanidm session is active for '{}'.", admin_name),
+        ),
+        SessionState::ReauthRequired { .. } => (
+            HomeBaseSessionStatus::Active,
+            HomePrivilegedWriteStatus::ReauthRequired,
+            format!(
+                "Session for '{}' is authenticated, but privileged reauthentication is required.",
+                admin_name
+            ),
+        ),
+    }
+}
+
 fn session_tools_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
     while let Some(selection) =
         forms::contextual_select("Session Tools", None, &session_tools_items(), 0)?
@@ -252,12 +324,18 @@ fn group_inspection_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
                 let query = forms::input_required("Search query", None)?;
                 run_command("Group Search", kanidm, || search_groups(kanidm, &query))?;
             }
-            2 => group_target_flow(kanidm, "Select a group to inspect", |group| {
-                show_group(kanidm, group)
-            })?,
-            3 => group_target_flow(kanidm, "Select a group to inspect members", |group| {
-                group_members(kanidm, group)
-            })?,
+            2 => group_target_flow_with_scope(
+                kanidm,
+                "Select a group to inspect",
+                GroupPickerScope::AllGroups,
+                |group| show_group(kanidm, group),
+            )?,
+            3 => group_target_flow_with_scope(
+                kanidm,
+                "Select a group to inspect members",
+                GroupPickerScope::AllGroups,
+                |group| group_members(kanidm, group),
+            )?,
             _ => break,
         }
     }
@@ -282,59 +360,53 @@ fn membership_tools_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
 }
 
 fn clients_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
-    loop {
-        let items = vec![
-            "List clients".to_string(),
-            "Show client".to_string(),
-            "Show client secret".to_string(),
-            "Reset client secret".to_string(),
-            "Enable PKCE".to_string(),
-            "Disable PKCE".to_string(),
-            "Enable consent prompt".to_string(),
-            "Disable consent prompt".to_string(),
-            "Add redirect URL".to_string(),
-            "Remove redirect URL".to_string(),
-            "Back".to_string(),
-        ];
-        match forms::select("OAuth2 Clients", &items, 0)? {
-            Some(0) => run_command("OAuth2 Clients", kanidm, || list_clients(kanidm))?,
-            Some(1) => {
+    while let Some(selection) = forms::contextual_select(
+        "OAuth2 Clients",
+        Some(
+            "Inspect live OAuth2 clients, secrets, redirect URLs, PKCE, and consent prompts. Use filtering to narrow long client lists quickly.",
+        ),
+        &client_menu_items(),
+        0,
+    )? {
+        match selection {
+            0 => run_command("OAuth2 Clients", kanidm, || list_clients(kanidm))?,
+            1 => {
                 client_target_flow(kanidm, "Select an oauth2 client to inspect", |client| {
                     show_client(kanidm, client)
                 })?
             }
-            Some(2) => {
+            2 => {
                 client_target_flow(kanidm, "Select an oauth2 client secret to show", |client| {
                     client_secret_show(kanidm, client)
                 })?
             }
-            Some(3) => client_target_flow_privileged(
+            3 => client_target_flow_privileged(
                 kanidm,
                 "Select an oauth2 client secret to reset",
                 |client| client_secret_reset(kanidm, client),
             )?,
-            Some(4) => {
+            4 => {
                 client_target_flow_privileged(kanidm, "Select an oauth2 client", |client| {
                     client_pkce_enable(kanidm, client)
                 })?
             }
-            Some(5) => {
+            5 => {
                 client_target_flow_privileged(kanidm, "Select an oauth2 client", |client| {
                     client_pkce_disable(kanidm, client)
                 })?
             }
-            Some(6) => {
+            6 => {
                 client_target_flow_privileged(kanidm, "Select an oauth2 client", |client| {
                     client_consent_enable(kanidm, client)
                 })?
             }
-            Some(7) => {
+            7 => {
                 client_target_flow_privileged(kanidm, "Select an oauth2 client", |client| {
                     client_consent_disable(kanidm, client)
                 })?
             }
-            Some(8) => redirect_flow(kanidm, true)?,
-            Some(9) => redirect_flow(kanidm, false)?,
+            8 => redirect_flow(kanidm, true)?,
+            9 => redirect_flow(kanidm, false)?,
             _ => break,
         }
     }
@@ -342,27 +414,25 @@ fn clients_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
 }
 
 fn policy_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
-    loop {
-        let items = vec![
-            "Show group policy".to_string(),
-            "Set auth expiry".to_string(),
-            "Reset auth expiry".to_string(),
-            "Set privilege expiry".to_string(),
-            "Reset privilege expiry".to_string(),
-            "Back".to_string(),
-        ];
-        match forms::select("Group Policy", &items, 0)? {
-            Some(0) => group_target_flow(kanidm, "Select a group to inspect", |group| {
-                show_group_policy(kanidm, group)
-            })?,
-            Some(1) => policy_set_flow(kanidm, true)?,
-            Some(2) => group_target_flow_privileged(kanidm, "Select a group", |group| {
-                reset_group_auth_expiry(kanidm, group)
-            })?,
-            Some(3) => policy_set_flow(kanidm, false)?,
-            Some(4) => group_target_flow_privileged(kanidm, "Select a group", |group| {
-                reset_group_privilege_expiry(kanidm, group)
-            })?,
+    while let Some(selection) = forms::contextual_select(
+        "Group Policy",
+        Some(
+            "Inspect or tune live Kanidm account-policy settings for a group. All live groups are shown here, including internal Kanidm groups.",
+        ),
+        &policy_menu_items(),
+        0,
+    )? {
+        match selection {
+            0 => group_target_flow_with_scope(
+                kanidm,
+                "Select a group to inspect",
+                GroupPickerScope::AllGroups,
+                |group| show_group_policy(kanidm, group),
+            )?,
+            1 => policy_set_flow(kanidm, true)?,
+            2 => policy_reset_flow(kanidm, true)?,
+            3 => policy_set_flow(kanidm, false)?,
+            4 => policy_reset_flow(kanidm, false)?,
             _ => break,
         }
     }
@@ -370,17 +440,19 @@ fn policy_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
 }
 
 fn context_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
-    loop {
-        let items = vec![
-            "Show context".to_string(),
-            "Doctor".to_string(),
-            "Back".to_string(),
-        ];
-        match forms::select("Context", &items, 0)? {
-            Some(0) => {
+    while let Some(selection) = forms::contextual_select(
+        "Context",
+        Some(
+            "Inspect the resolved repo and Kanidm connection context or run basic environment checks when discovery or sessions look unhealthy.",
+        ),
+        &context_menu_items(),
+        0,
+    )? {
+        match selection {
+            0 => {
                 render_output("Context", show_context(context))?;
             }
-            Some(1) => {
+            1 => {
                 run_command("Doctor", kanidm, || doctor(context, kanidm))?;
             }
             _ => break,
@@ -390,10 +462,16 @@ fn context_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), App
 }
 
 fn local_helpers_menu() -> Result<(), AppError> {
-    loop {
-        let items = vec!["Stage Jellyfin password".to_string(), "Back".to_string()];
-        match forms::select("Local Helpers", &items, 0)? {
-            Some(0) => {
+    while let Some(selection) = forms::contextual_select(
+        "Local Helpers",
+        Some(
+            "Run machine-local helper utilities that are intentionally separate from normal Kanidm identity administration.",
+        ),
+        &local_helpers_menu_items(),
+        0,
+    )? {
+        match selection {
+            0 => {
                 let account_id = forms::input_required_validated(
                     "Jellyfin account id",
                     None,
@@ -424,10 +502,6 @@ fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         None,
         validate_email,
     )?;
-    let Some(clear_validity) = forms::confirm("Clear validity restrictions after creation?", true)?
-    else {
-        return Ok(());
-    };
     let outcome = perform_privileged_command(kanidm, || {
         create_user(
             kanidm,
@@ -435,7 +509,7 @@ fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
                 account_id: account_id.clone(),
                 display_name: display_name.clone(),
                 email: email.clone(),
-                clear_validity,
+                clear_validity: true,
             },
         )
     })?;
@@ -473,10 +547,19 @@ fn delete_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     let Some(account_id) = choose_account_id(kanidm, "Select a user to delete")? else {
         return Ok(());
     };
+    let user = require_complete_user_for_action(kanidm, &account_id, "delete")?;
+    render::print_note(
+        "Review User Deletion",
+        &build_delete_user_review(&user.value),
+    );
     let confirmation = forms::input_required(
         &format!("Type {account_id} to permanently delete the user"),
         None,
     )?;
+    match forms::confirm("Permanently delete this user now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
     run_privileged_command("Delete User", kanidm, || {
         delete_user(
             kanidm,
@@ -494,6 +577,8 @@ fn help_user_reset_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     else {
         return Ok(());
     };
+    let user =
+        require_complete_user_for_action(kanidm, &account_id, "create a password reset link for")?;
     let ttl_text = forms::input_required("Password reset link lifetime in seconds", Some("3600"))?;
     let ttl_seconds = validate_seconds_field(
         "reset token TTL",
@@ -503,6 +588,14 @@ fn help_user_reset_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         RESET_TOKEN_TTL_MIN_SECONDS,
         RESET_TOKEN_TTL_MAX_SECONDS,
     )?;
+    render::print_note(
+        "Review Password Reset Link",
+        &build_reset_password_review(&user.value, ttl_seconds),
+    );
+    match forms::confirm("Create a temporary password reset link now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
     run_privileged_command("Help User Reset Password", kanidm, || {
         reset_token(
             kanidm,
@@ -542,6 +635,30 @@ fn assign_system_admin_flow(context: &ResolvedContext) -> Result<(), AppError> {
     else {
         return Ok(());
     };
+    let user = require_complete_user_for_action(
+        &idm_admin,
+        &account_id,
+        "grant default Kanidm administration roles to",
+    )?;
+    let review = build_assign_system_admin_review(&user.value);
+    if review.granted_now.is_empty() {
+        render::print_note(
+            "Assign System Admin",
+            &format!(
+                "{}\n\nNo membership changes would be applied.",
+                review.render()
+            ),
+        );
+        return forms::pause("Press Enter or Esc to continue");
+    }
+    render::print_note("Review System Admin Grant", &review.render());
+    match forms::confirm(
+        "Grant these default Kanidm administration roles now?",
+        false,
+    )? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
 
     run_privileged_command("Assign System Admin", &idm_admin, || {
         assign_system_admin(&idm_admin, &account_id)
@@ -554,7 +671,8 @@ fn policy_set_flow(kanidm: &KanidmCli, auth: bool) -> Result<(), AppError> {
     } else {
         "Select a group for privilege-expiry"
     };
-    let Some(group) = choose_group_name(kanidm, prompt)? else {
+    let Some(group) = choose_group_name_with_scope(kanidm, prompt, GroupPickerScope::AllGroups)?
+    else {
         return Ok(());
     };
     let seconds_text = forms::input_required("Expiry in seconds", Some("3600"))?;
@@ -580,6 +698,25 @@ fn policy_set_flow(kanidm: &KanidmCli, auth: bool) -> Result<(), AppError> {
             PRIVILEGE_EXPIRY_MAX_SECONDS
         },
     )?;
+    let group_record =
+        require_complete_group_for_action(kanidm, &group, "change live Kanidm group policy for")?;
+    let current_value = if auth {
+        group_record.value.policy.auth_expiry_seconds
+    } else {
+        group_record.value.policy.privilege_expiry_seconds
+    };
+    if current_value == Some(seconds) {
+        render::print_note("Group Policy", "No policy changes would be applied.");
+        return forms::pause("Press Enter or Esc to continue");
+    }
+    render::print_note(
+        "Review Group Policy Change",
+        &build_policy_review(&group_record.value, auth, PolicyChange::Set(seconds)),
+    );
+    match forms::confirm("Apply this group policy change now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
     if auth {
         run_privileged_command("Group Policy", kanidm, || {
             set_group_auth_expiry(kanidm, &group, seconds)
@@ -591,11 +728,80 @@ fn policy_set_flow(kanidm: &KanidmCli, auth: bool) -> Result<(), AppError> {
     }
 }
 
+fn policy_reset_flow(kanidm: &KanidmCli, auth: bool) -> Result<(), AppError> {
+    let prompt = if auth {
+        "Select a group to reset auth-expiry"
+    } else {
+        "Select a group to reset privilege-expiry"
+    };
+    let Some(group) = choose_group_name_with_scope(kanidm, prompt, GroupPickerScope::AllGroups)?
+    else {
+        return Ok(());
+    };
+    let group_record =
+        require_complete_group_for_action(kanidm, &group, "change live Kanidm group policy for")?;
+    let current_value = if auth {
+        group_record.value.policy.auth_expiry_seconds
+    } else {
+        group_record.value.policy.privilege_expiry_seconds
+    };
+    if current_value.is_none() {
+        render::print_note("Group Policy", "No policy changes would be applied.");
+        return forms::pause("Press Enter or Esc to continue");
+    }
+    render::print_note(
+        "Review Group Policy Reset",
+        &build_policy_review(&group_record.value, auth, PolicyChange::Reset),
+    );
+    match forms::confirm("Apply this group policy change now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
+    if auth {
+        run_privileged_command("Group Policy", kanidm, || {
+            reset_group_auth_expiry(kanidm, &group)
+        })
+    } else {
+        run_privileged_command("Group Policy", kanidm, || {
+            reset_group_privilege_expiry(kanidm, &group)
+        })
+    }
+}
+
 fn redirect_flow(kanidm: &KanidmCli, add: bool) -> Result<(), AppError> {
     let Some(client) = choose_client_name(kanidm, "Select an oauth2 client")? else {
         return Ok(());
     };
     let url = forms::input_required_validated("Redirect URL", None, validate_redirect_url)?;
+    let client_record =
+        require_complete_client_for_action(kanidm, &client, "change oauth2 redirect URLs for")?;
+    let already_present = client_record
+        .value
+        .redirect_urls
+        .iter()
+        .any(|candidate| candidate == &url);
+    if add && already_present {
+        render::print_note(
+            "OAuth2 Redirect",
+            "No redirect URL changes would be applied.",
+        );
+        return forms::pause("Press Enter or Esc to continue");
+    }
+    if !add && !already_present {
+        render::print_note(
+            "OAuth2 Redirect",
+            "No redirect URL changes would be applied.",
+        );
+        return forms::pause("Press Enter or Esc to continue");
+    }
+    render::print_note(
+        "Review OAuth2 Redirect Change",
+        &build_redirect_review(&client_record.value, &url, add, already_present),
+    );
+    match forms::confirm("Apply this redirect change now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
     if add {
         run_privileged_command("OAuth2 Redirect", kanidm, || {
             client_redirect_add(kanidm, &client, &url)
@@ -638,8 +844,12 @@ fn edit_membership_for_account(kanidm: &KanidmCli, account_id: &str) -> Result<(
         return forms::pause("Press Enter or Esc to continue");
     }
 
-    let current = show_membership(kanidm, account_id)?;
-    let current_groups = extract_groups(&current);
+    let current = require_complete_user_for_action(
+        kanidm,
+        account_id,
+        "authoritatively set memberships for",
+    )?;
+    let current_groups = current.value.groups.clone();
     let missing_groups = missing_visible_membership_inventory(&current_groups, &inventory.groups);
     if !missing_groups.is_empty() {
         render::print_note(
@@ -657,37 +867,67 @@ fn edit_membership_for_account(kanidm: &KanidmCli, account_id: &str) -> Result<(
         .iter()
         .map(|current_group| current_group.to_string())
         .collect::<Vec<_>>();
-    let item_defaults = inventory
+    let mut item_defaults = inventory
         .groups
         .iter()
         .map(|group| defaults.iter().any(|current| current == &group.name))
         .collect::<Vec<_>>();
-    let Some(selected) = forms::membership_picker(
-        &format!("Set access groups for '{account_id}'"),
-        &inventory.groups,
-        &item_defaults,
-        &current_groups,
-    )?
-    else {
-        return Ok(());
-    };
-    let groups = selected
-        .into_iter()
-        .map(|index| inventory.groups[index].name.clone())
-        .collect::<Vec<_>>();
     let preserve_groups = preserved_hidden_memberships(&current_groups).collect::<Vec<_>>();
 
-    run_privileged_command("Memberships", kanidm, || {
-        set_membership(
-            kanidm,
-            SetMembershipOptions {
-                account_id: account_id.to_string(),
-                groups: groups.clone(),
-                preserve_groups: preserve_groups.clone(),
-                allow_empty: true,
-            },
-        )
-    })
+    loop {
+        let Some(selected) = forms::membership_picker(
+            &format!("Set access groups for '{account_id}'"),
+            &inventory.groups,
+            &item_defaults,
+            &current_groups,
+        )?
+        else {
+            return Ok(());
+        };
+        let groups = selected
+            .into_iter()
+            .map(|index| inventory.groups[index].name.clone())
+            .collect::<Vec<_>>();
+        let review =
+            build_membership_review(account_id, &current_groups, groups, preserve_groups.clone());
+
+        if review.diff.is_empty() {
+            render::print_note(
+                "Review Membership Changes",
+                "No membership changes would be applied.",
+            );
+            return forms::pause("Press Enter or Esc to continue");
+        }
+
+        render::print_note("Review Membership Changes", &review.render());
+        match forms::confirm("Apply these membership changes now?", false)? {
+            Some(true) => {
+                return run_privileged_command("Memberships", kanidm, || {
+                    set_membership(
+                        kanidm,
+                        SetMembershipOptions {
+                            account_id: account_id.to_string(),
+                            groups: review.selected_visible_groups.clone(),
+                            preserve_groups: review.preserved_hidden_groups.clone(),
+                            allow_empty: true,
+                        },
+                    )
+                });
+            }
+            _ => {
+                item_defaults = inventory
+                    .groups
+                    .iter()
+                    .map(|group| {
+                        review
+                            .selected_visible_groups
+                            .iter()
+                            .any(|selected| selected == &group.name)
+                    })
+                    .collect::<Vec<_>>();
+            }
+        }
+    }
 }
 
 fn manage_user_access_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
@@ -711,17 +951,23 @@ fn disable_enable_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     else {
         return Ok(());
     };
-    let user = load_user(kanidm, &account_id)?;
+    let user =
+        require_complete_user_for_action(kanidm, &account_id, "change the enabled state for")?;
     let enabled = is_user_enabled(&user.value);
     render::print_note(
-        "User State",
+        "Review User State Change",
         &format!(
-            "{}\n\nCurrent Status: {}",
+            "{}\n\nCurrent Status: {}\n\nEffect:\n{}",
             human_operator_user_summary(&user.value),
             if enabled {
                 "enabled"
             } else {
                 "disabled or restricted"
+            },
+            if enabled {
+                "Disabling the user will block sign-in after the validity restriction converges."
+            } else {
+                "Enabling the user will clear validity restrictions and restore sign-in."
             }
         ),
     );
@@ -731,7 +977,7 @@ fn disable_enable_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         } else {
             "Enable this user now?"
         },
-        true,
+        false,
     )? {
         Some(true) if enabled => {
             run_privileged_command("Disable User", kanidm, || disable_user(kanidm, &account_id))
@@ -747,18 +993,65 @@ fn membership_change_flow(kanidm: &KanidmCli, mode: MembershipChange) -> Result<
     let Some(account_id) = choose_account_id(kanidm, "Select a user")? else {
         return Ok(());
     };
-    let group_text =
-        forms::input_required("Enter one or more group names separated by spaces", None)?;
-    let groups = group_text
-        .split_whitespace()
-        .map(|group| validate_identifier_field("group name", group))
-        .collect::<Result<Vec<_>, _>>()?;
+    let current = require_complete_user_for_action(
+        kanidm,
+        &account_id,
+        if matches!(mode, MembershipChange::Add) {
+            "add memberships for"
+        } else {
+            "remove memberships for"
+        },
+    )?;
+    let inventory = prepare_membership_picker_inventory(kanidm)?;
+    if !inventory.warnings.is_empty() {
+        return block_incomplete_inventory(
+            "Membership Inventory Incomplete",
+            "Incremental membership changes are blocked because the live discovery set is incomplete.",
+            &inventory.warnings,
+        );
+    }
+    if inventory.groups.is_empty() {
+        render::print_note(
+            "Membership Inventory Incomplete",
+            "Incremental membership changes are blocked because the live group picker returned no visible groups. Use read-only inspection or fix Kanidm group discovery first.",
+        );
+        return forms::pause("Press Enter or Esc to continue");
+    }
+
+    let Some(groups) = choose_membership_change_groups(
+        kanidm,
+        &account_id,
+        &current.value,
+        &inventory.groups,
+        mode,
+    )?
+    else {
+        return Ok(());
+    };
+    let review = build_membership_change_review(&account_id, &current.value.groups, groups, mode);
+    if review.is_noop() {
+        render::print_note(
+            "Review Membership Changes",
+            "No membership changes would be applied.",
+        );
+        return forms::pause("Press Enter or Esc to continue");
+    }
+    render::print_note("Review Membership Changes", &review.render());
+    let prompt = if matches!(mode, MembershipChange::Add) {
+        "Add these groups now?"
+    } else {
+        "Remove these groups now?"
+    };
+    match forms::confirm(prompt, false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
     match mode {
         MembershipChange::Add => run_privileged_command("Memberships", kanidm, || {
-            add_membership(kanidm, &account_id, &groups)
+            add_membership(kanidm, &account_id, &review.groups_to_add)
         }),
         MembershipChange::Remove => run_privileged_command("Memberships", kanidm, || {
-            remove_membership(kanidm, &account_id, &groups)
+            remove_membership(kanidm, &account_id, &review.groups_to_remove)
         }),
     }
 }
@@ -773,28 +1066,19 @@ where
     run_command("User", kanidm, || action(&account_id))
 }
 
-fn group_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
-where
-    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
-{
-    let Some(group) = choose_group_name(kanidm, prompt)? else {
-        return Ok(());
-    };
-    run_command("Group", kanidm, || action(&group))
-}
-
-fn group_target_flow_privileged<F>(
+fn group_target_flow_with_scope<F>(
     kanidm: &KanidmCli,
     prompt: &str,
+    scope: GroupPickerScope,
     action: F,
 ) -> Result<(), AppError>
 where
-    F: Fn(&str) -> Result<CommandOutput, AppError>,
+    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
 {
-    let Some(group) = choose_group_name(kanidm, prompt)? else {
+    let Some(group) = choose_group_name_with_scope(kanidm, prompt, scope)? else {
         return Ok(());
     };
-    run_privileged_command("Group", kanidm, || action(&group))
+    run_command("Group", kanidm, || action(&group))
 }
 
 fn client_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
@@ -826,9 +1110,13 @@ fn choose_account_id(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>,
     choose_from_users(prompt, &people)
 }
 
-fn choose_group_name(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>, AppError> {
+fn choose_group_name_with_scope(
+    kanidm: &KanidmCli,
+    prompt: &str,
+    scope: GroupPickerScope,
+) -> Result<Option<String>, AppError> {
     let groups = parse_group_list(&kanidm.group_list::<Value>()?)?;
-    choose_from_groups(prompt, &groups)
+    choose_from_groups(prompt, &groups, scope)
 }
 
 fn choose_client_name(kanidm: &KanidmCli, prompt: &str) -> Result<Option<String>, AppError> {
@@ -890,6 +1178,7 @@ fn choose_from_users(
 fn choose_from_groups(
     prompt: &str,
     groups: &Parsed<Vec<GroupSummary>>,
+    scope: GroupPickerScope,
 ) -> Result<Option<String>, AppError> {
     if !groups.warnings.is_empty() {
         render::print_note(
@@ -907,30 +1196,28 @@ fn choose_from_groups(
             |value| validate_identifier_field("group name", value),
         );
     }
-    let visible_groups = groups
-        .value
-        .iter()
-        .filter(|group| is_operator_visible_group(&group.name))
-        .cloned()
-        .collect::<Vec<_>>();
-    if visible_groups.is_empty() {
-        return forms::input_optional_validated(
-            "No non-IDM groups were listed. Enter a group name manually",
-            None,
-            |value| validate_identifier_field("group name", value),
-        );
+    let picker = build_group_picker_inventory(&groups.value, scope);
+    if picker.groups.is_empty() {
+        return forms::input_optional_validated(picker.no_matching_groups_prompt, None, |value| {
+            validate_identifier_field("group name", value)
+        });
     }
-    let Some(selection) =
-        forms::group_picker(prompt, "Enter a group name manually", &visible_groups)?
+    let Some(selection) = forms::group_picker(
+        prompt,
+        Some(picker.intro),
+        picker.manual_label,
+        picker.manual_detail,
+        &picker.groups,
+    )?
     else {
         return Ok(None);
     };
     if selection == 0 {
-        return forms::input_optional_validated("Enter the group name to manage", None, |value| {
+        return forms::input_optional_validated(picker.manual_prompt, None, |value| {
             validate_identifier_field("group name", value)
         });
     }
-    Ok(Some(visible_groups[selection - 1].name.clone()))
+    Ok(Some(picker.groups[selection - 1].name.clone()))
 }
 
 fn choose_from_clients(
@@ -1260,7 +1547,7 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
         menu_item(
             "Manage User Access",
             "Set the user's normal app and file access groups.",
-            "Use this to review and replace the user's full direct-group access set. This is the main day-to-day workflow for normal versus admin access changes.",
+            "Use this as the normal safe path for day-to-day access changes. The workflow reviews and replaces the user's full direct-group access set with explicit before-and-after confirmation.",
         ),
         menu_item(
             "Find / View User",
@@ -1290,6 +1577,66 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
     ]
 }
 
+fn client_menu_items() -> Vec<forms::ContextualItem> {
+    vec![
+        menu_item(
+            "List clients",
+            "Show the live OAuth2 client inventory.",
+            "Use this for a broad read-only list of discoverable OAuth2 clients before drilling into a specific one.",
+        ),
+        menu_item(
+            "Show client",
+            "Inspect one OAuth2 client in detail.",
+            "Use this to review redirect URLs, scope maps, claim maps, and related client settings.",
+        ),
+        menu_item(
+            "Show client secret",
+            "Reveal the current client secret for one OAuth2 client.",
+            "Use this only when an operator needs to inspect the currently active secret value for a client.",
+        ),
+        menu_item(
+            "Reset client secret",
+            "Generate and apply a new client secret.",
+            "Use this when a client secret must be rotated. This is a privileged write operation and may require reauthentication.",
+        ),
+        menu_item(
+            "Enable PKCE",
+            "Require PKCE for the selected client.",
+            "Use this to harden a client that should perform PKCE-based authorization flows.",
+        ),
+        menu_item(
+            "Disable PKCE",
+            "Stop requiring PKCE for the selected client.",
+            "Use this only when the client cannot complete PKCE and the runtime configuration must be relaxed.",
+        ),
+        menu_item(
+            "Enable consent prompt",
+            "Require a consent prompt for the selected client.",
+            "Use this when the client should explicitly prompt users before granting access.",
+        ),
+        menu_item(
+            "Disable consent prompt",
+            "Stop requiring a consent prompt for the selected client.",
+            "Use this when the current runtime flow should proceed without a consent screen.",
+        ),
+        menu_item(
+            "Add redirect URL",
+            "Append one redirect URL to a live OAuth2 client.",
+            "Use this when a client needs an additional callback URL. The review screen shows the current redirect set before applying a write.",
+        ),
+        menu_item(
+            "Remove redirect URL",
+            "Remove one redirect URL from a live OAuth2 client.",
+            "Use this when an old callback URL should no longer be accepted. The review screen shows the current redirect set before applying a write.",
+        ),
+        menu_item(
+            "Back",
+            "Return to Advanced.",
+            "Go back without changing OAuth2 client settings.",
+        ),
+    ]
+}
+
 fn advanced_menu_items() -> Vec<forms::ContextualItem> {
     vec![
         menu_item(
@@ -1300,12 +1647,12 @@ fn advanced_menu_items() -> Vec<forms::ContextualItem> {
         menu_item(
             "Group Inspection",
             "Read group information without changing access.",
-            "Use this to list groups, inspect a group, search by name, or review group members. Manual entry still works for hidden internal groups when you already know the exact name.",
+            "Use this to list groups, inspect a group, search by name, or review group members. All live groups are shown here, including internal Kanidm groups.",
         ),
         menu_item(
             "Membership Tools",
             "Open the lower-level direct-group access commands.",
-            "Use this only when the guided access workflow is not enough. These tools expose raw add, remove, inspect, and exact-set operations.",
+            "Use this only when the guided access workflow is not enough. These tools expose targeted add/remove commands plus exact-set operations for experienced operators.",
         ),
         menu_item(
             "OAuth2 Clients",
@@ -1320,7 +1667,7 @@ fn advanced_menu_items() -> Vec<forms::ContextualItem> {
         menu_item(
             "Context / Doctor",
             "Inspect tool context and run basic environment checks.",
-            "Use this when troubleshooting Kanidm connection context or verifying that the admin tool resolves the right server and operator identity.",
+            "Use this when troubleshooting Kanidm context, session health, or incomplete live discovery. Doctor is the first place to look when commands start behaving unexpectedly.",
         ),
         menu_item(
             "Assign System Admin",
@@ -1390,12 +1737,12 @@ fn group_inspection_items() -> Vec<forms::ContextualItem> {
         menu_item(
             "Show group",
             "Inspect one group in detail.",
-            "Use this to review a group's description and other live details.",
+            "Use this to review a group's description and other live details. All live groups are shown here, including internal Kanidm groups.",
         ),
         menu_item(
             "List group members",
             "Show the people currently in a group.",
-            "Use this to confirm who currently holds a specific access or admin role.",
+            "Use this to confirm who currently holds a specific access or admin role. All live groups are shown here, including internal Kanidm groups.",
         ),
         menu_item(
             "Back",
@@ -1408,10 +1755,80 @@ fn group_inspection_items() -> Vec<forms::ContextualItem> {
 fn membership_tools_items() -> Vec<forms::ContextualItem> {
     vec![
         menu_item("View User Access", "Show a user's current direct groups.", "Use this for a raw read-only view of direct group membership when the guided user summary is not enough."),
-        menu_item("Add memberships", "Add one or more direct groups without replacing the rest.", "Use this only when you intentionally want an incremental access change instead of replacing the full direct-group set."),
-        menu_item("Remove memberships", "Remove one or more direct groups without changing the rest.", "Use this for targeted incremental access removal when the full guided access workflow would be excessive."),
+        menu_item("Add memberships", "Add one or more direct groups without replacing the rest.", "Use this for intentional targeted access additions when the full guided exact-set workflow would be excessive. The guided picker remains the default path inside this tool."),
+        menu_item("Remove memberships", "Remove one or more direct groups without changing the rest.", "Use this for intentional targeted access removal when the full guided exact-set workflow would be excessive. The guided picker remains the default path inside this tool."),
         menu_item("Set exact memberships", "Replace the user's full direct-group set.", "Use this to authoritatively define the final direct-group access list for a user. This is the same exact-set behavior used by the guided access workflow."),
         menu_item("Back", "Return to Advanced.", "Go back without making membership changes."),
+    ]
+}
+
+fn policy_menu_items() -> Vec<forms::ContextualItem> {
+    vec![
+        menu_item(
+            "Show group policy",
+            "Inspect the current live account-policy values for one group.",
+            "Use this to read auth-expiry or privilege-expiry values before deciding whether a live policy write is needed.",
+        ),
+        menu_item(
+            "Set auth expiry",
+            "Set the live auth-expiry value for one group.",
+            "Use this specialized policy control when the selected group's base authentication session lifetime needs a runtime change.",
+        ),
+        menu_item(
+            "Reset auth expiry",
+            "Clear the live auth-expiry value for one group.",
+            "Use this when the explicit auth-expiry override should be removed from the selected group.",
+        ),
+        menu_item(
+            "Set privilege expiry",
+            "Set the live privileged-session expiry value for one group.",
+            "Use this specialized policy control when the selected group's privileged-session lifetime needs a runtime change.",
+        ),
+        menu_item(
+            "Reset privilege expiry",
+            "Clear the live privileged-session expiry value for one group.",
+            "Use this when the explicit privileged-session expiry override should be removed from the selected group.",
+        ),
+        menu_item(
+            "Back",
+            "Return to Advanced.",
+            "Go back without changing group policy.",
+        ),
+    ]
+}
+
+fn context_menu_items() -> Vec<forms::ContextualItem> {
+    vec![
+        menu_item(
+            "Show context",
+            "Inspect the repo and Kanidm connection context used by this tool.",
+            "Use this to confirm which repository root, server URL, admin account name, and Kanidm binary path the tool resolved.",
+        ),
+        menu_item(
+            "Doctor",
+            "Run basic environment and discovery health checks.",
+            "Use this when session state or live inventory looks incomplete or commands are behaving unexpectedly.",
+        ),
+        menu_item(
+            "Back",
+            "Return to Advanced.",
+            "Go back without running more context or doctor checks.",
+        ),
+    ]
+}
+
+fn local_helpers_menu_items() -> Vec<forms::ContextualItem> {
+    vec![
+        menu_item(
+            "Stage Jellyfin password",
+            "Write a local Jellyfin password hash file from an environment variable.",
+            "Use this machine-local helper when the Jellyfin password hash needs to be staged outside normal Kanidm identity administration.",
+        ),
+        menu_item(
+            "Back",
+            "Return to Advanced.",
+            "Go back without running a local helper.",
+        ),
     ]
 }
 
@@ -1505,24 +1922,436 @@ fn preserved_hidden_memberships<'a>(
         .cloned()
 }
 
-fn extract_groups(output: &CommandOutput) -> Vec<String> {
-    output
-        .details
-        .get("groups")
-        .and_then(Value::as_array)
-        .map(|groups| {
-            groups
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MembershipReview {
+    account_id: String,
+    current_visible_groups: Vec<String>,
+    selected_visible_groups: Vec<String>,
+    preserved_hidden_groups: Vec<String>,
+    effective_desired_groups: Vec<String>,
+    diff: crate::ops::membership::MembershipDiff,
 }
 
+impl MembershipReview {
+    fn render(&self) -> String {
+        format!(
+            "Account ID: {}\n\nCurrent Visible Groups:\n{}\n\nSelected Visible Groups:\n{}\n\nPreserved Hidden Groups:\n{}\n\nGroups To Add:\n{}\n\nGroups To Remove:\n{}\n\nFinal Direct Groups After Apply:\n{}",
+            self.account_id,
+            render_group_block(&self.current_visible_groups),
+            render_group_block(&self.selected_visible_groups),
+            render_group_block(&self.preserved_hidden_groups),
+            render_group_block(&self.diff.added),
+            render_group_block(&self.diff.removed),
+            render_group_block(&self.effective_desired_groups),
+        )
+    }
+}
+
+fn build_membership_review(
+    account_id: &str,
+    current_groups: &[String],
+    selected_visible_groups: Vec<String>,
+    preserved_hidden_groups: Vec<String>,
+) -> MembershipReview {
+    let current_visible_groups = normalize_groups(
+        current_groups
+            .iter()
+            .filter(|group| is_operator_visible_group(group))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let selected_visible_groups = normalize_groups(selected_visible_groups);
+    let preserved_hidden_groups = normalize_groups(preserved_hidden_groups);
+    let effective_desired_groups = normalize_groups(
+        [
+            selected_visible_groups.clone(),
+            preserved_hidden_groups.clone(),
+        ]
+        .concat(),
+    );
+    let diff = membership_diff(current_groups, &effective_desired_groups);
+
+    MembershipReview {
+        account_id: account_id.to_string(),
+        current_visible_groups,
+        selected_visible_groups,
+        preserved_hidden_groups,
+        effective_desired_groups,
+        diff,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MembershipChange {
     Add,
     Remove,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MembershipChangeReview {
+    account_id: String,
+    current_direct_groups: Vec<String>,
+    selected_groups: Vec<String>,
+    already_present: Vec<String>,
+    already_absent: Vec<String>,
+    groups_to_add: Vec<String>,
+    groups_to_remove: Vec<String>,
+}
+
+impl MembershipChangeReview {
+    fn is_noop(&self) -> bool {
+        self.groups_to_add.is_empty() && self.groups_to_remove.is_empty()
+    }
+
+    fn render(&self) -> String {
+        format!(
+            "Account ID: {}\n\nCurrent Direct Groups:\n{}\n\nSelected Target Groups:\n{}\n\nAlready Present:\n{}\n\nAlready Absent:\n{}\n\nGroups To Add:\n{}\n\nGroups To Remove:\n{}",
+            self.account_id,
+            render_group_block(&self.current_direct_groups),
+            render_group_block(&self.selected_groups),
+            render_group_block(&self.already_present),
+            render_group_block(&self.already_absent),
+            render_group_block(&self.groups_to_add),
+            render_group_block(&self.groups_to_remove),
+        )
+    }
+}
+
+fn build_membership_change_review(
+    account_id: &str,
+    current_groups: &[String],
+    selected_groups: Vec<String>,
+    mode: MembershipChange,
+) -> MembershipChangeReview {
+    let current_direct_groups = normalize_groups(current_groups.to_vec());
+    let selected_groups = normalize_groups(selected_groups);
+    let current_set = current_direct_groups
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let selected_set = selected_groups
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let (already_present, already_absent, groups_to_add, groups_to_remove) = match mode {
+        MembershipChange::Add => (
+            selected_set
+                .intersection(&current_set)
+                .cloned()
+                .collect::<Vec<_>>(),
+            Vec::new(),
+            selected_set
+                .difference(&current_set)
+                .cloned()
+                .collect::<Vec<_>>(),
+            Vec::new(),
+        ),
+        MembershipChange::Remove => (
+            Vec::new(),
+            selected_set
+                .difference(&current_set)
+                .cloned()
+                .collect::<Vec<_>>(),
+            Vec::new(),
+            selected_set
+                .intersection(&current_set)
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
+    };
+
+    MembershipChangeReview {
+        account_id: account_id.to_string(),
+        current_direct_groups,
+        selected_groups,
+        already_present,
+        already_absent,
+        groups_to_add,
+        groups_to_remove,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AssignSystemAdminReview {
+    account_id: String,
+    current_groups: Vec<String>,
+    required_groups: Vec<String>,
+    already_present: Vec<String>,
+    granted_now: Vec<String>,
+}
+
+impl AssignSystemAdminReview {
+    fn render(&self) -> String {
+        format!(
+            "Account ID: {}\n\nCurrent Direct Groups:\n{}\n\nRequired Built-in Admin Groups:\n{}\n\nAlready Present:\n{}\n\nGranted Now:\n{}",
+            self.account_id,
+            render_group_block(&self.current_groups),
+            render_group_block(&self.required_groups),
+            render_group_block(&self.already_present),
+            render_group_block(&self.granted_now),
+        )
+    }
+}
+
+fn build_assign_system_admin_review(user: &UserRecord) -> AssignSystemAdminReview {
+    let current_groups = normalize_groups(user.groups.clone());
+    let required_groups = DEFAULT_SYSTEM_ADMIN_GROUPS
+        .iter()
+        .map(|group| (*group).to_string())
+        .collect::<Vec<_>>();
+    let current_set = current_groups
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let required_set = required_groups
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    AssignSystemAdminReview {
+        account_id: user.account_id.clone(),
+        current_groups,
+        required_groups,
+        already_present: required_set
+            .intersection(&current_set)
+            .cloned()
+            .collect::<Vec<_>>(),
+        granted_now: required_set
+            .difference(&current_set)
+            .cloned()
+            .collect::<Vec<_>>(),
+    }
+}
+
+fn build_delete_user_review(user: &UserRecord) -> String {
+    format!(
+        "{}\n\nWarning:\n- This permanently removes the Kanidm person record.\n- Existing direct memberships and downstream app access will be affected.",
+        human_operator_user_summary(user)
+    )
+}
+
+fn build_reset_password_review(user: &UserRecord, ttl_seconds: u64) -> String {
+    format!(
+        "{}\n\nReset Link TTL: {} seconds\n\nWarning:\n- The resulting reset link or token is sensitive.\n- Share it only through a secure channel.",
+        human_operator_user_summary(user),
+        ttl_seconds,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyChange {
+    Set(u64),
+    Reset,
+}
+
+fn build_policy_review(
+    group: &crate::inventory::groups::GroupRecord,
+    auth: bool,
+    change: PolicyChange,
+) -> String {
+    let (label, current_value) = if auth {
+        ("Auth Expiry Seconds", group.policy.auth_expiry_seconds)
+    } else {
+        (
+            "Privilege Expiry Seconds",
+            group.policy.privilege_expiry_seconds,
+        )
+    };
+    let requested = match change {
+        PolicyChange::Set(seconds) => seconds.to_string(),
+        PolicyChange::Reset => "clear / unset".to_string(),
+    };
+
+    format!(
+        "Group: {}\nDescription: {}\nCurrent {}: {}\nRequested Change: {}",
+        group.name,
+        group.description.as_deref().unwrap_or("-"),
+        label,
+        current_value
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "not set".to_string()),
+        requested,
+    )
+}
+
+fn build_redirect_review(
+    client: &crate::inventory::clients::ClientRecord,
+    url: &str,
+    add: bool,
+    already_present: bool,
+) -> String {
+    format!(
+        "Client: {}\nDisplay Name: {}\nLanding URL: {}\n\nCurrent Redirect URLs:\n{}\n\nRequested Action: {}\nTarget Redirect URL: {}\nCurrently Present: {}",
+        client.name,
+        client.display_name.as_deref().unwrap_or("-"),
+        client.landing_url.as_deref().unwrap_or("-"),
+        render_group_block(&client.redirect_urls),
+        if add { "add redirect URL" } else { "remove redirect URL" },
+        url,
+        if already_present { "yes" } else { "no" },
+    )
+}
+
+fn block_incomplete_inventory(
+    title: &str,
+    intro: &str,
+    warnings: &[String],
+) -> Result<(), AppError> {
+    render::print_note(
+        title,
+        &format!("{intro}\n\nWarnings:\n{}", render_bullets(warnings)),
+    );
+    forms::pause("Press Enter or Esc to continue")
+}
+
+fn require_complete_user_for_action(
+    kanidm: &KanidmCli,
+    account_id: &str,
+    action: &str,
+) -> Result<Parsed<UserRecord>, AppError> {
+    let user = load_user(kanidm, account_id)?;
+    if !user.warnings.is_empty() {
+        return Err(AppError::InventoryIncomplete {
+            message: format!(
+                "refusing to {action} '{}' because the current user record was only partially parsed",
+                account_id
+            ),
+            details: serde_json::json!({
+                "account_id": account_id,
+                "warnings": user.warnings,
+                "next_actions": [
+                    "Run `kanidm-admin doctor` to inspect session and inventory health.",
+                    format!("Inspect the live user with `kanidm-admin user show {account_id}` once discovery is healthy."),
+                ],
+            }),
+        });
+    }
+    Ok(user)
+}
+
+fn require_complete_group_for_action(
+    kanidm: &KanidmCli,
+    group: &str,
+    action: &str,
+) -> Result<Parsed<crate::inventory::groups::GroupRecord>, AppError> {
+    let group_record = load_group(kanidm, group)?;
+    if !group_record.warnings.is_empty() {
+        return Err(AppError::InventoryIncomplete {
+            message: format!(
+                "refusing to {action} '{group}' because the current group record was only partially parsed"
+            ),
+            details: serde_json::json!({
+                "group": group,
+                "warnings": group_record.warnings,
+                "next_actions": [
+                    "Run `kanidm-admin doctor` to inspect session and inventory health.",
+                    format!("Inspect the live group with `kanidm-admin group show {group}` once discovery is healthy."),
+                ],
+            }),
+        });
+    }
+    Ok(group_record)
+}
+
+fn require_complete_client_for_action(
+    kanidm: &KanidmCli,
+    client: &str,
+    action: &str,
+) -> Result<Parsed<crate::inventory::clients::ClientRecord>, AppError> {
+    let client_record = load_client(kanidm, client)?;
+    if !client_record.warnings.is_empty() {
+        return Err(AppError::InventoryIncomplete {
+            message: format!(
+                "refusing to {action} '{client}' because the current oauth2 client record was only partially parsed"
+            ),
+            details: serde_json::json!({
+                "client": client,
+                "warnings": client_record.warnings,
+                "next_actions": [
+                    "Run `kanidm-admin doctor` to inspect session and inventory health.",
+                    format!("Inspect the live client with `kanidm-admin client show {client}` once discovery is healthy."),
+                ],
+            }),
+        });
+    }
+    Ok(client_record)
+}
+
+fn choose_membership_change_groups(
+    _kanidm: &KanidmCli,
+    account_id: &str,
+    user: &UserRecord,
+    groups: &[GroupSummary],
+    mode: MembershipChange,
+) -> Result<Option<Vec<String>>, AppError> {
+    let guided_picker = build_group_picker_inventory(groups, GroupPickerScope::OperatorVisibleOnly);
+    let choice_items = vec![
+        menu_item(
+            "Guided Group Picker",
+            "Choose visible groups from the curated picker.",
+            guided_picker.intro,
+        ),
+        menu_item(
+            "Manual Entry (Advanced)",
+            "Type one or more group names directly.",
+            guided_picker.manual_detail,
+        ),
+        menu_item(
+            "Back",
+            "Cancel this membership change.",
+            "Return without changing memberships.",
+        ),
+    ];
+
+    let Some(selection) = forms::contextual_select(
+        "Choose membership change mode",
+        Some(
+            "Guided selection is the default safe path for user-facing access groups. Manual entry remains available for advanced cases.",
+        ),
+        &choice_items,
+        0,
+    )? else {
+        return Ok(None);
+    };
+
+    match selection {
+        0 => {
+            let defaults = groups
+                .iter()
+                .map(|group| {
+                    matches!(mode, MembershipChange::Remove)
+                        && user.groups.iter().any(|current| current == &group.name)
+                })
+                .collect::<Vec<_>>();
+            let prompt = if matches!(mode, MembershipChange::Add) {
+                format!("Select groups to add to '{account_id}'")
+            } else {
+                format!("Select groups to remove from '{account_id}'")
+            };
+            let Some(selected) =
+                forms::membership_picker(&prompt, groups, &defaults, &user.groups)?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(
+                selected
+                    .into_iter()
+                    .map(|index| groups[index].name.clone())
+                    .collect::<Vec<_>>(),
+            ))
+        }
+        1 => {
+            let group_text =
+                forms::input_required("Enter one or more group names separated by spaces", None)?;
+            let groups = group_text
+                .split_whitespace()
+                .map(|group| validate_identifier_field("group name", group))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(groups))
+        }
+        _ => Ok(None),
+    }
 }
 
 enum SessionRecoveryResult {
@@ -1549,8 +2378,41 @@ fn partial_success_has_observed_user(error: &AppError, account_id: &str) -> bool
     }
 }
 
+fn build_group_picker_inventory(
+    groups: &[GroupSummary],
+    scope: GroupPickerScope,
+) -> GroupPickerInventory {
+    match scope {
+        GroupPickerScope::OperatorVisibleOnly => GroupPickerInventory {
+            intro: "Choose from the guided access picker. Internal Kanidm groups are intentionally hidden here so the day-to-day access workflow stays focused on user-facing groups.",
+            no_matching_groups_prompt:
+                "No non-IDM groups were listed. Enter a group name manually",
+            manual_prompt: "Enter the group name to manage",
+            manual_label: "Enter a group name manually",
+            manual_detail: "Use manual entry when the group is hidden from the guided access picker or you already know the exact group name.",
+            groups: groups
+                .iter()
+                .filter(|group| is_operator_visible_group(&group.name))
+                .cloned()
+                .collect(),
+        },
+        GroupPickerScope::AllGroups => GroupPickerInventory {
+            intro: "Choose from all live groups, including internal Kanidm groups. This advanced workflow is intended for deeper inspection and configuration work.",
+            no_matching_groups_prompt: "No live groups were listed. Enter a group name manually",
+            manual_prompt: "Enter the group name to manage",
+            manual_label: "Enter a group name manually",
+            manual_detail: "Use manual entry when the group is missing from live discovery or you already know the exact group name.",
+            groups: groups.to_vec(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::inventory::{
+        clients::ClientRecord, groups::GroupRecord, policy::GroupPolicySnapshot,
+    };
+
     use super::*;
 
     #[test]
@@ -1584,6 +2446,166 @@ mod tests {
         assert!(labels.contains(&"Session Tools".to_string()));
         assert!(labels.contains(&"Membership Tools".to_string()));
         assert!(labels.contains(&"Delete User".to_string()));
+    }
+
+    #[test]
+    fn advanced_submenus_expose_stable_labels() {
+        assert_eq!(
+            client_menu_items()
+                .into_iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>(),
+            vec![
+                "List clients",
+                "Show client",
+                "Show client secret",
+                "Reset client secret",
+                "Enable PKCE",
+                "Disable PKCE",
+                "Enable consent prompt",
+                "Disable consent prompt",
+                "Add redirect URL",
+                "Remove redirect URL",
+                "Back",
+            ]
+        );
+        assert_eq!(
+            policy_menu_items()
+                .into_iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>(),
+            vec![
+                "Show group policy",
+                "Set auth expiry",
+                "Reset auth expiry",
+                "Set privilege expiry",
+                "Reset privilege expiry",
+                "Back",
+            ]
+        );
+        assert_eq!(
+            context_menu_items()
+                .into_iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>(),
+            vec!["Show context", "Doctor", "Back"]
+        );
+        assert_eq!(
+            local_helpers_menu_items()
+                .into_iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>(),
+            vec!["Stage Jellyfin password", "Back"]
+        );
+    }
+
+    #[test]
+    fn operator_visible_group_picker_excludes_internal_groups() {
+        let picker = build_group_picker_inventory(
+            &[
+                GroupSummary {
+                    name: "idm_admins".to_string(),
+                    description: None,
+                },
+                GroupSummary {
+                    name: "users".to_string(),
+                    description: None,
+                },
+            ],
+            GroupPickerScope::OperatorVisibleOnly,
+        );
+
+        assert_eq!(
+            picker.groups,
+            vec![GroupSummary {
+                name: "users".to_string(),
+                description: None,
+            }]
+        );
+        assert_eq!(picker.manual_label, "Enter a group name manually");
+        assert!(picker.intro.contains("intentionally hidden"));
+    }
+
+    #[test]
+    fn all_groups_picker_includes_internal_groups() {
+        let picker = build_group_picker_inventory(
+            &[
+                GroupSummary {
+                    name: "idm_admins".to_string(),
+                    description: None,
+                },
+                GroupSummary {
+                    name: "users".to_string(),
+                    description: None,
+                },
+            ],
+            GroupPickerScope::AllGroups,
+        );
+
+        assert_eq!(
+            picker.groups,
+            vec![
+                GroupSummary {
+                    name: "idm_admins".to_string(),
+                    description: None,
+                },
+                GroupSummary {
+                    name: "users".to_string(),
+                    description: None,
+                },
+            ]
+        );
+        assert_eq!(picker.manual_label, "Enter a group name manually");
+        assert!(picker.intro.contains("including internal Kanidm groups"));
+    }
+
+    #[test]
+    fn reauth_home_session_stays_active_but_requires_privileged_refresh() {
+        let (base_session, privileged_writes, diagnostic) = summarize_home_session_state(
+            "admindsaw",
+            &SessionState::ReauthRequired {
+                diagnostic: "reauth".to_string(),
+            },
+        );
+
+        assert_eq!(base_session, HomeBaseSessionStatus::Active);
+        assert_eq!(privileged_writes, HomePrivilegedWriteStatus::ReauthRequired);
+        assert!(diagnostic.contains("reauthentication is required"));
+    }
+
+    #[test]
+    fn missing_and_expired_home_sessions_are_not_reported_as_active() {
+        let missing = summarize_home_session_state(
+            "admindsaw",
+            &SessionState::Missing {
+                diagnostic: "missing".to_string(),
+            },
+        );
+        let expired = summarize_home_session_state(
+            "admindsaw",
+            &SessionState::Expired {
+                diagnostic: "expired".to_string(),
+            },
+        );
+
+        assert_eq!(missing.0, HomeBaseSessionStatus::Missing);
+        assert_eq!(missing.1, HomePrivilegedWriteStatus::Unavailable);
+        assert_eq!(expired.0, HomeBaseSessionStatus::Expired);
+        assert_eq!(expired.1, HomePrivilegedWriteStatus::Unavailable);
+    }
+
+    #[test]
+    fn authenticated_home_session_reports_privileged_writes_ready() {
+        let (base_session, privileged_writes, diagnostic) = summarize_home_session_state(
+            "admindsaw",
+            &SessionState::Authenticated {
+                stdout: "ok".to_string(),
+            },
+        );
+
+        assert_eq!(base_session, HomeBaseSessionStatus::Active);
+        assert_eq!(privileged_writes, HomePrivilegedWriteStatus::Ready);
+        assert!(diagnostic.contains("Privileged write commands are ready"));
     }
 
     #[test]
@@ -1630,5 +2652,189 @@ mod tests {
 
         assert!(partial_success_has_observed_user(&error, "dsaw"));
         assert!(!partial_success_has_observed_user(&error, "someone-else"));
+    }
+
+    #[test]
+    fn membership_review_computes_add_remove_and_final_sets() {
+        let review = build_membership_review(
+            "dsaw",
+            &[
+                "idm_all_persons".to_string(),
+                "users".to_string(),
+                "paperless-users".to_string(),
+            ],
+            vec!["users".to_string(), "shared-files-ro".to_string()],
+            vec!["idm_all_persons".to_string()],
+        );
+
+        assert_eq!(
+            review.current_visible_groups,
+            vec!["paperless-users".to_string(), "users".to_string()]
+        );
+        assert_eq!(
+            review.selected_visible_groups,
+            vec!["shared-files-ro".to_string(), "users".to_string()]
+        );
+        assert_eq!(
+            review.preserved_hidden_groups,
+            vec!["idm_all_persons".to_string()]
+        );
+        assert_eq!(
+            review.effective_desired_groups,
+            vec![
+                "idm_all_persons".to_string(),
+                "shared-files-ro".to_string(),
+                "users".to_string()
+            ]
+        );
+        assert_eq!(review.diff.added, vec!["shared-files-ro".to_string()]);
+        assert_eq!(review.diff.removed, vec!["paperless-users".to_string()]);
+    }
+
+    #[test]
+    fn membership_review_detects_noop_exact_set() {
+        let review = build_membership_review(
+            "dsaw",
+            &["idm_all_persons".to_string(), "users".to_string()],
+            vec!["users".to_string()],
+            vec!["idm_all_persons".to_string()],
+        );
+
+        assert!(review.diff.is_empty());
+    }
+
+    #[test]
+    fn membership_review_render_shows_preserved_hidden_groups() {
+        let review = build_membership_review(
+            "dsaw",
+            &["idm_all_persons".to_string(), "users".to_string()],
+            vec!["users".to_string()],
+            vec!["idm_all_persons".to_string()],
+        );
+
+        let rendered = review.render();
+        assert!(rendered.contains("Preserved Hidden Groups"));
+        assert!(rendered.contains("idm_all_persons"));
+    }
+
+    #[test]
+    fn membership_change_review_add_computes_actual_changes() {
+        let review = build_membership_change_review(
+            "dsaw",
+            &["users".to_string(), "paperless-users".to_string()],
+            vec!["paperless-users".to_string(), "shared-files-ro".to_string()],
+            MembershipChange::Add,
+        );
+
+        assert_eq!(review.already_present, vec!["paperless-users".to_string()]);
+        assert_eq!(review.groups_to_add, vec!["shared-files-ro".to_string()]);
+        assert!(review.groups_to_remove.is_empty());
+    }
+
+    #[test]
+    fn membership_change_review_remove_computes_actual_changes() {
+        let review = build_membership_change_review(
+            "dsaw",
+            &["users".to_string(), "paperless-users".to_string()],
+            vec!["paperless-users".to_string(), "shared-files-ro".to_string()],
+            MembershipChange::Remove,
+        );
+
+        assert_eq!(review.already_absent, vec!["shared-files-ro".to_string()]);
+        assert_eq!(review.groups_to_remove, vec!["paperless-users".to_string()]);
+        assert!(review.groups_to_add.is_empty());
+    }
+
+    #[test]
+    fn membership_change_review_detects_noop() {
+        let review = build_membership_change_review(
+            "dsaw",
+            &["users".to_string()],
+            vec!["users".to_string()],
+            MembershipChange::Add,
+        );
+
+        assert!(review.is_noop());
+    }
+
+    #[test]
+    fn assign_system_admin_review_distinguishes_existing_from_new() {
+        let review = build_assign_system_admin_review(&UserRecord {
+            account_id: "dsaw".to_string(),
+            display_name: Some("Dan".to_string()),
+            primary_email: Some("dsaw@example.test".to_string()),
+            spn: None,
+            uuid: None,
+            valid_from: None,
+            expiry: None,
+            groups: vec!["idm_admins".to_string(), "users".to_string()],
+        });
+
+        assert_eq!(review.already_present, vec!["idm_admins".to_string()]);
+        assert_eq!(review.granted_now, vec!["system_admins".to_string()]);
+    }
+
+    #[test]
+    fn reset_password_review_includes_ttl_and_user_summary() {
+        let rendered = build_reset_password_review(
+            &UserRecord {
+                account_id: "dsaw".to_string(),
+                display_name: Some("Dan".to_string()),
+                primary_email: Some("dsaw@example.test".to_string()),
+                spn: None,
+                uuid: None,
+                valid_from: None,
+                expiry: None,
+                groups: vec!["users".to_string()],
+            },
+            3600,
+        );
+
+        assert!(rendered.contains("Reset Link TTL: 3600 seconds"));
+        assert!(rendered.contains("secure channel"));
+        assert!(rendered.contains("Account ID: dsaw"));
+    }
+
+    #[test]
+    fn redirect_review_shows_current_presence() {
+        let rendered = build_redirect_review(
+            &ClientRecord {
+                name: "files".to_string(),
+                display_name: Some("Files".to_string()),
+                landing_url: Some("https://files.example.test".to_string()),
+                redirect_urls: vec!["https://files.example.test/oauth2/callback".to_string()],
+                scope_maps: Vec::new(),
+                claim_maps: Vec::new(),
+                referenced_groups: Vec::new(),
+                pkce_enabled: Some(true),
+                consent_prompt_enabled: Some(true),
+            },
+            "https://files.example.test/oauth2/callback",
+            false,
+            true,
+        );
+
+        assert!(rendered.contains("Currently Present: yes"));
+        assert!(rendered.contains("remove redirect URL"));
+    }
+
+    #[test]
+    fn policy_review_shows_current_and_requested_values() {
+        let rendered = build_policy_review(
+            &GroupRecord {
+                name: "idm_all_persons".to_string(),
+                description: Some("Foundation".to_string()),
+                members: Vec::new(),
+                policy: GroupPolicySnapshot {
+                    auth_expiry_seconds: Some(3600),
+                    privilege_expiry_seconds: None,
+                },
+            },
+            true,
+            PolicyChange::Set(7200),
+        );
+
+        assert!(rendered.contains("Current Auth Expiry Seconds: 3600"));
+        assert!(rendered.contains("Requested Change: 7200"));
     }
 }

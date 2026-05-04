@@ -117,6 +117,18 @@ pub fn validate_identifier_field(field_name: &str, value: &str) -> Result<String
     }
 }
 
+pub fn validate_search_query(value: &str) -> Result<String, AppError> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        Err(AppError::Config {
+            message: "invalid group search query: value must not be empty or whitespace only"
+                .to_string(),
+        })
+    } else {
+        Ok(normalized.to_string())
+    }
+}
+
 fn is_printable_non_control(ch: char) -> bool {
     !ch.is_control()
 }
@@ -203,5 +215,13 @@ mod tests {
         );
         assert!(validate_seconds_field("reset token TTL", 30, 60, 3600).is_err());
         assert!(validate_seconds_field("reset token TTL", 4000, 60, 3600).is_err());
+    }
+
+    #[test]
+    fn validates_search_queries() {
+        assert_eq!(validate_search_query("files").unwrap(), "files");
+        assert_eq!(validate_search_query(" storage ").unwrap(), "storage");
+        assert!(validate_search_query("").is_err());
+        assert!(validate_search_query("   ").is_err());
     }
 }

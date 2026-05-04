@@ -1,22 +1,11 @@
 { lib, pkgs, vars, ... }:
 
 let
-  libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   jellyfinPort = 8096;
   dataDir = "/var/lib/jellyfin";
   dataDbPath = "${dataDir}/data/jellyfin.db";
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
   apiKeyName = "nixos-jellyfin-library-sync-v1";
-  sharedRootRegex = lib.escapeRegex vars.sharedVideosRoot;
-  watchRegex = "^(${sharedRootRegex}(/|$))";
-  watcherScript = libraryWatchers.mkSettledWatcherScript {
-    name = "jellyfin-library-watch";
-    watchedRoots = [ vars.sharedVideosRoot ];
-    triggerUnit = "jellyfin-library-sync.service";
-    includeRegex = watchRegex;
-    settleSeconds = 20;
-    pollSeconds = 5;
-  };
 in
 {
   systemd.services.jellyfin-library-sync = {
@@ -134,27 +123,6 @@ in
       User = "jellyfin";
       Group = "jellyfin";
       Restart = "on-failure";
-      RestartSec = "5s";
-    };
-  };
-
-  systemd.services.jellyfin-library-watch = {
-    description = "Watch video roots and debounce Jellyfin scans";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "jellyfin.service"
-      "jellyfin-library-sync.service"
-      "data-pool-layout.service"
-    ];
-    wants = [
-      "jellyfin.service"
-      "jellyfin-library-sync.service"
-      "data-pool-layout.service"
-    ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${watcherScript}";
-      Restart = "always";
       RestartSec = "5s";
     };
   };

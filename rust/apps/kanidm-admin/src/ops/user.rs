@@ -414,7 +414,7 @@ pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<Comman
         human.push_str(&format!("\nFallback Token: {token}"));
     }
     human.push_str(
-        "\n\nSend this link to the user through a secure channel. If the link is unusable, the fallback token may still help with manual recovery.\n\nRaw Output:\n",
+        "\n\nOperator Checklist:\n- Send the link through a secure channel.\n- Do not paste the link or token into shared chat.\n- Regenerate the reset link if it was mishandled.\n\nIf the link is unusable, the fallback token may still help with manual recovery.\n\nRaw Output:\n",
     );
     human.push_str(if summary.value.raw_output.is_empty() {
         "(no output)"
@@ -654,6 +654,48 @@ exit 1
         let output = assign_system_admin(&cli, "dsaw").expect("assign system admin");
         assert!(output.human.contains("idm_admins"));
         assert!(output.human.contains("system_admins"));
+    }
+
+    #[test]
+    fn assign_system_admin_is_a_noop_when_builtin_roles_already_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("calls.txt");
+        fs::write(&state, "").expect("seed");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            &format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+calls_file={}
+args=("$@")
+if [[ "${{args[0]}}" == "group" && "${{args[1]}}" == "add-members" ]]; then
+  printf 'unexpected add-members\n' >> "$calls_file"
+  exit 0
+fi
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
+  printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["users@example.test","idm_admins@example.test","system_admins@example.test"]}}}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+                serde_json::to_string(&state.display().to_string()).expect("json path"),
+            ),
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "idm_admin".to_string(),
+            kanidm_bin: script.into_os_string(),
+        });
+
+        let output = assign_system_admin(&cli, "dsaw").expect("assign system admin");
+        assert!(output.human.contains("Already Present"));
+        assert!(fs::read_to_string(&state)
+            .expect("read state")
+            .trim()
+            .is_empty());
     }
 
     #[test]

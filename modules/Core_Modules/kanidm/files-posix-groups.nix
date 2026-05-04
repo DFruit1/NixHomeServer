@@ -15,7 +15,6 @@ in
     wants = [ "kanidm.service" ];
     before = [
       "fileshare-user-root-sync.service"
-      "samba-smbd.service"
     ];
     path = [
       pkgs.coreutils
