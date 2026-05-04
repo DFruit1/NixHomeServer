@@ -50,19 +50,10 @@ let
             denyByDefault = true;
           };
         }
-        {
-          path = vars.kiwixLibraryRoot;
-          name = "Kiwix";
-          config = {
-            defaultEnabled = false;
-            defaultUserScope = "/";
-            denyByDefault = true;
-          };
-        }
       ];
     };
     frontend = {
-      name = "File";
+      name = "Files";
       oidcLoginButtonText = "Login with Kanidm";
     };
     auth = {
@@ -345,13 +336,11 @@ in
           desired_scopes="$(jq -cn \
             --arg users_root ${lib.escapeShellArg vars.usersRoot} \
             --arg shared_root ${lib.escapeShellArg vars.sharedRoot} \
-            --arg kiwix_root ${lib.escapeShellArg vars.kiwixLibraryRoot} \
             '[
               {name:$users_root, scope:"/"},
-              {name:$shared_root, scope:"/"},
-              {name:$kiwix_root, scope:"/"}
+              {name:$shared_root, scope:"/"}
             ]')"
-          desired_permissions='{"api":false,"admin":true,"modify":true,"share":true,"realtime":false,"delete":true,"create":true,"download":true}'
+          desired_permissions='{"api":true,"admin":true,"modify":true,"share":true,"realtime":false,"delete":true,"create":true,"download":true}'
         else
           [[ "$login_method" == "oidc" ]] || return 0
           groups_json="$(api_get "/api/access/groups?user=$(urlencode "$username")" | jq -c '.groups // []')"
@@ -359,7 +348,6 @@ in
           desired_scopes="$(jq -cn \
             --arg users_root ${lib.escapeShellArg vars.usersRoot} \
             --arg shared_root ${lib.escapeShellArg vars.sharedRoot} \
-            --arg kiwix_root ${lib.escapeShellArg vars.kiwixLibraryRoot} \
             --arg username "$username" \
             --argjson groups "$groups_json" '
               def has_group($group_name): ($groups | index($group_name)) != null;
@@ -369,25 +357,23 @@ in
                 else empty end,
                 if has_group("shared-files-ro") or has_group("shared-files-rw") or has_group("domain_admins") then
                   {name:$shared_root, scope:"/"}
-                else empty end,
-                if has_group("domain_admins") then
-                  {name:$kiwix_root, scope:"/"}
                 else empty end
               ]')"
 
           # FileBrowser Quantum exposes per-user global permissions plus source access
-          # rules, but it does not provide per-path read/write ACLs. This keeps the
-          # service conservative for shared-read-only users while allowing normal
-          # personal and shared-rw workflows.
+          # rules. Delete remains a global user capability, so shared-files-rw is kept
+          # delete-disabled here. Users who also need personal-drive full control must
+          # still receive delete through user-files, which means FileBrowser cannot
+          # simultaneously forbid delete in Shared for those same users.
           desired_permissions="$(jq -cn --argjson groups "$groups_json" '
             def has_group($group_name): ($groups | index($group_name)) != null;
             {
-              api: false,
+              api: (has_group("user-files") or has_group("shared-files-ro") or has_group("shared-files-rw") or has_group("domain_admins")),
               admin: has_group("domain_admins"),
               modify: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
               share: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
               realtime: false,
-              delete: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
+              delete: (has_group("user-files") or has_group("domain_admins")),
               create: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
               download: true
             }')"
@@ -419,14 +405,8 @@ in
       done
 
       for group_name in shared-files-ro shared-files-rw domain_admins; do
-        ensure_allow_group "Shared" "/files" "$group_name"
-        ensure_allow_group "Shared" "/audiobooks" "$group_name"
-        ensure_allow_group "Shared" "/books" "$group_name"
-        ensure_allow_group "Shared" "/emails" "$group_name"
-        ensure_allow_group "Shared" "/videos" "$group_name"
+        ensure_allow_group "Shared" "/" "$group_name"
       done
-
-      ensure_allow_group "Kiwix" "/" "domain_admins"
 
       api_get "/api/users" | jq -c '.[]' | while IFS= read -r user_json; do
         sync_user "$user_json"

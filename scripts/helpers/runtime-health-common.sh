@@ -129,6 +129,13 @@ let
       payloadRoots = [ vars.usersRoot vars.sharedRoot vars.kiwixLibraryRoot ];
     }
     {
+      app = "goaccess";
+      component = "app";
+      stateRoot = "/var/lib/goaccess";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/goaccess";
+      payloadRoots = [ ];
+    }
+    {
       app = "mail-archive-ui";
       component = "app";
       stateRoot = cfg.services.mail-archive-ui.dataDir;
@@ -175,12 +182,14 @@ in
         "immich-server.service"
         "paperless-web.service"
         "audiobookshelf.service"
-        "audiobookshelf-library-watch.service"
+        "audiobookshelf-library-sync.timer"
         "filebrowser-quantum.service"
         "kavita.service"
-        "kavita-library-watch.service"
+        "kavita-library-sync.timer"
         "jellyfin.service"
-        "jellyfin-library-watch.service"
+        "glances.service"
+        "glances-oauth2-proxy.service"
+        "goaccess-report.service"
       ]
       ++ optional cfg.services.cloudflared.enable "cloudflared-tunnel-${vars.cloudflareTunnelName}.service"
       ++ optional cfg.services.oauth2-proxy.enable "oauth2-proxy.service"
@@ -194,13 +203,15 @@ in
 
     edgeHttp = [
       { name = "kanidm"; url = "https://${vars.kanidmDomain}/"; expected = [ 200 303 ]; }
-      { name = "files"; url = "https://${vars.filesDomain}/"; expected = [ 200 302 303 401 403 ]; }
-      { name = "file"; url = "https://${vars.filebrowserDomain}/"; expected = [ 200 302 303 ]; }
+      { name = "uploads"; url = "https://${vars.uploadsDomain}/"; expected = [ 200 302 303 401 403 ]; }
+      { name = "files"; url = "https://${vars.filebrowserDomain}/"; expected = [ 200 302 303 ]; }
       { name = "paperless"; url = "https://paperless.${vars.domain}/"; expected = [ 200 302 ]; }
       { name = "photos"; url = "https://${vars.photosDomain}/"; expected = [ 200 302 ]; }
       { name = "sharephotos"; url = "https://${vars.sharePhotosDomain}/share/healthcheck"; expected = [ 200 ]; }
       { name = "audiobooks"; url = "https://${vars.audiobooksDomain}/"; expected = [ 200 302 ]; }
       { name = "books"; url = "https://${vars.kavitaDomain}/"; expected = [ 200 302 ]; }
+      { name = "monitor"; url = "https://${vars.monitorDomain}/"; expected = [ 200 302 303 401 403 ]; }
+      { name = "traffic"; url = "https://${vars.trafficDomain}/"; expected = [ 200 ]; }
       { name = "videos"; url = "https://${vars.jellyfinDomain}/"; expected = [ 200 302 ]; }
     ]
     ++ optional kiwixEnabled { name = "kiwix"; url = "https://${vars.kiwixDomain}/"; expected = [ 200 302 ]; }
@@ -210,6 +221,7 @@ in
     internalHttp = [
       { name = "copyparty"; url = "http://127.0.0.1:${toString cfg.services.copyparty.settings.p}/"; expected = [ 200 302 401 403 ]; }
       { name = "filebrowser-quantum-health"; url = "http://127.0.0.1:${toString vars.filebrowserPort}/health"; expected = [ 200 ]; }
+      { name = "glances-web"; url = "http://127.0.0.1:61208/"; expected = [ 200 ]; }
       { name = "sharephotos"; url = "http://127.0.0.1:3300/share/healthcheck"; expected = [ 200 ]; }
     ]
     ++ optional mailArchiveEnabled { name = "mail-archive-ui-healthz"; url = "http://127.0.0.1:${toString cfg.services.mail-archive-ui.port}/healthz"; expected = [ 200 ]; }
@@ -224,6 +236,8 @@ in
         { host = "${vars.filebrowserDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.kavitaDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.jellyfinDomain}"; expected = localDnsPrivateAnswer; }
+        { host = "${vars.monitorDomain}"; expected = localDnsPrivateAnswer; }
+        { host = "${vars.trafficDomain}"; expected = localDnsPrivateAnswer; }
       ]
       ++ optional kiwixEnabled { host = "${vars.kiwixDomain}"; expected = localDnsPrivateAnswer; }
       ++ optional mailArchiveEnabled { host = "${vars.emailsDomain}"; expected = localDnsPrivateAnswer; }
@@ -232,7 +246,7 @@ in
         private = [
           { host = "${vars.kanidmDomain}"; expected = vars.serverLanIP; }
           { host = "${vars.filebrowserDomain}"; expected = vars.serverLanIP; }
-          { host = "${vars.filesDomain}"; expected = vars.serverLanIP; }
+          { host = "${vars.uploadsDomain}"; expected = vars.serverLanIP; }
           { host = "${vars.hostname}.${vars.lanDnsDomain}"; expected = vars.serverLanIP; }
         ];
         ptr = [
@@ -242,7 +256,7 @@ in
       netbirdOnly = {
         public = [
           { host = "${vars.kanidmDomain}"; forbidden = vars.nbIP; }
-          { host = "${vars.filesDomain}"; forbidden = vars.nbIP; }
+          { host = "${vars.uploadsDomain}"; forbidden = vars.nbIP; }
         ];
       };
     };

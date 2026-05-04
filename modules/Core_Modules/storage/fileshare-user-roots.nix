@@ -15,13 +15,19 @@ let
     root="${vars.usersRoot}/$username"
     emails="$root/emails"
 
-    install -d -m 2770 -g users "$root"
+    install -d -m 2750 -g users "$root"
+    chown root:users "$root"
+    chmod 2750 "$root"
     for name in ${userContentSubdirs}; do
       [[ "$name" == "emails" ]] && continue
       install -d -m 2770 -g users "$root/$name"
+      chown root:users "$root/$name"
+      chmod 2770 "$root/$name"
     done
     for name in ${userBooksSubdirs}; do
       install -d -m 2770 -g users "$root/books/$name"
+      chown root:users "$root/books/$name"
+      chmod 2770 "$root/books/$name"
     done
 
     if [[ -L "$emails" ]]; then
@@ -41,15 +47,19 @@ let
       install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails"
     fi
 
-    chown -R mail-archive-ui:mail-archive-ui "$emails"
-
     ${pkgs.acl}/bin/setfacl \
+      -m u::rwx \
+      -m g::r-x \
+      -m o::--- \
+      -m m::rwx \
+      -m d:u::rwx \
+      -m d:g::r-x \
+      -m d:o::--- \
+      -m d:m::rwx \
       -m g:kavita-media:--x \
       -m g:mail-archive-ui:--x \
       -m g:immich:--x \
       -m g:paperless:--x \
-      "$root"
-    ${pkgs.acl}/bin/setfacl \
       -m g:audiobookshelf-media:rwx \
       -m d:g:audiobookshelf-media:rwx \
       "$root"
@@ -119,7 +129,7 @@ let
 in
 {
   systemd.services.fileshare-user-root-sync = {
-    description = "Create per-user fileshare content roots from Kanidm group membership";
+    description = "Create per-user fileshare content and upload roots from Kanidm group membership";
     wantedBy = [ "multi-user.target" ];
     wants = [
       "data-pool-layout.service"
@@ -133,7 +143,6 @@ in
     ];
     before = [
       "copyparty.service"
-      "samba-smbd.service"
     ];
     serviceConfig.Type = "oneshot";
     path = [

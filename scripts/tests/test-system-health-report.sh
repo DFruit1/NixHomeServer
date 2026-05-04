@@ -263,7 +263,7 @@ cat <<'JSON'
   "hostname": "server",
   "overallSeverity": "OK",
   "units": [{ "unit": "copyparty.service", "severity": "OK", "detail": "unit active" }],
-  "edgeHttp": [{ "name": "files", "url": "https://files.example.test/", "severity": "OK", "httpCode": "200", "detail": "http 200" }],
+  "edgeHttp": [{ "name": "uploads", "url": "https://uploads.example.test/", "severity": "OK", "httpCode": "200", "detail": "http 200" }],
   "internalHttp": [],
   "dns": [],
   "mounts": [],

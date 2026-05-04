@@ -1,84 +1,26 @@
 { lib, pkgs, config, vars, copyparty, ... }:
 
 let
-  kanidmPort = 8443;
-  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  userFilesGroup = "user-files";
   sharedFilesAdminGroup = "domain_admins";
   copypartyPort = 3923;
   runtimeConfigDir = "/var/lib/copyparty/runtime";
   runtimeConfigPath = "${runtimeConfigDir}/copyparty.conf";
-  sharedFilesRoot = "${vars.sharedRoot}/files";
-  sharedKiwixRoot = vars.kiwixLibraryRoot;
-  mkVolumeStanza =
-    {
-      route,
-      path,
-      accs,
-      chmodDir ? null,
-      chmodFile ? null,
-    }:
-    let
-      flags = [
-        "fk: 4"
-        "e2d: true"
-      ]
-      ++ lib.optional (chmodDir != null) "chmod_d: ${chmodDir}"
-      ++ lib.optional (chmodFile != null) "chmod_f: ${chmodFile}"
-      ++ [
-        "unlistcr: true"
-        "unlistcw: true"
-      ];
-    in
-    ''
-      [${route}]
-      ${path}
-      accs:
-      ${lib.concatMapStringsSep "\n" (line: "  ${line}") accs}
-      flags:
-      ${lib.concatMapStringsSep "\n" (line: "  ${line}") flags}
-    '';
-  mkSharedVolume = route: path: mkVolumeStanza {
-    inherit route path;
-    accs = [
-      "r: @shared-files-ro"
-      "rwm: @shared-files-rw"
-      "rwmda: @${sharedFilesAdminGroup}"
-    ];
-    chmodDir = "775";
-    chmodFile = "664";
-  };
-  mkSharedAdminVolume = route: path: mkVolumeStanza {
-    inherit route path;
-    accs = [ "rwmda: @${sharedFilesAdminGroup}" ];
-    chmodDir = "775";
-    chmodFile = "664";
-  };
-  mkPersonalWritableVolume = route: path: mkVolumeStanza {
-    inherit route path;
-    accs = [ "rwmda: $username" ];
-    chmodDir = "770";
-    chmodFile = "660";
-  };
-  mkPersonalReadonlyVolume = route: path: mkVolumeStanza {
-    inherit route path;
-    accs = [ "r: $username" ];
-  };
-  sharedBookVolumes = lib.concatMapStringsSep "\n\n" (library:
-    mkSharedVolume "/books/shared/${library.dir}" "${vars.sharedBooksRoot}/${library.dir}"
-  ) vars.sharedKavitaLibraries;
-  personalBookVolumes = lib.concatMapStringsSep "\n\n" (library:
-    mkPersonalWritableVolume "/books/$username/${library.dir}" "${vars.usersRoot}/$username/books/${library.dir}"
-  ) vars.personalKavitaLibraries;
-  sharedRuntimeVolumes = lib.concatStringsSep "\n\n" [
-    (mkSharedVolume "/shared/files" sharedFilesRoot)
-    (mkSharedVolume "/shared/audiobooks" vars.sharedAudiobooksRoot)
-    sharedBookVolumes
-    (mkSharedVolume "/shared/emails" vars.sharedEmailsRoot)
-    (mkSharedVolume "/shared/videos" vars.sharedVideosRoot)
-    (mkSharedAdminVolume "/shared/kiwix" sharedKiwixRoot)
-  ];
-  staticRuntimeConfig = pkgs.writeText "copyparty-runtime.conf" ''
+  uploaderVolumeConfig = ''
+    [/upload/''${u}]
+    ${vars.usersRoot}/''${u}/uploads
+    accs:
+      rwmda: ''${u}, @${sharedFilesAdminGroup}
+    flags:
+      fk: 4
+      e2d: true
+      chmod_d: 2770
+      chmod_f: 660
+  '';
+  buildRuntimeConfig = ''
+    set -euo pipefail
+
+    install -d -m 0700 -o copyparty -g copyparty ${runtimeConfigDir}
+    cat >${runtimeConfigPath} <<'EOF'
     [global]
     auth-ord: idp
     i: 127.0.0.1
@@ -92,9 +34,6 @@ let
     no-reload
     p: ${toString copypartyPort}
     rproxy: 1
-    shr: /shares
-    shr-site: https://${vars.filesDomain}
-    shr-who: auth
     xff-hdr: x-forwarded-for
     xff-src: 127.0.0.1/32
 
@@ -102,48 +41,9 @@ let
 
     [groups]
 
-    ${sharedRuntimeVolumes}
-  '';
-  appendPersonalVolumes = ''
-    set -euo pipefail
-
-    runtime_conf="${runtimeConfigPath}"
-    export HOME="$(${pkgs.coreutils}/bin/mktemp -d)"
-    trap '${pkgs.coreutils}/bin/rm -rf "$HOME"' EXIT
-    export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
-
-    ${pkgs.kanidm_1_9}/bin/kanidm login \
-      -H ${kanidmCliUrl} \
-      -D idm_admin >/dev/null
-
-    ${pkgs.kanidm_1_9}/bin/kanidm group get \
-      ${lib.escapeShellArg userFilesGroup} \
-      -H ${kanidmCliUrl} \
-      -D idm_admin \
-      -o json \
-      | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]' \
-      | ${pkgs.coreutils}/bin/sort -u \
-      | while IFS= read -r username; do
-          [[ -n "$username" ]] || continue
-
-          ${pkgs.coreutils}/bin/cat >>"$runtime_conf" <<EOF
-
-${mkPersonalWritableVolume "/$username/files" "${vars.usersRoot}/$username/files"}
-
-${mkPersonalWritableVolume "/$username/audiobooks" "${vars.usersRoot}/$username/audiobooks"}
-
-${personalBookVolumes}
-
-${mkPersonalReadonlyVolume "/$username/emails" "${vars.usersRoot}/$username/emails"}
-EOF
-        done
-  '';
-  buildRuntimeConfig = ''
-    set -euo pipefail
-
-    install -d -m 0700 -o copyparty -g copyparty ${runtimeConfigDir}
-    install -m 0600 ${staticRuntimeConfig} ${runtimeConfigPath}
-    ${appendPersonalVolumes}
+    ${uploaderVolumeConfig}
+    EOF
+    chmod 0600 ${runtimeConfigPath}
     chown copyparty:copyparty ${runtimeConfigPath}
     ${pkgs.copyparty}/bin/copyparty -c ${runtimeConfigPath} --exit cfg
   '';
@@ -160,9 +60,6 @@ in
     settings = {
       i = "127.0.0.1";
       p = copypartyPort;
-      shr = "/shares";
-      "shr-who" = "auth";
-      "shr-site" = "https://${vars.filesDomain}";
       auth-ord = "idp";
       idp-h-usr = "x-forwarded-preferred-username";
       idp-h-grp = "x-forwarded-groups";
@@ -178,9 +75,7 @@ in
       no-reload = true;
     };
     volumes = { };
-    globalExtraConfig = ''
-      ${sharedRuntimeVolumes}
-    '';
+    globalExtraConfig = uploaderVolumeConfig;
   };
 
   services.kiwixServe.extraUploadUsers = lib.optionals config.services.kiwixServe.enable [ "copyparty" ];
@@ -211,7 +106,7 @@ in
   };
 
   systemd.services.copyparty-runtime-config-sync = {
-    description = "Build Copyparty runtime config with live user-files membership";
+    description = "Build Copyparty runtime config";
     wantedBy = [ "multi-user.target" ];
     wants = [
       "fileshare-user-root-sync.service"
@@ -225,11 +120,7 @@ in
     serviceConfig = {
       Type = "oneshot";
     };
-    path = [
-      pkgs.coreutils
-      pkgs.kanidm_1_9
-      pkgs.jq
-    ];
+    path = [ pkgs.coreutils ];
     script = buildRuntimeConfig;
   };
 }

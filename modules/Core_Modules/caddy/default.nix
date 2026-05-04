@@ -6,6 +6,15 @@ let
   kanidmPort = 8443;
   netbirdIface = "nb0";
   splitDnsMode = vars.dnsMode == "split-horizon";
+  accessLogConfig = ''
+    log {
+      output file /var/log/caddy/access.log {
+        mode 0640
+      }
+      format json
+    }
+  '';
+  goaccessReportRoot = "/var/lib/goaccess/report";
 in
 {
   services.caddy = {
@@ -18,6 +27,7 @@ in
       "${vars.domain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           redir https://${vars.kanidmDomain}{uri} 308
         '';
       };
@@ -25,6 +35,7 @@ in
       "www.${vars.domain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           redir https://${vars.kanidmDomain}{uri} 308
         '';
       };
@@ -32,6 +43,7 @@ in
       "${vars.kanidmDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem
+          ${accessLogConfig}
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
           reverse_proxy https://127.0.0.1:${toString kanidmPort} {
@@ -48,6 +60,7 @@ in
       "paperless.${vars.domain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:${toString config.services.paperless.port}
         '';
       };
@@ -55,32 +68,22 @@ in
       "${vars.audiobooksDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:${toString config.services.audiobookshelf.port}
         '';
       };
 
-      "${vars.filesDomain}" = {
+      "${vars.uploadsDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
-          # Keep only explicit anonymous share links outside OAuth2 Proxy.
-          @copyparty_shares path /shares /shares/*
-          handle @copyparty_shares {
-            reverse_proxy http://127.0.0.1:${toString config.services.copyparty.settings.p} {
-              header_up X-Forwarded-Proto https
-              header_up X-Forwarded-Host {host}
-              header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
-              header_up Cf-Connecting-Ip {http.request.header.Cf-Connecting-Ip}
-            }
-          }
-          handle {
-            reverse_proxy http://${config.services.oauth2-proxy.httpAddress} {
-              header_up X-Forwarded-Proto https
-              header_up X-Forwarded-Host {host}
-              header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
-              header_up Cf-Connecting-Ip {http.request.header.Cf-Connecting-Ip}
-            }
+          reverse_proxy http://${config.services.oauth2-proxy.httpAddress} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+            header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
+            header_up Cf-Connecting-Ip {http.request.header.Cf-Connecting-Ip}
           }
         '';
       };
@@ -88,6 +91,7 @@ in
       "${vars.filebrowserDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:${toString vars.filebrowserPort} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
@@ -98,6 +102,7 @@ in
       "${vars.emailsDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:${toString mailArchiveOauth2ProxyPort} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
@@ -108,6 +113,7 @@ in
       "${vars.kiwixDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:4182 {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
@@ -118,6 +124,7 @@ in
       "${vars.metubeDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:4183 {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
@@ -125,9 +132,30 @@ in
         '';
       };
 
+      "${vars.monitorDomain}" = {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
+          reverse_proxy http://127.0.0.1:4184 {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+          }
+        '';
+      };
+
+      "${vars.trafficDomain}" = {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          root * ${goaccessReportRoot}
+          try_files {path} /index.html
+          file_server
+        '';
+      };
+
       "${vars.photosDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:${toString config.services.immich.port}
         '';
       };
@@ -135,6 +163,7 @@ in
       "${vars.sharePhotosDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:3300 {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
@@ -145,6 +174,7 @@ in
       "${vars.kavitaDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:${toString config.services.kavita.settings.Port}
         '';
       };
@@ -152,6 +182,7 @@ in
       "${vars.jellyfinDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
           reverse_proxy http://127.0.0.1:${toString jellyfinPort} {
             header_up X-Forwarded-Proto https
           }

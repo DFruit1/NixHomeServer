@@ -35,4 +35,4 @@ public share links use `sharephotos.sydneybasiniot.org`. See
 
 Mail archive control plane: see [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private UI, sync flow, and storage model.
 
-Private file manager trial: `https://file.sydneybasiniot.org` now runs FileBrowser Quantum alongside the existing Copyparty deployment. Copyparty remains unchanged and primary during evaluation. Kavita-managed book roots now only include `ebooks`, `comics`, and `manga`.
+Files now split cleanly by role: `https://uploads.sydneybasiniot.org/upload/<username>/` is the Copyparty bulk-uploader surface, while `https://files.sydneybasiniot.org/` is the private FileBrowser Quantum UI and WebDAV entrypoint. Kavita-managed book roots now only include `ebooks`, `comics`, and `manga`.

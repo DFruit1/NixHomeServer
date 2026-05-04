@@ -15,7 +15,7 @@ in
     scope = "openid profile email groups_name";
     email.domains = [ "*" ];
     upstream = [ "http://127.0.0.1:${toString config.services.copyparty.settings.p}" ];
-    redirectURL = "https://${vars.filesDomain}/oauth2/callback";
+    redirectURL = "https://${vars.uploadsDomain}/oauth2/callback";
     httpAddress = "127.0.0.1:${toString oauth2ProxyPort}";
     clientID = "oauth2-proxy";
     keyFile = oauth2ProxyKeyFilePath;
@@ -25,8 +25,6 @@ in
       "allowed-group" = [
         "user-files"
         "domain_admins"
-        "shared-files-ro"
-        "shared-files-rw"
       ];
       "code-challenge-method" = "S256";
       "oidc-groups-claim" = "groups";

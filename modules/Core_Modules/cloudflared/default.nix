@@ -23,9 +23,9 @@
           service = "https://127.0.0.1:443";
           originRequest.originServerName = vars.kanidmDomain;
         };
-        "${vars.filesDomain}" = {
+        "${vars.uploadsDomain}" = {
           service = "https://127.0.0.1:443";
-          originRequest.originServerName = vars.filesDomain;
+          originRequest.originServerName = vars.uploadsDomain;
         };
         "${vars.sharePhotosDomain}" = {
           service = "https://127.0.0.1:443";

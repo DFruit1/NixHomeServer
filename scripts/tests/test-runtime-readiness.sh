@@ -82,7 +82,8 @@ cat >"$snapshot_file" <<EOF
   "services": {
     "requiredUnits": ["copyparty.service"],
     "edgeHttp": [
-      { "name": "files", "url": "https://files.example.test/", "expected": [200, 302, 303, 401, 403] }
+      { "name": "uploads", "url": "https://uploads.example.test/", "expected": [200, 302, 303, 401, 403] },
+      { "name": "files", "url": "https://files.example.test/", "expected": [200, 302, 303] }
     ],
     "internalHttp": [
       { "name": "copyparty", "url": "http://127.0.0.1:3923/", "expected": [200, 302, 401, 403] }
@@ -94,6 +95,7 @@ cat >"$snapshot_file" <<EOF
       ],
       "splitHorizon": {
         "private": [
+          { "host": "uploads.example.test", "expected": "192.168.8.12" },
           { "host": "server.home.arpa", "expected": "192.168.8.12" }
         ],
         "ptr": [
@@ -200,7 +202,7 @@ case "$name" in
   example.com)
     printf '%s has address 93.184.216.34\n' "$name"
     ;;
-  files.example.test|server.home.arpa)
+  files.example.test|uploads.example.test|server.home.arpa)
     printf '%s has address 192.168.8.12\n' "$name"
     ;;
   192.168.8.12)

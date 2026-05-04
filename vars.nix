@@ -142,6 +142,7 @@ rec {
     "books"
     "emails"
     "files"
+    "uploads"
   ];
   sharedContentSubdirs = [
     "audiobooks"
@@ -155,13 +156,18 @@ rec {
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
+  glancesAccessUsers = [
+    kanidmAdminUser
+  ];
+  monitorDomain = "monitor.${domain}";
+  trafficDomain = "traffic.${domain}";
   photosDomain = "photos.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
   sharePhotosDomain = "sharephotos.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.
   audiobooksDomain = "audiobooks.${domain}";
-  filebrowserDomain = "file.${domain}";
+  uploadsDomain = "uploads.${domain}";
+  filebrowserDomain = "files.${domain}";
   filebrowserPort = 8097;
   filebrowserStateDir = "/var/lib/filebrowser-quantum";
-  filesDomain = "files.${domain}";
   emailsDomain = "emails.${domain}";
   kiwixDomain = "wiki.${domain}";
   kiwixLibraryRoot = "${dataRoot}/kiwix";

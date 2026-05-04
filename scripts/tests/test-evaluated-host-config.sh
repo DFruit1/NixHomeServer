@@ -41,7 +41,10 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
       netIface = vars.netIface;
       photosDomain = vars.photosDomain;
       sharePhotosDomain = vars.sharePhotosDomain;
+      uploadsDomain = vars.uploadsDomain;
       filebrowserDomain = vars.filebrowserDomain;
+      monitorDomain = vars.monitorDomain;
+      trafficDomain = vars.trafficDomain;
       personalKavitaLibraries = vars.personalKavitaLibraries;
       sharedBooksSubdirs = vars.sharedBooksSubdirs;
     };
@@ -111,8 +114,10 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
         hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
         hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
+        hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
         hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
         hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
+        hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
         hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
         kavitaLibrarySyncAfter = cfg.systemd.services.kavita-library-sync.after;
         kavitaLibrarySyncWants = cfg.systemd.services.kavita-library-sync.wants;
@@ -124,6 +129,9 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
         jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
         hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
+        hasGlancesService = cfg.systemd.services ? "glances";
+        hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
+        hasGoaccessReportService = cfg.systemd.services ? "goaccess-report";
       };
     };
   }
@@ -131,41 +139,6 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
 
 snapshot_query() {
   jq -c "$1" <<<"$CORE_CONFIG_SNAPSHOT_JSON"
-}
-
-copyparty_duplicate_book_paths() {
-  {
-    snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.'
-    snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.'
-  } | awk '
-    /^\[[^][]+\]$/ {
-      route = substr($0, 2, length($0) - 2)
-      next
-    }
-    route != "" && $0 ~ /^\// {
-      path = $0
-      if (path ~ /\/books\//) {
-        print path "\t" route
-      }
-      route = ""
-      next
-    }
-    {
-      route = ""
-    }
-  ' | awk -F '\t' '
-    {
-      routes[$1] = routes[$1] ? routes[$1] ", " $2 : $2
-      count[$1]++
-    }
-    END {
-      for (path in count) {
-        if (count[path] > 1) {
-          print path ": " routes[path]
-        }
-      }
-    }
-  ' | sort
 }
 
 assert_json_true() {
@@ -259,38 +232,37 @@ assert_json_true '.config.apps.hasImmichServerService' "Immich service wiring mu
 assert_json_true '.config.apps.hasPaperlessWebService' "Paperless service wiring must remain present."
 assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiring must remain present."
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf settled scan service must remain present."
-assert_json_true '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf watcher service must remain present."
+assert_json_true '.config.apps.hasAudiobookshelfLibrarySyncTimer' "Audiobookshelf overnight scan timer must remain present."
+assert_json_false '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf recursive watcher service must remain absent."
 assert_json_true '.config.apps.hasKavitaLibrarySync' "Kavita settled scan service must remain present."
+assert_json_true '.config.apps.hasKavitaLibrarySyncTimer' "Kavita overnight scan timer must remain present."
 assert_json_true '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence service must remain present."
-assert_json_true '.config.apps.hasKavitaLibraryWatch' "Kavita watcher service must remain present."
+assert_json_false '.config.apps.hasKavitaLibraryWatch' "Kavita recursive watcher service must remain absent."
 assert_json_true '.config.apps.hasKiwixLibraryWatch' "Kiwix watcher service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryMonitor' "Jellyfin library monitor config service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan service must remain present."
-assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin watcher service must remain present."
+assert_json_false '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain absent."
+assert_json_true '.config.apps.hasGlancesService' "Glances service wiring must remain present."
+assert_json_true '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Proxy wiring must remain present."
+assert_json_true '.config.apps.hasGoaccessReportService' "GoAccess report service wiring must remain present."
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
 
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/shared/ebooks\]' \
-  "Copyparty must expose grouped shared-book aliases."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/shared/ebooks\]' \
-  "Copyparty must retire legacy shared-book routes in favour of /books/shared/*."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/shared/other\]' \
-  "Copyparty must not expose retired shared other-book aliases."
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/books/\$username/ebooks\]' \
-  "Copyparty runtime config sync must emit grouped per-user book aliases."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/\$username/ebooks\]' \
-  "Copyparty runtime config sync must retire legacy per-user book routes in favour of /books/\$username/*."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/books/\$username/other\]' \
-  "Copyparty runtime config sync must not emit retired per-user other-book aliases."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/upload/\$\{u\}\]' \
+  "Copyparty must expose only the upload placeholder volume."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/shared/' \
+  "Copyparty must retire shared browsing volumes."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/' \
+  "Copyparty must retire book browsing volumes."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/upload/\$\{u\}\]' \
+  "Copyparty runtime config sync must emit the upload placeholder volume."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/files' \
+  "Copyparty runtime config sync must retire legacy per-user file volumes."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/audiobooks' \
+  "Copyparty runtime config sync must retire legacy per-user audiobook volumes."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/emails' \
+  "Copyparty runtime config sync must retire legacy per-user email volumes."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'copyparty -c .+ --exit cfg' \
   "Copyparty runtime config sync must validate the rendered config before startup."
-
-copyparty_duplicate_book_paths="$(copyparty_duplicate_book_paths)"
-if [[ -n "$copyparty_duplicate_book_paths" ]]; then
-  echo "❌ Copyparty book routes must not map multiple public volumes onto the same backing path."
-  echo "   duplicates:"
-  printf '%s\n' "$copyparty_duplicate_book_paths"
-  exit 1
-fi
 
 if [[ "$(snapshot_query '.config.apps.caddyHostCount')" == "0" ]]; then
   echo "❌ Caddy must expose at least one virtual host."
@@ -315,8 +287,26 @@ if ! jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '
   exit 1
 fi
 
+if ! jq -e --arg uploads_host "$(snapshot_query '.vars.uploadsDomain' | jq -r '.')" 'index($uploads_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must expose the Copyparty uploader hostname."
+  echo "   hosts: $caddy_host_names"
+  exit 1
+fi
+
 if ! jq -e --arg share_host "$(snapshot_query '.vars.sharePhotosDomain' | jq -r '.')" 'index($share_host) != null' >/dev/null <<<"$caddy_host_names"; then
   echo "❌ Caddy must keep the public Immich share hostname configured."
+  echo "   hosts: $caddy_host_names"
+  exit 1
+fi
+
+if ! jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must expose the private Glances hostname."
+  echo "   hosts: $caddy_host_names"
+  exit 1
+fi
+
+if ! jq -e --arg traffic_host "$(snapshot_query '.vars.trafficDomain' | jq -r '.')" 'index($traffic_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must expose the private GoAccess hostname."
   echo "   hosts: $caddy_host_names"
   exit 1
 fi
@@ -340,8 +330,26 @@ if jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '.'
   exit 1
 fi
 
+if ! jq -e --arg uploads_host "$(snapshot_query '.vars.uploadsDomain' | jq -r '.')" 'index($uploads_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must publish the Copyparty uploader hostname."
+  echo "   ingress hosts: $cloudflared_ingress_host_names"
+  exit 1
+fi
+
+if jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must not publish the private Glances hostname."
+  echo "   ingress hosts: $cloudflared_ingress_host_names"
+  exit 1
+fi
+
+if jq -e --arg traffic_host "$(snapshot_query '.vars.trafficDomain' | jq -r '.')" 'index($traffic_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must not publish the private GoAccess hostname."
+  echo "   ingress hosts: $cloudflared_ingress_host_names"
+  exit 1
+fi
+
 oauth_systems="$(snapshot_query '.config.apps.oauthSystemNames')"
-if ! jq -e 'index("oauth2-proxy") != null and index("filebrowser-quantum-web") != null and index("immich-web") != null and index("paperless-web") != null and index("abs-web") != null' >/dev/null <<<"$oauth_systems"; then
+if ! jq -e 'index("oauth2-proxy") != null and index("filebrowser-quantum-web") != null and index("immich-web") != null and index("paperless-web") != null and index("abs-web") != null and index("glances-web") != null' >/dev/null <<<"$oauth_systems"; then
   echo "❌ Expected OIDC-facing application registrations are missing from Kanidm provisioning."
   echo "   OAuth systems: $oauth_systems"
   exit 1
@@ -359,6 +367,8 @@ fi
 
 require_match scripts/helpers/runtime-health-common.sh 'filebrowser-quantum\.service' \
   "Runtime health inventory must require the FileBrowser Quantum service."
+require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.uploadsDomain\}/' \
+  "Runtime health inventory must probe the Copyparty uploader edge hostname."
 require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.filebrowserDomain\}/' \
   "Runtime health inventory must probe the FileBrowser Quantum edge hostname."
 

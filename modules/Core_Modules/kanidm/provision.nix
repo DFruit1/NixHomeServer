@@ -32,6 +32,7 @@ in
     groups."mail-archive-users" = mkManualGroup [ ];
     groups."immich-users" = mkManualGroup [ ];
     groups."immich-admin" = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."glances-users" = mkManualGroup vars.glancesAccessUsers;
     groups."paperless-users" = mkManualGroup [ ];
     groups."paperless-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."audiobookshelf-users" = mkManualGroup [ ];
@@ -107,20 +108,18 @@ in
     };
 
     systems.oauth2.oauth2-proxy = {
-      displayName = "Files";
+      displayName = "Uploads";
       imageFile = ./assets/files.svg;
-      originUrl = "https://${vars.filesDomain}/oauth2/callback";
-      originLanding = "https://${vars.filesDomain}";
+      originUrl = "https://${vars.uploadsDomain}/oauth2/callback";
+      originLanding = "https://${vars.uploadsDomain}";
       basicSecretFile = oauth2ProxyClientSecretPath;
       preferShortUsername = true;
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
       scopeMaps.domain_admins = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps."shared-files-ro" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps."shared-files-rw" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.filebrowser-quantum-web = {
-      displayName = "File";
+      displayName = "Files";
       imageFile = ./assets/files.svg;
       originUrl = "https://${vars.filebrowserDomain}/api/auth/oidc/callback";
       originLanding = "https://${vars.filebrowserDomain}/";
@@ -141,6 +140,16 @@ in
       basicSecretFile = config.age.secrets.mailArchiveOauth2ProxyClientSecret.path;
       preferShortUsername = true;
       scopeMaps."mail-archive-users" = [ "openid" "profile" "email" "groups_name" ];
+    };
+
+    systems.oauth2.glances-web = {
+      displayName = "Monitoring";
+      imageFile = ./assets/portal.svg;
+      originUrl = "https://${vars.monitorDomain}/oauth2/callback";
+      originLanding = "https://${vars.monitorDomain}";
+      basicSecretFile = config.age.secrets.glancesOauth2ProxyClientSecret.path;
+      preferShortUsername = true;
+      scopeMaps."glances-users" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.kiwix-web = {

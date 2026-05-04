@@ -89,6 +89,8 @@ let
       "\"${vars.emailsDomain}           A ${targetIp}\""
       "\"${vars.kiwixDomain}            A ${targetIp}\""
       "\"${vars.metubeDomain}           A ${targetIp}\""
+      "\"${vars.monitorDomain}          A ${targetIp}\""
+      "\"${vars.trafficDomain}          A ${targetIp}\""
       "\"${vars.photosDomain}           A ${targetIp}\""
       "\"${vars.kavitaDomain}           A ${targetIp}\""
       "\"${vars.jellyfinDomain}         A ${targetIp}\""
@@ -98,7 +100,7 @@ let
     (privateHostedRecords vars.serverLanIP)
     ++ [
       "\"${vars.kanidmDomain}           A ${vars.serverLanIP}\""
-      "\"${vars.filesDomain}            A ${vars.serverLanIP}\""
+      "\"${vars.uploadsDomain}          A ${vars.serverLanIP}\""
     ]
     ++ lanDnsHostRecords;
 
@@ -170,7 +172,7 @@ in
             else
               {
                 # Private apps resolve to the NetBird address here. Public tunnel
-                # names like id.<domain> and files.<domain> stay on normal public
+                # names like id.<domain> and uploads.<domain> stay on normal public
                 # recursion by design.
                 local-zone = [ "${vars.domain} transparent" ];
                 local-data = netbirdHostedRecords;
