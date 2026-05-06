@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use crate::{
     inventory::policy::{matches_policy_value, PolicyField},
-    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
+    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck, VerificationPolicy},
     output::CommandOutput,
     validation::{
         validate_identifier_field, validate_seconds_field, AUTH_EXPIRY_MAX_SECONDS,
@@ -99,6 +99,7 @@ fn verify_policy_field(
     expected: Option<u64>,
 ) -> Result<crate::inventory::Parsed<crate::inventory::groups::GroupRecord>, AppError> {
     verify_with_retry(
+        VerificationPolicy::PolicyConvergence,
         &format!("policy verification failed for Kanidm group '{group}'"),
         json!({
             "group": group,

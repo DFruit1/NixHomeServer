@@ -1,8 +1,9 @@
 { lib, config, vars, ... }:
 
 {
-  # The Cloudflare tunnel is intentionally limited to the public endpoints.
-  # Internal apps stay on LAN/NetBird behind local DNS and Caddy.
+  # The Cloudflare tunnel is intentionally limited to public or
+  # authentication-gated endpoints. LAN/NetBird still provide the direct path
+  # for private DNS resolution and local access.
   users.users.cloudflared = {
     isSystemUser = true;
     group = "cloudflared";
@@ -26,6 +27,10 @@
         "${vars.uploadsDomain}" = {
           service = "https://127.0.0.1:443";
           originRequest.originServerName = vars.uploadsDomain;
+        };
+        "${vars.filebrowserDomain}" = {
+          service = "https://127.0.0.1:443";
+          originRequest.originServerName = vars.filebrowserDomain;
         };
         "${vars.sharePhotosDomain}" = {
           service = "https://127.0.0.1:443";

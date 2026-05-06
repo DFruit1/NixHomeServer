@@ -2194,14 +2194,15 @@ fn run_account_action(
                         error,
                     )
                 })?;
-                let secret =
-                    decrypt_secret(&encryption_key, &account.encrypted_secret).map_err(|error| {
+                let secret = decrypt_secret(&encryption_key, &account.encrypted_secret).map_err(
+                    |error| {
                         preflight_sync_diagnostic(
                             "secret_decrypt_failed",
                             "Mailbox sync could not unlock the stored mailbox credential.",
                             error,
                         )
-                    })?;
+                    },
+                )?;
                 let account_paths = ensure_account_paths(config, account).map_err(|error| {
                     preflight_sync_diagnostic(
                         "archive_path_unavailable",
@@ -2224,19 +2225,15 @@ fn run_account_action(
                             error,
                         )
                     })?;
-                let temp_config = write_temp_mbsyncrc(
-                    config,
-                    account,
-                    &account_paths,
-                    &temp_secret.path,
-                )
-                .map_err(|error| {
-                    preflight_sync_diagnostic(
+                let temp_config =
+                    write_temp_mbsyncrc(config, account, &account_paths, &temp_secret.path)
+                        .map_err(|error| {
+                            preflight_sync_diagnostic(
                         "sync_config_failed",
                         "Mailbox sync could not generate the temporary mbsync configuration.",
                         error,
                     )
-                })?;
+                        })?;
 
                 run_sync_command(
                     SyncPhase::Download,
@@ -2324,13 +2321,15 @@ fn run_account_action(
             Ok(())
         }
         Err(error) => {
-            update_sync_finished(config, account.id, "error", Some(&error)).map_err(|db_error| {
-                preflight_sync_diagnostic(
-                    "sync_state_update_failed",
-                    "Mailbox sync failed and the diagnostic state could not be saved.",
-                    db_error,
-                )
-            })?;
+            update_sync_finished(config, account.id, "error", Some(&error)).map_err(
+                |db_error| {
+                    preflight_sync_diagnostic(
+                        "sync_state_update_failed",
+                        "Mailbox sync failed and the diagnostic state could not be saved.",
+                        db_error,
+                    )
+                },
+            )?;
             Err(error)
         }
     }
@@ -2462,11 +2461,7 @@ fn ensure_account_paths(
         notmuch_db_root,
     };
 
-    migrate_legacy_account_state(
-        &legacy_state_dir,
-        &legacy_notmuch_db_root,
-        &account_paths,
-    )?;
+    migrate_legacy_account_state(&legacy_state_dir, &legacy_notmuch_db_root, &account_paths)?;
     migrate_account_state_root_layout(&account_paths)?;
 
     fs::create_dir_all(&account_paths.sync_state_dir).map_err(|error| {
@@ -2648,8 +2643,13 @@ fn copy_path_recursive(src: &FsPath, dst: &FsPath) -> Result<(), String> {
         ));
     }
 
-    fs::copy(src, dst)
-        .map_err(|error| format!("failed to copy {} to {}: {error}", src.display(), dst.display()))?;
+    fs::copy(src, dst).map_err(|error| {
+        format!(
+            "failed to copy {} to {}: {error}",
+            src.display(),
+            dst.display()
+        )
+    })?;
     fs::set_permissions(dst, metadata.permissions())
         .map_err(|error| format!("failed to chmod {}: {error}", dst.display()))?;
     Ok(())
@@ -2891,7 +2891,9 @@ fn run_sync_command(
         return Ok(());
     }
 
-    Err(command_sync_diagnostic(phase, code, summary, command, &output))
+    Err(command_sync_diagnostic(
+        phase, code, summary, command, &output,
+    ))
 }
 
 fn stored_sync_diagnostic(account: &AccountRecord) -> Option<SyncDiagnostic> {
@@ -2909,7 +2911,10 @@ fn stored_sync_diagnostic(account: &AccountRecord) -> Option<SyncDiagnostic> {
         account.last_sync_phase.as_deref(),
         account.last_sync_code.as_deref(),
         account.last_sync_summary.as_deref(),
-        account.last_sync_detail.as_deref().or(account.last_sync_error.as_deref()),
+        account
+            .last_sync_detail
+            .as_deref()
+            .or(account.last_sync_error.as_deref()),
     ) {
         (phase, Some(code), Some(summary), Some(detail)) => Some(SyncDiagnostic {
             phase: phase.and_then(SyncPhase::from_stored),
@@ -3717,6 +3722,7 @@ fn load_dashboard_account_views(
     config: &AppConfig,
     username: &str,
 ) -> Result<Vec<DashboardAccountView>, String> {
+    reconcile_interrupted_syncs(config)?;
     let accounts = list_accounts_for_user(config, username)?;
     Ok(accounts
         .into_iter()
@@ -3761,8 +3767,13 @@ fn build_dashboard_account_view(
         ),
     };
     let metrics_diagnostic = progress_error.map(metrics_sync_diagnostic);
-    let (status_class, status_label) =
-        account_status(&account, index_state, &counts, sync_diagnostic.as_ref());
+    let (status_class, status_label) = account_status(
+        &account,
+        index_state,
+        &counts,
+        sync_diagnostic.as_ref(),
+        metrics_diagnostic.as_ref(),
+    );
     let progress_note = account_progress_note(
         &account,
         &counts,
@@ -3950,8 +3961,7 @@ fn account_progress_note(
     metrics_diagnostic: Option<&SyncDiagnostic>,
 ) -> String {
     if metrics_diagnostic.is_some() {
-        "Counts are unavailable because the archive or search index could not be read."
-            .to_string()
+        "Counts are unavailable because the archive or search index could not be read.".to_string()
     } else if account.last_sync_status.as_deref() == Some("running")
         && counts.pending_index_count > 0
     {
@@ -3967,8 +3977,7 @@ fn account_progress_note(
     } else if counts.downloaded_message_count == 0 {
         "No messages downloaded yet.".to_string()
     } else if counts.pending_index_count > 0 {
-        "Downloaded mail is ahead of the current search index. Run Reindex to catch up."
-            .to_string()
+        "Downloaded mail is ahead of the current search index. Run Reindex to catch up.".to_string()
     } else if index_state == IndexState::Indexed {
         "Search index is caught up with the downloaded archive.".to_string()
     } else {
@@ -4030,21 +4039,20 @@ fn diagnostic_recommended_action(
 ) -> Option<String> {
     match diagnostic.phase {
         Some(SyncPhase::Download | SyncPhase::Preflight) => Some(
-            "Check the mailbox credentials and archive paths, then run Sync now again."
-                .to_string(),
+            "Check the mailbox credentials and archive paths, then run Sync now again.".to_string(),
         ),
-        Some(SyncPhase::Index | SyncPhase::Reconcile) if counts.pending_index_count > 0 => Some(
-            "Run Reindex to catch search up with the downloaded archive.".to_string(),
-        ),
+        Some(SyncPhase::Index | SyncPhase::Reconcile) if counts.pending_index_count > 0 => {
+            Some("Run Reindex to catch search up with the downloaded archive.".to_string())
+        }
         Some(SyncPhase::Index | SyncPhase::Reconcile) => Some(
             "Run Reindex after checking the notmuch configuration and archive state.".to_string(),
         ),
-        Some(SyncPhase::Metrics) => Some(
-            "Check archive and notmuch access, then refresh the dashboard.".to_string(),
-        ),
-        None => Some(
-            "Review the technical detail below, then retry Sync now or Reindex.".to_string(),
-        ),
+        Some(SyncPhase::Metrics) => {
+            Some("Check archive and notmuch access, then refresh the dashboard.".to_string())
+        }
+        None => {
+            Some("Review the technical detail below, then retry Sync now or Reindex.".to_string())
+        }
     }
 }
 
@@ -4081,8 +4089,7 @@ fn dashboard_sync_notice(
         notice.progress_warning_action = diagnostic_recommended_action(diagnostic, counts);
 
         if notice.diagnostic_summary.is_none() {
-            notice.diagnostic_phase =
-                diagnostic.phase.map(SyncPhase::as_str).map(str::to_string);
+            notice.diagnostic_phase = diagnostic.phase.map(SyncPhase::as_str).map(str::to_string);
             notice.diagnostic_code = Some(diagnostic.code.clone());
             notice.diagnostic_summary = Some(diagnostic.summary.clone());
             notice.diagnostic_detail = Some(diagnostic.detail.clone());
@@ -4395,6 +4402,7 @@ fn account_status(
     index_state: IndexState,
     counts: &AccountProgressCounts,
     sync_diagnostic: Option<&SyncDiagnostic>,
+    metrics_diagnostic: Option<&SyncDiagnostic>,
 ) -> (&'static str, &'static str) {
     match account.last_sync_status.as_deref() {
         Some("running") => ("pending", "syncing"),
@@ -4408,6 +4416,7 @@ fn account_status(
             ("pending", "index behind")
         }
         Some("error") => ("error", "sync failed"),
+        _ if metrics_diagnostic.is_some() => ("pending", "check archive"),
         Some("ok") if counts.pending_index_count > 0 => ("pending", "index behind"),
         Some("ok") if index_state == IndexState::Indexed => ("ok", "healthy"),
         _ if index_state != IndexState::Indexed => ("unindexed", "needs index"),
@@ -5015,10 +5024,16 @@ mod tests {
         assert!(read_write.contains(&PathBuf::from(config.runtime_dir.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.lock_dir.as_ref())));
         assert!(read_write.contains(&PathBuf::from(
-            config.paperless_consume_root.as_deref().expect("paperless consume root"),
+            config
+                .paperless_consume_root
+                .as_deref()
+                .expect("paperless consume root"),
         )));
         assert!(read_write.contains(&PathBuf::from(
-            config.paperless_staging_dir.as_deref().expect("paperless staging root"),
+            config
+                .paperless_staging_dir
+                .as_deref()
+                .expect("paperless staging root"),
         )));
     }
 
@@ -5220,7 +5235,7 @@ mod tests {
                 .join(".notmuch-stub")
                 .join(name),
         )
-            .unwrap_or_default()
+        .unwrap_or_default()
     }
 
     fn mail_export_stub_commands() -> [(&'static str, &'static str); 4] {
@@ -5454,10 +5469,7 @@ mod tests {
         assert!(rendered.contains("Host imap.gmail.com"));
         assert!(rendered.contains("\"[Gmail]/All Mail\""));
         assert!(rendered.contains("Sync Pull New Flags"));
-        assert!(rendered.contains(&format!(
-            "Path {}/",
-            paths.maildir.display()
-        )));
+        assert!(rendered.contains(&format!("Path {}/", paths.maildir.display())));
         assert!(rendered.contains(&format!(
             "SyncState {}",
             paths.sync_state_dir.join("state").display()
@@ -5608,6 +5620,28 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_load_reconciles_stale_running_syncs() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_account(&config, "alice", "secret");
+
+        update_sync_started(&config, account_id).expect("mark running");
+        let lock_path = sync_lock_path(&config, account_id);
+        write_private_file(&lock_path, b"999999").expect("stale lock");
+
+        let views = load_dashboard_account_views(&config, "alice").expect("dashboard views");
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].status.status_label, "sync failed");
+        assert_eq!(
+            views[0].status.diagnostic_code.as_deref(),
+            Some("interrupted")
+        );
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
     fn sync_failure_classifies_download_phase() {
         with_stubbed_path(
             &[
@@ -5724,6 +5758,7 @@ mod tests {
                     view.status.progress_warning.as_deref(),
                     Some("Archive counts could not be verified for this mailbox.")
                 );
+                assert_eq!(view.status.status_label, "check archive");
                 assert!(view
                     .status
                     .progress_warning_detail
@@ -5758,7 +5793,8 @@ mod tests {
             )
             .expect("update");
 
-        let view = build_dashboard_account_view(&config, read_account(&config, "alice", account_id));
+        let view =
+            build_dashboard_account_view(&config, read_account(&config, "alice", account_id));
         assert_eq!(
             view.status.diagnostic_summary.as_deref(),
             Some("The last sync reported an error.")
@@ -5886,14 +5922,8 @@ mod tests {
         let initial = read_notmuch_config(&config, &account);
         let paths = ensure_account_paths(&config, &account).expect("paths");
         assert!(initial.contains("primary_email=alice@gmail.com"));
-        assert!(initial.contains(&format!(
-            "mail_root={}",
-            paths.maildir.display()
-        )));
-        assert!(initial.contains(&format!(
-            "path={}",
-            paths.notmuch_db_root.display()
-        )));
+        assert!(initial.contains(&format!("mail_root={}", paths.maildir.display())));
+        assert!(initial.contains(&format!("path={}", paths.notmuch_db_root.display())));
         assert!(initial.contains("[index]\nas_text="));
         assert!(initial.contains("^application/pdf$"));
         assert!(initial.contains(
@@ -6080,12 +6110,10 @@ mod tests {
                 account.paperless_last_export_status.as_deref(),
                 Some("error")
             );
-            assert!(
-                account
-                    .paperless_last_export_error
-                    .as_deref()
-                    .is_some_and(|error| error.contains("unknown binary attachment"))
-            );
+            assert!(account
+                .paperless_last_export_error
+                .as_deref()
+                .is_some_and(|error| error.contains("unknown binary attachment")));
 
             write_private_file(
                 &message_path,

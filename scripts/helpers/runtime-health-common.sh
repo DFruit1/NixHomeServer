@@ -185,7 +185,6 @@ in
         "audiobookshelf-library-sync.timer"
         "filebrowser-quantum.service"
         "kavita.service"
-        "kavita-library-sync.timer"
         "jellyfin.service"
         "glances.service"
         "glances-oauth2-proxy.service"

@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::{
     context::ResolvedContext,
     inventory::{clients::parse_client_list, groups::parse_group_list, users::parse_user_list},
-    kanidm_cli::{KanidmCli, SessionState},
+    kanidm_cli::{BaseSessionState, KanidmCli, PrivilegedWriteState},
     output::CommandOutput,
     AppError,
 };
@@ -242,33 +242,42 @@ impl DoctorReport {
 }
 
 fn probe_session(cli: &KanidmCli) -> SessionDoctorProbe {
-    match cli.session_status() {
-        Ok(SessionState::Authenticated { stdout }) => SessionDoctorProbe {
-            status: DoctorProbeStatus::Ok,
-            authenticated: Some(true),
-            state: "authenticated".to_string(),
-            diagnostic: stdout.trim().to_string(),
-            error: None,
-        },
-        Ok(SessionState::Expired { diagnostic }) => SessionDoctorProbe {
-            status: DoctorProbeStatus::Warning,
-            authenticated: Some(false),
-            state: "expired".to_string(),
-            diagnostic: diagnostic.trim().to_string(),
-            error: None,
-        },
-        Ok(SessionState::Missing { diagnostic }) => SessionDoctorProbe {
+    match cli.session_snapshot() {
+        Ok(snapshot)
+            if matches!(snapshot.base_session_state, BaseSessionState::Present)
+                && matches!(snapshot.privileged_write_state, PrivilegedWriteState::Ready) =>
+        {
+            SessionDoctorProbe {
+                status: DoctorProbeStatus::Ok,
+                authenticated: Some(true),
+                state: "authenticated".to_string(),
+                diagnostic: snapshot.diagnostic_raw.trim().to_string(),
+                error: None,
+            }
+        }
+        Ok(snapshot) if matches!(snapshot.base_session_state, BaseSessionState::Expired) => {
+            SessionDoctorProbe {
+                status: DoctorProbeStatus::Warning,
+                authenticated: Some(false),
+                state: "expired".to_string(),
+                diagnostic: snapshot.diagnostic_raw.trim().to_string(),
+                error: None,
+            }
+        }
+        Ok(snapshot) if matches!(snapshot.base_session_state, BaseSessionState::Present) => {
+            SessionDoctorProbe {
+                status: DoctorProbeStatus::Warning,
+                authenticated: Some(true),
+                state: "reauth_required".to_string(),
+                diagnostic: snapshot.diagnostic_raw.trim().to_string(),
+                error: None,
+            }
+        }
+        Ok(snapshot) => SessionDoctorProbe {
             status: DoctorProbeStatus::Warning,
             authenticated: Some(false),
             state: "missing".to_string(),
-            diagnostic: diagnostic.trim().to_string(),
-            error: None,
-        },
-        Ok(SessionState::ReauthRequired { diagnostic }) => SessionDoctorProbe {
-            status: DoctorProbeStatus::Warning,
-            authenticated: Some(true),
-            state: "reauth_required".to_string(),
-            diagnostic: diagnostic.trim().to_string(),
+            diagnostic: snapshot.diagnostic_raw.trim().to_string(),
             error: None,
         },
         Err(error) => SessionDoctorProbe {

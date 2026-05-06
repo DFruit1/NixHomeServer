@@ -8,7 +8,7 @@ use crate::{
         clients::{parse_client_list, parse_client_record},
         groups::{category_sort_rank, is_operator_visible_group, parse_group_list, GroupSummary},
     },
-    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
+    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck, VerificationPolicy},
     ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
     output::CommandOutput,
     AppError,
@@ -391,6 +391,7 @@ fn verify_membership(
     mode: MembershipMode,
 ) -> Result<crate::inventory::Parsed<crate::inventory::users::UserRecord>, AppError> {
     verify_with_retry(
+        VerificationPolicy::MembershipConvergence,
         &format!("membership verification failed for Kanidm user '{account_id}'"),
         json!({
             "account_id": account_id,

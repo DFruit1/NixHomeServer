@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use crate::{
     inventory::clients::{parse_client_list, parse_client_record, ClientRecord},
-    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
+    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck, VerificationPolicy},
     ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
     output::CommandOutput,
     validation::{validate_identifier_field, validate_redirect_url},
@@ -357,6 +357,7 @@ fn verify_redirect_presence(
     expected_present: bool,
 ) -> Result<crate::inventory::Parsed<ClientRecord>, AppError> {
     verify_with_retry(
+        VerificationPolicy::ClientConvergence,
         &format!("redirect URL verification failed for oauth2 client '{client}'"),
         json!({
             "client": client,
@@ -395,6 +396,7 @@ fn verify_bool_flag(
     expected: Option<bool>,
 ) -> Result<crate::inventory::Parsed<ClientRecord>, AppError> {
     verify_with_retry(
+        VerificationPolicy::ClientConvergence,
         &format!("boolean flag verification failed for oauth2 client '{client}'"),
         json!({
             "client": client,

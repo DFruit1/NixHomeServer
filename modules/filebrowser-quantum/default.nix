@@ -7,6 +7,11 @@ let
   accessSyncStamp = "${managedDir}/last-sync.json";
   localAdminUsername = "local-admin";
   filebrowserPackage = pkgsUnstable."filebrowser-quantum";
+  customCssFile = pkgs.writeText "filebrowser-quantum-custom.css" ''
+    #sidebar .credits {
+      display: none !important;
+    }
+  '';
   yamlFormat = pkgs.formats.yaml { };
   configTemplate = yamlFormat.generate "filebrowser-quantum-config-template.yaml" {
     server = {
@@ -54,6 +59,9 @@ let
     };
     frontend = {
       name = "Files";
+      disableDefaultLinks = true;
+      externalLinks = [ ];
+      styling.customCSS = customCssFile;
       oidcLoginButtonText = "Login with Kanidm";
     };
     auth = {
@@ -300,15 +308,52 @@ in
         local source_name="$1"
         local index_path="$2"
         local group_name="$3"
+        ensure_access_rule "$source_name" "$index_path" true group "$group_name"
+      }
+
+      ensure_deny_user() {
+        local source_name="$1"
+        local index_path="$2"
+        local username="$3"
+        ensure_access_rule "$source_name" "$index_path" false user "$username"
+      }
+
+      ensure_access_rule() {
+        local source_name="$1"
+        local index_path="$2"
+        local allow="$3"
+        local rule_category="$4"
+        local value="$5"
         local current_rule response body status
 
         current_rule="$(api_get "/api/access?source=$(urlencode "$source_name")&path=$(urlencode "$index_path")")"
-        if ! jq -e --arg group_name "$group_name" '.allow.groups // [] | index($group_name) != null' >/dev/null <<<"$current_rule"; then
+        if ! jq -e \
+          --arg allow "$allow" \
+          --arg rule_category "$rule_category" \
+          --arg value "$value" '
+            if $rule_category == "group" then
+              if $allow == "true" then
+                .allow.groups // [] | index($value) != null
+              else
+                .deny.groups // [] | index($value) != null
+              end
+            else
+              if $allow == "true" then
+                .allow.users // [] | index($value) != null
+              else
+                .deny.users // [] | index($value) != null
+              end
+            end
+          ' >/dev/null <<<"$current_rule"; then
           response="$(${pkgs.curl}/bin/curl --silent --show-error \
             -X POST \
             -H "Authorization: Bearer $token" \
             -H 'Content-Type: application/json' \
-            --data "$(jq -cn --arg value "$group_name" '{allow:true, ruleCategory:"group", value:$value}')" \
+            --data "$(jq -cn \
+              --argjson allow "$allow" \
+              --arg rule_category "$rule_category" \
+              --arg value "$value" \
+              '{allow:$allow, ruleCategory:$rule_category, value:$value}')" \
             --write-out $'\n%{http_code}' \
             "$api_base/api/access?source=$(urlencode "$source_name")&path=$(urlencode "$index_path")")"
           status="''${response##*$'\n'}"
@@ -327,36 +372,32 @@ in
 
       sync_user() {
         local user_json="$1"
-        local username login_method groups_json desired_scopes desired_permissions updated_user
+        local username login_method groups_json desired_scopes desired_permissions desired_sidebar_links updated_user
 
         username="$(jq -r '.username' <<<"$user_json")"
         login_method="$(jq -r '.loginMethod' <<<"$user_json")"
 
         if [[ "$username" == "$admin_username" ]]; then
-          desired_scopes="$(jq -cn \
-            --arg users_root ${lib.escapeShellArg vars.usersRoot} \
-            --arg shared_root ${lib.escapeShellArg vars.sharedRoot} \
-            '[
-              {name:$users_root, scope:"/"},
-              {name:$shared_root, scope:"/"}
-            ]')"
+          desired_scopes='[
+            {"name":"Personal","scope":"/"},
+            {"name":"Shared","scope":"/"}
+          ]'
           desired_permissions='{"api":true,"admin":true,"modify":true,"share":true,"realtime":false,"delete":true,"create":true,"download":true}'
+          desired_sidebar_links='[]'
         else
           [[ "$login_method" == "oidc" ]] || return 0
           groups_json="$(api_get "/api/access/groups?user=$(urlencode "$username")" | jq -c '.groups // []')"
 
           desired_scopes="$(jq -cn \
-            --arg users_root ${lib.escapeShellArg vars.usersRoot} \
-            --arg shared_root ${lib.escapeShellArg vars.sharedRoot} \
             --arg username "$username" \
             --argjson groups "$groups_json" '
               def has_group($group_name): ($groups | index($group_name)) != null;
               [
                 if has_group("user-files") or has_group("domain_admins") then
-                  {name:$users_root, scope:("/" + $username)}
+                  {name:"Personal", scope:("/" + $username)}
                 else empty end,
                 if has_group("shared-files-ro") or has_group("shared-files-rw") or has_group("domain_admins") then
-                  {name:$shared_root, scope:"/"}
+                  {name:"Shared", scope:"/"}
                 else empty end
               ]')"
 
@@ -377,23 +418,46 @@ in
               create: (has_group("user-files") or has_group("shared-files-rw") or has_group("domain_admins")),
               download: true
             }')"
+
+          desired_sidebar_links="$(jq -cn --argjson groups "$groups_json" '
+            def has_group($group_name): ($groups | index($group_name)) != null;
+            [
+              if has_group("user-files") or has_group("domain_admins") then
+                {name:"Personal", category:"source", target:"/", icon:"", sourceName:"Personal"},
+                {name:"Files", category:"source", target:"/files/", icon:"file_present", sourceName:"Personal"},
+                {name:"Uploads", category:"source", target:"/uploads/", icon:"cloud_upload", sourceName:"Personal"}
+              else empty end,
+              if (has_group("user-files") or has_group("domain_admins")) and (has_group("shared-files-ro") or has_group("shared-files-rw") or has_group("domain_admins")) then
+                {name:"", category:"divider", target:"#", icon:""}
+              else empty end,
+              if has_group("shared-files-ro") or has_group("shared-files-rw") or has_group("domain_admins") then
+                {name:"Shared", category:"source", target:"/", icon:"", sourceName:"Shared"}
+              else empty end
+            ]')"
+
+          if jq -e 'index("user-files") != null or index("domain_admins") != null' >/dev/null <<<"$groups_json"; then
+            ensure_deny_user "Personal" "/$username/documents" "$username"
+            ensure_deny_user "Personal" "/$username/photos" "$username"
+          fi
         fi
 
         updated_user="$(jq -c \
           --argjson scopes "$desired_scopes" \
           --argjson permissions "$desired_permissions" \
-          '.scopes = $scopes | .permissions = $permissions' <<<"$user_json")"
+          --argjson sidebar_links "$desired_sidebar_links" \
+          '.scopes = $scopes | .permissions = $permissions | .sidebarLinks = $sidebar_links' <<<"$user_json")"
 
         if jq -e \
           --argjson scopes "$desired_scopes" \
           --argjson permissions "$desired_permissions" \
-          '.scopes == $scopes and .permissions == $permissions' >/dev/null <<<"$user_json"; then
+          --argjson sidebar_links "$desired_sidebar_links" \
+          '.scopes == $scopes and .permissions == $permissions and ((.sidebarLinks // []) == $sidebar_links)' >/dev/null <<<"$user_json"; then
           return 0
         fi
 
         api_put \
           "/api/users?username=$(urlencode "$username")" \
-          "$(jq -cn --argjson data "$updated_user" '{which:["Scopes","Permissions"], data:$data}')" \
+          "$(jq -cn --argjson data "$updated_user" '{which:["Scopes","Permissions","SidebarLinks"], data:$data}')" \
           >/dev/null
       }
 

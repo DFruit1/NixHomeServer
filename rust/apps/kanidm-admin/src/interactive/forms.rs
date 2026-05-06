@@ -1,5 +1,5 @@
 use console::{Key, Term};
-use dialoguer::{theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect, Select};
 
 use crate::{
     inventory::groups::{resolve_group_help, GroupSummary},
@@ -13,6 +13,12 @@ pub struct ContextualItem {
     pub label: String,
     pub summary: String,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptResult<T> {
+    Submitted(T),
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +37,46 @@ struct MembershipPickerView<'a> {
     current_groups: &'a [String],
     visible: &'a FilteredView,
     filter: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextPromptState {
+    value: Vec<char>,
+    cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TextPromptAction {
+    Continue,
+    Submit,
+    Cancel,
+}
+
+struct TerminalCleanupGuard<'a> {
+    term: &'a Term,
+    clear_screen: bool,
+    show_cursor: bool,
+}
+
+impl<'a> TerminalCleanupGuard<'a> {
+    fn new(term: &'a Term, clear_screen: bool, show_cursor: bool) -> Self {
+        Self {
+            term,
+            clear_screen,
+            show_cursor,
+        }
+    }
+}
+
+impl Drop for TerminalCleanupGuard<'_> {
+    fn drop(&mut self) {
+        if self.clear_screen {
+            let _ = self.term.clear_screen();
+        }
+        if self.show_cursor {
+            let _ = self.term.show_cursor();
+        }
+    }
 }
 
 pub fn select(prompt: &str, items: &[String], default: usize) -> Result<Option<usize>, AppError> {
@@ -84,8 +130,9 @@ pub fn membership_picker(
     term.hide_cursor().map_err(|error| AppError::Io {
         message: format!("interactive membership selection failed: {error}"),
     })?;
+    let _cleanup = TerminalCleanupGuard::new(&term, true, true);
 
-    let result = membership_picker_loop(
+    membership_picker_loop(
         &term,
         prompt,
         groups,
@@ -93,11 +140,7 @@ pub fn membership_picker(
         &mut checked,
         &mut cursor,
         current_groups,
-    );
-
-    let _ = term.clear_screen();
-    let _ = term.show_cursor();
-    result
+    )
 }
 
 pub fn group_picker(
@@ -146,12 +189,9 @@ pub fn contextual_select(
     term.hide_cursor().map_err(|error| AppError::Io {
         message: format!("interactive selection failed: {error}"),
     })?;
+    let _cleanup = TerminalCleanupGuard::new(&term, true, true);
 
-    let result = contextual_select_loop(&term, prompt, intro, items, &mut cursor);
-
-    let _ = term.clear_screen();
-    let _ = term.show_cursor();
-    result
+    contextual_select_loop(&term, prompt, intro, items, &mut cursor)
 }
 
 fn contextual_select_loop(
@@ -449,7 +489,8 @@ fn render_selected_groups(groups: &[String]) -> String {
 
 fn prompt_filter(term: &Term, current: Option<&str>) -> Result<Option<String>, AppError> {
     let _ = term.show_cursor();
-    let result = input_optional("Filter", current);
+    let result = read_text_prompt(term, "Filter", current, true, false, None)
+        .map(|result| resolve_filter_prompt_result(current, result));
     let _ = term.hide_cursor();
     result
 }
@@ -535,115 +576,272 @@ fn render_screen(term: &Term, body: &str, context: &str) -> Result<(), AppError>
     Ok(())
 }
 
-pub fn input_required(prompt: &str, initial: Option<&str>) -> Result<String, AppError> {
-    let theme = theme();
-    let mut input = Input::<String>::with_theme(&theme).with_prompt(prompt);
-    if let Some(initial) = initial {
-        input = input.with_initial_text(initial.to_string());
-    }
-    input
-        .validate_with(|value: &String| {
-            if value.trim().is_empty() {
-                Err("value is required")
-            } else {
-                Ok(())
-            }
-        })
-        .interact_text()
-        .map(|value| value.trim().to_string())
-        .map_err(|error| AppError::Io {
-            message: format!("interactive input failed: {error}"),
-        })
-}
-
-pub fn input_required_validated<F>(
+fn read_validated_text_prompt<F>(
+    term: &Term,
     prompt: &str,
     initial: Option<&str>,
+    allow_empty: bool,
+    trim_required: bool,
     validator: F,
-) -> Result<String, AppError>
+) -> Result<PromptResult<String>, AppError>
 where
     F: Fn(&str) -> Result<String, AppError>,
 {
-    let theme = theme();
-    let mut input = Input::<String>::with_theme(&theme).with_prompt(prompt);
-    if let Some(initial) = initial {
-        input = input.with_initial_text(initial.to_string());
+    let mut next_initial = initial.map(str::to_string);
+    let mut validation_error = None::<String>;
+    loop {
+        match read_text_prompt(
+            term,
+            prompt,
+            next_initial.as_deref(),
+            allow_empty,
+            trim_required,
+            validation_error.as_deref(),
+        )? {
+            PromptResult::Submitted(value) => {
+                if allow_empty && value.trim().is_empty() {
+                    return Ok(PromptResult::Submitted(String::new()));
+                }
+                match validator(&value) {
+                    Ok(validated) => return Ok(PromptResult::Submitted(validated)),
+                    Err(error) => {
+                        next_initial = Some(value);
+                        validation_error = Some(error.human_message());
+                    }
+                }
+            }
+            PromptResult::Cancelled => return Ok(PromptResult::Cancelled),
+        }
     }
-    let validator_ref = &validator;
-    input
-        .validate_with(|value: &String| {
-            validator_ref(value)
-                .map(|_| ())
-                .map_err(|error| error.human_message())
-        })
-        .interact_text()
-        .map_err(|error| AppError::Io {
-            message: format!("interactive input failed: {error}"),
-        })
-        .and_then(|value| validator(&value))
 }
 
-pub fn input_optional(prompt: &str, initial: Option<&str>) -> Result<Option<String>, AppError> {
-    let theme = theme();
-    let mut input = Input::<String>::with_theme(&theme)
-        .with_prompt(prompt)
-        .allow_empty(true);
-    if let Some(initial) = initial {
-        input = input.with_initial_text(initial.to_string());
+fn read_text_prompt(
+    term: &Term,
+    prompt: &str,
+    initial: Option<&str>,
+    allow_empty: bool,
+    trim_required: bool,
+    validation_error: Option<&str>,
+) -> Result<PromptResult<String>, AppError> {
+    if !term.is_term() {
+        return Err(AppError::Io {
+            message: "interactive text input requires a terminal".to_string(),
+        });
     }
-    input
-        .interact_text()
-        .map(|value| {
+
+    let mut state = TextPromptState::new(initial);
+    term.show_cursor().map_err(|error| AppError::Io {
+        message: format!("interactive input failed: {error}"),
+    })?;
+    let _cleanup = TerminalCleanupGuard::new(term, true, true);
+
+    loop {
+        render_text_prompt(term, prompt, &state, validation_error)?;
+        let key = term.read_key().map_err(|error| AppError::Io {
+            message: format!("interactive input failed: {error}"),
+        })?;
+
+        match apply_text_prompt_key(&mut state, key) {
+            TextPromptAction::Continue => {}
+            TextPromptAction::Cancel => return Ok(PromptResult::Cancelled),
+            TextPromptAction::Submit => {
+                let submitted = state.as_string();
+                let Some(candidate) =
+                    finalize_prompt_submission(submitted, allow_empty, trim_required)
+                else {
+                    return Ok(PromptResult::Submitted(String::new()));
+                };
+                return Ok(PromptResult::Submitted(candidate));
+            }
+        }
+    }
+}
+
+fn render_text_prompt(
+    term: &Term,
+    prompt: &str,
+    state: &TextPromptState,
+    validation_error: Option<&str>,
+) -> Result<(), AppError> {
+    let mut body = format!("{prompt}\nKeys: Enter submit | Esc back\n");
+    if let Some(validation_error) = validation_error {
+        body.push_str(&format!("Error: {validation_error}\n"));
+    } else {
+        body.push('\n');
+    }
+    body.push_str(&format!("> {}", state.as_string()));
+    render_screen(term, &body, "interactive input failed")?;
+
+    let trailing = state.value.len().saturating_sub(state.cursor);
+    if trailing > 0 {
+        term.move_cursor_left(trailing)
+            .map_err(|error| AppError::Io {
+                message: format!("interactive input failed: {error}"),
+            })?;
+    }
+    Ok(())
+}
+
+fn apply_text_prompt_key(state: &mut TextPromptState, key: Key) -> TextPromptAction {
+    match key {
+        Key::Enter => TextPromptAction::Submit,
+        Key::Escape => TextPromptAction::Cancel,
+        Key::ArrowLeft => {
+            state.cursor = state.cursor.saturating_sub(1);
+            TextPromptAction::Continue
+        }
+        Key::ArrowRight => {
+            state.cursor = (state.cursor + 1).min(state.value.len());
+            TextPromptAction::Continue
+        }
+        Key::Home => {
+            state.cursor = 0;
+            TextPromptAction::Continue
+        }
+        Key::End => {
+            state.cursor = state.value.len();
+            TextPromptAction::Continue
+        }
+        Key::Backspace => {
+            if state.cursor > 0 {
+                state.cursor -= 1;
+                state.value.remove(state.cursor);
+            }
+            TextPromptAction::Continue
+        }
+        Key::Del => {
+            if state.cursor < state.value.len() {
+                state.value.remove(state.cursor);
+            }
+            TextPromptAction::Continue
+        }
+        Key::Char(ch) if !ch.is_control() => {
+            state.value.insert(state.cursor, ch);
+            state.cursor += 1;
+            TextPromptAction::Continue
+        }
+        _ => TextPromptAction::Continue,
+    }
+}
+
+fn finalize_prompt_submission(
+    submitted: String,
+    allow_empty: bool,
+    trim_required: bool,
+) -> Option<String> {
+    let candidate = if trim_required {
+        submitted.trim().to_string()
+    } else {
+        submitted
+    };
+    if !allow_empty && candidate.trim().is_empty() {
+        None
+    } else {
+        Some(candidate)
+    }
+}
+
+fn resolve_filter_prompt_result(
+    current: Option<&str>,
+    result: PromptResult<String>,
+) -> Option<String> {
+    match result {
+        PromptResult::Submitted(value) => {
             let trimmed = value.trim().to_string();
             if trimmed.is_empty() {
                 None
             } else {
                 Some(trimmed)
             }
-        })
-        .map_err(|error| AppError::Io {
-            message: format!("interactive input failed: {error}"),
-        })
+        }
+        PromptResult::Cancelled => current.map(str::to_string),
+    }
+}
+
+impl TextPromptState {
+    fn new(initial: Option<&str>) -> Self {
+        let value = initial.unwrap_or_default().chars().collect::<Vec<_>>();
+        let cursor = value.len();
+        Self { value, cursor }
+    }
+
+    fn as_string(&self) -> String {
+        self.value.iter().collect()
+    }
+}
+
+pub fn input_required(
+    prompt: &str,
+    initial: Option<&str>,
+) -> Result<PromptResult<String>, AppError> {
+    let mut next_initial = initial.map(str::to_string);
+    let mut validation_error = None::<String>;
+    loop {
+        match read_text_prompt(
+            &Term::stderr(),
+            prompt,
+            next_initial.as_deref(),
+            false,
+            true,
+            validation_error.as_deref(),
+        )? {
+            PromptResult::Submitted(value) if value.is_empty() => {
+                validation_error = Some("value is required".to_string());
+                next_initial = Some(String::new());
+                continue;
+            }
+            PromptResult::Submitted(value) => {
+                return Ok(PromptResult::Submitted(value.trim().to_string()))
+            }
+            PromptResult::Cancelled => return Ok(PromptResult::Cancelled),
+        }
+    }
+}
+
+pub fn input_required_validated<F>(
+    prompt: &str,
+    initial: Option<&str>,
+    validator: F,
+) -> Result<PromptResult<String>, AppError>
+where
+    F: Fn(&str) -> Result<String, AppError>,
+{
+    read_validated_text_prompt(&Term::stderr(), prompt, initial, false, true, validator)
+}
+
+pub fn input_optional(
+    prompt: &str,
+    initial: Option<&str>,
+) -> Result<PromptResult<Option<String>>, AppError> {
+    read_text_prompt(&Term::stderr(), prompt, initial, true, false, None).map(|result| match result
+    {
+        PromptResult::Submitted(value) => {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                PromptResult::Submitted(None)
+            } else {
+                PromptResult::Submitted(Some(trimmed))
+            }
+        }
+        PromptResult::Cancelled => PromptResult::Cancelled,
+    })
 }
 
 pub fn input_optional_validated<F>(
     prompt: &str,
     initial: Option<&str>,
     validator: F,
-) -> Result<Option<String>, AppError>
+) -> Result<PromptResult<Option<String>>, AppError>
 where
     F: Fn(&str) -> Result<String, AppError>,
 {
-    let theme = theme();
-    let mut input = Input::<String>::with_theme(&theme)
-        .with_prompt(prompt)
-        .allow_empty(true);
-    if let Some(initial) = initial {
-        input = input.with_initial_text(initial.to_string());
+    match read_validated_text_prompt(&Term::stderr(), prompt, initial, true, false, validator)? {
+        PromptResult::Submitted(value) if value.trim().is_empty() => {
+            Ok(PromptResult::Submitted(None))
+        }
+        PromptResult::Submitted(value) => Ok(PromptResult::Submitted(Some(value))),
+        PromptResult::Cancelled => Ok(PromptResult::Cancelled),
     }
-    let validator_ref = &validator;
-    input
-        .validate_with(|value: &String| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                Ok(())
-            } else {
-                validator_ref(value)
-                    .map(|_| ())
-                    .map_err(|error| error.human_message())
-            }
-        })
-        .interact_text()
-        .map_err(|error| AppError::Io {
-            message: format!("interactive input failed: {error}"),
-        })
-        .and_then(|value| {
-            if value.trim().is_empty() {
-                Ok(None)
-            } else {
-                validator(&value).map(Some)
-            }
-        })
 }
 
 pub fn confirm(prompt: &str, default: bool) -> Result<Option<bool>, AppError> {
@@ -879,5 +1077,56 @@ mod tests {
 
         assert!(body.contains("No matches for current filter."));
         assert!(body.contains("Filter: missing"));
+    }
+
+    #[test]
+    fn prompt_escape_cancels() {
+        let mut state = TextPromptState::new(Some("alice"));
+        assert_eq!(
+            apply_text_prompt_key(&mut state, Key::Escape),
+            TextPromptAction::Cancel
+        );
+    }
+
+    #[test]
+    fn optional_blank_submit_is_preserved() {
+        assert_eq!(
+            finalize_prompt_submission("   ".to_string(), true, false),
+            Some("   ".to_string())
+        );
+    }
+
+    #[test]
+    fn required_prompt_rejects_empty_submit() {
+        assert_eq!(
+            finalize_prompt_submission("   ".to_string(), false, true),
+            None
+        );
+    }
+
+    #[test]
+    fn initial_text_is_editable() {
+        let mut state = TextPromptState::new(Some("alice"));
+        assert_eq!(
+            apply_text_prompt_key(&mut state, Key::Backspace),
+            TextPromptAction::Continue
+        );
+        assert_eq!(
+            apply_text_prompt_key(&mut state, Key::Char('x')),
+            TextPromptAction::Continue
+        );
+        assert_eq!(state.as_string(), "alicx");
+    }
+
+    #[test]
+    fn cancelled_filter_keeps_current_value() {
+        assert_eq!(
+            resolve_filter_prompt_result(Some("users"), PromptResult::Cancelled),
+            Some("users".to_string())
+        );
+        assert_eq!(
+            resolve_filter_prompt_result(Some("users"), PromptResult::Submitted(String::new())),
+            None
+        );
     }
 }

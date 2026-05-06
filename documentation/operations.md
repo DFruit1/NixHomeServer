@@ -29,15 +29,15 @@ Immich uses separate private and public hostnames on purpose:
 - Private Immich app: `https://photos.sydneybasiniot.org`
 - Public Immich share links: `https://sharephotos.sydneybasiniot.org`
 - Public Copyparty uploader: `https://uploads.sydneybasiniot.org/upload/<username>/`
-- Private FileBrowser Quantum UI and WebDAV: `https://files.sydneybasiniot.org/`
+- Authenticated FileBrowser Quantum UI and WebDAV: `https://files.sydneybasiniot.org/`
 
 Use `photos.sydneybasiniot.org` for the owner's normal Immich login on LAN or
 NetBird. Use `sharephotos.sydneybasiniot.org` only for public album or photo
 links sent to other people.
 
 Use `uploads.sydneybasiniot.org` for large uploads into the authenticated
-user's personal `uploads` folder. Use `files.sydneybasiniot.org` on LAN or
-NetBird for browsing, moving, smaller uploads, and WebDAV access.
+user's personal `uploads` folder. Use `files.sydneybasiniot.org` for browsing,
+moving, smaller uploads, and WebDAV access.
 
 FileBrowser Quantum WebDAV roots:
 

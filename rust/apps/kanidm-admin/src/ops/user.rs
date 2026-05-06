@@ -7,7 +7,7 @@ use crate::{
         users::{parse_user_list, parse_user_record, UserRecord},
         Parsed,
     },
-    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck},
+    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck, VerificationPolicy},
     models::parse_reset_token_summary,
     ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
     output::CommandOutput,
@@ -263,6 +263,7 @@ pub fn delete_user(cli: &KanidmCli, options: DeleteUserOptions) -> Result<Comman
 
     cli.person_delete(&options.account_id)?;
     verify_with_retry(
+        VerificationPolicy::ReadAfterWrite,
         &format!(
             "deleted Kanidm user '{}' but post-delete verification did not converge",
             options.account_id
@@ -341,6 +342,7 @@ pub fn assign_system_admin(cli: &KanidmCli, account_id: &str) -> Result<CommandO
     }
 
     let user = verify_with_retry(
+        VerificationPolicy::MembershipConvergence,
         &format!(
             "assigning default Kanidm administration roles to '{}' did not converge",
             account_id
@@ -493,22 +495,28 @@ fn verify_user_state<F>(
 where
     F: Fn(&UserRecord) -> bool,
 {
-    verify_with_retry(context, expected_state, write_completed, || {
-        let user = load_user(cli, account_id)?;
-        let matched = predicate(&user.value);
-        let observed = json!({
-            "user": &user.value,
-            "warnings": &user.warnings,
-        });
-        if matched {
-            Ok(VerificationCheck::Matched {
-                observed,
-                value: user,
-            })
-        } else {
-            Ok(VerificationCheck::Mismatch { observed })
-        }
-    })
+    verify_with_retry(
+        VerificationPolicy::ReadAfterWrite,
+        context,
+        expected_state,
+        write_completed,
+        || {
+            let user = load_user(cli, account_id)?;
+            let matched = predicate(&user.value);
+            let observed = json!({
+                "user": &user.value,
+                "warnings": &user.warnings,
+            });
+            if matched {
+                Ok(VerificationCheck::Matched {
+                    observed,
+                    value: user,
+                })
+            } else {
+                Ok(VerificationCheck::Mismatch { observed })
+            }
+        },
+    )
 }
 
 pub fn human_user_summary(user: &UserRecord) -> String {

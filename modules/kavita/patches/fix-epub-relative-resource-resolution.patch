@@ -1,9 +1,9 @@
---- a/API/Services/BookService.cs
-+++ b/API/Services/BookService.cs
-@@ -360,14 +360,14 @@
+--- a/Kavita.Services/BookService.cs
++++ b/Kavita.Services/BookService.cs
+@@ -332,14 +332,14 @@
          AnnotationHelper.InjectMultiElementAnnotations(doc, multiElementAnnotations);
      }
- 
+
 -    private static void ScopeImages(HtmlDocument doc, EpubBookRef book, string apiBase)
 +    private static void ScopeImages(HtmlDocument doc, EpubBookRef book, string apiBase, string? contentFilePath = null)
      {
@@ -14,22 +14,22 @@
 +        ScopeHtmlImageCollection(book, apiBase, contentFilePath, doc.DocumentNode.SelectNodes("//image"));
 +        ScopeHtmlImageCollection(book, apiBase, contentFilePath, doc.DocumentNode.SelectNodes("//svg"));
      }
- 
+
 -    private static void ScopeHtmlImageCollection(EpubBookRef book, string apiBase, HtmlNodeCollection? images)
 +    private static void ScopeHtmlImageCollection(EpubBookRef book, string apiBase, string? contentFilePath, HtmlNodeCollection? images)
      {
          if (images == null) return;
- 
-@@ -388,7 +388,7 @@
- 
+
+@@ -351,7 +351,7 @@
+
              if (string.IsNullOrEmpty(key)) continue;
- 
+
 -            var imageFile = GetKeyForImage(book, image.Attributes[key].Value);
 +            var imageFile = GetKeyForImage(book, image.Attributes[key].Value, contentFilePath);
              image.Attributes.Remove(key);
- 
+
              if (!imageFile.StartsWith("http"))
-@@ -430,25 +430,13 @@
+@@ -377,26 +377,13 @@
      /// <param name="book"></param>
      /// <param name="imageFile"></param>
      /// <returns></returns>
@@ -55,19 +55,20 @@
 -                imageFile = correctedKey;
 -            }
 -        }
- 
- 
+-
+
          return imageFile;
-@@ -482,7 +470,7 @@
+     }
+@@ -431,7 +418,7 @@
          }
      }
- 
--    private async Task InlineStyles(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body)
-+    private async Task InlineStyles(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body, string? contentFilePath = null)
+
+-    private async Task InlineStyles(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body, CancellationToken ct = default)
++    private async Task InlineStyles(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body, string? contentFilePath = null, CancellationToken ct = default)
      {
          var inlineStyles = doc.DocumentNode.SelectNodes("//style");
-         if (inlineStyles != null)
-@@ -499,19 +487,14 @@
+         // ReSharper disable once ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+@@ -450,19 +437,14 @@
          {
              foreach (var styleLinks in styleNodes)
              {
@@ -82,20 +83,20 @@
 -                    var correctedKey = book.Content.Css.Local.Select(s => s.Key).SingleOrDefault(s => s.EndsWith(key));
 -                    if (correctedKey == null)
 -                    {
--                        _logger.LogError("Epub is Malformed, key: {Key} is not matching OPF file", key);
+-                        logger.LogError("Epub is Malformed, key: {Key} is not matching OPF file", key);
 -                        continue;
 -                    }
 -
 -                    key = correctedKey;
-+                    _logger.LogError("Epub is Malformed, key: {Key} is not matching OPF file", styleLinks.Attributes["href"].Value);
++                    logger.LogError("Epub is Malformed, key: {Key} is not matching OPF file", styleLinks.Attributes["href"].Value);
 +                    continue;
                  }
- 
+
                  try
-@@ -915,6 +898,67 @@
+@@ -921,6 +903,67 @@
          return key.Replace("../", string.Empty);
      }
- 
+
 +    private static string NormalizeContentKey(string key)
 +    {
 +        return key.Replace('\\', '/');
@@ -157,10 +158,10 @@
 +        return FindUniqueSuffixMatch(availableKeys, cleanedKey);
 +    }
 +
-     public async Task<Dictionary<string, int>> CreateKeyToPageMappingAsync(EpubBookRef book)
+     public async Task<Dictionary<string, int>> CreateKeyToPageMappingAsync(EpubBookRef book,
+         CancellationToken ct = default)
      {
-         var dict = new Dictionary<string, int>();
-@@ -1028,7 +1072,7 @@
+@@ -1257,7 +1300,7 @@
              var imageSource = targetImage.Attributes[srcAttributeName].Value;
 
              // Clean and get the correct key for the image
@@ -169,32 +170,34 @@
 
              // Check if it's an external URL
              if (imageKey.StartsWith("http"))
-@@ -1244,15 +1288,16 @@
-     /// <param name="mappings">Epub mappings</param>
+@@ -1515,17 +1558,18 @@
      /// <param name="page">Page number we are loading</param>
      /// <param name="ptocBookmarks">Ptoc (Text) Bookmarks to tie against</param>
+     /// <param name="annotations"></param>
 +    /// <param name="contentFilePath">Current page content file path</param>
+     /// <param name="ct"></param>
      /// <returns></returns>
      private async Task<string> ScopePage(HtmlDocument doc, EpubBookRef book, string apiBase, HtmlNode body,
--        Dictionary<string, int> mappings, int page, List<PersonalToCDto> ptocBookmarks, List<AnnotationDto> annotations)
-+        Dictionary<string, int> mappings, int page, List<PersonalToCDto> ptocBookmarks, List<AnnotationDto> annotations, string? contentFilePath = null)
+         Dictionary<string, int> mappings, int page, List<PersonalToCDto> ptocBookmarks, List<AnnotationDto> annotations,
+-        CancellationToken ct = default)
++        string? contentFilePath = null, CancellationToken ct = default)
      {
--        await InlineStyles(doc, book, apiBase, body);
-+        await InlineStyles(doc, book, apiBase, body, contentFilePath);
- 
+-        await InlineStyles(doc, book, apiBase, body, ct);
++        await InlineStyles(doc, book, apiBase, body, contentFilePath, ct);
+
          RewriteAnchors(page, doc, mappings);
- 
+
 -        ScopeImages(doc, book, apiBase);
 +        ScopeImages(doc, book, apiBase, contentFilePath);
- 
-         InjectImages(doc, book, apiBase);
- 
-@@ -1509,7 +1554,7 @@
+
+         // Inject PTOC Bookmark Icons
+         InjectTextBookmarks(doc, ptocBookmarks);
+@@ -1782,7 +1826,7 @@
                      body = doc.DocumentNode.SelectSingleNode("/html/body");
                  }
- 
--                return await ScopePage(doc, book, apiBase, body!, mappings, page, ptocBookmarks, annotations);
-+                return await ScopePage(doc, book, apiBase, body!, mappings, page, ptocBookmarks, annotations, contentFileRef.FilePath);
+
+-                return await ScopePage(doc, book, apiBase, body!, mappings, page, ptocBookmarks, annotations, ct);
++                return await ScopePage(doc, book, apiBase, body!, mappings, page, ptocBookmarks, annotations, contentFileRef.FilePath, ct);
              }
          } catch (Exception ex)
          {

@@ -119,8 +119,6 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
         hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
         hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
-        kavitaLibrarySyncAfter = cfg.systemd.services.kavita-library-sync.after;
-        kavitaLibrarySyncWants = cfg.systemd.services.kavita-library-sync.wants;
         hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
         hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
         hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
@@ -234,8 +232,8 @@ assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiri
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf settled scan service must remain present."
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySyncTimer' "Audiobookshelf overnight scan timer must remain present."
 assert_json_false '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf recursive watcher service must remain absent."
-assert_json_true '.config.apps.hasKavitaLibrarySync' "Kavita settled scan service must remain present."
-assert_json_true '.config.apps.hasKavitaLibrarySyncTimer' "Kavita overnight scan timer must remain present."
+assert_json_false '.config.apps.hasKavitaLibrarySync' "Kavita settled scan service must remain absent."
+assert_json_false '.config.apps.hasKavitaLibrarySyncTimer' "Kavita overnight scan timer must remain absent."
 assert_json_true '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence service must remain present."
 assert_json_false '.config.apps.hasKavitaLibraryWatch' "Kavita recursive watcher service must remain absent."
 assert_json_true '.config.apps.hasKiwixLibraryWatch' "Kiwix watcher service must remain present."
@@ -324,8 +322,8 @@ if jq -e --arg photos_host "$(snapshot_query '.vars.photosDomain' | jq -r '.')" 
   exit 1
 fi
 
-if jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '.')" 'index($file_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
-  echo "❌ Cloudflared must not publish the private FileBrowser Quantum hostname."
+if ! jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '.')" 'index($file_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must publish the FileBrowser Quantum hostname."
   echo "   ingress hosts: $cloudflared_ingress_host_names"
   exit 1
 fi
@@ -371,20 +369,6 @@ require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.upload
   "Runtime health inventory must probe the Copyparty uploader edge hostname."
 require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.filebrowserDomain\}/' \
   "Runtime health inventory must probe the FileBrowser Quantum edge hostname."
-
-kavita_library_sync_after="$(snapshot_query '.config.apps.kavitaLibrarySyncAfter')"
-if ! jq -e 'index("kavita-media-acl-sync-v1.service") != null' >/dev/null <<<"$kavita_library_sync_after"; then
-  echo "❌ Kavita library sync must run after the Kavita media ACL convergence service."
-  echo "   after: $kavita_library_sync_after"
-  exit 1
-fi
-
-kavita_library_sync_wants="$(snapshot_query '.config.apps.kavitaLibrarySyncWants')"
-if ! jq -e 'index("kavita-media-acl-sync-v1.service") != null' >/dev/null <<<"$kavita_library_sync_wants"; then
-  echo "❌ Kavita library sync must want the Kavita media ACL convergence service."
-  echo "   wants: $kavita_library_sync_wants"
-  exit 1
-fi
 
 jellyfin_library_sync_after="$(snapshot_query '.config.apps.jellyfinLibrarySyncAfter')"
 if ! jq -e 'index("jellyfin-library-monitor-v1.service") != null and index("data-pool-layout.service") != null' >/dev/null <<<"$jellyfin_library_sync_after"; then

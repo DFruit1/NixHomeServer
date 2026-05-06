@@ -88,6 +88,126 @@ exit 1
 }
 
 #[test]
+fn session_status_ignores_other_users_sessions() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  cat <<'EOF'
+---
+spn: someone@example.test
+uuid: 00000000-0000-0000-0000-000000000001
+display: Someone
+expiry: 2030-01-01T00:00:00Z
+purpose: read write (expiry: 2030-01-01T00:30:00Z)
+EOF
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "session",
+            "status",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "No valid Kanidm CLI session is active",
+        ))
+        .stdout(predicate::str::contains("kanidm-admin session login"));
+}
+
+#[test]
+fn session_status_checks_admin_session_expiry() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  cat <<'EOF'
+---
+spn: admindsaw@example.test
+uuid: 00000000-0000-0000-0000-000000000001
+display: Dan
+expiry: 2000-01-01T00:00:00Z
+purpose: read write (expiry: 2030-01-01T00:30:00Z)
+EOF
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "session",
+            "status",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Session for 'admindsaw' has expired",
+        ))
+        .stdout(predicate::str::contains("kanidm-admin session login"));
+}
+
+#[test]
+fn session_status_reports_reauth_required_when_base_session_is_active() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  cat <<'EOF'
+---
+spn: admindsaw@example.test
+uuid: 00000000-0000-0000-0000-000000000001
+display: Dan
+expiry: 2030-01-01T00:00:00Z
+purpose: read write (expiry: none)
+EOF
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "session",
+            "status",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Session for 'admindsaw' is authenticated, but privileged reauthentication is required",
+        ))
+        .stdout(predicate::str::contains("kanidm-admin session reauth"));
+}
+
+#[test]
 fn membership_set_rejects_empty_without_allow_empty() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash
