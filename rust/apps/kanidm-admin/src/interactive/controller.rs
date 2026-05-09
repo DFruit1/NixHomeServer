@@ -5,13 +5,12 @@ use super::{
     help_user_reset_password_flow,
     home::{load_home, HomeCache, HomeSummary},
     manage_user_access_flow, recover_target_interactively_with_snapshot, render_bullets,
-    session_tools_menu, simple_menu_items,
+    simple_menu_items,
 };
 use crate::ops::executor::RecoveryTarget;
 use crate::session_state::should_prompt_for_startup_login;
 
 pub(super) enum SimpleMenuAction {
-    SessionTools,
     CreateUser,
     ManageUserAccess,
     FindViewUser,
@@ -37,7 +36,6 @@ pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError
         let home = load_home(kanidm, &mut home_cache);
         let action = select_main_menu(context, &home)?;
         match action {
-            SimpleMenuAction::SessionTools => session_tools_menu(kanidm)?,
             SimpleMenuAction::CreateUser => create_user_flow(kanidm)?,
             SimpleMenuAction::ManageUserAccess => manage_user_access_flow(kanidm)?,
             SimpleMenuAction::FindViewUser => find_view_user_flow(kanidm)?,
@@ -68,13 +66,12 @@ fn select_main_menu(
     };
 
     Ok(match selection {
-        0 => SimpleMenuAction::SessionTools,
-        1 => SimpleMenuAction::CreateUser,
-        2 => SimpleMenuAction::ManageUserAccess,
-        3 => SimpleMenuAction::FindViewUser,
-        4 => SimpleMenuAction::DisableEnableUser,
-        5 => SimpleMenuAction::HelpUserResetPassword,
-        6 => SimpleMenuAction::Advanced,
+        0 => SimpleMenuAction::CreateUser,
+        1 => SimpleMenuAction::ManageUserAccess,
+        2 => SimpleMenuAction::FindViewUser,
+        3 => SimpleMenuAction::DisableEnableUser,
+        4 => SimpleMenuAction::HelpUserResetPassword,
+        5 => SimpleMenuAction::Advanced,
         _ => SimpleMenuAction::Exit,
     })
 }

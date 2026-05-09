@@ -23,6 +23,11 @@ snapshot_file="${runtime_root}/snapshot.json"
 device_root="${runtime_root}/devices"
 dev_disk_root="${runtime_root}/dev-disk"
 by_id_dir="${dev_disk_root}/by-id"
+mail_archive_data_root="${runtime_root}/mail-archive-ui"
+mail_archive_runtime_dir="${runtime_root}/run-mail-archive-ui"
+mail_archive_lock_dir="${mail_archive_data_root}/locks"
+mail_archive_store_root="${mount_root}/data/users"
+mail_archive_hidden_sync_root="${mail_archive_store_root}/dsaw/emails/.internal-sync/personal-gmail--1"
 
 system_disk_actual="${device_root}/system-disk"
 system_part_actual="${device_root}/system-disk-part1"
@@ -39,14 +44,18 @@ mkdir -p \
   "${mount_root}/data/paperless/archive/.hist" \
   "${mount_root}/data/shared/app-state" \
   "${mount_root}/data/users/dsaw/uploads" \
+  "${mail_archive_hidden_sync_root}/maildir/cur" \
   "$metadata_root" \
   "$dumps_root" \
   "$db_root" \
+  "$mail_archive_data_root" \
+  "$mail_archive_runtime_dir" \
+  "$mail_archive_lock_dir" \
   "$device_root" \
   "$by_id_dir"
 
 touch \
-  "${db_root}/mail-archive-ui.sqlite3" \
+  "${mail_archive_data_root}/mail-archive-ui.sqlite3" \
   "$system_disk_actual" \
   "$system_part_actual" \
   "$data_a_actual" \
@@ -80,13 +89,14 @@ cat >"$snapshot_file" <<EOF
     "localDnsPrivateAnswer": "192.168.8.12"
   },
   "services": {
-    "requiredUnits": ["copyparty.service"],
+    "requiredUnits": ["copyparty.service", "mail-archive-ui.service"],
     "edgeHttp": [
       { "name": "uploads", "url": "https://uploads.example.test/", "expected": [200, 302, 303, 401, 403] },
       { "name": "files", "url": "https://files.example.test/", "expected": [200, 302, 303] }
     ],
     "internalHttp": [
-      { "name": "copyparty", "url": "http://127.0.0.1:3923/", "expected": [200, 302, 401, 403] }
+      { "name": "copyparty", "url": "http://127.0.0.1:3923/", "expected": [200, 302, 401, 403] },
+      { "name": "mail-archive-ui-healthz", "url": "http://127.0.0.1:9011/healthz", "expected": [200] }
     ],
     "dns": {
       "resolve": ["example.com"],
@@ -167,13 +177,33 @@ cat >"$snapshot_file" <<EOF
       {
         "label": "copyparty-archive-metadata",
         "path": "${mount_root}/data/paperless/archive/.hist"
+      },
+      {
+        "label": "mail-archive-ui-data",
+        "path": "${mail_archive_data_root}"
+      },
+      {
+        "label": "mail-archive-ui-runtime",
+        "path": "${mail_archive_runtime_dir}"
+      },
+      {
+        "label": "mail-archive-ui-locks",
+        "path": "${mail_archive_lock_dir}"
+      },
+      {
+        "label": "mail-archive-ui-store-root",
+        "path": "${mail_archive_store_root}"
+      },
+      {
+        "label": "mail-archive-hidden-sync-root",
+        "path": "${mail_archive_hidden_sync_root}"
       }
     ]
   },
   "databases": {
     "sqliteBinary": "${runtime_bin}/sqlite3",
     "sqlite": [
-      { "name": "mail-archive-ui", "path": "${db_root}/mail-archive-ui.sqlite3" }
+      { "name": "mail-archive-ui", "path": "${mail_archive_data_root}/mail-archive-ui.sqlite3" }
     ],
     "postgresql": {
       "enabled": true,
@@ -231,7 +261,7 @@ cmd="$1"
 case "$cmd" in
   is-active)
     case "$2" in
-      copyparty.service|restic-backups-system-state.timer)
+      copyparty.service|mail-archive-ui.service|restic-backups-system-state.timer)
         printf 'active\n'
         ;;
       *)
@@ -499,6 +529,10 @@ require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "copyparty-grou
   "check-runtime-readiness.sh JSON output must record the Copyparty group bridge check."
 require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "copyparty-upload-root") | .severity' <<<"$monitor_json" | head -n 1)" "OK" \
   "check-runtime-readiness.sh JSON output must record successful Copyparty upload-root write probes."
+require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-ui-store-root") | .severity' <<<"$monitor_json")" "OK" \
+  "check-runtime-readiness.sh JSON output must record the managed mail-archive store root."
+require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-hidden-sync-root") | .severity' <<<"$monitor_json")" "OK" \
+  "check-runtime-readiness.sh JSON output must record a hidden mail-archive sync root probe."
 
 set +e
 deploy_output="$(

@@ -266,7 +266,7 @@ storage_health_assess_disk() {
     storage_health_note "Reallocated_Sector_Ct=${reallocated}"
   fi
 
-  if (( reported_uncorrect > 0 )) && [[ "$STORAGE_HEALTH_LAST_SEVERITY" != "CRITICAL" ]]; then
+  if (( reported_uncorrect > 1 )) && [[ "$STORAGE_HEALTH_LAST_SEVERITY" != "CRITICAL" ]]; then
     STORAGE_HEALTH_LAST_SEVERITY="WARN"
     storage_health_note "Reported_Uncorrect=${reported_uncorrect}"
   fi

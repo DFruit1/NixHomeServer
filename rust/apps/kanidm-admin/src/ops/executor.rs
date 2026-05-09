@@ -272,6 +272,11 @@ pub fn recovery_command_output(
             cli.admin_name(),
             verification.snapshot.diagnostic_raw.trim()
         ),
+        "reauth_required" if title == "Login" => format!(
+            "Base login successful for '{}'.\nSome actions require reauthentication for added security. If needed, you will be prompted to log in again automatically before those actions continue.\n\n{}",
+            cli.admin_name(),
+            verification.snapshot.diagnostic_raw.trim()
+        ),
         "reauth_required" => format!(
             "{title} succeeded for '{}'. The base session is active, but privileged write access still requires `kanidm-admin session reauth`.\n\n{}",
             cli.admin_name(),
@@ -303,8 +308,13 @@ pub fn recovery_command_output(
 
 #[cfg(test)]
 mod tests {
+    use std::{ffi::OsString, sync::Arc};
+
     use super::*;
-    use crate::kanidm_cli::{ParseConfidence, ParsedExpiry};
+    use crate::{
+        backend::ProcessKanidmBackend,
+        kanidm_cli::{KanidmCli, ParseConfidence, ParsedExpiry},
+    };
 
     fn snapshot(
         base_session_state: BaseSessionState,
@@ -321,6 +331,15 @@ mod tests {
             diagnostic_raw: "diagnostic".to_string(),
             parse_confidence: ParseConfidence::High,
         }
+    }
+
+    fn test_cli() -> KanidmCli {
+        KanidmCli::with_backend(
+            OsString::from("kanidm"),
+            "https://id.example.test".to_string(),
+            "admindsaw".to_string(),
+            Arc::new(ProcessKanidmBackend::new(OsString::from("kanidm"))),
+        )
     }
 
     #[test]
@@ -364,5 +383,31 @@ mod tests {
             }),
             Some(RecoveryTarget::PrivilegedWrites)
         );
+    }
+
+    #[test]
+    fn login_recovery_output_explains_future_reauthentication() {
+        let output = recovery_command_output(
+            &test_cli(),
+            "Login",
+            RecoveryVerification {
+                snapshot: snapshot(BaseSessionState::Present, PrivilegedWriteState::ReauthRequired),
+                state: "reauth_required",
+                privileged_write_access: "reauth_required",
+                warnings: vec![
+                    "Privileged write access still requires `kanidm-admin session reauth`."
+                        .to_string(),
+                ],
+            },
+        );
+
+        assert!(output.human.contains("Base login successful for 'admindsaw'."));
+        assert!(output
+            .human
+            .contains("Some actions require reauthentication for added security."));
+        assert!(output
+            .human
+            .contains("you will be prompted to log in again automatically"));
+        assert_eq!(output.details["state"], "reauth_required");
     }
 }

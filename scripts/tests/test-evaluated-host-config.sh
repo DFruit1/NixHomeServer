@@ -275,6 +275,10 @@ if jq -e 'index("mail-archive-ui") != null' >/dev/null <<<"$filebrowser_quantum_
   echo "   extraGroups: $filebrowser_quantum_extra_groups"
   exit 1
 fi
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix '\.internal-sync' \
+  "User email roots must provision a hidden internal sync tree."
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_noaccess_acl filebrowser-quantum "\$root/emails/\.internal-sync"' \
+  "FileBrowser Quantum must not be able to traverse the hidden internal email sync tree."
 
 copyparty_service_supplementary_groups="$(snapshot_query '.config.apps.copypartyServiceSupplementaryGroups')"
 if ! jq -e 'index("users") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then

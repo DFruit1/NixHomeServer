@@ -76,19 +76,20 @@ fn advanced_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), Ap
     while let Some(selection) = forms::contextual_select(
         "Advanced",
         Some(
-            "Specialized Kanidm and local helper tools live here. Use this area when the guided day-to-day workflows are not enough.",
+            "Specialized Kanidm session management, lower-level tools, and local helpers live here. Use this area when the guided day-to-day workflows are not enough.",
         ),
         &advanced_menu_items(),
         0,
     )? {
         match selection {
-            0 => group_inspection_menu(kanidm)?,
-            1 => membership_tools_menu(kanidm)?,
-            2 => clients_menu(kanidm)?,
-            3 => policy_menu(kanidm)?,
-            4 => context_menu(context, kanidm)?,
-            5 => local_helpers_menu()?,
-            6 => delete_user_flow(kanidm)?,
+            0 => session_tools_menu(kanidm)?,
+            1 => group_inspection_menu(kanidm)?,
+            2 => membership_tools_menu(kanidm)?,
+            3 => clients_menu(kanidm)?,
+            4 => policy_menu(kanidm)?,
+            5 => context_menu(context, kanidm)?,
+            6 => local_helpers_menu()?,
+            7 => delete_user_flow(kanidm)?,
             _ => break,
         }
     }
@@ -1279,25 +1280,23 @@ pub(super) fn recover_target_interactively_with_snapshot(
             recover_login(kanidm, prompt)
         }
         RecoveryTarget::PrivilegedWrites => {
-            if let Some(snapshot) = snapshot {
-                if let Some(message) = concise_session_message(kanidm.admin_name(), snapshot) {
-                    render::print_note("Reauthentication Required", &message);
-                } else {
-                    render::print_note(
-                        "Reauthentication Required",
-                        &format!(
-                            "The base Kanidm session for '{}' is active, but privileged write access is not ready.\n\nDiagnostic:\n{}",
-                            kanidm.admin_name(),
-                            snapshot.diagnostic_raw.trim()
-                        ),
-                    );
-                }
-            } else if let Some(error) = error {
-                render::print_note("Reauthentication Required", &error.human_message());
-            }
-            recover_reauth(kanidm, "Reauthenticate now?")
+            let _ = snapshot;
+            let _ = error;
+            render::print_note(
+                "Reauthentication Required",
+                privileged_reauth_note_message(),
+            );
+            recover_reauth(kanidm, privileged_reauth_prompt_message())
         }
     }
+}
+
+fn privileged_reauth_note_message() -> &'static str {
+    "Your base login is active.\nThis action requires reauthentication for added security.\nIf you continue, the tool will guide you through the admin sign-in prompt again before applying the change."
+}
+
+fn privileged_reauth_prompt_message() -> &'static str {
+    "This action requires reauthentication for added security. Would you like to log in again now?"
 }
 
 fn recover_login(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
@@ -1350,11 +1349,6 @@ fn menu_item(label: &str, summary: &str, detail: &str) -> forms::ContextualItem 
 fn simple_menu_items() -> Vec<forms::ContextualItem> {
     vec![
         menu_item(
-            "Session Tools",
-            "Inspect or manage the current Kanidm CLI session.",
-            "Use this for explicit login, reauthentication, logout, or session inspection. This is the first place to go when the delegated operator session may be stale or expired.",
-        ),
-        menu_item(
             "Create User",
             "Create a new Kanidm person and then assign their access groups.",
             "Use this for new staff or household members. The workflow creates the identity first and then immediately guides you through normal and admin access groups.",
@@ -1381,8 +1375,8 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
         ),
         menu_item(
             "Advanced",
-            "Open lower-level Kanidm and local helper tools.",
-            "Use this for raw membership tools, group inspection, OAuth2 clients, policy, diagnostics, or permanent deletion.",
+            "Open session management, lower-level Kanidm, and local helper tools.",
+            "Use this for session tools, raw membership tools, group inspection, OAuth2 clients, policy, diagnostics, or permanent deletion.",
         ),
         menu_item(
             "Exit",
@@ -1454,6 +1448,11 @@ fn client_menu_items() -> Vec<forms::ContextualItem> {
 
 fn advanced_menu_items() -> Vec<forms::ContextualItem> {
     vec![
+        menu_item(
+            "Session Tools",
+            "Inspect or manage the current Kanidm CLI session.",
+            "Use this for explicit login, reauthentication, logout, or session inspection when guided workflows are not enough.",
+        ),
         menu_item(
             "Group Inspection",
             "Read group information without changing access.",
@@ -2222,7 +2221,6 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "Session Tools",
                 "Create User",
                 "Manage User Access",
                 "Find / View User",
@@ -2241,13 +2239,20 @@ mod tests {
             .map(|item| item.label)
             .collect::<Vec<_>>();
 
-        assert!(!labels.contains(&"Session Tools".to_string()));
+        assert!(labels.contains(&"Session Tools".to_string()));
         assert!(labels.contains(&"Membership Tools".to_string()));
         assert!(labels.contains(&"Delete User".to_string()));
     }
 
     #[test]
     fn advanced_submenus_expose_stable_labels() {
+        assert_eq!(
+            session_tools_items()
+                .into_iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>(),
+            vec!["Status", "Login", "Reauthenticate", "Logout", "Back"]
+        );
         assert_eq!(
             client_menu_items()
                 .into_iter()
@@ -2442,6 +2447,18 @@ mod tests {
         assert_eq!(base_session, HomeBaseSessionStatus::Active);
         assert_eq!(privileged_writes, HomePrivilegedWriteStatus::Ready);
         assert!(diagnostic.contains("Privileged write commands are ready"));
+    }
+
+    #[test]
+    fn privileged_reauth_copy_is_plain_language() {
+        assert_eq!(
+            privileged_reauth_note_message(),
+            "Your base login is active.\nThis action requires reauthentication for added security.\nIf you continue, the tool will guide you through the admin sign-in prompt again before applying the change."
+        );
+        assert_eq!(
+            privileged_reauth_prompt_message(),
+            "This action requires reauthentication for added security. Would you like to log in again now?"
+        );
     }
 
     #[test]

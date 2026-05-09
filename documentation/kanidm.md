@@ -257,7 +257,7 @@ Expected result:
 
 - `uploads.<domain>`: Copyparty upload access is enforced by OAuth2 Proxy. `user-files` grants access to the signed-in user's own uploads root at `/`.
 - `files.<domain>`: FileBrowser UI and WebDAV access require `user-files` for personal roots and `shared-files-read-write-access` for explicit shared-files access. `app-admin` and `system_admins` do not expose shared files there.
-- `emails.<domain>`: browser access is enforced by `mail-archive-users`.
+- `emails.<domain>`: browser access is enforced by `mail-archive-users`. That group grants access to the private mail-archive UI only; it does not grant direct access to the hidden `.internal-sync` payload tree. User-visible mailbox `.eml` files are exposed through the visible mirror under each personal `emails/` root.
 - `wiki.<domain>`: baseline `users` membership is sufficient.
 - `ytdownload.<domain>`: browser access is enforced by `metube-users`.
 - Immich: `immich-users` grants normal login and `app-admin` adds the admin role when combined with `immich-users`.

@@ -1,0 +1,20 @@
+=== START OF INFORMATION SECTION ===
+Device Model: SK hynix SC401 SATA 256GB
+Serial Number: ALONE123
+SMART support is: Available - device has SMART capability.
+SMART support is: Enabled
+
+=== START OF READ SMART DATA SECTION ===
+SMART overall-health self-assessment test result: PASSED
+
+ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+  5 Reallocated_Sector_Ct   0x0033   100   100   036    Pre-fail  Always       -       0
+  9 Power_On_Hours          0x0032   081   081   000    Old_age   Always       -       17041
+187 Reported_Uncorrect      0x0033   100   100   001    Pre-fail  Always       -       1
+197 Current_Pending_Sector  0x0012   100   100   000    Old_age   Always       -       0
+198 Offline_Uncorrectable   0x0030   100   100   000    Old_age   Offline      -       0
+199 UDMA_CRC_Error_Count    0x0033   100   100   001    Pre-fail  Always       -       0
+
+ATA Error Count: 0
+SMART Self-test log structure revision number 1
+# 1  Short offline       Completed without error       00%     17041         -

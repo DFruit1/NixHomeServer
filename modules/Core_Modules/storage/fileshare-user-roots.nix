@@ -46,6 +46,7 @@ let
     else
       install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails"
     fi
+    install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails/.internal-sync"
 
     ${pkgs.acl}/bin/setfacl \
       -m u::rwx \
@@ -95,6 +96,13 @@ let
       apply_recursive_acl "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
     }
 
+    apply_noaccess_acl() {
+      local group_name="$1"
+      shift
+
+      apply_recursive_acl "g:''${group_name}:---" "d:g:''${group_name}:---" "$@"
+    }
+
     apply_owner_group_writable_acl \
       "$root/uploads" \
       "$root/files" \
@@ -111,6 +119,7 @@ let
       ${kavitaWritablePaths}
 
     apply_readonly_acl filebrowser-quantum "$root/emails"
+    apply_noaccess_acl filebrowser-quantum "$root/emails/.internal-sync"
     apply_readonly_acl immich "$root/photos"
     apply_readonly_acl paperless "$root/documents"
   '';

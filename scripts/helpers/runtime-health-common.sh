@@ -150,6 +150,7 @@ let
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-data"; path = cfg.services.mail-archive-ui.dataDir; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-runtime"; path = cfg.services.mail-archive-ui.runtimeDir; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-locks"; path = cfg.services.mail-archive-ui.lockDir; }
+    ++ optional mailArchiveEnabled { label = "mail-archive-ui-store-root"; path = cfg.services.mail-archive-ui.storeRoot; }
     ++ optional (mailArchiveEnabled && cfg.services.mail-archive-ui.environment ? MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT) {
       label = "mail-archive-paperless-consume";
       path = cfg.services.mail-archive-ui.environment.MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT;

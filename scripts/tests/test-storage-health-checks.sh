@@ -83,4 +83,13 @@ require_match <(printf '%s\n' "$transport_output") '^CRITICAL[[:space:]]+transpo
 require_match <(printf '%s\n' "$transport_output") 'recent kernel transport errors' \
   "Storage health helper must explain transport-related critical results."
 
+reported_uncorrect_output="$(
+  PATH="$tmpdir:$PATH" \
+    STORAGE_HEALTH_FIXTURE_DIR="$fixture_dir" \
+    scripts/helpers/storage-health-common.sh --mode warn \
+      lone=/dev/disk/by-id/reported-uncorrect-alone
+)"
+require_match <(printf '%s\n' "$reported_uncorrect_output") '^OK[[:space:]]+lone[[:space:]]+/dev/disk/by-id/reported-uncorrect-alone$' \
+  "A lone historical Reported_Uncorrect=1 must not warn by itself."
+
 echo "✅ Storage health helper tests passed."

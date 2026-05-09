@@ -310,7 +310,10 @@ exit 1
         assert_eq!(output.details["base_session_present"], true);
         assert!(output
             .human
-            .contains("The base session is active, but privileged write access still requires"));
+            .contains("Base login successful for 'admindsaw'."));
+        assert!(output
+            .human
+            .contains("Some actions require reauthentication for added security."));
         assert_eq!(output.warnings.len(), 1);
     }
 }

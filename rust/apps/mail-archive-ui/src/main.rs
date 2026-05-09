@@ -461,13 +461,58 @@ struct AttachmentListItem {
     is_deleted: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct AccountPaths {
+    emails_root: PathBuf,
+    visible_emails_root: PathBuf,
+    hidden_sync_root: PathBuf,
     maildir: PathBuf,
     account_state_root: PathBuf,
     notmuch_config: PathBuf,
     sync_state_dir: PathBuf,
     notmuch_db_root: PathBuf,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct AccountProgressSnapshotRecord {
+    account_id: i64,
+    archived_message_count: usize,
+    indexed_message_count: usize,
+    pending_index_count: usize,
+    index_coverage_percent: usize,
+    archive_file_count: usize,
+    overlap_file_count: usize,
+    last_computed_at: String,
+    source_sync_finished_at: Option<String>,
+    snapshot_status: String,
+    snapshot_note: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct MessageCatalogRecord {
+    account_id: i64,
+    message_key: String,
+    canonical_hidden_relpath: String,
+    subject: String,
+    sender: String,
+    timestamp: i64,
+    message_sha256: String,
+    last_seen_at: String,
+}
+
+#[derive(Clone, Debug)]
+struct MessageMailboxInstanceRecord {
+    account_id: i64,
+    message_key: String,
+    raw_mailbox_path: String,
+    visible_relpath: String,
+    hidden_relpath: String,
+    account_slug: String,
+    mailbox_slug: String,
+    filename: String,
+    last_seen_at: String,
 }
 
 #[derive(Clone, Debug)]
@@ -2157,6 +2202,51 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
             CREATE INDEX IF NOT EXISTS idx_attachment_actions_key
             ON attachment_actions (attachment_key, method, outcome);
 
+            CREATE TABLE IF NOT EXISTS account_progress_snapshots (
+                account_id INTEGER PRIMARY KEY,
+                archived_message_count INTEGER NOT NULL,
+                indexed_message_count INTEGER NOT NULL,
+                pending_index_count INTEGER NOT NULL,
+                index_coverage_percent INTEGER NOT NULL,
+                archive_file_count INTEGER NOT NULL,
+                overlap_file_count INTEGER NOT NULL,
+                last_computed_at TEXT NOT NULL,
+                source_sync_finished_at TEXT,
+                snapshot_status TEXT NOT NULL,
+                snapshot_note TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS message_catalog (
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                canonical_hidden_relpath TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                message_sha256 TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, message_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_message_catalog_timestamp
+            ON message_catalog (account_id, timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS message_mailbox_instances (
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                raw_mailbox_path TEXT NOT NULL,
+                visible_relpath TEXT NOT NULL,
+                hidden_relpath TEXT NOT NULL,
+                account_slug TEXT NOT NULL,
+                mailbox_slug TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY (account_id, message_key, raw_mailbox_path)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_message_mailbox_visible_relpath
+            ON message_mailbox_instances (account_id, visible_relpath);
+
             CREATE TABLE IF NOT EXISTS deleted_messages (
                 account_id INTEGER NOT NULL,
                 message_key TEXT NOT NULL,
@@ -3092,6 +3182,14 @@ fn run_account_action(
                         error,
                     )
                 })?;
+                rebuild_message_catalog_and_visible_mailboxes(config, account).map_err(|error| {
+                    SyncDiagnostic::new(
+                        SyncPhase::Reconcile,
+                        "mailbox_mirror_rebuild_failed",
+                        "Mail sync completed, but the visible mailbox mirror could not be rebuilt.",
+                        error,
+                    )
+                })?;
             }
             AccountAction::Reindex => {
                 let account_paths = ensure_account_paths(config, account).map_err(|error| {
@@ -3130,6 +3228,14 @@ fn run_account_action(
                         SyncPhase::Reconcile,
                         "deleted_message_suppression_failed",
                         "Mailbox reindex completed, but deleted-message reconciliation failed.",
+                        error,
+                    )
+                })?;
+                rebuild_message_catalog_and_visible_mailboxes(config, account).map_err(|error| {
+                    SyncDiagnostic::new(
+                        SyncPhase::Reconcile,
+                        "mailbox_mirror_rebuild_failed",
+                        "Mailbox reindex completed, but the visible mailbox mirror could not be rebuilt.",
                         error,
                     )
                 })?;
@@ -3275,14 +3381,15 @@ fn ensure_account_paths(
         return Err("mail archive store root is not a directory".to_string());
     }
 
-    let payload_root = store_root
-        .join(&account.username)
-        .join("emails")
-        .join("accounts")
-        .join(account.id.to_string());
-    let maildir = payload_root.join("maildir");
-    let legacy_state_dir = payload_root.join("state");
-    let legacy_notmuch_db_root = maildir.join(".notmuch");
+    let emails_root = store_root.join(&account.username).join("emails");
+    let visible_emails_root = emails_root.clone();
+    let hidden_sync_root = emails_root
+        .join(".internal-sync")
+        .join(account_hidden_root_name(account));
+    let maildir = hidden_sync_root.join("maildir");
+    let legacy_payload_root = emails_root.join("accounts").join(account.id.to_string());
+    let legacy_state_dir = legacy_payload_root.join("state");
+    let legacy_notmuch_db_root = legacy_payload_root.join("maildir/.notmuch");
     let account_state_root = PathBuf::from(config.account_state_root.as_ref())
         .join(&account.username)
         .join(account.id.to_string());
@@ -3290,12 +3397,22 @@ fn ensure_account_paths(
     let notmuch_config = account_state_root.join("notmuch-config");
     let notmuch_db_root = account_state_root.join("notmuch-db");
 
-    for directory in [&maildir, &account_state_root] {
+    for directory in [
+        &emails_root,
+        &visible_emails_root,
+        hidden_sync_root.parent().unwrap_or(&hidden_sync_root),
+        &hidden_sync_root,
+        &maildir,
+        &account_state_root,
+    ] {
         fs::create_dir_all(directory)
             .map_err(|error| format!("failed to create {}: {error}", directory.display()))?;
     }
 
     let account_paths = AccountPaths {
+        emails_root,
+        visible_emails_root,
+        hidden_sync_root,
         maildir,
         account_state_root,
         notmuch_config,
@@ -3305,6 +3422,7 @@ fn ensure_account_paths(
 
     migrate_legacy_account_state(&legacy_state_dir, &legacy_notmuch_db_root, &account_paths)?;
     migrate_account_state_root_layout(&account_paths)?;
+    remove_legacy_email_payload_tree(&legacy_payload_root)?;
 
     fs::create_dir_all(&account_paths.sync_state_dir).map_err(|error| {
         format!(
@@ -3314,6 +3432,35 @@ fn ensure_account_paths(
     })?;
 
     Ok(account_paths)
+}
+
+fn slugify_component(raw: &str, fallback: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    for character in raw.chars() {
+        let lowered = character.to_ascii_lowercase();
+        if lowered.is_ascii_alphanumeric() {
+            slug.push(lowered);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        fallback.to_string()
+    } else {
+        slug
+    }
+}
+
+fn account_hidden_root_name(account: &AccountRecord) -> String {
+    format!(
+        "{}--{}",
+        slugify_component(&account.display_name, "mailbox"),
+        account.id
+    )
 }
 
 fn account_notmuch_db_exists(account_paths: &AccountPaths) -> bool {
@@ -3377,7 +3524,7 @@ fn migrate_legacy_account_state(
         &legacy_state_dir.join("notmuch-config"),
         &account_paths.notmuch_config,
     )?;
-    move_or_prune_legacy_path(legacy_notmuch_db_root, &account_paths.notmuch_db_root)?;
+    remove_path_recursive_if_exists(legacy_notmuch_db_root)?;
     remove_dir_if_empty(legacy_state_dir)?;
     Ok(())
 }
@@ -3507,6 +3654,24 @@ fn remove_path_recursive(path: &FsPath) -> Result<(), String> {
         fs::remove_file(path)
             .map_err(|error| format!("failed to remove {}: {error}", path.display()))
     }
+}
+
+fn remove_path_recursive_if_exists(path: &FsPath) -> Result<(), String> {
+    if path.exists() {
+        remove_path_recursive(path)?;
+    }
+    Ok(())
+}
+
+fn remove_legacy_email_payload_tree(legacy_payload_root: &FsPath) -> Result<(), String> {
+    if legacy_payload_root.exists() {
+        remove_path_recursive(legacy_payload_root)?;
+    }
+    remove_dir_if_empty(
+        legacy_payload_root
+            .parent()
+            .ok_or_else(|| "legacy payload root parent missing".to_string())?,
+    )
 }
 
 fn remove_dir_if_empty(path: &FsPath) -> Result<(), String> {
@@ -5239,6 +5404,17 @@ fn delete_message_from_archive(
     let (account, live_message) =
         load_live_message_for_user(config, username, account_id, message_key)?;
     let account_paths = ensure_account_paths(config, &account)?;
+    let existing_connection = open_db(config)?;
+    let mailbox_instances = load_message_mailbox_instances_for_account(&existing_connection, account_id)?
+        .into_iter()
+        .filter(|instance| instance.message_key == message_key)
+        .collect::<Vec<_>>();
+    let mut visible_paths_to_remove = mailbox_instances
+        .iter()
+        .map(|instance| account_paths.visible_emails_root.join(&instance.visible_relpath))
+        .collect::<Vec<_>>();
+    visible_paths_to_remove.sort();
+    visible_paths_to_remove.dedup();
     let mut paths_to_remove = live_message
         .message_relpaths
         .iter()
@@ -5256,6 +5432,15 @@ fn delete_message_from_archive(
         }
     }
 
+    for path in &visible_paths_to_remove {
+        if path.exists() {
+            fs::remove_file(path)
+                .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
+            if let Some(parent) = path.parent() {
+                prune_empty_ancestors(parent, &account_paths.visible_emails_root)?;
+            }
+        }
+    }
     for path in &paths_to_remove {
         fs::remove_file(path)
             .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
@@ -5366,6 +5551,18 @@ fn delete_message_from_archive(
         )
         .map_err(|error| format!("failed to delete attachment message row: {error}"))?;
     transaction
+        .execute(
+            "DELETE FROM message_mailbox_instances WHERE account_id = ?1 AND message_key = ?2",
+            params![account_id, message_key],
+        )
+        .map_err(|error| format!("failed to delete mailbox instance rows: {error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM message_catalog WHERE account_id = ?1 AND message_key = ?2",
+            params![account_id, message_key],
+        )
+        .map_err(|error| format!("failed to delete message catalog row: {error}"))?;
+    transaction
         .commit()
         .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
 
@@ -5383,6 +5580,7 @@ fn delete_message_from_archive(
             ),
         ],
     )?;
+    rebuild_message_catalog_and_visible_mailboxes(config, &account)?;
 
     Ok(())
 }
@@ -5572,7 +5770,7 @@ fn summarize_attachment_actions(
     summaries
 }
 
-fn load_legacy_paperless_saved_keys(
+fn load_recorded_paperless_saved_keys(
     connection: &Connection,
     account_id: i64,
 ) -> Result<HashSet<(String, String)>, String> {
@@ -5768,7 +5966,7 @@ fn load_attachment_page_data(
         let action_summaries = summarize_attachment_actions(
             &load_attachment_action_records_for_account(&connection, account.id)?,
         );
-        let legacy_paperless = load_legacy_paperless_saved_keys(&connection, account.id)?;
+        let recorded_paperless = load_recorded_paperless_saved_keys(&connection, account.id)?;
         let deleted_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
         if message_state != MessageStateFilter::Deleted {
             for (message, attachment) in
@@ -5792,7 +5990,7 @@ fn load_attachment_page_data(
                     .get(&attachment.attachment_key)
                     .cloned()
                     .unwrap_or_default();
-                if legacy_paperless.contains(&(
+                if recorded_paperless.contains(&(
                     attachment.message_key.clone(),
                     attachment.attachment_sha256.clone(),
                 )) {
@@ -5843,7 +6041,7 @@ fn load_attachment_page_data(
                     .get(&deleted_attachment.attachment_key)
                     .cloned()
                     .unwrap_or_default();
-                if legacy_paperless.contains(&(
+                if recorded_paperless.contains(&(
                     deleted_message.message_key.clone(),
                     deleted_attachment.attachment_sha256.clone(),
                 )) {
@@ -6427,6 +6625,615 @@ fn search_deleted_messages(
     Ok(results)
 }
 
+fn load_account_progress_snapshot(
+    config: &AppConfig,
+    account_id: i64,
+) -> Result<Option<AccountProgressSnapshotRecord>, String> {
+    let connection = open_db(config)?;
+    connection
+        .query_row(
+            r#"
+            SELECT
+                account_id,
+                archived_message_count,
+                indexed_message_count,
+                pending_index_count,
+                index_coverage_percent,
+                archive_file_count,
+                overlap_file_count,
+                last_computed_at,
+                source_sync_finished_at,
+                snapshot_status,
+                snapshot_note
+            FROM account_progress_snapshots
+            WHERE account_id = ?1
+            "#,
+            params![account_id],
+            |row| {
+                Ok(AccountProgressSnapshotRecord {
+                    account_id: row.get(0)?,
+                    archived_message_count: row.get(1)?,
+                    indexed_message_count: row.get(2)?,
+                    pending_index_count: row.get(3)?,
+                    index_coverage_percent: row.get(4)?,
+                    archive_file_count: row.get(5)?,
+                    overlap_file_count: row.get(6)?,
+                    last_computed_at: row.get(7)?,
+                    source_sync_finished_at: row.get(8)?,
+                    snapshot_status: row.get(9)?,
+                    snapshot_note: row.get(10)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("failed to load account progress snapshot: {error}"))
+}
+
+fn store_account_progress_snapshot(
+    config: &AppConfig,
+    account_id: i64,
+    counts: &AccountProgressCounts,
+    source_sync_finished_at: Option<&str>,
+    snapshot_status: &str,
+    snapshot_note: Option<&str>,
+) -> Result<(), String> {
+    let connection = open_db(config)?;
+    let now = Utc::now().to_rfc3339();
+    connection
+        .execute(
+            r#"
+            INSERT INTO account_progress_snapshots (
+                account_id,
+                archived_message_count,
+                indexed_message_count,
+                pending_index_count,
+                index_coverage_percent,
+                archive_file_count,
+                overlap_file_count,
+                last_computed_at,
+                source_sync_finished_at,
+                snapshot_status,
+                snapshot_note
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(account_id) DO UPDATE SET
+                archived_message_count = excluded.archived_message_count,
+                indexed_message_count = excluded.indexed_message_count,
+                pending_index_count = excluded.pending_index_count,
+                index_coverage_percent = excluded.index_coverage_percent,
+                archive_file_count = excluded.archive_file_count,
+                overlap_file_count = excluded.overlap_file_count,
+                last_computed_at = excluded.last_computed_at,
+                source_sync_finished_at = excluded.source_sync_finished_at,
+                snapshot_status = excluded.snapshot_status,
+                snapshot_note = excluded.snapshot_note
+            "#,
+            params![
+                account_id,
+                counts.archived_message_count,
+                counts.indexed_message_count,
+                counts.pending_index_count,
+                counts.index_coverage_percent,
+                counts.archive_file_count,
+                counts.overlap_file_count,
+                now,
+                source_sync_finished_at,
+                snapshot_status,
+                snapshot_note,
+            ],
+        )
+        .map_err(|error| format!("failed to store account progress snapshot: {error}"))?;
+    Ok(())
+}
+
+fn snapshot_counts(snapshot: &AccountProgressSnapshotRecord) -> AccountProgressCounts {
+    AccountProgressCounts {
+        archived_message_count: snapshot.archived_message_count,
+        indexed_message_count: snapshot.indexed_message_count,
+        pending_index_count: snapshot.pending_index_count,
+        index_coverage_percent: snapshot.index_coverage_percent,
+        archive_file_count: snapshot.archive_file_count,
+        overlap_file_count: snapshot.overlap_file_count,
+    }
+}
+
+fn load_message_mailbox_instances_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Vec<MessageMailboxInstanceRecord>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                account_id,
+                message_key,
+                raw_mailbox_path,
+                visible_relpath,
+                hidden_relpath,
+                account_slug,
+                mailbox_slug,
+                filename,
+                last_seen_at
+            FROM message_mailbox_instances
+            WHERE account_id = ?1
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare mailbox instance query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok(MessageMailboxInstanceRecord {
+                account_id: row.get(0)?,
+                message_key: row.get(1)?,
+                raw_mailbox_path: row.get(2)?,
+                visible_relpath: row.get(3)?,
+                hidden_relpath: row.get(4)?,
+                account_slug: row.get(5)?,
+                mailbox_slug: row.get(6)?,
+                filename: row.get(7)?,
+                last_seen_at: row.get(8)?,
+            })
+        })
+        .map_err(|error| format!("failed to load mailbox instances: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode mailbox instances: {error}"))
+}
+
+fn visible_account_slug(config: &AppConfig, account: &AccountRecord) -> Result<String, String> {
+    let accounts = list_accounts_for_user(config, &account.username)?;
+    let base_source = if account.display_name.trim().is_empty() {
+        account.imap_username.as_str()
+    } else {
+        account.display_name.as_str()
+    };
+    let base = slugify_component(base_source, "mailbox");
+    let conflicting_count = accounts
+        .iter()
+        .filter(|candidate| {
+            let candidate_source = if candidate.display_name.trim().is_empty() {
+                candidate.imap_username.as_str()
+            } else {
+                candidate.display_name.as_str()
+            };
+            slugify_component(candidate_source, "mailbox") == base
+        })
+        .count();
+    if conflicting_count > 1 {
+        Ok(format!("{base}--{}", account.id))
+    } else {
+        Ok(base)
+    }
+}
+
+fn preferred_mailbox_slug(raw_mailbox_path: &str) -> String {
+    match raw_mailbox_path.trim().to_ascii_lowercase().as_str() {
+        "" | "inbox" => "inbox".to_string(),
+        "[gmail]/all mail" => "archive".to_string(),
+        "[gmail]/sent mail" => "sent".to_string(),
+        "[gmail]/drafts" => "drafts".to_string(),
+        "[gmail]/important" => "important".to_string(),
+        "[gmail]/starred" => "starred".to_string(),
+        "[gmail]/spam" => "spam".to_string(),
+        "[gmail]/trash" => "trash".to_string(),
+        other => {
+            let label = other.rsplit('/').next().unwrap_or(other);
+            slugify_component(label, "mailbox")
+        }
+    }
+}
+
+fn raw_mailbox_path_from_hidden_relpath(hidden_relpath: &str) -> String {
+    let components = hidden_relpath
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    let marker = components
+        .iter()
+        .position(|component| matches!(*component, "cur" | "new" | "tmp"));
+    match marker {
+        Some(0) | None => "Inbox".to_string(),
+        Some(index) => components[..index].join("/"),
+    }
+}
+
+fn short_message_key(message_key: &str) -> String {
+    sha256_hex(message_key.as_bytes())
+        .chars()
+        .take(8)
+        .collect::<String>()
+}
+
+fn visible_message_subject(subject: &str) -> String {
+    let sanitized = subject
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '_' | '-') {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if sanitized.is_empty() {
+        "No Subject".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn visible_message_filename(timestamp: i64, subject: &str, message_key: &str) -> String {
+    let date_label = DateTime::<Utc>::from_timestamp(timestamp, 0)
+        .map(|value| value.format("%Y-%m-%d %H-%M").to_string())
+        .unwrap_or_else(|| "1970-01-01 00-00".to_string());
+    format!(
+        "{} - {} [{}].eml",
+        date_label,
+        visible_message_subject(subject),
+        short_message_key(message_key)
+    )
+}
+
+fn timestamp_year_month(timestamp: i64) -> (String, String) {
+    DateTime::<Utc>::from_timestamp(timestamp, 0)
+        .map(|value| {
+            (
+                value.format("%Y").to_string(),
+                value.format("%m").to_string(),
+            )
+        })
+        .unwrap_or_else(|| ("1970".to_string(), "01".to_string()))
+}
+
+fn same_file_identity(left: &FsPath, right: &FsPath) -> Result<bool, String> {
+    let left_meta = fs::metadata(left)
+        .map_err(|error| format!("failed to inspect {}: {error}", left.display()))?;
+    let right_meta = fs::metadata(right)
+        .map_err(|error| format!("failed to inspect {}: {error}", right.display()))?;
+    Ok(left_meta.dev() == right_meta.dev() && left_meta.ino() == right_meta.ino())
+}
+
+fn ensure_hard_link(source: &FsPath, destination: &FsPath) -> Result<(), String> {
+    if destination.exists() {
+        if same_file_identity(source, destination)? {
+            return Ok(());
+        }
+        fs::remove_file(destination)
+            .map_err(|error| format!("failed to replace {}: {error}", destination.display()))?;
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    }
+    fs::hard_link(source, destination).map_err(|error| {
+        format!(
+            "failed to link {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+fn prune_empty_ancestors(path: &FsPath, stop_at: &FsPath) -> Result<(), String> {
+    let mut current = path.to_path_buf();
+    while current.starts_with(stop_at) && current != stop_at {
+        match fs::remove_dir(&current) {
+            Ok(()) => {
+                if let Some(parent) = current.parent() {
+                    current = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::DirectoryNotEmpty => break,
+            Err(error) if error.kind() == ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(format!(
+                    "failed to prune empty directory {}: {error}",
+                    current.display()
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rebuild_message_catalog_and_visible_mailboxes(
+    config: &AppConfig,
+    account: &AccountRecord,
+) -> Result<AccountProgressCounts, String> {
+    #[derive(Clone)]
+    struct PendingInstance {
+        message_key: String,
+        hidden_relpath: String,
+        raw_mailbox_path: String,
+        subject: String,
+        timestamp: i64,
+        last_seen_at: String,
+    }
+
+    let account_paths = ensure_account_paths(config, account)?;
+    if account_index_state(&account_paths) != IndexState::Indexed {
+        let empty = AccountProgressCounts::default();
+        store_account_progress_snapshot(
+            config,
+            account.id,
+            &empty,
+            account.last_sync_finished_at.as_deref(),
+            "stale",
+            Some("Run Sync now or Reindex to rebuild dashboard counts."),
+        )?;
+        return Ok(empty);
+    }
+
+    let mut connection = open_db(config)?;
+    let previous_instances = load_message_mailbox_instances_for_account(&connection, account.id)?;
+    let tombstones = load_active_deleted_message_map_for_account(&connection, account.id)?;
+    let account_slug = visible_account_slug(config, account)?;
+    let mut restored_message_keys = HashSet::new();
+    let mut pending_instances = Vec::new();
+    let mut catalog_by_key = HashMap::<String, MessageCatalogRecord>::new();
+
+    for file_path in list_notmuch_message_files(&account_paths, "*")? {
+        let metadata = read_message_metadata(&file_path)?;
+        let message_key = message_key_from_metadata(&metadata)?;
+        if let Some(tombstone) = tombstones.get(&message_key) {
+            if tombstone.restore_pending {
+                restored_message_keys.insert(message_key.clone());
+            } else {
+                continue;
+            }
+        }
+
+        let hidden_relpath = message_relative_path(&account_paths, &file_path)?
+            .to_string_lossy()
+            .to_string();
+        let raw_mailbox_path = raw_mailbox_path_from_hidden_relpath(&hidden_relpath);
+        let last_seen_at = Utc::now().to_rfc3339();
+        let message_sha256 = sha256_file(&file_path)?;
+        pending_instances.push(PendingInstance {
+            message_key: message_key.clone(),
+            hidden_relpath: hidden_relpath.clone(),
+            raw_mailbox_path,
+            subject: metadata.subject.clone(),
+            timestamp: metadata.timestamp,
+            last_seen_at: last_seen_at.clone(),
+        });
+        catalog_by_key
+            .entry(message_key.clone())
+            .and_modify(|record| {
+                if hidden_relpath < record.canonical_hidden_relpath {
+                    record.canonical_hidden_relpath = hidden_relpath.clone();
+                }
+            })
+            .or_insert_with(|| MessageCatalogRecord {
+                account_id: account.id,
+                message_key,
+                canonical_hidden_relpath: hidden_relpath,
+                subject: metadata.subject,
+                sender: metadata.from,
+                timestamp: metadata.timestamp,
+                message_sha256,
+                last_seen_at,
+            });
+    }
+
+    let mut mailbox_slug_map = HashMap::<String, String>::new();
+    let mut grouped_mailboxes = HashMap::<String, Vec<String>>::new();
+    for raw_mailbox_path in pending_instances
+        .iter()
+        .map(|instance| instance.raw_mailbox_path.clone())
+        .collect::<HashSet<_>>()
+    {
+        grouped_mailboxes
+            .entry(preferred_mailbox_slug(&raw_mailbox_path))
+            .or_default()
+            .push(raw_mailbox_path);
+    }
+    for (preferred_slug, mut mailboxes) in grouped_mailboxes {
+        mailboxes.sort();
+        for (index, raw_mailbox_path) in mailboxes.into_iter().enumerate() {
+            let mailbox_slug = if index == 0 {
+                preferred_slug.clone()
+            } else {
+                format!(
+                    "{}--{}",
+                    preferred_slug,
+                    slugify_component(&raw_mailbox_path, "mailbox")
+                )
+            };
+            mailbox_slug_map.insert(raw_mailbox_path, mailbox_slug);
+        }
+    }
+
+    let mut used_visible_relpaths = HashSet::new();
+    let mut desired_instances = Vec::new();
+    for instance in pending_instances {
+        let mailbox_slug = mailbox_slug_map
+            .get(&instance.raw_mailbox_path)
+            .cloned()
+            .unwrap_or_else(|| preferred_mailbox_slug(&instance.raw_mailbox_path));
+        let mailbox_dir = format!("{account_slug}-{mailbox_slug}");
+        let (year, month) = timestamp_year_month(instance.timestamp);
+        let mut filename =
+            visible_message_filename(instance.timestamp, &instance.subject, &instance.message_key);
+        let mut visible_relpath = PathBuf::from(&mailbox_dir)
+            .join(&year)
+            .join(&month)
+            .join(&filename)
+            .to_string_lossy()
+            .to_string();
+        if !used_visible_relpaths.insert(visible_relpath.clone()) {
+            filename = format!(
+                "{}--{}.eml",
+                filename.trim_end_matches(".eml"),
+                short_message_key(&instance.hidden_relpath)
+            );
+            visible_relpath = PathBuf::from(&mailbox_dir)
+                .join(&year)
+                .join(&month)
+                .join(&filename)
+                .to_string_lossy()
+                .to_string();
+            used_visible_relpaths.insert(visible_relpath.clone());
+        }
+        desired_instances.push(MessageMailboxInstanceRecord {
+            account_id: account.id,
+            message_key: instance.message_key,
+            raw_mailbox_path: instance.raw_mailbox_path,
+            visible_relpath,
+            hidden_relpath: instance.hidden_relpath,
+            account_slug: account_slug.clone(),
+            mailbox_slug,
+            filename,
+            last_seen_at: instance.last_seen_at,
+        });
+    }
+
+    let desired_visible_relpaths = desired_instances
+        .iter()
+        .map(|instance| instance.visible_relpath.clone())
+        .collect::<HashSet<_>>();
+    for instance in &desired_instances {
+        let source = account_paths.maildir.join(&instance.hidden_relpath);
+        let destination = account_paths.visible_emails_root.join(&instance.visible_relpath);
+        ensure_hard_link(&source, &destination)?;
+    }
+    for previous in previous_instances {
+        if desired_visible_relpaths.contains(&previous.visible_relpath) {
+            continue;
+        }
+        let destination = account_paths.visible_emails_root.join(&previous.visible_relpath);
+        if destination.exists() {
+            fs::remove_file(&destination)
+                .map_err(|error| format!("failed to remove {}: {error}", destination.display()))?;
+            if let Some(parent) = destination.parent() {
+                prune_empty_ancestors(parent, &account_paths.visible_emails_root)?;
+            }
+        }
+    }
+
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to start mailbox rebuild transaction: {error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM message_mailbox_instances WHERE account_id = ?1",
+            params![account.id],
+        )
+        .map_err(|error| format!("failed to clear mailbox instances: {error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM message_catalog WHERE account_id = ?1",
+            params![account.id],
+        )
+        .map_err(|error| format!("failed to clear message catalog: {error}"))?;
+    for record in catalog_by_key.values() {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO message_catalog (
+                    account_id,
+                    message_key,
+                    canonical_hidden_relpath,
+                    subject,
+                    sender,
+                    timestamp,
+                    message_sha256,
+                    last_seen_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#,
+                params![
+                    record.account_id,
+                    record.message_key,
+                    record.canonical_hidden_relpath,
+                    record.subject,
+                    record.sender,
+                    record.timestamp,
+                    record.message_sha256,
+                    record.last_seen_at,
+                ],
+            )
+            .map_err(|error| format!("failed to insert message catalog row: {error}"))?;
+    }
+    for record in &desired_instances {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO message_mailbox_instances (
+                    account_id,
+                    message_key,
+                    raw_mailbox_path,
+                    visible_relpath,
+                    hidden_relpath,
+                    account_slug,
+                    mailbox_slug,
+                    filename,
+                    last_seen_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                "#,
+                params![
+                    record.account_id,
+                    record.message_key,
+                    record.raw_mailbox_path,
+                    record.visible_relpath,
+                    record.hidden_relpath,
+                    record.account_slug,
+                    record.mailbox_slug,
+                    record.filename,
+                    record.last_seen_at,
+                ],
+            )
+            .map_err(|error| format!("failed to insert mailbox instance row: {error}"))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit mailbox rebuild transaction: {error}"))?;
+
+    if !restored_message_keys.is_empty() {
+        let now = Utc::now().to_rfc3339();
+        for message_key in restored_message_keys {
+            connection
+                .execute(
+                    r#"
+                    UPDATE deleted_messages
+                    SET
+                        restored_at = ?3,
+                        restore_pending = 0
+                    WHERE account_id = ?1
+                      AND message_key = ?2
+                      AND restored_at IS NULL
+                    "#,
+                    params![account.id, message_key, now],
+                )
+                .map_err(|error| format!("failed to mark restored message catalog row: {error}"))?;
+        }
+    }
+
+    let inventory = MaildirInventory {
+        archive_file_count: desired_instances.len(),
+        logical_message_count: catalog_by_key.len(),
+        overlap_file_count: desired_instances.len().saturating_sub(catalog_by_key.len()),
+    };
+    let indexed_message_count = count_indexed_messages(&account_paths)?;
+    let counts = progress_counts(&inventory, indexed_message_count);
+    let snapshot_status = if counts.archived_message_count == 0 {
+        "empty"
+    } else {
+        "ready"
+    };
+    store_account_progress_snapshot(
+        config,
+        account.id,
+        &counts,
+        account.last_sync_finished_at.as_deref(),
+        snapshot_status,
+        None,
+    )?;
+    Ok(counts)
+}
+
 fn load_dashboard_account_views(
     config: &AppConfig,
     username: &str,
@@ -6464,8 +7271,24 @@ fn build_dashboard_account_view(
     let (index_state, counts, progress_error) = match ensure_account_paths(config, &account) {
         Ok(account_paths) => {
             let index_state = account_index_state(&account_paths);
-            match load_account_progress(&account_paths, index_state) {
-                Ok(counts) => (index_state, counts, None),
+            match load_account_progress_snapshot(config, account.id) {
+                Ok(Some(snapshot)) => {
+                    let note = match snapshot.snapshot_status.as_str() {
+                        "error" => snapshot.snapshot_note.clone().or_else(|| {
+                            Some("Dashboard counts could not be refreshed for this mailbox.".to_string())
+                        }),
+                        "stale" => snapshot.snapshot_note.clone().or_else(|| {
+                            Some("Dashboard counts are waiting for the next sync or reindex.".to_string())
+                        }),
+                        _ => None,
+                    };
+                    (index_state, snapshot_counts(&snapshot), note)
+                }
+                Ok(None) => (
+                    index_state,
+                    AccountProgressCounts::default(),
+                    Some("Dashboard counts will appear after the next sync or reindex.".to_string()),
+                ),
                 Err(error) => (index_state, AccountProgressCounts::default(), Some(error)),
             }
         }
@@ -6534,19 +7357,6 @@ fn build_dashboard_account_view(
         },
         account,
     }
-}
-
-fn load_account_progress(
-    account_paths: &AccountPaths,
-    index_state: IndexState,
-) -> Result<AccountProgressCounts, String> {
-    let inventory = scan_maildir_inventory(&account_paths.maildir)?;
-    let indexed_message_count = if index_state == IndexState::Indexed {
-        count_indexed_messages(account_paths)?
-    } else {
-        0
-    };
-    Ok(progress_counts(&inventory, indexed_message_count))
 }
 
 fn scan_maildir_inventory(maildir: &FsPath) -> Result<MaildirInventory, String> {
@@ -6618,15 +7428,13 @@ fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String>
         return Err(detail);
     }
 
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse::<usize>()
-        .map_err(|error| {
-            format!(
-                "failed to parse indexed message count from '{}': {error}",
-                String::from_utf8_lossy(&output.stdout).trim()
-            )
-        })
+    let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    trimmed.parse::<usize>().map_err(|error| {
+        format!("failed to parse indexed message count from '{}': {error}", trimmed)
+    })
 }
 
 fn maildir_message_key(message_path: &FsPath) -> Result<String, String> {
@@ -8606,6 +9414,22 @@ mod tests {
             .expect("deleted message attachment rows")
     }
 
+    fn count_message_catalog_rows(config: &AppConfig) -> i64 {
+        let connection = open_db(config).expect("db");
+        connection
+            .query_row("SELECT COUNT(*) FROM message_catalog", [], |row| row.get(0))
+            .expect("message catalog rows")
+    }
+
+    fn load_account_progress_snapshot_for_test(
+        config: &AppConfig,
+        account_id: i64,
+    ) -> AccountProgressSnapshotRecord {
+        load_account_progress_snapshot(config, account_id)
+            .expect("snapshot query")
+            .expect("snapshot row")
+    }
+
     fn first_attachment_item(config: &AppConfig, username: &str) -> AttachmentListItem {
         let page = load_attachment_page_data(
             config,
@@ -8672,8 +9496,8 @@ mod tests {
                 .join("store")
                 .join("alice")
                 .join("emails")
-                .join("accounts")
-                .join("42")
+                .join(".internal-sync")
+                .join("personal-gmail--42")
                 .join("maildir")
         );
         assert_eq!(
@@ -8715,9 +9539,10 @@ mod tests {
 
         assert!(paths.sync_state_dir.join("state.dat").exists());
         assert!(paths.notmuch_config.exists());
-        assert!(paths.notmuch_db_root.join("metadata").exists());
+        assert!(!paths.notmuch_db_root.join("metadata").exists());
         assert!(!legacy_root.join("state").exists());
         assert!(!legacy_root.join("maildir/.notmuch").exists());
+        assert!(!legacy_root.exists());
     }
 
     #[test]
@@ -9136,35 +9961,36 @@ mod tests {
 
     #[test]
     fn metrics_progress_warning_is_exposed_in_status_payload() {
-        with_stubbed_path(
-            &[(
-                "notmuch",
-                "if [[ \"$1\" == 'count' ]]; then echo 'database unavailable' >&2; exit 1; fi\nexit 0\n",
-            )],
-            |_| {
-                let tempdir = TempDir::new().expect("tempdir");
-                let config = test_config(&tempdir);
-                prepare_test_layout(&config);
-                let account_id = seed_account(&config, "alice", "secret");
-                let account = read_account(&config, "alice", account_id);
-                let paths = ensure_account_paths(&config, &account).expect("paths");
-                fs::create_dir_all(&paths.notmuch_db_root).expect("db");
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account_id = seed_account(&config, "alice", "secret");
+        let account = read_account(&config, "alice", account_id);
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+        fs::create_dir_all(&paths.notmuch_db_root).expect("db");
+        store_account_progress_snapshot(
+            &config,
+            account_id,
+            &AccountProgressCounts::default(),
+            None,
+            "error",
+            Some("database unavailable"),
+        )
+        .expect("snapshot");
 
-                let view = build_dashboard_account_view(&config, account);
+        let view = build_dashboard_account_view(&config, account);
 
-                assert_eq!(
-                    view.status.progress_warning.as_deref(),
-                    Some("Archive counts could not be verified for this mailbox.")
-                );
-                assert_eq!(view.status.status_label, "check archive");
-                assert!(view
-                    .status
-                    .progress_warning_detail
-                    .as_deref()
-                    .expect("warning detail")
-                    .contains("database unavailable"));
-            },
+        assert_eq!(
+            view.status.progress_warning.as_deref(),
+            Some("Archive counts could not be verified for this mailbox.")
         );
+        assert_eq!(view.status.status_label, "check archive");
+        assert!(view
+            .status
+            .progress_warning_detail
+            .as_deref()
+            .expect("warning detail")
+            .contains("database unavailable"));
     }
 
     #[test]
@@ -9982,6 +10808,30 @@ mod tests {
     }
 
     #[test]
+    fn message_catalog_and_progress_snapshot_tables_are_initialized() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let connection = open_db(&config).expect("db");
+
+        let names = [
+            "account_progress_snapshots",
+            "message_catalog",
+            "message_mailbox_instances",
+        ];
+        for name in names {
+            let count = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("table count");
+            assert_eq!(count, 1, "expected table {name} to exist");
+        }
+    }
+
+    #[test]
     fn sync_refreshes_attachment_catalog_and_exposes_unsaved_items() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
@@ -10011,6 +10861,43 @@ mod tests {
     }
 
     #[test]
+    fn sync_builds_visible_mailbox_mirror_and_progress_snapshot() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            let hidden_path = write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <mirror@example.com>\nSubject: Friendly invoice\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            assert_eq!(count_message_catalog_rows(&config), 1);
+            let snapshot = load_account_progress_snapshot_for_test(&config, account_id);
+            assert_eq!(snapshot.snapshot_status, "ready");
+            assert_eq!(snapshot.archived_message_count, 1);
+
+            let visible_filename = visible_message_filename(
+                1_713_450_720,
+                "Friendly invoice",
+                "message-id:mirror@example.com",
+            );
+            let visible_path = account_paths
+                .visible_emails_root
+                .join("personal-gmail-inbox/2024/04")
+                .join(visible_filename);
+            assert!(visible_path.exists());
+            assert!(same_file_identity(&hidden_path, &visible_path).expect("same inode"));
+        });
+    }
+
+    #[test]
     fn delete_message_removes_payload_and_preserves_deleted_attachment_metadata() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
@@ -10028,11 +10915,21 @@ mod tests {
             run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
                 .expect("sync");
             let item = first_attachment_item(&config, "alice");
+            let connection = open_db(&config).expect("db");
+            let visible_path = account_paths.visible_emails_root.join(
+                load_message_mailbox_instances_for_account(&connection, account_id)
+                    .expect("mailbox instances")
+                    .into_iter()
+                    .find(|instance| instance.message_key == item.message.message_key)
+                    .expect("visible mailbox instance")
+                    .visible_relpath,
+            );
 
             delete_message_from_archive(&config, "alice", account_id, &item.message.message_key)
                 .expect("delete");
 
             assert!(!message_path.exists());
+            assert!(!visible_path.exists());
             assert_eq!(count_deleted_message_rows(&config), 1);
             assert_eq!(count_deleted_message_attachment_rows(&config), 1);
             assert_eq!(count_attachment_catalog_rows(&config), 0);

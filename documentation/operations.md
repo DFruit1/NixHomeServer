@@ -69,6 +69,29 @@ Immich sharing flow:
 2. Create an album or photo share link
 3. Send the generated `https://sharephotos.sydneybasiniot.org/...` URL to recipients
 
+## Mail Archive Operations
+
+The mail archive UI stays private at `https://emails.sydneybasiniot.org`. `mail-archive-users` grants browser access to the UI only. The archived sync payload stays in each user's hidden `.internal-sync` tree, while the user-visible mailbox mirror is exposed as hard-linked `.eml` files under that user's `emails/` root.
+
+Normal checks and manual actions:
+
+```bash
+systemctl status mail-archive-ui mail-archive-oauth2-proxy mail-archive-sync.timer
+sudo systemctl start mail-archive-sync.service
+curl -fsS http://127.0.0.1:9011/healthz | jq .
+```
+
+Use the dashboard `Sync now` and `Reindex` actions when you need to repair or refresh one mailbox without waiting for the timer. Use `https://emails.sydneybasiniot.org/attachments` to triage indexed document attachments and send qualifying files to Paperless.
+
+After deploying the hidden-sync migration, run this verification pass once:
+
+```bash
+sudo systemctl start fileshare-user-root-sync.service
+find /mnt/data/users -path '*/emails/accounts/*' -print
+```
+
+Then open the mail archive UI and run `Sync now` or `Reindex` once for every existing mailbox. The `find` command should produce no output after each mailbox has been touched on the new build.
+
 ## Validation Gate
 
 The documented day-2 validation path runs on the remote server and does not need

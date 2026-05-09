@@ -13,7 +13,8 @@ Access model:
 Storage model:
 - global app state and the app-local encryption key live under `/persist/appdata/mail-archive-ui`
 - per-account derived sync and indexing state lives under `/persist/appdata/mail-archive-ui/accounts/<user>/<account-id>/`
-- downloaded mail payload lives under `/mnt/data/users/<user>/emails/accounts/<account-id>/maildir/`
+- downloaded mail payload lives under `/mnt/data/users/<user>/emails/.internal-sync/<account-hidden-root>/maildir/`
+- the user-visible mailbox mirror lives under `/mnt/data/users/<user>/emails/<account-slug>-<mailbox-slug>/YYYY/MM/*.eml`
 - mailbox credentials are not stored in agenix
 - temporary sync material lives only under `/run/mail-archive-ui`
 
@@ -71,7 +72,8 @@ Repo validation:
 
 ```bash
 nix flake check --no-build
-scripts/check-repo.sh
+scripts/validate-repo.sh
+scripts/validate-repo.sh --full
 ```
 
-`scripts/check-repo.sh` now builds and runs the packaged mail UI test derivation in addition to the shell policy suite.
+Use `scripts/validate-repo.sh --full` when you want the local validation gate to build and run the packaged `mail-archive-ui-test` derivation in addition to the shell policy suite.
