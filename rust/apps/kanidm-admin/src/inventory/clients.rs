@@ -261,10 +261,7 @@ mod tests {
                 },
                 "scope_maps": {
                     "user-files": ["openid", "profile"],
-                    "system_admins": ["openid", "groups"]
-                },
-                "claim_maps": {
-                    "system_admins": { "role": ["admin"] }
+                    "shared-files-read-write-access": ["openid", "groups"]
                 },
                 "redirect_urls": ["https://files.example.test/oauth2/callback"],
                 "disable_pkce": [false],
@@ -276,7 +273,10 @@ mod tests {
 
         assert_eq!(
             record.value.referenced_groups,
-            vec!["system_admins".to_string(), "user-files".to_string()]
+            vec![
+                "shared-files-read-write-access".to_string(),
+                "user-files".to_string()
+            ]
         );
         assert_eq!(record.value.pkce_enabled, Some(true));
         assert_eq!(record.value.consent_prompt_enabled, Some(false));

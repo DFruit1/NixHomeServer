@@ -92,10 +92,12 @@ let
     }
 
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
+    apply_writable_acl mail-archive-ui "$root/files"
     apply_writable_acl kavita-media \
       "$root/books" \
       ${kavitaWritablePaths}
 
+    apply_readonly_acl filebrowser-quantum "$root/emails"
     apply_readonly_acl immich "$root/photos"
     apply_readonly_acl paperless "$root/documents"
   '';

@@ -23,8 +23,11 @@ in
       mailAddresses = [ vars.kanidmAdminEmail ];
     };
 
+    # Keep the builtin group in the provision inventory so post-start
+    # reconciliation does not try to delete it as an orphaned entity.
+    groups."domain_admins" = mkManualGroup [ ];
     groups."user-files" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."shared-files-ro" = mkManualGroup [ ];
+    groups."shared-files-read-write-access" = mkManualGroup [ ];
     groups."app-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."mail-archive-users" = mkManualGroup [ ];
     groups."immich-users" = mkManualGroup [ vars.kanidmAdminUser ];
@@ -119,8 +122,7 @@ in
       allowInsecureClientDisablePkce = true;
       preferShortUsername = true;
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps."shared-files-ro" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps.system_admins = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."shared-files-read-write-access" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.mail-archive-web = {

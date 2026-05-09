@@ -100,6 +100,10 @@ in
       ]
       ++ lib.optionals config.services.kiwixServe.enable [ vars.kiwixLibraryRoot ]
     );
+    serviceConfig.SupplementaryGroups = [
+      "users"
+      "mail-archive-ui"
+    ];
     serviceConfig.ExecStart = lib.mkForce "${pkgs.copyparty}/bin/copyparty -c ${runtimeConfigPath}";
     serviceConfig.ExecStartPre = lib.mkForce [ ];
   };

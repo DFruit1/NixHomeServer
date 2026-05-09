@@ -273,6 +273,15 @@ in
     };
   };
 
+  uploadAccess = {
+    copyparty = {
+      serviceUser = "copyparty";
+      requiredGroup = "users";
+      uploadRootsParent = vars.usersRoot;
+      uploadSubdir = "uploads";
+    };
+  };
+
   persistence = {
     enabled = bool cfg.repo.impermanence.enablePersistence;
     directories = cfg.repo.impermanence.inventory.persistenceDirectories;

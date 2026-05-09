@@ -1,7 +1,8 @@
 use axum::{
+    body::Body,
     extract::{Form, Path, Query, State},
     http::{
-        header::{CONTENT_TYPE, HOST},
+        header::{CONTENT_DISPOSITION, CONTENT_TYPE, HOST},
         HeaderMap, HeaderValue, StatusCode, Uri,
     },
     response::{Html, IntoResponse, Redirect, Response},
@@ -28,7 +29,7 @@ use serde::{
 use sha2::{Digest, Sha256};
 use std::{
     cmp::Reverse,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     fmt::Write as _,
     fs::{self, OpenOptions},
@@ -48,6 +49,14 @@ const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 const DEFAULT_LOCK_DIR: &str = ".";
 const PAPERLESS_REVIEWED_TAG: &str = "paperless-reviewed";
 const PAPERLESS_FILED_TAG: &str = "paperless-filed";
+const ATTACHMENTS_PER_PAGE: usize = 100;
+const ATTACHMENT_METHOD_BROWSER_DOWNLOAD: &str = "browser_download";
+const ATTACHMENT_METHOD_FILES: &str = "files";
+const ATTACHMENT_METHOD_PAPERLESS: &str = "paperless";
+const ATTACHMENT_OUTCOME_STARTED: &str = "started";
+const ATTACHMENT_OUTCOME_SAVED: &str = "saved";
+const ATTACHMENT_OUTCOME_DUPLICATE: &str = "duplicate";
+const ATTACHMENT_OUTCOME_ERROR: &str = "error";
 const MASTER_KEY_FILENAME: &str = "master.key";
 const DB_FILENAME: &str = "mail-archive-ui.sqlite3";
 const ATTACHMENT_TEXT_MIME_PATTERNS: &[&str] = &[
@@ -335,14 +344,121 @@ struct SearchPreferenceRecord {
     default_account_id: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct SearchResult {
+    account_id: i64,
     account_name: String,
+    message_key: String,
+    message_relpath: String,
     timestamp: i64,
     date_label: String,
     from: String,
     subject: String,
     tags: Vec<String>,
+    deleted_at: Option<String>,
+    restore_pending: bool,
+    is_deleted: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct AttachmentMessageRecord {
+    account_id: i64,
+    message_key: String,
+    message_relpath: String,
+    message_mtime: i64,
+    message_size: i64,
+    subject: String,
+    from: String,
+    timestamp: i64,
+    last_scanned_at: String,
+    has_attachments: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AttachmentRecord {
+    attachment_key: String,
+    account_id: i64,
+    message_key: String,
+    attachment_index: i64,
+    attachment_sha256: String,
+    original_filename: String,
+    safe_filename: String,
+    extension: String,
+    mime_type: String,
+    size_bytes: i64,
+    is_inline_artifact: bool,
+    created_at: String,
+    updated_at: String,
+    last_seen_at: String,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct AttachmentActionRecord {
+    attachment_key: String,
+    account_id: i64,
+    message_key: String,
+    attachment_sha256: String,
+    original_filename: String,
+    method: String,
+    outcome: String,
+    counts_as_saved: bool,
+    destination_relpath: Option<String>,
+    created_at: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AttachmentActionSummary {
+    downloaded_browser: bool,
+    saved_files: bool,
+    saved_paperless: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+struct DeletedMessageRecord {
+    account_id: i64,
+    message_key: String,
+    message_relpath_at_delete: String,
+    subject: String,
+    sender: String,
+    timestamp: i64,
+    deleted_at: String,
+    delete_reason: String,
+    restored_at: Option<String>,
+    restore_pending: bool,
+    last_restore_requested_at: Option<String>,
+    payload_removed: bool,
+    notes: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct DeletedMessageAttachmentRecord {
+    account_id: i64,
+    message_key: String,
+    attachment_key: String,
+    attachment_sha256: String,
+    original_filename: String,
+    safe_filename: String,
+    extension: String,
+    mime_type: String,
+    size_bytes: i64,
+    is_inline_artifact: bool,
+    deleted_at: String,
+}
+
+#[derive(Clone, Debug)]
+struct AttachmentListItem {
+    attachment: AttachmentRecord,
+    message: AttachmentMessageRecord,
+    account_name: String,
+    date_label: String,
+    status: AttachmentActionSummary,
+    supports_paperless: bool,
+    deleted_at: Option<String>,
+    restore_pending: bool,
+    is_deleted: bool,
 }
 
 #[derive(Debug)]
@@ -377,6 +493,18 @@ struct CandidateMessage {
 struct MessageMetadata {
     normalized_message_id: Option<String>,
     message_sha256: Option<String>,
+    subject: String,
+    from: String,
+    timestamp: i64,
+}
+
+#[derive(Clone, Debug)]
+struct LiveMessageRecord {
+    message_key: String,
+    message_relpaths: Vec<String>,
+    subject: String,
+    from: String,
+    timestamp: i64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -454,6 +582,38 @@ struct SearchParams {
     q: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
     account_id: Option<i64>,
+    message_state: Option<String>,
+    flash: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AttachmentListParams {
+    q: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
+    account_id: Option<i64>,
+    save_state: Option<String>,
+    message_state: Option<String>,
+    extension: Option<String>,
+    page: Option<String>,
+    flash: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentRefreshForm {
+    account_id: Option<String>,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentActionForm {
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageActionForm {
+    return_to: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -524,6 +684,7 @@ struct AccountStatusPayload {
     last_paperless_error: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct RawNotmuchSummary {
     timestamp: Option<i64>,
@@ -679,6 +840,103 @@ struct SearchViewState {
     submitted: bool,
     result_count: usize,
     empty_message: Option<String>,
+    message_state: MessageStateFilter,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MessageStateFilter {
+    Active,
+    Deleted,
+    All,
+}
+
+impl MessageStateFilter {
+    fn from_query(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|value| !value.is_empty()) {
+            Some("deleted") => Self::Deleted,
+            Some("all") => Self::All,
+            _ => Self::Active,
+        }
+    }
+
+    fn as_query_value(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Deleted => "deleted",
+            Self::All => "all",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Active => "Active only",
+            Self::Deleted => "Deleted only",
+            Self::All => "Active and deleted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttachmentSaveFilter {
+    NeedsTriage,
+    SavedAny,
+    SavedFiles,
+    SavedPaperless,
+    DownloadedBrowser,
+}
+
+impl AttachmentSaveFilter {
+    fn from_query(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|value| !value.is_empty()) {
+            Some("saved_any") => Self::SavedAny,
+            Some("saved_files") => Self::SavedFiles,
+            Some("saved_paperless") => Self::SavedPaperless,
+            Some("downloaded_browser") => Self::DownloadedBrowser,
+            _ => Self::NeedsTriage,
+        }
+    }
+
+    fn as_query_value(self) -> &'static str {
+        match self {
+            Self::NeedsTriage => "needs_triage",
+            Self::SavedAny => "saved_any",
+            Self::SavedFiles => "saved_files",
+            Self::SavedPaperless => "saved_paperless",
+            Self::DownloadedBrowser => "downloaded_browser",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::NeedsTriage => "Needs triage",
+            Self::SavedAny => "Saved anywhere",
+            Self::SavedFiles => "Saved to files",
+            Self::SavedPaperless => "Saved to Paperless",
+            Self::DownloadedBrowser => "Downloaded to browser",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AttachmentListViewState {
+    save_filter: AttachmentSaveFilter,
+    message_state: MessageStateFilter,
+    page: usize,
+    result_count: usize,
+    has_previous_page: bool,
+    has_next_page: bool,
+    empty_message: Option<String>,
+    base_query: String,
+}
+
+#[derive(Debug)]
+struct AttachmentPageData {
+    accounts: Vec<AccountRecord>,
+    selected_account_id: Option<i64>,
+    query_text: String,
+    extension_filter: String,
+    items: Vec<AttachmentListItem>,
+    state: AttachmentListViewState,
 }
 
 #[tokio::main]
@@ -731,6 +989,28 @@ fn router(state: AppState) -> Router {
         .route("/accounts/{id}/sync", post(sync_account))
         .route("/accounts/{id}/reindex", post(reindex_account))
         .route("/search", get(search_page))
+        .route(
+            "/accounts/{account_id}/messages/{message_key}/delete",
+            post(delete_message_from_local_archive),
+        )
+        .route(
+            "/accounts/{account_id}/messages/{message_key}/restore",
+            post(restore_message_for_next_sync),
+        )
+        .route("/attachments", get(attachments_page))
+        .route("/attachments/refresh", post(refresh_attachments))
+        .route(
+            "/attachments/{attachment_key}/download/browser",
+            post(download_attachment_browser),
+        )
+        .route(
+            "/attachments/{attachment_key}/save/files",
+            post(save_attachment_to_files),
+        )
+        .route(
+            "/attachments/{attachment_key}/save/paperless",
+            post(save_attachment_to_paperless),
+        )
         .route("/healthz", get(healthz))
         .route("/static/custom.css", get(custom_css))
         .route("/static/dashboard.js", get(dashboard_js))
@@ -1042,6 +1322,11 @@ async fn search_page(
     } else {
         preferences.last_query.unwrap_or_default()
     };
+    let message_state = if has_params {
+        MessageStateFilter::from_query(params.message_state.as_deref())
+    } else {
+        MessageStateFilter::Active
+    };
     let mut selected_account_id = if has_params {
         params.account_id
     } else {
@@ -1060,13 +1345,34 @@ async fn search_page(
         }
     }
 
-    let should_execute_search = has_explicit_query && !query_text.trim().is_empty();
+    let should_execute_search = has_params
+        && (!query_text.trim().is_empty() || message_state != MessageStateFilter::Active);
     let results = if should_execute_search {
         let config = state.config.clone();
         let username = identity.username.clone();
         let query_clone = query_text.clone();
         match tokio::task::spawn_blocking(move || {
-            search_mail(&config, &username, selected_account_id, &query_clone)
+            let mut results = match message_state {
+                MessageStateFilter::Active => {
+                    search_mail(&config, &username, selected_account_id, &query_clone)?
+                }
+                MessageStateFilter::Deleted => {
+                    search_deleted_messages(&config, &username, selected_account_id, &query_clone)?
+                }
+                MessageStateFilter::All => {
+                    let mut results =
+                        search_mail(&config, &username, selected_account_id, &query_clone)?;
+                    results.extend(search_deleted_messages(
+                        &config,
+                        &username,
+                        selected_account_id,
+                        &query_clone,
+                    )?);
+                    results
+                }
+            };
+            results.sort_by_key(|result| Reverse(result.timestamp));
+            Ok::<_, String>(results)
         })
         .await
         {
@@ -1082,7 +1388,10 @@ async fn search_page(
                         submitted: true,
                         result_count: 0,
                         empty_message: Some(error),
+                        message_state,
                     },
+                    params.flash.as_deref(),
+                    params.error.as_deref(),
                 ))
             }
             Err(_) => {
@@ -1096,7 +1405,10 @@ async fn search_page(
                         submitted: true,
                         result_count: 0,
                         empty_message: Some("Search task failed".to_string()),
+                        message_state,
                     },
+                    params.flash.as_deref(),
+                    params.error.as_deref(),
                 ))
             }
         }
@@ -1118,29 +1430,44 @@ async fn search_page(
         .count();
 
     let empty_message = if !has_explicit_query {
-        Some(
-            "Saved search defaults are prefilled below. Submit a query to search indexed mail."
-                .to_string(),
-        )
-    } else if query_text.trim().is_empty() {
+        if has_params && message_state != MessageStateFilter::Active {
+            if results.is_empty() {
+                Some("No deleted messages matched the current filters.".to_string())
+            } else {
+                None
+            }
+        } else {
+            Some(
+                "Saved search defaults are prefilled below. Submit a query to search indexed mail."
+                    .to_string(),
+            )
+        }
+    } else if query_text.trim().is_empty() && message_state == MessageStateFilter::Active {
         Some("Enter a notmuch query to search your indexed archive.".to_string())
     } else if selected_accounts.is_empty() {
         Some("No mailbox is available for this search filter.".to_string())
-    } else if indexed_selected_accounts == 0 {
+    } else if indexed_selected_accounts == 0 && message_state != MessageStateFilter::Deleted {
         Some(
             "The selected mailbox archive has not been indexed yet. Run Sync now or Reindex first."
                 .to_string(),
         )
     } else if results.is_empty() {
-        Some("No indexed messages matched this query.".to_string())
+        Some(match message_state {
+            MessageStateFilter::Active => "No indexed messages matched this query.".to_string(),
+            MessageStateFilter::Deleted => {
+                "No deleted messages matched the current filters.".to_string()
+            }
+            MessageStateFilter::All => "No messages matched this query.".to_string(),
+        })
     } else {
         None
     };
 
     let view_state = SearchViewState {
-        submitted: has_explicit_query,
+        submitted: has_params,
         result_count: results.len(),
         empty_message,
+        message_state,
     };
 
     html_response(render_search(
@@ -1150,7 +1477,390 @@ async fn search_page(
         selected_account_id,
         &results,
         &view_state,
+        params.flash.as_deref(),
+        params.error.as_deref(),
     ))
+}
+
+async fn attachments_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<AttachmentListParams>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let params_for_task = params.clone();
+    let data = match tokio::task::spawn_blocking(move || {
+        load_attachment_page_data(&config, &username, &params_for_task)
+    })
+    .await
+    {
+        Ok(Ok(data)) => data,
+        Ok(Err(error)) => {
+            return server_error_page("Failed to load attachments", &error, Some(&identity))
+        }
+        Err(_) => {
+            return server_error_page(
+                "Failed to load attachments",
+                "Attachment task failed",
+                Some(&identity),
+            )
+        }
+    };
+
+    html_response(render_attachments_page(
+        &identity,
+        &data,
+        params.flash.as_deref(),
+        params.error.as_deref(),
+    ))
+}
+
+async fn delete_message_from_local_archive(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((account_id, message_key)): Path<(i64, String)>,
+    Form(form): Form<MessageActionForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        delete_message_from_archive(&config, &username, account_id, &message_key)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => redirect_response(&message_redirect_location(
+            form.return_to.as_deref(),
+            Some("Message removed from the local archive"),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&message_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&message_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some("Message delete task failed"),
+        )),
+    }
+}
+
+async fn restore_message_for_next_sync(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((account_id, message_key)): Path<(i64, String)>,
+    Form(form): Form<MessageActionForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        mark_deleted_message_restore_pending(&config, &username, account_id, &message_key)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => redirect_response(&message_redirect_location(
+            form.return_to.as_deref(),
+            Some("Message marked for restore on the next sync"),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&message_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&message_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some("Message restore task failed"),
+        )),
+    }
+}
+
+async fn refresh_attachments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AttachmentRefreshForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let selected_account_id = match parse_optional_query_i64(form.account_id.as_deref()) {
+        Ok(value) => value,
+        Err(error) => {
+            return redirect_response(&attachments_redirect_location(
+                form.return_to.as_deref(),
+                None,
+                Some(error.as_str()),
+            ))
+        }
+    };
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        refresh_attachment_catalog_for_user(&config, &username, selected_account_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            Some("Attachment catalog refreshed"),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some("Attachment refresh task failed"),
+        )),
+    }
+}
+
+async fn download_attachment_browser(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(attachment_key): Path<String>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let payload = match tokio::task::spawn_blocking(move || {
+        let (account, message, attachment) =
+            load_attachment_for_user(&config, &username, &attachment_key)?;
+        let (_dir, attachment_path) =
+            resolve_attachment_payload(&config, &account, &message, &attachment)?;
+        let bytes = fs::read(&attachment_path).map_err(|error| {
+            format!(
+                "failed to read extracted attachment {}: {error}",
+                attachment_path.display()
+            )
+        })?;
+        record_attachment_action(
+            &config,
+            &attachment,
+            ATTACHMENT_METHOD_BROWSER_DOWNLOAD,
+            ATTACHMENT_OUTCOME_STARTED,
+            false,
+            None,
+        )?;
+        Ok::<_, String>((attachment.original_filename, attachment.mime_type, bytes))
+    })
+    .await
+    {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(error)) => return server_error_page("Download failed", &error, Some(&identity)),
+        Err(_) => {
+            return server_error_page(
+                "Download failed",
+                "Attachment download task failed",
+                Some(&identity),
+            )
+        }
+    };
+
+    attachment_download_response(&payload.0, &payload.1, payload.2)
+}
+
+async fn save_attachment_to_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(attachment_key): Path<String>,
+    Form(form): Form<AttachmentActionForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let (account, message, attachment) =
+            load_attachment_for_user(&config, &username, &attachment_key)?;
+        let (_dir, attachment_path) =
+            resolve_attachment_payload(&config, &account, &message, &attachment)?;
+        match copy_attachment_to_files_destination(&config, &account, &attachment, &attachment_path)
+        {
+            Ok((relpath, outcome)) => {
+                record_attachment_action(
+                    &config,
+                    &attachment,
+                    ATTACHMENT_METHOD_FILES,
+                    outcome,
+                    true,
+                    Some(&relpath),
+                )?;
+                Ok::<_, String>(outcome)
+            }
+            Err(error) => {
+                let _ = record_attachment_action(
+                    &config,
+                    &attachment,
+                    ATTACHMENT_METHOD_FILES,
+                    ATTACHMENT_OUTCOME_ERROR,
+                    false,
+                    None,
+                );
+                Err(error)
+            }
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(ATTACHMENT_OUTCOME_DUPLICATE)) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            Some("Attachment was already saved to files"),
+            None,
+        )),
+        Ok(Ok(_)) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            Some("Attachment saved to files"),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some("Attachment save task failed"),
+        )),
+    }
+}
+
+async fn save_attachment_to_paperless(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(attachment_key): Path<String>,
+    Form(form): Form<AttachmentActionForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let (account, message, attachment) =
+            load_attachment_for_user(&config, &username, &attachment_key)?;
+        if !is_supported_document_attachment_metadata(&attachment.mime_type, &attachment.extension)
+        {
+            return Err("This attachment type is not eligible for Paperless filing".to_string());
+        }
+        let (_dir, attachment_path) =
+            resolve_attachment_payload(&config, &account, &message, &attachment)?;
+        match send_attachment_to_paperless_destination(
+            &config,
+            &account,
+            &attachment,
+            &attachment_path,
+        ) {
+            Ok((relpath, outcome)) => {
+                record_attachment_action(
+                    &config,
+                    &attachment,
+                    ATTACHMENT_METHOD_PAPERLESS,
+                    outcome,
+                    true,
+                    Some(&relpath),
+                )?;
+                Ok::<_, String>(outcome)
+            }
+            Err(error) => {
+                let _ = record_attachment_action(
+                    &config,
+                    &attachment,
+                    ATTACHMENT_METHOD_PAPERLESS,
+                    ATTACHMENT_OUTCOME_ERROR,
+                    false,
+                    None,
+                );
+                Err(error)
+            }
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(ATTACHMENT_OUTCOME_DUPLICATE)) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            Some("Attachment was already available in Paperless"),
+            None,
+        )),
+        Ok(Ok(_)) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            Some("Attachment sent to Paperless"),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            form.return_to.as_deref(),
+            None,
+            Some("Attachment Paperless task failed"),
+        )),
+    }
 }
 
 async fn healthz(State(state): State<AppState>) -> Response {
@@ -1391,6 +2101,100 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_paperless_attachment_exports_sha256
             ON paperless_attachment_exports (attachment_sha256);
+
+            CREATE TABLE IF NOT EXISTS attachment_messages (
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                message_relpath TEXT NOT NULL,
+                message_mtime INTEGER NOT NULL,
+                message_size INTEGER NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                last_scanned_at TEXT NOT NULL,
+                has_attachments INTEGER NOT NULL,
+                PRIMARY KEY (account_id, message_key),
+                UNIQUE (account_id, message_relpath)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_messages_relpath
+            ON attachment_messages (account_id, message_relpath);
+
+            CREATE TABLE IF NOT EXISTS attachment_catalog (
+                attachment_key TEXT PRIMARY KEY,
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                attachment_index INTEGER NOT NULL,
+                attachment_sha256 TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                safe_filename TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                is_inline_artifact INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_catalog_message
+            ON attachment_catalog (account_id, message_key);
+
+            CREATE TABLE IF NOT EXISTS attachment_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attachment_key TEXT NOT NULL,
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                attachment_sha256 TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                method TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                counts_as_saved INTEGER NOT NULL,
+                destination_relpath TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_actions_key
+            ON attachment_actions (attachment_key, method, outcome);
+
+            CREATE TABLE IF NOT EXISTS deleted_messages (
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                message_relpath_at_delete TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                deleted_at TEXT NOT NULL,
+                delete_reason TEXT NOT NULL,
+                restored_at TEXT,
+                restore_pending INTEGER NOT NULL,
+                last_restore_requested_at TEXT,
+                payload_removed INTEGER NOT NULL,
+                notes TEXT,
+                PRIMARY KEY (account_id, message_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_deleted_messages_state
+            ON deleted_messages (account_id, restored_at, restore_pending, timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS deleted_message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                message_key TEXT NOT NULL,
+                attachment_key TEXT NOT NULL,
+                attachment_sha256 TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                safe_filename TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                is_inline_artifact INTEGER NOT NULL,
+                deleted_at TEXT NOT NULL,
+                UNIQUE (account_id, attachment_key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_deleted_message_attachments_message
+            ON deleted_message_attachments (account_id, message_key);
             "#,
         )
         .map_err(|error| format!("failed to initialize sqlite schema: {error}"))?;
@@ -2280,6 +3084,14 @@ fn run_account_action(
                         ),
                     ],
                 )?;
+                suppress_deleted_messages_for_account(config, account).map_err(|error| {
+                    SyncDiagnostic::new(
+                        SyncPhase::Reconcile,
+                        "deleted_message_suppression_failed",
+                        "Mail sync completed, but deleted-message reconciliation failed.",
+                        error,
+                    )
+                })?;
             }
             AccountAction::Reindex => {
                 let account_paths = ensure_account_paths(config, account).map_err(|error| {
@@ -2313,6 +3125,14 @@ fn run_account_action(
                         ),
                     ],
                 )?;
+                suppress_deleted_messages_for_account(config, account).map_err(|error| {
+                    SyncDiagnostic::new(
+                        SyncPhase::Reconcile,
+                        "deleted_message_suppression_failed",
+                        "Mailbox reindex completed, but deleted-message reconciliation failed.",
+                        error,
+                    )
+                })?;
             }
         }
 
@@ -2328,6 +3148,12 @@ fn run_account_action(
                     error,
                 )
             })?;
+            if let Err(error) = refresh_attachment_catalog(config, account) {
+                eprintln!(
+                    "mail-archive-ui attachment refresh failed username={} account_id={} detail={}",
+                    account.username, account.id, error
+                );
+            }
             if let Err(error) = maybe_export_account_to_paperless(config, account) {
                 eprintln!(
                     "mail-archive-ui paperless export failed username={} account_id={} detail={}",
@@ -3281,13 +4107,27 @@ fn read_message_metadata(message_path: &FsPath) -> Result<MessageMetadata, Strin
     let bytes = fs::read(message_path)
         .map_err(|error| format!("failed to read {}: {error}", message_path.display()))?;
     let normalized_message_id = extract_message_id(&bytes).and_then(normalize_message_id);
+    let subject = extract_header_value(&bytes, "subject").unwrap_or_else(|| "(no subject)".into());
+    let from = extract_header_value(&bytes, "from").unwrap_or_else(|| "Unknown sender".into());
+    let timestamp = extract_header_value(&bytes, "date")
+        .and_then(|value| parse_message_timestamp(&value))
+        .unwrap_or_else(|| {
+            fs::metadata(message_path)
+                .ok()
+                .and_then(|metadata| DateTime::<Utc>::from_timestamp(metadata.mtime(), 0))
+                .map(|value| value.timestamp())
+                .unwrap_or_default()
+        });
     Ok(MessageMetadata {
         message_sha256: normalized_message_id.is_none().then(|| sha256_hex(&bytes)),
         normalized_message_id,
+        subject,
+        from,
+        timestamp,
     })
 }
 
-fn extract_message_id(message_bytes: &[u8]) -> Option<String> {
+fn extract_header_value(message_bytes: &[u8], target_name: &str) -> Option<String> {
     let headers = String::from_utf8_lossy(message_bytes);
     let mut current_name = String::new();
     let mut current_value = String::new();
@@ -3308,7 +4148,7 @@ fn extract_message_id(message_bytes: &[u8]) -> Option<String> {
             continue;
         }
 
-        if current_name.eq_ignore_ascii_case("message-id") {
+        if current_name.eq_ignore_ascii_case(target_name) {
             return Some(current_value);
         }
 
@@ -3321,11 +4161,26 @@ fn extract_message_id(message_bytes: &[u8]) -> Option<String> {
         }
     }
 
-    if current_name.eq_ignore_ascii_case("message-id") {
+    if current_name.eq_ignore_ascii_case(target_name) {
         Some(current_value)
     } else {
         None
     }
+}
+
+fn parse_message_timestamp(raw: &str) -> Option<i64> {
+    DateTime::parse_from_rfc2822(raw)
+        .ok()
+        .map(|value| value.with_timezone(&Utc).timestamp())
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(raw)
+                .ok()
+                .map(|value| value.with_timezone(&Utc).timestamp())
+        })
+}
+
+fn extract_message_id(message_bytes: &[u8]) -> Option<String> {
+    extract_header_value(message_bytes, "message-id")
 }
 
 fn normalize_message_id(raw: String) -> Option<String> {
@@ -3387,8 +4242,12 @@ fn detect_attachment_mime_type(path: &FsPath) -> Result<String, String> {
 
 fn fallback_mime_from_extension(path: &FsPath) -> Option<String> {
     let extension = path.extension()?.to_string_lossy().to_ascii_lowercase();
+    fallback_mime_from_extension_str(&extension)
+}
+
+fn fallback_mime_from_extension_str(extension: &str) -> Option<String> {
     Some(
-        match extension.as_str() {
+        match extension {
             "pdf" => "application/pdf",
             "txt" => "text/plain",
             "doc" => "application/msword",
@@ -3411,6 +4270,14 @@ fn is_supported_document_attachment(mime_type: &str, path: &FsPath) -> bool {
     is_supported_document_mime(mime_type)
         || (mime_type == "application/octet-stream"
             && fallback_mime_from_extension(path)
+                .as_deref()
+                .is_some_and(is_supported_document_mime))
+}
+
+fn is_supported_document_attachment_metadata(mime_type: &str, extension: &str) -> bool {
+    is_supported_document_mime(mime_type)
+        || (mime_type == "application/octet-stream"
+            && fallback_mime_from_extension_str(extension)
                 .as_deref()
                 .is_some_and(is_supported_document_mime))
 }
@@ -3576,32 +4443,1836 @@ fn safe_filename(raw: &str) -> String {
     }
 }
 
+fn attachment_inventory_root(config: &AppConfig, account_id: i64) -> PathBuf {
+    PathBuf::from(config.runtime_dir.as_ref())
+        .join("attachment-inventory")
+        .join(format!("account-{account_id}"))
+}
+
+fn create_runtime_extraction_dir(
+    config: &AppConfig,
+    account_id: i64,
+) -> Result<TempExtractionDir, String> {
+    let path = attachment_inventory_root(config, account_id).join(random_hex(8));
+    fs::create_dir_all(&path).map_err(|error| {
+        format!(
+            "failed to create extraction directory {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(TempExtractionDir { path })
+}
+
+fn message_relative_path(
+    account_paths: &AccountPaths,
+    file_path: &FsPath,
+) -> Result<PathBuf, String> {
+    if let Ok(relative) = file_path.strip_prefix(&account_paths.maildir) {
+        return Ok(relative.to_path_buf());
+    }
+
+    let canonical_maildir = fs::canonicalize(&account_paths.maildir).map_err(|error| {
+        format!(
+            "failed to resolve {}: {error}",
+            account_paths.maildir.display()
+        )
+    })?;
+    let canonical_file = fs::canonicalize(file_path)
+        .map_err(|error| format!("failed to resolve {}: {error}", file_path.display()))?;
+    canonical_file
+        .strip_prefix(&canonical_maildir)
+        .map(|relative| relative.to_path_buf())
+        .map_err(|_| {
+            format!(
+                "message path {} is outside the maildir",
+                file_path.display()
+            )
+        })
+}
+
+fn attachment_extension(filename: &str) -> String {
+    FsPath::new(filename)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+fn attachment_key(
+    account_id: i64,
+    message_key: &str,
+    attachment_index: usize,
+    attachment_sha256: &str,
+    original_filename: &str,
+) -> String {
+    sha256_hex(
+        format!(
+            "{account_id}\u{1f}{message_key}\u{1f}{attachment_index}\u{1f}{attachment_sha256}\u{1f}{original_filename}"
+        )
+        .as_bytes(),
+    )
+}
+
+fn account_files_root(config: &AppConfig, username: &str) -> PathBuf {
+    PathBuf::from(config.store_root.as_ref())
+        .join(username)
+        .join("files")
+        .join("mail-attachments")
+}
+
+fn list_notmuch_message_files(
+    account_paths: &AccountPaths,
+    query: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let output = execute_command(
+        "notmuch",
+        &["search", "--output=files", "--format=text", query],
+        &[
+            (
+                "HOME",
+                account_paths.account_state_root.to_string_lossy().as_ref(),
+            ),
+            (
+                "NOTMUCH_CONFIG",
+                account_paths.notmuch_config.to_string_lossy().as_ref(),
+            ),
+        ],
+    )?;
+
+    if !output.status.success() {
+        let detail = command_failure_detail("notmuch", &output);
+        if detail.contains("No database found") || detail.contains("not initialized") {
+            return Ok(Vec::new());
+        }
+        return Err(detail);
+    }
+
+    let mut files = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
+}
+
+fn scan_message_attachments_for_catalog(
+    config: &AppConfig,
+    account_id: i64,
+    message_key: &str,
+    message_path: &FsPath,
+) -> Result<(TempExtractionDir, Vec<(AttachmentRecord, PathBuf)>), String> {
+    let extraction_dir = create_runtime_extraction_dir(config, account_id)?;
+    extract_message_attachments(message_path, &extraction_dir.path)?;
+    let extracted_files = collect_regular_files(&extraction_dir.path)?;
+    let now = Utc::now().to_rfc3339();
+    let mut attachments = Vec::new();
+
+    for (index, extracted_file) in extracted_files.into_iter().enumerate() {
+        let metadata = fs::metadata(&extracted_file).map_err(|error| {
+            format!(
+                "failed to inspect extracted attachment {}: {error}",
+                extracted_file.display()
+            )
+        })?;
+        let original_filename = extracted_file
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "attachment".to_string());
+        let safe_name = safe_filename(&original_filename);
+        let extension = attachment_extension(&original_filename);
+        let mime_type = detect_attachment_mime_type(&extracted_file)
+            .unwrap_or_else(|_| "application/octet-stream".to_string());
+        let size_bytes = i64::try_from(metadata.len()).map_err(|_| {
+            format!(
+                "attachment {} is too large to catalog",
+                extracted_file.display()
+            )
+        })?;
+        let attachment_sha256 = sha256_file(&extracted_file)?;
+        let attachment_record = AttachmentRecord {
+            attachment_key: attachment_key(
+                account_id,
+                message_key,
+                index,
+                &attachment_sha256,
+                &original_filename,
+            ),
+            account_id,
+            message_key: message_key.to_string(),
+            attachment_index: index as i64,
+            attachment_sha256,
+            original_filename: original_filename.clone(),
+            safe_filename: safe_name,
+            extension,
+            mime_type: mime_type.clone(),
+            size_bytes,
+            is_inline_artifact: looks_like_inline_artifact(
+                &original_filename,
+                &mime_type,
+                metadata.len(),
+            ),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            last_seen_at: now.clone(),
+        };
+        attachments.push((attachment_record, extracted_file));
+    }
+
+    Ok((extraction_dir, attachments))
+}
+
+fn load_attachment_messages_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Vec<AttachmentMessageRecord>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                account_id,
+                message_key,
+                message_relpath,
+                message_mtime,
+                message_size,
+                subject,
+                sender,
+                timestamp,
+                last_scanned_at,
+                has_attachments
+            FROM attachment_messages
+            WHERE account_id = ?1
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare attachment message query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok(AttachmentMessageRecord {
+                account_id: row.get(0)?,
+                message_key: row.get(1)?,
+                message_relpath: row.get(2)?,
+                message_mtime: row.get(3)?,
+                message_size: row.get(4)?,
+                subject: row.get(5)?,
+                from: row.get(6)?,
+                timestamp: row.get(7)?,
+                last_scanned_at: row.get(8)?,
+                has_attachments: row.get::<_, i64>(9)? != 0,
+            })
+        })
+        .map_err(|error| format!("failed to query attachment messages: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode attachment messages: {error}"))
+}
+
+fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Result<(), String> {
+    let account_paths = ensure_account_paths(config, account)?;
+    if account_index_state(&account_paths) != IndexState::Indexed {
+        return Ok(());
+    }
+
+    let mut connection = open_db(config)?;
+    let existing_messages = load_attachment_messages_for_account(&connection, account.id)?;
+    let deleted_message_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
+    let existing_by_relpath = existing_messages
+        .iter()
+        .map(|record| (record.message_relpath.clone(), record.clone()))
+        .collect::<HashMap<_, _>>();
+    let message_files = list_notmuch_message_files(&account_paths, "*")?;
+    let mut seen_relpaths = HashSet::new();
+    let mut seen_message_keys = HashSet::new();
+    let mut restored_message_keys = HashSet::new();
+
+    for message_path in message_files {
+        let relpath = message_relative_path(&account_paths, &message_path)?
+            .to_string_lossy()
+            .to_string();
+        let metadata = fs::metadata(&message_path)
+            .map_err(|error| format!("failed to inspect {}: {error}", message_path.display()))?;
+        let message_mtime = metadata.mtime();
+        let message_size = i64::try_from(metadata.size())
+            .map_err(|_| format!("message {} is too large to catalog", message_path.display()))?;
+        let message_metadata = read_message_metadata(&message_path)?;
+        let message_key = message_key_from_metadata(&message_metadata)?;
+
+        if let Some(tombstone) = deleted_message_map.get(&message_key) {
+            if tombstone.restore_pending {
+                restored_message_keys.insert(message_key.clone());
+            } else {
+                continue;
+            }
+        }
+
+        if !seen_message_keys.insert(message_key.clone()) {
+            continue;
+        }
+        seen_relpaths.insert(relpath.clone());
+
+        if existing_by_relpath.get(&relpath).is_some_and(|record| {
+            record.message_key == message_key
+                && record.message_mtime == message_mtime
+                && record.message_size == message_size
+        }) {
+            continue;
+        }
+
+        let (_extraction_dir, scanned_attachments) =
+            scan_message_attachments_for_catalog(config, account.id, &message_key, &message_path)?;
+        let now = Utc::now().to_rfc3339();
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("failed to start attachment refresh transaction: {error}"))?;
+
+        if let Some(existing) = existing_by_relpath.get(&relpath) {
+            transaction
+                .execute(
+                    "DELETE FROM attachment_catalog WHERE account_id = ?1 AND message_key = ?2",
+                    params![account.id, existing.message_key],
+                )
+                .map_err(|error| format!("failed to clear stale attachment rows: {error}"))?;
+        }
+        transaction
+            .execute(
+                "DELETE FROM attachment_catalog WHERE account_id = ?1 AND message_key = ?2",
+                params![account.id, message_key],
+            )
+            .map_err(|error| format!("failed to replace attachment rows: {error}"))?;
+        transaction
+            .execute(
+                "DELETE FROM attachment_messages WHERE account_id = ?1 AND (message_relpath = ?2 OR message_key = ?3)",
+                params![account.id, relpath, message_key],
+            )
+            .map_err(|error| format!("failed to replace attachment message row: {error}"))?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO attachment_messages (
+                    account_id,
+                    message_key,
+                    message_relpath,
+                    message_mtime,
+                    message_size,
+                    subject,
+                    sender,
+                    timestamp,
+                    last_scanned_at,
+                    has_attachments
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "#,
+                params![
+                    account.id,
+                    message_key,
+                    relpath,
+                    message_mtime,
+                    message_size,
+                    message_metadata.subject,
+                    message_metadata.from,
+                    message_metadata.timestamp,
+                    now,
+                    if scanned_attachments.is_empty() { 0 } else { 1 },
+                ],
+            )
+            .map_err(|error| format!("failed to store attachment message row: {error}"))?;
+
+        for (attachment, _) in scanned_attachments {
+            transaction
+                .execute(
+                    r#"
+                    INSERT INTO attachment_catalog (
+                        attachment_key,
+                        account_id,
+                        message_key,
+                        attachment_index,
+                        attachment_sha256,
+                        original_filename,
+                        safe_filename,
+                        extension,
+                        mime_type,
+                        size_bytes,
+                        is_inline_artifact,
+                        created_at,
+                        updated_at,
+                        last_seen_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                    "#,
+                    params![
+                        attachment.attachment_key,
+                        attachment.account_id,
+                        attachment.message_key,
+                        attachment.attachment_index,
+                        attachment.attachment_sha256,
+                        attachment.original_filename,
+                        attachment.safe_filename,
+                        attachment.extension,
+                        attachment.mime_type,
+                        attachment.size_bytes,
+                        if attachment.is_inline_artifact { 1 } else { 0 },
+                        attachment.created_at,
+                        attachment.updated_at,
+                        attachment.last_seen_at,
+                    ],
+                )
+                .map_err(|error| format!("failed to store attachment catalog row: {error}"))?;
+        }
+
+        transaction
+            .commit()
+            .map_err(|error| format!("failed to commit attachment refresh transaction: {error}"))?;
+    }
+
+    let stale_messages = existing_messages
+        .into_iter()
+        .filter(|message| !seen_relpaths.contains(&message.message_relpath))
+        .collect::<Vec<_>>();
+    if !stale_messages.is_empty() {
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("failed to start stale attachment cleanup: {error}"))?;
+        for stale in stale_messages {
+            transaction
+                .execute(
+                    "DELETE FROM attachment_catalog WHERE account_id = ?1 AND message_key = ?2",
+                    params![account.id, stale.message_key],
+                )
+                .map_err(|error| {
+                    format!("failed to delete stale attachment catalog rows: {error}")
+                })?;
+            transaction
+                .execute(
+                    "DELETE FROM attachment_messages WHERE account_id = ?1 AND message_key = ?2",
+                    params![account.id, stale.message_key],
+                )
+                .map_err(|error| {
+                    format!("failed to delete stale attachment message row: {error}")
+                })?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("failed to commit stale attachment cleanup: {error}"))?;
+    }
+
+    if !restored_message_keys.is_empty() {
+        let now = Utc::now().to_rfc3339();
+        for message_key in restored_message_keys {
+            connection
+                .execute(
+                    r#"
+                    UPDATE deleted_messages
+                    SET
+                        restored_at = ?3,
+                        restore_pending = 0
+                    WHERE account_id = ?1
+                      AND message_key = ?2
+                      AND restored_at IS NULL
+                    "#,
+                    params![account.id, message_key, now],
+                )
+                .map_err(|error| {
+                    format!("failed to mark restored message after refresh: {error}")
+                })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn refresh_attachment_catalog_for_user(
+    config: &AppConfig,
+    username: &str,
+    selected_account_id: Option<i64>,
+) -> Result<(), String> {
+    let accounts = list_accounts_for_user(config, username)?;
+    for account in accounts
+        .into_iter()
+        .filter(|account| selected_account_id.is_none_or(|selected| selected == account.id))
+    {
+        refresh_attachment_catalog(config, &account)?;
+    }
+    Ok(())
+}
+
+fn load_active_deleted_message_records_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Vec<DeletedMessageRecord>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                account_id,
+                message_key,
+                message_relpath_at_delete,
+                subject,
+                sender,
+                timestamp,
+                deleted_at,
+                delete_reason,
+                restored_at,
+                restore_pending,
+                last_restore_requested_at,
+                payload_removed,
+                notes
+            FROM deleted_messages
+            WHERE account_id = ?1
+              AND restored_at IS NULL
+            ORDER BY timestamp DESC, deleted_at DESC
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare deleted message query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok(DeletedMessageRecord {
+                account_id: row.get(0)?,
+                message_key: row.get(1)?,
+                message_relpath_at_delete: row.get(2)?,
+                subject: row.get(3)?,
+                sender: row.get(4)?,
+                timestamp: row.get(5)?,
+                deleted_at: row.get(6)?,
+                delete_reason: row.get(7)?,
+                restored_at: row.get(8)?,
+                restore_pending: row.get::<_, i64>(9)? != 0,
+                last_restore_requested_at: row.get(10)?,
+                payload_removed: row.get::<_, i64>(11)? != 0,
+                notes: row.get(12)?,
+            })
+        })
+        .map_err(|error| format!("failed to query deleted messages: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode deleted messages: {error}"))
+}
+
+fn load_active_deleted_message_map_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<HashMap<String, DeletedMessageRecord>, String> {
+    Ok(
+        load_active_deleted_message_records_for_account(connection, account_id)?
+            .into_iter()
+            .map(|record| (record.message_key.clone(), record))
+            .collect(),
+    )
+}
+
+fn load_deleted_message_records_for_user(
+    config: &AppConfig,
+    username: &str,
+    selected_account_id: Option<i64>,
+) -> Result<Vec<(AccountRecord, DeletedMessageRecord)>, String> {
+    let connection = open_db(config)?;
+    let mut results = Vec::new();
+    for account in list_accounts_for_user(config, username)?
+        .into_iter()
+        .filter(|account| selected_account_id.is_none_or(|selected| selected == account.id))
+    {
+        for record in load_active_deleted_message_records_for_account(&connection, account.id)? {
+            results.push((account.clone(), record));
+        }
+    }
+    results.sort_by(|left, right| right.1.timestamp.cmp(&left.1.timestamp));
+    Ok(results)
+}
+
+fn load_deleted_message_for_user(
+    config: &AppConfig,
+    username: &str,
+    account_id: i64,
+    message_key: &str,
+) -> Result<(AccountRecord, DeletedMessageRecord), String> {
+    let account = load_account_for_user(config, username, account_id)?;
+    let connection = open_db(config)?;
+    connection
+        .query_row(
+            r#"
+            SELECT
+                account_id,
+                message_key,
+                message_relpath_at_delete,
+                subject,
+                sender,
+                timestamp,
+                deleted_at,
+                delete_reason,
+                restored_at,
+                restore_pending,
+                last_restore_requested_at,
+                payload_removed,
+                notes
+            FROM deleted_messages
+            WHERE account_id = ?1
+              AND message_key = ?2
+              AND restored_at IS NULL
+            LIMIT 1
+            "#,
+            params![account_id, message_key],
+            |row| {
+                Ok(DeletedMessageRecord {
+                    account_id: row.get(0)?,
+                    message_key: row.get(1)?,
+                    message_relpath_at_delete: row.get(2)?,
+                    subject: row.get(3)?,
+                    sender: row.get(4)?,
+                    timestamp: row.get(5)?,
+                    deleted_at: row.get(6)?,
+                    delete_reason: row.get(7)?,
+                    restored_at: row.get(8)?,
+                    restore_pending: row.get::<_, i64>(9)? != 0,
+                    last_restore_requested_at: row.get(10)?,
+                    payload_removed: row.get::<_, i64>(11)? != 0,
+                    notes: row.get(12)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("failed to load deleted message: {error}"))?
+        .map(|record| (account, record))
+        .ok_or_else(|| "Deleted message not found".to_string())
+}
+
+fn load_deleted_message_attachments_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Vec<(DeletedMessageRecord, DeletedMessageAttachmentRecord)>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                m.account_id,
+                m.message_key,
+                m.message_relpath_at_delete,
+                m.subject,
+                m.sender,
+                m.timestamp,
+                m.deleted_at,
+                m.delete_reason,
+                m.restored_at,
+                m.restore_pending,
+                m.last_restore_requested_at,
+                m.payload_removed,
+                m.notes,
+                a.account_id,
+                a.message_key,
+                a.attachment_key,
+                a.attachment_sha256,
+                a.original_filename,
+                a.safe_filename,
+                a.extension,
+                a.mime_type,
+                a.size_bytes,
+                a.is_inline_artifact,
+                a.deleted_at
+            FROM deleted_message_attachments a
+            INNER JOIN deleted_messages m
+                ON m.account_id = a.account_id
+               AND m.message_key = a.message_key
+            WHERE a.account_id = ?1
+              AND m.restored_at IS NULL
+            ORDER BY m.timestamp DESC, a.original_filename ASC
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare deleted attachment query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok((
+                DeletedMessageRecord {
+                    account_id: row.get(0)?,
+                    message_key: row.get(1)?,
+                    message_relpath_at_delete: row.get(2)?,
+                    subject: row.get(3)?,
+                    sender: row.get(4)?,
+                    timestamp: row.get(5)?,
+                    deleted_at: row.get(6)?,
+                    delete_reason: row.get(7)?,
+                    restored_at: row.get(8)?,
+                    restore_pending: row.get::<_, i64>(9)? != 0,
+                    last_restore_requested_at: row.get(10)?,
+                    payload_removed: row.get::<_, i64>(11)? != 0,
+                    notes: row.get(12)?,
+                },
+                DeletedMessageAttachmentRecord {
+                    account_id: row.get(13)?,
+                    message_key: row.get(14)?,
+                    attachment_key: row.get(15)?,
+                    attachment_sha256: row.get(16)?,
+                    original_filename: row.get(17)?,
+                    safe_filename: row.get(18)?,
+                    extension: row.get(19)?,
+                    mime_type: row.get(20)?,
+                    size_bytes: row.get(21)?,
+                    is_inline_artifact: row.get::<_, i64>(22)? != 0,
+                    deleted_at: row.get(23)?,
+                },
+            ))
+        })
+        .map_err(|error| format!("failed to query deleted attachments: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode deleted attachments: {error}"))
+}
+
+fn collect_live_messages_for_account(
+    config: &AppConfig,
+    account: &AccountRecord,
+    query: &str,
+) -> Result<Vec<LiveMessageRecord>, String> {
+    let account_paths = ensure_account_paths(config, account)?;
+    if account_index_state(&account_paths) != IndexState::Indexed {
+        return Ok(Vec::new());
+    }
+
+    let mut by_key = HashMap::<String, LiveMessageRecord>::new();
+    for file_path in list_notmuch_message_files(&account_paths, query)? {
+        let relpath = message_relative_path(&account_paths, &file_path)?
+            .to_string_lossy()
+            .to_string();
+        let metadata = read_message_metadata(&file_path)?;
+        let message_key = message_key_from_metadata(&metadata)?;
+        let record = by_key
+            .entry(message_key.clone())
+            .or_insert_with(|| LiveMessageRecord {
+                message_key: message_key.clone(),
+                message_relpaths: Vec::new(),
+                subject: metadata.subject.clone(),
+                from: metadata.from.clone(),
+                timestamp: metadata.timestamp,
+            });
+        record.message_relpaths.push(relpath);
+    }
+
+    let connection = open_db(config)?;
+    let deleted_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
+    let mut messages = by_key
+        .into_values()
+        .filter(|record| !deleted_map.contains_key(&record.message_key))
+        .collect::<Vec<_>>();
+    messages.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+    Ok(messages)
+}
+
+fn load_live_message_for_user(
+    config: &AppConfig,
+    username: &str,
+    account_id: i64,
+    message_key: &str,
+) -> Result<(AccountRecord, LiveMessageRecord), String> {
+    let account = load_account_for_user(config, username, account_id)?;
+    let mut matches = collect_live_messages_for_account(config, &account, "*")?
+        .into_iter()
+        .filter(|record| record.message_key == message_key)
+        .collect::<Vec<_>>();
+    matches
+        .pop()
+        .map(|record| (account, record))
+        .ok_or_else(|| "Message not found in the local archive".to_string())
+}
+
+fn write_deleted_message_snapshot(
+    transaction: &Connection,
+    account_id: i64,
+    message: &LiveMessageRecord,
+    deleted_at: &str,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO deleted_messages (
+                account_id,
+                message_key,
+                message_relpath_at_delete,
+                subject,
+                sender,
+                timestamp,
+                deleted_at,
+                delete_reason,
+                restored_at,
+                restore_pending,
+                last_restore_requested_at,
+                payload_removed,
+                notes
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'user_deleted', NULL, 0, NULL, 1, NULL)
+            ON CONFLICT(account_id, message_key) DO UPDATE SET
+                message_relpath_at_delete = excluded.message_relpath_at_delete,
+                subject = excluded.subject,
+                sender = excluded.sender,
+                timestamp = excluded.timestamp,
+                deleted_at = excluded.deleted_at,
+                delete_reason = excluded.delete_reason,
+                restored_at = NULL,
+                restore_pending = 0,
+                last_restore_requested_at = NULL,
+                payload_removed = 1,
+                notes = NULL
+            "#,
+            params![
+                account_id,
+                message.message_key,
+                message
+                    .message_relpaths
+                    .first()
+                    .cloned()
+                    .unwrap_or_default(),
+                message.subject,
+                message.from,
+                message.timestamp,
+                deleted_at,
+            ],
+        )
+        .map_err(|error| format!("failed to store deleted message: {error}"))?;
+    Ok(())
+}
+
+fn delete_message_from_archive(
+    config: &AppConfig,
+    username: &str,
+    account_id: i64,
+    message_key: &str,
+) -> Result<(), String> {
+    if load_deleted_message_for_user(config, username, account_id, message_key).is_ok() {
+        return Ok(());
+    }
+
+    let (account, live_message) =
+        load_live_message_for_user(config, username, account_id, message_key)?;
+    let account_paths = ensure_account_paths(config, &account)?;
+    let mut paths_to_remove = live_message
+        .message_relpaths
+        .iter()
+        .map(|relpath| account_paths.maildir.join(relpath))
+        .collect::<Vec<_>>();
+    paths_to_remove.sort();
+    paths_to_remove.dedup();
+
+    for path in &paths_to_remove {
+        if !path.exists() {
+            return Err(format!(
+                "refusing to delete missing archive payload {}",
+                path.display()
+            ));
+        }
+    }
+
+    for path in &paths_to_remove {
+        fs::remove_file(path)
+            .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
+        if let Some(parent) = path.parent() {
+            sync_directory(parent)?;
+        }
+    }
+    sync_directory(&account_paths.maildir)?;
+
+    let mut connection = open_db(config)?;
+    let deleted_at = Utc::now().to_rfc3339();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to start delete transaction: {error}"))?;
+    write_deleted_message_snapshot(&transaction, account_id, &live_message, &deleted_at)?;
+    transaction
+        .execute(
+            "DELETE FROM deleted_message_attachments WHERE account_id = ?1 AND message_key = ?2",
+            params![account_id, message_key],
+        )
+        .map_err(|error| format!("failed to clear prior deleted attachment rows: {error}"))?;
+
+    let mut attachment_statement = transaction
+        .prepare(
+            r#"
+            SELECT
+                attachment_key,
+                attachment_sha256,
+                original_filename,
+                safe_filename,
+                extension,
+                mime_type,
+                size_bytes,
+                is_inline_artifact
+            FROM attachment_catalog
+            WHERE account_id = ?1
+              AND message_key = ?2
+            ORDER BY attachment_index ASC
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare attachment snapshot query: {error}"))?;
+    let snapshot_rows = attachment_statement
+        .query_map(params![account_id, message_key], |row| {
+            Ok(DeletedMessageAttachmentRecord {
+                account_id,
+                message_key: message_key.to_string(),
+                attachment_key: row.get(0)?,
+                attachment_sha256: row.get(1)?,
+                original_filename: row.get(2)?,
+                safe_filename: row.get(3)?,
+                extension: row.get(4)?,
+                mime_type: row.get(5)?,
+                size_bytes: row.get(6)?,
+                is_inline_artifact: row.get::<_, i64>(7)? != 0,
+                deleted_at: deleted_at.clone(),
+            })
+        })
+        .map_err(|error| format!("failed to snapshot attachments before delete: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode attachment snapshots: {error}"))?;
+    drop(attachment_statement);
+
+    for attachment in snapshot_rows {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO deleted_message_attachments (
+                    account_id,
+                    message_key,
+                    attachment_key,
+                    attachment_sha256,
+                    original_filename,
+                    safe_filename,
+                    extension,
+                    mime_type,
+                    size_bytes,
+                    is_inline_artifact,
+                    deleted_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "#,
+                params![
+                    attachment.account_id,
+                    attachment.message_key,
+                    attachment.attachment_key,
+                    attachment.attachment_sha256,
+                    attachment.original_filename,
+                    attachment.safe_filename,
+                    attachment.extension,
+                    attachment.mime_type,
+                    attachment.size_bytes,
+                    if attachment.is_inline_artifact { 1 } else { 0 },
+                    attachment.deleted_at,
+                ],
+            )
+            .map_err(|error| format!("failed to store deleted attachment metadata: {error}"))?;
+    }
+
+    transaction
+        .execute(
+            "DELETE FROM attachment_catalog WHERE account_id = ?1 AND message_key = ?2",
+            params![account_id, message_key],
+        )
+        .map_err(|error| format!("failed to delete attachment catalog rows: {error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM attachment_messages WHERE account_id = ?1 AND message_key = ?2",
+            params![account_id, message_key],
+        )
+        .map_err(|error| format!("failed to delete attachment message row: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
+
+    run_command(
+        "notmuch",
+        &["new"],
+        &[
+            (
+                "HOME",
+                account_paths.account_state_root.to_string_lossy().as_ref(),
+            ),
+            (
+                "NOTMUCH_CONFIG",
+                account_paths.notmuch_config.to_string_lossy().as_ref(),
+            ),
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn mark_deleted_message_restore_pending(
+    config: &AppConfig,
+    username: &str,
+    account_id: i64,
+    message_key: &str,
+) -> Result<(), String> {
+    let _ = load_deleted_message_for_user(config, username, account_id, message_key)?;
+    let connection = open_db(config)?;
+    let now = Utc::now().to_rfc3339();
+    connection
+        .execute(
+            r#"
+            UPDATE deleted_messages
+            SET
+                restore_pending = 1,
+                last_restore_requested_at = ?3
+            WHERE account_id = ?1
+              AND message_key = ?2
+              AND restored_at IS NULL
+            "#,
+            params![account_id, message_key, now],
+        )
+        .map_err(|error| format!("failed to mark restore pending: {error}"))?;
+    Ok(())
+}
+
+fn suppress_deleted_messages_for_account(
+    config: &AppConfig,
+    account: &AccountRecord,
+) -> Result<(), String> {
+    let account_paths = ensure_account_paths(config, account)?;
+    if account_index_state(&account_paths) != IndexState::Indexed {
+        return Ok(());
+    }
+
+    let connection = open_db(config)?;
+    let tombstones = load_active_deleted_message_map_for_account(&connection, account.id)?;
+    if tombstones.is_empty() {
+        return Ok(());
+    }
+
+    let mut removed_any = false;
+    let mut restored_keys = HashSet::new();
+    for file_path in list_notmuch_message_files(&account_paths, "*")? {
+        let message_key = maildir_message_key(&file_path)?;
+        let Some(tombstone) = tombstones.get(&message_key) else {
+            continue;
+        };
+        if tombstone.restore_pending {
+            restored_keys.insert(message_key);
+            continue;
+        }
+        fs::remove_file(&file_path)
+            .map_err(|error| format!("failed to suppress {}: {error}", file_path.display()))?;
+        if let Some(parent) = file_path.parent() {
+            sync_directory(parent)?;
+        }
+        removed_any = true;
+    }
+
+    if removed_any {
+        run_command(
+            "notmuch",
+            &["new"],
+            &[
+                (
+                    "HOME",
+                    account_paths.account_state_root.to_string_lossy().as_ref(),
+                ),
+                (
+                    "NOTMUCH_CONFIG",
+                    account_paths.notmuch_config.to_string_lossy().as_ref(),
+                ),
+            ],
+        )?;
+    }
+
+    if !restored_keys.is_empty() {
+        let now = Utc::now().to_rfc3339();
+        for message_key in restored_keys {
+            connection
+                .execute(
+                    r#"
+                    UPDATE deleted_messages
+                    SET
+                        restored_at = ?3,
+                        restore_pending = 0
+                    WHERE account_id = ?1
+                      AND message_key = ?2
+                      AND restored_at IS NULL
+                    "#,
+                    params![account.id, message_key, now],
+                )
+                .map_err(|error| format!("failed to mark restored tombstone: {error}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn load_attachment_action_records_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Vec<AttachmentActionRecord>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                attachment_key,
+                account_id,
+                message_key,
+                attachment_sha256,
+                original_filename,
+                method,
+                outcome,
+                counts_as_saved,
+                destination_relpath,
+                created_at
+            FROM attachment_actions
+            WHERE account_id = ?1
+            ORDER BY created_at ASC
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare attachment action query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok(AttachmentActionRecord {
+                attachment_key: row.get(0)?,
+                account_id: row.get(1)?,
+                message_key: row.get(2)?,
+                attachment_sha256: row.get(3)?,
+                original_filename: row.get(4)?,
+                method: row.get(5)?,
+                outcome: row.get(6)?,
+                counts_as_saved: row.get::<_, i64>(7)? != 0,
+                destination_relpath: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })
+        .map_err(|error| format!("failed to query attachment actions: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode attachment actions: {error}"))
+}
+
+fn summarize_attachment_actions(
+    actions: &[AttachmentActionRecord],
+) -> HashMap<String, AttachmentActionSummary> {
+    let mut summaries = HashMap::new();
+    for action in actions {
+        let summary = summaries
+            .entry(action.attachment_key.clone())
+            .or_insert_with(AttachmentActionSummary::default);
+        match action.method.as_str() {
+            ATTACHMENT_METHOD_BROWSER_DOWNLOAD => {
+                if action.outcome == ATTACHMENT_OUTCOME_STARTED {
+                    summary.downloaded_browser = true;
+                }
+            }
+            ATTACHMENT_METHOD_FILES => {
+                if action.counts_as_saved
+                    && matches!(
+                        action.outcome.as_str(),
+                        ATTACHMENT_OUTCOME_SAVED | ATTACHMENT_OUTCOME_DUPLICATE
+                    )
+                {
+                    summary.saved_files = true;
+                }
+            }
+            ATTACHMENT_METHOD_PAPERLESS => {
+                if action.counts_as_saved
+                    && matches!(
+                        action.outcome.as_str(),
+                        ATTACHMENT_OUTCOME_SAVED | ATTACHMENT_OUTCOME_DUPLICATE
+                    )
+                {
+                    summary.saved_paperless = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    summaries
+}
+
+fn load_legacy_paperless_saved_keys(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<HashSet<(String, String)>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT message_key, attachment_sha256
+            FROM paperless_attachment_exports
+            WHERE account_id = ?1 AND outcome IN ('exported', 'duplicate')
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare legacy paperless query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("failed to query legacy paperless rows: {error}"))?;
+
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| format!("failed to decode legacy paperless rows: {error}"))
+}
+
+fn load_attachment_catalog_rows_for_account(
+    connection: &Connection,
+    account_id: i64,
+) -> Result<Vec<(AttachmentMessageRecord, AttachmentRecord)>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                m.account_id,
+                m.message_key,
+                m.message_relpath,
+                m.message_mtime,
+                m.message_size,
+                m.subject,
+                m.sender,
+                m.timestamp,
+                m.last_scanned_at,
+                m.has_attachments,
+                c.attachment_key,
+                c.account_id,
+                c.message_key,
+                c.attachment_index,
+                c.attachment_sha256,
+                c.original_filename,
+                c.safe_filename,
+                c.extension,
+                c.mime_type,
+                c.size_bytes,
+                c.is_inline_artifact,
+                c.created_at,
+                c.updated_at,
+                c.last_seen_at
+            FROM attachment_catalog c
+            INNER JOIN attachment_messages m
+                ON m.account_id = c.account_id
+               AND m.message_key = c.message_key
+            WHERE c.account_id = ?1
+            ORDER BY m.timestamp DESC, c.attachment_index ASC
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare attachment catalog query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok((
+                AttachmentMessageRecord {
+                    account_id: row.get(0)?,
+                    message_key: row.get(1)?,
+                    message_relpath: row.get(2)?,
+                    message_mtime: row.get(3)?,
+                    message_size: row.get(4)?,
+                    subject: row.get(5)?,
+                    from: row.get(6)?,
+                    timestamp: row.get(7)?,
+                    last_scanned_at: row.get(8)?,
+                    has_attachments: row.get::<_, i64>(9)? != 0,
+                },
+                AttachmentRecord {
+                    attachment_key: row.get(10)?,
+                    account_id: row.get(11)?,
+                    message_key: row.get(12)?,
+                    attachment_index: row.get(13)?,
+                    attachment_sha256: row.get(14)?,
+                    original_filename: row.get(15)?,
+                    safe_filename: row.get(16)?,
+                    extension: row.get(17)?,
+                    mime_type: row.get(18)?,
+                    size_bytes: row.get(19)?,
+                    is_inline_artifact: row.get::<_, i64>(20)? != 0,
+                    created_at: row.get(21)?,
+                    updated_at: row.get(22)?,
+                    last_seen_at: row.get(23)?,
+                },
+            ))
+        })
+        .map_err(|error| format!("failed to query attachment catalog rows: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode attachment catalog rows: {error}"))
+}
+
+fn attachment_matches_filter(
+    status: &AttachmentActionSummary,
+    save_filter: AttachmentSaveFilter,
+) -> bool {
+    match save_filter {
+        AttachmentSaveFilter::NeedsTriage => !status.saved_files && !status.saved_paperless,
+        AttachmentSaveFilter::SavedAny => status.saved_files || status.saved_paperless,
+        AttachmentSaveFilter::SavedFiles => status.saved_files,
+        AttachmentSaveFilter::SavedPaperless => status.saved_paperless,
+        AttachmentSaveFilter::DownloadedBrowser => status.downloaded_browser,
+    }
+}
+
+fn parse_page_number(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
+}
+
+fn build_attachment_base_query(
+    query_text: &str,
+    selected_account_id: Option<i64>,
+    save_filter: AttachmentSaveFilter,
+    message_state: MessageStateFilter,
+    extension_filter: &str,
+) -> String {
+    let mut pairs = Vec::new();
+    if !query_text.trim().is_empty() {
+        pairs.push(("q", query_text.trim().to_string()));
+    }
+    if let Some(account_id) = selected_account_id {
+        pairs.push(("account_id", account_id.to_string()));
+    }
+    if save_filter != AttachmentSaveFilter::NeedsTriage {
+        pairs.push(("save_state", save_filter.as_query_value().to_string()));
+    }
+    if message_state != MessageStateFilter::Active {
+        pairs.push(("message_state", message_state.as_query_value().to_string()));
+    }
+    if !extension_filter.trim().is_empty() {
+        pairs.push(("extension", extension_filter.trim().to_string()));
+    }
+    pairs
+        .into_iter()
+        .map(|(key, value)| format!("{key}={}", url_encode_component(&value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn load_attachment_page_data(
+    config: &AppConfig,
+    username: &str,
+    params: &AttachmentListParams,
+) -> Result<AttachmentPageData, String> {
+    let accounts = list_accounts_for_user(config, username)?;
+    let selected_account_id = normalize_selected_account_id(&accounts, params.account_id);
+    let save_filter = AttachmentSaveFilter::from_query(params.save_state.as_deref());
+    let message_state = MessageStateFilter::from_query(params.message_state.as_deref());
+    let query_text = params.q.clone().unwrap_or_default();
+    let extension_filter = params
+        .extension
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let page = parse_page_number(params.page.as_deref());
+    let connection = open_db(config)?;
+    let mut items = Vec::new();
+    let mut query_relpaths_by_account = HashMap::<i64, HashSet<String>>::new();
+
+    for account in accounts
+        .iter()
+        .filter(|account| selected_account_id.is_none_or(|selected| selected == account.id))
+    {
+        let account_paths = ensure_account_paths(config, account)?;
+        if account_index_state(&account_paths) != IndexState::Indexed {
+            continue;
+        }
+
+        if !query_text.trim().is_empty() {
+            let relpaths = list_notmuch_message_files(&account_paths, query_text.trim())?
+                .into_iter()
+                .map(|path| {
+                    message_relative_path(&account_paths, &path)
+                        .map(|relative| relative.to_string_lossy().to_string())
+                })
+                .collect::<Result<HashSet<_>, _>>()?;
+            query_relpaths_by_account.insert(account.id, relpaths);
+        }
+
+        let action_summaries = summarize_attachment_actions(
+            &load_attachment_action_records_for_account(&connection, account.id)?,
+        );
+        let legacy_paperless = load_legacy_paperless_saved_keys(&connection, account.id)?;
+        let deleted_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
+        if message_state != MessageStateFilter::Deleted {
+            for (message, attachment) in
+                load_attachment_catalog_rows_for_account(&connection, account.id)?
+            {
+                if deleted_map.contains_key(&message.message_key) {
+                    continue;
+                }
+                if !query_text.trim().is_empty()
+                    && !query_relpaths_by_account
+                        .get(&account.id)
+                        .is_some_and(|relpaths| relpaths.contains(&message.message_relpath))
+                {
+                    continue;
+                }
+                if !extension_filter.is_empty() && attachment.extension != extension_filter {
+                    continue;
+                }
+
+                let mut status = action_summaries
+                    .get(&attachment.attachment_key)
+                    .cloned()
+                    .unwrap_or_default();
+                if legacy_paperless.contains(&(
+                    attachment.message_key.clone(),
+                    attachment.attachment_sha256.clone(),
+                )) {
+                    status.saved_paperless = true;
+                }
+                let supports_paperless = is_supported_document_attachment_metadata(
+                    &attachment.mime_type,
+                    &attachment.extension,
+                );
+                items.push(AttachmentListItem {
+                    account_name: account.display_name.clone(),
+                    date_label: format_timestamp(message.timestamp),
+                    attachment,
+                    message,
+                    status,
+                    supports_paperless,
+                    deleted_at: None,
+                    restore_pending: false,
+                    is_deleted: false,
+                });
+            }
+        }
+
+        if message_state != MessageStateFilter::Active {
+            let lowered_query = query_text.trim().to_ascii_lowercase();
+            for (deleted_message, deleted_attachment) in
+                load_deleted_message_attachments_for_account(&connection, account.id)?
+            {
+                if !lowered_query.is_empty()
+                    && ![
+                        deleted_message.subject.as_str(),
+                        deleted_message.sender.as_str(),
+                        deleted_message.message_relpath_at_delete.as_str(),
+                        deleted_message.message_key.as_str(),
+                        deleted_attachment.original_filename.as_str(),
+                    ]
+                    .into_iter()
+                    .any(|value| value.to_ascii_lowercase().contains(&lowered_query))
+                {
+                    continue;
+                }
+                if !extension_filter.is_empty() && deleted_attachment.extension != extension_filter
+                {
+                    continue;
+                }
+
+                let mut status = action_summaries
+                    .get(&deleted_attachment.attachment_key)
+                    .cloned()
+                    .unwrap_or_default();
+                if legacy_paperless.contains(&(
+                    deleted_message.message_key.clone(),
+                    deleted_attachment.attachment_sha256.clone(),
+                )) {
+                    status.saved_paperless = true;
+                }
+                let supports_paperless = is_supported_document_attachment_metadata(
+                    &deleted_attachment.mime_type,
+                    &deleted_attachment.extension,
+                );
+                items.push(AttachmentListItem {
+                    account_name: account.display_name.clone(),
+                    date_label: format_timestamp(deleted_message.timestamp),
+                    attachment: AttachmentRecord {
+                        attachment_key: deleted_attachment.attachment_key.clone(),
+                        account_id: deleted_attachment.account_id,
+                        message_key: deleted_attachment.message_key.clone(),
+                        attachment_index: 0,
+                        attachment_sha256: deleted_attachment.attachment_sha256.clone(),
+                        original_filename: deleted_attachment.original_filename.clone(),
+                        safe_filename: deleted_attachment.safe_filename.clone(),
+                        extension: deleted_attachment.extension.clone(),
+                        mime_type: deleted_attachment.mime_type.clone(),
+                        size_bytes: deleted_attachment.size_bytes,
+                        is_inline_artifact: deleted_attachment.is_inline_artifact,
+                        created_at: deleted_attachment.deleted_at.clone(),
+                        updated_at: deleted_attachment.deleted_at.clone(),
+                        last_seen_at: deleted_attachment.deleted_at.clone(),
+                    },
+                    message: AttachmentMessageRecord {
+                        account_id: deleted_message.account_id,
+                        message_key: deleted_message.message_key.clone(),
+                        message_relpath: deleted_message.message_relpath_at_delete.clone(),
+                        message_mtime: 0,
+                        message_size: 0,
+                        subject: deleted_message.subject.clone(),
+                        from: deleted_message.sender.clone(),
+                        timestamp: deleted_message.timestamp,
+                        last_scanned_at: deleted_message.deleted_at.clone(),
+                        has_attachments: true,
+                    },
+                    status,
+                    supports_paperless,
+                    deleted_at: Some(deleted_message.deleted_at.clone()),
+                    restore_pending: deleted_message.restore_pending,
+                    is_deleted: true,
+                });
+            }
+        }
+    }
+
+    let mut visible_non_inline = HashSet::new();
+    for item in &items {
+        if !item.attachment.is_inline_artifact {
+            visible_non_inline.insert((item.message.account_id, item.message.message_key.clone()));
+        }
+    }
+
+    items.retain(|item| {
+        if save_filter == AttachmentSaveFilter::NeedsTriage
+            && !item.is_deleted
+            && item.attachment.is_inline_artifact
+            && visible_non_inline
+                .contains(&(item.message.account_id, item.message.message_key.clone()))
+        {
+            return false;
+        }
+        attachment_matches_filter(&item.status, save_filter)
+    });
+
+    items.sort_by(|left, right| {
+        right.message.timestamp.cmp(&left.message.timestamp).then(
+            left.attachment
+                .attachment_index
+                .cmp(&right.attachment.attachment_index),
+        )
+    });
+
+    let total_count = items.len();
+    let start = (page - 1).saturating_mul(ATTACHMENTS_PER_PAGE);
+    let end = usize::min(start + ATTACHMENTS_PER_PAGE, total_count);
+    let page_items = if start >= total_count {
+        Vec::new()
+    } else {
+        items[start..end].to_vec()
+    };
+    let base_query = build_attachment_base_query(
+        &query_text,
+        selected_account_id,
+        save_filter,
+        message_state,
+        &extension_filter,
+    );
+    let empty_message =
+        if selected_account_id.is_some() && page_items.is_empty() && total_count == 0 {
+            Some("No attachments matched this mailbox filter.".to_string())
+        } else if page_items.is_empty() && total_count == 0 {
+            Some("No catalogued attachments matched the current filters.".to_string())
+        } else {
+            None
+        };
+
+    Ok(AttachmentPageData {
+        accounts,
+        selected_account_id,
+        query_text,
+        extension_filter,
+        items: page_items,
+        state: AttachmentListViewState {
+            save_filter,
+            message_state,
+            page,
+            result_count: total_count,
+            has_previous_page: page > 1 && start < total_count,
+            has_next_page: end < total_count,
+            empty_message,
+            base_query,
+        },
+    })
+}
+
+fn load_attachment_for_user(
+    config: &AppConfig,
+    username: &str,
+    attachment_key_value: &str,
+) -> Result<(AccountRecord, AttachmentMessageRecord, AttachmentRecord), String> {
+    let connection = open_db(config)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                a.id,
+                a.username,
+                a.provider_kind,
+                a.display_name,
+                a.imap_host,
+                a.imap_port,
+                a.imap_username,
+                a.folder_mode,
+                a.folder_patterns_json,
+                a.encrypted_secret,
+                a.sync_enabled,
+                a.paperless_enabled,
+                a.created_at,
+                a.updated_at,
+                a.last_sync_started_at,
+                a.last_sync_finished_at,
+                a.last_sync_status,
+                a.last_sync_error,
+                a.last_sync_phase,
+                a.last_sync_code,
+                a.last_sync_summary,
+                a.last_sync_detail,
+                a.paperless_last_export_started_at,
+                a.paperless_last_export_finished_at,
+                a.paperless_last_export_status,
+                a.paperless_last_export_error,
+                m.account_id,
+                m.message_key,
+                m.message_relpath,
+                m.message_mtime,
+                m.message_size,
+                m.subject,
+                m.sender,
+                m.timestamp,
+                m.last_scanned_at,
+                m.has_attachments,
+                c.attachment_key,
+                c.account_id,
+                c.message_key,
+                c.attachment_index,
+                c.attachment_sha256,
+                c.original_filename,
+                c.safe_filename,
+                c.extension,
+                c.mime_type,
+                c.size_bytes,
+                c.is_inline_artifact,
+                c.created_at,
+                c.updated_at,
+                c.last_seen_at
+            FROM attachment_catalog c
+            INNER JOIN attachment_messages m
+                ON m.account_id = c.account_id
+               AND m.message_key = c.message_key
+            INNER JOIN accounts a
+                ON a.id = c.account_id
+            WHERE a.username = ?1 AND c.attachment_key = ?2
+            LIMIT 1
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare attachment lookup: {error}"))?;
+    statement
+        .query_row(params![username, attachment_key_value], |row| {
+            Ok((
+                AccountRecord {
+                    id: row.get(0)?,
+                    username: row.get(1)?,
+                    provider_kind: row.get(2)?,
+                    display_name: row.get(3)?,
+                    imap_host: row.get(4)?,
+                    imap_port: row.get(5)?,
+                    imap_username: row.get(6)?,
+                    folder_mode: row.get(7)?,
+                    folder_patterns_json: row.get(8)?,
+                    encrypted_secret: row.get(9)?,
+                    sync_enabled: row.get::<_, i64>(10)? != 0,
+                    paperless_enabled: row.get::<_, i64>(11)? != 0,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
+                    last_sync_started_at: row.get(14)?,
+                    last_sync_finished_at: row.get(15)?,
+                    last_sync_status: row.get(16)?,
+                    last_sync_error: row.get(17)?,
+                    last_sync_phase: row.get(18)?,
+                    last_sync_code: row.get(19)?,
+                    last_sync_summary: row.get(20)?,
+                    last_sync_detail: row.get(21)?,
+                    paperless_last_export_started_at: row.get(22)?,
+                    paperless_last_export_finished_at: row.get(23)?,
+                    paperless_last_export_status: row.get(24)?,
+                    paperless_last_export_error: row.get(25)?,
+                },
+                AttachmentMessageRecord {
+                    account_id: row.get(26)?,
+                    message_key: row.get(27)?,
+                    message_relpath: row.get(28)?,
+                    message_mtime: row.get(29)?,
+                    message_size: row.get(30)?,
+                    subject: row.get(31)?,
+                    from: row.get(32)?,
+                    timestamp: row.get(33)?,
+                    last_scanned_at: row.get(34)?,
+                    has_attachments: row.get::<_, i64>(35)? != 0,
+                },
+                AttachmentRecord {
+                    attachment_key: row.get(36)?,
+                    account_id: row.get(37)?,
+                    message_key: row.get(38)?,
+                    attachment_index: row.get(39)?,
+                    attachment_sha256: row.get(40)?,
+                    original_filename: row.get(41)?,
+                    safe_filename: row.get(42)?,
+                    extension: row.get(43)?,
+                    mime_type: row.get(44)?,
+                    size_bytes: row.get(45)?,
+                    is_inline_artifact: row.get::<_, i64>(46)? != 0,
+                    created_at: row.get(47)?,
+                    updated_at: row.get(48)?,
+                    last_seen_at: row.get(49)?,
+                },
+            ))
+        })
+        .optional()
+        .map_err(|error| format!("failed to load attachment row: {error}"))?
+        .ok_or_else(|| "Attachment not found".to_string())
+}
+
+fn resolve_attachment_payload(
+    config: &AppConfig,
+    account: &AccountRecord,
+    message: &AttachmentMessageRecord,
+    attachment: &AttachmentRecord,
+) -> Result<(TempExtractionDir, PathBuf), String> {
+    let account_paths = ensure_account_paths(config, account)?;
+    let message_path = account_paths.maildir.join(&message.message_relpath);
+    let (extraction_dir, scanned) = scan_message_attachments_for_catalog(
+        config,
+        account.id,
+        &message.message_key,
+        &message_path,
+    )?;
+    scanned
+        .into_iter()
+        .find(|(scanned_attachment, _)| {
+            scanned_attachment.attachment_key == attachment.attachment_key
+        })
+        .map(|(_, path)| (extraction_dir, path))
+        .ok_or_else(|| {
+            "Attachment payload could not be reconstructed from the archived message".to_string()
+        })
+}
+
+fn record_attachment_action(
+    config: &AppConfig,
+    attachment: &AttachmentRecord,
+    method: &str,
+    outcome: &str,
+    counts_as_saved: bool,
+    destination_relpath: Option<&str>,
+) -> Result<(), String> {
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO attachment_actions (
+                attachment_key,
+                account_id,
+                message_key,
+                attachment_sha256,
+                original_filename,
+                method,
+                outcome,
+                counts_as_saved,
+                destination_relpath,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+            params![
+                attachment.attachment_key,
+                attachment.account_id,
+                attachment.message_key,
+                attachment.attachment_sha256,
+                attachment.original_filename,
+                method,
+                outcome,
+                if counts_as_saved { 1 } else { 0 },
+                destination_relpath,
+                Utc::now().to_rfc3339(),
+            ],
+        )
+        .map_err(|error| format!("failed to record attachment action: {error}"))?;
+    Ok(())
+}
+
+fn find_existing_manual_paperless_destination(
+    config: &AppConfig,
+    attachment_sha256: &str,
+) -> Result<Option<String>, String> {
+    let connection = open_db(config)?;
+    connection
+        .query_row(
+            r#"
+            SELECT destination_relpath
+            FROM attachment_actions
+            WHERE method = ?1
+              AND attachment_sha256 = ?2
+              AND outcome IN (?3, ?4)
+              AND destination_relpath IS NOT NULL
+            ORDER BY created_at ASC
+            LIMIT 1
+            "#,
+            params![
+                ATTACHMENT_METHOD_PAPERLESS,
+                attachment_sha256,
+                ATTACHMENT_OUTCOME_SAVED,
+                ATTACHMENT_OUTCOME_DUPLICATE,
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed to query saved paperless attachment actions: {error}"))?
+        .flatten()
+        .map_or(Ok(None), |value| Ok(Some(value)))
+}
+
+fn copy_attachment_to_files_destination(
+    config: &AppConfig,
+    account: &AccountRecord,
+    attachment: &AttachmentRecord,
+    source_path: &FsPath,
+) -> Result<(String, &'static str), String> {
+    let files_root = account_files_root(config, &account.username);
+    fs::create_dir_all(&files_root)
+        .map_err(|error| format!("failed to create {}: {error}", files_root.display()))?;
+    let relpath = PathBuf::from("mail-attachments").join(format!(
+        "{}--{}",
+        attachment.attachment_sha256, attachment.safe_filename
+    ));
+    let destination = files_root.join(format!(
+        "{}--{}",
+        attachment.attachment_sha256, attachment.safe_filename
+    ));
+    if destination.exists() {
+        return Ok((
+            relpath.to_string_lossy().to_string(),
+            ATTACHMENT_OUTCOME_DUPLICATE,
+        ));
+    }
+
+    fs::copy(source_path, &destination).map_err(|error| {
+        format!(
+            "failed to copy {} into {}: {error}",
+            source_path.display(),
+            destination.display()
+        )
+    })?;
+    sync_path(&destination)?;
+    sync_directory(&files_root)?;
+    Ok((
+        relpath.to_string_lossy().to_string(),
+        ATTACHMENT_OUTCOME_SAVED,
+    ))
+}
+
+fn send_attachment_to_paperless_destination(
+    config: &AppConfig,
+    account: &AccountRecord,
+    attachment: &AttachmentRecord,
+    source_path: &FsPath,
+) -> Result<(String, &'static str), String> {
+    if let Some(existing_relpath) =
+        find_existing_manual_paperless_destination(config, &attachment.attachment_sha256)?
+    {
+        return Ok((existing_relpath, ATTACHMENT_OUTCOME_DUPLICATE));
+    }
+    if let Some(existing_relpath) =
+        find_existing_paperless_export(config, &attachment.attachment_sha256)?
+    {
+        return Ok((existing_relpath, ATTACHMENT_OUTCOME_DUPLICATE));
+    }
+
+    let paperless_paths = paperless_paths(config)?;
+    let relpath = move_attachment_into_paperless(
+        account,
+        &ensure_account_paths(config, account)?,
+        &paperless_paths,
+        &attachment.attachment_sha256,
+        &attachment.original_filename,
+        source_path,
+    )?;
+    Ok((relpath, ATTACHMENT_OUTCOME_SAVED))
+}
+
 fn tag_notmuch_message(
     account_paths: &AccountPaths,
     file_path: &FsPath,
     tag: &str,
 ) -> Result<(), String> {
-    let relative_path = if let Ok(relative) = file_path.strip_prefix(&account_paths.maildir) {
-        relative.to_path_buf()
-    } else {
-        let canonical_maildir = fs::canonicalize(&account_paths.maildir).map_err(|error| {
-            format!(
-                "failed to resolve {}: {error}",
-                account_paths.maildir.display()
-            )
-        })?;
-        let canonical_file = fs::canonicalize(file_path)
-            .map_err(|error| format!("failed to resolve {}: {error}", file_path.display()))?;
-        canonical_file
-            .strip_prefix(&canonical_maildir)
-            .map_err(|_| {
-                format!(
-                    "message path {} is outside the maildir",
-                    file_path.display()
-                )
-            })?
-            .to_path_buf()
-    };
+    let relative_path = message_relative_path(account_paths, file_path)?;
     let query = format!(
         "path:\"{}\"",
         escape_notmuch_query_value(&relative_path.to_string_lossy())
@@ -3682,58 +6353,74 @@ fn search_mail(
     selected_account_id: Option<i64>,
     query: &str,
 ) -> Result<Vec<SearchResult>, String> {
-    let accounts = list_accounts_for_user(config, username)?;
-    let filtered = accounts
+    let query = query.trim();
+    let mut results = Vec::new();
+    for account in list_accounts_for_user(config, username)?
         .into_iter()
         .filter(|account| selected_account_id.is_none_or(|selected| selected == account.id))
-        .collect::<Vec<_>>();
-
-    let mut results = Vec::new();
-
-    for account in filtered {
-        let account_paths = ensure_account_paths(config, &account)?;
-        if account_index_state(&account_paths) != IndexState::Indexed {
-            continue;
-        }
-
-        let output = execute_command(
-            "notmuch",
-            &["search", "--format=json", "--output=summary", query],
-            &[
-                (
-                    "HOME",
-                    account_paths.account_state_root.to_string_lossy().as_ref(),
-                ),
-                (
-                    "NOTMUCH_CONFIG",
-                    account_paths.notmuch_config.to_string_lossy().as_ref(),
-                ),
-            ],
-        )?;
-
-        if !output.status.success() {
-            let detail = command_failure_detail("notmuch", &output);
-            if detail.contains("No database found") || detail.contains("not initialized") {
-                continue;
-            }
-            return Err(detail);
-        }
-
-        let parsed: Vec<RawNotmuchSummary> = serde_json::from_slice(&output.stdout)
-            .map_err(|error| format!("failed to parse notmuch search output: {error}"))?;
-
-        for item in parsed {
+    {
+        for item in collect_live_messages_for_account(
+            config,
+            &account,
+            if query.is_empty() { "*" } else { query },
+        )? {
             results.push(SearchResult {
+                account_id: account.id,
                 account_name: account.display_name.clone(),
-                timestamp: item.timestamp.unwrap_or_default(),
-                date_label: item
-                    .date_relative
-                    .unwrap_or_else(|| format_timestamp(item.timestamp.unwrap_or_default())),
-                from: item.authors.unwrap_or_else(|| "Unknown sender".to_string()),
-                subject: item.subject.unwrap_or_else(|| "(no subject)".to_string()),
-                tags: visible_notmuch_tags(item.tags.unwrap_or_default()),
+                message_key: item.message_key.clone(),
+                message_relpath: item.message_relpaths.first().cloned().unwrap_or_default(),
+                timestamp: item.timestamp,
+                date_label: format_timestamp(item.timestamp),
+                from: item.from.clone(),
+                subject: item.subject.clone(),
+                tags: Vec::new(),
+                deleted_at: None,
+                restore_pending: false,
+                is_deleted: false,
             });
         }
+    }
+
+    results.sort_by_key(|result| Reverse(result.timestamp));
+    Ok(results)
+}
+
+fn search_deleted_messages(
+    config: &AppConfig,
+    username: &str,
+    selected_account_id: Option<i64>,
+    query: &str,
+) -> Result<Vec<SearchResult>, String> {
+    let query = query.trim().to_ascii_lowercase();
+    let mut results = load_deleted_message_records_for_user(config, username, selected_account_id)?
+        .into_iter()
+        .map(|(account, record)| SearchResult {
+            account_id: account.id,
+            account_name: account.display_name,
+            message_key: record.message_key.clone(),
+            message_relpath: record.message_relpath_at_delete.clone(),
+            timestamp: record.timestamp,
+            date_label: format_timestamp(record.timestamp),
+            from: record.sender.clone(),
+            subject: record.subject.clone(),
+            tags: vec!["Deleted".to_string()],
+            deleted_at: Some(record.deleted_at.clone()),
+            restore_pending: record.restore_pending,
+            is_deleted: true,
+        })
+        .collect::<Vec<_>>();
+
+    if !query.is_empty() {
+        results.retain(|result| {
+            [
+                result.subject.as_str(),
+                result.from.as_str(),
+                result.message_relpath.as_str(),
+                result.message_key.as_str(),
+            ]
+            .into_iter()
+            .any(|value| value.to_ascii_lowercase().contains(&query))
+        });
     }
 
     results.sort_by_key(|result| Reverse(result.timestamp));
@@ -3944,15 +6631,21 @@ fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String>
 
 fn maildir_message_key(message_path: &FsPath) -> Result<String, String> {
     let metadata = read_message_metadata(message_path)?;
-    Ok(metadata
+    message_key_from_metadata(&metadata)
+}
+
+fn message_key_from_metadata(metadata: &MessageMetadata) -> Result<String, String> {
+    metadata
         .normalized_message_id
+        .as_ref()
         .map(|value| format!("message-id:{value}"))
         .or_else(|| {
             metadata
                 .message_sha256
+                .as_ref()
                 .map(|value| format!("sha256:{value}"))
         })
-        .expect("message metadata must provide an identity key"))
+        .ok_or_else(|| "message metadata must provide an identity key".to_string())
 }
 
 fn progress_counts(
@@ -4274,6 +6967,7 @@ fn render_dashboard(
           <div class=\"nav\">
             <a href=\"/accounts/new\">Add mailbox</a>
             <a class=\"secondary\" href=\"/search\">Search mail</a>
+            <a class=\"secondary\" href=\"/attachments\">Triage attachments</a>
           </div>
         </section>",
     );
@@ -4621,6 +7315,357 @@ fn render_account_form(
     layout(page_title, Some(identity), "accounts", &body)
 }
 
+fn render_attachments_page(
+    identity: &Identity,
+    data: &AttachmentPageData,
+    flash: Option<&str>,
+    error: Option<&str>,
+) -> String {
+    let mut body = String::new();
+
+    if let Some(flash) = flash {
+        writeln!(
+            &mut body,
+            "<div class=\"flash\">{}</div>",
+            escape_html(&flash.replace('+', " "))
+        )
+        .ok();
+    }
+
+    if let Some(error) = error {
+        writeln!(
+            &mut body,
+            "<div class=\"error\">{}</div>",
+            escape_html(&error.replace('+', " "))
+        )
+        .ok();
+    }
+
+    body.push_str(
+        "<section class=\"hero\">
+          <p class=\"eyebrow\">Attachment Triage</p>
+          <h1>Review attachments from indexed mail without mutating the archive.</h1>
+          <p class=\"lede\">Every action works from a temporary extraction copy. The original email and attachment inside the mail archive stay untouched.</p>
+        </section>",
+    );
+
+    let return_to = attachment_return_to(&data.state);
+    writeln!(
+        &mut body,
+        "<section class=\"panel stack\">
+          <form method=\"get\" action=\"/attachments\" class=\"fields\">
+            <div class=\"fields four\">
+              <label>Notmuch query
+                <input name=\"q\" value=\"{}\" placeholder=\"from:billing@example.com invoice\">
+              </label>
+              <label>Mailbox
+                <select name=\"account_id\">
+                  <option value=\"\">All mailboxes</option>
+                  {}
+                </select>
+              </label>
+              <label>Saved state
+                <select name=\"save_state\">{}</select>
+              </label>
+              <label>Message state
+                <select name=\"message_state\">{}</select>
+              </label>
+            </div>
+            <div class=\"fields two\">
+              <label>Extension
+                <input name=\"extension\" value=\"{}\" placeholder=\"pdf\">
+              </label>
+              <div class=\"attachment-filter-actions\">
+                <button type=\"submit\">Filter attachments</button>
+                <a class=\"button-link secondary\" href=\"/attachments\">Reset</a>
+              </div>
+            </div>
+          </form>
+          <div class=\"action-row\">
+            <form method=\"post\" action=\"/attachments/refresh\">
+              <input type=\"hidden\" name=\"account_id\" value=\"{}\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <button class=\"secondary\" type=\"submit\">Refresh catalog</button>
+            </form>
+            <a class=\"button-link secondary\" href=\"/search\">Back to search</a>
+          </div>
+        </section>",
+        escape_html(&data.query_text),
+        render_account_options(&data.accounts, data.selected_account_id),
+        render_attachment_save_filter_options(data.state.save_filter),
+        render_message_state_filter_options(data.state.message_state),
+        escape_html(&data.extension_filter),
+        data.selected_account_id
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        escape_html(&return_to),
+    )
+    .ok();
+
+    writeln!(
+        &mut body,
+        "<section class=\"panel result-summary\"><strong>{}</strong><span class=\"meta\"> catalogued attachments matching the current view</span></section>",
+        pluralize_results(data.state.result_count),
+    )
+    .ok();
+
+    body.push_str(
+        "<section class=\"notice\">
+          <p class=\"notice-title\">Local archive deletion only</p>
+          <p class=\"notice-copy\">Delete From Local Archive removes the local archived copy only. It does not delete the remote email.</p>
+        </section>",
+    );
+
+    if let Some(message) = data.state.empty_message.as_deref() {
+        writeln!(
+            &mut body,
+            "<section class=\"panel empty-state\"><p class=\"meta\">{}</p></section>",
+            escape_html(message)
+        )
+        .ok();
+    }
+
+    if !data.items.is_empty() {
+        writeln!(
+            &mut body,
+            "<section class=\"attachment-grid\">{}</section>",
+            data.items
+                .iter()
+                .map(|item| render_attachment_item(item, &return_to))
+                .collect::<Vec<_>>()
+                .join("")
+        )
+        .ok();
+    }
+
+    if data.state.has_previous_page || data.state.has_next_page {
+        body.push_str(&render_attachment_pagination(&data.state));
+    }
+
+    layout("Attachments", Some(identity), "attachments", &body)
+}
+
+fn render_attachment_save_filter_options(selected: AttachmentSaveFilter) -> String {
+    [
+        AttachmentSaveFilter::NeedsTriage,
+        AttachmentSaveFilter::SavedAny,
+        AttachmentSaveFilter::SavedFiles,
+        AttachmentSaveFilter::SavedPaperless,
+        AttachmentSaveFilter::DownloadedBrowser,
+    ]
+    .into_iter()
+    .map(|option| {
+        format!(
+            "<option value=\"{}\" {}>{}</option>",
+            option.as_query_value(),
+            if option == selected { "selected" } else { "" },
+            escape_html(option.label())
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("")
+}
+
+fn render_attachment_item(item: &AttachmentListItem, return_to: &str) -> String {
+    let badge_label = if item.attachment.extension.is_empty() {
+        item.attachment.mime_type.clone()
+    } else {
+        item.attachment.extension.clone()
+    };
+    let type_label = if item.attachment.extension.is_empty() {
+        item.attachment.mime_type.clone()
+    } else {
+        format!(
+            "{}. {}",
+            item.attachment.extension, item.attachment.mime_type
+        )
+    };
+    let mut badges = Vec::new();
+    if item.status.saved_files {
+        badges.push("<span class=\"tag\">Saved_files</span>".to_string());
+    }
+    if item.status.saved_paperless {
+        badges.push("<span class=\"tag\">Saved_paperless</span>".to_string());
+    }
+    if item.status.downloaded_browser {
+        badges.push("<span class=\"tag\">Downloaded_browser</span>".to_string());
+    }
+    if item.attachment.is_inline_artifact {
+        badges.push("<span class=\"tag\">Inline artifact</span>".to_string());
+    }
+    if item.is_deleted {
+        badges.push(format!(
+            "<span class=\"tag deleted-tag\">Deleted {}</span>",
+            escape_html(item.deleted_at.as_deref().unwrap_or(""))
+        ));
+        if item.restore_pending {
+            badges.push("<span class=\"tag\">Restore pending</span>".to_string());
+        }
+    }
+
+    let mut actions = String::new();
+    if item.is_deleted {
+        writeln!(
+            &mut actions,
+            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <button class=\"secondary\" type=\"submit\">Restore On Next Sync</button>
+            </form>",
+            item.message.account_id,
+            escape_html(&item.message.message_key),
+            escape_html(return_to),
+        )
+        .ok();
+    } else {
+        writeln!(
+            &mut actions,
+            "<form method=\"post\" action=\"/attachments/{}/download/browser\">
+              <button type=\"submit\">Download to local PC</button>
+            </form>",
+            escape_html(&item.attachment.attachment_key)
+        )
+        .ok();
+        writeln!(
+            &mut actions,
+            "<form method=\"post\" action=\"/attachments/{}/save/files\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <button class=\"secondary\" type=\"submit\">Save to files</button>
+            </form>",
+            escape_html(&item.attachment.attachment_key),
+            escape_html(return_to),
+        )
+        .ok();
+        if item.supports_paperless {
+            writeln!(
+                &mut actions,
+                "<form method=\"post\" action=\"/attachments/{}/save/paperless\">
+                  <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                  <button class=\"secondary\" type=\"submit\">Send to Paperless</button>
+                </form>",
+                escape_html(&item.attachment.attachment_key),
+                escape_html(return_to),
+            )
+            .ok();
+        }
+        writeln!(
+            &mut actions,
+            "<form method=\"post\" action=\"/accounts/{}/messages/{}/delete\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <button class=\"secondary danger\" type=\"submit\">Delete From Local Archive</button>
+            </form>",
+            item.message.account_id,
+            escape_html(&item.message.message_key),
+            escape_html(return_to),
+        )
+        .ok();
+    }
+
+    format!(
+        "<article class=\"attachment-card stack {}\">
+          <div class=\"card-header\">
+            <div>
+              <p class=\"eyebrow\">{}</p>
+              <h2>{}</h2>
+              <p class=\"meta\">{} · {} · {}</p>
+            </div>
+            <span class=\"badge\">{}</span>
+          </div>
+          <div class=\"tag-list\">{}</div>
+          <div class=\"attachment-meta\">
+            <span class=\"meta\">Type {}</span>
+            <span class=\"meta\">Size {}</span>
+            <span class=\"meta\">Message {}</span>
+          </div>
+          <div class=\"hint\">{} · {}</div>
+          <div class=\"action-row\">{}</div>
+        </article>",
+        if item.is_deleted { "is-deleted" } else { "" },
+        escape_html(&item.account_name),
+        escape_html(&item.attachment.original_filename),
+        escape_html(&item.message.subject),
+        escape_html(&item.message.from),
+        escape_html(&item.date_label),
+        escape_html(&badge_label),
+        if badges.is_empty() {
+            "<span class=\"meta\">No save markers yet</span>".to_string()
+        } else {
+            badges.join("")
+        },
+        escape_html(&type_label),
+        escape_html(&format_file_size(item.attachment.size_bytes)),
+        escape_html(&item.message.message_relpath),
+        escape_html(&format!("Scanned {}", item.message.last_scanned_at)),
+        escape_html(if item.is_deleted {
+            "This attachment belongs to a deleted local archive message"
+        } else if item.supports_paperless {
+            "Eligible for Paperless"
+        } else {
+            "Paperless not available for this attachment type"
+        }),
+        actions,
+    )
+}
+
+fn render_attachment_pagination(state: &AttachmentListViewState) -> String {
+    let previous_page = state.page.saturating_sub(1);
+    let next_page = state.page + 1;
+    let previous_href = attachment_page_href(&state.base_query, previous_page);
+    let next_href = attachment_page_href(&state.base_query, next_page);
+    format!(
+        "<section class=\"panel pagination-row\">
+          <a class=\"button-link secondary {}\" href=\"{}\">Previous page</a>
+          <span class=\"meta\">Page {}</span>
+          <a class=\"button-link secondary {}\" href=\"{}\">Next page</a>
+        </section>",
+        if state.has_previous_page {
+            ""
+        } else {
+            "disabled"
+        },
+        escape_html(&previous_href),
+        state.page,
+        if state.has_next_page { "" } else { "disabled" },
+        escape_html(&next_href),
+    )
+}
+
+fn attachment_return_to(state: &AttachmentListViewState) -> String {
+    attachment_page_href(&state.base_query, state.page)
+}
+
+fn attachment_page_href(base_query: &str, page: usize) -> String {
+    let page = usize::max(page, 1);
+    let mut query = base_query.to_string();
+    if page > 1 {
+        if !query.is_empty() {
+            query.push('&');
+        }
+        query.push_str(&format!("page={page}"));
+    }
+    if query.is_empty() {
+        "/attachments".to_string()
+    } else {
+        format!("/attachments?{query}")
+    }
+}
+
+fn format_file_size(size_bytes: i64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    let size = size_bytes.max(0) as f64;
+    if size >= GIB {
+        format!("{:.1} GiB", size / GIB)
+    } else if size >= MIB {
+        format!("{:.1} MiB", size / MIB)
+    } else if size >= KIB {
+        format!("{:.1} KiB", size / KIB)
+    } else {
+        format!("{} B", size_bytes.max(0))
+    }
+}
+
 fn render_search(
     identity: &Identity,
     accounts: &[AccountRecord],
@@ -4628,8 +7673,28 @@ fn render_search(
     selected_account_id: Option<i64>,
     results: &[SearchResult],
     state: &SearchViewState,
+    flash: Option<&str>,
+    error: Option<&str>,
 ) -> String {
     let mut body = String::new();
+
+    if let Some(flash) = flash {
+        writeln!(
+            &mut body,
+            "<div class=\"flash\">{}</div>",
+            escape_html(&flash.replace('+', " "))
+        )
+        .ok();
+    }
+
+    if let Some(error) = error {
+        writeln!(
+            &mut body,
+            "<div class=\"error\">{}</div>",
+            escape_html(&error.replace('+', " "))
+        )
+        .ok();
+    }
 
     body.push_str(
         "<section class=\"hero\">
@@ -4643,7 +7708,7 @@ fn render_search(
     writeln!(
         &mut body,
         "<form method=\"get\" action=\"/search\" class=\"fields\">
-          <div class=\"fields two\">
+          <div class=\"fields three\">
             <label>Search query
               <input name=\"q\" value=\"{}\" placeholder=\"from:billing@example.com subject:invoice\">
             </label>
@@ -4653,6 +7718,9 @@ fn render_search(
                 {}
               </select>
             </label>
+            <label>Message state
+              <select name=\"message_state\">{}</select>
+            </label>
           </div>
           <div class=\"actions\">
             <button type=\"submit\">Search</button>
@@ -4661,9 +7729,17 @@ fn render_search(
         </form>",
         escape_html(query),
         render_account_options(accounts, selected_account_id),
+        render_message_state_filter_options(state.message_state),
     )
     .ok();
     body.push_str("</section>");
+
+    body.push_str(
+        "<section class=\"notice\">
+          <p class=\"notice-title\">Local archive deletion only</p>
+          <p class=\"notice-copy\">Delete From Local Archive removes the local archived copy only. It does not delete the remote email.</p>
+        </section>",
+    );
 
     if state.submitted {
         writeln!(
@@ -4684,12 +7760,13 @@ fn render_search(
     }
 
     if !results.is_empty() {
+        let return_to = search_page_href(query, selected_account_id, state.message_state);
         writeln!(
             &mut body,
             "<section class=\"grid\">{}</section>",
             results
                 .iter()
-                .map(render_search_result)
+                .map(|result| render_search_result(result, &return_to))
                 .collect::<Vec<_>>()
                 .join("")
         )
@@ -4697,6 +7774,25 @@ fn render_search(
     }
 
     layout("Search Mail", Some(identity), "search", &body)
+}
+
+fn render_message_state_filter_options(selected: MessageStateFilter) -> String {
+    [
+        MessageStateFilter::Active,
+        MessageStateFilter::Deleted,
+        MessageStateFilter::All,
+    ]
+    .into_iter()
+    .map(|option| {
+        format!(
+            "<option value=\"{}\" {}>{}</option>",
+            option.as_query_value(),
+            if option == selected { "selected" } else { "" },
+            escape_html(option.label())
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("")
 }
 
 fn pluralize_results(count: usize) -> String {
@@ -4726,34 +7822,104 @@ fn render_account_options(accounts: &[AccountRecord], selected_account_id: Optio
         .join("")
 }
 
-fn render_search_result(result: &SearchResult) -> String {
+fn search_page_href(
+    query: &str,
+    selected_account_id: Option<i64>,
+    message_state: MessageStateFilter,
+) -> String {
+    let mut pairs = Vec::new();
+    if !query.trim().is_empty() {
+        pairs.push(("q", query.trim().to_string()));
+    }
+    if let Some(account_id) = selected_account_id {
+        pairs.push(("account_id", account_id.to_string()));
+    }
+    if message_state != MessageStateFilter::Active {
+        pairs.push(("message_state", message_state.as_query_value().to_string()));
+    }
+    if pairs.is_empty() {
+        "/search".to_string()
+    } else {
+        format!(
+            "/search?{}",
+            pairs
+                .into_iter()
+                .map(|(key, value)| format!("{key}={}", url_encode_component(&value)))
+                .collect::<Vec<_>>()
+                .join("&")
+        )
+    }
+}
+
+fn render_search_result(result: &SearchResult, return_to: &str) -> String {
+    let mut actions = String::new();
+    if result.is_deleted {
+        writeln!(
+            &mut actions,
+            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <button class=\"secondary\" type=\"submit\">Restore On Next Sync</button>
+            </form>",
+            result.account_id,
+            escape_html(&result.message_key),
+            escape_html(&return_to),
+        )
+        .ok();
+    } else {
+        writeln!(
+            &mut actions,
+            "<form method=\"post\" action=\"/accounts/{}/messages/{}/delete\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <button class=\"secondary danger\" type=\"submit\">Delete From Local Archive</button>
+            </form>",
+            result.account_id,
+            escape_html(&result.message_key),
+            escape_html(&return_to),
+        )
+        .ok();
+    }
+
+    let mut tags = if result.tags.is_empty() {
+        vec!["<span class=\"meta\">No tags</span>".to_string()]
+    } else {
+        result
+            .tags
+            .iter()
+            .map(|tag| format!("<span class=\"tag\">{}</span>", escape_html(tag)))
+            .collect::<Vec<_>>()
+    };
+    if result.is_deleted {
+        tags.push(format!(
+            "<span class=\"tag deleted-tag\">Deleted {}</span>",
+            escape_html(result.deleted_at.as_deref().unwrap_or(""))
+        ));
+        if result.restore_pending {
+            tags.push("<span class=\"tag\">Restore pending</span>".to_string());
+        }
+    }
+
     format!(
-        "<article class=\"result stack\">
+        "<article class=\"result stack {}\">
           <div class=\"result-head\">
             <span class=\"badge\">{}</span>
             <p class=\"meta\">{}</p>
           </div>
           <div>
             <h2>{}</h2>
-            <p class=\"meta\">{} · {}</p>
+            <p class=\"meta\">{} · {} · {}</p>
           </div>
           <div class=\"tag-list\">{}</div>
+          <div class=\"action-row\">{}</div>
         </article>",
+        if result.is_deleted { "is-deleted" } else { "" },
         escape_html(&result.account_name),
         escape_html(&result.date_label),
         escape_html(&result.subject),
         escape_html(&result.from),
         escape_html(&result.date_label),
-        if result.tags.is_empty() {
-            "<span class=\"meta\">No tags</span>".to_string()
-        } else {
-            result
-                .tags
-                .iter()
-                .map(|tag| format!("<span class=\"tag\">{}</span>", escape_html(tag)))
-                .collect::<Vec<_>>()
-                .join("")
-        }
+        escape_html(&result.message_relpath),
+        tags.join(""),
+        actions
     )
 }
 
@@ -4781,6 +7947,7 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
           <a class="{}" href="/">Dashboard</a>
           <a class="{}" href="/accounts/new">Add mailbox</a>
           <a class="{}" href="/search">Search</a>
+          <a class="{}" href="/attachments">Attachments</a>
         </nav>
         <p class="meta footer-meta">{}</p>
       </footer>
@@ -4793,6 +7960,7 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
         nav_active_class(active_nav == "dashboard"),
         nav_active_class(active_nav == "accounts"),
         nav_active_class(active_nav == "search"),
+        nav_active_class(active_nav == "attachments"),
         escape_html(&identity_summary(identity)),
     )
 }
@@ -4898,6 +8066,85 @@ fn has_explicit_query_param(raw_query: &str) -> bool {
     raw_query
         .split('&')
         .any(|part| part == "q" || part.starts_with("q="))
+}
+
+fn url_encode_component(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            b' ' => vec!['+'],
+            _ => format!("%{byte:02X}").chars().collect::<Vec<_>>(),
+        })
+        .collect()
+}
+
+fn attachments_redirect_location(
+    return_to: Option<&str>,
+    flash: Option<&str>,
+    error: Option<&str>,
+) -> String {
+    let mut location = return_to
+        .filter(|value| value.starts_with("/attachments"))
+        .unwrap_or("/attachments")
+        .to_string();
+    let separator = if location.contains('?') { '&' } else { '?' };
+    let mut first_extra = true;
+    for (key, value) in [("flash", flash), ("error", error)] {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            location.push(if first_extra { separator } else { '&' });
+            first_extra = false;
+            location.push_str(key);
+            location.push('=');
+            location.push_str(&url_encode_component(value));
+        }
+    }
+    location
+}
+
+fn message_redirect_location(
+    return_to: Option<&str>,
+    flash: Option<&str>,
+    error: Option<&str>,
+) -> String {
+    let mut location = return_to
+        .filter(|value| value.starts_with("/search") || value.starts_with("/attachments"))
+        .unwrap_or("/search")
+        .to_string();
+    let separator = if location.contains('?') { '&' } else { '?' };
+    let mut first_extra = true;
+    for (key, value) in [("flash", flash), ("error", error)] {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            location.push(if first_extra { separator } else { '&' });
+            first_extra = false;
+            location.push_str(key);
+            location.push('=');
+            location.push_str(&url_encode_component(value));
+        }
+    }
+    location
+}
+
+fn attachment_download_response(filename: &str, mime_type: &str, bytes: Vec<u8>) -> Response {
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::OK;
+    if let Ok(value) = HeaderValue::from_str(mime_type) {
+        response.headers_mut().insert(CONTENT_TYPE, value);
+    } else {
+        response.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+    }
+    if let Ok(value) = HeaderValue::from_str(&format!(
+        "attachment; filename=\"{}\"",
+        safe_filename(filename)
+    )) {
+        response.headers_mut().insert(CONTENT_DISPOSITION, value);
+    }
+    harden_response(response)
 }
 
 fn html_response(html: String) -> Response {
@@ -5253,7 +8500,11 @@ mod tests {
 
         let connection = open_db(config).expect("db");
         connection
-            .query_row("SELECT id FROM accounts LIMIT 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT id FROM accounts WHERE username = ?1 ORDER BY id DESC LIMIT 1",
+                params![username],
+                |row| row.get(0),
+            )
             .expect("account id")
     }
 
@@ -5315,6 +8566,65 @@ mod tests {
             .expect("attachment export rows by outcome")
     }
 
+    fn count_attachment_catalog_rows(config: &AppConfig) -> i64 {
+        let connection = open_db(config).expect("db");
+        connection
+            .query_row("SELECT COUNT(*) FROM attachment_catalog", [], |row| {
+                row.get(0)
+            })
+            .expect("attachment catalog rows")
+    }
+
+    fn count_attachment_action_rows_for_method(config: &AppConfig, method: &str) -> i64 {
+        let connection = open_db(config).expect("db");
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM attachment_actions WHERE method = ?1",
+                params![method],
+                |row| row.get(0),
+            )
+            .expect("attachment action rows")
+    }
+
+    fn count_deleted_message_rows(config: &AppConfig) -> i64 {
+        let connection = open_db(config).expect("db");
+        connection
+            .query_row("SELECT COUNT(*) FROM deleted_messages", [], |row| {
+                row.get(0)
+            })
+            .expect("deleted message rows")
+    }
+
+    fn count_deleted_message_attachment_rows(config: &AppConfig) -> i64 {
+        let connection = open_db(config).expect("db");
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM deleted_message_attachments",
+                [],
+                |row| row.get(0),
+            )
+            .expect("deleted message attachment rows")
+    }
+
+    fn first_attachment_item(config: &AppConfig, username: &str) -> AttachmentListItem {
+        let page = load_attachment_page_data(
+            config,
+            username,
+            &AttachmentListParams {
+                q: None,
+                account_id: None,
+                save_state: None,
+                message_state: None,
+                extension: None,
+                page: None,
+                flash: None,
+                error: None,
+            },
+        )
+        .expect("attachment page");
+        page.items.into_iter().next().expect("attachment item")
+    }
+
     fn read_notmuch_stub_tag_file(account_paths: &AccountPaths, name: &str) -> String {
         fs::read_to_string(
             account_paths
@@ -5337,11 +8647,11 @@ mod tests {
             ),
             (
                 "ripmime",
-                "input=''\noutput=''\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    -i)\n      input=\"$2\"\n      shift 2\n      ;;\n    -d)\n      output=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nmkdir -p \"$output\"\ncontents=\"$(cat \"$input\")\"\nif [[ \"$contents\" == *'ATTACH:none'* ]]; then\n  exit 0\nfi\nif [[ \"$contents\" == *'ATTACH:duplicate-pdf'* ]]; then\n  printf 'duplicate payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:text'* ]]; then\n  printf 'plain text payload\\n' > \"$output/note.txt\"\nfi\nif [[ \"$contents\" == *'ATTACH:tiny-image'* ]]; then\n  printf 'tiny' > \"$output/logo.png\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files-bad'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.bin\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.docx\"\nfi\n",
+                "input=''\noutput=''\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    -i)\n      input=\"$2\"\n      shift 2\n      ;;\n    -d)\n      output=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nmkdir -p \"$output\"\ncontents=\"$(cat \"$input\")\"\nif [[ \"$contents\" == *'ATTACH:none'* ]]; then\n  exit 0\nfi\nif [[ \"$contents\" == *'ATTACH:duplicate-pdf'* ]]; then\n  printf 'duplicate payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf-and-zip'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\n  printf 'zip payload\\n' > \"$output/archive.zip\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:text'* ]]; then\n  printf 'plain text payload\\n' > \"$output/note.txt\"\nfi\nif [[ \"$contents\" == *'ATTACH:tiny-image'* ]]; then\n  printf 'tiny' > \"$output/logo.png\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files-bad'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.bin\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.docx\"\nfi\n",
             ),
             (
                 "file",
-                "target=\"${@: -1}\"\ncase \"$target\" in\n  *.pdf)\n    printf 'application/pdf\\n'\n    ;;\n  *.txt)\n    printf 'text/plain\\n'\n    ;;\n  *.docx)\n    printf 'application/vnd.openxmlformats-officedocument.wordprocessingml.document\\n'\n    ;;\n  *.png)\n    printf 'image/png\\n'\n    ;;\n  *.bin)\n    echo 'unknown binary attachment' >&2\n    exit 1\n    ;;\n  *)\n    printf 'application/octet-stream\\n'\n    ;;\nesac\n",
+                "target=\"${@: -1}\"\ncase \"$target\" in\n  *.pdf)\n    printf 'application/pdf\\n'\n    ;;\n  *.txt)\n    printf 'text/plain\\n'\n    ;;\n  *.docx)\n    printf 'application/vnd.openxmlformats-officedocument.wordprocessingml.document\\n'\n    ;;\n  *.png)\n    printf 'image/png\\n'\n    ;;\n  *.zip)\n    printf 'application/zip\\n'\n    ;;\n  *.bin)\n    echo 'unknown binary attachment' >&2\n    exit 1\n    ;;\n  *)\n    printf 'application/octet-stream\\n'\n    ;;\nesac\n",
             ),
         ]
     }
@@ -6375,29 +9685,26 @@ mod tests {
 
     #[test]
     fn search_mail_uses_stubbed_notmuch_and_returns_results() {
-        with_stubbed_path(
-            &[
-                (
-                    "notmuch",
-                    "printf '[{\"timestamp\":1713412350,\"date_relative\":\"2d\",\"authors\":\"Alice Example\",\"subject\":\"Invoice ready\",\"tags\":[\"inbox\",\"unread\"]}]'\n",
-                ),
-            ],
-            |_| {
-                let tempdir = TempDir::new().expect("tempdir");
-                let config = test_config(&tempdir);
-                prepare_test_layout(&config);
-                let account_id = seed_account(&config, "alice", "secret");
-                let account = read_account(&config, "alice", account_id);
-                let paths = ensure_account_paths(&config, &account).expect("paths");
-                ensure_notmuch_config(&config, &account, &paths).expect("config");
-                fs::create_dir_all(&paths.notmuch_db_root).expect("db");
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account(&config, "alice", "secret");
+            let account = read_account(&config, "alice", account_id);
+            let paths = ensure_account_paths(&config, &account).expect("paths");
+            ensure_notmuch_config(&config, &account, &paths).expect("config");
+            fs::create_dir_all(&paths.notmuch_db_root).expect("db");
+            write_maildir_message(
+                &paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <search@example.com>\nFrom: Alice Example <alice@example.com>\nSubject: Invoice ready\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
 
-                let results =
-                    search_mail(&config, "alice", Some(account_id), "subject:invoice").expect("search");
-                assert_eq!(results.len(), 1);
-                assert_eq!(results[0].subject, "Invoice ready");
-            },
-        );
+            let results =
+                search_mail(&config, "alice", Some(account_id), "subject:invoice").expect("search");
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].subject, "Invoice ready");
+        });
     }
 
     #[test]
@@ -6417,7 +9724,10 @@ mod tests {
                 submitted: false,
                 result_count: 0,
                 empty_message: Some("Saved search defaults are prefilled below. Submit a query to search indexed mail.".to_string()),
+                message_state: MessageStateFilter::Active,
             },
+            None,
+            None,
         );
         let html_submitted = render_search(
             &identity,
@@ -6429,7 +9739,10 @@ mod tests {
                 submitted: true,
                 result_count: 0,
                 empty_message: Some("No indexed messages matched this query.".to_string()),
+                message_state: MessageStateFilter::Active,
             },
+            None,
+            None,
         );
 
         assert!(html_prefill.contains("Saved search defaults"));
@@ -6622,5 +9935,548 @@ mod tests {
             account_status(&account, IndexState::Indexed, &counts, None, None),
             ("pending", "index behind")
         );
+    }
+
+    #[test]
+    fn attachment_tables_are_initialized() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let connection = open_db(&config).expect("db");
+
+        let names = [
+            "attachment_messages",
+            "attachment_catalog",
+            "attachment_actions",
+        ];
+        for name in names {
+            let count = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("table count");
+            assert_eq!(count, 1, "expected table {name} to exist");
+        }
+    }
+
+    #[test]
+    fn deleted_message_tables_are_initialized() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let connection = open_db(&config).expect("db");
+
+        let names = ["deleted_messages", "deleted_message_attachments"];
+        for name in names {
+            let count = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("table count");
+            assert_eq!(count, 1, "expected table {name} to exist");
+        }
+    }
+
+    #[test]
+    fn sync_refreshes_attachment_catalog_and_exposes_unsaved_items() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <catalog@example.com>\nFrom: Billing <billing@example.com>\nSubject: Invoice ready\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            assert_eq!(count_attachment_catalog_rows(&config), 1);
+            let item = first_attachment_item(&config, "alice");
+            assert_eq!(item.attachment.original_filename, "invoice.pdf");
+            assert_eq!(item.message.subject, "Invoice ready");
+            assert!(item.supports_paperless);
+            assert!(!item.status.saved_files);
+            assert!(!item.status.saved_paperless);
+            assert!(!item.status.downloaded_browser);
+        });
+    }
+
+    #[test]
+    fn delete_message_removes_payload_and_preserves_deleted_attachment_metadata() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            let message_path = write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-delete",
+                "Message-ID: <delete-me@example.com>\nSubject: Delete me\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+            let item = first_attachment_item(&config, "alice");
+
+            delete_message_from_archive(&config, "alice", account_id, &item.message.message_key)
+                .expect("delete");
+
+            assert!(!message_path.exists());
+            assert_eq!(count_deleted_message_rows(&config), 1);
+            assert_eq!(count_deleted_message_attachment_rows(&config), 1);
+            assert_eq!(count_attachment_catalog_rows(&config), 0);
+
+            let default_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: None,
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("default page");
+            assert!(default_page.items.is_empty());
+
+            let deleted_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: None,
+                    message_state: Some("deleted".to_string()),
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("deleted page");
+            assert_eq!(deleted_page.items.len(), 1);
+            assert!(deleted_page.items[0].is_deleted);
+        });
+    }
+
+    #[test]
+    fn deleted_messages_do_not_reappear_until_restore_is_requested() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            let message_path = write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-suppress",
+                "Message-ID: <suppress@example.com>\nSubject: Suppress me\n\nbody\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+            let results = search_mail(&config, "alice", Some(account_id), "subject:suppress")
+                .expect("search");
+            assert_eq!(results.len(), 1);
+
+            delete_message_from_archive(&config, "alice", account_id, &results[0].message_key)
+                .expect("delete");
+            assert!(!message_path.exists());
+
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-suppress",
+                "Message-ID: <suppress@example.com>\nSubject: Suppress me\n\nbody\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Reindex)
+                .expect("reindex");
+
+            assert!(!message_path.exists());
+            assert!(
+                search_mail(&config, "alice", Some(account_id), "subject:suppress")
+                    .expect("search after suppression")
+                    .is_empty()
+            );
+
+            mark_deleted_message_restore_pending(
+                &config,
+                "alice",
+                account_id,
+                &results[0].message_key,
+            )
+            .expect("restore pending");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-suppress",
+                "Message-ID: <suppress@example.com>\nSubject: Suppress me\n\nbody\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Reindex)
+                .expect("reindex restore");
+
+            assert!(message_path.exists());
+            assert_eq!(
+                search_mail(&config, "alice", Some(account_id), "subject:suppress")
+                    .expect("search after restore")
+                    .len(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn attachment_lookup_is_scoped_to_the_authenticated_user() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let alice_account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let bob_account_id = seed_account_with_flags(&config, "bob", "secret", true, false);
+            let alice_account = read_account(&config, "alice", alice_account_id);
+            let bob_account = read_account(&config, "bob", bob_account_id);
+            let alice_paths = ensure_account_paths(&config, &alice_account).expect("alice paths");
+            let bob_paths = ensure_account_paths(&config, &bob_account).expect("bob paths");
+            write_maildir_message(
+                &alice_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <alice-only@example.com>\n\nATTACH:pdf\n",
+            );
+            write_maildir_message(
+                &bob_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <bob@example.com>\n\n1\n",
+            );
+
+            run_account_action_for_user(&config, "alice", alice_account_id, AccountAction::Sync)
+                .expect("alice sync");
+            run_account_action_for_user(&config, "bob", bob_account_id, AccountAction::Sync)
+                .expect("bob sync");
+
+            let item = first_attachment_item(&config, "alice");
+            assert!(
+                load_attachment_for_user(&config, "bob", &item.attachment.attachment_key).is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn files_save_marks_attachment_saved_and_deduplicates_retries() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <files-save@example.com>\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let item = first_attachment_item(&config, "alice");
+            let (account, message, attachment) =
+                load_attachment_for_user(&config, "alice", &item.attachment.attachment_key)
+                    .expect("attachment lookup");
+            let (_dir, attachment_path) =
+                resolve_attachment_payload(&config, &account, &message, &attachment)
+                    .expect("payload");
+
+            let (relpath, outcome) = copy_attachment_to_files_destination(
+                &config,
+                &account,
+                &attachment,
+                &attachment_path,
+            )
+            .expect("first copy");
+            assert_eq!(outcome, ATTACHMENT_OUTCOME_SAVED);
+            record_attachment_action(
+                &config,
+                &attachment,
+                ATTACHMENT_METHOD_FILES,
+                outcome,
+                true,
+                Some(&relpath),
+            )
+            .expect("record first action");
+
+            let (_second_relpath, second_outcome) = copy_attachment_to_files_destination(
+                &config,
+                &account,
+                &attachment,
+                &attachment_path,
+            )
+            .expect("second copy");
+            assert_eq!(second_outcome, ATTACHMENT_OUTCOME_DUPLICATE);
+            record_attachment_action(
+                &config,
+                &attachment,
+                ATTACHMENT_METHOD_FILES,
+                second_outcome,
+                true,
+                Some(&relpath),
+            )
+            .expect("record duplicate action");
+
+            assert_eq!(
+                count_attachment_action_rows_for_method(&config, ATTACHMENT_METHOD_FILES),
+                2
+            );
+            assert!(account_files_root(&config, "alice")
+                .join(format!(
+                    "{}--{}",
+                    attachment.attachment_sha256, attachment.safe_filename
+                ))
+                .exists());
+
+            let default_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: None,
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("default page");
+            assert!(default_page.items.is_empty());
+
+            let saved_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: Some("saved_files".to_string()),
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("saved page");
+            assert_eq!(saved_page.items.len(), 1);
+            assert!(saved_page.items[0].status.saved_files);
+        });
+    }
+
+    #[test]
+    fn browser_download_audit_does_not_count_as_saved_any() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <browser@example.com>\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let item = first_attachment_item(&config, "alice");
+            let (account, message, attachment) =
+                load_attachment_for_user(&config, "alice", &item.attachment.attachment_key)
+                    .expect("attachment lookup");
+            let (_dir, attachment_path) =
+                resolve_attachment_payload(&config, &account, &message, &attachment)
+                    .expect("payload");
+            assert!(
+                fs::read(&attachment_path)
+                    .expect("read extracted payload")
+                    .len()
+                    > 0
+            );
+            record_attachment_action(
+                &config,
+                &attachment,
+                ATTACHMENT_METHOD_BROWSER_DOWNLOAD,
+                ATTACHMENT_OUTCOME_STARTED,
+                false,
+                None,
+            )
+            .expect("record browser action");
+
+            let downloaded_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: Some("downloaded_browser".to_string()),
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("downloaded page");
+            assert_eq!(downloaded_page.items.len(), 1);
+            assert!(downloaded_page.items[0].status.downloaded_browser);
+
+            let saved_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: Some("saved_any".to_string()),
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("saved any page");
+            assert!(saved_page.items.is_empty());
+        });
+    }
+
+    #[test]
+    fn legacy_paperless_exports_surface_as_saved_paperless() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <legacy-paperless@example.com>\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            assert_eq!(
+                count_attachment_export_rows_for_outcome(&config, "exported"),
+                1
+            );
+
+            let saved_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: Some("saved_paperless".to_string()),
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("saved paperless page");
+            assert_eq!(saved_page.items.len(), 1);
+            assert!(saved_page.items[0].status.saved_paperless);
+
+            let default_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: None,
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("default page");
+            assert!(default_page.items.is_empty());
+        });
+    }
+
+    #[test]
+    fn attachments_page_only_shows_paperless_action_for_supported_types() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <render@example.com>\n\nATTACH:pdf-and-zip\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    save_state: Some("needs_triage".to_string()),
+                    message_state: None,
+                    extension: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("page");
+            assert_eq!(
+                page.items
+                    .iter()
+                    .filter(|item| item.supports_paperless)
+                    .count(),
+                1
+            );
+            let rendered_items = page
+                .items
+                .iter()
+                .map(|item| render_attachment_item(item, "/attachments"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rendered_items
+                    .iter()
+                    .filter(|html| html.contains("Send to Paperless"))
+                    .count(),
+                1
+            );
+            assert!(rendered_items
+                .iter()
+                .any(|html| html.contains("archive.zip")));
+        });
     }
 }

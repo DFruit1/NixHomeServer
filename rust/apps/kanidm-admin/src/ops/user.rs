@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use serde_json::{json, Value};
 
 use crate::{
@@ -37,8 +35,6 @@ pub struct DeleteUserOptions {
     pub account_id: String,
     pub confirm: String,
 }
-
-pub const DEFAULT_SYSTEM_ADMIN_GROUPS: &[&str] = &["idm_admins", "system_admins"];
 
 pub fn list_users(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     let people = parse_user_list(&cli.person_list::<Value>()?)?;
@@ -301,97 +297,6 @@ pub fn delete_user(cli: &KanidmCli, options: DeleteUserOptions) -> Result<Comman
     })
 }
 
-pub fn assign_system_admin(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
-    let current = load_user(cli, account_id)?;
-    if !current.warnings.is_empty() {
-        return Err(AppError::InventoryIncomplete {
-            message: format!(
-                "refusing to assign default Kanidm administration roles to '{}' because the current user record was only partially parsed",
-                account_id
-            ),
-            details: json!({
-                "account_id": account_id,
-                "warnings": current.warnings,
-            }),
-        });
-    }
-
-    let current_groups = current
-        .value
-        .groups
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let required_groups = DEFAULT_SYSTEM_ADMIN_GROUPS
-        .iter()
-        .map(|group| (*group).to_string())
-        .collect::<Vec<_>>();
-    let already_present = required_groups
-        .iter()
-        .filter(|group| current_groups.contains(*group))
-        .cloned()
-        .collect::<Vec<_>>();
-    let granted_now = required_groups
-        .iter()
-        .filter(|group| !current_groups.contains(*group))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    for group in &granted_now {
-        cli.group_add_members(group, account_id)?;
-    }
-
-    let user = verify_with_retry(
-        VerificationPolicy::MembershipConvergence,
-        &format!(
-            "assigning default Kanidm administration roles to '{}' did not converge",
-            account_id
-        ),
-        json!({
-            "account_id": account_id,
-            "required_groups": required_groups,
-        }),
-        true,
-        || {
-            let user = load_user(cli, account_id)?;
-            let matched = DEFAULT_SYSTEM_ADMIN_GROUPS
-                .iter()
-                .all(|group| user.value.groups.iter().any(|candidate| candidate == group));
-            let observed = json!({
-                "actual_groups": &user.value.groups,
-                "warnings": &user.warnings,
-            });
-            if matched {
-                Ok(VerificationCheck::Matched {
-                    observed,
-                    value: user,
-                })
-            } else {
-                Ok(VerificationCheck::Mismatch { observed })
-            }
-        },
-    )?;
-
-    Ok(CommandOutput {
-        message: format!("assigned default Kanidm administration roles to '{}'", account_id),
-        human: format!(
-            "Assigned default Kanidm administration roles to '{}'.\n\nGranted Now:\n{}\n\nAlready Present:\n{}\n\nCurrent Direct Groups:\n{}",
-            account_id,
-            render_group_block(&granted_now),
-            render_group_block(&already_present),
-            render_group_block(&user.value.groups)
-        ),
-        details: json!({
-            "account_id": account_id,
-            "required_groups": required_groups,
-            "granted_now": granted_now,
-            "already_present": already_present,
-            "user": user.value,
-        }),
-        warnings: user.warnings,
-    })
-}
-
 pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<CommandOutput, AppError> {
     let options = ResetTokenOptions {
         account_id: validate_account_id(&options.account_id)?,
@@ -618,92 +523,6 @@ mod tests {
         let mut permissions = fs::metadata(path).expect("metadata").permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("chmod");
-    }
-
-    #[test]
-    fn assign_system_admin_adds_builtin_roles() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = dir.path().join("groups.txt");
-        fs::write(&state, "").expect("seed");
-        let script = dir.path().join("kanidm-stub.sh");
-        write_script(
-            &script,
-            &format!(
-                r#"#!/usr/bin/env bash
-set -euo pipefail
-state_file={}
-args=("$@")
-if [[ "${{args[0]}}" == "group" && "${{args[1]}}" == "add-members" ]]; then
-  printf '%s\n' "${{args[2]}}" >> "$state_file"
-  exit 0
-fi
-if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
-  mapfile -t groups < "$state_file"
-  if [[ ${{#groups[@]}} -eq 0 ]]; then
-    printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["users@example.test"]}}}}'
-  else
-    printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["users@example.test","idm_admins@example.test","system_admins@example.test"]}}}}'
-  fi
-  exit 0
-fi
-echo "unexpected args: $*" >&2
-exit 1
-"#,
-                serde_json::to_string(&state.display().to_string()).expect("json path"),
-            ),
-        );
-        let cli = KanidmCli::new(&ResolvedContext {
-            repo_root: None,
-            server_url: "https://id.example.test".to_string(),
-            admin_name: "idm_admin".to_string(),
-            kanidm_bin: script.into_os_string(),
-        });
-
-        let output = assign_system_admin(&cli, "dsaw").expect("assign system admin");
-        assert!(output.human.contains("idm_admins"));
-        assert!(output.human.contains("system_admins"));
-    }
-
-    #[test]
-    fn assign_system_admin_is_a_noop_when_builtin_roles_already_present() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = dir.path().join("calls.txt");
-        fs::write(&state, "").expect("seed");
-        let script = dir.path().join("kanidm-stub.sh");
-        write_script(
-            &script,
-            &format!(
-                r#"#!/usr/bin/env bash
-set -euo pipefail
-calls_file={}
-args=("$@")
-if [[ "${{args[0]}}" == "group" && "${{args[1]}}" == "add-members" ]]; then
-  printf 'unexpected add-members\n' >> "$calls_file"
-  exit 0
-fi
-if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
-  printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["users@example.test","idm_admins@example.test","system_admins@example.test"]}}}}'
-  exit 0
-fi
-echo "unexpected args: $*" >&2
-exit 1
-"#,
-                serde_json::to_string(&state.display().to_string()).expect("json path"),
-            ),
-        );
-        let cli = KanidmCli::new(&ResolvedContext {
-            repo_root: None,
-            server_url: "https://id.example.test".to_string(),
-            admin_name: "idm_admin".to_string(),
-            kanidm_bin: script.into_os_string(),
-        });
-
-        let output = assign_system_admin(&cli, "dsaw").expect("assign system admin");
-        assert!(output.human.contains("Already Present"));
-        assert!(fs::read_to_string(&state)
-            .expect("read state")
-            .trim()
-            .is_empty());
     }
 
     #[test]

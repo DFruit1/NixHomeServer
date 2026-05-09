@@ -47,7 +47,8 @@ a {
 .hero,
 .panel,
 .result,
-.account-card {
+.account-card,
+.attachment-card {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -64,7 +65,8 @@ a {
 }
 
 .result,
-.account-card {
+.account-card,
+.attachment-card {
   padding: 1.15rem 1.2rem;
 }
 
@@ -79,7 +81,8 @@ a {
 }
 
 .card-grid,
-.grid {
+.grid,
+.attachment-grid {
   display: grid;
   gap: 1.1rem;
   grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
@@ -98,6 +101,7 @@ a {
 .nav,
 .actions,
 .action-row,
+.attachment-meta,
 .footer-nav,
 .progress-metrics,
 .dashboard-summary {
@@ -166,6 +170,11 @@ button,
 button.secondary {
   color: var(--accent-strong);
   background: var(--accent-soft);
+}
+
+button.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .pill,
@@ -282,6 +291,24 @@ form {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+.fields.three {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.fields.four {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.attachment-filter-actions {
+  display: grid;
+  align-content: end;
+  gap: 0.75rem;
+}
+
+.attachment-meta {
+  gap: 1rem;
+}
+
 label {
   display: grid;
   gap: 0.4rem;
@@ -334,6 +361,17 @@ textarea {
 .error {
   background: var(--danger-soft);
   border: 1px solid rgba(141, 45, 28, 0.18);
+}
+
+.result.is-deleted,
+.attachment-card.is-deleted {
+  opacity: 0.72;
+  background: rgba(255, 252, 246, 0.72);
+}
+
+.deleted-tag {
+  background: rgba(141, 45, 28, 0.12);
+  color: var(--danger);
 }
 
 .error.compact {
@@ -414,6 +452,18 @@ textarea {
 .footer-nav a.active {
   text-decoration: underline;
   text-underline-offset: 0.2rem;
+}
+
+.button-link.disabled {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.pagination-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .footer-meta {

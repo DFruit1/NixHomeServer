@@ -46,14 +46,23 @@ in
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 
-      mapfile -t desired_admin_emails < <(
+      group_member_usernames() {
+        local group_name="$1"
+
         ${pkgs.kanidm_1_9}/bin/kanidm group get \
-          app-admin \
+          "$group_name" \
           -H ${kanidmCliUrl} \
           -D idm_admin \
           -o json \
           | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]' \
-          | ${pkgs.coreutils}/bin/sort -u \
+          | ${pkgs.gnused}/bin/sed '/^$/d' \
+          | ${pkgs.coreutils}/bin/sort -u
+      }
+
+      mapfile -t desired_admin_emails < <(
+        ${pkgs.coreutils}/bin/comm -12 \
+          <(group_member_usernames "immich-users") \
+          <(group_member_usernames "app-admin") \
           | while IFS= read -r username; do
               [[ -n "$username" ]] || continue
               ${pkgs.kanidm_1_9}/bin/kanidm person get \

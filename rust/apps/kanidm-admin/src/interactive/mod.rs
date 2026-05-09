@@ -39,9 +39,8 @@ use crate::{
         },
         session::{session_login, session_logout, session_reauth, session_status},
         user::{
-            assign_system_admin, create_user, delete_user, disable_user, enable_user, load_user,
-            reset_token, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
-            DEFAULT_SYSTEM_ADMIN_GROUPS,
+            create_user, delete_user, disable_user, enable_user, load_user, reset_token,
+            CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
     output::CommandOutput,
@@ -73,15 +72,6 @@ struct GroupPickerInventory {
     groups: Vec<GroupSummary>,
 }
 
-fn kanidm_with_admin_name(context: &ResolvedContext, admin_name: &str) -> KanidmCli {
-    KanidmCli::new(&ResolvedContext {
-        repo_root: context.repo_root.clone(),
-        server_url: context.server_url.clone(),
-        admin_name: admin_name.to_string(),
-        kanidm_bin: context.kanidm_bin.clone(),
-    })
-}
-
 fn advanced_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     while let Some(selection) = forms::contextual_select(
         "Advanced",
@@ -97,9 +87,8 @@ fn advanced_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), Ap
             2 => clients_menu(kanidm)?,
             3 => policy_menu(kanidm)?,
             4 => context_menu(context, kanidm)?,
-            5 => assign_system_admin_flow(context)?,
-            6 => local_helpers_menu()?,
-            7 => delete_user_flow(kanidm)?,
+            5 => local_helpers_menu()?,
+            6 => delete_user_flow(kanidm)?,
             _ => break,
         }
     }
@@ -440,67 +429,6 @@ fn help_user_reset_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
                 ttl_seconds,
             },
         )
-    })
-}
-
-fn assign_system_admin_flow(context: &ResolvedContext) -> Result<(), AppError> {
-    let idm_admin = kanidm_with_admin_name(context, "idm_admin");
-    render::print_note(
-        "Assign System Admin",
-        &format!(
-            "This recovery flow uses the break-glass 'idm_admin' account instead of '{}'.\n\nLog in as 'idm_admin' when prompted. The flow grants only the default Kanidm administration roles needed for user/group administration and system operation:\n{}",
-            context.admin_name,
-            render_bullets(
-                &DEFAULT_SYSTEM_ADMIN_GROUPS
-                    .iter()
-                    .map(|group| (*group).to_string())
-                    .collect::<Vec<_>>(),
-            ),
-        ),
-    );
-    forms::pause("Press Enter or Esc to continue")?;
-
-    if !recover_target_interactively(&idm_admin, RecoveryTarget::PrivilegedWrites, None)? {
-        return Ok(());
-    }
-
-    let Some(account_id) = choose_account_id(
-        &idm_admin,
-        "Select a user to receive default Kanidm administration roles",
-    )?
-    else {
-        return Ok(());
-    };
-    let Some(user) = require_complete_user_for_action(
-        &idm_admin,
-        &account_id,
-        "grant default Kanidm administration roles to",
-    )?
-    else {
-        return Ok(());
-    };
-    let review = build_assign_system_admin_review(&user.value);
-    if review.granted_now.is_empty() {
-        render::print_note(
-            "Assign System Admin",
-            &format!(
-                "{}\n\nNo membership changes would be applied.",
-                review.render()
-            ),
-        );
-        return forms::pause("Press Enter or Esc to continue");
-    }
-    render::print_note("Review System Admin Grant", &review.render());
-    match forms::confirm(
-        "Grant these default Kanidm administration roles now?",
-        false,
-    )? {
-        Some(true) => {}
-        _ => return Ok(()),
-    }
-
-    run_privileged_command("Assign System Admin", &idm_admin, || {
-        assign_system_admin(&idm_admin, &account_id)
     })
 }
 
@@ -1552,11 +1480,6 @@ fn advanced_menu_items() -> Vec<forms::ContextualItem> {
             "Use this when troubleshooting Kanidm context, session health, or incomplete live discovery. Doctor is the first place to look when commands start behaving unexpectedly.",
         ),
         menu_item(
-            "Assign System Admin",
-            "Grant the default Kanidm administration roles to a user.",
-            "Use this disaster-recovery workflow when a named person account needs the built-in Kanidm admin roles. It uses the break-glass 'idm_admin' account and grants only 'idm_admins' and 'system_admins'.",
-        ),
-        menu_item(
             "Local Helpers",
             "Run machine-local helper utilities that are not normal Kanidm operations.",
             "Use this for local helper tasks such as staging a Jellyfin password hash. This area is intentionally separate from normal identity administration.",
@@ -1747,7 +1670,7 @@ fn human_operator_user_summary(user: &UserRecord) -> String {
     );
 
     if !hidden_groups.is_empty() {
-        body.push_str("\n\nHidden Internal IDM Groups:\n");
+        body.push_str("\n\nHidden Protected Groups:\n");
         body.push_str(&render_group_block(&hidden_groups));
     }
 
@@ -1951,58 +1874,6 @@ fn build_membership_change_review(
         already_absent,
         groups_to_add,
         groups_to_remove,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AssignSystemAdminReview {
-    account_id: String,
-    current_groups: Vec<String>,
-    required_groups: Vec<String>,
-    already_present: Vec<String>,
-    granted_now: Vec<String>,
-}
-
-impl AssignSystemAdminReview {
-    fn render(&self) -> String {
-        format!(
-            "Account ID: {}\n\nCurrent Direct Groups:\n{}\n\nRequired Built-in Admin Groups:\n{}\n\nAlready Present:\n{}\n\nGranted Now:\n{}",
-            self.account_id,
-            render_group_block(&self.current_groups),
-            render_group_block(&self.required_groups),
-            render_group_block(&self.already_present),
-            render_group_block(&self.granted_now),
-        )
-    }
-}
-
-fn build_assign_system_admin_review(user: &UserRecord) -> AssignSystemAdminReview {
-    let current_groups = normalize_groups(user.groups.clone());
-    let required_groups = DEFAULT_SYSTEM_ADMIN_GROUPS
-        .iter()
-        .map(|group| (*group).to_string())
-        .collect::<Vec<_>>();
-    let current_set = current_groups
-        .iter()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let required_set = required_groups
-        .iter()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    AssignSystemAdminReview {
-        account_id: user.account_id.clone(),
-        current_groups,
-        required_groups,
-        already_present: required_set
-            .intersection(&current_set)
-            .cloned()
-            .collect::<Vec<_>>(),
-        granted_now: required_set
-            .difference(&current_set)
-            .cloned()
-            .collect::<Vec<_>>(),
     }
 }
 
@@ -2427,11 +2298,15 @@ mod tests {
     }
 
     #[test]
-    fn operator_visible_group_picker_excludes_internal_groups() {
+    fn operator_visible_group_picker_excludes_protected_groups() {
         let picker = build_group_picker_inventory(
             &[
                 GroupSummary {
                     name: "idm_admins".to_string(),
+                    description: None,
+                },
+                GroupSummary {
+                    name: "system_admins".to_string(),
                     description: None,
                 },
                 GroupSummary {
@@ -2659,7 +2534,10 @@ exit 99
                 "users".to_string(),
                 "paperless-users".to_string(),
             ],
-            vec!["users".to_string(), "shared-files-ro".to_string()],
+            vec![
+                "users".to_string(),
+                "shared-files-read-write-access".to_string(),
+            ],
             vec!["idm_all_persons".to_string()],
         );
 
@@ -2669,7 +2547,10 @@ exit 99
         );
         assert_eq!(
             review.selected_visible_groups,
-            vec!["shared-files-ro".to_string(), "users".to_string()]
+            vec![
+                "shared-files-read-write-access".to_string(),
+                "users".to_string()
+            ]
         );
         assert_eq!(
             review.preserved_hidden_groups,
@@ -2679,11 +2560,14 @@ exit 99
             review.effective_desired_groups,
             vec![
                 "idm_all_persons".to_string(),
-                "shared-files-ro".to_string(),
+                "shared-files-read-write-access".to_string(),
                 "users".to_string()
             ]
         );
-        assert_eq!(review.diff.added, vec!["shared-files-ro".to_string()]);
+        assert_eq!(
+            review.diff.added,
+            vec!["shared-files-read-write-access".to_string()]
+        );
         assert_eq!(review.diff.removed, vec!["paperless-users".to_string()]);
     }
 
@@ -2718,12 +2602,18 @@ exit 99
         let review = build_membership_change_review(
             "dsaw",
             &["users".to_string(), "paperless-users".to_string()],
-            vec!["paperless-users".to_string(), "shared-files-ro".to_string()],
+            vec![
+                "paperless-users".to_string(),
+                "shared-files-read-write-access".to_string(),
+            ],
             MembershipChange::Add,
         );
 
         assert_eq!(review.already_present, vec!["paperless-users".to_string()]);
-        assert_eq!(review.groups_to_add, vec!["shared-files-ro".to_string()]);
+        assert_eq!(
+            review.groups_to_add,
+            vec!["shared-files-read-write-access".to_string()]
+        );
         assert!(review.groups_to_remove.is_empty());
     }
 
@@ -2732,11 +2622,17 @@ exit 99
         let review = build_membership_change_review(
             "dsaw",
             &["users".to_string(), "paperless-users".to_string()],
-            vec!["paperless-users".to_string(), "shared-files-ro".to_string()],
+            vec![
+                "paperless-users".to_string(),
+                "shared-files-read-write-access".to_string(),
+            ],
             MembershipChange::Remove,
         );
 
-        assert_eq!(review.already_absent, vec!["shared-files-ro".to_string()]);
+        assert_eq!(
+            review.already_absent,
+            vec!["shared-files-read-write-access".to_string()]
+        );
         assert_eq!(review.groups_to_remove, vec!["paperless-users".to_string()]);
         assert!(review.groups_to_add.is_empty());
     }
@@ -2751,23 +2647,6 @@ exit 99
         );
 
         assert!(review.is_noop());
-    }
-
-    #[test]
-    fn assign_system_admin_review_distinguishes_existing_from_new() {
-        let review = build_assign_system_admin_review(&UserRecord {
-            account_id: "dsaw".to_string(),
-            display_name: Some("Dan".to_string()),
-            primary_email: Some("dsaw@example.test".to_string()),
-            spn: None,
-            uuid: None,
-            valid_from: None,
-            expiry: None,
-            groups: vec!["idm_admins".to_string(), "users".to_string()],
-        });
-
-        assert_eq!(review.already_present, vec!["idm_admins".to_string()]);
-        assert_eq!(review.granted_now, vec!["system_admins".to_string()]);
     }
 
     #[test]

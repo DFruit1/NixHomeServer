@@ -6,7 +6,7 @@ use crate::{
     AppError,
 };
 
-const MEMBERSHIP_GUIDANCE: &str = "Start most normal people with `users`. Add app-specific `*-users` groups only for the apps they should access. Add `user-files` for personal files access and `shared-files-ro` only when shared read access is needed. Add `app-admin` only for trusted app operators, and reserve `system_admins` for high-authority server administration.";
+const MEMBERSHIP_GUIDANCE: &str = "Start most normal people with `users`. Add app-specific `*-users` groups only for the apps they should access. Add `user-files` for personal files access. Add `shared-files-read-write-access` only for trusted people who should be able to access and change shared data. Add `app-admin` only for trusted app operators. Bootstrap `system_admins` manually with the regular kanidm CLI instead of through this tool.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextualItem {

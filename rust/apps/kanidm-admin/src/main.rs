@@ -25,8 +25,8 @@ use kanidm_admin::{
             session_status,
         },
         user::{
-            assign_system_admin, create_user, delete_user, disable_user, enable_user, list_users,
-            reset_token, show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
+            create_user, delete_user, disable_user, enable_user, list_users, reset_token,
+            show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
     output::{render_error, render_output, OutputFormat},
@@ -186,8 +186,6 @@ enum UserSubcommand {
         )]
         ttl: u64,
     },
-    #[command(about = "Grant the default built-in Kanidm administration roles to a user.")]
-    AssignSystemAdmin { account_id: String },
 }
 
 #[derive(Debug, Args)]
@@ -494,10 +492,6 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                 )
                 .map(Some)
             }
-            UserSubcommand::AssignSystemAdmin { account_id } => {
-                let account_id = validate_account_id(&account_id)?;
-                assign_system_admin(&kanidm, &account_id).map(Some)
-            }
         },
         Some(Commands::Group(command)) => match command.command {
             GroupSubcommand::List => list_groups(&kanidm).map(Some),
@@ -753,19 +747,6 @@ mod tests {
                     command: ClientPkceSubcommand::Disable { client }
                 })
             })) if client == "files"
-        ));
-    }
-
-    #[test]
-    fn parses_assign_system_admin() {
-        let cli = Cli::try_parse_from(["kanidm-admin", "user", "assign-system-admin", "dsaw"])
-            .expect("parse");
-
-        assert!(matches!(
-            cli.command,
-            Some(Commands::User(UserCommand {
-                command: UserSubcommand::AssignSystemAdmin { account_id }
-            })) if account_id == "dsaw"
         ));
     }
 

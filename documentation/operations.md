@@ -39,6 +39,18 @@ Use `uploads.sydneybasiniot.org` for large uploads into the authenticated
 user's personal `uploads` folder. Use `files.sydneybasiniot.org` for browsing,
 moving, smaller uploads, and WebDAV access.
 
+Copyparty upload troubleshooting note:
+- if the fix depends on declarative user or group state, a service restart alone is not enough
+- use a guarded deploy or switch so the local `copyparty` account and unit runtime groups are converged
+- after deploy, verify the upload bridge directly:
+
+```bash
+id copyparty
+getent group users
+sudo -u copyparty sh -lc 'probe=/mnt/data/users/dsaw/uploads/.write-probe && : >"$probe" && rm -f "$probe"'
+journalctl -u copyparty -n 100 --no-pager
+```
+
 FileBrowser Quantum WebDAV roots:
 
 - Personal source: `https://files.sydneybasiniot.org/dav/Personal/`

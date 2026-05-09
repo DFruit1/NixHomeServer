@@ -61,7 +61,7 @@ rec {
   sharedRoot = "${dataRoot}/shared";
   fileAccessPosixGids = {
     "user-files" = 2001;
-    "shared-files-ro" = 2002;
+    "shared-files-read-write-access" = 2002;
   };
   personalKavitaLibraries = [
     {

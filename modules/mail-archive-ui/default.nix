@@ -104,17 +104,25 @@ in
     systemd.services.mail-archive-ui = {
       description = "Mail archive UI";
       wantedBy = [ "multi-user.target" ];
+      unitConfig = {
+        ConditionPathIsMountPoint = vars.dataRoot;
+        RequiresMountsFor = [
+          cfg.storeRoot
+          cfg.dataDir
+          cfg.accountStateRoot
+          cfg.runtimeDir
+          cfg.lockDir
+        ];
+      };
       wants = [
         "data-pool-layout.service"
-        "network-online.target"
         "local-fs.target"
       ];
       after = [
         "data-pool-layout.service"
-        "network-online.target"
         "local-fs.target"
       ];
-      path = [ pkgs.isync pkgs.notmuch pkgs.coreutils ];
+      path = [ pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
 
       serviceConfig = {
         Type = "simple";

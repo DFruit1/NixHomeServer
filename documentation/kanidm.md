@@ -93,10 +93,10 @@ Everything more specialized lives under `Advanced`.
 
 Interactive navigation notes:
 - `Esc` acts as back/cancel in menu-style screens so you can unwind menus quickly without selecting `Back`.
-- The guided access picker intentionally hides internal Kanidm groups such as `idm_*`. Other visible groups keep their explanations in a contextual help pane that updates when the highlighted option changes.
+- The guided access picker intentionally hides protected groups such as `idm_*` and `system_admins`. Other visible groups keep their explanations in a contextual help pane that updates when the highlighted option changes.
 - Picker-style screens support `/` filtering, so you can narrow long user, group, and client lists without leaving the flow.
 - `Advanced` contains explicit session tools, raw membership tools, group inspection, OAuth2 clients, group policy, context/doctor, local helpers, and permanent user deletion.
-- Advanced group inspection and policy flows now show all live groups, including internal Kanidm groups such as `idm_*`. The guided access-management pickers still hide those internal groups intentionally.
+- Advanced group inspection and policy flows now show all live groups, including protected groups such as `idm_*` and `system_admins`. The guided access-management pickers still hide those protected groups intentionally.
 
 Expected result:
 - the interactive tool keeps the normal workflow focused on user administration instead of general Kanidm internals
@@ -174,9 +174,9 @@ kanidm-admin membership set "$NEW_USER" --allow-empty
 
 File-access group model:
 - `user-files` grants access to personal Copyparty uploads and the personal FileBrowser root.
-- `shared-files-ro` grants read-only access to `/shared/*` in FileBrowser and WebDAV.
-- `shared-files-ro` does not imply `user-files`.
-- Human shared-write access is not modeled as a normal Kanidm group anymore.
+- `shared-files-read-write-access` grants explicit shared-files access in FileBrowser and WebDAV.
+- `shared-files-read-write-access` does not imply `user-files`.
+- In the current single FileBrowser Quantum instance, this group is intentionally the only human group that exposes `/shared/*`.
 
 Expected result:
 - `membership add` and `membership remove` work against live-discovered groups instead of a hardcoded Rust list
@@ -191,9 +191,9 @@ Normal onboarding sequence:
 2. Add them to `users`.
 3. Add only the live groups they need for file, app, or admin access.
 4. For personal file access, add `user-files` explicitly.
-5. Add `shared-files-ro` only if they need read access to `/shared/*`.
+5. Add `shared-files-read-write-access` only if they should be able to access and change shared data that may affect other users.
 6. Add `app-admin` only when they should be an application operator in the apps they already use.
-7. Reserve `system_admins` for trusted operators who need high-authority server or shared-files administration.
+7. Bootstrap `system_admins` manually with the regular `kanidm` CLI only when someone truly needs high-authority server administration.
 8. Have them sign into the target app so first-login provisioning can happen.
 
 Interactive guidance note:
@@ -256,7 +256,7 @@ Expected result:
 ## App-Specific First Login Notes
 
 - `uploads.<domain>`: Copyparty upload access is enforced by OAuth2 Proxy. `user-files` grants access to the signed-in user's own uploads root at `/`.
-- `files.<domain>`: FileBrowser UI and WebDAV access require `user-files` for personal roots, `shared-files-ro` for shared read-only access, and `system_admins` for shared administration.
+- `files.<domain>`: FileBrowser UI and WebDAV access require `user-files` for personal roots and `shared-files-read-write-access` for explicit shared-files access. `app-admin` and `system_admins` do not expose shared files there.
 - `emails.<domain>`: browser access is enforced by `mail-archive-users`.
 - `wiki.<domain>`: baseline `users` membership is sufficient.
 - `ytdownload.<domain>`: browser access is enforced by `metube-users`.

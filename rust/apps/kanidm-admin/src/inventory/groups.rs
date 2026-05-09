@@ -111,7 +111,7 @@ pub fn resolve_group_help(name: &str, description: Option<&str>) -> ResolvedGrou
 }
 
 pub fn is_operator_visible_group(name: &str) -> bool {
-    !name.starts_with("idm_")
+    !name.starts_with("idm_") && name != "system_admins"
 }
 
 pub fn category_sort_rank(name: &str) -> usize {
@@ -214,14 +214,14 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             detail: "Add this when the user needs their own personal files area. It does not grant shared storage access by itself.",
             category: GroupCategory::Foundation,
         },
-        "shared-files-ro" => GroupHelp {
-            summary: "Grants read-only access to shared storage.",
-            detail: "Use this when someone should browse or download shared files but not upload or modify them. It does not imply personal file access.",
+        "shared-files-read-write-access" => GroupHelp {
+            summary: "Grants explicit access to shared storage.",
+            detail: "Use this only for trusted people who should be able to access and change shared files that may affect other users. It does not imply personal file access.",
             category: GroupCategory::Foundation,
         },
         "system_admins" => GroupHelp {
             summary: "Grants broad system administration authority.",
-            detail: "Reserve this for trusted operators who need high-level system administration rights, including shared-files administration in FileBrowser. This is not a normal app-access group.",
+            detail: "Bootstrap this manually with the regular kanidm CLI only when someone truly needs high-level server authority. It is intentionally hidden from normal guided access-management flows.",
             category: GroupCategory::AppAdmin,
         },
         "app-admin" => GroupHelp {
@@ -270,7 +270,7 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
 
 fn inferred_category(name: &str) -> GroupCategory {
     match name {
-        "users" | "user-files" | "shared-files-ro" => GroupCategory::Foundation,
+        "users" | "user-files" | "shared-files-read-write-access" => GroupCategory::Foundation,
         _ if name.ends_with("-admin") => GroupCategory::AppAdmin,
         _ if name.ends_with("-users") || name.ends_with("-login") => GroupCategory::AppUser,
         _ => GroupCategory::Other,
@@ -321,9 +321,9 @@ mod tests {
     }
 
     #[test]
-    fn operator_visible_groups_hide_only_idm_entries() {
+    fn operator_visible_groups_hide_protected_entries() {
         assert!(!is_operator_visible_group("idm_admins"));
-        assert!(is_operator_visible_group("system_admins"));
+        assert!(!is_operator_visible_group("system_admins"));
         assert!(is_operator_visible_group("ext_radius_servers"));
     }
 }

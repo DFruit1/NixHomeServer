@@ -77,7 +77,7 @@ case "$output_format" in
     ;;
 esac
 
-need curl systemctl findmnt blkid jq smartctl journalctl zpool zfs runuser stat date readlink
+need curl systemctl findmnt blkid jq smartctl journalctl zpool zfs runuser stat date readlink getent id sort
 need "$host_cmd"
 
 if [[ -z "${RUNTIME_HEALTH_SNAPSHOT_JSON_FILE:-}" ]]; then
@@ -407,6 +407,75 @@ run_as_user() {
     runuser -u "$user" -- "$@"
   else
     sudo -u "$user" "$@"
+  fi
+}
+
+check_copyparty_upload_permissions() {
+  local access_json service_user required_group upload_roots_parent upload_subdir
+  local group_entry group_members id_groups upload_dir probe_path detail severity present found_upload_root=0
+
+  access_json="$(runtime_health_snapshot_query '.uploadAccess.copyparty')"
+  service_user="$(jq -r '.serviceUser' <<<"$access_json")"
+  required_group="$(jq -r '.requiredGroup' <<<"$access_json")"
+  upload_roots_parent="$(jq -r '.uploadRootsParent' <<<"$access_json")"
+  upload_subdir="$(jq -r '.uploadSubdir' <<<"$access_json")"
+
+  group_entry="$(getent group "$required_group" 2>/dev/null || true)"
+  group_members="$(awk -F: '{ print $4 }' <<<"$group_entry")"
+  if [[ -n "$group_entry" && ",${group_members}," == *",${service_user},"* ]]; then
+    severity="OK"
+    detail="group contains ${service_user}"
+    present=true
+    emit_text "✅ upload group ${required_group} contains ${service_user}"
+  else
+    severity="CRITICAL"
+    detail="group is missing ${service_user}"
+    present=false
+    emit_text "❌ upload group ${required_group} is missing ${service_user}"
+  fi
+  append_json "$paths_file" "$(path_result_json "upload permission" "copyparty-group-membership" "group:${required_group}" "$severity" "$detail" "$present")"
+  mark_failed_if_critical "$severity"
+
+  id_groups="$(id -nG "$service_user" 2>/dev/null || true)"
+  if [[ -n "$id_groups" && " ${id_groups} " == *" ${required_group} "* ]]; then
+    severity="OK"
+    detail="identity includes ${required_group}"
+    present=true
+    emit_text "✅ upload identity ${service_user} includes ${required_group}"
+  else
+    severity="CRITICAL"
+    detail="identity is missing ${required_group}"
+    present=false
+    emit_text "❌ upload identity ${service_user} is missing ${required_group}"
+  fi
+  append_json "$paths_file" "$(path_result_json "upload permission" "copyparty-identity-groups" "user:${service_user}" "$severity" "$detail" "$present")"
+  mark_failed_if_critical "$severity"
+
+  while IFS= read -r upload_dir; do
+    [[ -n "$upload_dir" ]] || continue
+    found_upload_root=1
+    probe_path="${upload_dir}/.copyparty-runtime-write-probe.$$"
+    if run_as_user "$service_user" sh -lc 'probe_path="$1"; : >"$probe_path" && rm -f "$probe_path"' sh "$probe_path" >/dev/null 2>&1; then
+      severity="OK"
+      detail="service user can create and remove files"
+      present=true
+      emit_text "✅ upload path writable: ${upload_dir}"
+    else
+      severity="CRITICAL"
+      detail="service user cannot create and remove files"
+      present=true
+      emit_text "❌ upload path not writable by ${service_user}: ${upload_dir}"
+    fi
+    append_json "$paths_file" "$(path_result_json "upload permission" "copyparty-upload-root" "$upload_dir" "$severity" "$detail" "$present")"
+    mark_failed_if_critical "$severity"
+  done < <(
+    find "$upload_roots_parent" -mindepth 2 -maxdepth 2 -type d -name "$upload_subdir" -print 2>/dev/null \
+      | sort
+  )
+
+  if (( found_upload_root == 0 )); then
+    emit_text "ℹ️ No managed Copyparty upload roots exist yet under ${upload_roots_parent}; skipping write probe."
+    append_json "$paths_file" "$(path_result_json "upload permission" "copyparty-upload-root" "${upload_roots_parent}/${upload_subdir}" "OK" "no managed upload roots discovered yet" "false")"
   fi
 }
 
@@ -761,6 +830,10 @@ emit_text "== Required Paths =="
 while IFS= read -r path_json; do
   check_path_exists "required path" "$(jq -r '.label' <<<"$path_json")" "$(jq -r '.path' <<<"$path_json")"
 done < <(runtime_health_snapshot_query '.appState.requiredPaths[]')
+
+emit_text
+emit_text "== Copyparty Upload Permissions =="
+check_copyparty_upload_permissions
 
 emit_text
 emit_text "== Backups =="

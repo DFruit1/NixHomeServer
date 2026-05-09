@@ -49,7 +49,7 @@ in
         cfg.lockDir
       ];
     };
-    path = [ pkgs.isync pkgs.notmuch pkgs.coreutils ];
+    path = [ pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
   };
 
   systemd.timers.mail-archive-sync = lib.mkIf cfg.enable {

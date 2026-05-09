@@ -38,6 +38,7 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
       serverLanGateway = vars.serverLanGateway;
       serverLanIP = vars.serverLanIP;
       serverLanPrefixLength = vars.serverLanPrefixLength;
+      dataRoot = vars.dataRoot;
       netIface = vars.netIface;
       photosDomain = vars.photosDomain;
       sharePhotosDomain = vars.sharePhotosDomain;
@@ -105,11 +106,20 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
         oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
         mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
+        hasMailArchiveOauth2ProxyService = cfg.systemd.services ? "mail-archive-oauth2-proxy";
+        mailArchiveOauth2ProxyExecStartPre =
+          cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [ ];
+        mailArchiveUiMountCondition =
+          cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
         hasCopypartyService = cfg.systemd.services ? "copyparty";
+        copypartyServiceSupplementaryGroups =
+          cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
         hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
         hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
+        filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
         copypartyGlobalExtraConfig = cfg.services.copyparty.globalExtraConfig;
         copypartyRuntimeConfigSyncScript = cfg.systemd.services.copyparty-runtime-config-sync.script;
+        usersGroupMembers = cfg.users.groups.users.members or [ ];
         hasImmichServerService = cfg.systemd.services ? "immich-server";
         hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
         hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
@@ -227,9 +237,59 @@ forbid_match <(printf '%s\n' "$(snapshot_query '.config.storage.zfsImportScript'
 
 require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiEnable')" "true" \
   "Mail archive UI must remain enabled."
+assert_json_true '.config.apps.hasMailArchiveOauth2ProxyService' \
+  "Mail archive OAuth2 Proxy wiring must remain present."
+require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiMountCondition')" "$(snapshot_query '.vars.dataRoot')" \
+  "Mail archive UI must stay gated on the data mount."
+
+mail_archive_oauth2_proxy_exec_start_pre="$(snapshot_query '.config.apps.mailArchiveOauth2ProxyExecStartPre')"
+if [[ "$mail_archive_oauth2_proxy_exec_start_pre" == "[]" ]]; then
+  echo "❌ Mail archive OAuth2 Proxy must wait for discovery and upstream readiness before starting."
+  exit 1
+fi
+
+if ! jq -e 'map(test("mail-archive-oauth2-proxy-wait-for-discovery")) | any' >/dev/null <<<"$mail_archive_oauth2_proxy_exec_start_pre"; then
+  echo "❌ Mail archive OAuth2 Proxy must wait for Kanidm OIDC discovery before startup."
+  echo "   ExecStartPre: $mail_archive_oauth2_proxy_exec_start_pre"
+  exit 1
+fi
+
+if ! jq -e 'map(test("mail-archive-oauth2-proxy-wait-for-upstream")) | any' >/dev/null <<<"$mail_archive_oauth2_proxy_exec_start_pre"; then
+  echo "❌ Mail archive OAuth2 Proxy must wait for the Mail Archive UI upstream before startup."
+  echo "   ExecStartPre: $mail_archive_oauth2_proxy_exec_start_pre"
+  exit 1
+fi
+
 assert_json_true '.config.apps.hasCopypartyService' "Copyparty service wiring must remain present."
 assert_json_true '.config.apps.hasFilebrowserQuantumService' "FileBrowser Quantum service wiring must remain present."
 assert_json_true '.config.apps.hasFilebrowserQuantumAccessSync' "FileBrowser Quantum access convergence must remain present."
+
+filebrowser_quantum_extra_groups="$(snapshot_query '.config.apps.filebrowserQuantumExtraGroups')"
+if ! jq -e 'index("users") != null' >/dev/null <<<"$filebrowser_quantum_extra_groups"; then
+  echo "❌ FileBrowser Quantum must keep users as a supplementary runtime group."
+  echo "   extraGroups: $filebrowser_quantum_extra_groups"
+  exit 1
+fi
+if jq -e 'index("mail-archive-ui") != null' >/dev/null <<<"$filebrowser_quantum_extra_groups"; then
+  echo "❌ FileBrowser Quantum must not inherit mail-archive-ui write authority."
+  echo "   extraGroups: $filebrowser_quantum_extra_groups"
+  exit 1
+fi
+
+copyparty_service_supplementary_groups="$(snapshot_query '.config.apps.copypartyServiceSupplementaryGroups')"
+if ! jq -e 'index("users") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
+  echo "❌ Copyparty must declare users as a supplementary runtime group."
+  echo "   SupplementaryGroups: $copyparty_service_supplementary_groups"
+  exit 1
+fi
+
+users_group_members="$(snapshot_query '.config.apps.usersGroupMembers')"
+if ! jq -e 'index("copyparty") != null' >/dev/null <<<"$users_group_members"; then
+  echo "❌ The local users group must keep copyparty as a declarative member."
+  echo "   users group members: $users_group_members"
+  exit 1
+fi
+
 assert_json_true '.config.apps.hasImmichServerService' "Immich service wiring must remain present."
 assert_json_true '.config.apps.hasPaperlessWebService' "Paperless service wiring must remain present."
 assert_json_true '.config.apps.hasPaperlessPermissionsBootstrap' "Paperless permission bootstrap wiring must remain present."

@@ -38,7 +38,7 @@ mkdir -p \
   "$runtime_bin" \
   "${mount_root}/data/paperless/archive/.hist" \
   "${mount_root}/data/shared/app-state" \
-  "${mount_root}/data/users" \
+  "${mount_root}/data/users/dsaw/uploads" \
   "$metadata_root" \
   "$dumps_root" \
   "$db_root" \
@@ -119,6 +119,14 @@ cat >"$snapshot_file" <<EOF
         "${mount_root}/data/users",
         "${mount_root}/data/shared"
       ]
+    }
+  },
+  "uploadAccess": {
+    "copyparty": {
+      "serviceUser": "copyparty",
+      "requiredGroup": "users",
+      "uploadRootsParent": "${mount_root}/data/users",
+      "uploadSubdir": "uploads"
     }
   },
   "persistence": {
@@ -321,6 +329,32 @@ fi
 EOF
 chmod +x "$runtime_bin/sudo"
 
+cat >"$runtime_bin/getent" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "group" && "${2:-}" == "users" ]]; then
+  printf 'users:x:100:copyparty,filebrowser-quantum,metube\n'
+  exit 0
+fi
+
+exit 2
+EOF
+chmod +x "$runtime_bin/getent"
+
+cat >"$runtime_bin/id" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "-nG" && "${2:-}" == "copyparty" ]]; then
+  printf 'copyparty users mail-archive-ui\n'
+  exit 0
+fi
+
+exit 1
+EOF
+chmod +x "$runtime_bin/id"
+
 cat >"$runtime_bin/zpool" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -439,6 +473,10 @@ require_match <(printf '%s\n' "$manual_output") 'continuing because the mirrored
   "check-runtime-readiness.sh must explain why degraded mirrored storage still passes by default."
 require_match <(printf '%s\n' "$manual_output") 'backup state: backup metadata is stale, but the removable target is absent' \
   "check-runtime-readiness.sh must warn when backups are stale but the removable target is absent."
+require_match <(printf '%s\n' "$manual_output") '^✅ upload group users contains copyparty' \
+  "check-runtime-readiness.sh must confirm the Copyparty upload bridge group membership."
+require_match <(printf '%s\n' "$manual_output") '^✅ upload path writable:' \
+  "check-runtime-readiness.sh must probe a managed personal upload root for write access."
 
 monitor_json="$(
   env "${manual_env[@]}" \
@@ -457,6 +495,10 @@ require_json_equal "$(jq -r '.smart[] | select(.label == "data1") | .device' <<<
   "check-runtime-readiness.sh must normalize ZFS pool members to whole-disk by-id paths."
 require_json_equal "$(jq -r --arg actual "${usb_actual}" '.smart[] | select(.actualDevice == $actual) | .smartctlArgs | join(" ")' <<<"$monitor_json")" "-d sntasmedia" \
   "check-runtime-readiness.sh must preserve discovered SMART transport arguments for USB backup disks."
+require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "copyparty-group-membership") | .severity' <<<"$monitor_json")" "OK" \
+  "check-runtime-readiness.sh JSON output must record the Copyparty group bridge check."
+require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "copyparty-upload-root") | .severity' <<<"$monitor_json" | head -n 1)" "OK" \
+  "check-runtime-readiness.sh JSON output must record successful Copyparty upload-root write probes."
 
 set +e
 deploy_output="$(

@@ -85,7 +85,6 @@ let
           scopes = "openid email profile groups_name";
           userIdentifier = "preferred_username";
           groupsClaim = "groups";
-          adminGroup = "system_admins";
         };
       };
     };
@@ -112,7 +111,6 @@ in
     createHome = false;
     extraGroups = [
       "users"
-      "mail-archive-ui"
       "audiobookshelf-media"
       "kavita-media"
       "jellyfin-media"
@@ -395,48 +393,50 @@ in
             --argjson groups "$groups_json" '
               def has_group($group_name): ($groups | index($group_name)) != null;
               [
-                if has_group("user-files") or has_group("system_admins") then
+                if has_group("user-files") then
                   {name:"Personal", scope:("/" + $username)}
                 else empty end,
-                if has_group("shared-files-ro") or has_group("system_admins") then
+                if has_group("shared-files-read-write-access") then
                   {name:"Shared", scope:"/"}
                 else empty end
               ]')"
 
           # FileBrowser Quantum exposes per-user global permissions plus source access
-          # rules rather than per-source permissions. Personal-drive write access from
-          # user-files therefore remains global, even when a user also receives the
-          # read-only shared source through shared-files-ro.
+          # rules rather than per-source permissions. The explicit
+          # shared-files-read-write-access group therefore gates all shared-files
+          # visibility in this single-instance model, and members who also hold
+          # user-files will have write-capable permissions across the sources they
+          # can access.
           desired_permissions="$(jq -cn --argjson groups "$groups_json" '
             def has_group($group_name): ($groups | index($group_name)) != null;
             {
-              api: (has_group("user-files") or has_group("shared-files-ro") or has_group("system_admins")),
-              admin: has_group("system_admins"),
-              modify: (has_group("user-files") or has_group("system_admins")),
-              share: (has_group("user-files") or has_group("system_admins")),
+              api: (has_group("user-files") or has_group("shared-files-read-write-access")),
+              admin: false,
+              modify: (has_group("user-files") or has_group("shared-files-read-write-access")),
+              share: (has_group("user-files") or has_group("shared-files-read-write-access")),
               realtime: false,
-              delete: (has_group("user-files") or has_group("system_admins")),
-              create: (has_group("user-files") or has_group("system_admins")),
+              delete: (has_group("user-files") or has_group("shared-files-read-write-access")),
+              create: (has_group("user-files") or has_group("shared-files-read-write-access")),
               download: true
             }')"
 
           desired_sidebar_links="$(jq -cn --argjson groups "$groups_json" '
             def has_group($group_name): ($groups | index($group_name)) != null;
             [
-              if has_group("user-files") or has_group("system_admins") then
+              if has_group("user-files") then
                 {name:"Personal", category:"source", target:"/", icon:"", sourceName:"Personal"},
                 {name:"Files", category:"source", target:"/files/", icon:"file_present", sourceName:"Personal"},
                 {name:"Uploads", category:"source", target:"/uploads/", icon:"cloud_upload", sourceName:"Personal"}
               else empty end,
-              if (has_group("user-files") or has_group("system_admins")) and (has_group("shared-files-ro") or has_group("system_admins")) then
+              if has_group("user-files") and has_group("shared-files-read-write-access") then
                 {name:"", category:"divider", target:"#", icon:""}
               else empty end,
-              if has_group("shared-files-ro") or has_group("system_admins") then
+              if has_group("shared-files-read-write-access") then
                 {name:"Shared", category:"source", target:"/", icon:"", sourceName:"Shared"}
               else empty end
             ]')"
 
-          if jq -e 'index("user-files") != null or index("system_admins") != null' >/dev/null <<<"$groups_json"; then
+          if jq -e 'index("user-files") != null' >/dev/null <<<"$groups_json"; then
             ensure_deny_user "Personal" "/$username/documents" "$username"
             ensure_deny_user "Personal" "/$username/photos" "$username"
           fi
@@ -465,11 +465,11 @@ in
       wait_for_health
       login
 
-      for group_name in user-files shared-files-ro system_admins; do
+      for group_name in user-files shared-files-read-write-access; do
         ensure_group_membership "$group_name"
       done
 
-      for group_name in shared-files-ro system_admins; do
+      for group_name in shared-files-read-write-access; do
         ensure_allow_group "Shared" "/" "$group_name"
       done
 

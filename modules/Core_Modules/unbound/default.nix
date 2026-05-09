@@ -48,9 +48,18 @@ let
       name
     else
       "${name}.${vars.lanDnsDomain}";
+  hostRecordNames =
+    name:
+    if lib.hasSuffix "." name || lib.hasInfix "." name then
+      [ (normaliseDnsName name) ]
+    else
+      [
+        name
+        (normaliseDnsName name)
+      ];
   mkARecord =
     name: ip:
-    "\"${normaliseDnsName name} A ${ip}\"";
+    map (recordName: "\"${recordName} A ${ip}\"") (hostRecordNames name);
   mkPtrRecord =
     name: ip:
     let
@@ -71,10 +80,8 @@ let
         let
           hostIp = vars.lanDnsHosts.${hostName};
         in
-        [
-          (mkARecord hostName hostIp)
-          (mkPtrRecord hostName hostIp)
-        ]
+        (mkARecord hostName hostIp)
+        ++ [ (mkPtrRecord hostName hostIp) ]
       )
       lanHostNames;
   lanReverseZones = lib.unique (map (hostName: reverseZoneForIp vars.lanDnsHosts.${hostName}) lanHostNames);
