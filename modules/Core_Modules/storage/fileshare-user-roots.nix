@@ -84,12 +84,25 @@ let
       apply_recursive_acl "g:''${group_name}:rwX" "d:g:''${group_name}:rwx" "$@"
     }
 
+    apply_owner_group_writable_acl() {
+      apply_recursive_acl "g::rwX" "d:g::rwx" "$@"
+    }
+
     apply_readonly_acl() {
       local group_name="$1"
       shift
 
       apply_recursive_acl "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
     }
+
+    apply_owner_group_writable_acl \
+      "$root/uploads" \
+      "$root/files" \
+      "$root/documents" \
+      "$root/photos" \
+      "$root/audiobooks" \
+      "$root/books" \
+      ${kavitaWritablePaths}
 
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
     apply_writable_acl mail-archive-ui "$root/files"
