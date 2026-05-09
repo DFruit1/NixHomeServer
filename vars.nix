@@ -62,7 +62,6 @@ rec {
   fileAccessPosixGids = {
     "user-files" = 2001;
     "shared-files-ro" = 2002;
-    "shared-files-rw" = 2003;
   };
   personalKavitaLibraries = [
     {

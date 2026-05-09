@@ -4,20 +4,14 @@ use serde_json::json;
 
 use crate::{
     kanidm_cli::{
-        verify_with_retry, BaseSessionState, KanidmCli, ParseConfidence, ParsedExpiry,
-        PrivilegedWriteState, SessionSnapshot, VerificationCheck, VerificationPolicy,
+        BaseSessionState, KanidmCli, ParseConfidence, ParsedExpiry, PrivilegedWriteState,
+        SessionSnapshot,
     },
+    ops::executor::{recovery_command_output, verify_session_recovery, RecoveryTarget},
     output::{CommandOutput, OutputFormat},
+    session_state::concise_session_message,
     AppError,
 };
-
-#[derive(Debug)]
-struct SessionRecoveryVerification {
-    state: &'static str,
-    privileged_write_access: &'static str,
-    snapshot: SessionSnapshot,
-    warnings: Vec<String>,
-}
 
 pub fn ensure_interactive_session_allowed(format: OutputFormat) -> Result<(), AppError> {
     if format != OutputFormat::Human {
@@ -56,11 +50,8 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         },
         (BaseSessionState::Expired, _) => CommandOutput {
             message: "Kanidm CLI session has expired".to_string(),
-            human: format!(
-                "Session for '{}' has expired.\nRun `kanidm-admin session login` first.\n\nDiagnostic:\n{}",
-                cli.admin_name(),
-                snapshot.diagnostic_raw.trim()
-            ),
+            human: concise_session_message(cli.admin_name(), &snapshot)
+                .expect("expired session copy"),
             details: json!({
                 "authenticated": false,
                 "state": "expired",
@@ -70,11 +61,12 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         },
         (BaseSessionState::Missing | BaseSessionState::Unknown, _) => CommandOutput {
             message: "no valid Kanidm CLI session is active".to_string(),
-            human: format!(
-                "No valid Kanidm CLI session is active for '{}'.\nRun `kanidm-admin session login` first.\n\nDiagnostic:\n{}",
-                cli.admin_name(),
-                snapshot.diagnostic_raw.trim()
-            ),
+            human: concise_session_message(cli.admin_name(), &snapshot).unwrap_or_else(|| {
+                format!(
+                    "No active admin session was found for '{}'. Run `kanidm-admin session login` to log in.",
+                    cli.admin_name()
+                )
+            }),
             details: json!({
                 "authenticated": false,
                 "state": "missing",
@@ -84,11 +76,8 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         },
         (BaseSessionState::Present, _) => CommandOutput {
             message: "Kanidm CLI session requires privileged reauthentication".to_string(),
-            human: format!(
-                "Session for '{}' is authenticated, but privileged reauthentication is required.\nRun `kanidm-admin session reauth` first.\n\nDiagnostic:\n{}",
-                cli.admin_name(),
-                snapshot.diagnostic_raw.trim()
-            ),
+            human: concise_session_message(cli.admin_name(), &snapshot)
+                .expect("reauth-required session copy"),
             details: json!({
                 "authenticated": true,
                 "state": "reauth_required",
@@ -100,128 +89,19 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
 }
 
 pub fn session_login(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
-    cli.login()?;
-    let verification = verify_with_retry(
-        VerificationPolicy::SessionRecovery,
-        &format!(
-            "kanidm login exited successfully but no active base session was detected for '{}'",
-            cli.admin_name()
-        ),
-        json!({
-            "base_session_present": true,
-            "admin_name": cli.admin_name(),
-            "server_url": cli.server_url(),
-        }),
-        true,
-        || {
-            let snapshot = cli.session_snapshot()?;
-            Ok(match snapshot.base_session_state {
-                BaseSessionState::Present => {
-                    let (state, privileged_write_access, warnings) = if snapshot
-                        .privileged_write_ready()
-                    {
-                        ("authenticated", "ready", Vec::new())
-                    } else {
-                        (
-                                "reauth_required",
-                                "reauth_required",
-                                vec![
-                                    "Privileged write access still requires `kanidm-admin session reauth`."
-                                        .to_string(),
-                                ],
-                            )
-                    };
-                    VerificationCheck::Matched {
-                        observed: session_recovery_observed(&snapshot),
-                        value: SessionRecoveryVerification {
-                            state,
-                            privileged_write_access,
-                            snapshot,
-                            warnings,
-                        },
-                    }
-                }
-                BaseSessionState::Expired
-                | BaseSessionState::Missing
-                | BaseSessionState::Unknown => VerificationCheck::Mismatch {
-                    observed: session_recovery_observed(&snapshot),
-                },
-            })
-        },
-    )?;
-
-    let human = match verification.state {
-        "authenticated" => format!(
-            "Authentication succeeded for '{}'.\n\n{}",
-            cli.admin_name(),
-            verification.snapshot.diagnostic_raw.trim()
-        ),
-        "reauth_required" => format!(
-            "Authentication succeeded for '{}'. The base session is active, but privileged write access still requires `kanidm-admin session reauth`.\n\n{}",
-            cli.admin_name(),
-            verification.snapshot.diagnostic_raw.trim()
-        ),
-        _ => unreachable!("unexpected login verification state"),
-    };
-
-    Ok(CommandOutput {
-        message: "authenticated with Kanidm".to_string(),
-        human,
-        details: json!({
-            "authenticated": true,
-            "base_session_present": true,
-            "state": verification.state,
-            "privileged_write_access": verification.privileged_write_access,
-            "snapshot": session_snapshot_details(&verification.snapshot),
-        }),
-        warnings: verification.warnings,
-    })
+    let verification = verify_session_recovery(cli, RecoveryTarget::BaseSession, || cli.login())?;
+    let mut output = recovery_command_output(cli, "Login", verification.clone());
+    output.details["snapshot"] = session_snapshot_details(&verification.snapshot);
+    Ok(output)
 }
 
 pub fn session_reauth(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
-    cli.reauth()?;
-    let verification = verify_with_retry(
-        VerificationPolicy::SessionRecovery,
-        &format!(
-            "kanidm reauth exited successfully but privileged write access was not confirmed for '{}'",
-            cli.admin_name()
-        ),
-        json!({
-            "base_session_present": true,
-            "privileged_write_access": "ready",
-            "admin_name": cli.admin_name(),
-            "server_url": cli.server_url(),
-        }),
-        true,
-        || {
-            let snapshot = cli.session_snapshot()?;
-            if snapshot.base_session_present() && snapshot.privileged_write_ready() {
-                Ok(VerificationCheck::Matched {
-                    observed: session_recovery_observed(&snapshot),
-                    value: snapshot,
-                })
-            } else {
-                Ok(VerificationCheck::Mismatch {
-                    observed: session_recovery_observed(&snapshot),
-                })
-            }
-        },
-    )?;
-    Ok(CommandOutput {
-        message: "Kanidm privileged reauthentication succeeded".to_string(),
-        human: format!(
-            "Privileged reauthentication succeeded for '{}'.\n\n{}",
-            cli.admin_name(),
-            verification.diagnostic_raw.trim()
-        ),
-        details: json!({
-            "reauth_command_completed": true,
-            "state": "authenticated",
-            "privileged_write_access": "ready",
-            "snapshot": session_snapshot_details(&verification),
-        }),
-        warnings: Vec::new(),
-    })
+    let verification =
+        verify_session_recovery(cli, RecoveryTarget::PrivilegedWrites, || cli.reauth())?;
+    let mut output = recovery_command_output(cli, "Reauthenticate", verification.clone());
+    output.details["reauth_command_completed"] = json!(true);
+    output.details["snapshot"] = session_snapshot_details(&verification.snapshot);
+    Ok(output)
 }
 
 pub fn session_logout(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
@@ -238,16 +118,6 @@ pub fn session_logout(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     })
 }
 
-fn session_recovery_observed(snapshot: &SessionSnapshot) -> serde_json::Value {
-    json!({
-        "base_session_present": snapshot.base_session_present(),
-        "state": session_state_label(snapshot),
-        "privileged_write_access": privileged_write_state_label(snapshot.privileged_write_state),
-        "diagnostic": snapshot.diagnostic_raw.trim(),
-        "snapshot": session_snapshot_details(snapshot),
-    })
-}
-
 fn session_snapshot_details(snapshot: &SessionSnapshot) -> serde_json::Value {
     json!({
         "admin_name": snapshot.admin_name,
@@ -260,15 +130,6 @@ fn session_snapshot_details(snapshot: &SessionSnapshot) -> serde_json::Value {
         "parse_confidence": parse_confidence_label(snapshot.parse_confidence),
         "diagnostic": snapshot.diagnostic_raw.trim(),
     })
-}
-
-fn session_state_label(snapshot: &SessionSnapshot) -> &'static str {
-    match (snapshot.base_session_state, snapshot.privileged_write_state) {
-        (BaseSessionState::Present, PrivilegedWriteState::Ready) => "authenticated",
-        (BaseSessionState::Present, _) => "reauth_required",
-        (BaseSessionState::Expired, _) => "expired",
-        (BaseSessionState::Missing | BaseSessionState::Unknown, _) => "missing",
-    }
 }
 
 fn base_session_state_label(state: BaseSessionState) -> &'static str {
@@ -349,9 +210,7 @@ printf 'active token for admindsaw\n'
         });
 
         let output = session_status(&cli).expect("session status");
-        assert!(output
-            .human
-            .contains("privileged reauthentication is required"));
+        assert!(output.human.contains("requires reauthentication"));
         assert!(output.human.contains("kanidm-admin session reauth"));
         assert_eq!(output.details["state"], "reauth_required");
     }
@@ -407,7 +266,7 @@ EOF
         let output = session_status(&cli).expect("session status");
         assert!(output
             .human
-            .contains("authenticated, but privileged reauthentication is required"));
+            .contains("Privileged write access for 'admindsaw' requires reauthentication"));
         assert_eq!(output.details["state"], "reauth_required");
         assert_eq!(output.details["authenticated"], true);
     }

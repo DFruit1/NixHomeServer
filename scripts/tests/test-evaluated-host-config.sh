@@ -112,6 +112,10 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         copypartyRuntimeConfigSyncScript = cfg.systemd.services.copyparty-runtime-config-sync.script;
         hasImmichServerService = cfg.systemd.services ? "immich-server";
         hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
+        hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
+        paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
+        paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
+        paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
         hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
         hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
         hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
@@ -228,6 +232,11 @@ assert_json_true '.config.apps.hasFilebrowserQuantumService' "FileBrowser Quantu
 assert_json_true '.config.apps.hasFilebrowserQuantumAccessSync' "FileBrowser Quantum access convergence must remain present."
 assert_json_true '.config.apps.hasImmichServerService' "Immich service wiring must remain present."
 assert_json_true '.config.apps.hasPaperlessWebService' "Paperless service wiring must remain present."
+assert_json_true '.config.apps.hasPaperlessPermissionsBootstrap' "Paperless permission bootstrap wiring must remain present."
+require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGroups')" '"true"' \
+  "Paperless must keep OIDC group sync enabled."
+require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGroupsClaim')" '"groups"' \
+  "Paperless must keep syncing OIDC groups from the groups claim."
 assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiring must remain present."
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf settled scan service must remain present."
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySyncTimer' "Audiobookshelf overnight scan timer must remain present."
@@ -245,14 +254,26 @@ assert_json_true '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Pro
 assert_json_true '.config.apps.hasGoaccessReportService' "GoAccess report service wiring must remain present."
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
 
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/upload/\$\{u\}\]' \
-  "Copyparty must expose only the upload placeholder volume."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/\$\{u\}\]' \
+  "Copyparty must map each authenticated user to their own upload-root volume."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/upload/\$\{u\}\]' \
+  "Copyparty must not require a per-user upload subpath on the uploads domain."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") 'rwmda:' \
+  "Copyparty must not expose admin controls on the uploads domain."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '@domain_admins' \
+  "Copyparty must not grant cross-user uploader access through domain_admins."
 forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/shared/' \
   "Copyparty must retire shared browsing volumes."
 forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/' \
   "Copyparty must retire book browsing volumes."
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/upload/\$\{u\}\]' \
-  "Copyparty runtime config sync must emit the upload placeholder volume."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/\$\{u\}\]' \
+  "Copyparty runtime config sync must emit per-user upload-root volumes."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/upload/\$\{u\}\]' \
+  "Copyparty runtime config sync must not require a per-user upload subpath."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'rwmda:' \
+  "Copyparty runtime config sync must not expose admin controls on the uploads domain."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '@domain_admins' \
+  "Copyparty runtime config sync must not grant cross-user uploader access through domain_admins."
 forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/files' \
   "Copyparty runtime config sync must retire legacy per-user file volumes."
 forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/audiobooks' \
@@ -261,6 +282,38 @@ forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeCon
   "Copyparty runtime config sync must retire legacy per-user email volumes."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'copyparty -c .+ --exit cfg' \
   "Copyparty runtime config sync must validate the rendered config before startup."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_document" \
+  "Paperless permission bootstrap must grant document view access to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "add_document" \
+  "Paperless permission bootstrap must grant document create access to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "change_document" \
+  "Paperless permission bootstrap must grant document edit access to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "delete_document" \
+  "Paperless permission bootstrap must grant document delete access to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_tag" \
+  "Paperless permission bootstrap must grant tag visibility to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_correspondent" \
+  "Paperless permission bootstrap must grant correspondent visibility to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_documenttype" \
+  "Paperless permission bootstrap must grant document type visibility to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_customfield" \
+  "Paperless permission bootstrap must grant custom field visibility to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_storagepath" \
+  "Paperless permission bootstrap must grant storage path visibility to paperless-users."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_paperlesstask" \
+  "Paperless permission bootstrap must grant task visibility to paperless-users."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "add_group" \
+  "Paperless permission bootstrap must not grant group creation to paperless-users."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "change_group" \
+  "Paperless permission bootstrap must not grant group editing to paperless-users."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "add_user" \
+  "Paperless permission bootstrap must not grant user creation to paperless-users."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "change_user" \
+  "Paperless permission bootstrap must not grant user editing to paperless-users."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "add_workflow" \
+  "Paperless permission bootstrap must not grant workflow creation to paperless-users."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "change_appconfig" \
+  "Paperless permission bootstrap must not grant application configuration editing to paperless-users."
 
 if [[ "$(snapshot_query '.config.apps.caddyHostCount')" == "0" ]]; then
   echo "❌ Caddy must expose at least one virtual host."

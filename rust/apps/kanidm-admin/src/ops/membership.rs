@@ -533,11 +533,11 @@ mod tests {
                     description: None,
                 },
                 GroupSummary {
-                    name: "domain_admins".to_string(),
+                    name: "app-admin".to_string(),
                     description: None,
                 },
                 GroupSummary {
-                    name: "shared-files-rw".to_string(),
+                    name: "shared-files-ro".to_string(),
                     description: None,
                 },
                 GroupSummary {
@@ -545,7 +545,7 @@ mod tests {
                     description: None,
                 },
             ],
-            referenced_groups: vec!["shared-files-rw".to_string()],
+            referenced_groups: vec!["shared-files-ro".to_string()],
             warnings: Vec::new(),
         };
 
@@ -560,8 +560,8 @@ mod tests {
             visible,
             vec![
                 "ext_radius_servers".to_string(),
-                "domain_admins".to_string(),
-                "shared-files-rw".to_string(),
+                "app-admin".to_string(),
+                "shared-files-ro".to_string(),
                 "users".to_string()
             ]
         );
@@ -579,7 +579,7 @@ mod tests {
                 description: None,
             },
             GroupSummary {
-                name: "immich-admin".to_string(),
+                name: "app-admin".to_string(),
                 description: None,
             },
             GroupSummary {
@@ -596,7 +596,7 @@ mod tests {
 
         assert_eq!(groups[0].name, "users");
         assert_eq!(groups[1].name, "immich-users");
-        assert_eq!(groups[2].name, "immich-admin");
+        assert_eq!(groups[2].name, "app-admin");
         assert_eq!(groups[3].name, "custom-group");
     }
 
@@ -606,12 +606,12 @@ mod tests {
             &[
                 "idm_all_persons".to_string(),
                 "users".to_string(),
-                "paperless-admin".to_string(),
+                "app-admin".to_string(),
             ],
             &["idm_all_persons".to_string(), "users".to_string()],
         );
 
         assert!(diff.added.is_empty());
-        assert_eq!(diff.removed, vec!["paperless-admin".to_string()]);
+        assert_eq!(diff.removed, vec!["app-admin".to_string()]);
     }
 }

@@ -61,7 +61,7 @@ new = """    def _get_social_group_names(self, sociallogin):
     def _apply_kanidm_admin_role(self, user, sociallogin):
         if sociallogin.account.provider != \"kanidm\":
             return
-        is_admin = \"paperless-admin\" in self._get_social_group_names(sociallogin)
+        is_admin = \"app-admin\" in self._get_social_group_names(sociallogin)
         logger.debug(
             f\"Reconciling Paperless social admin flags for `{user}`: {is_admin}\",
         )

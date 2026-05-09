@@ -122,7 +122,7 @@ exit 1
     cmd.assert()
         .success()
         .stdout(predicate::str::contains(
-            "No valid Kanidm CLI session is active",
+            "No active admin session was found for 'admindsaw'",
         ))
         .stdout(predicate::str::contains("kanidm-admin session login"));
 }
@@ -162,7 +162,7 @@ exit 1
     cmd.assert()
         .success()
         .stdout(predicate::str::contains(
-            "Session for 'admindsaw' has expired",
+            "The previous admin session for 'admindsaw' has expired",
         ))
         .stdout(predicate::str::contains("kanidm-admin session login"));
 }
@@ -202,7 +202,7 @@ exit 1
     cmd.assert()
         .success()
         .stdout(predicate::str::contains(
-            "Session for 'admindsaw' is authenticated, but privileged reauthentication is required",
+            "Privileged write access for 'admindsaw' requires reauthentication",
         ))
         .stdout(predicate::str::contains("kanidm-admin session reauth"));
 }
@@ -663,7 +663,7 @@ exit 1
         ]);
 
     cmd.assert().code(6).stderr(predicate::str::contains(
-        "Run `kanidm-admin session login` first.",
+        "No active admin session was found for 'admindsaw'. Run `kanidm-admin session login` to log in.",
     ));
 }
 
@@ -690,8 +690,45 @@ exit 1
         ]);
 
     cmd.assert().code(7).stderr(predicate::str::contains(
-        "Run `kanidm-admin session reauth` first.",
+        "Privileged write access for 'admindsaw' requires reauthentication. Run `kanidm-admin session reauth` first.",
     ));
+}
+
+#[test]
+fn session_required_sanitizes_upstream_terminal_panic_noise() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+cat >&2 <<'EOF'
+2026-05-07T11:43:44.977001Z ERROR kanidm_cli::common: Session has expired for admindsaw@example.test - you may need to login again.
+
+thread 'main' (15995) panicked at /build/source/tools/cli/src/cli/common.rs:312:26:
+Failed to interact with interactive session: Io(Custom { kind: NotConnected, error: "not a terminal" })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+EOF
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "group",
+            "show",
+            "users",
+        ]);
+
+    cmd.assert()
+        .code(6)
+        .stderr(predicate::str::contains(
+            "The previous admin session for 'admindsaw' has expired. Run `kanidm-admin session login` to log in again.",
+        ))
+        .stderr(predicate::str::contains("thread 'main'").not())
+        .stderr(predicate::str::contains("not a terminal").not());
 }
 
 #[test]

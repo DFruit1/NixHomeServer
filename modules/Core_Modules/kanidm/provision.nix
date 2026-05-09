@@ -24,21 +24,14 @@ in
     };
 
     groups."user-files" = mkManualGroup [ vars.kanidmAdminUser ];
-    # Built into Kanidm; declared here so repo-managed oauth clients can
-    # reference it in scope maps without taking over membership.
-    groups.domain_admins = mkManualGroup [ ];
     groups."shared-files-ro" = mkManualGroup [ ];
-    groups."shared-files-rw" = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."app-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."mail-archive-users" = mkManualGroup [ ];
-    groups."immich-users" = mkManualGroup [ ];
-    groups."immich-admin" = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."immich-users" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."glances-users" = mkManualGroup vars.glancesAccessUsers;
-    groups."paperless-users" = mkManualGroup [ ];
-    groups."paperless-admin" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."audiobookshelf-users" = mkManualGroup [ ];
-    groups."audiobookshelf-admin" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."kavita-admin" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."kavita-login" = mkManualGroup [ ];
+    groups."paperless-users" = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."audiobookshelf-users" = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."kavita-users" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."metube-users" = mkManualGroup [ vars.kanidmAdminUser ];
     groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
@@ -54,8 +47,8 @@ in
       basicSecretFile = config.age.secrets.immichClientSecret.path;
       preferShortUsername = true;
       scopeMaps."immich-users" = [ "openid" "profile" "email" "immich_role" ];
-      scopeMaps."immich-admin" = [ "openid" "profile" "email" "immich_role" ];
-      claimMaps.immich_role.valuesByGroup."immich-admin" = [ "admin" ];
+      supplementaryScopeMaps."app-admin" = [ "immich_role" ];
+      claimMaps.immich_role.valuesByGroup."app-admin" = [ "admin" ];
     };
 
     systems.oauth2.paperless-web = {
@@ -66,7 +59,7 @@ in
       basicSecretFile = config.age.secrets.paperlessClientSecret.path;
       preferShortUsername = true;
       scopeMaps."paperless-users" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps."paperless-admin" = [ "openid" "profile" "email" "groups_name" ];
+      supplementaryScopeMaps."app-admin" = [ "groups_name" ];
     };
 
     systems.oauth2.abs-web = {
@@ -80,11 +73,11 @@ in
       basicSecretFile = config.age.secrets.absClientSecret.path;
       preferShortUsername = true;
       scopeMaps."audiobookshelf-users" = [ "openid" "profile" "email" "abs_role" ];
-      scopeMaps."audiobookshelf-admin" = [ "openid" "profile" "email" "abs_role" ];
+      supplementaryScopeMaps."app-admin" = [ "abs_role" ];
       claimMaps.abs_role = {
         joinType = "array";
         valuesByGroup."audiobookshelf-users" = [ "user" ];
-        valuesByGroup."audiobookshelf-admin" = [ "admin" ];
+        valuesByGroup."app-admin" = [ "admin" ];
       };
     };
 
@@ -98,12 +91,12 @@ in
       originLanding = "https://${vars.kavitaDomain}/";
       basicSecretFile = config.age.secrets.kavitaClientSecret.path;
       preferShortUsername = true;
-      scopeMaps."kavita-login" = [ "openid" "profile" "email" "kavita_roles" ];
-      scopeMaps."kavita-admin" = [ "openid" "profile" "email" "kavita_roles" ];
+      scopeMaps."kavita-users" = [ "openid" "profile" "email" "kavita_roles" ];
+      supplementaryScopeMaps."app-admin" = [ "kavita_roles" ];
       claimMaps.kavita_roles = {
         joinType = "array";
-        valuesByGroup."kavita-login" = [ "Login" ];
-        valuesByGroup."kavita-admin" = [ "Admin" "Login" ];
+        valuesByGroup."kavita-users" = [ "Login" ];
+        valuesByGroup."app-admin" = [ "Admin" ];
       };
     };
 
@@ -115,7 +108,6 @@ in
       basicSecretFile = oauth2ProxyClientSecretPath;
       preferShortUsername = true;
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps.domain_admins = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.filebrowser-quantum-web = {
@@ -127,9 +119,8 @@ in
       allowInsecureClientDisablePkce = true;
       preferShortUsername = true;
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps.domain_admins = [ "openid" "profile" "email" "groups_name" ];
       scopeMaps."shared-files-ro" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps."shared-files-rw" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps.system_admins = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.mail-archive-web = {

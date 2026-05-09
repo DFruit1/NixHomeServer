@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod context;
 pub mod interactive;
 pub mod inventory;
@@ -5,12 +6,48 @@ pub mod kanidm_cli;
 pub mod models;
 pub mod ops;
 pub mod output;
+pub mod session_state;
 pub mod validation;
+pub mod verification;
 
 use serde_json::{json, Value};
 use thiserror::Error;
 
-use crate::kanidm_cli::BackendFailure;
+use crate::{backend::BackendFailure, session_state::SessionFailureKind};
+
+#[derive(Debug, Clone)]
+pub struct BackendErrorDetails {
+    pub failure: BackendFailure,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionErrorDetails {
+    pub kind: SessionFailureKind,
+    pub diagnostic: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct VerificationErrorDetails {
+    pub details: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct InventoryErrorDetails {
+    pub details: Value,
+}
+
+#[derive(Debug, Clone)]
+pub enum DomainError {
+    Session(SessionFailureKind, SessionErrorDetails),
+    Backend(BackendErrorDetails),
+    Verification(VerificationErrorDetails),
+    Inventory(InventoryErrorDetails),
+    Config { message: String },
+    Io { message: String },
+    Json { details: Value },
+    AlreadyExists { details: Value },
+    NotFound { details: Value },
+}
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -128,18 +165,14 @@ impl AppError {
                 format!("{message}\n\nDetails:\n{rendered}")
             }
             Self::PartialSuccess { message, details } => render_partial_success(message, details),
-            Self::SessionRequired { message, details }
-            | Self::ReauthRequired { message, details } => {
-                let diagnostic = details
-                    .get("diagnostic")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty());
-                match diagnostic {
-                    Some(diagnostic) => format!("{message}\n\nDiagnostic:\n{diagnostic}"),
-                    None => message.clone(),
-                }
+            Self::SessionRequired {
+                message,
+                details: _,
             }
+            | Self::ReauthRequired {
+                message,
+                details: _,
+            } => message.clone(),
             _ => self.to_string(),
         }
     }
@@ -165,6 +198,7 @@ impl AppError {
                 "status": failure.status,
                 "stdout": failure.stdout,
                 "stderr": failure.stderr,
+                "crash_kind": failure.crash_kind.map(|kind| kind.as_str()),
             }),
             Self::NotFound {
                 resource,

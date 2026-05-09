@@ -28,7 +28,7 @@ Immich uses separate private and public hostnames on purpose:
 
 - Private Immich app: `https://photos.sydneybasiniot.org`
 - Public Immich share links: `https://sharephotos.sydneybasiniot.org`
-- Public Copyparty uploader: `https://uploads.sydneybasiniot.org/upload/<username>/`
+- Public Copyparty uploader: `https://uploads.sydneybasiniot.org/`
 - Authenticated FileBrowser Quantum UI and WebDAV: `https://files.sydneybasiniot.org/`
 
 Use `photos.sydneybasiniot.org` for the owner's normal Immich login on LAN or

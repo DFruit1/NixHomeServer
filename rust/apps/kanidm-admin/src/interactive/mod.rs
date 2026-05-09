@@ -1,9 +1,11 @@
+pub mod controller;
 pub mod forms;
+pub mod home;
 pub mod render;
 
-use std::time::Instant;
+pub use controller::run;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
     context::ResolvedContext,
@@ -13,7 +15,7 @@ use crate::{
         users::{parse_user_list, UserRecord, UserSummary},
         Parsed,
     },
-    kanidm_cli::{BaseSessionState, KanidmCli, PrivilegedWriteState, SessionSnapshot},
+    kanidm_cli::{KanidmCli, SessionSnapshot},
     ops::{
         client::{
             client_consent_disable, client_consent_enable, client_pkce_disable, client_pkce_enable,
@@ -21,6 +23,10 @@ use crate::{
             list_clients, load_client, show_client,
         },
         context::{doctor, show_context},
+        executor::{
+            execute_interactive_operation, OperationKind, OperationOutcome, OperationPreconditions,
+            RecoveryTarget,
+        },
         group::{group_members, list_groups, load_group, search_groups, show_group},
         local::stage_jellyfin_password,
         membership::{
@@ -39,6 +45,9 @@ use crate::{
         },
     },
     output::CommandOutput,
+    session_state::{
+        concise_session_message, login_prompt_message, should_prompt_for_startup_login,
+    },
     validation::{
         validate_account_id, validate_display_name, validate_email, validate_identifier_field,
         validate_redirect_url, validate_seconds_field, AUTH_EXPIRY_MAX_SECONDS,
@@ -48,59 +57,10 @@ use crate::{
     AppError,
 };
 
-enum SimpleMenuAction {
-    SessionTools,
-    CreateUser,
-    ManageUserAccess,
-    FindViewUser,
-    DisableEnableUser,
-    HelpUserResetPassword,
-    Advanced,
-    Exit,
-}
-
-const MAX_SESSION_RECOVERY_ATTEMPTS: usize = 2;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GroupPickerScope {
     OperatorVisibleOnly,
     AllGroups,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HomeBaseSessionStatus {
-    Active,
-    Missing,
-    Expired,
-    Unavailable,
-}
-
-impl HomeBaseSessionStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Missing => "missing",
-            Self::Expired => "expired",
-            Self::Unavailable => "unavailable",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HomePrivilegedWriteStatus {
-    Ready,
-    ReauthRequired,
-    Unavailable,
-}
-
-impl HomePrivilegedWriteStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Ready => "ready",
-            Self::ReauthRequired => "reauth required",
-            Self::Unavailable => "unavailable",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,223 +73,12 @@ struct GroupPickerInventory {
     groups: Vec<GroupSummary>,
 }
 
-pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
-    let mut home_cache = HomeCache::default();
-    loop {
-        let home = load_home(kanidm, &mut home_cache);
-        let action = select_main_menu(context, &home)?;
-        match action {
-            SimpleMenuAction::SessionTools => session_tools_menu(kanidm)?,
-            SimpleMenuAction::CreateUser => create_user_flow(kanidm)?,
-            SimpleMenuAction::ManageUserAccess => manage_user_access_flow(kanidm)?,
-            SimpleMenuAction::FindViewUser => find_view_user_flow(kanidm)?,
-            SimpleMenuAction::DisableEnableUser => disable_enable_user_flow(kanidm)?,
-            SimpleMenuAction::HelpUserResetPassword => help_user_reset_password_flow(kanidm)?,
-            SimpleMenuAction::Advanced => advanced_menu(context, kanidm)?,
-            SimpleMenuAction::Exit => break,
-        }
-    }
-
-    Ok(())
-}
-
-struct HomeSummary {
-    base_session: HomeBaseSessionStatus,
-    privileged_writes: HomePrivilegedWriteStatus,
-    diagnostic: String,
-    user_count: HomeCountStatus,
-    group_count: HomeCountStatus,
-    client_count: HomeCountStatus,
-    warnings: Vec<String>,
-}
-
-impl HomeSummary {
-    fn render(&self, context: &ResolvedContext) -> String {
-        format!(
-            "Server URL: {}\nAdmin Name: {}\nBase Session: {}\nPrivileged Writes: {}\nDiagnostic: {}\nUsers: {}\nGroups: {}\nOAuth2 Clients: {}",
-            context.server_url,
-            context.admin_name,
-            self.base_session.label(),
-            self.privileged_writes.label(),
-            self.diagnostic,
-            self.user_count.render_count(),
-            self.group_count.render_count(),
-            self.client_count.render_count(),
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-enum HomeCountStatus {
-    Ok {
-        count: usize,
-    },
-    Stale {
-        count: usize,
-        age_seconds: u64,
-        reason: String,
-    },
-    Unavailable {
-        reason: String,
-    },
-}
-
-impl HomeCountStatus {
-    fn render_count(&self) -> String {
-        match self {
-            Self::Ok { count } => count.to_string(),
-            Self::Stale { count, .. } => format!("{count} (stale)"),
-            Self::Unavailable { .. } => "unavailable".to_string(),
-        }
-    }
-
-    fn warning_line(&self, label: &str) -> Option<String> {
-        match self {
-            Self::Ok { .. } => None,
-            Self::Stale {
-                count,
-                age_seconds,
-                reason,
-            } => Some(format!(
-                "{label} count is stale at {count} (last successful read {age_seconds}s ago): {reason}"
-            )),
-            Self::Unavailable { reason } => Some(format!("{label} count is unavailable: {reason}")),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CachedHomeCount {
-    count: usize,
-    observed_at: Instant,
-}
-
-#[derive(Debug, Default)]
-struct HomeCache {
-    users: Option<CachedHomeCount>,
-    groups: Option<CachedHomeCount>,
-    clients: Option<CachedHomeCount>,
-}
-
-fn load_home(kanidm: &KanidmCli, cache: &mut HomeCache) -> HomeSummary {
-    let mut warnings = Vec::new();
-
-    let (base_session, privileged_writes, diagnostic) = match kanidm.session_snapshot() {
-        Ok(snapshot) => summarize_home_session_state(kanidm.admin_name(), &snapshot),
-        Err(error) => {
-            warnings.push(error.human_message());
-            (
-                HomeBaseSessionStatus::Unavailable,
-                HomePrivilegedWriteStatus::Unavailable,
-                "session state unavailable".to_string(),
-            )
-        }
-    };
-
-    let user_count = load_home_count("Users", &mut cache.users, || {
-        let parsed = parse_user_list(&kanidm.person_list::<Value>()?)?;
-        warnings.extend(parsed.warnings.clone());
-        Ok(parsed.value.len())
-    });
-    let group_count = load_home_count("Groups", &mut cache.groups, || {
-        let parsed = parse_group_list(&kanidm.group_list::<Value>()?)?;
-        warnings.extend(parsed.warnings.clone());
-        Ok(parsed.value.len())
-    });
-    let client_count = load_home_count("OAuth2 Clients", &mut cache.clients, || {
-        let parsed = parse_client_list(&kanidm.oauth2_list::<Value>()?)?;
-        warnings.extend(parsed.warnings.clone());
-        Ok(parsed.value.len())
-    });
-
-    for warning in [
-        user_count.warning_line("Users"),
-        group_count.warning_line("Groups"),
-        client_count.warning_line("OAuth2 Clients"),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        warnings.push(warning);
-    }
-
-    warnings.sort();
-    warnings.dedup();
-
-    HomeSummary {
-        base_session,
-        privileged_writes,
-        diagnostic,
-        user_count,
-        group_count,
-        client_count,
-        warnings,
-    }
-}
-
-fn load_home_count<F>(
-    label: &str,
-    cache: &mut Option<CachedHomeCount>,
-    loader: F,
-) -> HomeCountStatus
-where
-    F: FnOnce() -> Result<usize, AppError>,
-{
-    match loader() {
-        Ok(count) => {
-            *cache = Some(CachedHomeCount {
-                count,
-                observed_at: Instant::now(),
-            });
-            HomeCountStatus::Ok { count }
-        }
-        Err(error) => match cache {
-            Some(cached) => HomeCountStatus::Stale {
-                count: cached.count,
-                age_seconds: cached.observed_at.elapsed().as_secs(),
-                reason: format!("{label} probe failed: {}", error.human_message()),
-            },
-            None => HomeCountStatus::Unavailable {
-                reason: error.human_message(),
-            },
-        },
-    }
-}
-
 fn kanidm_with_admin_name(context: &ResolvedContext, admin_name: &str) -> KanidmCli {
     KanidmCli::new(&ResolvedContext {
         repo_root: context.repo_root.clone(),
         server_url: context.server_url.clone(),
         admin_name: admin_name.to_string(),
         kanidm_bin: context.kanidm_bin.clone(),
-    })
-}
-
-fn select_main_menu(
-    context: &ResolvedContext,
-    home: &HomeSummary,
-) -> Result<SimpleMenuAction, AppError> {
-    let mut intro = home.render(context);
-    if !home.warnings.is_empty() {
-        intro.push_str("\n\nWarnings:\n");
-        intro.push_str(&render_bullets(&home.warnings));
-    }
-
-    let Some(selection) =
-        forms::contextual_select("Kanidm Admin", Some(&intro), &simple_menu_items(), 0)?
-    else {
-        return Ok(SimpleMenuAction::Exit);
-    };
-
-    Ok(match selection {
-        0 => SimpleMenuAction::SessionTools,
-        1 => SimpleMenuAction::CreateUser,
-        2 => SimpleMenuAction::ManageUserAccess,
-        3 => SimpleMenuAction::FindViewUser,
-        4 => SimpleMenuAction::DisableEnableUser,
-        5 => SimpleMenuAction::HelpUserResetPassword,
-        6 => SimpleMenuAction::Advanced,
-        _ => SimpleMenuAction::Exit,
     })
 }
 
@@ -355,43 +104,6 @@ fn advanced_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), Ap
         }
     }
     Ok(())
-}
-
-fn summarize_home_session_state(
-    admin_name: &str,
-    snapshot: &SessionSnapshot,
-) -> (HomeBaseSessionStatus, HomePrivilegedWriteStatus, String) {
-    match (
-        snapshot.base_session_state,
-        snapshot.privileged_write_state,
-    ) {
-        (BaseSessionState::Present, PrivilegedWriteState::Ready) => (
-            HomeBaseSessionStatus::Active,
-            HomePrivilegedWriteStatus::Ready,
-            format!(
-                "Authenticated base session is active for '{}'. Privileged write commands are ready.",
-                admin_name
-            ),
-        ),
-        (BaseSessionState::Expired, _) => (
-            HomeBaseSessionStatus::Expired,
-            HomePrivilegedWriteStatus::Unavailable,
-            format!("Session for '{}' has expired.", admin_name),
-        ),
-        (BaseSessionState::Missing | BaseSessionState::Unknown, _) => (
-            HomeBaseSessionStatus::Missing,
-            HomePrivilegedWriteStatus::Unavailable,
-            format!("No Kanidm session is active for '{}'.", admin_name),
-        ),
-        (BaseSessionState::Present, _) => (
-            HomeBaseSessionStatus::Active,
-            HomePrivilegedWriteStatus::ReauthRequired,
-            format!(
-                "Session for '{}' is authenticated, but privileged reauthentication is required.",
-                admin_name
-            ),
-        ),
-    }
 }
 
 fn session_tools_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
@@ -748,7 +460,7 @@ fn assign_system_admin_flow(context: &ResolvedContext) -> Result<(), AppError> {
     );
     forms::pause("Press Enter or Esc to continue")?;
 
-    if !ensure_privileged_session_ready(&idm_admin)? {
+    if !recover_target_interactively(&idm_admin, RecoveryTarget::PrivilegedWrites, None)? {
         return Ok(());
     }
 
@@ -1221,9 +933,9 @@ fn membership_change_flow(kanidm: &KanidmCli, mode: MembershipChange) -> Result<
     }
 }
 
-fn user_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
+fn user_target_flow<F>(kanidm: &KanidmCli, prompt: &str, mut action: F) -> Result<(), AppError>
 where
-    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
+    F: FnMut(&str) -> Result<CommandOutput, AppError>,
 {
     let Some(account_id) = choose_account_id(kanidm, prompt)? else {
         return Ok(());
@@ -1235,10 +947,10 @@ fn group_target_flow_with_scope<F>(
     kanidm: &KanidmCli,
     prompt: &str,
     scope: GroupPickerScope,
-    action: F,
+    mut action: F,
 ) -> Result<(), AppError>
 where
-    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
+    F: FnMut(&str) -> Result<CommandOutput, AppError>,
 {
     let Some(group) = choose_group_name_with_scope(kanidm, prompt, scope)? else {
         return Ok(());
@@ -1246,9 +958,9 @@ where
     run_command("Group", kanidm, || action(&group))
 }
 
-fn client_target_flow<F>(kanidm: &KanidmCli, prompt: &str, action: F) -> Result<(), AppError>
+fn client_target_flow<F>(kanidm: &KanidmCli, prompt: &str, mut action: F) -> Result<(), AppError>
 where
-    F: FnOnce(&str) -> Result<CommandOutput, AppError>,
+    F: FnMut(&str) -> Result<CommandOutput, AppError>,
 {
     let Some(client) = choose_client_name(kanidm, prompt)? else {
         return Ok(());
@@ -1455,17 +1167,18 @@ fn choose_from_clients(
 
 fn perform_command<F>(kanidm: &KanidmCli, action: F) -> Result<Option<CommandOutput>, AppError>
 where
-    F: FnOnce() -> Result<CommandOutput, AppError>,
+    F: FnMut() -> Result<CommandOutput, AppError>,
 {
-    match action() {
-        Ok(output) => Ok(Some(output)),
-        Err(error) => {
-            match prompt_for_session_recovery(kanidm, &error)? {
-                SessionRecoveryResult::Recovered | SessionRecoveryResult::Aborted => {
-                    return Ok(None);
-                }
-                SessionRecoveryResult::NotApplicable => {}
-            }
+    match execute_interactive_operation(
+        kanidm,
+        OperationKind::Read,
+        OperationPreconditions::None,
+        action,
+        |target, error, _snapshot| recover_target_interactively(kanidm, target, error),
+    )? {
+        OperationOutcome::Success(output) => Ok(Some(output)),
+        OperationOutcome::Cancelled => Ok(None),
+        OperationOutcome::RecoverableFailure(error) | OperationOutcome::Fatal(error) => {
             render::print_error(&error);
             forms::pause("Press Enter or Esc to continue")?;
             Ok(None)
@@ -1477,32 +1190,19 @@ fn perform_interactive_read<T, F>(kanidm: &KanidmCli, mut action: F) -> Result<O
 where
     F: FnMut() -> Result<T, AppError>,
 {
-    let mut recovery_attempts = 0usize;
-    loop {
-        match action() {
-            Ok(value) => return Ok(Some(value)),
-            Err(error) => match prompt_for_session_recovery(kanidm, &error)? {
-                SessionRecoveryResult::Recovered
-                    if recovery_attempts < MAX_SESSION_RECOVERY_ATTEMPTS =>
-                {
-                    recovery_attempts += 1;
-                    let _ = kanidm.session_snapshot();
-                }
-                SessionRecoveryResult::Recovered => {
-                    render::print_note(
-                        "Recovery Incomplete",
-                        "Session recovery did not stabilize after multiple attempts. Returning to the previous menu.",
-                    );
-                    forms::pause("Press Enter or Esc to continue")?;
-                    return Ok(None);
-                }
-                SessionRecoveryResult::Aborted => return Ok(None),
-                SessionRecoveryResult::NotApplicable => {
-                    render::print_error(&error);
-                    forms::pause("Press Enter or Esc to continue")?;
-                    return Ok(None);
-                }
-            },
+    match execute_interactive_operation(
+        kanidm,
+        OperationKind::Read,
+        OperationPreconditions::None,
+        &mut action,
+        |target, error, _snapshot| recover_target_interactively(kanidm, target, error),
+    )? {
+        OperationOutcome::Success(value) => Ok(Some(value)),
+        OperationOutcome::Cancelled => Ok(None),
+        OperationOutcome::RecoverableFailure(error) | OperationOutcome::Fatal(error) => {
+            render::print_error(&error);
+            forms::pause("Press Enter or Esc to continue")?;
+            Ok(None)
         }
     }
 }
@@ -1525,50 +1225,31 @@ fn prompt_optional_submitted<T>(
 
 fn perform_privileged_command<F>(
     kanidm: &KanidmCli,
-    mut action: F,
+    action: F,
 ) -> Result<PrivilegedCommandResult, AppError>
 where
     F: FnMut() -> Result<CommandOutput, AppError>,
 {
-    let mut recovery_attempts = 0usize;
-    loop {
-        if !ensure_privileged_session_ready(kanidm)? {
-            return Ok(PrivilegedCommandResult::Cancelled);
-        }
-
-        match action() {
-            Ok(output) => return Ok(PrivilegedCommandResult::Output(output)),
-            Err(error) => match prompt_for_session_recovery(kanidm, &error)? {
-                SessionRecoveryResult::Recovered
-                    if recovery_attempts < MAX_SESSION_RECOVERY_ATTEMPTS =>
-                {
-                    recovery_attempts += 1;
-                    let _ = kanidm.session_snapshot();
-                }
-                SessionRecoveryResult::Recovered => {
-                    return Ok(PrivilegedCommandResult::Error(AppError::Verification {
-                        message: "session recovery did not stabilize after multiple attempts"
-                            .to_string(),
-                        details: json!({
-                            "max_recovery_attempts": MAX_SESSION_RECOVERY_ATTEMPTS,
-                            "last_error": error.json_payload(),
-                        }),
-                    }));
-                }
-                SessionRecoveryResult::Aborted => {
-                    return Ok(PrivilegedCommandResult::Cancelled);
-                }
-                SessionRecoveryResult::NotApplicable => {
-                    return Ok(PrivilegedCommandResult::Error(error));
-                }
-            },
+    match execute_interactive_operation(
+        kanidm,
+        OperationKind::PrivilegedWrite,
+        OperationPreconditions::PrivilegedWriteReady,
+        action,
+        |target, error, snapshot| {
+            recover_target_interactively_with_snapshot(kanidm, target, error, snapshot)
+        },
+    )? {
+        OperationOutcome::Success(output) => Ok(PrivilegedCommandResult::Output(output)),
+        OperationOutcome::Cancelled => Ok(PrivilegedCommandResult::Cancelled),
+        OperationOutcome::RecoverableFailure(error) | OperationOutcome::Fatal(error) => {
+            Ok(PrivilegedCommandResult::Error(error))
         }
     }
 }
 
 fn run_command<F>(title: &str, kanidm: &KanidmCli, action: F) -> Result<(), AppError>
 where
-    F: FnOnce() -> Result<CommandOutput, AppError>,
+    F: FnMut() -> Result<CommandOutput, AppError>,
 {
     if let Some(output) = perform_command(kanidm, action)? {
         render_output(title, output)?;
@@ -1611,44 +1292,81 @@ fn render_output(title: &str, output: CommandOutput) -> Result<(), AppError> {
 }
 
 fn session_status_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+    let snapshot = kanidm.session_snapshot()?;
+    if should_prompt_for_startup_login(&snapshot) {
+        let _ = recover_target_interactively_with_snapshot(
+            kanidm,
+            RecoveryTarget::BaseSession,
+            None,
+            Some(&snapshot),
+        )?;
+        return Ok(());
+    }
+
     run_command("Session Status", kanidm, || session_status(kanidm))
 }
 
-fn ensure_privileged_session_ready(kanidm: &KanidmCli) -> Result<bool, AppError> {
-    let snapshot = kanidm.session_snapshot()?;
-    match (snapshot.base_session_state, snapshot.privileged_write_state) {
-        (BaseSessionState::Present, PrivilegedWriteState::Ready) => Ok(true),
-        (BaseSessionState::Expired, _) => {
-            render::print_note(
-                "Authentication Required",
-                &format!(
-                    "The authenticated Kanidm session for '{}' has expired, so privileged commands cannot run yet.\n\nDiagnostic:\n{}",
-                    kanidm.admin_name(),
-                    snapshot.diagnostic_raw.trim()
-                ),
-            );
-            recover_login(kanidm, "Authenticate now?")
+fn recover_target_interactively(
+    kanidm: &KanidmCli,
+    target: RecoveryTarget,
+    error: Option<&AppError>,
+) -> Result<bool, AppError> {
+    recover_target_interactively_with_snapshot(kanidm, target, error, None)
+}
+
+pub(super) fn recover_target_interactively_with_snapshot(
+    kanidm: &KanidmCli,
+    target: RecoveryTarget,
+    error: Option<&AppError>,
+    snapshot: Option<&SessionSnapshot>,
+) -> Result<bool, AppError> {
+    let owned_snapshot = if snapshot.is_none() {
+        kanidm.session_snapshot().ok()
+    } else {
+        None
+    };
+    let snapshot = snapshot.or(owned_snapshot.as_ref());
+
+    match target {
+        RecoveryTarget::BaseSession => {
+            if let Some(snapshot) = snapshot {
+                if let Some(message) = concise_session_message(kanidm.admin_name(), snapshot) {
+                    render::print_note("Authentication Required", &message);
+                } else {
+                    render::print_note(
+                        "Authentication Required",
+                        &format!(
+                            "The delegated Kanidm session for '{}' is not ready for this action.\n\nDiagnostic:\n{}",
+                            kanidm.admin_name(),
+                            snapshot.diagnostic_raw.trim()
+                        ),
+                    );
+                }
+            } else if let Some(error) = error {
+                render::print_note("Authentication Required", &error.human_message());
+            }
+            let prompt = snapshot
+                .and_then(login_prompt_message)
+                .unwrap_or("Authenticate now?");
+            recover_login(kanidm, prompt)
         }
-        (BaseSessionState::Missing | BaseSessionState::Unknown, _) => {
-            render::print_note(
-                "Authentication Required",
-                &format!(
-                    "No authenticated Kanidm session is active for '{}', so privileged commands cannot run yet.\n\nDiagnostic:\n{}",
-                    kanidm.admin_name(),
-                    snapshot.diagnostic_raw.trim()
-                ),
-            );
-            recover_login(kanidm, "Authenticate now?")
-        }
-        (BaseSessionState::Present, _) => {
-            render::print_note(
-                "Reauthentication Required",
-                &format!(
-                    "The base Kanidm session for '{}' is still active, but privileged write access has expired.\n\nDiagnostic:\n{}",
-                    kanidm.admin_name(),
-                    snapshot.diagnostic_raw.trim()
-                ),
-            );
+        RecoveryTarget::PrivilegedWrites => {
+            if let Some(snapshot) = snapshot {
+                if let Some(message) = concise_session_message(kanidm.admin_name(), snapshot) {
+                    render::print_note("Reauthentication Required", &message);
+                } else {
+                    render::print_note(
+                        "Reauthentication Required",
+                        &format!(
+                            "The base Kanidm session for '{}' is active, but privileged write access is not ready.\n\nDiagnostic:\n{}",
+                            kanidm.admin_name(),
+                            snapshot.diagnostic_raw.trim()
+                        ),
+                    );
+                }
+            } else if let Some(error) = error {
+                render::print_note("Reauthentication Required", &error.human_message());
+            }
             recover_reauth(kanidm, "Reauthenticate now?")
         }
     }
@@ -1682,47 +1400,6 @@ where
             forms::pause("Press Enter or Esc to continue")?;
             Ok(false)
         }
-    }
-}
-
-fn prompt_for_session_recovery(
-    kanidm: &KanidmCli,
-    error: &AppError,
-) -> Result<SessionRecoveryResult, AppError> {
-    match error {
-        AppError::SessionRequired { .. } => {
-            render::print_note(
-                "Session Required",
-                &format!(
-                    "Session for '{}' has expired or is unavailable. Would you like to authenticate now?",
-                    kanidm.admin_name()
-                ),
-            );
-            recover_login(kanidm, "Authenticate now?").map(|recovered| {
-                if recovered {
-                    SessionRecoveryResult::Recovered
-                } else {
-                    SessionRecoveryResult::Aborted
-                }
-            })
-        }
-        AppError::ReauthRequired { .. } => {
-            render::print_note(
-                "Reauthentication Required",
-                &format!(
-                    "Session for '{}' requires privileged reauthentication. The base session may still appear active, but write access has expired. Would you like to reauthenticate now?",
-                    kanidm.admin_name()
-                ),
-            );
-            recover_reauth(kanidm, "Reauthenticate now?").map(|recovered| {
-                if recovered {
-                    SessionRecoveryResult::Recovered
-                } else {
-                    SessionRecoveryResult::Aborted
-                }
-            })
-        }
-        _ => Ok(SessionRecoveryResult::NotApplicable),
     }
 }
 
@@ -2570,12 +2247,6 @@ fn choose_membership_change_groups(
     }
 }
 
-enum SessionRecoveryResult {
-    NotApplicable,
-    Recovered,
-    Aborted,
-}
-
 enum PrivilegedCommandResult {
     Output(CommandOutput),
     Error(AppError),
@@ -2625,11 +2296,50 @@ fn build_group_picker_inventory(
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
+
+    use crate::context::ResolvedContext;
+    use crate::interactive::home::{
+        load_home, summarize_home_session_state, HomeBaseSessionStatus, HomeCache, HomeCountStatus,
+        HomePrivilegedWriteStatus,
+    };
     use crate::inventory::{
         clients::ClientRecord, groups::GroupRecord, policy::GroupPolicySnapshot,
     };
+    use crate::kanidm_cli::{BaseSessionState, PrivilegedWriteState};
 
     use super::*;
+
+    fn write_script(path: &Path, body: &str) {
+        let shell = ProcessCommand::new("bash")
+            .args(["-lc", "command -v bash"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.trim().to_string())
+            .filter(|stdout| !stdout.is_empty())
+            .unwrap_or_else(|| "/bin/sh".to_string());
+        let rewritten = body.replacen("#!/usr/bin/env bash", &format!("#!{shell}"), 1);
+        fs::write(path, rewritten).expect("write script");
+        let mut permissions = fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod");
+    }
+
+    fn stub_kanidm(script_body: &str) -> KanidmCli {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(&script, script_body);
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+        });
+        std::mem::forget(dir);
+        cli
+    }
 
     #[test]
     fn simple_menu_stays_task_oriented() {
@@ -2860,12 +2570,47 @@ mod tests {
     }
 
     #[test]
+    fn load_home_skips_live_counts_when_base_session_is_missing() {
+        let cli = stub_kanidm(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  printf 'No valid auth tokens found\n' >&2
+  exit 1
+fi
+echo "unexpected live probe: $*" >&2
+exit 99
+"#,
+        );
+
+        let home = load_home(&cli, &mut HomeCache::default());
+
+        assert_eq!(home.base_session, HomeBaseSessionStatus::Missing);
+        assert!(matches!(
+            home.user_count,
+            HomeCountStatus::Unavailable { .. }
+        ));
+        assert!(matches!(
+            home.group_count,
+            HomeCountStatus::Unavailable { .. }
+        ));
+        assert!(matches!(
+            home.client_count,
+            HomeCountStatus::Unavailable { .. }
+        ));
+        assert!(home
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Users count is unavailable")));
+    }
+
+    #[test]
     fn missing_visible_membership_inventory_ignores_hidden_idm_groups() {
         let missing = missing_visible_membership_inventory(
             &[
                 "idm_all_persons".to_string(),
                 "users".to_string(),
-                "paperless-admin".to_string(),
+                "app-admin".to_string(),
             ],
             &[GroupSummary {
                 name: "users".to_string(),
@@ -2873,7 +2618,7 @@ mod tests {
             }],
         );
 
-        assert_eq!(missing, vec!["paperless-admin".to_string()]);
+        assert_eq!(missing, vec!["app-admin".to_string()]);
     }
 
     #[test]

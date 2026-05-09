@@ -210,7 +210,7 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             category: GroupCategory::Foundation,
         },
         "user-files" => GroupHelp {
-            summary: "Grants personal Copyparty and SMB file access.",
+            summary: "Grants personal Copyparty and FileBrowser access.",
             detail: "Add this when the user needs their own personal files area. It does not grant shared storage access by itself.",
             category: GroupCategory::Foundation,
         },
@@ -219,19 +219,14 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             detail: "Use this when someone should browse or download shared files but not upload or modify them. It does not imply personal file access.",
             category: GroupCategory::Foundation,
         },
-        "shared-files-rw" => GroupHelp {
-            summary: "Grants shared-write access through Samba.",
-            detail: "Use this for trusted users who need to upload or update shared content. It still does not imply personal file access.",
-            category: GroupCategory::Foundation,
-        },
         "system_admins" => GroupHelp {
             summary: "Grants broad system administration authority.",
-            detail: "Reserve this for trusted operators who need high-level system administration rights. This is not a normal app-access group.",
+            detail: "Reserve this for trusted operators who need high-level system administration rights, including shared-files administration in FileBrowser. This is not a normal app-access group.",
             category: GroupCategory::AppAdmin,
         },
-        "domain_admins" => GroupHelp {
-            summary: "Grants local domain administration authority.",
-            detail: "Reserve this for trusted operators who need broad identity or domain-level control. This is a high-authority group and not part of normal user onboarding.",
+        "app-admin" => GroupHelp {
+            summary: "Grants application admin roles when paired with app access.",
+            detail: "Add this only for trusted operators who already belong to the matching app's `*-users` group. It does not grant app sign-in by itself.",
             category: GroupCategory::AppAdmin,
         },
         "mail-archive-users" => GroupHelp {
@@ -244,40 +239,20 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             detail: "Add this when the user should use the Photos app. First successful OIDC login provisions the local Immich account.",
             category: GroupCategory::AppUser,
         },
-        "immich-admin" => GroupHelp {
-            summary: "Grants elevated authority in Immich.",
-            detail: "Reserve this for trusted operators of the Photos app. It carries application-level administrative power beyond normal user access.",
-            category: GroupCategory::AppAdmin,
-        },
         "paperless-users" => GroupHelp {
-            summary: "Grants Paperless sign-in access.",
-            detail: "Add this when the user should use the Documents app. First successful OIDC login creates or links the local Paperless account.",
+            summary: "Grants normal non-admin Paperless access.",
+            detail: "Add this when the user should use the Documents app day to day. First successful OIDC login creates or links the local Paperless account and grants normal document-management access without app administration.",
             category: GroupCategory::AppUser,
-        },
-        "paperless-admin" => GroupHelp {
-            summary: "Grants elevated authority in Paperless.",
-            detail: "Reserve this for trusted operators of the Documents app. It allows administrative actions inside Paperless in addition to normal access.",
-            category: GroupCategory::AppAdmin,
         },
         "audiobookshelf-users" => GroupHelp {
             summary: "Grants Audiobookshelf sign-in access.",
             detail: "Add this when the user should access the Audiobooks app. It is for normal app use rather than administration.",
             category: GroupCategory::AppUser,
         },
-        "audiobookshelf-admin" => GroupHelp {
-            summary: "Grants elevated authority in Audiobookshelf.",
-            detail: "Reserve this for trusted operators of the Audiobooks app. It provides administrative control inside Audiobookshelf.",
-            category: GroupCategory::AppAdmin,
-        },
-        "kavita-login" => GroupHelp {
+        "kavita-users" => GroupHelp {
             summary: "Grants Kavita sign-in access.",
             detail: "Add this when the user should access the Books app. It enables normal use without granting app-level administrative control.",
             category: GroupCategory::AppUser,
-        },
-        "kavita-admin" => GroupHelp {
-            summary: "Grants Kavita administrative authority.",
-            detail: "Reserve this for trusted operators of the Books app. It provides administrative control beyond normal login access.",
-            category: GroupCategory::AppAdmin,
         },
         "metube-users" => GroupHelp {
             summary: "Grants access to the MeTube downloads web app.",
@@ -295,7 +270,7 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
 
 fn inferred_category(name: &str) -> GroupCategory {
     match name {
-        "users" | "user-files" | "shared-files-ro" | "shared-files-rw" => GroupCategory::Foundation,
+        "users" | "user-files" | "shared-files-ro" => GroupCategory::Foundation,
         _ if name.ends_with("-admin") => GroupCategory::AppAdmin,
         _ if name.ends_with("-users") || name.ends_with("-login") => GroupCategory::AppUser,
         _ => GroupCategory::Other,
@@ -323,10 +298,10 @@ mod tests {
 
     #[test]
     fn curated_help_prefers_known_groups() {
-        let help = resolve_group_help("shared-files-rw", Some("ignored"));
+        let help = resolve_group_help("app-admin", Some("ignored"));
 
-        assert_eq!(help.category, GroupCategory::Foundation);
-        assert!(help.summary.contains("shared-write"));
+        assert_eq!(help.category, GroupCategory::AppAdmin);
+        assert!(help.summary.contains("application admin"));
     }
 
     #[test]
@@ -348,7 +323,7 @@ mod tests {
     #[test]
     fn operator_visible_groups_hide_only_idm_entries() {
         assert!(!is_operator_visible_group("idm_admins"));
-        assert!(is_operator_visible_group("domain_admins"));
+        assert!(is_operator_visible_group("system_admins"));
         assert!(is_operator_visible_group("ext_radius_servers"));
     }
 }

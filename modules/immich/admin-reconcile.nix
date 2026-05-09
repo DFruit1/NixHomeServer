@@ -48,7 +48,7 @@ in
 
       mapfile -t desired_admin_emails < <(
         ${pkgs.kanidm_1_9}/bin/kanidm group get \
-          immich-admin \
+          app-admin \
           -H ${kanidmCliUrl} \
           -D idm_admin \
           -o json \

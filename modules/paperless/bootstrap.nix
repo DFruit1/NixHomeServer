@@ -3,7 +3,25 @@
 let
   dataDir = "/var/lib/paperless";
   paperlessLegacyConsumeDir = "${vars.dataRoot}/media/documents/consume";
-  paperlessUserPermissionCodenames = [
+  paperlessUserDocumentPermissionCodenames = [
+    "view_document"
+    "add_document"
+    "change_document"
+    "delete_document"
+    "view_note"
+    "add_note"
+    "change_note"
+    "delete_note"
+  ];
+  paperlessUserMetadataViewPermissionCodenames = [
+    "view_correspondent"
+    "view_tag"
+    "view_documenttype"
+    "view_customfield"
+    "view_storagepath"
+    "view_paperlesstask"
+  ];
+  paperlessUserPersonalFeaturePermissionCodenames = [
     "view_uisettings"
     "add_uisettings"
     "change_uisettings"
@@ -16,7 +34,14 @@ let
     "add_savedviewfilterrule"
     "change_savedviewfilterrule"
     "delete_savedviewfilterrule"
+    "view_sharelink"
+    "add_sharelink"
+    "delete_sharelink"
   ];
+  paperlessUserPermissionCodenames =
+    paperlessUserDocumentPermissionCodenames
+    ++ paperlessUserMetadataViewPermissionCodenames
+    ++ paperlessUserPersonalFeaturePermissionCodenames;
   paperlessUserPermissionsSql = lib.concatStringsSep ", " (
     map (codename: "'${codename}'") paperlessUserPermissionCodenames
   );
@@ -138,18 +163,12 @@ in
             SELECT 1 FROM auth_group WHERE name = 'paperless-users'
           );
 
-          INSERT INTO auth_group (name)
-          SELECT 'paperless-admin'
-          WHERE NOT EXISTS (
-            SELECT 1 FROM auth_group WHERE name = 'paperless-admin'
-          );
-
           INSERT INTO auth_group_permissions (group_id, permission_id)
           SELECT g.id, p.id
           FROM auth_group AS g
           JOIN auth_permission AS p
             ON p.codename IN (${paperlessUserPermissionsSql})
-          WHERE g.name IN ('paperless-users', 'paperless-admin')
+          WHERE g.name = 'paperless-users'
             AND NOT EXISTS (
               SELECT 1
               FROM auth_group_permissions AS gp

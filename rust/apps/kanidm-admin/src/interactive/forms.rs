@@ -6,7 +6,7 @@ use crate::{
     AppError,
 };
 
-const MEMBERSHIP_GUIDANCE: &str = "Start most normal people with `users`. Add app-specific `*-users` groups only for the apps they should access. Add `user-files` for personal files access. Add `shared-files-ro` or `shared-files-rw` only when shared storage access is needed. Reserve `*-admin` groups for trusted operators of that app.";
+const MEMBERSHIP_GUIDANCE: &str = "Start most normal people with `users`. Add app-specific `*-users` groups only for the apps they should access. Add `user-files` for personal files access and `shared-files-ro` only when shared read access is needed. Add `app-admin` only for trusted app operators, and reserve `system_admins` for high-authority server administration.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextualItem {

@@ -28,6 +28,7 @@ use serde::{
 use sha2::{Digest, Sha256};
 use std::{
     cmp::Reverse,
+    collections::HashSet,
     env,
     fmt::Write as _,
     fs::{self, OpenOptions},
@@ -108,8 +109,8 @@ if (DASHBOARD_ROOT) {
 
     setCount(
       summary,
-      '[data-summary-field="downloaded"]',
-      totals.downloaded_message_count,
+      '[data-summary-field="archived"]',
+      totals.archived_message_count,
     );
     setCount(
       summary,
@@ -144,8 +145,8 @@ if (DASHBOARD_ROOT) {
     setText(card.querySelector("[data-index-pill]"), account.index_label);
     setText(card.querySelector("[data-paperless-pill]"), account.paperless_label);
     setText(
-      card.querySelector('[data-progress-field="downloaded"]'),
-      numberFormatter.format(account.downloaded_message_count),
+      card.querySelector('[data-progress-field="archived"]'),
+      numberFormatter.format(account.archived_message_count),
     );
     setText(
       card.querySelector('[data-progress-field="indexed"]'),
@@ -160,6 +161,7 @@ if (DASHBOARD_ROOT) {
       `${account.index_coverage_percent}%`,
     );
     setText(card.querySelector("[data-progress-note]"), account.progress_note);
+    setOptionalText(card, "[data-overlap-note]", account.overlap_note);
     setText(card.querySelector("[data-last-activity]"), `Last activity ${account.last_activity}`);
     setText(card.querySelector("[data-paperless-note]"), account.paperless_note);
 
@@ -374,7 +376,14 @@ struct CandidateMessage {
 #[derive(Clone, Debug)]
 struct MessageMetadata {
     normalized_message_id: Option<String>,
-    message_sha256: String,
+    message_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MaildirInventory {
+    archive_file_count: usize,
+    logical_message_count: usize,
+    overlap_file_count: usize,
 }
 
 #[derive(Debug)]
@@ -455,10 +464,12 @@ struct DashboardAccountView {
 
 #[derive(Clone, Debug, Default)]
 struct AccountProgressCounts {
-    downloaded_message_count: usize,
+    archived_message_count: usize,
     indexed_message_count: usize,
     pending_index_count: usize,
     index_coverage_percent: usize,
+    archive_file_count: usize,
+    overlap_file_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -475,10 +486,12 @@ struct ErrorPayload {
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct DashboardTotals {
-    downloaded_message_count: usize,
+    archived_message_count: usize,
     indexed_message_count: usize,
     pending_index_count: usize,
     index_coverage_percent: usize,
+    archive_file_count: usize,
+    overlap_file_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -488,11 +501,14 @@ struct AccountStatusPayload {
     status_label: String,
     index_label: String,
     last_activity: String,
-    downloaded_message_count: usize,
+    archived_message_count: usize,
     indexed_message_count: usize,
     pending_index_count: usize,
     index_coverage_percent: usize,
+    archive_file_count: usize,
+    overlap_file_count: usize,
     progress_note: String,
+    overlap_note: Option<String>,
     last_sync_error: Option<String>,
     diagnostic_phase: Option<String>,
     diagnostic_code: Option<String>,
@@ -2250,7 +2266,7 @@ fn run_account_action(
                 run_sync_command(
                     SyncPhase::Index,
                     "index_failed",
-                    "Mail download completed, but indexing failed. Downloaded mail may be missing from search until reindex succeeds.",
+                    "Mail download completed, but indexing failed. Archived messages may be missing from search until reindex succeeds.",
                     "notmuch",
                     &["new"],
                     &[
@@ -2283,7 +2299,7 @@ fn run_account_action(
                 run_sync_command(
                     SyncPhase::Index,
                     "index_failed",
-                    "Mailbox reindex failed. Downloaded mail may be missing from search until reindex succeeds.",
+                    "Mailbox reindex failed. Archived messages may be missing from search until reindex succeeds.",
                     "notmuch",
                     &["new"],
                     &[
@@ -3247,7 +3263,12 @@ fn list_paperless_candidate_messages(
         let message_key = metadata
             .normalized_message_id
             .map(|value| format!("message-id:{value}"))
-            .unwrap_or_else(|| format!("sha256:{}", metadata.message_sha256));
+            .or_else(|| {
+                metadata
+                    .message_sha256
+                    .map(|value| format!("sha256:{value}"))
+            })
+            .expect("message metadata must provide an identity key");
         candidates.push(CandidateMessage {
             file_path,
             message_key,
@@ -3259,9 +3280,10 @@ fn list_paperless_candidate_messages(
 fn read_message_metadata(message_path: &FsPath) -> Result<MessageMetadata, String> {
     let bytes = fs::read(message_path)
         .map_err(|error| format!("failed to read {}: {error}", message_path.display()))?;
+    let normalized_message_id = extract_message_id(&bytes).and_then(normalize_message_id);
     Ok(MessageMetadata {
-        normalized_message_id: extract_message_id(&bytes).and_then(normalize_message_id),
-        message_sha256: sha256_hex(&bytes),
+        message_sha256: normalized_message_id.is_none().then(|| sha256_hex(&bytes)),
+        normalized_message_id,
     })
 }
 
@@ -3781,6 +3803,7 @@ fn build_dashboard_account_view(
         sync_diagnostic.as_ref(),
         metrics_diagnostic.as_ref(),
     );
+    let overlap_note = account_overlap_note(&counts, metrics_diagnostic.as_ref());
     let sync_notice = dashboard_sync_notice(
         sync_diagnostic.as_ref(),
         metrics_diagnostic.as_ref(),
@@ -3800,11 +3823,14 @@ fn build_dashboard_account_view(
             status_label: status_label.to_string(),
             index_label: account_index_label(index_state).to_string(),
             last_activity,
-            downloaded_message_count: counts.downloaded_message_count,
+            archived_message_count: counts.archived_message_count,
             indexed_message_count: counts.indexed_message_count,
             pending_index_count: counts.pending_index_count,
             index_coverage_percent: counts.index_coverage_percent,
+            archive_file_count: counts.archive_file_count,
+            overlap_file_count: counts.overlap_file_count,
             progress_note,
+            overlap_note,
             last_sync_error,
             diagnostic_phase: sync_notice.diagnostic_phase,
             diagnostic_code: sync_notice.diagnostic_code,
@@ -3827,26 +3853,35 @@ fn load_account_progress(
     account_paths: &AccountPaths,
     index_state: IndexState,
 ) -> Result<AccountProgressCounts, String> {
-    let downloaded_message_count = count_maildir_messages(&account_paths.maildir)?;
+    let inventory = scan_maildir_inventory(&account_paths.maildir)?;
     let indexed_message_count = if index_state == IndexState::Indexed {
         count_indexed_messages(account_paths)?
     } else {
         0
     };
-    Ok(progress_counts(
-        downloaded_message_count,
-        indexed_message_count,
-    ))
+    Ok(progress_counts(&inventory, indexed_message_count))
 }
 
-fn count_maildir_messages(maildir: &FsPath) -> Result<usize, String> {
-    count_maildir_messages_inner(maildir, false)
+fn scan_maildir_inventory(maildir: &FsPath) -> Result<MaildirInventory, String> {
+    let mut message_keys = HashSet::new();
+    let mut archive_file_count = 0;
+    scan_maildir_inventory_inner(maildir, false, &mut archive_file_count, &mut message_keys)?;
+    let logical_message_count = message_keys.len();
+    Ok(MaildirInventory {
+        archive_file_count,
+        logical_message_count,
+        overlap_file_count: archive_file_count.saturating_sub(logical_message_count),
+    })
 }
 
-fn count_maildir_messages_inner(path: &FsPath, count_files_here: bool) -> Result<usize, String> {
+fn scan_maildir_inventory_inner(
+    path: &FsPath,
+    count_files_here: bool,
+    archive_file_count: &mut usize,
+    message_keys: &mut HashSet<String>,
+) -> Result<(), String> {
     let entries = fs::read_dir(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let mut total = 0;
 
     for entry in entries {
         let entry = entry.map_err(|error| format!("failed to read {}: {error}", path.display()))?;
@@ -3857,16 +3892,19 @@ fn count_maildir_messages_inner(path: &FsPath, count_files_here: bool) -> Result
         if file_type.is_dir() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            total += count_maildir_messages_inner(
+            scan_maildir_inventory_inner(
                 &entry.path(),
                 name.as_ref() == "cur" || name.as_ref() == "new",
+                archive_file_count,
+                message_keys,
             )?;
         } else if count_files_here && file_type.is_file() {
-            total += 1;
+            *archive_file_count += 1;
+            message_keys.insert(maildir_message_key(&entry.path())?);
         }
     }
 
-    Ok(total)
+    Ok(())
 }
 
 fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String> {
@@ -3904,45 +3942,71 @@ fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String>
         })
 }
 
+fn maildir_message_key(message_path: &FsPath) -> Result<String, String> {
+    let metadata = read_message_metadata(message_path)?;
+    Ok(metadata
+        .normalized_message_id
+        .map(|value| format!("message-id:{value}"))
+        .or_else(|| {
+            metadata
+                .message_sha256
+                .map(|value| format!("sha256:{value}"))
+        })
+        .expect("message metadata must provide an identity key"))
+}
+
 fn progress_counts(
-    downloaded_message_count: usize,
+    inventory: &MaildirInventory,
     indexed_message_count: usize,
 ) -> AccountProgressCounts {
-    let pending_index_count = downloaded_message_count.saturating_sub(indexed_message_count);
-    let index_coverage_percent = if downloaded_message_count == 0 {
+    let archived_message_count = inventory.logical_message_count;
+    let pending_index_count = archived_message_count.saturating_sub(indexed_message_count);
+    let index_coverage_percent = if archived_message_count == 0 {
         usize::from(indexed_message_count > 0) * 100
     } else {
-        (indexed_message_count.min(downloaded_message_count) * 100) / downloaded_message_count
+        (indexed_message_count.min(archived_message_count) * 100) / archived_message_count
     };
     AccountProgressCounts {
-        downloaded_message_count,
+        archived_message_count,
         indexed_message_count,
         pending_index_count,
         index_coverage_percent,
+        archive_file_count: inventory.archive_file_count,
+        overlap_file_count: inventory.overlap_file_count,
     }
 }
 
 fn dashboard_totals(accounts: Vec<AccountStatusPayload>) -> DashboardTotals {
-    let downloaded_message_count = accounts
+    let archived_message_count = accounts
         .iter()
-        .map(|account| account.downloaded_message_count)
+        .map(|account| account.archived_message_count)
         .sum::<usize>();
     let indexed_message_count = accounts
         .iter()
         .map(|account| account.indexed_message_count)
         .sum::<usize>();
-    let pending_index_count = downloaded_message_count.saturating_sub(indexed_message_count);
-    let index_coverage_percent = if downloaded_message_count == 0 {
+    let archive_file_count = accounts
+        .iter()
+        .map(|account| account.archive_file_count)
+        .sum::<usize>();
+    let overlap_file_count = accounts
+        .iter()
+        .map(|account| account.overlap_file_count)
+        .sum::<usize>();
+    let pending_index_count = archived_message_count.saturating_sub(indexed_message_count);
+    let index_coverage_percent = if archived_message_count == 0 {
         usize::from(indexed_message_count > 0) * 100
     } else {
-        (indexed_message_count.min(downloaded_message_count) * 100) / downloaded_message_count
+        (indexed_message_count.min(archived_message_count) * 100) / archived_message_count
     };
 
     DashboardTotals {
-        downloaded_message_count,
+        archived_message_count,
         indexed_message_count,
         pending_index_count,
         index_coverage_percent,
+        archive_file_count,
+        overlap_file_count,
     }
 }
 
@@ -3965,7 +4029,7 @@ fn account_progress_note(
     } else if account.last_sync_status.as_deref() == Some("running")
         && counts.pending_index_count > 0
     {
-        "Sync is active. Downloaded mail should rise first, then the index will catch up."
+        "Sync is active. Archived message count should rise first, then the index will catch up."
             .to_string()
     } else if sync_diagnostic
         .as_ref()
@@ -3973,16 +4037,31 @@ fn account_progress_note(
         .is_some_and(|phase| matches!(phase, SyncPhase::Index | SyncPhase::Reconcile))
         && counts.pending_index_count > 0
     {
-        "Downloaded mail is ahead of search. Run Reindex to catch up.".to_string()
-    } else if counts.downloaded_message_count == 0 {
-        "No messages downloaded yet.".to_string()
+        "Archived messages are ahead of search. Run Reindex to catch up.".to_string()
+    } else if counts.archived_message_count == 0 {
+        "No archived messages yet.".to_string()
     } else if counts.pending_index_count > 0 {
-        "Downloaded mail is ahead of the current search index. Run Reindex to catch up.".to_string()
+        "Archived messages are ahead of the current search index. Run Reindex to catch up."
+            .to_string()
     } else if index_state == IndexState::Indexed {
-        "Search index is caught up with the downloaded archive.".to_string()
+        "Search index is caught up with the archived messages.".to_string()
     } else {
         "Run Sync now or Reindex to build the search index.".to_string()
     }
+}
+
+fn account_overlap_note(
+    counts: &AccountProgressCounts,
+    metrics_diagnostic: Option<&SyncDiagnostic>,
+) -> Option<String> {
+    if metrics_diagnostic.is_some() || counts.overlap_file_count == 0 {
+        return None;
+    }
+
+    Some(format!(
+        "Archive contains {} physical message files representing {} logical messages because synced folders overlap.",
+        counts.archive_file_count, counts.archived_message_count
+    ))
 }
 
 fn metrics_sync_diagnostic(error: String) -> SyncDiagnostic {
@@ -4008,22 +4087,22 @@ fn diagnostic_impact(
             if counts.pending_index_count > 0 =>
         {
             Some(format!(
-                "{} downloaded messages are not searchable yet.",
+                "{} archived messages are not searchable yet.",
                 counts.pending_index_count
             ))
         }
         Some(SyncPhase::Index | SyncPhase::Reconcile) => Some(
-            "Downloaded mail may be missing from search until reindex succeeds.".to_string(),
+            "Archived messages may be missing from search until reindex succeeds.".to_string(),
         ),
         Some(SyncPhase::Preflight) => Some(
             "The sync stopped before the mailbox download step started.".to_string(),
         ),
         Some(SyncPhase::Metrics) => Some(
-            "Downloaded and indexed counts are hidden until the archive can be read again."
+            "Archive and index counts are hidden until the archive can be read again."
                 .to_string(),
         ),
         None if counts.pending_index_count > 0 => Some(format!(
-            "{} downloaded messages may not be searchable yet.",
+            "{} archived messages may not be searchable yet.",
             counts.pending_index_count
         )),
         None if index_state != IndexState::Indexed => Some(
@@ -4042,7 +4121,7 @@ fn diagnostic_recommended_action(
             "Check the mailbox credentials and archive paths, then run Sync now again.".to_string(),
         ),
         Some(SyncPhase::Index | SyncPhase::Reconcile) if counts.pending_index_count > 0 => {
-            Some("Run Reindex to catch search up with the downloaded archive.".to_string())
+            Some("Run Reindex to catch search up with the archived messages.".to_string())
         }
         Some(SyncPhase::Index | SyncPhase::Reconcile) => Some(
             "Run Reindex after checking the notmuch configuration and archive state.".to_string(),
@@ -4221,12 +4300,12 @@ fn render_dashboard_totals(accounts: &[DashboardAccountView]) -> String {
     let totals = dashboard_totals(accounts.iter().map(|view| view.status.clone()).collect());
     format!(
         "<div class=\"dashboard-summary\" data-dashboard-summary>
-          <div class=\"summary-metric\"><span class=\"metric-label\">Downloaded</span><strong data-summary-field=\"downloaded\">{}</strong></div>
+          <div class=\"summary-metric\"><span class=\"metric-label\">Archived</span><strong data-summary-field=\"archived\">{}</strong></div>
           <div class=\"summary-metric\"><span class=\"metric-label\">Indexed</span><strong data-summary-field=\"indexed\">{}</strong></div>
           <div class=\"summary-metric\"><span class=\"metric-label\">Pending index</span><strong data-summary-field=\"pending\">{}</strong></div>
           <div class=\"summary-metric\"><span class=\"metric-label\">Coverage</span><strong data-summary-field=\"coverage\">{}%</strong></div>
         </div>",
-        totals.downloaded_message_count,
+        totals.archived_message_count,
         totals.indexed_message_count,
         totals.pending_index_count,
         totals.index_coverage_percent,
@@ -4327,13 +4406,14 @@ fn render_account_card(view: &DashboardAccountView) -> String {
           <div class=\"hint\">Added {} · Updated {}</div>
           <div class=\"progress-cluster\">
             <div class=\"progress-metrics\">
-              <div class=\"summary-metric\"><span class=\"metric-label\">Downloaded</span><strong data-progress-field=\"downloaded\">{}</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Archived</span><strong data-progress-field=\"archived\">{}</strong></div>
               <div class=\"summary-metric\"><span class=\"metric-label\">Indexed</span><strong data-progress-field=\"indexed\">{}</strong></div>
               <div class=\"summary-metric\"><span class=\"metric-label\">Pending index</span><strong data-progress-field=\"pending\">{}</strong></div>
               <div class=\"summary-metric\"><span class=\"metric-label\">Coverage</span><strong data-progress-field=\"coverage\">{}%</strong></div>
             </div>
             <div class=\"progress-bar\" aria-label=\"Index coverage\"><span data-progress-bar style=\"width: {}%\"></span></div>
             <p class=\"meta\" data-progress-note>{}</p>
+            <p class=\"meta{}\" data-overlap-note>{}</p>
           </div>
           <div class=\"hint\" data-paperless-note>{}</div>
           <div class=\"hint\" data-last-activity>Last activity {}</div>
@@ -4360,12 +4440,14 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         escape_html(folder_mode_label(&account.folder_mode)),
         escape_html(&account.created_at),
         escape_html(&account.updated_at),
-        status.downloaded_message_count,
+        status.archived_message_count,
         status.indexed_message_count,
         status.pending_index_count,
         status.index_coverage_percent,
         status.index_coverage_percent,
         escape_html(&status.progress_note),
+        hidden_class(status.overlap_note.is_some()),
+        escape_html(status.overlap_note.as_deref().unwrap_or("")),
         escape_html(&status.paperless_note),
         escape_html(&status.last_activity),
         account.id,
@@ -5075,12 +5157,17 @@ mod tests {
             status_label: "sync failed".to_string(),
             index_label: "Indexed".to_string(),
             last_activity: "2026-04-25T21:37:55Z".to_string(),
-            downloaded_message_count: 8_002,
+            archived_message_count: 6_668,
             indexed_message_count: 6_668,
-            pending_index_count: 1_334,
-            index_coverage_percent: 83,
-            progress_note: "Downloaded mail is ahead of search. Run Reindex to catch up."
+            pending_index_count: 0,
+            index_coverage_percent: 100,
+            archive_file_count: 8_002,
+            overlap_file_count: 1_334,
+            progress_note: "Search index is caught up with the archived messages."
                 .to_string(),
+            overlap_note: Some(
+                "Archive contains 8002 physical message files representing 6668 logical messages because synced folders overlap.".to_string(),
+            ),
             last_sync_error: Some("mbsync: authentication failed".to_string()),
             diagnostic_phase: Some("download".to_string()),
             diagnostic_code: Some("download_failed".to_string()),
@@ -5734,6 +5821,7 @@ mod tests {
         assert!(html.contains("Mailbox download failed before new mail could be indexed."));
         assert!(html.contains("Technical detail"));
         assert!(html.contains("Check the mailbox credentials and archive paths"));
+        assert!(html.contains("physical message files representing 6668 logical messages"));
     }
 
     #[test]
@@ -5815,6 +5903,10 @@ mod tests {
 
         let json = serde_json::to_value(payload).expect("json");
         let account = &json["accounts"][0];
+        assert!(account.get("archived_message_count").is_some());
+        assert!(account.get("archive_file_count").is_some());
+        assert!(account.get("overlap_file_count").is_some());
+        assert!(account.get("overlap_note").is_some());
         assert!(account.get("diagnostic_summary").is_some());
         assert!(account.get("diagnostic_detail").is_some());
         assert!(account.get("recommended_action").is_some());
@@ -6381,7 +6473,7 @@ mod tests {
     }
 
     #[test]
-    fn maildir_message_count_tracks_root_and_nested_folders() {
+    fn maildir_inventory_tracks_root_and_nested_folders() {
         let tempdir = TempDir::new().expect("tempdir");
         let maildir = tempdir.path().join("maildir");
 
@@ -6391,13 +6483,144 @@ mod tests {
         fs::create_dir_all(maildir.join(".Archive/tmp")).expect("archive tmp");
         fs::create_dir_all(maildir.join(".notmuch")).expect("notmuch");
 
-        write_private_file(&maildir.join("cur/root-message"), b"1").expect("root cur message");
-        write_private_file(&maildir.join("new/root-new"), b"1").expect("root new message");
-        write_private_file(&maildir.join(".Archive/cur/sub-message"), b"1")
-            .expect("archive cur message");
+        write_private_file(
+            &maildir.join("cur/root-message"),
+            b"Message-ID: <root@example.com>\n\n1",
+        )
+        .expect("root cur message");
+        write_private_file(
+            &maildir.join("new/root-new"),
+            b"Message-ID: <new@example.com>\n\n1",
+        )
+        .expect("root new message");
+        write_private_file(
+            &maildir.join(".Archive/cur/sub-message"),
+            b"Message-ID: <archive@example.com>\n\n1",
+        )
+        .expect("archive cur message");
         write_private_file(&maildir.join(".Archive/tmp/not-a-message"), b"1").expect("tmp file");
         write_private_file(&maildir.join(".notmuch/metadata"), b"1").expect("metadata");
 
-        assert_eq!(count_maildir_messages(&maildir).expect("message count"), 3);
+        let inventory = scan_maildir_inventory(&maildir).expect("inventory");
+        assert_eq!(inventory.archive_file_count, 3);
+        assert_eq!(inventory.logical_message_count, 3);
+        assert_eq!(inventory.overlap_file_count, 0);
+    }
+
+    #[test]
+    fn maildir_inventory_collapses_duplicate_message_ids_across_folders() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let maildir = tempdir.path().join("maildir");
+
+        fs::create_dir_all(maildir.join("cur")).expect("root cur");
+        fs::create_dir_all(maildir.join(".Archive/cur")).expect("archive cur");
+
+        write_private_file(
+            &maildir.join("cur/root-message"),
+            b"Message-ID: <duplicate@example.com>\n\nsame",
+        )
+        .expect("root cur message");
+        write_private_file(
+            &maildir.join(".Archive/cur/sub-message"),
+            b"Message-ID: <duplicate@example.com>\n\nsame",
+        )
+        .expect("archive cur message");
+
+        let inventory = scan_maildir_inventory(&maildir).expect("inventory");
+        assert_eq!(inventory.archive_file_count, 2);
+        assert_eq!(inventory.logical_message_count, 1);
+        assert_eq!(inventory.overlap_file_count, 1);
+    }
+
+    #[test]
+    fn maildir_inventory_falls_back_to_sha256_when_message_id_is_missing() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let maildir = tempdir.path().join("maildir");
+
+        fs::create_dir_all(maildir.join("cur")).expect("root cur");
+        fs::create_dir_all(maildir.join(".Archive/cur")).expect("archive cur");
+
+        write_private_file(&maildir.join("cur/root-message"), b"same body")
+            .expect("root cur message");
+        write_private_file(&maildir.join(".Archive/cur/sub-message"), b"same body")
+            .expect("archive cur message");
+        write_private_file(
+            &maildir.join(".Archive/cur/other-message"),
+            b"different body",
+        )
+        .expect("other archive cur message");
+
+        let inventory = scan_maildir_inventory(&maildir).expect("inventory");
+        assert_eq!(inventory.archive_file_count, 3);
+        assert_eq!(inventory.logical_message_count, 2);
+        assert_eq!(inventory.overlap_file_count, 1);
+    }
+
+    #[test]
+    fn progress_counts_use_logical_messages_for_pending_index() {
+        let counts = progress_counts(
+            &MaildirInventory {
+                archive_file_count: 5,
+                logical_message_count: 3,
+                overlap_file_count: 2,
+            },
+            3,
+        );
+
+        assert_eq!(counts.archived_message_count, 3);
+        assert_eq!(counts.archive_file_count, 5);
+        assert_eq!(counts.overlap_file_count, 2);
+        assert_eq!(counts.pending_index_count, 0);
+        assert_eq!(counts.index_coverage_percent, 100);
+    }
+
+    #[test]
+    fn overlap_does_not_mark_a_caught_up_index_as_behind() {
+        let mut account = example_account();
+        account.last_sync_status = Some("ok".to_string());
+        let counts = progress_counts(
+            &MaildirInventory {
+                archive_file_count: 5,
+                logical_message_count: 3,
+                overlap_file_count: 2,
+            },
+            3,
+        );
+
+        assert_eq!(
+            account_status(&account, IndexState::Indexed, &counts, None, None),
+            ("ok", "healthy")
+        );
+        assert_eq!(
+            account_progress_note(&account, &counts, IndexState::Indexed, None, None),
+            "Search index is caught up with the archived messages."
+        );
+        assert_eq!(
+            account_overlap_note(&counts, None),
+            Some(
+                "Archive contains 5 physical message files representing 3 logical messages because synced folders overlap."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn true_logical_index_lag_still_marks_the_account_as_behind() {
+        let mut account = example_account();
+        account.last_sync_status = Some("ok".to_string());
+        let counts = progress_counts(
+            &MaildirInventory {
+                archive_file_count: 12,
+                logical_message_count: 10,
+                overlap_file_count: 2,
+            },
+            8,
+        );
+
+        assert_eq!(counts.pending_index_count, 2);
+        assert_eq!(
+            account_status(&account, IndexState::Indexed, &counts, None, None),
+            ("pending", "index behind")
+        );
     }
 }

@@ -4,6 +4,7 @@ use crate::AppError;
 
 pub mod client;
 pub mod context;
+pub mod executor;
 pub mod group;
 pub mod local;
 pub mod membership;

@@ -1,15 +1,14 @@
 { lib, pkgs, config, vars, copyparty, ... }:
 
 let
-  sharedFilesAdminGroup = "domain_admins";
   copypartyPort = 3923;
   runtimeConfigDir = "/var/lib/copyparty/runtime";
   runtimeConfigPath = "${runtimeConfigDir}/copyparty.conf";
   uploaderVolumeConfig = ''
-    [/upload/''${u}]
+    [/''${u}]
     ${vars.usersRoot}/''${u}/uploads
     accs:
-      rwmda: ''${u}, @${sharedFilesAdminGroup}
+      rwmd: ''${u}
     flags:
       fk: 4
       e2d: true

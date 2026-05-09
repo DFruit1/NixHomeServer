@@ -22,10 +22,7 @@ in
     reverseProxy = true;
     setXauthrequest = true;
     extraConfig = {
-      "allowed-group" = [
-        "user-files"
-        "domain_admins"
-      ];
+      "allowed-group" = [ "user-files" ];
       "code-challenge-method" = "S256";
       "oidc-groups-claim" = "groups";
       "pass-user-headers" = true;

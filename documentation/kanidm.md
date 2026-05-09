@@ -52,9 +52,10 @@ kanidm-admin
 ```
 
 Recommended TUI path:
-1. Open `Sessions`.
-2. Run `Login`.
-3. Run `Status` if you want to confirm the session state.
+1. Start `kanidm-admin`.
+2. If no usable admin session exists yet, accept the startup login prompt.
+3. Open `Sessions`.
+4. Run `Status` if you want to confirm the session state.
 
 Direct CLI path:
 
@@ -172,11 +173,10 @@ kanidm-admin membership set "$NEW_USER" --allow-empty
 ```
 
 File-access group model:
-- `user-files` grants access to personal Copyparty uploads and FileBrowser WebDAV roots.
+- `user-files` grants access to personal Copyparty uploads and the personal FileBrowser root.
 - `shared-files-ro` grants read-only access to `/shared/*` in FileBrowser and WebDAV.
-- `shared-files-rw` grants read, write, and move access to `/shared/*` in FileBrowser and WebDAV.
-- `domain_admins` is the only shared-files override that grants full `rwmda` access on `/shared/*` and all uploader roots.
-- `shared-files-ro` and `shared-files-rw` do not imply `user-files`.
+- `shared-files-ro` does not imply `user-files`.
+- Human shared-write access is not modeled as a normal Kanidm group anymore.
 
 Expected result:
 - `membership add` and `membership remove` work against live-discovered groups instead of a hardcoded Rust list
@@ -191,9 +191,10 @@ Normal onboarding sequence:
 2. Add them to `users`.
 3. Add only the live groups they need for file, app, or admin access.
 4. For personal file access, add `user-files` explicitly.
-5. Add `shared-files-ro` or `shared-files-rw` only if they need `/shared/*` access.
-6. Only use `domain_admins` when they should be able to delete or fully administer shared files.
-7. Have them sign into the target app so first-login provisioning can happen.
+5. Add `shared-files-ro` only if they need read access to `/shared/*`.
+6. Add `app-admin` only when they should be an application operator in the apps they already use.
+7. Reserve `system_admins` for trusted operators who need high-authority server or shared-files administration.
+8. Have them sign into the target app so first-login provisioning can happen.
 
 Interactive guidance note:
 - The default `Manage User Access` flow uses an exact-set group picker with a contextual help pane.
@@ -254,15 +255,15 @@ Expected result:
 
 ## App-Specific First Login Notes
 
-- `uploads.<domain>`: Copyparty upload access is enforced by OAuth2 Proxy. `user-files` grants access to `upload/<username>/`; `domain_admins` can also administer uploader roots.
-- `files.<domain>`: FileBrowser UI and WebDAV access require `user-files` for personal roots and `shared-files-ro`, `shared-files-rw`, or `domain_admins` for shared roots.
+- `uploads.<domain>`: Copyparty upload access is enforced by OAuth2 Proxy. `user-files` grants access to the signed-in user's own uploads root at `/`.
+- `files.<domain>`: FileBrowser UI and WebDAV access require `user-files` for personal roots, `shared-files-ro` for shared read-only access, and `system_admins` for shared administration.
 - `emails.<domain>`: browser access is enforced by `mail-archive-users`.
 - `wiki.<domain>`: baseline `users` membership is sufficient.
 - `ytdownload.<domain>`: browser access is enforced by `metube-users`.
-- Immich: first successful OIDC login creates the local user row.
-- Paperless: first successful OIDC login creates or links the local user row.
-- Audiobookshelf: OIDC is configured, but the local bootstrap or root flow still exists.
-- Kavita: OIDC handles auth and provisioning, non-admin local password login is disabled, and admin recovery remains app-local.
+- Immich: `immich-users` grants normal login and `app-admin` adds the admin role when combined with `immich-users`.
+- Paperless: `paperless-users` grants normal login and `app-admin` adds the Paperless admin flags when combined with `paperless-users`.
+- Audiobookshelf: `audiobookshelf-users` grants normal login and `app-admin` adds the admin role when combined with `audiobookshelf-users`.
+- Kavita: `kavita-users` grants normal login and `app-admin` adds the admin role when combined with `kavita-users`.
 - Jellyfin is intentionally local-auth and is managed through the local helper only when you need to stage a desired password hash.
 
 ## Troubleshooting Flow
