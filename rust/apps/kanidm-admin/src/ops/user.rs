@@ -551,6 +551,8 @@ exit 1
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let error = create_user(
@@ -610,6 +612,8 @@ exit 1
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let error = create_user(
@@ -675,6 +679,8 @@ exit 1
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let output = create_user(

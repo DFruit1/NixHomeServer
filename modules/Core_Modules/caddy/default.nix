@@ -14,7 +14,6 @@ let
       format json
     }
   '';
-  goaccessReportRoot = "/var/lib/goaccess/report";
 in
 {
   services.caddy = {
@@ -111,6 +110,17 @@ in
         '';
       };
 
+      "${vars.vaultwardenDomain}" = {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
+          reverse_proxy http://127.0.0.1:8222 {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+          }
+        '';
+      };
+
       "${vars.kiwixDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
@@ -141,15 +151,6 @@ in
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
-        '';
-      };
-
-      "${vars.trafficDomain}" = {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          root * ${goaccessReportRoot}
-          try_files {path} /index.html
-          file_server
         '';
       };
 

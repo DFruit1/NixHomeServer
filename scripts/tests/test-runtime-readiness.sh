@@ -12,6 +12,7 @@ echo "ℹ️ Checking runtime readiness profiles with dynamic storage fixtures�
 fixture_dir="$TESTS_REPO_ROOT/scripts/tests/fixtures/storage-health"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+bash_path="$(command -v bash)"
 
 runtime_root="${tmpdir}/runtime"
 runtime_bin="${runtime_root}/bin"
@@ -23,11 +24,15 @@ snapshot_file="${runtime_root}/snapshot.json"
 device_root="${runtime_root}/devices"
 dev_disk_root="${runtime_root}/dev-disk"
 by_id_dir="${dev_disk_root}/by-id"
+bootstrap_state_file="${runtime_root}/bootstrap-state.json"
+helper_results_file="${runtime_root}/browser-helper-results.json"
 mail_archive_data_root="${runtime_root}/mail-archive-ui"
 mail_archive_runtime_dir="${runtime_root}/run-mail-archive-ui"
 mail_archive_lock_dir="${mail_archive_data_root}/locks"
 mail_archive_store_root="${mount_root}/data/users"
 mail_archive_hidden_sync_root="${mail_archive_store_root}/dsaw/emails/.internal-sync/personal-gmail--1"
+mail_archive_visible_mirror_dir="${mail_archive_store_root}/dsaw/emails/personal-gmail-inbox/2024/04"
+mail_archive_visible_mirror_file="${mail_archive_visible_mirror_dir}/2024-04-18 14-32 - Runtime Probe [abc12345].eml"
 
 system_disk_actual="${device_root}/system-disk"
 system_part_actual="${device_root}/system-disk-part1"
@@ -45,6 +50,7 @@ mkdir -p \
   "${mount_root}/data/shared/app-state" \
   "${mount_root}/data/users/dsaw/uploads" \
   "${mail_archive_hidden_sync_root}/maildir/cur" \
+  "$mail_archive_visible_mirror_dir" \
   "$metadata_root" \
   "$dumps_root" \
   "$db_root" \
@@ -55,6 +61,7 @@ mkdir -p \
   "$by_id_dir"
 
 touch \
+  "$mail_archive_visible_mirror_file" \
   "${mail_archive_data_root}/mail-archive-ui.sqlite3" \
   "$system_disk_actual" \
   "$system_part_actual" \
@@ -65,6 +72,7 @@ touch \
   "$retired_actual" \
   "$usb_actual" \
   "$usb_part_actual"
+chmod 0644 "$mail_archive_visible_mirror_file"
 
 ln -s "$system_disk_actual" "$by_id_dir/ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"
 ln -s "$system_part_actual" "$by_id_dir/ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E-part1"
@@ -210,6 +218,74 @@ cat >"$snapshot_file" <<EOF
       "dataDir": "/var/lib/postgresql",
       "pgIsReadyBinary": "${runtime_bin}/pg_isready"
     }
+  },
+  "accessChecks": {
+    "bootstrapStateFile": "${bootstrap_state_file}",
+    "browserHelper": "scripts/helpers/runtime-access-browser-check.mjs",
+    "canaries": [
+      {
+        "accountId": "canary-files",
+        "displayName": "Runtime Access Canary",
+        "mailAddress": "runtime-canary-files@example.test",
+        "groups": [
+          "users",
+          "user-files",
+          "shared-files-read-write-access",
+          "paperless-users",
+          "immich-users",
+          "audiobookshelf-users",
+          "kavita-users",
+          "glances-users",
+          "mail-archive-users",
+          "metube-users"
+        ],
+        "passwordSecret": "runtimeCanaryFilesPassword",
+        "expectedApps": [
+          { "name": "uploads", "kind": "oauth2-proxy", "expectedLandingUrl": "https://uploads.example.test/" },
+          { "name": "files", "kind": "oidc-direct", "expectedLandingUrl": "https://files.example.test/" }
+        ]
+      }
+    ],
+    "apps": [
+      {
+        "name": "uploads",
+        "kind": "oauth2-proxy",
+        "entryUrl": "https://uploads.example.test/",
+        "expectedLandingUrl": "https://uploads.example.test/",
+        "allowedGroups": ["user-files"],
+        "localUnauthCheck": {
+          "host": "uploads.example.test",
+          "path": "/",
+          "expected": [302, 303],
+          "redirectPrefix": "https://id.example.test/ui/oauth2"
+        },
+        "verification": {
+          "finalUrlPrefix": "https://uploads.example.test/",
+          "markerText": "copyparty"
+        }
+      },
+      {
+        "name": "files",
+        "kind": "oidc-direct",
+        "entryUrl": "https://files.example.test/",
+        "expectedLandingUrl": "https://files.example.test/",
+        "allowedGroups": ["user-files", "shared-files-read-write-access"],
+        "localUnauthCheck": {
+          "host": "files.example.test",
+          "path": "/login",
+          "expected": [302, 303],
+          "redirectPrefix": "/api/auth/oidc/login"
+        },
+        "verification": {
+          "finalUrlPrefix": "https://files.example.test/",
+          "markerText": "Files"
+        }
+      }
+    ]
+  },
+  "mailArchiveFilebrowser": {
+    "serviceUser": "filebrowser-quantum",
+    "storeRoot": "${mail_archive_store_root}"
   }
 }
 EOF
@@ -227,7 +303,53 @@ chmod +x "$runtime_bin/nix"
 cat >"$runtime_bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '200'
+
+headers_file=""
+url=""
+
+while (($# > 0)); do
+  case "$1" in
+    -D)
+      headers_file="$2"
+      shift 2
+      ;;
+    -o|-w|--resolve)
+      shift 2
+      ;;
+    -s|-k|-sk|-ks|-I|-L)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+
+code="200"
+location=""
+case "$url" in
+  https://uploads.example.test/)
+    code="302"
+    location="https://id.example.test/ui/oauth2?client_id=oauth2-proxy"
+    ;;
+  https://files.example.test/login)
+    code="302"
+    location="/api/auth/oidc/login?next=%2F"
+    ;;
+esac
+
+if [[ -n "$headers_file" ]]; then
+  {
+    printf 'HTTP/1.1 %s Test\r\n' "$code"
+    if [[ -n "$location" ]]; then
+      printf 'Location: %s\r\n' "$location"
+    fi
+    printf '\r\n'
+  } >"$headers_file"
+fi
+
+printf '%s' "$code"
 EOF
 chmod +x "$runtime_bin/curl"
 
@@ -288,6 +410,13 @@ case "$cmd" in
 esac
 EOF
 chmod +x "$runtime_bin/systemctl"
+
+cat >"$runtime_bin/blkid" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+chmod +x "$runtime_bin/blkid"
 
 cat >"$runtime_bin/findmnt" <<EOF
 #!/usr/bin/env bash
@@ -355,6 +484,9 @@ set -euo pipefail
 if [[ "${1:-}" == "-u" ]]; then
   shift 2
 fi
+if [[ "${1:-}" == "test" && "${2:-}" == "!" && "${3:-}" == "-x" && "${4:-}" == *"/emails/.internal-sync" ]]; then
+  exit 0
+fi
 "$@"
 EOF
 chmod +x "$runtime_bin/sudo"
@@ -384,6 +516,19 @@ fi
 exit 1
 EOF
 chmod +x "$runtime_bin/id"
+
+cat >"$runtime_bin/host" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "192.168.8.12" ]]; then
+  printf '%s.in-addr.arpa domain name pointer server.home.arpa.\n' "$1"
+elif [[ "$1" == "example.com" ]]; then
+  printf '%s has address 192.0.2.10\n' "$1"
+else
+  printf '%s has address 192.168.8.12\n' "$1"
+fi
+EOF
+chmod +x "$runtime_bin/host"
 
 cat >"$runtime_bin/zpool" <<EOF
 #!/usr/bin/env bash
@@ -462,6 +607,9 @@ cat >"$runtime_bin/runuser" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 shift 3
+if [[ "${1:-}" == "test" && "${2:-}" == "!" && "${3:-}" == "-x" && "${4:-}" == *"/emails/.internal-sync" ]]; then
+  exit 0
+fi
 exec "$@"
 EOF
 chmod +x "$runtime_bin/runuser"
@@ -480,6 +628,8 @@ exit 0
 EOF
 chmod +x "$runtime_bin/pg_isready"
 
+find "$runtime_bin" "$tmpdir" -maxdepth 1 -type f -perm -0100 -exec sed -i "1s|.*|#!${bash_path}|" {} +
+
 manual_env=(
   "PATH=$runtime_bin:$tmpdir:$PATH"
   "RUNTIME_READINESS_REPO_ROOT=$TESTS_REPO_ROOT"
@@ -491,10 +641,13 @@ set +e
 manual_output="$(
   env "${manual_env[@]}" \
     RUNTIME_READINESS_ZPOOL_HEALTH=DEGRADED \
-    scripts/check-runtime-readiness.sh 2>&1
+    bash scripts/check-runtime-readiness.sh 2>&1
 )"
 manual_status=$?
 set -e
+if (( manual_status != 0 )); then
+  printf '%s\n' "$manual_output" >&2
+fi
 require_json_equal "$manual_status" "0" \
   "check-runtime-readiness.sh must pass by default when a mirrored pool is DEGRADED but mounted."
 require_match <(printf '%s\n' "$manual_output") '^⚠️  zpool health DEGRADED:' \
@@ -511,7 +664,7 @@ require_match <(printf '%s\n' "$manual_output") '^✅ upload path writable:' \
 monitor_json="$(
   env "${manual_env[@]}" \
     RUNTIME_READINESS_ZPOOL_HEALTH=DEGRADED \
-    scripts/check-runtime-readiness.sh --profile monitor --format json
+    bash scripts/check-runtime-readiness.sh --profile monitor --format json
 )"
 require_json_equal "$(jq -r '.profile' <<<"$monitor_json")" "monitor" \
   "check-runtime-readiness.sh JSON output must report the selected profile."
@@ -533,12 +686,24 @@ require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-u
   "check-runtime-readiness.sh JSON output must record the managed mail-archive store root."
 require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-hidden-sync-root") | .severity' <<<"$monitor_json")" "OK" \
   "check-runtime-readiness.sh JSON output must record a hidden mail-archive sync root probe."
+require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-visible-eml-readable") | .severity' <<<"$monitor_json")" "OK" \
+  "check-runtime-readiness.sh JSON output must verify FileBrowser can read a visible mail archive .eml mirror file."
+require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-hidden-sync-not-traversable") | .severity' <<<"$monitor_json")" "OK" \
+  "check-runtime-readiness.sh JSON output must verify FileBrowser cannot traverse the hidden mail archive sync root."
+require_json_equal "$(jq -r '[.accessChecks.matrix[] | .accountId] | join(",")' <<<"$monitor_json")" "canary-files" \
+  "check-runtime-readiness.sh JSON output must expose the runtime access canary matrix."
+require_json_equal "$(jq -r '.accessChecks.matrix[] | select(.accountId == "canary-files") | [.expectedApps[] | .name] | join(",")' <<<"$monitor_json")" "uploads,files" \
+  "check-runtime-readiness.sh JSON output must map the single canary to every applicable fixture app."
+require_json_equal "$(jq -r '.accessChecks.localUnauth[] | select(.app == "uploads") | .severity' <<<"$monitor_json")" "OK" \
+  "check-runtime-readiness.sh JSON output must record successful local unauthenticated upload-edge checks."
+require_json_equal "$(jq -r '.accessChecks.localUnauth[] | select(.app == "files") | .finalUrl' <<<"$monitor_json")" "/api/auth/oidc/login?next=%2F" \
+  "check-runtime-readiness.sh JSON output must record the local FileBrowser unauthenticated redirect."
 
 set +e
 deploy_output="$(
   env "${manual_env[@]}" \
     RUNTIME_READINESS_ZPOOL_HEALTH=DEGRADED \
-    scripts/check-runtime-readiness.sh --profile deploy 2>&1
+    bash scripts/check-runtime-readiness.sh --profile deploy 2>&1
 )"
 deploy_status=$?
 set -e
@@ -555,9 +720,62 @@ touch "${metadata_root}/app-state-roots.tsv" \
   "${metadata_root}/zfs-list.txt" \
   "${dumps_root}/postgresql.sql"
 
+set +e
+missing_bootstrap_output="$(
+  env "${manual_env[@]}" \
+    bash scripts/check-runtime-readiness.sh --profile manual --deep 2>&1
+)"
+missing_bootstrap_status=$?
+set -e
+require_json_equal "$missing_bootstrap_status" "1" \
+  "check-runtime-readiness.sh deep mode must fail when canary bootstrap state is missing."
+require_match <(printf '%s\n' "$missing_bootstrap_output") 'access canary bootstrap state missing:' \
+  "check-runtime-readiness.sh deep mode must explain that canary bootstrap state is missing."
+
+cat >"$bootstrap_state_file" <<'EOF'
+{
+  "timestamp": "2026-01-01T00:00:00Z",
+  "resetResults": [
+    {
+      "accountId": "canary-files",
+      "severity": "CRITICAL",
+      "detail": "page.goto: net::ERR_NAME_NOT_RESOLVED at https://idsydneybasiniotorg/ui/reset?token=bad"
+    }
+  ],
+  "warmupResults": []
+}
+EOF
+set +e
+failed_bootstrap_output="$(
+  env "${manual_env[@]}" \
+    bash scripts/check-runtime-readiness.sh --profile manual --deep 2>&1
+)"
+failed_bootstrap_status=$?
+set -e
+require_json_equal "$failed_bootstrap_status" "1" \
+  "check-runtime-readiness.sh deep mode must fail when bootstrap state records failed browser setup."
+require_match <(printf '%s\n' "$failed_bootstrap_output") 'access canary bootstrap state contains failures:' \
+  "check-runtime-readiness.sh deep mode must report failed canary bootstrap state before browser verification."
+
+printf '%s\n' '{"timestamp":"2026-01-01T00:00:00Z"}' >"$bootstrap_state_file"
+cat >"$helper_results_file" <<'EOF'
+[
+  {
+    "scope": "authed",
+    "app": "uploads",
+    "canary": "canary-files",
+    "severity": "OK",
+    "detail": "landed on https://uploads.example.test/",
+    "finalUrl": "https://uploads.example.test/",
+    "httpCode": 200
+  }
+]
+EOF
+
 deep_json="$(
   env "${manual_env[@]}" \
-    scripts/check-runtime-readiness.sh --profile manual --deep --format json
+    RUNTIME_ACCESS_BROWSER_CHECK_JSON_FILE="$helper_results_file" \
+    bash scripts/check-runtime-readiness.sh --profile manual --deep --format json
 )"
 require_json_equal "$(jq -r '.overallSeverity' <<<"$deep_json")" "OK" \
   "check-runtime-readiness.sh deep checks must pass when database and backup fixtures are healthy."
@@ -565,5 +783,7 @@ require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "sqlite" and .seve
   "check-runtime-readiness.sh deep mode must run sqlite quick_check probes."
 require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "postgresql" and .severity == "OK")] | length' <<<"$deep_json")" "2" \
   "check-runtime-readiness.sh deep mode must validate PostgreSQL connectivity and dump freshness."
+require_json_equal "$(jq -r '[.accessChecks.authed[] | select(.severity == "OK")] | length' <<<"$deep_json")" "1" \
+  "check-runtime-readiness.sh deep mode must include authenticated access-check results."
 
 echo "✅ Runtime readiness tests passed."

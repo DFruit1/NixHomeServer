@@ -21,6 +21,7 @@ in
     curl
     findutils
     gawk
+    glibc.bin
     gnugrep
     gnused
     jq
@@ -79,6 +80,7 @@ in
         curl
         findutils
         gawk
+        glibc.bin
         gnugrep
         gnused
         jq

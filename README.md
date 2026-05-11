@@ -22,7 +22,7 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 | Situation | Start with | Use when | Follow next |
 | --- | --- | --- | --- |
 | Blank-machine bootstrap | [Quickstart](./documentation/quickstart.md) | You are preparing a workstation, staging secrets, installing the agenix key, or installing onto a fresh machine. `disko` is in scope only here. | Continue with [Operations](./documentation/operations.md) for validation, guarded deploys, and runtime checks. |
-| Normal deploy, validation, or runtime check | [Operations](./documentation/operations.md) | The host already exists and you need the canonical validation gate, guarded deploy workflow, runtime readiness, DNS checks, storage checks, or rollback steps. | Use [Kanidm Guide](./documentation/kanidm.md) for identity work or [Restore And Recovery](./documentation/restore-and-recovery.md) for mirrored-pool repair or SSD-backed state restore. |
+| Normal deploy, validation, or runtime check | [Operations](./documentation/operations.md) | The host already exists and you need the canonical validation gate, guarded deploy workflow, runtime readiness, DNS checks, storage checks, or rollback steps. | Use [Kanidm Guide](./documentation/kanidm.md) for identity work, [Vaultwarden Guide](./documentation/vaultwarden.md) for the shared password-manager workflow, or [Restore And Recovery](./documentation/restore-and-recovery.md) for mirrored-pool repair or SSD-backed state restore. |
 | Mirrored-pool repair or SSD-backed state restore | [Restore And Recovery](./documentation/restore-and-recovery.md) | You need the maintained recovery boundary for degraded mirror replacement or backup-backed app-state inspection and restore. | Use [Quickstart](./documentation/quickstart.md) only when the rebuilt host still needs bootstrap inputs or agenix key installation. |
 
 Validation gate: see [Operations](./documentation/operations.md#validation-gate) for the canonical remote day-2 validation workflow and the optional local Nix validation commands.
@@ -36,3 +36,5 @@ public share links use `sharephotos.sydneybasiniot.org`. See
 Mail archive control plane: see [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private UI, sync flow, and storage model.
 
 Files now split cleanly by role: `https://uploads.sydneybasiniot.org/` is the Copyparty bulk-uploader surface and lands each signed-in user directly in their own uploads root, while `https://files.sydneybasiniot.org/` is the authenticated FileBrowser Quantum UI and WebDAV entrypoint. Kavita-managed book roots now only include `ebooks`, `comics`, and `manga`.
+
+Vaultwarden stays private at `https://passwords.sydneybasiniot.org` and is intended for LAN and NetBird use only. See [Vaultwarden Guide](./documentation/vaultwarden.md) for the local-login invite flow and break-glass local admin model.

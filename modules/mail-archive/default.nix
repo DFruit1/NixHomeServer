@@ -15,6 +15,7 @@ let
       "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
     ]
+    ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
 in
 {
@@ -49,7 +50,7 @@ in
         cfg.lockDir
       ];
     };
-    path = [ pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
+    path = [ pkgs.acl pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
   };
 
   systemd.timers.mail-archive-sync = lib.mkIf cfg.enable {

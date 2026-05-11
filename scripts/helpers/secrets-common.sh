@@ -112,6 +112,13 @@ validate_webhook_url() {
   [[ "$url" =~ ^https?://[^[:space:]]+$ ]] && [[ "$url" != REPLACE_ME* ]]
 }
 
+validate_nonempty_secret() {
+  local value
+
+  value="$(tr -d '\r\n' <"$1")"
+  [[ -n "$value" ]] && [[ "$value" != REPLACE_ME* ]]
+}
+
 normalize_cf_api_token() {
   local source_file="$1"
   local destination_file="$2"

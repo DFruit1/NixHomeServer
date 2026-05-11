@@ -15,8 +15,8 @@
   --warning: #715d11;
   --warning-soft: #efe7cc;
   --info-soft: rgba(15, 107, 92, 0.08);
-  --shadow: 0 22px 60px rgba(30, 25, 15, 0.14);
-  --radius: 22px;
+  --shadow: 0 10px 24px rgba(30, 25, 15, 0.08);
+  --radius: 8px;
   font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
 
@@ -28,10 +28,7 @@ body {
   margin: 0;
   min-height: 100vh;
   color: var(--ink);
-  background:
-    radial-gradient(circle at top left, rgba(15, 107, 92, 0.15), transparent 30%),
-    radial-gradient(circle at top right, rgba(141, 45, 28, 0.12), transparent 22%),
-    linear-gradient(160deg, #f8f4ec 0%, #f0e8dc 100%);
+  background: linear-gradient(160deg, #f8f4ec 0%, #f0e8dc 100%);
 }
 
 a {
@@ -68,6 +65,115 @@ a {
 .account-card,
 .attachment-card {
   padding: 1.15rem 1.2rem;
+}
+
+.mail-list,
+.attachment-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 1rem;
+}
+
+.mail-row,
+.attachment-row {
+  display: grid;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.mail-row {
+  grid-template-columns: minmax(7rem, 0.8fr) minmax(10rem, 1fr) minmax(16rem, 2.4fr) minmax(9rem, 1fr) auto;
+}
+
+.attachment-row {
+  grid-template-columns: 1.6rem minmax(16rem, 2.2fr) minmax(4.5rem, 0.5fr) minmax(9rem, 1fr) minmax(12rem, 1.4fr) minmax(4rem, auto) auto;
+}
+
+.mail-row > *,
+.attachment-row > *,
+.card-header > * {
+  min-width: 0;
+}
+
+.mail-subject,
+.attachment-main {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.attachment-select,
+.row-actions {
+  display: flex;
+  align-items: center;
+}
+
+.row-actions {
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+.icon-form {
+  display: inline-flex;
+  margin: 0;
+}
+
+.icon-button,
+button.icon-button,
+.button-link.icon-button {
+  width: 2.25rem;
+  min-width: 2.25rem;
+  height: 2.25rem;
+  min-height: 2.25rem;
+  padding: 0;
+  border-radius: var(--radius);
+  line-height: 1;
+}
+
+.attachment-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.select-page {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.attachment-selector-placeholder {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+}
+
+.tag-list.compact {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.tag-list.compact .tag,
+.tag-list.compact .meta {
+  max-width: 100%;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.breakable {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .stack {
@@ -175,6 +281,14 @@ button.secondary {
 button.danger {
   color: var(--danger);
   background: var(--danger-soft);
+}
+
+.badge,
+.tag,
+.status,
+.button-link,
+button {
+  max-width: 100%;
 }
 
 .pill,
@@ -364,7 +478,9 @@ textarea {
 }
 
 .result.is-deleted,
-.attachment-card.is-deleted {
+.attachment-card.is-deleted,
+.mail-row.is-deleted,
+.attachment-row.is-deleted {
   opacity: 0.72;
   background: rgba(255, 252, 246, 0.72);
 }
@@ -494,13 +610,35 @@ code {
   .panel,
   .result,
   .account-card {
-    border-radius: 18px;
+    border-radius: var(--radius);
   }
 
   .card-header,
   .result-head {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .mail-row {
+    grid-template-columns: minmax(6rem, 0.8fr) minmax(0, 1.4fr) auto;
+  }
+
+  .mail-row .mail-subject {
+    grid-column: 1 / -1;
+  }
+
+  .mail-row .tag-list {
+    grid-column: 1 / 3;
+  }
+
+  .attachment-row {
+    grid-template-columns: 1.6rem minmax(0, 1fr) auto;
+  }
+
+  .attachment-row .badge,
+  .attachment-row > .meta,
+  .attachment-row .tag-list {
+    grid-column: 2 / -1;
   }
 
   .action-row,
@@ -512,8 +650,8 @@ code {
     align-items: stretch;
   }
 
-  .button-link,
-  button {
+  .actions > .button-link:not(.icon-button),
+  .actions > button:not(.icon-button) {
     width: 100%;
   }
 }

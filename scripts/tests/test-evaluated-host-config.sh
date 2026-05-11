@@ -44,8 +44,9 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
       sharePhotosDomain = vars.sharePhotosDomain;
       uploadsDomain = vars.uploadsDomain;
       filebrowserDomain = vars.filebrowserDomain;
+      vaultwardenDomain = vars.vaultwardenDomain;
       monitorDomain = vars.monitorDomain;
-      trafficDomain = vars.trafficDomain;
+      runtimeAccessCanaries = vars.runtimeAccessCanaries;
       personalKavitaLibraries = vars.personalKavitaLibraries;
       sharedBooksSubdirs = vars.sharedBooksSubdirs;
     };
@@ -85,19 +86,9 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         hasStorageSmartShortTimer = cfg.systemd.timers ? "storage-smart-short";
         hasStorageSmartLongTimer = cfg.systemd.timers ? "storage-smart-long";
         hasSmartdService = cfg.systemd.services ? "smartd";
-        hasLegacyStorageHealthService = cfg.systemd.services ? "storage-health-report";
-        hasLegacyRuntimeHealthService = cfg.systemd.services ? "runtime-health-report";
-        hasLegacyStorageHealthTimer = cfg.systemd.timers ? "storage-health-report";
-        hasLegacyRuntimeHealthTimer = cfg.systemd.timers ? "runtime-health-report";
-        hasLegacyStorageSmartShortInstance = cfg.systemd.timers ? "storage-smart-short@disk1";
-        hasLegacyStorageSmartLongInstance = cfg.systemd.timers ? "storage-smart-long@disk1";
       };
       storage = {
         zfsImportScript = cfg.systemd.services.zfs-import-data.script;
-      };
-      legacy = {
-        hasMediaRootRetirementService = cfg.systemd.services ? "media-root-retirement-v1";
-        hasRetiredRootsCleanupService = cfg.systemd.services ? "retired-content-roots-cleanup-v1";
       };
       apps = {
         caddyHostNames = builtins.attrNames cfg.services.caddy.virtualHosts;
@@ -105,12 +96,24 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         cloudflaredIngressHostNames = builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
         cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
         oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
+        provisionGroupNames = builtins.attrNames cfg.services.kanidm.provision.groups;
+        provisionPersonNames = builtins.attrNames cfg.services.kanidm.provision.persons;
+        provisionPersons = cfg.services.kanidm.provision.persons;
+        ageSecretNames = builtins.attrNames cfg.age.secrets;
         mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
+        mailArchiveVisibleMirrorReadGroup = cfg.services.mail-archive-ui.visibleMirrorReadGroup;
         hasMailArchiveOauth2ProxyService = cfg.systemd.services ? "mail-archive-oauth2-proxy";
         mailArchiveOauth2ProxyExecStartPre =
           cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [ ];
         mailArchiveUiMountCondition =
           cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
+        mailArchiveUiEnvironment = cfg.services.mail-archive-ui.environment or { };
+        mailArchiveUiReadWritePaths =
+          cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
+        mailArchiveUiPath =
+          map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
+        mailArchiveSyncPath =
+          map (package: lib.getName package) (cfg.systemd.services."mail-archive-sync".path or [ ]);
         hasCopypartyService = cfg.systemd.services ? "copyparty";
         copypartyServiceSupplementaryGroups =
           cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
@@ -127,6 +130,7 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
         paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
         hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
+        oauth2ProxyExecStart = cfg.systemd.services.oauth2-proxy.serviceConfig.ExecStart;
         hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
         hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
         hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
@@ -143,7 +147,7 @@ CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot
         hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
         hasGlancesService = cfg.systemd.services ? "glances";
         hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
-        hasGoaccessReportService = cfg.systemd.services ? "goaccess-report";
+        hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
       };
     };
   }
@@ -221,14 +225,6 @@ assert_json_true '.config.monitoring.hasStorageSmartLongService' "SMART long swe
 assert_json_true '.config.monitoring.hasStorageSmartShortTimer' "SMART short sweep timer must remain defined."
 assert_json_true '.config.monitoring.hasStorageSmartLongTimer' "SMART long sweep timer must remain defined."
 assert_json_true '.config.monitoring.hasSmartdService' "smartd must remain defined."
-assert_json_false '.config.monitoring.hasLegacyStorageHealthService' "Legacy storage health reporting service must be absent."
-assert_json_false '.config.monitoring.hasLegacyRuntimeHealthService' "Legacy runtime health reporting service must be absent."
-assert_json_false '.config.monitoring.hasLegacyStorageHealthTimer' "Legacy storage health reporting timer must be absent."
-assert_json_false '.config.monitoring.hasLegacyRuntimeHealthTimer' "Legacy runtime health reporting timer must be absent."
-assert_json_false '.config.monitoring.hasLegacyStorageSmartShortInstance' "Legacy per-disk SMART short timers must be absent."
-assert_json_false '.config.monitoring.hasLegacyStorageSmartLongInstance' "Legacy per-disk SMART long timers must be absent."
-assert_json_false '.config.legacy.hasMediaRootRetirementService' "Legacy media retirement units must be absent."
-assert_json_false '.config.legacy.hasRetiredRootsCleanupService' "Legacy retired-root cleanup units must be absent."
 
 require_match <(printf '%s\n' "$(snapshot_query '.config.storage.zfsImportScript' | jq -r '.')") '-d /dev/disk/by-id' \
   "The ZFS import helper must scan the by-id directory generically."
@@ -241,6 +237,22 @@ assert_json_true '.config.apps.hasMailArchiveOauth2ProxyService' \
   "Mail archive OAuth2 Proxy wiring must remain present."
 require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiMountCondition')" "$(snapshot_query '.vars.dataRoot')" \
   "Mail archive UI must stay gated on the data mount."
+require_json_equal "$(snapshot_query '.config.apps.mailArchiveVisibleMirrorReadGroup')" '"filebrowser-quantum"' \
+  "Mail archive visible mirror read ACLs must target FileBrowser Quantum by default."
+
+mail_archive_ui_path="$(snapshot_query '.config.apps.mailArchiveUiPath')"
+if ! jq -e 'index("acl") != null' >/dev/null <<<"$mail_archive_ui_path"; then
+  echo "❌ Mail archive UI service path must include acl tools for visible mirror read ACL repair."
+  echo "   path: $mail_archive_ui_path"
+  exit 1
+fi
+
+mail_archive_sync_path="$(snapshot_query '.config.apps.mailArchiveSyncPath')"
+if ! jq -e 'index("acl") != null' >/dev/null <<<"$mail_archive_sync_path"; then
+  echo "❌ Mail archive sync service path must include acl tools for visible mirror read ACL repair."
+  echo "   path: $mail_archive_sync_path"
+  exit 1
+fi
 
 mail_archive_oauth2_proxy_exec_start_pre="$(snapshot_query '.config.apps.mailArchiveOauth2ProxyExecStartPre')"
 if [[ "$mail_archive_oauth2_proxy_exec_start_pre" == "[]" ]]; then
@@ -279,6 +291,26 @@ require_match modules/Core_Modules/storage/fileshare-user-roots.nix '\.internal-
   "User email roots must provision a hidden internal sync tree."
 require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_noaccess_acl filebrowser-quantum "\$root/emails/\.internal-sync"' \
   "FileBrowser Quantum must not be able to traverse the hidden internal email sync tree."
+require_match scripts/helpers/runtime-health-common.sh 'allowedGroups = \[ "user-files" "shared-files-read-write-access" \];' \
+  "Runtime health inventory must keep FileBrowser access scoped to file access groups only."
+forbid_match modules/filebrowser-quantum/default.nix 'ensure_group_membership "mail-archive-users"' \
+  "FileBrowser access convergence must not grant access from mail-archive-users alone."
+forbid_match configuration.nix './modules/mail-archive-paperless' \
+  "Mail Archive UI must not import the retired Paperless handoff module."
+
+mail_archive_ui_environment="$(snapshot_query '.config.apps.mailArchiveUiEnvironment')"
+if jq -e 'has("MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT") or has("MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR")' >/dev/null <<<"$mail_archive_ui_environment"; then
+  echo "❌ Mail Archive UI environment must not expose Paperless consume/staging paths."
+  echo "   environment: $mail_archive_ui_environment"
+  exit 1
+fi
+
+mail_archive_ui_read_write_paths="$(snapshot_query '.config.apps.mailArchiveUiReadWritePaths')"
+if jq -e 'map(test("mail-archive|paperless") and test("consume|staging")) | any' >/dev/null <<<"$mail_archive_ui_read_write_paths"; then
+  echo "❌ Mail Archive UI ReadWritePaths must not include Paperless consume/staging paths."
+  echo "   ReadWritePaths: $mail_archive_ui_read_write_paths"
+  exit 1
+fi
 
 copyparty_service_supplementary_groups="$(snapshot_query '.config.apps.copypartyServiceSupplementaryGroups')"
 if ! jq -e 'index("users") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
@@ -302,6 +334,12 @@ require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGro
 require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGroupsClaim')" '"groups"' \
   "Paperless must keep syncing OIDC groups from the groups claim."
 assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiring must remain present."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--upstream-timeout='30m0s'" \
+  "Uploads OAuth2 Proxy must allow long Copyparty upload handshakes and chunk posts."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--session-cookie-minimal=true" \
+  "Uploads OAuth2 Proxy should keep repeated upload request cookies lean."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--skip-auth-preflight=true" \
+  "Uploads OAuth2 Proxy should not force auth redirects for upload preflight requests."
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf settled scan service must remain present."
 assert_json_true '.config.apps.hasAudiobookshelfLibrarySyncTimer' "Audiobookshelf overnight scan timer must remain present."
 assert_json_false '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf recursive watcher service must remain absent."
@@ -315,7 +353,6 @@ assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan se
 assert_json_false '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain absent."
 assert_json_true '.config.apps.hasGlancesService' "Glances service wiring must remain present."
 assert_json_true '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Proxy wiring must remain present."
-assert_json_true '.config.apps.hasGoaccessReportService' "GoAccess report service wiring must remain present."
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
 
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/\$\{u\}\]' \
@@ -346,6 +383,10 @@ forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeCon
   "Copyparty runtime config sync must retire legacy per-user email volumes."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'copyparty -c .+ --exit cfg' \
   "Copyparty runtime config sync must validate the rendered config before startup."
+forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") 'chmod_d: 2770' \
+  "Copyparty must not request setgid mkdir modes while the systemd unit uses RestrictSUIDSGID."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") 'chmod_d: 770' \
+  "Copyparty should let the setgid upload parent directory apply inherited group ownership."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_document" \
   "Paperless permission bootstrap must grant document view access to paperless-users."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "add_document" \
@@ -414,14 +455,14 @@ if ! jq -e --arg share_host "$(snapshot_query '.vars.sharePhotosDomain' | jq -r 
   exit 1
 fi
 
-if ! jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$caddy_host_names"; then
-  echo "❌ Caddy must expose the private Glances hostname."
+if ! jq -e --arg vaultwarden_host "$(snapshot_query '.vars.vaultwardenDomain' | jq -r '.')" 'index($vaultwarden_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must expose the private Vaultwarden hostname."
   echo "   hosts: $caddy_host_names"
   exit 1
 fi
 
-if ! jq -e --arg traffic_host "$(snapshot_query '.vars.trafficDomain' | jq -r '.')" 'index($traffic_host) != null' >/dev/null <<<"$caddy_host_names"; then
-  echo "❌ Caddy must expose the private GoAccess hostname."
+if ! jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$caddy_host_names"; then
+  echo "❌ Caddy must expose the private Glances hostname."
   echo "   hosts: $caddy_host_names"
   exit 1
 fi
@@ -451,14 +492,14 @@ if ! jq -e --arg uploads_host "$(snapshot_query '.vars.uploadsDomain' | jq -r '.
   exit 1
 fi
 
-if jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
-  echo "❌ Cloudflared must not publish the private Glances hostname."
+if jq -e --arg vaultwarden_host "$(snapshot_query '.vars.vaultwardenDomain' | jq -r '.')" 'index($vaultwarden_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must not publish the private Vaultwarden hostname."
   echo "   ingress hosts: $cloudflared_ingress_host_names"
   exit 1
 fi
 
-if jq -e --arg traffic_host "$(snapshot_query '.vars.trafficDomain' | jq -r '.')" 'index($traffic_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
-  echo "❌ Cloudflared must not publish the private GoAccess hostname."
+if jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must not publish the private Glances hostname."
   echo "   ingress hosts: $cloudflared_ingress_host_names"
   exit 1
 fi
@@ -469,16 +510,70 @@ if ! jq -e 'index("oauth2-proxy") != null and index("filebrowser-quantum-web") !
   echo "   OAuth systems: $oauth_systems"
   exit 1
 fi
-
-if jq -e 'map(.dir) | index("other") != null' >/dev/null <<<"$(snapshot_query '.vars.personalKavitaLibraries')"; then
-  echo "❌ Managed personal Kavita libraries must not include the retired other category."
+if jq -e 'index("vaultwarden-web") != null' >/dev/null <<<"$oauth_systems"; then
+  echo "❌ Vaultwarden must not be registered as a Kanidm OAuth2 client."
+  echo "   OAuth systems: $oauth_systems"
   exit 1
 fi
 
-if jq -e 'index("other") != null' >/dev/null <<<"$(snapshot_query '.vars.sharedBooksSubdirs')"; then
-  echo "❌ Managed shared book subdirectories must not include the retired other category."
+provision_groups="$(snapshot_query '.config.apps.provisionGroupNames')"
+if jq -e 'index("vaultwarden-users") != null or index("vaultwarden-user") != null' >/dev/null <<<"$provision_groups"; then
+  echo "❌ Kanidm provisioning must not define Vaultwarden access groups for local-auth Vaultwarden."
+  echo "   provisioned groups: $provision_groups"
   exit 1
 fi
+
+runtime_canaries="$(snapshot_query '.vars.runtimeAccessCanaries')"
+provision_person_names="$(snapshot_query '.config.apps.provisionPersonNames')"
+if ! jq -e 'keys == ["canary-files"]' >/dev/null <<<"$runtime_canaries"; then
+  echo "❌ vars.runtimeAccessCanaries must define exactly one runtime canary: canary-files."
+  echo "   runtimeAccessCanaries: $runtime_canaries"
+  exit 1
+fi
+
+if ! jq -e 'index("canary-files") != null' >/dev/null <<<"$provision_person_names"; then
+  echo "❌ Kanidm provisioning must declare canary-files."
+  echo "   provisioned persons: $provision_person_names"
+  exit 1
+fi
+
+if ! jq -e '.["canary-files"].groups == [
+  "users",
+  "user-files",
+  "shared-files-read-write-access",
+  "paperless-users",
+  "immich-users",
+  "audiobookshelf-users",
+  "kavita-users",
+  "glances-users",
+  "mail-archive-users",
+  "metube-users"
+]' >/dev/null <<<"$runtime_canaries"; then
+  echo "❌ canary-files must carry all non-admin user-facing access groups."
+  echo "   runtimeAccessCanaries: $runtime_canaries"
+  exit 1
+fi
+
+if jq -e '
+  to_entries
+  | map(.value.groups // [])
+  | flatten
+  | any(. == "app-admin" or . == "domain_admins" or . == "system_admins" or . == "idm_admins" or test("(^|[-_])admins?($|[-_])"))
+' >/dev/null <<<"$runtime_canaries"; then
+  echo "❌ Runtime canaries must never be granted admin groups."
+  echo "   runtimeAccessCanaries: $runtime_canaries"
+  exit 1
+fi
+
+age_secret_names="$(snapshot_query '.config.apps.ageSecretNames')"
+if ! jq -e 'index("runtimeCanaryFilesPassword") != null' >/dev/null <<<"$age_secret_names"; then
+  echo "❌ Missing runtime canary agenix secret definition: runtimeCanaryFilesPassword."
+  echo "   age secrets: $age_secret_names"
+  exit 1
+fi
+
+assert_json_true '.config.apps.hasVaultwardenService' \
+  "Vaultwarden must remain defined as a systemd service."
 
 require_match scripts/helpers/runtime-health-common.sh 'filebrowser-quantum\.service' \
   "Runtime health inventory must require the FileBrowser Quantum service."
@@ -486,6 +581,12 @@ require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.upload
   "Runtime health inventory must probe the Copyparty uploader edge hostname."
 require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.filebrowserDomain\}/' \
   "Runtime health inventory must probe the FileBrowser Quantum edge hostname."
+require_match scripts/helpers/runtime-health-common.sh 'vaultwarden\.service' \
+  "Runtime health inventory must require the Vaultwarden service."
+require_match scripts/helpers/runtime-health-common.sh 'https://\$\{vars\.vaultwardenDomain\}/' \
+  "Runtime health inventory must probe the Vaultwarden edge hostname."
+require_match scripts/helpers/runtime-health-common.sh 'http://127\.0\.0\.1:8222/' \
+  "Runtime health inventory must probe the Vaultwarden local upstream."
 
 jellyfin_library_sync_after="$(snapshot_query '.config.apps.jellyfinLibrarySyncAfter')"
 if ! jq -e 'index("jellyfin-library-monitor-v1.service") != null and index("data-pool-layout.service") != null' >/dev/null <<<"$jellyfin_library_sync_after"; then

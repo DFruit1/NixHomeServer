@@ -104,6 +104,19 @@ pub fn session_reauth(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     Ok(output)
 }
 
+pub fn session_login_refresh_privileged(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
+    let verification =
+        verify_session_recovery(cli, RecoveryTarget::PrivilegedWrites, || cli.login())?;
+    let mut output = recovery_command_output(
+        cli,
+        "Refresh Login For Privileged Writes",
+        verification.clone(),
+    );
+    output.details["login_command_completed"] = json!(true);
+    output.details["snapshot"] = session_snapshot_details(&verification.snapshot);
+    Ok(output)
+}
+
 pub fn session_logout(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     cli.logout()?;
     Ok(CommandOutput {
@@ -207,6 +220,8 @@ printf 'active token for admindsaw\n'
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let output = session_status(&cli).expect("session status");
@@ -231,6 +246,8 @@ exit 1
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let output = session_status(&cli).expect("session status");
@@ -261,6 +278,8 @@ EOF
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let output = session_status(&cli).expect("session status");
@@ -303,6 +322,8 @@ exit 1
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let output = session_login(&cli).expect("session login");

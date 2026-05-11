@@ -14,21 +14,31 @@ pub fn show_context(context: &ResolvedContext) -> CommandOutput {
         .as_ref()
         .map(|path| path.display().to_string());
     let kanidm_bin = context.kanidm_bin.to_string_lossy().to_string();
+    let vaultwarden_admin_token_file = context
+        .vaultwarden_admin_token_file
+        .as_ref()
+        .map(|path| path.display().to_string());
 
     CommandOutput {
         message: "loaded kanidm-admin context".to_string(),
         human: format!(
-            "Repository Root: {}\nServer URL: {}\nAdmin Name: {}\nKanidm Binary: {}",
+            "Repository Root: {}\nServer URL: {}\nAdmin Name: {}\nKanidm Binary: {}\nVaultwarden URL: {}\nVaultwarden Admin Token File: {}",
             repo_root.as_deref().unwrap_or("(not resolved)"),
             context.server_url,
             context.admin_name,
             kanidm_bin,
+            context.vaultwarden_url.as_deref().unwrap_or("(not resolved)"),
+            vaultwarden_admin_token_file
+                .as_deref()
+                .unwrap_or("(not resolved)"),
         ),
         details: json!({
             "repo_root": repo_root,
             "server_url": context.server_url,
             "admin_name": context.admin_name,
             "kanidm_bin": kanidm_bin,
+            "vaultwarden_url": context.vaultwarden_url,
+            "vaultwarden_admin_token_file": vaultwarden_admin_token_file,
         }),
         warnings: Vec::new(),
     }
@@ -54,6 +64,7 @@ pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutpu
         users,
         groups,
         clients,
+        vaultwarden: probe_vaultwarden_helper_context(context),
     };
     let repo_root = context
         .repo_root
@@ -69,12 +80,18 @@ pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutpu
                 "server_url": context.server_url,
                 "admin_name": context.admin_name,
                 "kanidm_bin": context.kanidm_bin.to_string_lossy().to_string(),
+                "vaultwarden_url": context.vaultwarden_url,
+                "vaultwarden_admin_token_file": context
+                    .vaultwarden_admin_token_file
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
             },
             "session": report.session.to_value(),
             "probes": {
                 "users": report.users.to_value(),
                 "groups": report.groups.to_value(),
                 "clients": report.clients.to_value(),
+                "vaultwarden": report.vaultwarden.to_value(),
             },
             "counts": {
                 "users": report.users.count,
@@ -182,21 +199,26 @@ struct DoctorReport {
     users: DoctorProbe,
     groups: DoctorProbe,
     clients: DoctorProbe,
+    vaultwarden: VaultwardenDoctorProbe,
 }
 
 impl DoctorReport {
     fn render_human(&self, context: &ResolvedContext) -> String {
         let mut body = format!(
-            "Server URL: {}\nAdmin Name: {}\nSession: {}\nUsers: {}\nGroups: {}\nOAuth2 Clients: {}",
+            "Server URL: {}\nAdmin Name: {}\nSession: {}\nUsers: {}\nGroups: {}\nOAuth2 Clients: {}\nVaultwarden Local Helper: {}",
             context.server_url,
             context.admin_name,
             self.session.summary_line(),
             render_count(self.users.count),
             render_count(self.groups.count),
             render_count(self.clients.count),
+            self.vaultwarden.summary_line(),
         );
 
-        let next_steps = self.session.next_steps();
+        let next_steps = merge_lists(vec![
+            self.session.next_steps(),
+            self.vaultwarden.next_steps(),
+        ]);
         if !next_steps.is_empty() {
             body.push_str("\n\nNext Step:\n");
             body.push_str(&render_bullets(&next_steps));
@@ -206,6 +228,7 @@ impl DoctorReport {
             self.users.warnings.clone(),
             self.groups.warnings.clone(),
             self.clients.warnings.clone(),
+            self.vaultwarden.warnings.clone(),
         ]);
         if !warnings.is_empty() {
             body.push_str("\n\nWarnings:\n");
@@ -237,7 +260,50 @@ impl DoctorReport {
         append_probe_error("Users", &self.users, &mut errors);
         append_probe_error("Groups", &self.groups, &mut errors);
         append_probe_error("OAuth2 Clients", &self.clients, &mut errors);
+        if self.vaultwarden.status == DoctorProbeStatus::Error
+            && !self.vaultwarden.detail.is_empty()
+        {
+            errors.push(format!(
+                "Vaultwarden local helper: {}",
+                self.vaultwarden.detail
+            ));
+        }
         errors
+    }
+}
+
+#[derive(Debug, Clone)]
+struct VaultwardenDoctorProbe {
+    status: DoctorProbeStatus,
+    url_configured: bool,
+    admin_token_file_configured: bool,
+    detail: String,
+    warnings: Vec<String>,
+}
+
+impl VaultwardenDoctorProbe {
+    fn to_value(&self) -> Value {
+        json!({
+            "status": self.status.as_str(),
+            "url_configured": self.url_configured,
+            "admin_token_file_configured": self.admin_token_file_configured,
+            "detail": self.detail,
+            "warnings": self.warnings,
+        })
+    }
+
+    fn summary_line(&self) -> String {
+        self.detail.clone()
+    }
+
+    fn next_steps(&self) -> Vec<String> {
+        match self.status {
+            DoctorProbeStatus::Ok => Vec::new(),
+            DoctorProbeStatus::Warning => vec![
+                "Confirm the repo context can resolve the Vaultwarden URL and admin token file before using `kanidm-admin local vaultwarden invite`.".to_string(),
+            ],
+            DoctorProbeStatus::Error => Vec::new(),
+        }
     }
 }
 
@@ -314,6 +380,37 @@ where
     }
 }
 
+fn probe_vaultwarden_helper_context(context: &ResolvedContext) -> VaultwardenDoctorProbe {
+    let url_configured = context.vaultwarden_url.is_some();
+    let admin_token_file_configured = context.vaultwarden_admin_token_file.is_some();
+    let mut warnings = Vec::new();
+    if !url_configured {
+        warnings.push("Vaultwarden URL is not configured for local invite helpers".to_string());
+    }
+    if !admin_token_file_configured {
+        warnings.push(
+            "Vaultwarden admin token file is not configured for local invite helpers".to_string(),
+        );
+    }
+    let status = if warnings.is_empty() {
+        DoctorProbeStatus::Ok
+    } else {
+        DoctorProbeStatus::Warning
+    };
+    let detail = if warnings.is_empty() {
+        "local invite helper context is configured".to_string()
+    } else {
+        "local invite helper context is incomplete".to_string()
+    };
+    VaultwardenDoctorProbe {
+        status,
+        url_configured,
+        admin_token_file_configured,
+        detail,
+        warnings,
+    }
+}
+
 fn append_probe_error(label: &str, probe: &DoctorProbe, errors: &mut Vec<String>) {
     if let Some(error) = &probe.error {
         let message = error
@@ -379,6 +476,8 @@ mod tests {
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: Some("https://passwords.example.test".to_string()),
+            vaultwarden_admin_token_file: Some("/run/agenix/vaultwardenAdminToken".into()),
         });
         std::mem::forget(dir);
         cli
@@ -390,6 +489,8 @@ mod tests {
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: "/bin/true".into(),
+            vaultwarden_url: Some("https://passwords.example.test".to_string()),
+            vaultwarden_admin_token_file: Some("/run/agenix/vaultwardenAdminToken".into()),
         }
     }
 
@@ -487,5 +588,90 @@ exit 1
         assert!(output.human.contains("Warnings:"));
         assert!(output.human.contains("skipped malformed"));
         assert_eq!(output.details["counts"]["users"], 0);
+    }
+
+    #[test]
+    fn doctor_reports_vaultwarden_local_helper_context_success() {
+        let cli = stub_cli(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  printf 'authenticated'
+  exit 0
+fi
+if [[ "$1" == "person" && "$2" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+if [[ "$1" == "group" && "$2" == "list" ]]; then
+  printf '[{"name":["users"]}]'
+  exit 0
+fi
+if [[ "$1" == "system" && "$2" == "oauth2" && "$3" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+
+        let output = doctor(&context(), &cli).expect("doctor");
+        assert!(output
+            .human
+            .contains("Vaultwarden Local Helper: local invite helper context is configured"));
+        assert_eq!(output.details["probes"]["vaultwarden"]["status"], "ok");
+        assert_eq!(
+            output.details["probes"]["vaultwarden"]["url_configured"],
+            true
+        );
+        assert_eq!(
+            output.details["probes"]["vaultwarden"]["admin_token_file_configured"],
+            true
+        );
+    }
+
+    #[test]
+    fn doctor_warns_when_vaultwarden_helper_context_is_incomplete() {
+        let cli = stub_cli(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "session" && "$2" == "list" ]]; then
+  printf 'authenticated'
+  exit 0
+fi
+if [[ "$1" == "person" && "$2" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+if [[ "$1" == "group" && "$2" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+if [[ "$1" == "system" && "$2" == "oauth2" && "$3" == "list" ]]; then
+  printf '[]'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+
+        let mut context = context();
+        context.vaultwarden_url = None;
+        context.vaultwarden_admin_token_file = None;
+        let output = doctor(&context, &cli).expect("doctor");
+        assert_eq!(output.details["probes"]["vaultwarden"]["status"], "warning");
+        assert_eq!(
+            output.details["probes"]["vaultwarden"]["url_configured"],
+            false
+        );
+        assert_eq!(
+            output.details["probes"]["vaultwarden"]["admin_token_file_configured"],
+            false
+        );
+        assert!(output
+            .human
+            .contains("Vaultwarden Local Helper: local invite helper context is incomplete"));
     }
 }

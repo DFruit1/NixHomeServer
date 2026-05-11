@@ -391,7 +391,10 @@ mod tests {
             &test_cli(),
             "Login",
             RecoveryVerification {
-                snapshot: snapshot(BaseSessionState::Present, PrivilegedWriteState::ReauthRequired),
+                snapshot: snapshot(
+                    BaseSessionState::Present,
+                    PrivilegedWriteState::ReauthRequired,
+                ),
                 state: "reauth_required",
                 privileged_write_access: "reauth_required",
                 warnings: vec![
@@ -401,7 +404,9 @@ mod tests {
             },
         );
 
-        assert!(output.human.contains("Base login successful for 'admindsaw'."));
+        assert!(output
+            .human
+            .contains("Base login successful for 'admindsaw'."));
         assert!(output
             .human
             .contains("Some actions require reauthentication for added security."));

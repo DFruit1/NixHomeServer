@@ -20,6 +20,7 @@ use landlock::{
     path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus, ABI,
 };
+use mailparse::MailHeaderMap;
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{
@@ -33,13 +34,14 @@ use std::{
     env,
     fmt::Write as _,
     fs::{self, OpenOptions},
-    io::{ErrorKind, Read},
+    io::{Cursor, ErrorKind, Read, Write},
     net::SocketAddr,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path as FsPath, PathBuf},
-    process::Output,
+    process::{Command, Output},
     sync::Arc,
 };
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 9011;
@@ -47,18 +49,13 @@ const DEFAULT_DATA_DIR: &str = ".";
 const DEFAULT_STORE_ROOT: &str = ".";
 const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 const DEFAULT_LOCK_DIR: &str = ".";
-const PAPERLESS_REVIEWED_TAG: &str = "paperless-reviewed";
-const PAPERLESS_FILED_TAG: &str = "paperless-filed";
 const ATTACHMENTS_PER_PAGE: usize = 100;
-const ATTACHMENT_METHOD_BROWSER_DOWNLOAD: &str = "browser_download";
-const ATTACHMENT_METHOD_FILES: &str = "files";
-const ATTACHMENT_METHOD_PAPERLESS: &str = "paperless";
-const ATTACHMENT_OUTCOME_STARTED: &str = "started";
-const ATTACHMENT_OUTCOME_SAVED: &str = "saved";
-const ATTACHMENT_OUTCOME_DUPLICATE: &str = "duplicate";
-const ATTACHMENT_OUTCOME_ERROR: &str = "error";
+const MAX_ZIP_ATTACHMENTS: usize = 500;
+const MAX_ZIP_BYTES: u64 = 1024 * 1024 * 1024;
+const ATTACHMENT_SELECTION_ALL_MATCHING: &str = "all_matching";
 const MASTER_KEY_FILENAME: &str = "master.key";
 const DB_FILENAME: &str = "mail-archive-ui.sqlite3";
+const VISIBLE_MESSAGE_SUBJECT_MAX_CHARS: usize = 120;
 const ATTACHMENT_TEXT_MIME_PATTERNS: &[&str] = &[
     "^application/pdf$",
     "^application/msword$",
@@ -76,7 +73,7 @@ if (DASHBOARD_ROOT) {
   const IDLE_INTERVAL_MS = 15000;
   let pollTimer = null;
 
-  const setText = (element, value) => {
+    const setText = (element, value) => {
     if (element) {
       element.textContent = value;
     }
@@ -152,7 +149,6 @@ if (DASHBOARD_ROOT) {
     }
 
     setText(card.querySelector("[data-index-pill]"), account.index_label);
-    setText(card.querySelector("[data-paperless-pill]"), account.paperless_label);
     setText(
       card.querySelector('[data-progress-field="archived"]'),
       numberFormatter.format(account.archived_message_count),
@@ -172,7 +168,6 @@ if (DASHBOARD_ROOT) {
     setText(card.querySelector("[data-progress-note]"), account.progress_note);
     setOptionalText(card, "[data-overlap-note]", account.overlap_note);
     setText(card.querySelector("[data-last-activity]"), `Last activity ${account.last_activity}`);
-    setText(card.querySelector("[data-paperless-note]"), account.paperless_note);
 
     const progressBar = card.querySelector("[data-progress-bar]");
     if (progressBar) {
@@ -230,16 +225,6 @@ if (DASHBOARD_ROOT) {
       }
     }
 
-    const paperlessErrorBox = card.querySelector("[data-paperless-error]");
-    if (paperlessErrorBox) {
-      if (account.last_paperless_error) {
-        paperlessErrorBox.textContent = account.last_paperless_error;
-        paperlessErrorBox.classList.remove("hidden");
-      } else {
-        paperlessErrorBox.textContent = "";
-        paperlessErrorBox.classList.add("hidden");
-      }
-    }
   };
 
   const scheduleNextPoll = (accounts) => {
@@ -280,6 +265,15 @@ if (DASHBOARD_ROOT) {
   fetchStatus();
 }
 "#;
+const ATTACHMENTS_JS: &str = r#"const selectPage = document.querySelector("[data-select-page]");
+if (selectPage) {
+  selectPage.addEventListener("change", () => {
+    document.querySelectorAll("[data-attachment-checkbox]").forEach((checkbox) => {
+      checkbox.checked = selectPage.checked;
+    });
+  });
+}
+"#;
 const GROUP_NAME: &str = "mail-archive-users";
 
 #[derive(Clone, Debug)]
@@ -291,8 +285,7 @@ struct AppConfig {
     account_state_root: Arc<str>,
     runtime_dir: Arc<str>,
     lock_dir: Arc<str>,
-    paperless_consume_root: Option<Arc<str>>,
-    paperless_staging_dir: Option<Arc<str>>,
+    visible_mirror_read_group: Option<Arc<str>>,
     default_tags: Arc<[String]>,
 }
 
@@ -321,7 +314,6 @@ struct AccountRecord {
     folder_patterns_json: String,
     encrypted_secret: String,
     sync_enabled: bool,
-    paperless_enabled: bool,
     created_at: String,
     updated_at: String,
     last_sync_started_at: Option<String>,
@@ -332,10 +324,6 @@ struct AccountRecord {
     last_sync_code: Option<String>,
     last_sync_summary: Option<String>,
     last_sync_detail: Option<String>,
-    paperless_last_export_started_at: Option<String>,
-    paperless_last_export_finished_at: Option<String>,
-    paperless_last_export_status: Option<String>,
-    paperless_last_export_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -395,28 +383,6 @@ struct AttachmentRecord {
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
-struct AttachmentActionRecord {
-    attachment_key: String,
-    account_id: i64,
-    message_key: String,
-    attachment_sha256: String,
-    original_filename: String,
-    method: String,
-    outcome: String,
-    counts_as_saved: bool,
-    destination_relpath: Option<String>,
-    created_at: String,
-}
-
-#[derive(Clone, Debug, Default)]
-struct AttachmentActionSummary {
-    downloaded_browser: bool,
-    saved_files: bool,
-    saved_paperless: bool,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
 struct DeletedMessageRecord {
     account_id: i64,
     message_key: String,
@@ -454,8 +420,6 @@ struct AttachmentListItem {
     message: AttachmentMessageRecord,
     account_name: String,
     date_label: String,
-    status: AttachmentActionSummary,
-    supports_paperless: bool,
     deleted_at: Option<String>,
     restore_pending: bool,
     is_deleted: bool,
@@ -513,25 +477,6 @@ struct MessageMailboxInstanceRecord {
     mailbox_slug: String,
     filename: String,
     last_seen_at: String,
-}
-
-#[derive(Clone, Debug)]
-struct PaperlessPaths {
-    consume_root: PathBuf,
-    staging_root: PathBuf,
-}
-
-#[derive(Clone, Debug)]
-struct PaperlessExportSummary {
-    exported_count: usize,
-    duplicate_count: usize,
-    ignored_count: usize,
-}
-
-#[derive(Clone, Debug)]
-struct CandidateMessage {
-    file_path: PathBuf,
-    message_key: String,
 }
 
 #[derive(Clone, Debug)]
@@ -613,7 +558,6 @@ struct CreateAccountForm {
     secret: String,
     folder_patterns: String,
     sync_enabled: Option<String>,
-    paperless_enabled: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -637,7 +581,6 @@ struct AttachmentListParams {
     q: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
     account_id: Option<i64>,
-    save_state: Option<String>,
     message_state: Option<String>,
     extension: Option<String>,
     page: Option<String>,
@@ -652,7 +595,14 @@ struct AttachmentRefreshForm {
 }
 
 #[derive(Debug, Deserialize)]
-struct AttachmentActionForm {
+struct AttachmentDownloadForm {
+    #[serde(default)]
+    attachment_keys: Vec<String>,
+    selection_scope: Option<String>,
+    q: Option<String>,
+    account_id: Option<String>,
+    message_state: Option<String>,
+    extension: Option<String>,
     return_to: Option<String>,
 }
 
@@ -724,9 +674,6 @@ struct AccountStatusPayload {
     progress_warning: Option<String>,
     progress_warning_detail: Option<String>,
     progress_warning_action: Option<String>,
-    paperless_label: String,
-    paperless_note: String,
-    last_paperless_error: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -877,7 +824,6 @@ struct ValidatedAccount {
     folder_patterns: Vec<String>,
     secret: Option<String>,
     sync_enabled: bool,
-    paperless_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -921,50 +867,8 @@ impl MessageStateFilter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AttachmentSaveFilter {
-    NeedsTriage,
-    SavedAny,
-    SavedFiles,
-    SavedPaperless,
-    DownloadedBrowser,
-}
-
-impl AttachmentSaveFilter {
-    fn from_query(raw: Option<&str>) -> Self {
-        match raw.map(str::trim).filter(|value| !value.is_empty()) {
-            Some("saved_any") => Self::SavedAny,
-            Some("saved_files") => Self::SavedFiles,
-            Some("saved_paperless") => Self::SavedPaperless,
-            Some("downloaded_browser") => Self::DownloadedBrowser,
-            _ => Self::NeedsTriage,
-        }
-    }
-
-    fn as_query_value(self) -> &'static str {
-        match self {
-            Self::NeedsTriage => "needs_triage",
-            Self::SavedAny => "saved_any",
-            Self::SavedFiles => "saved_files",
-            Self::SavedPaperless => "saved_paperless",
-            Self::DownloadedBrowser => "downloaded_browser",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::NeedsTriage => "Needs triage",
-            Self::SavedAny => "Saved anywhere",
-            Self::SavedFiles => "Saved to files",
-            Self::SavedPaperless => "Saved to Paperless",
-            Self::DownloadedBrowser => "Downloaded to browser",
-        }
-    }
-}
-
 #[derive(Debug)]
 struct AttachmentListViewState {
-    save_filter: AttachmentSaveFilter,
     message_state: MessageStateFilter,
     page: usize,
     result_count: usize,
@@ -1048,17 +952,11 @@ fn router(state: AppState) -> Router {
             "/attachments/{attachment_key}/download/browser",
             post(download_attachment_browser),
         )
-        .route(
-            "/attachments/{attachment_key}/save/files",
-            post(save_attachment_to_files),
-        )
-        .route(
-            "/attachments/{attachment_key}/save/paperless",
-            post(save_attachment_to_paperless),
-        )
+        .route("/attachments/download", post(download_attachments_zip))
         .route("/healthz", get(healthz))
         .route("/static/custom.css", get(custom_css))
         .route("/static/dashboard.js", get(dashboard_js))
+        .route("/static/attachments.js", get(attachments_js))
         .with_state(state)
 }
 
@@ -1128,7 +1026,6 @@ async fn new_account(headers: HeaderMap) -> Response {
                 secret: String::new(),
                 folder_patterns: gmail_default_patterns().join("\n"),
                 sync_enabled: Some("on".to_string()),
-                paperless_enabled: None,
             };
 
             html_response(render_account_form(
@@ -1726,14 +1623,6 @@ async fn download_attachment_browser(
                 attachment_path.display()
             )
         })?;
-        record_attachment_action(
-            &config,
-            &attachment,
-            ATTACHMENT_METHOD_BROWSER_DOWNLOAD,
-            ATTACHMENT_OUTCOME_STARTED,
-            false,
-            None,
-        )?;
         Ok::<_, String>((attachment.original_filename, attachment.mime_type, bytes))
     })
     .await
@@ -1752,11 +1641,10 @@ async fn download_attachment_browser(
     attachment_download_response(&payload.0, &payload.1, payload.2)
 }
 
-async fn save_attachment_to_files(
+async fn download_attachments_zip(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(attachment_key): Path<String>,
-    Form(form): Form<AttachmentActionForm>,
+    Form(form): Form<AttachmentDownloadForm>,
 ) -> Response {
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
@@ -1769,141 +1657,21 @@ async fn save_attachment_to_files(
 
     let config = state.config.clone();
     let username = identity.username.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let (account, message, attachment) =
-            load_attachment_for_user(&config, &username, &attachment_key)?;
-        let (_dir, attachment_path) =
-            resolve_attachment_payload(&config, &account, &message, &attachment)?;
-        match copy_attachment_to_files_destination(&config, &account, &attachment, &attachment_path)
-        {
-            Ok((relpath, outcome)) => {
-                record_attachment_action(
-                    &config,
-                    &attachment,
-                    ATTACHMENT_METHOD_FILES,
-                    outcome,
-                    true,
-                    Some(&relpath),
-                )?;
-                Ok::<_, String>(outcome)
-            }
-            Err(error) => {
-                let _ = record_attachment_action(
-                    &config,
-                    &attachment,
-                    ATTACHMENT_METHOD_FILES,
-                    ATTACHMENT_OUTCOME_ERROR,
-                    false,
-                    None,
-                );
-                Err(error)
-            }
-        }
-    })
-    .await;
+    let return_to = form.return_to.clone();
+    let result =
+        tokio::task::spawn_blocking(move || build_attachments_zip(&config, &username, &form)).await;
 
     match result {
-        Ok(Ok(ATTACHMENT_OUTCOME_DUPLICATE)) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
-            Some("Attachment was already saved to files"),
-            None,
-        )),
-        Ok(Ok(_)) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
-            Some("Attachment saved to files"),
-            None,
-        )),
+        Ok(Ok((filename, bytes))) => zip_download_response(&filename, bytes),
         Ok(Err(error)) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
+            return_to.as_deref(),
             None,
             Some(&error),
         )),
         Err(_) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
+            return_to.as_deref(),
             None,
-            Some("Attachment save task failed"),
-        )),
-    }
-}
-
-async fn save_attachment_to_paperless(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(attachment_key): Path<String>,
-    Form(form): Form<AttachmentActionForm>,
-) -> Response {
-    let identity = match identity_from_headers(&headers) {
-        Ok(identity) => identity,
-        Err((status, message)) => return auth_error(status, &message),
-    };
-
-    if let Err((status, message)) = verify_same_origin_request(&headers) {
-        return auth_error(status, &message);
-    }
-
-    let config = state.config.clone();
-    let username = identity.username.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let (account, message, attachment) =
-            load_attachment_for_user(&config, &username, &attachment_key)?;
-        if !is_supported_document_attachment_metadata(&attachment.mime_type, &attachment.extension)
-        {
-            return Err("This attachment type is not eligible for Paperless filing".to_string());
-        }
-        let (_dir, attachment_path) =
-            resolve_attachment_payload(&config, &account, &message, &attachment)?;
-        match send_attachment_to_paperless_destination(
-            &config,
-            &account,
-            &attachment,
-            &attachment_path,
-        ) {
-            Ok((relpath, outcome)) => {
-                record_attachment_action(
-                    &config,
-                    &attachment,
-                    ATTACHMENT_METHOD_PAPERLESS,
-                    outcome,
-                    true,
-                    Some(&relpath),
-                )?;
-                Ok::<_, String>(outcome)
-            }
-            Err(error) => {
-                let _ = record_attachment_action(
-                    &config,
-                    &attachment,
-                    ATTACHMENT_METHOD_PAPERLESS,
-                    ATTACHMENT_OUTCOME_ERROR,
-                    false,
-                    None,
-                );
-                Err(error)
-            }
-        }
-    })
-    .await;
-
-    match result {
-        Ok(Ok(ATTACHMENT_OUTCOME_DUPLICATE)) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
-            Some("Attachment was already available in Paperless"),
-            None,
-        )),
-        Ok(Ok(_)) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
-            Some("Attachment sent to Paperless"),
-            None,
-        )),
-        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
-            None,
-            Some(&error),
-        )),
-        Err(_) => redirect_response(&attachments_redirect_location(
-            form.return_to.as_deref(),
-            None,
-            Some("Attachment Paperless task failed"),
+            Some("Attachment ZIP task failed"),
         )),
     }
 }
@@ -1931,6 +1699,15 @@ async fn dashboard_js() -> Response {
     harden_response(response)
 }
 
+async fn attachments_js() -> Response {
+    let response = (
+        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        ATTACHMENTS_JS.to_string(),
+    )
+        .into_response();
+    harden_response(response)
+}
+
 fn load_config() -> AppConfig {
     let address =
         env::var("MAIL_ARCHIVE_UI_ADDRESS").unwrap_or_else(|_| DEFAULT_ADDRESS.to_string());
@@ -1948,12 +1725,7 @@ fn load_config() -> AppConfig {
         env::var("MAIL_ARCHIVE_UI_RUNTIME_DIR").unwrap_or_else(|_| DEFAULT_RUNTIME_DIR.to_string());
     let lock_dir =
         env::var("MAIL_ARCHIVE_UI_LOCK_DIR").unwrap_or_else(|_| DEFAULT_LOCK_DIR.to_string());
-    let paperless_consume_root = env::var("MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(Arc::<str>::from);
-    let paperless_staging_dir = env::var("MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR")
+    let visible_mirror_read_group = env::var("MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -1979,8 +1751,7 @@ fn load_config() -> AppConfig {
         account_state_root: Arc::<str>::from(account_state_root),
         runtime_dir: Arc::<str>::from(runtime_dir),
         lock_dir: Arc::<str>::from(lock_dir),
-        paperless_consume_root,
-        paperless_staging_dir,
+        visible_mirror_read_group,
         default_tags: Arc::from(default_tags),
     }
 }
@@ -1994,13 +1765,6 @@ fn ensure_app_layout(config: &AppConfig) -> Result<(), String> {
     ] {
         fs::create_dir_all(directory)
             .map_err(|error| format!("failed to create {directory}: {error}"))?;
-    }
-
-    if let Some(path) = config.paperless_consume_root.as_deref() {
-        fs::create_dir_all(path).map_err(|error| format!("failed to create {path}: {error}"))?;
-    }
-    if let Some(path) = config.paperless_staging_dir.as_deref() {
-        fs::create_dir_all(path).map_err(|error| format!("failed to create {path}: {error}"))?;
     }
 
     Ok(())
@@ -2069,8 +1833,6 @@ fn landlock_roots(config: &AppConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
         Some(PathBuf::from(config.account_state_root.as_ref())),
         Some(PathBuf::from(config.runtime_dir.as_ref())),
         Some(PathBuf::from(config.lock_dir.as_ref())),
-        config.paperless_consume_root.as_deref().map(PathBuf::from),
-        config.paperless_staging_dir.as_deref().map(PathBuf::from),
     ]);
 
     (read_only_roots, read_write_roots)
@@ -2107,7 +1869,6 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 folder_patterns_json TEXT NOT NULL,
                 encrypted_secret TEXT NOT NULL,
                 sync_enabled INTEGER NOT NULL,
-                paperless_enabled INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_sync_started_at TEXT,
@@ -2117,11 +1878,7 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 last_sync_phase TEXT,
                 last_sync_code TEXT,
                 last_sync_summary TEXT,
-                last_sync_detail TEXT,
-                paperless_last_export_started_at TEXT,
-                paperless_last_export_finished_at TEXT,
-                paperless_last_export_status TEXT,
-                paperless_last_export_error TEXT
+                last_sync_detail TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts (username);
@@ -2131,21 +1888,6 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 last_query TEXT,
                 default_account_id INTEGER
             );
-
-            CREATE TABLE IF NOT EXISTS paperless_attachment_exports (
-                account_id INTEGER NOT NULL,
-                message_key TEXT NOT NULL,
-                attachment_sha256 TEXT NOT NULL,
-                original_filename TEXT NOT NULL,
-                paperless_relpath TEXT,
-                outcome TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(account_id, message_key, attachment_sha256)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_paperless_attachment_exports_sha256
-            ON paperless_attachment_exports (attachment_sha256);
 
             CREATE TABLE IF NOT EXISTS attachment_messages (
                 account_id INTEGER NOT NULL,
@@ -2184,23 +1926,6 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_attachment_catalog_message
             ON attachment_catalog (account_id, message_key);
-
-            CREATE TABLE IF NOT EXISTS attachment_actions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                attachment_key TEXT NOT NULL,
-                account_id INTEGER NOT NULL,
-                message_key TEXT NOT NULL,
-                attachment_sha256 TEXT NOT NULL,
-                original_filename TEXT NOT NULL,
-                method TEXT NOT NULL,
-                outcome TEXT NOT NULL,
-                counts_as_saved INTEGER NOT NULL,
-                destination_relpath TEXT,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_attachment_actions_key
-            ON attachment_actions (attachment_key, method, outcome);
 
             CREATE TABLE IF NOT EXISTS account_progress_snapshots (
                 account_id INTEGER PRIMARY KEY,
@@ -2309,31 +2034,23 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
         "last_sync_detail",
         "ALTER TABLE accounts ADD COLUMN last_sync_detail TEXT",
     )?;
-    ensure_account_column(
-        &connection,
+    connection
+        .execute_batch(
+            r#"
+            DROP TABLE IF EXISTS attachment_actions;
+            DROP TABLE IF EXISTS paperless_attachment_exports;
+            "#,
+        )
+        .map_err(|error| format!("failed to drop legacy attachment action state: {error}"))?;
+    for column in [
         "paperless_enabled",
-        "ALTER TABLE accounts ADD COLUMN paperless_enabled INTEGER NOT NULL DEFAULT 0",
-    )?;
-    ensure_account_column(
-        &connection,
         "paperless_last_export_started_at",
-        "ALTER TABLE accounts ADD COLUMN paperless_last_export_started_at TEXT",
-    )?;
-    ensure_account_column(
-        &connection,
         "paperless_last_export_finished_at",
-        "ALTER TABLE accounts ADD COLUMN paperless_last_export_finished_at TEXT",
-    )?;
-    ensure_account_column(
-        &connection,
         "paperless_last_export_status",
-        "ALTER TABLE accounts ADD COLUMN paperless_last_export_status TEXT",
-    )?;
-    ensure_account_column(
-        &connection,
         "paperless_last_export_error",
-        "ALTER TABLE accounts ADD COLUMN paperless_last_export_error TEXT",
-    )?;
+    ] {
+        drop_account_column_if_exists(&connection, column)?;
+    }
 
     Ok(())
 }
@@ -2355,6 +2072,30 @@ fn ensure_account_column(connection: &Connection, column: &str, sql: &str) -> Re
     connection
         .execute(sql, [])
         .map_err(|error| format!("failed to add accounts column {column}: {error}"))?;
+    Ok(())
+}
+
+fn drop_account_column_if_exists(connection: &Connection, column: &str) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(accounts)")
+        .map_err(|error| format!("failed to inspect accounts schema: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("failed to inspect accounts columns: {error}"))?;
+    let mut exists = false;
+    for row in rows {
+        if row.map_err(|error| format!("failed to decode accounts column: {error}"))? == column {
+            exists = true;
+            break;
+        }
+    }
+    drop(statement);
+
+    if exists {
+        connection
+            .execute(&format!("ALTER TABLE accounts DROP COLUMN {column}"), [])
+            .map_err(|error| format!("failed to drop legacy accounts column {column}: {error}"))?;
+    }
     Ok(())
 }
 
@@ -2540,7 +2281,6 @@ fn validate_account_form(
         folder_patterns,
         secret: (!secret.is_empty()).then(|| secret.to_string()),
         sync_enabled: form.sync_enabled.is_some(),
-        paperless_enabled: form.paperless_enabled.is_some(),
     })
 }
 
@@ -2597,7 +2337,6 @@ fn account_form_from_account(account: &AccountRecord) -> CreateAccountForm {
         secret: String::new(),
         folder_patterns,
         sync_enabled: account.sync_enabled.then(|| "on".to_string()),
-        paperless_enabled: account.paperless_enabled.then(|| "on".to_string()),
     }
 }
 
@@ -2633,7 +2372,6 @@ fn insert_account(
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
-                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_status,
@@ -2641,10 +2379,8 @@ fn insert_account(
                 last_sync_phase,
                 last_sync_code,
                 last_sync_summary,
-                last_sync_detail,
-                paperless_last_export_status,
-                paperless_last_export_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                last_sync_detail
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             "#,
             params![
                 username,
@@ -2657,12 +2393,9 @@ fn insert_account(
                 patterns_json,
                 encrypted_secret,
                 if account.sync_enabled { 1 } else { 0 },
-                if account.paperless_enabled { 1 } else { 0 },
                 now,
                 now,
                 "idle",
-                Option::<String>::None,
-                Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
                 Option::<String>::None,
@@ -2707,9 +2440,8 @@ fn update_account_for_user(
                 folder_patterns_json = ?7,
                 encrypted_secret = ?8,
                 sync_enabled = ?9,
-                paperless_enabled = ?10,
-                updated_at = ?11
-            WHERE username = ?12 AND id = ?13
+                updated_at = ?10
+            WHERE username = ?11 AND id = ?12
             "#,
             params![
                 account.provider_kind,
@@ -2721,7 +2453,6 @@ fn update_account_for_user(
                 patterns_json,
                 encrypted_secret,
                 if account.sync_enabled { 1 } else { 0 },
-                if account.paperless_enabled { 1 } else { 0 },
                 now,
                 username,
                 account_id,
@@ -2779,7 +2510,6 @@ fn list_accounts_for_user(
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
-                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_started_at,
@@ -2789,11 +2519,7 @@ fn list_accounts_for_user(
                 last_sync_phase,
                 last_sync_code,
                 last_sync_summary,
-                last_sync_detail,
-                paperless_last_export_started_at,
-                paperless_last_export_finished_at,
-                paperless_last_export_status,
-                paperless_last_export_error
+                last_sync_detail
             FROM accounts
             WHERE username = ?1
             ORDER BY display_name COLLATE NOCASE, id ASC
@@ -2834,7 +2560,6 @@ fn load_account_for_user(
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
-                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_started_at,
@@ -2844,11 +2569,7 @@ fn load_account_for_user(
                 last_sync_phase,
                 last_sync_code,
                 last_sync_summary,
-                last_sync_detail,
-                paperless_last_export_started_at,
-                paperless_last_export_finished_at,
-                paperless_last_export_status,
-                paperless_last_export_error
+                last_sync_detail
             FROM accounts
             WHERE username = ?1 AND id = ?2
             "#,
@@ -2922,21 +2643,16 @@ fn map_account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRecord> {
         folder_patterns_json: row.get(8)?,
         encrypted_secret: row.get(9)?,
         sync_enabled: row.get::<_, i64>(10)? != 0,
-        paperless_enabled: row.get::<_, i64>(11)? != 0,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
-        last_sync_started_at: row.get(14)?,
-        last_sync_finished_at: row.get(15)?,
-        last_sync_status: row.get(16)?,
-        last_sync_error: row.get(17)?,
-        last_sync_phase: row.get(18)?,
-        last_sync_code: row.get(19)?,
-        last_sync_summary: row.get(20)?,
-        last_sync_detail: row.get(21)?,
-        paperless_last_export_started_at: row.get(22)?,
-        paperless_last_export_finished_at: row.get(23)?,
-        paperless_last_export_status: row.get(24)?,
-        paperless_last_export_error: row.get(25)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        last_sync_started_at: row.get(13)?,
+        last_sync_finished_at: row.get(14)?,
+        last_sync_status: row.get(15)?,
+        last_sync_error: row.get(16)?,
+        last_sync_phase: row.get(17)?,
+        last_sync_code: row.get(18)?,
+        last_sync_summary: row.get(19)?,
+        last_sync_detail: row.get(20)?,
     })
 }
 
@@ -3008,7 +2724,6 @@ fn sync_due(config: &AppConfig) -> Result<bool, String> {
                 folder_patterns_json,
                 encrypted_secret,
                 sync_enabled,
-                paperless_enabled,
                 created_at,
                 updated_at,
                 last_sync_started_at,
@@ -3018,11 +2733,7 @@ fn sync_due(config: &AppConfig) -> Result<bool, String> {
                 last_sync_phase,
                 last_sync_code,
                 last_sync_summary,
-                last_sync_detail,
-                paperless_last_export_started_at,
-                paperless_last_export_finished_at,
-                paperless_last_export_status,
-                paperless_last_export_error
+                last_sync_detail
             FROM accounts
             WHERE sync_enabled = 1
             ORDER BY username ASC, display_name COLLATE NOCASE ASC, id ASC
@@ -3182,14 +2893,16 @@ fn run_account_action(
                         error,
                     )
                 })?;
-                rebuild_message_catalog_and_visible_mailboxes(config, account).map_err(|error| {
-                    SyncDiagnostic::new(
+                rebuild_message_catalog_and_visible_mailboxes(config, account).map_err(
+                    |error| {
+                        SyncDiagnostic::new(
                         SyncPhase::Reconcile,
                         "mailbox_mirror_rebuild_failed",
                         "Mail sync completed, but the visible mailbox mirror could not be rebuilt.",
                         error,
                     )
-                })?;
+                    },
+                )?;
             }
             AccountAction::Reindex => {
                 let account_paths = ensure_account_paths(config, account).map_err(|error| {
@@ -3257,12 +2970,6 @@ fn run_account_action(
             if let Err(error) = refresh_attachment_catalog(config, account) {
                 eprintln!(
                     "mail-archive-ui attachment refresh failed username={} account_id={} detail={}",
-                    account.username, account.id, error
-                );
-            }
-            if let Err(error) = maybe_export_account_to_paperless(config, account) {
-                eprintln!(
-                    "mail-archive-ui paperless export failed username={} account_id={} detail={}",
                     account.username, account.id, error
                 );
             }
@@ -3421,6 +3128,7 @@ fn ensure_account_paths(
     };
 
     migrate_legacy_account_state(&legacy_state_dir, &legacy_notmuch_db_root, &account_paths)?;
+    migrate_legacy_maildir_payload(&legacy_payload_root.join("maildir"), &account_paths.maildir)?;
     migrate_account_state_root_layout(&account_paths)?;
     remove_legacy_email_payload_tree(&legacy_payload_root)?;
 
@@ -3529,6 +3237,31 @@ fn migrate_legacy_account_state(
     Ok(())
 }
 
+fn migrate_legacy_maildir_payload(legacy_maildir: &FsPath, maildir: &FsPath) -> Result<(), String> {
+    if !legacy_maildir.is_dir() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(maildir)
+        .map_err(|error| format!("failed to create {}: {error}", maildir.display()))?;
+
+    let entries = fs::read_dir(legacy_maildir)
+        .map_err(|error| format!("failed to read {}: {error}", legacy_maildir.display()))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| format!("failed to read {}: {error}", legacy_maildir.display()))?;
+        if entry.file_name() == ".notmuch" {
+            remove_path_recursive(&entry.path())?;
+            continue;
+        }
+
+        let destination = maildir.join(entry.file_name());
+        move_legacy_payload_path(&entry.path(), &destination)?;
+    }
+
+    remove_dir_if_empty(legacy_maildir)
+}
+
 fn migrate_account_state_root_layout(account_paths: &AccountPaths) -> Result<(), String> {
     move_prefixed_files_if_missing_or_stale(
         &account_paths.account_state_root,
@@ -3599,13 +3332,25 @@ fn move_prefixed_files_if_missing_or_stale(
     Ok(())
 }
 
+fn move_legacy_payload_path(src: &FsPath, dst: &FsPath) -> Result<(), String> {
+    if dst.exists() {
+        return Err(format!(
+            "refusing to overwrite existing migrated mail payload path: {}",
+            dst.display()
+        ));
+    }
+
+    copy_path_recursive(src, dst)?;
+    remove_path_recursive(src)
+}
+
 fn copy_path_recursive(src: &FsPath, dst: &FsPath) -> Result<(), String> {
     let metadata = fs::symlink_metadata(src)
         .map_err(|error| format!("failed to inspect {}: {error}", src.display()))?;
 
     if metadata.file_type().is_symlink() {
         return Err(format!(
-            "refusing to migrate symlinked legacy state path: {}",
+            "refusing to migrate symlinked legacy path: {}",
             src.display()
         ));
     }
@@ -3627,7 +3372,7 @@ fn copy_path_recursive(src: &FsPath, dst: &FsPath) -> Result<(), String> {
 
     if !metadata.is_file() {
         return Err(format!(
-            "refusing to migrate unsupported legacy state path: {}",
+            "refusing to migrate unsupported legacy path: {}",
             src.display()
         ));
     }
@@ -3972,205 +3717,6 @@ fn command_failure_detail(command: &str, output: &Output) -> String {
     }
 }
 
-fn maybe_export_account_to_paperless(
-    config: &AppConfig,
-    account: &AccountRecord,
-) -> Result<(), String> {
-    if !account.paperless_enabled {
-        return Ok(());
-    }
-
-    update_paperless_export_started(config, account.id)?;
-    match export_account_to_paperless(config, account) {
-        Ok(_) => {
-            update_paperless_export_finished(config, account.id, "ok", None)?;
-            Ok(())
-        }
-        Err(error) => {
-            update_paperless_export_finished(config, account.id, "error", Some(error.clone()))?;
-            Err(error)
-        }
-    }
-}
-
-fn export_account_to_paperless(
-    config: &AppConfig,
-    account: &AccountRecord,
-) -> Result<PaperlessExportSummary, String> {
-    let account_paths = ensure_account_paths(config, account)?;
-    let paperless_paths = paperless_paths(config)?;
-    let candidates = list_paperless_candidate_messages(&account_paths)?;
-    let mut summary = PaperlessExportSummary {
-        exported_count: 0,
-        duplicate_count: 0,
-        ignored_count: 0,
-    };
-
-    for candidate in candidates {
-        let message_summary = export_candidate_message_to_paperless(
-            config,
-            account,
-            &account_paths,
-            &paperless_paths,
-            &candidate,
-        )?;
-        tag_notmuch_message(&account_paths, &candidate.file_path, PAPERLESS_REVIEWED_TAG)?;
-        if message_summary.exported_count > 0 {
-            tag_notmuch_message(&account_paths, &candidate.file_path, PAPERLESS_FILED_TAG)?;
-        }
-        summary.exported_count += message_summary.exported_count;
-        summary.duplicate_count += message_summary.duplicate_count;
-        summary.ignored_count += message_summary.ignored_count;
-    }
-
-    Ok(summary)
-}
-
-fn export_candidate_message_to_paperless(
-    config: &AppConfig,
-    account: &AccountRecord,
-    account_paths: &AccountPaths,
-    paperless_paths: &PaperlessPaths,
-    candidate: &CandidateMessage,
-) -> Result<PaperlessExportSummary, String> {
-    let extraction_dir = create_temp_extraction_dir(paperless_paths, account.id)?;
-    extract_message_attachments(&candidate.file_path, &extraction_dir.path)?;
-    let extracted_files = collect_regular_files(&extraction_dir.path)?;
-
-    let mut summary = PaperlessExportSummary {
-        exported_count: 0,
-        duplicate_count: 0,
-        ignored_count: 0,
-    };
-
-    for extracted_file in extracted_files {
-        let metadata = fs::metadata(&extracted_file).map_err(|error| {
-            format!(
-                "failed to inspect extracted attachment {}: {error}",
-                extracted_file.display()
-            )
-        })?;
-        let original_filename = extracted_file
-            .file_name()
-            .and_then(|value| value.to_str())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "attachment".to_string());
-        let attachment_sha256 = sha256_file(&extracted_file)?;
-
-        if metadata.len() == 0 {
-            record_attachment_export(
-                config,
-                account.id,
-                &candidate.message_key,
-                &attachment_sha256,
-                &original_filename,
-                None,
-                "ignored",
-            )?;
-            summary.ignored_count += 1;
-            continue;
-        }
-
-        let mime_type = detect_attachment_mime_type(&extracted_file)?;
-        if !is_supported_document_attachment(&mime_type, &extracted_file)
-            || looks_like_inline_artifact(&original_filename, &mime_type, metadata.len())
-        {
-            record_attachment_export(
-                config,
-                account.id,
-                &candidate.message_key,
-                &attachment_sha256,
-                &original_filename,
-                None,
-                "ignored",
-            )?;
-            summary.ignored_count += 1;
-            continue;
-        }
-
-        if let Some(existing_relpath) = find_existing_paperless_export(config, &attachment_sha256)?
-        {
-            record_attachment_export(
-                config,
-                account.id,
-                &candidate.message_key,
-                &attachment_sha256,
-                &original_filename,
-                Some(existing_relpath.as_str()),
-                "duplicate",
-            )?;
-            summary.duplicate_count += 1;
-            continue;
-        }
-
-        let relpath = move_attachment_into_paperless(
-            account,
-            account_paths,
-            paperless_paths,
-            &attachment_sha256,
-            &original_filename,
-            &extracted_file,
-        )
-        .map_err(|error| {
-            let _ = record_attachment_export(
-                config,
-                account.id,
-                &candidate.message_key,
-                &attachment_sha256,
-                &original_filename,
-                None,
-                "error",
-            );
-            error
-        })?;
-        record_attachment_export(
-            config,
-            account.id,
-            &candidate.message_key,
-            &attachment_sha256,
-            &original_filename,
-            Some(relpath.as_str()),
-            "exported",
-        )?;
-        summary.exported_count += 1;
-    }
-
-    Ok(summary)
-}
-
-fn paperless_paths(config: &AppConfig) -> Result<PaperlessPaths, String> {
-    let consume_root = config
-        .paperless_consume_root
-        .as_deref()
-        .ok_or_else(|| "Paperless consume root is not configured".to_string())?;
-    let staging_root = config
-        .paperless_staging_dir
-        .as_deref()
-        .ok_or_else(|| "Paperless staging directory is not configured".to_string())?;
-
-    Ok(PaperlessPaths {
-        consume_root: PathBuf::from(consume_root),
-        staging_root: PathBuf::from(staging_root),
-    })
-}
-
-fn create_temp_extraction_dir(
-    paperless_paths: &PaperlessPaths,
-    account_id: i64,
-) -> Result<TempExtractionDir, String> {
-    let path = paperless_paths
-        .staging_root
-        .join(format!("account-{account_id}"))
-        .join(random_hex(8));
-    fs::create_dir_all(&path).map_err(|error| {
-        format!(
-            "failed to create extraction directory {}: {error}",
-            path.display()
-        )
-    })?;
-    Ok(TempExtractionDir { path })
-}
-
 fn extract_message_attachments(message_path: &FsPath, output_dir: &FsPath) -> Result<(), String> {
     run_command(
         "ripmime",
@@ -4209,72 +3755,14 @@ fn collect_regular_files_inner(root: &FsPath, files: &mut Vec<PathBuf>) -> Resul
     Ok(())
 }
 
-fn list_paperless_candidate_messages(
-    account_paths: &AccountPaths,
-) -> Result<Vec<CandidateMessage>, String> {
-    let output = execute_command(
-        "notmuch",
-        &[
-            "search",
-            "--output=files",
-            "--format=text",
-            &format!("not tag:{PAPERLESS_REVIEWED_TAG}"),
-        ],
-        &[
-            (
-                "HOME",
-                account_paths.account_state_root.to_string_lossy().as_ref(),
-            ),
-            (
-                "NOTMUCH_CONFIG",
-                account_paths.notmuch_config.to_string_lossy().as_ref(),
-            ),
-        ],
-    )?;
-
-    if !output.status.success() {
-        let detail = command_failure_detail("notmuch", &output);
-        if detail.contains("No database found") || detail.contains("not initialized") {
-            return Ok(Vec::new());
-        }
-        return Err(detail);
-    }
-
-    let mut candidates = Vec::new();
-    for raw_line in String::from_utf8_lossy(&output.stdout).lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let file_path = PathBuf::from(line);
-        if !file_path.is_file() {
-            continue;
-        }
-        let metadata = read_message_metadata(&file_path)?;
-        let message_key = metadata
-            .normalized_message_id
-            .map(|value| format!("message-id:{value}"))
-            .or_else(|| {
-                metadata
-                    .message_sha256
-                    .map(|value| format!("sha256:{value}"))
-            })
-            .expect("message metadata must provide an identity key");
-        candidates.push(CandidateMessage {
-            file_path,
-            message_key,
-        });
-    }
-    Ok(candidates)
-}
-
 fn read_message_metadata(message_path: &FsPath) -> Result<MessageMetadata, String> {
     let bytes = fs::read(message_path)
         .map_err(|error| format!("failed to read {}: {error}", message_path.display()))?;
-    let normalized_message_id = extract_message_id(&bytes).and_then(normalize_message_id);
-    let subject = extract_header_value(&bytes, "subject").unwrap_or_else(|| "(no subject)".into());
-    let from = extract_header_value(&bytes, "from").unwrap_or_else(|| "Unknown sender".into());
-    let timestamp = extract_header_value(&bytes, "date")
+    let normalized_message_id =
+        decoded_header_value(&bytes, "message-id").and_then(normalize_message_id);
+    let subject = decoded_header_value(&bytes, "subject").unwrap_or_else(|| "(no subject)".into());
+    let from = decoded_header_value(&bytes, "from").unwrap_or_else(|| "Unknown sender".into());
+    let timestamp = decoded_header_value(&bytes, "date")
         .and_then(|value| parse_message_timestamp(&value))
         .unwrap_or_else(|| {
             fs::metadata(message_path)
@@ -4292,45 +3780,12 @@ fn read_message_metadata(message_path: &FsPath) -> Result<MessageMetadata, Strin
     })
 }
 
-fn extract_header_value(message_bytes: &[u8], target_name: &str) -> Option<String> {
-    let headers = String::from_utf8_lossy(message_bytes);
-    let mut current_name = String::new();
-    let mut current_value = String::new();
-
-    for line in headers.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() {
-            break;
-        }
-
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if !current_name.is_empty() {
-                if !current_value.is_empty() {
-                    current_value.push(' ');
-                }
-                current_value.push_str(line.trim());
-            }
-            continue;
-        }
-
-        if current_name.eq_ignore_ascii_case(target_name) {
-            return Some(current_value);
-        }
-
-        current_name.clear();
-        current_value.clear();
-
-        if let Some((name, value)) = line.split_once(':') {
-            current_name = name.trim().to_string();
-            current_value = value.trim().to_string();
-        }
-    }
-
-    if current_name.eq_ignore_ascii_case(target_name) {
-        Some(current_value)
-    } else {
-        None
-    }
+fn decoded_header_value(message_bytes: &[u8], target_name: &str) -> Option<String> {
+    mailparse::parse_mail(message_bytes)
+        .ok()
+        .and_then(|message| message.headers.get_first_value(target_name))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_message_timestamp(raw: &str) -> Option<i64> {
@@ -4342,10 +3797,6 @@ fn parse_message_timestamp(raw: &str) -> Option<i64> {
                 .ok()
                 .map(|value| value.with_timezone(&Utc).timestamp())
         })
-}
-
-fn extract_message_id(message_bytes: &[u8]) -> Option<String> {
-    extract_header_value(message_bytes, "message-id")
 }
 
 fn normalize_message_id(raw: String) -> Option<String> {
@@ -4431,154 +3882,10 @@ fn fallback_mime_from_extension_str(extension: &str) -> Option<String> {
     )
 }
 
-fn is_supported_document_attachment(mime_type: &str, path: &FsPath) -> bool {
-    is_supported_document_mime(mime_type)
-        || (mime_type == "application/octet-stream"
-            && fallback_mime_from_extension(path)
-                .as_deref()
-                .is_some_and(is_supported_document_mime))
-}
-
-fn is_supported_document_attachment_metadata(mime_type: &str, extension: &str) -> bool {
-    is_supported_document_mime(mime_type)
-        || (mime_type == "application/octet-stream"
-            && fallback_mime_from_extension_str(extension)
-                .as_deref()
-                .is_some_and(is_supported_document_mime))
-}
-
-fn is_supported_document_mime(mime_type: &str) -> bool {
-    matches!(
-        mime_type,
-        "application/pdf"
-            | "text/plain"
-            | "application/msword"
-            | "application/rtf"
-            | "application/vnd.oasis.opendocument.text"
-            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ) || mime_type.starts_with("image/")
-}
-
 fn looks_like_inline_artifact(filename: &str, mime_type: &str, size_bytes: u64) -> bool {
     mime_type.starts_with("image/") && size_bytes <= 1024
         || filename.eq_ignore_ascii_case("winmail.dat")
         || filename.eq_ignore_ascii_case("smime.p7s")
-}
-
-fn find_existing_paperless_export(
-    config: &AppConfig,
-    attachment_sha256: &str,
-) -> Result<Option<String>, String> {
-    let connection = open_db(config)?;
-    connection
-        .query_row(
-            r#"
-            SELECT paperless_relpath
-            FROM paperless_attachment_exports
-            WHERE attachment_sha256 = ?1 AND outcome = 'exported'
-            ORDER BY created_at ASC
-            LIMIT 1
-            "#,
-            params![attachment_sha256],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map_err(|error| format!("failed to query paperless export dedupe: {error}"))?
-        .flatten()
-        .map_or(Ok(None), |value| Ok(Some(value)))
-}
-
-fn record_attachment_export(
-    config: &AppConfig,
-    account_id: i64,
-    message_key: &str,
-    attachment_sha256: &str,
-    original_filename: &str,
-    paperless_relpath: Option<&str>,
-    outcome: &str,
-) -> Result<(), String> {
-    let connection = open_db(config)?;
-    let now = Utc::now().to_rfc3339();
-    connection
-        .execute(
-            r#"
-            INSERT INTO paperless_attachment_exports (
-                account_id,
-                message_key,
-                attachment_sha256,
-                original_filename,
-                paperless_relpath,
-                outcome,
-                created_at,
-                updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-            ON CONFLICT(account_id, message_key, attachment_sha256) DO UPDATE
-            SET
-                original_filename = excluded.original_filename,
-                paperless_relpath = COALESCE(
-                    paperless_attachment_exports.paperless_relpath,
-                    excluded.paperless_relpath
-                ),
-                outcome = CASE
-                    WHEN paperless_attachment_exports.outcome = 'exported'
-                        AND excluded.outcome = 'duplicate'
-                    THEN paperless_attachment_exports.outcome
-                    ELSE excluded.outcome
-                END,
-                updated_at = excluded.updated_at
-            "#,
-            params![
-                account_id,
-                message_key,
-                attachment_sha256,
-                original_filename,
-                paperless_relpath,
-                outcome,
-                now,
-            ],
-        )
-        .map_err(|error| format!("failed to record paperless attachment export: {error}"))?;
-    Ok(())
-}
-
-fn move_attachment_into_paperless(
-    account: &AccountRecord,
-    _account_paths: &AccountPaths,
-    paperless_paths: &PaperlessPaths,
-    attachment_sha256: &str,
-    original_filename: &str,
-    source_path: &FsPath,
-) -> Result<String, String> {
-    let safe_name = safe_filename(original_filename);
-    let relpath = PathBuf::from("user-".to_string() + &account.username)
-        .join(format!("account-{}", account.id))
-        .join(format!("{attachment_sha256}--{safe_name}"));
-    let destination = paperless_paths.consume_root.join(&relpath);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
-    }
-    if destination.exists() {
-        return Ok(relpath.to_string_lossy().to_string());
-    }
-    fs::rename(source_path, &destination).map_err(|error| {
-        format!(
-            "failed to move {} into Paperless consume tree: {error}",
-            source_path.display()
-        )
-    })?;
-    sync_path(&destination)?;
-    if let Some(parent) = destination.parent() {
-        sync_directory(parent)?;
-    }
-    Ok(relpath.to_string_lossy().to_string())
-}
-
-fn sync_path(path: &FsPath) -> Result<(), String> {
-    let file = fs::File::open(path)
-        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-    file.sync_all()
-        .map_err(|error| format!("failed to sync {}: {error}", path.display()))
 }
 
 fn sync_directory(path: &FsPath) -> Result<(), String> {
@@ -4676,13 +3983,6 @@ fn attachment_key(
         )
         .as_bytes(),
     )
-}
-
-fn account_files_root(config: &AppConfig, username: &str) -> PathBuf {
-    PathBuf::from(config.store_root.as_ref())
-        .join(username)
-        .join("files")
-        .join("mail-attachments")
 }
 
 fn list_notmuch_message_files(
@@ -5139,7 +4439,7 @@ fn load_deleted_message_records_for_user(
             results.push((account.clone(), record));
         }
     }
-    results.sort_by(|left, right| right.1.timestamp.cmp(&left.1.timestamp));
+    results.sort_by_key(|result| Reverse(result.1.timestamp));
     Ok(results)
 }
 
@@ -5315,7 +4615,7 @@ fn collect_live_messages_for_account(
         .into_values()
         .filter(|record| !deleted_map.contains_key(&record.message_key))
         .collect::<Vec<_>>();
-    messages.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+    messages.sort_by_key(|message| Reverse(message.timestamp));
     Ok(messages)
 }
 
@@ -5405,13 +4705,18 @@ fn delete_message_from_archive(
         load_live_message_for_user(config, username, account_id, message_key)?;
     let account_paths = ensure_account_paths(config, &account)?;
     let existing_connection = open_db(config)?;
-    let mailbox_instances = load_message_mailbox_instances_for_account(&existing_connection, account_id)?
-        .into_iter()
-        .filter(|instance| instance.message_key == message_key)
-        .collect::<Vec<_>>();
+    let mailbox_instances =
+        load_message_mailbox_instances_for_account(&existing_connection, account_id)?
+            .into_iter()
+            .filter(|instance| instance.message_key == message_key)
+            .collect::<Vec<_>>();
     let mut visible_paths_to_remove = mailbox_instances
         .iter()
-        .map(|instance| account_paths.visible_emails_root.join(&instance.visible_relpath))
+        .map(|instance| {
+            account_paths
+                .visible_emails_root
+                .join(&instance.visible_relpath)
+        })
         .collect::<Vec<_>>();
     visible_paths_to_remove.sort();
     visible_paths_to_remove.dedup();
@@ -5685,114 +4990,6 @@ fn suppress_deleted_messages_for_account(
     Ok(())
 }
 
-fn load_attachment_action_records_for_account(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<Vec<AttachmentActionRecord>, String> {
-    let mut statement = connection
-        .prepare(
-            r#"
-            SELECT
-                attachment_key,
-                account_id,
-                message_key,
-                attachment_sha256,
-                original_filename,
-                method,
-                outcome,
-                counts_as_saved,
-                destination_relpath,
-                created_at
-            FROM attachment_actions
-            WHERE account_id = ?1
-            ORDER BY created_at ASC
-            "#,
-        )
-        .map_err(|error| format!("failed to prepare attachment action query: {error}"))?;
-    let rows = statement
-        .query_map(params![account_id], |row| {
-            Ok(AttachmentActionRecord {
-                attachment_key: row.get(0)?,
-                account_id: row.get(1)?,
-                message_key: row.get(2)?,
-                attachment_sha256: row.get(3)?,
-                original_filename: row.get(4)?,
-                method: row.get(5)?,
-                outcome: row.get(6)?,
-                counts_as_saved: row.get::<_, i64>(7)? != 0,
-                destination_relpath: row.get(8)?,
-                created_at: row.get(9)?,
-            })
-        })
-        .map_err(|error| format!("failed to query attachment actions: {error}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to decode attachment actions: {error}"))
-}
-
-fn summarize_attachment_actions(
-    actions: &[AttachmentActionRecord],
-) -> HashMap<String, AttachmentActionSummary> {
-    let mut summaries = HashMap::new();
-    for action in actions {
-        let summary = summaries
-            .entry(action.attachment_key.clone())
-            .or_insert_with(AttachmentActionSummary::default);
-        match action.method.as_str() {
-            ATTACHMENT_METHOD_BROWSER_DOWNLOAD => {
-                if action.outcome == ATTACHMENT_OUTCOME_STARTED {
-                    summary.downloaded_browser = true;
-                }
-            }
-            ATTACHMENT_METHOD_FILES => {
-                if action.counts_as_saved
-                    && matches!(
-                        action.outcome.as_str(),
-                        ATTACHMENT_OUTCOME_SAVED | ATTACHMENT_OUTCOME_DUPLICATE
-                    )
-                {
-                    summary.saved_files = true;
-                }
-            }
-            ATTACHMENT_METHOD_PAPERLESS => {
-                if action.counts_as_saved
-                    && matches!(
-                        action.outcome.as_str(),
-                        ATTACHMENT_OUTCOME_SAVED | ATTACHMENT_OUTCOME_DUPLICATE
-                    )
-                {
-                    summary.saved_paperless = true;
-                }
-            }
-            _ => {}
-        }
-    }
-    summaries
-}
-
-fn load_recorded_paperless_saved_keys(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<HashSet<(String, String)>, String> {
-    let mut statement = connection
-        .prepare(
-            r#"
-            SELECT message_key, attachment_sha256
-            FROM paperless_attachment_exports
-            WHERE account_id = ?1 AND outcome IN ('exported', 'duplicate')
-            "#,
-        )
-        .map_err(|error| format!("failed to prepare legacy paperless query: {error}"))?;
-    let rows = statement
-        .query_map(params![account_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|error| format!("failed to query legacy paperless rows: {error}"))?;
-
-    rows.collect::<Result<HashSet<_>, _>>()
-        .map_err(|error| format!("failed to decode legacy paperless rows: {error}"))
-}
-
 fn load_attachment_catalog_rows_for_account(
     connection: &Connection,
     account_id: i64,
@@ -5873,19 +5070,6 @@ fn load_attachment_catalog_rows_for_account(
         .map_err(|error| format!("failed to decode attachment catalog rows: {error}"))
 }
 
-fn attachment_matches_filter(
-    status: &AttachmentActionSummary,
-    save_filter: AttachmentSaveFilter,
-) -> bool {
-    match save_filter {
-        AttachmentSaveFilter::NeedsTriage => !status.saved_files && !status.saved_paperless,
-        AttachmentSaveFilter::SavedAny => status.saved_files || status.saved_paperless,
-        AttachmentSaveFilter::SavedFiles => status.saved_files,
-        AttachmentSaveFilter::SavedPaperless => status.saved_paperless,
-        AttachmentSaveFilter::DownloadedBrowser => status.downloaded_browser,
-    }
-}
-
 fn parse_page_number(raw: Option<&str>) -> usize {
     raw.and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -5895,7 +5079,6 @@ fn parse_page_number(raw: Option<&str>) -> usize {
 fn build_attachment_base_query(
     query_text: &str,
     selected_account_id: Option<i64>,
-    save_filter: AttachmentSaveFilter,
     message_state: MessageStateFilter,
     extension_filter: &str,
 ) -> String {
@@ -5905,9 +5088,6 @@ fn build_attachment_base_query(
     }
     if let Some(account_id) = selected_account_id {
         pairs.push(("account_id", account_id.to_string()));
-    }
-    if save_filter != AttachmentSaveFilter::NeedsTriage {
-        pairs.push(("save_state", save_filter.as_query_value().to_string()));
     }
     if message_state != MessageStateFilter::Active {
         pairs.push(("message_state", message_state.as_query_value().to_string()));
@@ -5929,7 +5109,6 @@ fn load_attachment_page_data(
 ) -> Result<AttachmentPageData, String> {
     let accounts = list_accounts_for_user(config, username)?;
     let selected_account_id = normalize_selected_account_id(&accounts, params.account_id);
-    let save_filter = AttachmentSaveFilter::from_query(params.save_state.as_deref());
     let message_state = MessageStateFilter::from_query(params.message_state.as_deref());
     let query_text = params.q.clone().unwrap_or_default();
     let extension_filter = params
@@ -5963,10 +5142,6 @@ fn load_attachment_page_data(
             query_relpaths_by_account.insert(account.id, relpaths);
         }
 
-        let action_summaries = summarize_attachment_actions(
-            &load_attachment_action_records_for_account(&connection, account.id)?,
-        );
-        let recorded_paperless = load_recorded_paperless_saved_keys(&connection, account.id)?;
         let deleted_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
         if message_state != MessageStateFilter::Deleted {
             for (message, attachment) in
@@ -5986,27 +5161,11 @@ fn load_attachment_page_data(
                     continue;
                 }
 
-                let mut status = action_summaries
-                    .get(&attachment.attachment_key)
-                    .cloned()
-                    .unwrap_or_default();
-                if recorded_paperless.contains(&(
-                    attachment.message_key.clone(),
-                    attachment.attachment_sha256.clone(),
-                )) {
-                    status.saved_paperless = true;
-                }
-                let supports_paperless = is_supported_document_attachment_metadata(
-                    &attachment.mime_type,
-                    &attachment.extension,
-                );
                 items.push(AttachmentListItem {
                     account_name: account.display_name.clone(),
                     date_label: format_timestamp(message.timestamp),
                     attachment,
                     message,
-                    status,
-                    supports_paperless,
                     deleted_at: None,
                     restore_pending: false,
                     is_deleted: false,
@@ -6037,20 +5196,6 @@ fn load_attachment_page_data(
                     continue;
                 }
 
-                let mut status = action_summaries
-                    .get(&deleted_attachment.attachment_key)
-                    .cloned()
-                    .unwrap_or_default();
-                if recorded_paperless.contains(&(
-                    deleted_message.message_key.clone(),
-                    deleted_attachment.attachment_sha256.clone(),
-                )) {
-                    status.saved_paperless = true;
-                }
-                let supports_paperless = is_supported_document_attachment_metadata(
-                    &deleted_attachment.mime_type,
-                    &deleted_attachment.extension,
-                );
                 items.push(AttachmentListItem {
                     account_name: account.display_name.clone(),
                     date_label: format_timestamp(deleted_message.timestamp),
@@ -6082,8 +5227,6 @@ fn load_attachment_page_data(
                         last_scanned_at: deleted_message.deleted_at.clone(),
                         has_attachments: true,
                     },
-                    status,
-                    supports_paperless,
                     deleted_at: Some(deleted_message.deleted_at.clone()),
                     restore_pending: deleted_message.restore_pending,
                     is_deleted: true,
@@ -6091,25 +5234,6 @@ fn load_attachment_page_data(
             }
         }
     }
-
-    let mut visible_non_inline = HashSet::new();
-    for item in &items {
-        if !item.attachment.is_inline_artifact {
-            visible_non_inline.insert((item.message.account_id, item.message.message_key.clone()));
-        }
-    }
-
-    items.retain(|item| {
-        if save_filter == AttachmentSaveFilter::NeedsTriage
-            && !item.is_deleted
-            && item.attachment.is_inline_artifact
-            && visible_non_inline
-                .contains(&(item.message.account_id, item.message.message_key.clone()))
-        {
-            return false;
-        }
-        attachment_matches_filter(&item.status, save_filter)
-    });
 
     items.sort_by(|left, right| {
         right.message.timestamp.cmp(&left.message.timestamp).then(
@@ -6130,7 +5254,6 @@ fn load_attachment_page_data(
     let base_query = build_attachment_base_query(
         &query_text,
         selected_account_id,
-        save_filter,
         message_state,
         &extension_filter,
     );
@@ -6150,7 +5273,6 @@ fn load_attachment_page_data(
         extension_filter,
         items: page_items,
         state: AttachmentListViewState {
-            save_filter,
             message_state,
             page,
             result_count: total_count,
@@ -6160,6 +5282,156 @@ fn load_attachment_page_data(
             base_query,
         },
     })
+}
+
+fn download_attachment_keys_for_form(
+    config: &AppConfig,
+    username: &str,
+    form: &AttachmentDownloadForm,
+) -> Result<Vec<String>, String> {
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
+
+    if form.selection_scope.as_deref() == Some(ATTACHMENT_SELECTION_ALL_MATCHING) {
+        let selected_account_id = parse_optional_query_i64(form.account_id.as_deref())?;
+        let mut page = 1;
+        loop {
+            let params = AttachmentListParams {
+                q: form.q.clone(),
+                account_id: selected_account_id,
+                message_state: form.message_state.clone(),
+                extension: form.extension.clone(),
+                page: Some(page.to_string()),
+                flash: None,
+                error: None,
+            };
+            let data = load_attachment_page_data(config, username, &params)?;
+            for item in data.items.into_iter().filter(|item| !item.is_deleted) {
+                if seen.insert(item.attachment.attachment_key.clone()) {
+                    keys.push(item.attachment.attachment_key);
+                }
+                if keys.len() > MAX_ZIP_ATTACHMENTS {
+                    return Err(format!(
+                        "Too many attachments matched. Narrow the filters to {} files or fewer.",
+                        MAX_ZIP_ATTACHMENTS
+                    ));
+                }
+            }
+            if !data.state.has_next_page {
+                break;
+            }
+            page += 1;
+        }
+    } else {
+        for key in &form.attachment_keys {
+            let key = key.trim();
+            if !key.is_empty() && seen.insert(key.to_string()) {
+                keys.push(key.to_string());
+            }
+        }
+    }
+
+    if keys.is_empty() {
+        return Err("Select at least one downloadable attachment.".to_string());
+    }
+    if keys.len() > MAX_ZIP_ATTACHMENTS {
+        return Err(format!(
+            "Select {} attachments or fewer for one ZIP download.",
+            MAX_ZIP_ATTACHMENTS
+        ));
+    }
+
+    Ok(keys)
+}
+
+fn build_attachments_zip(
+    config: &AppConfig,
+    username: &str,
+    form: &AttachmentDownloadForm,
+) -> Result<(String, Vec<u8>), String> {
+    let keys = download_attachment_keys_for_form(config, username, form)?;
+    let mut records = Vec::new();
+    let mut total_size = 0_u64;
+
+    for key in keys {
+        let record = load_attachment_for_user(config, username, &key)?;
+        let size = u64::try_from(record.2.size_bytes.max(0))
+            .map_err(|_| "Attachment size could not be represented safely".to_string())?;
+        total_size = total_size.saturating_add(size);
+        if total_size > MAX_ZIP_BYTES {
+            return Err("Selected attachments are too large for one ZIP download.".to_string());
+        }
+        records.push(record);
+    }
+
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o600);
+    let mut used_names = HashMap::<String, usize>::new();
+
+    for (account, message, attachment) in records {
+        let (_dir, attachment_path) =
+            resolve_attachment_payload(config, &account, &message, &attachment)?;
+        let bytes = fs::read(&attachment_path).map_err(|error| {
+            format!(
+                "failed to read extracted attachment {}: {error}",
+                attachment_path.display()
+            )
+        })?;
+        let entry_name = unique_zip_entry_name(
+            zip_entry_name(&account, &message, &attachment),
+            &mut used_names,
+        );
+        zip.start_file(entry_name, options)
+            .map_err(|error| format!("failed to start ZIP entry: {error}"))?;
+        zip.write_all(&bytes)
+            .map_err(|error| format!("failed to write ZIP entry: {error}"))?;
+    }
+
+    let bytes = zip
+        .finish()
+        .map_err(|error| format!("failed to finish ZIP archive: {error}"))?
+        .into_inner();
+    let filename = format!(
+        "mail-archive-attachments-{}.zip",
+        Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    Ok((filename, bytes))
+}
+
+fn zip_entry_name(
+    account: &AccountRecord,
+    message: &AttachmentMessageRecord,
+    attachment: &AttachmentRecord,
+) -> String {
+    let date = DateTime::<Utc>::from_timestamp(message.timestamp, 0)
+        .map(|value| value.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown-date".to_string());
+    let account_slug = slugify_component(&account.display_name, "mailbox");
+    let sha_prefix = attachment
+        .attachment_sha256
+        .chars()
+        .take(8)
+        .collect::<String>();
+    format!(
+        "{}/{}/{}/{}--{}",
+        date,
+        account_slug,
+        short_message_key(&message.message_key),
+        sha_prefix,
+        safe_filename(&attachment.original_filename)
+    )
+}
+
+fn unique_zip_entry_name(base: String, used_names: &mut HashMap<String, usize>) -> String {
+    let count = used_names.entry(base.clone()).or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        base
+    } else {
+        format!("{base}--{}", *count)
+    }
 }
 
 fn load_attachment_for_user(
@@ -6183,7 +5455,6 @@ fn load_attachment_for_user(
                 a.folder_patterns_json,
                 a.encrypted_secret,
                 a.sync_enabled,
-                a.paperless_enabled,
                 a.created_at,
                 a.updated_at,
                 a.last_sync_started_at,
@@ -6194,10 +5465,6 @@ fn load_attachment_for_user(
                 a.last_sync_code,
                 a.last_sync_summary,
                 a.last_sync_detail,
-                a.paperless_last_export_started_at,
-                a.paperless_last_export_finished_at,
-                a.paperless_last_export_status,
-                a.paperless_last_export_error,
                 m.account_id,
                 m.message_key,
                 m.message_relpath,
@@ -6248,49 +5515,44 @@ fn load_attachment_for_user(
                     folder_patterns_json: row.get(8)?,
                     encrypted_secret: row.get(9)?,
                     sync_enabled: row.get::<_, i64>(10)? != 0,
-                    paperless_enabled: row.get::<_, i64>(11)? != 0,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
-                    last_sync_started_at: row.get(14)?,
-                    last_sync_finished_at: row.get(15)?,
-                    last_sync_status: row.get(16)?,
-                    last_sync_error: row.get(17)?,
-                    last_sync_phase: row.get(18)?,
-                    last_sync_code: row.get(19)?,
-                    last_sync_summary: row.get(20)?,
-                    last_sync_detail: row.get(21)?,
-                    paperless_last_export_started_at: row.get(22)?,
-                    paperless_last_export_finished_at: row.get(23)?,
-                    paperless_last_export_status: row.get(24)?,
-                    paperless_last_export_error: row.get(25)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                    last_sync_started_at: row.get(13)?,
+                    last_sync_finished_at: row.get(14)?,
+                    last_sync_status: row.get(15)?,
+                    last_sync_error: row.get(16)?,
+                    last_sync_phase: row.get(17)?,
+                    last_sync_code: row.get(18)?,
+                    last_sync_summary: row.get(19)?,
+                    last_sync_detail: row.get(20)?,
                 },
                 AttachmentMessageRecord {
-                    account_id: row.get(26)?,
-                    message_key: row.get(27)?,
-                    message_relpath: row.get(28)?,
-                    message_mtime: row.get(29)?,
-                    message_size: row.get(30)?,
-                    subject: row.get(31)?,
-                    from: row.get(32)?,
-                    timestamp: row.get(33)?,
-                    last_scanned_at: row.get(34)?,
-                    has_attachments: row.get::<_, i64>(35)? != 0,
+                    account_id: row.get(21)?,
+                    message_key: row.get(22)?,
+                    message_relpath: row.get(23)?,
+                    message_mtime: row.get(24)?,
+                    message_size: row.get(25)?,
+                    subject: row.get(26)?,
+                    from: row.get(27)?,
+                    timestamp: row.get(28)?,
+                    last_scanned_at: row.get(29)?,
+                    has_attachments: row.get::<_, i64>(30)? != 0,
                 },
                 AttachmentRecord {
-                    attachment_key: row.get(36)?,
-                    account_id: row.get(37)?,
-                    message_key: row.get(38)?,
-                    attachment_index: row.get(39)?,
-                    attachment_sha256: row.get(40)?,
-                    original_filename: row.get(41)?,
-                    safe_filename: row.get(42)?,
-                    extension: row.get(43)?,
-                    mime_type: row.get(44)?,
-                    size_bytes: row.get(45)?,
-                    is_inline_artifact: row.get::<_, i64>(46)? != 0,
-                    created_at: row.get(47)?,
-                    updated_at: row.get(48)?,
-                    last_seen_at: row.get(49)?,
+                    attachment_key: row.get(31)?,
+                    account_id: row.get(32)?,
+                    message_key: row.get(33)?,
+                    attachment_index: row.get(34)?,
+                    attachment_sha256: row.get(35)?,
+                    original_filename: row.get(36)?,
+                    safe_filename: row.get(37)?,
+                    extension: row.get(38)?,
+                    mime_type: row.get(39)?,
+                    size_bytes: row.get(40)?,
+                    is_inline_artifact: row.get::<_, i64>(41)? != 0,
+                    created_at: row.get(42)?,
+                    updated_at: row.get(43)?,
+                    last_seen_at: row.get(44)?,
                 },
             ))
         })
@@ -6322,227 +5584,6 @@ fn resolve_attachment_payload(
         .ok_or_else(|| {
             "Attachment payload could not be reconstructed from the archived message".to_string()
         })
-}
-
-fn record_attachment_action(
-    config: &AppConfig,
-    attachment: &AttachmentRecord,
-    method: &str,
-    outcome: &str,
-    counts_as_saved: bool,
-    destination_relpath: Option<&str>,
-) -> Result<(), String> {
-    let connection = open_db(config)?;
-    connection
-        .execute(
-            r#"
-            INSERT INTO attachment_actions (
-                attachment_key,
-                account_id,
-                message_key,
-                attachment_sha256,
-                original_filename,
-                method,
-                outcome,
-                counts_as_saved,
-                destination_relpath,
-                created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            "#,
-            params![
-                attachment.attachment_key,
-                attachment.account_id,
-                attachment.message_key,
-                attachment.attachment_sha256,
-                attachment.original_filename,
-                method,
-                outcome,
-                if counts_as_saved { 1 } else { 0 },
-                destination_relpath,
-                Utc::now().to_rfc3339(),
-            ],
-        )
-        .map_err(|error| format!("failed to record attachment action: {error}"))?;
-    Ok(())
-}
-
-fn find_existing_manual_paperless_destination(
-    config: &AppConfig,
-    attachment_sha256: &str,
-) -> Result<Option<String>, String> {
-    let connection = open_db(config)?;
-    connection
-        .query_row(
-            r#"
-            SELECT destination_relpath
-            FROM attachment_actions
-            WHERE method = ?1
-              AND attachment_sha256 = ?2
-              AND outcome IN (?3, ?4)
-              AND destination_relpath IS NOT NULL
-            ORDER BY created_at ASC
-            LIMIT 1
-            "#,
-            params![
-                ATTACHMENT_METHOD_PAPERLESS,
-                attachment_sha256,
-                ATTACHMENT_OUTCOME_SAVED,
-                ATTACHMENT_OUTCOME_DUPLICATE,
-            ],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map_err(|error| format!("failed to query saved paperless attachment actions: {error}"))?
-        .flatten()
-        .map_or(Ok(None), |value| Ok(Some(value)))
-}
-
-fn copy_attachment_to_files_destination(
-    config: &AppConfig,
-    account: &AccountRecord,
-    attachment: &AttachmentRecord,
-    source_path: &FsPath,
-) -> Result<(String, &'static str), String> {
-    let files_root = account_files_root(config, &account.username);
-    fs::create_dir_all(&files_root)
-        .map_err(|error| format!("failed to create {}: {error}", files_root.display()))?;
-    let relpath = PathBuf::from("mail-attachments").join(format!(
-        "{}--{}",
-        attachment.attachment_sha256, attachment.safe_filename
-    ));
-    let destination = files_root.join(format!(
-        "{}--{}",
-        attachment.attachment_sha256, attachment.safe_filename
-    ));
-    if destination.exists() {
-        return Ok((
-            relpath.to_string_lossy().to_string(),
-            ATTACHMENT_OUTCOME_DUPLICATE,
-        ));
-    }
-
-    fs::copy(source_path, &destination).map_err(|error| {
-        format!(
-            "failed to copy {} into {}: {error}",
-            source_path.display(),
-            destination.display()
-        )
-    })?;
-    sync_path(&destination)?;
-    sync_directory(&files_root)?;
-    Ok((
-        relpath.to_string_lossy().to_string(),
-        ATTACHMENT_OUTCOME_SAVED,
-    ))
-}
-
-fn send_attachment_to_paperless_destination(
-    config: &AppConfig,
-    account: &AccountRecord,
-    attachment: &AttachmentRecord,
-    source_path: &FsPath,
-) -> Result<(String, &'static str), String> {
-    if let Some(existing_relpath) =
-        find_existing_manual_paperless_destination(config, &attachment.attachment_sha256)?
-    {
-        return Ok((existing_relpath, ATTACHMENT_OUTCOME_DUPLICATE));
-    }
-    if let Some(existing_relpath) =
-        find_existing_paperless_export(config, &attachment.attachment_sha256)?
-    {
-        return Ok((existing_relpath, ATTACHMENT_OUTCOME_DUPLICATE));
-    }
-
-    let paperless_paths = paperless_paths(config)?;
-    let relpath = move_attachment_into_paperless(
-        account,
-        &ensure_account_paths(config, account)?,
-        &paperless_paths,
-        &attachment.attachment_sha256,
-        &attachment.original_filename,
-        source_path,
-    )?;
-    Ok((relpath, ATTACHMENT_OUTCOME_SAVED))
-}
-
-fn tag_notmuch_message(
-    account_paths: &AccountPaths,
-    file_path: &FsPath,
-    tag: &str,
-) -> Result<(), String> {
-    let relative_path = message_relative_path(account_paths, file_path)?;
-    let query = format!(
-        "path:\"{}\"",
-        escape_notmuch_query_value(&relative_path.to_string_lossy())
-    );
-    run_command(
-        "notmuch",
-        &["tag", &format!("+{tag}"), "--", query.as_str()],
-        &[
-            (
-                "HOME",
-                account_paths.account_state_root.to_string_lossy().as_ref(),
-            ),
-            (
-                "NOTMUCH_CONFIG",
-                account_paths.notmuch_config.to_string_lossy().as_ref(),
-            ),
-        ],
-    )
-}
-
-fn escape_notmuch_query_value(value: &str) -> String {
-    value.replace('\\', r"\\").replace('"', "\\\"")
-}
-
-fn update_paperless_export_started(config: &AppConfig, account_id: i64) -> Result<(), String> {
-    let connection = open_db(config)?;
-    connection
-        .execute(
-            r#"
-            UPDATE accounts
-            SET
-                paperless_last_export_started_at = ?1,
-                paperless_last_export_status = 'running',
-                paperless_last_export_error = NULL,
-                updated_at = ?1
-            WHERE id = ?2
-            "#,
-            params![Utc::now().to_rfc3339(), account_id],
-        )
-        .map_err(|error| format!("failed to mark paperless export start: {error}"))?;
-    Ok(())
-}
-
-fn update_paperless_export_finished(
-    config: &AppConfig,
-    account_id: i64,
-    status: &str,
-    error_message: Option<String>,
-) -> Result<(), String> {
-    let connection = open_db(config)?;
-    let now = Utc::now().to_rfc3339();
-    connection
-        .execute(
-            r#"
-            UPDATE accounts
-            SET
-                paperless_last_export_finished_at = ?1,
-                paperless_last_export_status = ?2,
-                paperless_last_export_error = ?3,
-                updated_at = ?1
-            WHERE id = ?4
-            "#,
-            params![now, status, error_message, account_id],
-        )
-        .map_err(|error| format!("failed to mark paperless export finish: {error}"))?;
-    Ok(())
-}
-
-fn visible_notmuch_tags(tags: Vec<String>) -> Vec<String> {
-    tags.into_iter()
-        .filter(|tag| !tag.starts_with("paperless-"))
-        .collect()
 }
 
 fn search_mail(
@@ -6856,10 +5897,20 @@ fn visible_message_subject(subject: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    if sanitized.is_empty() {
-        "No Subject".to_string()
+    let visible = if sanitized.chars().count() > VISIBLE_MESSAGE_SUBJECT_MAX_CHARS {
+        sanitized
+            .chars()
+            .take(VISIBLE_MESSAGE_SUBJECT_MAX_CHARS)
+            .collect::<String>()
+            .trim()
+            .to_string()
     } else {
         sanitized
+    };
+    if visible.is_empty() {
+        "No Subject".to_string()
+    } else {
+        visible
     }
 }
 
@@ -6913,6 +5964,43 @@ fn ensure_hard_link(source: &FsPath, destination: &FsPath) -> Result<(), String>
             destination.display()
         )
     })
+}
+
+fn reconcile_visible_mirror_read_acl(
+    config: &AppConfig,
+    account_paths: &AccountPaths,
+    destination: &FsPath,
+) -> Result<(), String> {
+    let Some(group) = config.visible_mirror_read_group.as_deref() else {
+        return Ok(());
+    };
+
+    let mut directory = destination.parent();
+    while let Some(path) = directory {
+        if !path.starts_with(&account_paths.visible_emails_root) {
+            break;
+        }
+        setfacl(path, &format!("g:{group}:r-x"))?;
+        if path == account_paths.visible_emails_root {
+            break;
+        }
+        directory = path.parent();
+    }
+
+    setfacl(destination, &format!("g:{group}:r--"))
+}
+
+fn setfacl(path: &FsPath, acl: &str) -> Result<(), String> {
+    let output = Command::new("setfacl")
+        .args(["-m", acl])
+        .arg(path)
+        .output()
+        .map_err(|error| format!("failed to run setfacl for {}: {error}", path.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(command_failure_detail("setfacl", &output))
 }
 
 fn prune_empty_ancestors(path: &FsPath, stop_at: &FsPath) -> Result<(), String> {
@@ -7097,14 +6185,19 @@ fn rebuild_message_catalog_and_visible_mailboxes(
         .collect::<HashSet<_>>();
     for instance in &desired_instances {
         let source = account_paths.maildir.join(&instance.hidden_relpath);
-        let destination = account_paths.visible_emails_root.join(&instance.visible_relpath);
+        let destination = account_paths
+            .visible_emails_root
+            .join(&instance.visible_relpath);
         ensure_hard_link(&source, &destination)?;
+        reconcile_visible_mirror_read_acl(config, &account_paths, &destination)?;
     }
     for previous in previous_instances {
         if desired_visible_relpaths.contains(&previous.visible_relpath) {
             continue;
         }
-        let destination = account_paths.visible_emails_root.join(&previous.visible_relpath);
+        let destination = account_paths
+            .visible_emails_root
+            .join(&previous.visible_relpath);
         if destination.exists() {
             fs::remove_file(&destination)
                 .map_err(|error| format!("failed to remove {}: {error}", destination.display()))?;
@@ -7275,10 +6368,16 @@ fn build_dashboard_account_view(
                 Ok(Some(snapshot)) => {
                     let note = match snapshot.snapshot_status.as_str() {
                         "error" => snapshot.snapshot_note.clone().or_else(|| {
-                            Some("Dashboard counts could not be refreshed for this mailbox.".to_string())
+                            Some(
+                                "Dashboard counts could not be refreshed for this mailbox."
+                                    .to_string(),
+                            )
                         }),
                         "stale" => snapshot.snapshot_note.clone().or_else(|| {
-                            Some("Dashboard counts are waiting for the next sync or reindex.".to_string())
+                            Some(
+                                "Dashboard counts are waiting for the next sync or reindex."
+                                    .to_string(),
+                            )
                         }),
                         _ => None,
                     };
@@ -7287,7 +6386,9 @@ fn build_dashboard_account_view(
                 Ok(None) => (
                     index_state,
                     AccountProgressCounts::default(),
-                    Some("Dashboard counts will appear after the next sync or reindex.".to_string()),
+                    Some(
+                        "Dashboard counts will appear after the next sync or reindex.".to_string(),
+                    ),
                 ),
                 Err(error) => (index_state, AccountProgressCounts::default(), Some(error)),
             }
@@ -7320,7 +6421,6 @@ fn build_dashboard_account_view(
         &counts,
         index_state,
     );
-    let (paperless_label, paperless_note) = paperless_status_summary(&account);
     let last_sync_error = account
         .last_sync_detail
         .clone()
@@ -7351,14 +6451,12 @@ fn build_dashboard_account_view(
             progress_warning: sync_notice.progress_warning,
             progress_warning_detail: sync_notice.progress_warning_detail,
             progress_warning_action: sync_notice.progress_warning_action,
-            paperless_label,
-            paperless_note,
-            last_paperless_error: account.paperless_last_export_error.clone(),
         },
         account,
     }
 }
 
+#[cfg(test)]
 fn scan_maildir_inventory(maildir: &FsPath) -> Result<MaildirInventory, String> {
     let mut message_keys = HashSet::new();
     let mut archive_file_count = 0;
@@ -7371,6 +6469,7 @@ fn scan_maildir_inventory(maildir: &FsPath) -> Result<MaildirInventory, String> 
     })
 }
 
+#[cfg(test)]
 fn scan_maildir_inventory_inner(
     path: &FsPath,
     count_files_here: bool,
@@ -7433,7 +6532,10 @@ fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String>
         return Ok(0);
     }
     trimmed.parse::<usize>().map_err(|error| {
-        format!("failed to parse indexed message count from '{}': {error}", trimmed)
+        format!(
+            "failed to parse indexed message count from '{}': {error}",
+            trimmed
+        )
     })
 }
 
@@ -7462,11 +6564,11 @@ fn progress_counts(
 ) -> AccountProgressCounts {
     let archived_message_count = inventory.logical_message_count;
     let pending_index_count = archived_message_count.saturating_sub(indexed_message_count);
-    let index_coverage_percent = if archived_message_count == 0 {
-        usize::from(indexed_message_count > 0) * 100
-    } else {
-        (indexed_message_count.min(archived_message_count) * 100) / archived_message_count
-    };
+    let index_coverage_percent = indexed_message_count
+        .min(archived_message_count)
+        .saturating_mul(100)
+        .checked_div(archived_message_count)
+        .unwrap_or_else(|| usize::from(indexed_message_count > 0) * 100);
     AccountProgressCounts {
         archived_message_count,
         indexed_message_count,
@@ -7495,11 +6597,11 @@ fn dashboard_totals(accounts: Vec<AccountStatusPayload>) -> DashboardTotals {
         .map(|account| account.overlap_file_count)
         .sum::<usize>();
     let pending_index_count = archived_message_count.saturating_sub(indexed_message_count);
-    let index_coverage_percent = if archived_message_count == 0 {
-        usize::from(indexed_message_count > 0) * 100
-    } else {
-        (indexed_message_count.min(archived_message_count) * 100) / archived_message_count
-    };
+    let index_coverage_percent = indexed_message_count
+        .min(archived_message_count)
+        .saturating_mul(100)
+        .checked_div(archived_message_count)
+        .unwrap_or_else(|| usize::from(indexed_message_count > 0) * 100);
 
     DashboardTotals {
         archived_message_count,
@@ -7681,49 +6783,6 @@ fn dashboard_sync_notice(
     notice
 }
 
-fn paperless_status_summary(account: &AccountRecord) -> (String, String) {
-    if !account.paperless_enabled {
-        return (
-            "Paperless off".to_string(),
-            "Attachment filing is disabled for this mailbox.".to_string(),
-        );
-    }
-
-    match account.paperless_last_export_status.as_deref() {
-        Some("running") => (
-            "Paperless running".to_string(),
-            format!(
-                "Qualifying attachments are being handed off to Paperless{}.",
-                account
-                    .paperless_last_export_started_at
-                    .as_deref()
-                    .map(|timestamp| format!(" since {timestamp}"))
-                    .unwrap_or_default()
-            ),
-        ),
-        Some("error") => (
-            "Paperless error".to_string(),
-            "The last attachment export failed; the mailbox will retry on the next run."
-                .to_string(),
-        ),
-        Some("ok") => (
-            "Paperless on".to_string(),
-            format!(
-                "Qualifying attachments are handed off to Paperless after sync or reindex{}.",
-                account
-                    .paperless_last_export_finished_at
-                    .as_deref()
-                    .map(|timestamp| format!(" (last export {timestamp})"))
-                    .unwrap_or_default()
-            ),
-        ),
-        _ => (
-            "Paperless on".to_string(),
-            "Qualifying attachments will be handed off to Paperless on the next run.".to_string(),
-        ),
-    }
-}
-
 fn folder_mode_label(mode: &str) -> &str {
     match mode {
         "gmail_default" => "gmail-default",
@@ -7902,7 +6961,6 @@ fn render_account_card(view: &DashboardAccountView) -> String {
           <div class=\"card-meta\">
             <span class=\"pill\">{}</span>
             <span class=\"pill\" data-index-pill>{}</span>
-            <span class=\"pill\" data-paperless-pill>{}</span>
           </div>
           <div class=\"hint\">Mailbox user: {} · Folder mode: {}</div>
           <div class=\"hint\">Added {} · Updated {}</div>
@@ -7917,7 +6975,6 @@ fn render_account_card(view: &DashboardAccountView) -> String {
             <p class=\"meta\" data-progress-note>{}</p>
             <p class=\"meta{}\" data-overlap-note>{}</p>
           </div>
-          <div class=\"hint\" data-paperless-note>{}</div>
           <div class=\"hint\" data-last-activity>Last activity {}</div>
           <div class=\"action-row\">
             <form method=\"post\" action=\"/accounts/{}/sync\"><button type=\"submit\">Sync now</button></form>
@@ -7937,7 +6994,6 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         escape_html(&status.status_label),
         escape_html(schedule_label),
         escape_html(&status.index_label),
-        escape_html(&status.paperless_label),
         escape_html(&account.imap_username),
         escape_html(folder_mode_label(&account.folder_mode)),
         escape_html(&account.created_at),
@@ -7950,7 +7006,6 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         escape_html(&status.progress_note),
         hidden_class(status.overlap_note.is_some()),
         escape_html(status.overlap_note.as_deref().unwrap_or("")),
-        escape_html(&status.paperless_note),
         escape_html(&status.last_activity),
         account.id,
         account.id,
@@ -7965,17 +7020,6 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         render_progress_warning_notice(status),
     )
     .ok();
-
-    if let Some(error) = status.last_paperless_error.as_deref() {
-        writeln!(
-            &mut body,
-            "<div class=\"error compact\" data-paperless-error>{}</div>",
-            escape_html(error)
-        )
-        .ok();
-    } else {
-        body.push_str("<div class=\"error compact hidden\" data-paperless-error></div>");
-    }
 
     body.push_str("</article>");
     body
@@ -8009,6 +7053,7 @@ fn account_status(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_account_form(
     identity: &Identity,
     page_title: &str,
@@ -8077,7 +7122,6 @@ fn render_account_form(
             <textarea name=\"folder_patterns\" placeholder=\"One IMAP pattern per line\">{}</textarea>
           </label>
           <label><input type=\"checkbox\" name=\"sync_enabled\" {}> Enable scheduled background sync</label>
-          <label><input type=\"checkbox\" name=\"paperless_enabled\" {}> Send document attachments to Paperless for filing</label>
           <div class=\"actions\">
             <button type=\"submit\">{}</button>
             <a class=\"button-link secondary\" href=\"/\">Cancel</a>
@@ -8085,7 +7129,6 @@ fn render_account_form(
           <ul class=\"muted-list\">
             <li>Gmail defaults to append-only archive folders.</li>
             <li>Generic IMAP keeps TLS on port 993 by default.</li>
-            <li>Paperless filing stays opt-in per mailbox and only sends qualifying attachments.</li>
             <li>This remains archive and search infrastructure, not a browser mail client.</li>
           </ul>
         </form>",
@@ -8110,11 +7153,6 @@ fn render_account_form(
             .unwrap_or_default(),
         escape_html(&form.folder_patterns),
         if form.sync_enabled.is_some() { "checked" } else { "" },
-        if form.paperless_enabled.is_some() {
-            "checked"
-        } else {
-            ""
-        },
         escape_html(submit_label),
     )
     .ok();
@@ -8151,13 +7189,15 @@ fn render_attachments_page(
 
     body.push_str(
         "<section class=\"hero\">
-          <p class=\"eyebrow\">Attachment Triage</p>
-          <h1>Review attachments from indexed mail without mutating the archive.</h1>
-          <p class=\"lede\">Every action works from a temporary extraction copy. The original email and attachment inside the mail archive stay untouched.</p>
+          <p class=\"eyebrow\">Attachments</p>
+          <h1>Search and download archived mail attachments.</h1>
+          <p class=\"lede\">Select files from indexed mail and download them as one ZIP for manual document filing.</p>
         </section>",
     );
 
     let return_to = attachment_return_to(&data.state);
+    let filter_hiddens = render_attachment_filter_hiddens(data, &return_to);
+    let show_download_all = data.state.result_count > data.items.len();
     writeln!(
         &mut body,
         "<section class=\"panel stack\">
@@ -8172,37 +7212,43 @@ fn render_attachments_page(
                   {}
                 </select>
               </label>
-              <label>Saved state
-                <select name=\"save_state\">{}</select>
-              </label>
               <label>Message state
                 <select name=\"message_state\">{}</select>
               </label>
-            </div>
-            <div class=\"fields two\">
               <label>Extension
                 <input name=\"extension\" value=\"{}\" placeholder=\"pdf\">
               </label>
-              <div class=\"attachment-filter-actions\">
-                <button type=\"submit\">Filter attachments</button>
-                <a class=\"button-link secondary\" href=\"/attachments\">Reset</a>
-              </div>
+            </div>
+            <div class=\"action-row\">
+              <button class=\"icon-button\" type=\"submit\" title=\"Search attachments\" aria-label=\"Search attachments\">⌕</button>
+              <a class=\"button-link secondary icon-button\" href=\"/attachments\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
+              <a class=\"button-link secondary icon-button\" href=\"/search\" title=\"Back to search\" aria-label=\"Back to search\">↩</a>
             </div>
           </form>
-          <div class=\"action-row\">
-            <form method=\"post\" action=\"/attachments/refresh\">
+          <div class=\"attachment-toolbar\">
+            <label class=\"select-page\"><input type=\"checkbox\" data-select-page> Select page</label>
+            <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
+              {}
+              <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\">↓</button>
+              {}
+            </form>
+            <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\">
               <input type=\"hidden\" name=\"account_id\" value=\"{}\">
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary\" type=\"submit\">Refresh catalog</button>
+              <button class=\"secondary icon-button\" type=\"submit\" title=\"Refresh catalog\" aria-label=\"Refresh catalog\">↻</button>
             </form>
-            <a class=\"button-link secondary\" href=\"/search\">Back to search</a>
           </div>
         </section>",
         escape_html(&data.query_text),
         render_account_options(&data.accounts, data.selected_account_id),
-        render_attachment_save_filter_options(data.state.save_filter),
         render_message_state_filter_options(data.state.message_state),
         escape_html(&data.extension_filter),
+        filter_hiddens,
+        if show_download_all {
+            "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
+        } else {
+            ""
+        },
         data.selected_account_id
             .map(|value| value.to_string())
             .unwrap_or_default(),
@@ -8219,8 +7265,8 @@ fn render_attachments_page(
 
     body.push_str(
         "<section class=\"notice\">
-          <p class=\"notice-title\">Local archive deletion only</p>
-          <p class=\"notice-copy\">Delete From Local Archive removes the local archived copy only. It does not delete the remote email.</p>
+          <p class=\"notice-title\">Manual document filing</p>
+          <p class=\"notice-copy\">This page only downloads attachments. Review the ZIP contents locally before uploading them to your document system.</p>
         </section>",
     );
 
@@ -8236,7 +7282,7 @@ fn render_attachments_page(
     if !data.items.is_empty() {
         writeln!(
             &mut body,
-            "<section class=\"attachment-grid\">{}</section>",
+            "<section class=\"attachment-list\">{}</section>",
             data.items
                 .iter()
                 .map(|item| render_attachment_item(item, &return_to))
@@ -8253,25 +7299,37 @@ fn render_attachments_page(
     layout("Attachments", Some(identity), "attachments", &body)
 }
 
-fn render_attachment_save_filter_options(selected: AttachmentSaveFilter) -> String {
-    [
-        AttachmentSaveFilter::NeedsTriage,
-        AttachmentSaveFilter::SavedAny,
-        AttachmentSaveFilter::SavedFiles,
-        AttachmentSaveFilter::SavedPaperless,
-        AttachmentSaveFilter::DownloadedBrowser,
-    ]
-    .into_iter()
-    .map(|option| {
-        format!(
-            "<option value=\"{}\" {}>{}</option>",
-            option.as_query_value(),
-            if option == selected { "selected" } else { "" },
-            escape_html(option.label())
-        )
-    })
-    .collect::<Vec<_>>()
-    .join("")
+fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) -> String {
+    let mut fields = Vec::new();
+    fields.push(format!(
+        "<input type=\"hidden\" name=\"return_to\" value=\"{}\">",
+        escape_html(return_to)
+    ));
+    if !data.query_text.trim().is_empty() {
+        fields.push(format!(
+            "<input type=\"hidden\" name=\"q\" value=\"{}\">",
+            escape_html(&data.query_text)
+        ));
+    }
+    if let Some(account_id) = data.selected_account_id {
+        fields.push(format!(
+            "<input type=\"hidden\" name=\"account_id\" value=\"{}\">",
+            account_id
+        ));
+    }
+    if data.state.message_state != MessageStateFilter::Active {
+        fields.push(format!(
+            "<input type=\"hidden\" name=\"message_state\" value=\"{}\">",
+            data.state.message_state.as_query_value()
+        ));
+    }
+    if !data.extension_filter.trim().is_empty() {
+        fields.push(format!(
+            "<input type=\"hidden\" name=\"extension\" value=\"{}\">",
+            escape_html(&data.extension_filter)
+        ));
+    }
+    fields.join("")
 }
 
 fn render_attachment_item(item: &AttachmentListItem, return_to: &str) -> String {
@@ -8284,22 +7342,13 @@ fn render_attachment_item(item: &AttachmentListItem, return_to: &str) -> String 
         item.attachment.mime_type.clone()
     } else {
         format!(
-            "{}. {}",
+            "{} · {}",
             item.attachment.extension, item.attachment.mime_type
         )
     };
     let mut badges = Vec::new();
-    if item.status.saved_files {
-        badges.push("<span class=\"tag\">Saved_files</span>".to_string());
-    }
-    if item.status.saved_paperless {
-        badges.push("<span class=\"tag\">Saved_paperless</span>".to_string());
-    }
-    if item.status.downloaded_browser {
-        badges.push("<span class=\"tag\">Downloaded_browser</span>".to_string());
-    }
     if item.attachment.is_inline_artifact {
-        badges.push("<span class=\"tag\">Inline artifact</span>".to_string());
+        badges.push("<span class=\"tag\">Inline</span>".to_string());
     }
     if item.is_deleted {
         badges.push(format!(
@@ -8311,105 +7360,76 @@ fn render_attachment_item(item: &AttachmentListItem, return_to: &str) -> String 
         }
     }
 
-    let mut actions = String::new();
-    if item.is_deleted {
-        writeln!(
-            &mut actions,
-            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\">
+    let selector = if item.is_deleted {
+        "<span class=\"attachment-selector-placeholder\"></span>".to_string()
+    } else {
+        format!(
+            "<input form=\"attachment-download-form\" data-attachment-checkbox type=\"checkbox\" name=\"attachment_keys\" value=\"{}\" aria-label=\"Select attachment {}\">",
+            escape_html(&item.attachment.attachment_key),
+            escape_html(&item.attachment.original_filename)
+        )
+    };
+
+    let actions = if item.is_deleted {
+        format!(
+            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\" class=\"icon-form\">
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary\" type=\"submit\">Restore On Next Sync</button>
+              <button class=\"secondary icon-button\" type=\"submit\" title=\"Restore on next sync\" aria-label=\"Restore on next sync\">↺</button>
             </form>",
             item.message.account_id,
             escape_html(&item.message.message_key),
             escape_html(return_to),
         )
-        .ok();
     } else {
-        writeln!(
-            &mut actions,
-            "<form method=\"post\" action=\"/attachments/{}/download/browser\">
-              <button type=\"submit\">Download to local PC</button>
-            </form>",
-            escape_html(&item.attachment.attachment_key)
-        )
-        .ok();
-        writeln!(
-            &mut actions,
-            "<form method=\"post\" action=\"/attachments/{}/save/files\">
+        format!(
+            "<form method=\"post\" action=\"/attachments/{}/download/browser\" class=\"icon-form\">
+              <button class=\"icon-button\" type=\"submit\" title=\"Download attachment\" aria-label=\"Download attachment\">↓</button>
+            </form>
+            <form method=\"post\" action=\"/accounts/{}/messages/{}/delete\" class=\"icon-form\">
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary\" type=\"submit\">Save to files</button>
+              <button class=\"secondary danger icon-button\" type=\"submit\" title=\"Delete local archive copy\" aria-label=\"Delete local archive copy\">🗑</button>
             </form>",
             escape_html(&item.attachment.attachment_key),
-            escape_html(return_to),
-        )
-        .ok();
-        if item.supports_paperless {
-            writeln!(
-                &mut actions,
-                "<form method=\"post\" action=\"/attachments/{}/save/paperless\">
-                  <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-                  <button class=\"secondary\" type=\"submit\">Send to Paperless</button>
-                </form>",
-                escape_html(&item.attachment.attachment_key),
-                escape_html(return_to),
-            )
-            .ok();
-        }
-        writeln!(
-            &mut actions,
-            "<form method=\"post\" action=\"/accounts/{}/messages/{}/delete\">
-              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary danger\" type=\"submit\">Delete From Local Archive</button>
-            </form>",
             item.message.account_id,
             escape_html(&item.message.message_key),
             escape_html(return_to),
         )
-        .ok();
-    }
+    };
 
     format!(
-        "<article class=\"attachment-card stack {}\">
-          <div class=\"card-header\">
-            <div>
-              <p class=\"eyebrow\">{}</p>
-              <h2>{}</h2>
-              <p class=\"meta\">{} · {} · {}</p>
-            </div>
-            <span class=\"badge\">{}</span>
+        "<article class=\"attachment-row {}\">
+          <div class=\"attachment-select\">{}</div>
+          <div class=\"attachment-main\">
+            <strong class=\"truncate\" title=\"{}\">{}</strong>
+            <span class=\"meta truncate\" title=\"{}\">{} · {} · {} · {} · {}</span>
           </div>
-          <div class=\"tag-list\">{}</div>
-          <div class=\"attachment-meta\">
-            <span class=\"meta\">Type {}</span>
-            <span class=\"meta\">Size {}</span>
-            <span class=\"meta\">Message {}</span>
-          </div>
-          <div class=\"hint\">{} · {}</div>
-          <div class=\"action-row\">{}</div>
+          <span class=\"badge truncate\" title=\"{}\">{}</span>
+          <span class=\"meta truncate\" title=\"{}\">{}</span>
+          <span class=\"meta truncate\" title=\"{}\">{}</span>
+          <div class=\"tag-list compact\">{}</div>
+          <div class=\"row-actions\">{}</div>
         </article>",
         if item.is_deleted { "is-deleted" } else { "" },
-        escape_html(&item.account_name),
+        selector,
+        escape_html(&item.attachment.original_filename),
         escape_html(&item.attachment.original_filename),
         escape_html(&item.message.subject),
+        escape_html(&item.message.subject),
+        escape_html(&item.account_name),
         escape_html(&item.message.from),
         escape_html(&item.date_label),
+        escape_html(&format_file_size(item.attachment.size_bytes)),
         escape_html(&badge_label),
+        escape_html(&badge_label),
+        escape_html(&type_label),
+        escape_html(&type_label),
+        escape_html(&item.message.message_relpath),
+        escape_html(&item.message.message_relpath),
         if badges.is_empty() {
-            "<span class=\"meta\">No save markers yet</span>".to_string()
+            String::new()
         } else {
             badges.join("")
         },
-        escape_html(&type_label),
-        escape_html(&format_file_size(item.attachment.size_bytes)),
-        escape_html(&item.message.message_relpath),
-        escape_html(&format!("Scanned {}", item.message.last_scanned_at)),
-        escape_html(if item.is_deleted {
-            "This attachment belongs to a deleted local archive message"
-        } else if item.supports_paperless {
-            "Eligible for Paperless"
-        } else {
-            "Paperless not available for this attachment type"
-        }),
         actions,
     )
 }
@@ -8474,6 +7494,7 @@ fn format_file_size(size_bytes: i64) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_search(
     identity: &Identity,
     accounts: &[AccountRecord],
@@ -8530,10 +7551,10 @@ fn render_search(
               <select name=\"message_state\">{}</select>
             </label>
           </div>
-          <div class=\"actions\">
-            <button type=\"submit\">Search</button>
-            <a class=\"button-link secondary\" href=\"/\">Back to dashboard</a>
-          </div>
+	          <div class=\"action-row\">
+	            <button class=\"icon-button\" type=\"submit\" title=\"Search mail\" aria-label=\"Search mail\">⌕</button>
+	            <a class=\"button-link secondary icon-button\" href=\"/\" title=\"Back to dashboard\" aria-label=\"Back to dashboard\">↩</a>
+	          </div>
         </form>",
         escape_html(query),
         render_account_options(accounts, selected_account_id),
@@ -8571,7 +7592,7 @@ fn render_search(
         let return_to = search_page_href(query, selected_account_id, state.message_state);
         writeln!(
             &mut body,
-            "<section class=\"grid\">{}</section>",
+            "<section class=\"mail-list\">{}</section>",
             results
                 .iter()
                 .map(|result| render_search_result(result, &return_to))
@@ -8664,25 +7685,25 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
     if result.is_deleted {
         writeln!(
             &mut actions,
-            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\">
+            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\" class=\"icon-form\">
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary\" type=\"submit\">Restore On Next Sync</button>
+              <button class=\"secondary icon-button\" type=\"submit\" title=\"Restore on next sync\" aria-label=\"Restore on next sync\">↺</button>
             </form>",
             result.account_id,
             escape_html(&result.message_key),
-            escape_html(&return_to),
+            escape_html(return_to),
         )
         .ok();
     } else {
         writeln!(
             &mut actions,
-            "<form method=\"post\" action=\"/accounts/{}/messages/{}/delete\">
+            "<form method=\"post\" action=\"/accounts/{}/messages/{}/delete\" class=\"icon-form\">
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary danger\" type=\"submit\">Delete From Local Archive</button>
+              <button class=\"secondary danger icon-button\" type=\"submit\" title=\"Delete local archive copy\" aria-label=\"Delete local archive copy\">🗑</button>
             </form>",
             result.account_id,
             escape_html(&result.message_key),
-            escape_html(&return_to),
+            escape_html(return_to),
         )
         .ok();
     }
@@ -8707,35 +7728,38 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
     }
 
     format!(
-        "<article class=\"result stack {}\">
-          <div class=\"result-head\">
-            <span class=\"badge\">{}</span>
-            <p class=\"meta\">{}</p>
+        "<article class=\"mail-row {}\">
+          <span class=\"meta truncate\" title=\"{}\">{}</span>
+          <span class=\"meta truncate\" title=\"{}\">{}</span>
+          <div class=\"mail-subject\">
+            <strong class=\"truncate\" title=\"{}\">{}</strong>
+            <span class=\"meta truncate\" title=\"{}\">{}</span>
           </div>
-          <div>
-            <h2>{}</h2>
-            <p class=\"meta\">{} · {} · {}</p>
-          </div>
-          <div class=\"tag-list\">{}</div>
-          <div class=\"action-row\">{}</div>
+          <div class=\"tag-list compact\">{}</div>
+          <div class=\"row-actions\">{}</div>
         </article>",
         if result.is_deleted { "is-deleted" } else { "" },
-        escape_html(&result.account_name),
         escape_html(&result.date_label),
-        escape_html(&result.subject),
+        escape_html(&result.date_label),
         escape_html(&result.from),
-        escape_html(&result.date_label),
+        escape_html(&result.from),
+        escape_html(&result.subject),
+        escape_html(&result.subject),
         escape_html(&result.message_relpath),
+        escape_html(&format!(
+            "{} · {}",
+            result.account_name, result.message_relpath
+        )),
         tags.join(""),
         actions
     )
 }
 
 fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str) -> String {
-    let dashboard_script = if active_nav == "dashboard" {
-        r#"<script src="/static/dashboard.js" defer></script>"#
-    } else {
-        ""
+    let page_script = match active_nav {
+        "dashboard" => r#"<script src="/static/dashboard.js" defer></script>"#,
+        "attachments" => r#"<script src="/static/attachments.js" defer></script>"#,
+        _ => "",
     };
     format!(
         r#"<!doctype html>
@@ -8763,7 +7787,7 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
   </body>
 </html>"#,
         escape_html(title),
-        dashboard_script,
+        page_script,
         body,
         nav_active_class(active_nav == "dashboard"),
         nav_active_class(active_nav == "accounts"),
@@ -8955,6 +7979,21 @@ fn attachment_download_response(filename: &str, mime_type: &str, bytes: Vec<u8>)
     harden_response(response)
 }
 
+fn zip_download_response(filename: &str, bytes: Vec<u8>) -> Response {
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::OK;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/zip"));
+    if let Ok(value) = HeaderValue::from_str(&format!(
+        "attachment; filename=\"{}\"",
+        safe_filename(filename)
+    )) {
+        response.headers_mut().insert(CONTENT_DISPOSITION, value);
+    }
+    harden_response(response)
+}
+
 fn html_response(html: String) -> Response {
     harden_response(Html(html).into_response())
 }
@@ -9119,8 +8158,6 @@ mod tests {
         let account_state_root = data_dir.join("accounts");
         let runtime_dir = tempdir.path().join("runtime");
         let lock_dir = tempdir.path().join("locks");
-        let paperless_consume_root = tempdir.path().join("paperless-consume");
-        let paperless_staging_dir = tempdir.path().join("paperless-staging");
 
         AppConfig {
             address: Arc::<str>::from("127.0.0.1"),
@@ -9130,12 +8167,7 @@ mod tests {
             account_state_root: Arc::<str>::from(account_state_root.to_string_lossy().to_string()),
             runtime_dir: Arc::<str>::from(runtime_dir.to_string_lossy().to_string()),
             lock_dir: Arc::<str>::from(lock_dir.to_string_lossy().to_string()),
-            paperless_consume_root: Some(Arc::<str>::from(
-                paperless_consume_root.to_string_lossy().to_string(),
-            )),
-            paperless_staging_dir: Some(Arc::<str>::from(
-                paperless_staging_dir.to_string_lossy().to_string(),
-            )),
+            visible_mirror_read_group: None,
             default_tags: Arc::from(vec!["new".to_string()]),
         }
     }
@@ -9147,7 +8179,7 @@ mod tests {
     }
 
     #[test]
-    fn landlock_roots_include_runtime_store_and_paperless_paths() {
+    fn landlock_roots_include_runtime_store_and_account_paths() {
         let tempdir = TempDir::new().expect("tempdir");
         let config = test_config(&tempdir);
 
@@ -9160,18 +8192,6 @@ mod tests {
         assert!(read_write.contains(&PathBuf::from(config.account_state_root.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.runtime_dir.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.lock_dir.as_ref())));
-        assert!(read_write.contains(&PathBuf::from(
-            config
-                .paperless_consume_root
-                .as_deref()
-                .expect("paperless consume root"),
-        )));
-        assert!(read_write.contains(&PathBuf::from(
-            config
-                .paperless_staging_dir
-                .as_deref()
-                .expect("paperless staging root"),
-        )));
     }
 
     fn example_account() -> AccountRecord {
@@ -9187,7 +8207,6 @@ mod tests {
             folder_patterns_json: serde_json::to_string(&gmail_default_patterns()).expect("json"),
             encrypted_secret: "ignored".to_string(),
             sync_enabled: true,
-            paperless_enabled: false,
             created_at: String::new(),
             updated_at: String::new(),
             last_sync_started_at: None,
@@ -9198,10 +8217,6 @@ mod tests {
             last_sync_code: None,
             last_sync_summary: None,
             last_sync_detail: None,
-            paperless_last_export_started_at: None,
-            paperless_last_export_finished_at: None,
-            paperless_last_export_status: None,
-            paperless_last_export_error: None,
         }
     }
 
@@ -9241,9 +8256,14 @@ mod tests {
             progress_warning: None,
             progress_warning_detail: None,
             progress_warning_action: None,
-            paperless_label: "Paperless off".to_string(),
-            paperless_note: "Attachment filing is disabled for this mailbox.".to_string(),
-            last_paperless_error: None,
+        }
+    }
+
+    fn sample_identity() -> Identity {
+        Identity {
+            username: "alice".to_string(),
+            email: Some("alice@example.com".to_string()),
+            groups: vec!["mail-archive-users".to_string()],
         }
     }
 
@@ -9278,7 +8298,7 @@ mod tests {
     }
 
     fn seed_account(config: &AppConfig, username: &str, secret: &str) -> i64 {
-        seed_account_with_flags(config, username, secret, true, false)
+        seed_account_with_flags(config, username, secret, true)
     }
 
     fn seed_account_with_flags(
@@ -9286,7 +8306,6 @@ mod tests {
         username: &str,
         secret: &str,
         sync_enabled: bool,
-        paperless_enabled: bool,
     ) -> i64 {
         insert_account(
             config,
@@ -9301,7 +8320,6 @@ mod tests {
                 folder_patterns: gmail_default_patterns(),
                 secret: Some(secret.to_string()),
                 sync_enabled,
-                paperless_enabled,
             },
         )
         .expect("insert account");
@@ -9337,43 +8355,6 @@ mod tests {
         path
     }
 
-    fn paperless_consume_root(config: &AppConfig) -> PathBuf {
-        PathBuf::from(
-            config
-                .paperless_consume_root
-                .as_deref()
-                .expect("paperless consume root"),
-        )
-    }
-
-    fn count_paperless_handoff_files(config: &AppConfig) -> usize {
-        collect_regular_files(&paperless_consume_root(config))
-            .expect("paperless consume files")
-            .len()
-    }
-
-    fn count_attachment_export_rows(config: &AppConfig) -> i64 {
-        let connection = open_db(config).expect("db");
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM paperless_attachment_exports",
-                [],
-                |row| row.get(0),
-            )
-            .expect("attachment export rows")
-    }
-
-    fn count_attachment_export_rows_for_outcome(config: &AppConfig, outcome: &str) -> i64 {
-        let connection = open_db(config).expect("db");
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM paperless_attachment_exports WHERE outcome = ?1",
-                params![outcome],
-                |row| row.get(0),
-            )
-            .expect("attachment export rows by outcome")
-    }
-
     fn count_attachment_catalog_rows(config: &AppConfig) -> i64 {
         let connection = open_db(config).expect("db");
         connection
@@ -9381,17 +8362,6 @@ mod tests {
                 row.get(0)
             })
             .expect("attachment catalog rows")
-    }
-
-    fn count_attachment_action_rows_for_method(config: &AppConfig, method: &str) -> i64 {
-        let connection = open_db(config).expect("db");
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM attachment_actions WHERE method = ?1",
-                params![method],
-                |row| row.get(0),
-            )
-            .expect("attachment action rows")
     }
 
     fn count_deleted_message_rows(config: &AppConfig) -> i64 {
@@ -9437,7 +8407,6 @@ mod tests {
             &AttachmentListParams {
                 q: None,
                 account_id: None,
-                save_state: None,
                 message_state: None,
                 extension: None,
                 page: None,
@@ -9449,16 +8418,6 @@ mod tests {
         page.items.into_iter().next().expect("attachment item")
     }
 
-    fn read_notmuch_stub_tag_file(account_paths: &AccountPaths, name: &str) -> String {
-        fs::read_to_string(
-            account_paths
-                .account_state_root
-                .join(".notmuch-stub")
-                .join(name),
-        )
-        .unwrap_or_default()
-    }
-
     fn mail_export_stub_commands() -> [(&'static str, &'static str); 4] {
         [
             (
@@ -9467,7 +8426,7 @@ mod tests {
             ),
             (
                 "notmuch",
-                "parse_notmuch_value() {\n  key=\"$1\"\n  awk -F= -v key=\"$key\" '\n    /^\\[database\\]$/ { in_db = 1; next }\n    /^\\[/ { in_db = 0 }\n    in_db && $1 == key { print substr($0, index($0, \"=\") + 1); exit }\n  ' \"$NOTMUCH_CONFIG\"\n}\nSTATE_DIR=\"$HOME/.notmuch-stub\"\nMAILDIR=\"$(parse_notmuch_value mail_root)\"\nDB_DIR=\"$(parse_notmuch_value path)\"\nmkdir -p \"$STATE_DIR\"\ncmd=\"${1:-}\"\nshift || true\ncase \"$cmd\" in\n  new)\n    mkdir -p \"$DB_DIR\"\n    ;;\n  count)\n    find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | wc -l | tr -d ' '\n    ;;\n  search)\n    if printf '%s ' \"$@\" | grep -q -- '--format=json'; then\n      printf '[]'\n      exit 0\n    fi\n    reviewed=\"$STATE_DIR/reviewed\"\n    touch \"$reviewed\"\n    while IFS= read -r path; do\n      rel=\"${path#${MAILDIR}/}\"\n      if grep -Fxq \"$rel\" \"$reviewed\"; then\n        continue\n      fi\n      printf '%s\\n' \"$path\"\n    done < <(find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | sort)\n    ;;\n  tag)\n    tag_spec=\"$1\"\n    shift\n    if [[ \"${1:-}\" == '--' ]]; then\n      shift\n    fi\n    query=\"${1:-}\"\n    rel=\"${query#path:\\\"}\"\n    rel=\"${rel%\\\"}\"\n    rel=\"${rel//\\\\\\\"/\\\"}\"\n    rel=\"${rel//\\\\\\\\/\\\\}\"\n    case \"$tag_spec\" in\n      +paperless-reviewed)\n        touch \"$STATE_DIR/reviewed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/reviewed\"\n        sort -u \"$STATE_DIR/reviewed\" -o \"$STATE_DIR/reviewed\"\n        ;;\n      +paperless-filed)\n        touch \"$STATE_DIR/filed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/filed\"\n        sort -u \"$STATE_DIR/filed\" -o \"$STATE_DIR/filed\"\n        ;;\n      *)\n        echo \"unsupported tag command: $tag_spec\" >&2\n        exit 1\n        ;;\n    esac\n    ;;\n  *)\n    echo \"unsupported notmuch command: $cmd\" >&2\n    exit 1\n    ;;\nesac\n",
+                "parse_notmuch_value() {\n  key=\"$1\"\n  awk -F= -v key=\"$key\" '\n    /^\\[database\\]$/ { in_db = 1; next }\n    /^\\[/ { in_db = 0 }\n    in_db && $1 == key { print substr($0, index($0, \"=\") + 1); exit }\n  ' \"$NOTMUCH_CONFIG\"\n}\nSTATE_DIR=\"$HOME/.notmuch-stub\"\nMAILDIR=\"$(parse_notmuch_value mail_root)\"\nDB_DIR=\"$(parse_notmuch_value path)\"\nmkdir -p \"$STATE_DIR\"\ncmd=\"${1:-}\"\nshift || true\ncase \"$cmd\" in\n  new)\n    mkdir -p \"$DB_DIR\"\n    ;;\n  count)\n    find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | wc -l | tr -d ' '\n    ;;\n  search)\n    if printf '%s ' \"$@\" | grep -q -- '--format=json'; then\n      printf '[]'\n      exit 0\n    fi\n    reviewed=\"$STATE_DIR/reviewed\"\n    touch \"$reviewed\"\n    while IFS= read -r path; do\n      rel=\"${path#${MAILDIR}/}\"\n      if grep -Fxq \"$rel\" \"$reviewed\"; then\n        continue\n      fi\n      printf '%s\\n' \"$path\"\n    done < <(find \"$MAILDIR\" -type f \\( -path '*/cur/*' -o -path '*/new/*' \\) | sort)\n    ;;\n  tag)\n    tag_spec=\"$1\"\n    shift\n    if [[ \"${1:-}\" == '--' ]]; then\n      shift\n    fi\n    query=\"${1:-}\"\n    rel=\"${query#path:\\\"}\"\n    rel=\"${rel%\\\"}\"\n    rel=\"${rel//\\\\\\\"/\\\"}\"\n    rel=\"${rel//\\\\\\\\/\\\\}\"\n    case \"$tag_spec\" in\n      +archive-reviewed)\n        touch \"$STATE_DIR/reviewed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/reviewed\"\n        sort -u \"$STATE_DIR/reviewed\" -o \"$STATE_DIR/reviewed\"\n        ;;\n      +archive-filed)\n        touch \"$STATE_DIR/filed\"\n        printf '%s\\n' \"$rel\" >> \"$STATE_DIR/filed\"\n        sort -u \"$STATE_DIR/filed\" -o \"$STATE_DIR/filed\"\n        ;;\n      *)\n        echo \"unsupported tag command: $tag_spec\" >&2\n        exit 1\n        ;;\n    esac\n    ;;\n  *)\n    echo \"unsupported notmuch command: $cmd\" >&2\n    exit 1\n    ;;\nesac\n",
             ),
             (
                 "ripmime",
@@ -9478,6 +8437,21 @@ mod tests {
                 "target=\"${@: -1}\"\ncase \"$target\" in\n  *.pdf)\n    printf 'application/pdf\\n'\n    ;;\n  *.txt)\n    printf 'text/plain\\n'\n    ;;\n  *.docx)\n    printf 'application/vnd.openxmlformats-officedocument.wordprocessingml.document\\n'\n    ;;\n  *.png)\n    printf 'image/png\\n'\n    ;;\n  *.zip)\n    printf 'application/zip\\n'\n    ;;\n  *.bin)\n    echo 'unknown binary attachment' >&2\n    exit 1\n    ;;\n  *)\n    printf 'application/octet-stream\\n'\n    ;;\nesac\n",
             ),
         ]
+    }
+
+    fn mail_export_acl_stub_commands() -> Vec<(&'static str, &'static str)> {
+        let mut commands = mail_export_stub_commands().to_vec();
+        commands.push((
+            "setfacl",
+            "printf '%s %s %s\\n' \"$1\" \"$2\" \"$3\" >> \"$SETFACL_LOG\"\n",
+        ));
+        commands
+    }
+
+    fn mail_export_failing_acl_stub_commands() -> Vec<(&'static str, &'static str)> {
+        let mut commands = mail_export_stub_commands().to_vec();
+        commands.push(("setfacl", "echo 'setfacl denied' >&2\nexit 1\n"));
+        commands
     }
 
     #[test]
@@ -9546,6 +8520,36 @@ mod tests {
     }
 
     #[test]
+    fn account_path_migration_moves_legacy_maildir_payload_into_hidden_sync_tree() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let account = example_account();
+        let legacy_root = tempdir
+            .path()
+            .join("store")
+            .join("alice")
+            .join("emails")
+            .join("accounts")
+            .join("42");
+        let legacy_message = legacy_root.join("maildir/Inbox/cur/msg-1");
+        let legacy_notmuch_db = legacy_root.join("maildir/.notmuch/metadata");
+        fs::create_dir_all(legacy_message.parent().expect("legacy message parent"))
+            .expect("legacy message dir");
+        fs::create_dir_all(legacy_notmuch_db.parent().expect("legacy db parent"))
+            .expect("legacy db dir");
+        write_private_file(&legacy_message, b"Message-ID: <legacy@example.com>\n\nbody")
+            .expect("legacy message");
+        write_private_file(&legacy_notmuch_db, b"db").expect("legacy db");
+
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+
+        assert!(paths.maildir.join("Inbox/cur/msg-1").exists());
+        assert!(!paths.maildir.join(".notmuch/metadata").exists());
+        assert!(!legacy_root.exists());
+    }
+
+    #[test]
     fn account_path_migration_moves_flat_legacy_mbsync_state_files_into_the_state_dir() {
         let tempdir = TempDir::new().expect("tempdir");
         let config = test_config(&tempdir);
@@ -9590,6 +8594,20 @@ mod tests {
 
         assert!(paths.sync_state_dir.join("stateINBOX").exists());
         assert!(!account_state_root.join("mbsync-stateINBOX").exists());
+    }
+
+    #[test]
+    fn visible_message_filename_caps_long_subjects() {
+        let long_subject = "10197254.".to_string() + &"LongToken".repeat(80);
+        let filename = visible_message_filename(
+            1_632_991_000,
+            &long_subject,
+            "message-id:very-long-subject@example.com",
+        );
+
+        assert!(filename.ends_with(".eml"));
+        assert!(filename.len() < 255);
+        assert!(filename.contains("["));
     }
 
     #[test]
@@ -10086,7 +9104,6 @@ mod tests {
                 folder_patterns: gmail_default_patterns(),
                 secret: None,
                 sync_enabled: false,
-                paperless_enabled: false,
             },
         )
         .expect("update");
@@ -10118,7 +9135,6 @@ mod tests {
                 folder_patterns: gmail_default_patterns(),
                 secret: Some("new-secret".to_string()),
                 sync_enabled: true,
-                paperless_enabled: false,
             },
         )
         .expect("update");
@@ -10172,7 +9188,6 @@ mod tests {
                 folder_patterns: gmail_default_patterns(),
                 secret: None,
                 sync_enabled: true,
-                paperless_enabled: false,
             },
         )
         .expect("update");
@@ -10180,230 +9195,6 @@ mod tests {
         let updated = read_account(&config, "alice", account_id);
         let reconciled = read_notmuch_config(&config, &updated);
         assert!(reconciled.contains("primary_email=archive@example.com"));
-    }
-
-    #[test]
-    fn paperless_flag_round_trips_through_account_storage_and_forms() {
-        let tempdir = TempDir::new().expect("tempdir");
-        let config = test_config(&tempdir);
-        prepare_test_layout(&config);
-        let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
-
-        let account = read_account(&config, "alice", account_id);
-        let form = account_form_from_account(&account);
-
-        assert!(account.paperless_enabled);
-        assert_eq!(form.paperless_enabled.as_deref(), Some("on"));
-    }
-
-    #[test]
-    fn paperless_export_skips_mailboxes_when_disabled() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <skip-disabled@example.com>\n\nATTACH:pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-
-            assert_eq!(count_paperless_handoff_files(&config), 0);
-            assert_eq!(count_attachment_export_rows(&config), 0);
-        });
-    }
-
-    #[test]
-    fn paperless_backfills_once_then_stops_reprocessing_reviewed_messages() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <backfill@example.com>\n\nATTACH:pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("first sync");
-            assert_eq!(count_paperless_handoff_files(&config), 1);
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "exported"),
-                1
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("second sync");
-            assert_eq!(count_paperless_handoff_files(&config), 1);
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "exported"),
-                1
-            );
-        });
-    }
-
-    #[test]
-    fn paperless_marks_attachmentless_messages_reviewed_without_importing() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-no-attachments",
-                "Message-ID: <no-attachments@example.com>\n\nATTACH:none\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-
-            assert_eq!(count_paperless_handoff_files(&config), 0);
-            assert!(read_notmuch_stub_tag_file(&account_paths, "reviewed")
-                .contains("Inbox/cur/msg-no-attachments"));
-        });
-    }
-
-    #[test]
-    fn paperless_deduplicates_identical_attachments_across_messages() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <duplicate-a@example.com>\n\nATTACH:duplicate-pdf\n",
-            );
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-2",
-                "Message-ID: <duplicate-b@example.com>\n\nATTACH:duplicate-pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-
-            assert_eq!(count_paperless_handoff_files(&config), 1);
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "exported"),
-                1
-            );
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "duplicate"),
-                1
-            );
-        });
-    }
-
-    #[test]
-    fn paperless_retry_avoids_reexporting_successful_attachments_after_partial_failure() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            let message_path = write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <partial-failure@example.com>\n\nATTACH:two-files-bad\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("first sync");
-            assert_eq!(count_paperless_handoff_files(&config), 1);
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "exported"),
-                1
-            );
-            let account = read_account(&config, "alice", account_id);
-            assert_eq!(
-                account.paperless_last_export_status.as_deref(),
-                Some("error")
-            );
-            assert!(account
-                .paperless_last_export_error
-                .as_deref()
-                .is_some_and(|error| error.contains("unknown binary attachment")));
-
-            write_private_file(
-                &message_path,
-                b"Message-ID: <partial-failure@example.com>\n\nATTACH:two-files\n",
-            )
-            .expect("rewrite mail message");
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("retry sync");
-
-            assert_eq!(count_paperless_handoff_files(&config), 2);
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "exported"),
-                2
-            );
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "duplicate"),
-                0
-            );
-        });
-    }
-
-    #[test]
-    fn maildir_renames_do_not_trigger_duplicate_paperless_handoffs() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            let original_path = write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <rename@example.com>\n\nATTACH:duplicate-pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("first sync");
-            assert_eq!(count_paperless_handoff_files(&config), 1);
-
-            let renamed_path = account_paths.maildir.join("Inbox/cur/msg-1:2,S");
-            fs::rename(&original_path, &renamed_path).expect("rename maildir file");
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("second sync after rename");
-
-            assert_eq!(count_paperless_handoff_files(&config), 1);
-            assert_eq!(count_attachment_export_rows(&config), 1);
-        });
-    }
-
-    #[test]
-    fn visible_notmuch_tags_hide_internal_paperless_state() {
-        assert_eq!(
-            visible_notmuch_tags(vec![
-                "inbox".to_string(),
-                PAPERLESS_REVIEWED_TAG.to_string(),
-                PAPERLESS_FILED_TAG.to_string(),
-                "unread".to_string(),
-            ]),
-            vec!["inbox".to_string(), "unread".to_string()]
-        );
     }
 
     #[test]
@@ -10587,7 +9378,6 @@ mod tests {
             secret: String::new(),
             folder_patterns: String::new(),
             sync_enabled: Some("on".to_string()),
-            paperless_enabled: None,
         };
 
         assert!(validate_account_form(&form, true).is_err());
@@ -10598,6 +9388,66 @@ mod tests {
     fn saved_query_detection_only_runs_on_explicit_q_param() {
         assert!(has_explicit_query_param("q=from%3Abilling"));
         assert!(!has_explicit_query_param("account_id=4"));
+    }
+
+    #[test]
+    fn rfc2047_headers_decode_to_display_symbols() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let message_path = tempdir.path().join("message.eml");
+        write_private_file(
+            &message_path,
+            b"Message-ID: <encoded@example.com>\r\nFrom: =?UTF-8?Q?Billing_=E2=9C=85?= <billing@example.com>\r\nSubject: =?UTF-8?Q?Invoice?=\r\n =?UTF-8?Q?_=E2=9C=85?=\r\nDate: Thu, 18 Apr 2024 14:32:00 +0000\r\n\r\nBody\r\n",
+        )
+        .expect("message");
+
+        let metadata = read_message_metadata(&message_path).expect("metadata");
+
+        assert_eq!(metadata.subject, "Invoice ✅");
+        assert!(metadata.from.contains("Billing ✅"));
+        assert_eq!(
+            metadata.normalized_message_id.as_deref(),
+            Some("encoded@example.com")
+        );
+    }
+
+    #[test]
+    fn malformed_headers_fall_back_without_panicking() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let message_path = tempdir.path().join("message.eml");
+        write_private_file(&message_path, b"Subject: =?UTF-8?Q?broken\r\n\r\nBody\r\n")
+            .expect("message");
+
+        let metadata = read_message_metadata(&message_path).expect("metadata");
+
+        assert!(!metadata.subject.is_empty());
+        assert_eq!(metadata.from, "Unknown sender");
+    }
+
+    #[test]
+    fn compact_search_result_markup_truncates_long_values() {
+        let result = SearchResult {
+            account_id: 1,
+            account_name: "Personal Gmail".to_string(),
+            message_key: "key".to_string(),
+            message_relpath: "Inbox/very/long/path/that/should/not/overflow/message.eml"
+                .to_string(),
+            timestamp: 0,
+            date_label: "2024-04-18 14:32 UTC".to_string(),
+            from: "Billing ✅ <billing@example.com>".to_string(),
+            subject: "Invoice ✅ with a very long subject that should truncate".to_string(),
+            tags: vec!["inbox".to_string()],
+            deleted_at: None,
+            restore_pending: false,
+            is_deleted: false,
+        };
+
+        let html = render_search_result(&result, "/search?q=invoice");
+
+        assert!(html.contains("mail-row"));
+        assert!(html.contains("Billing ✅"));
+        assert!(html.contains("Invoice ✅"));
+        assert!(html.contains("truncate"));
+        assert!(html.contains("aria-label=\"Delete local archive copy\""));
     }
 
     #[test]
@@ -10770,11 +9620,7 @@ mod tests {
         prepare_test_layout(&config);
         let connection = open_db(&config).expect("db");
 
-        let names = [
-            "attachment_messages",
-            "attachment_catalog",
-            "attachment_actions",
-        ];
+        let names = ["attachment_messages", "attachment_catalog"];
         for name in names {
             let count = connection
                 .query_row(
@@ -10784,6 +9630,16 @@ mod tests {
                 )
                 .expect("table count");
             assert_eq!(count, 1, "expected table {name} to exist");
+        }
+        for name in ["attachment_actions", "paperless_attachment_exports"] {
+            let count = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("table count");
+            assert_eq!(count, 0, "expected table {name} to stay absent");
         }
     }
 
@@ -10837,7 +9693,7 @@ mod tests {
             let tempdir = TempDir::new().expect("tempdir");
             let config = test_config(&tempdir);
             prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);
             let account_paths = ensure_account_paths(&config, &account).expect("paths");
             write_maildir_message(
@@ -10853,10 +9709,6 @@ mod tests {
             let item = first_attachment_item(&config, "alice");
             assert_eq!(item.attachment.original_filename, "invoice.pdf");
             assert_eq!(item.message.subject, "Invoice ready");
-            assert!(item.supports_paperless);
-            assert!(!item.status.saved_files);
-            assert!(!item.status.saved_paperless);
-            assert!(!item.status.downloaded_browser);
         });
     }
 
@@ -10866,7 +9718,7 @@ mod tests {
             let tempdir = TempDir::new().expect("tempdir");
             let config = test_config(&tempdir);
             prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);
             let account_paths = ensure_account_paths(&config, &account).expect("paths");
             let hidden_path = write_maildir_message(
@@ -10898,12 +9750,78 @@ mod tests {
     }
 
     #[test]
+    fn sync_applies_visible_mirror_read_acl_to_new_and_existing_hard_links() {
+        with_stubbed_path(&mail_export_acl_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let log_path = tempdir.path().join("setfacl.log");
+            env::set_var("SETFACL_LOG", &log_path);
+            let mut config = test_config(&tempdir);
+            config.visible_mirror_read_group = Some(Arc::<str>::from("filebrowser-quantum"));
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            let hidden_path = write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-acl",
+                "Message-ID: <acl@example.com>\nSubject: ACL repair\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("initial sync");
+            let visible_filename =
+                visible_message_filename(1_713_450_720, "ACL repair", "message-id:acl@example.com");
+            let visible_path = account_paths
+                .visible_emails_root
+                .join("personal-gmail-inbox/2024/04")
+                .join(&visible_filename);
+            assert!(same_file_identity(&hidden_path, &visible_path).expect("same inode"));
+
+            fs::write(&log_path, "").expect("clear acl log");
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Reindex)
+                .expect("reindex repairs acl");
+
+            let log = fs::read_to_string(&log_path).expect("acl log");
+            assert!(log.contains("g:filebrowser-quantum:r--"));
+            assert!(log.contains(visible_path.to_string_lossy().as_ref()));
+            assert!(log.contains("g:filebrowser-quantum:r-x"));
+            assert!(!log.contains(".internal-sync"));
+            env::remove_var("SETFACL_LOG");
+        });
+    }
+
+    #[test]
+    fn visible_mirror_acl_failure_fails_sync_reconciliation() {
+        with_stubbed_path(&mail_export_failing_acl_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            config.visible_mirror_read_group = Some(Arc::<str>::from("filebrowser-quantum"));
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-acl-fail",
+                "Message-ID: <acl-fail@example.com>\nSubject: ACL fail\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+
+            let error =
+                run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                    .expect_err("sync should fail when visible mirror acl cannot be applied");
+
+            assert_eq!(error.code, "mailbox_mirror_rebuild_failed");
+            assert!(error.detail.contains("setfacl denied"));
+        });
+    }
+
+    #[test]
     fn delete_message_removes_payload_and_preserves_deleted_attachment_metadata() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
             let config = test_config(&tempdir);
             prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);
             let account_paths = ensure_account_paths(&config, &account).expect("paths");
             let message_path = write_maildir_message(
@@ -10940,7 +9858,6 @@ mod tests {
                 &AttachmentListParams {
                     q: None,
                     account_id: None,
-                    save_state: None,
                     message_state: None,
                     extension: None,
                     page: None,
@@ -10957,7 +9874,6 @@ mod tests {
                 &AttachmentListParams {
                     q: None,
                     account_id: None,
-                    save_state: None,
                     message_state: Some("deleted".to_string()),
                     extension: None,
                     page: None,
@@ -10977,7 +9893,7 @@ mod tests {
             let tempdir = TempDir::new().expect("tempdir");
             let config = test_config(&tempdir);
             prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);
             let account_paths = ensure_account_paths(&config, &account).expect("paths");
             let message_path = write_maildir_message(
@@ -11042,8 +9958,8 @@ mod tests {
             let tempdir = TempDir::new().expect("tempdir");
             let config = test_config(&tempdir);
             prepare_test_layout(&config);
-            let alice_account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
-            let bob_account_id = seed_account_with_flags(&config, "bob", "secret", true, false);
+            let alice_account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let bob_account_id = seed_account_with_flags(&config, "bob", "secret", true);
             let alice_account = read_account(&config, "alice", alice_account_id);
             let bob_account = read_account(&config, "bob", bob_account_id);
             let alice_paths = ensure_account_paths(&config, &alice_account).expect("alice paths");
@@ -11072,260 +9988,12 @@ mod tests {
     }
 
     #[test]
-    fn files_save_marks_attachment_saved_and_deduplicates_retries() {
+    fn attachments_page_renders_bulk_download_controls_without_action_state() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
             let config = test_config(&tempdir);
             prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <files-save@example.com>\n\nATTACH:pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-
-            let item = first_attachment_item(&config, "alice");
-            let (account, message, attachment) =
-                load_attachment_for_user(&config, "alice", &item.attachment.attachment_key)
-                    .expect("attachment lookup");
-            let (_dir, attachment_path) =
-                resolve_attachment_payload(&config, &account, &message, &attachment)
-                    .expect("payload");
-
-            let (relpath, outcome) = copy_attachment_to_files_destination(
-                &config,
-                &account,
-                &attachment,
-                &attachment_path,
-            )
-            .expect("first copy");
-            assert_eq!(outcome, ATTACHMENT_OUTCOME_SAVED);
-            record_attachment_action(
-                &config,
-                &attachment,
-                ATTACHMENT_METHOD_FILES,
-                outcome,
-                true,
-                Some(&relpath),
-            )
-            .expect("record first action");
-
-            let (_second_relpath, second_outcome) = copy_attachment_to_files_destination(
-                &config,
-                &account,
-                &attachment,
-                &attachment_path,
-            )
-            .expect("second copy");
-            assert_eq!(second_outcome, ATTACHMENT_OUTCOME_DUPLICATE);
-            record_attachment_action(
-                &config,
-                &attachment,
-                ATTACHMENT_METHOD_FILES,
-                second_outcome,
-                true,
-                Some(&relpath),
-            )
-            .expect("record duplicate action");
-
-            assert_eq!(
-                count_attachment_action_rows_for_method(&config, ATTACHMENT_METHOD_FILES),
-                2
-            );
-            assert!(account_files_root(&config, "alice")
-                .join(format!(
-                    "{}--{}",
-                    attachment.attachment_sha256, attachment.safe_filename
-                ))
-                .exists());
-
-            let default_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    save_state: None,
-                    message_state: None,
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("default page");
-            assert!(default_page.items.is_empty());
-
-            let saved_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    save_state: Some("saved_files".to_string()),
-                    message_state: None,
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("saved page");
-            assert_eq!(saved_page.items.len(), 1);
-            assert!(saved_page.items[0].status.saved_files);
-        });
-    }
-
-    #[test]
-    fn browser_download_audit_does_not_count_as_saved_any() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <browser@example.com>\n\nATTACH:pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-
-            let item = first_attachment_item(&config, "alice");
-            let (account, message, attachment) =
-                load_attachment_for_user(&config, "alice", &item.attachment.attachment_key)
-                    .expect("attachment lookup");
-            let (_dir, attachment_path) =
-                resolve_attachment_payload(&config, &account, &message, &attachment)
-                    .expect("payload");
-            assert!(
-                fs::read(&attachment_path)
-                    .expect("read extracted payload")
-                    .len()
-                    > 0
-            );
-            record_attachment_action(
-                &config,
-                &attachment,
-                ATTACHMENT_METHOD_BROWSER_DOWNLOAD,
-                ATTACHMENT_OUTCOME_STARTED,
-                false,
-                None,
-            )
-            .expect("record browser action");
-
-            let downloaded_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    save_state: Some("downloaded_browser".to_string()),
-                    message_state: None,
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("downloaded page");
-            assert_eq!(downloaded_page.items.len(), 1);
-            assert!(downloaded_page.items[0].status.downloaded_browser);
-
-            let saved_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    save_state: Some("saved_any".to_string()),
-                    message_state: None,
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("saved any page");
-            assert!(saved_page.items.is_empty());
-        });
-    }
-
-    #[test]
-    fn legacy_paperless_exports_surface_as_saved_paperless() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <legacy-paperless@example.com>\n\nATTACH:pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-
-            assert_eq!(
-                count_attachment_export_rows_for_outcome(&config, "exported"),
-                1
-            );
-
-            let saved_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    save_state: Some("saved_paperless".to_string()),
-                    message_state: None,
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("saved paperless page");
-            assert_eq!(saved_page.items.len(), 1);
-            assert!(saved_page.items[0].status.saved_paperless);
-
-            let default_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    save_state: None,
-                    message_state: None,
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("default page");
-            assert!(default_page.items.is_empty());
-        });
-    }
-
-    #[test]
-    fn attachments_page_only_shows_paperless_action_for_supported_types() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true, false);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);
             let account_paths = ensure_account_paths(&config, &account).expect("paths");
             write_maildir_message(
@@ -11343,7 +10011,6 @@ mod tests {
                 &AttachmentListParams {
                     q: None,
                     account_id: None,
-                    save_state: Some("needs_triage".to_string()),
                     message_state: None,
                     extension: None,
                     page: None,
@@ -11352,28 +10019,55 @@ mod tests {
                 },
             )
             .expect("page");
-            assert_eq!(
-                page.items
-                    .iter()
-                    .filter(|item| item.supports_paperless)
-                    .count(),
-                1
+            let html = render_attachments_page(&sample_identity(), &page, None, None);
+            assert!(!html.contains("save_state"));
+            assert!(!html.contains("Paperless"));
+            assert!(!html.contains("/save/files"));
+            assert!(!html.contains("/save/paperless"));
+            assert!(html.contains("name=\"attachment_keys\""));
+            assert!(html.contains("aria-label=\"Download selected attachments\""));
+            assert!(html.contains("title=\"Download attachment\""));
+        });
+    }
+
+    #[test]
+    fn selected_attachment_keys_build_download_zip() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <zip@example.com>\nSubject: Zip ✅\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
             );
-            let rendered_items = page
-                .items
-                .iter()
-                .map(|item| render_attachment_item(item, "/attachments"))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                rendered_items
-                    .iter()
-                    .filter(|html| html.contains("Send to Paperless"))
-                    .count(),
-                1
-            );
-            assert!(rendered_items
-                .iter()
-                .any(|html| html.contains("archive.zip")));
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+            let item = first_attachment_item(&config, "alice");
+            let (_filename, bytes) = build_attachments_zip(
+                &config,
+                "alice",
+                &AttachmentDownloadForm {
+                    attachment_keys: vec![item.attachment.attachment_key],
+                    selection_scope: None,
+                    q: None,
+                    account_id: None,
+                    message_state: None,
+                    extension: None,
+                    return_to: None,
+                },
+            )
+            .expect("zip");
+
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("archive");
+            assert_eq!(archive.len(), 1);
+            let entry = archive.by_index(0).expect("entry");
+            assert!(entry.name().contains("invoice.pdf"));
+            assert!(entry.name().contains("personal-gmail"));
         });
     }
 }

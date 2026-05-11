@@ -15,7 +15,7 @@ for test_script in \
   scripts/tests/test-system-health-report.sh \
   scripts/tests/test-evaluated-host-config.sh
 do
-  "$test_script"
+  bash "$test_script"
 done
 
 echo "✅ All requested script tests passed."

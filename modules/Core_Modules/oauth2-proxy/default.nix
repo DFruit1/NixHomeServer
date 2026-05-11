@@ -27,7 +27,10 @@ in
       "oidc-groups-claim" = "groups";
       "pass-user-headers" = true;
       "provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";
+      "session-cookie-minimal" = true;
+      "skip-auth-preflight" = true;
       "skip-provider-button" = true;
+      "upstream-timeout" = "30m0s";
     };
   };
 

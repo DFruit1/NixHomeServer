@@ -27,6 +27,12 @@ in
         -D idm_admin \
         idm_all_persons \
         ${toString vars.kanidmAuthSessionExpirySeconds}
+
+      kanidm group account-policy privilege-expiry \
+        -H ${kanidmCliUrl} \
+        -D idm_admin \
+        idm_all_persons \
+        ${toString vars.kanidmPrivilegeSessionExpirySeconds}
     '';
     serviceConfig.Type = "oneshot";
   };

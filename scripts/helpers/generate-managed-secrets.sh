@@ -27,6 +27,8 @@ generated_secret_specs=(
   "metubeOauth2ProxyCookieSecret:32"
   "glancesOauth2ProxyClientSecret:32"
   "glancesOauth2ProxyCookieSecret:32"
+  "runtimeCanaryFilesPassword:32"
+  "vaultwardenAdminToken:32"
   "copypartyClientSecret:32"
   "filebrowserQuantumClientSecret:32"
   "filebrowserQuantumAdminPassword:32"

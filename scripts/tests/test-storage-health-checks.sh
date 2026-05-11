@@ -12,6 +12,7 @@ echo "ℹ️ Checking storage health helper fixture behavior…"
 fixture_dir="$TESTS_REPO_ROOT/scripts/tests/fixtures/storage-health"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+bash_path="$(command -v bash)"
 
 cat >"$tmpdir/smartctl" <<'EOF'
 #!/usr/bin/env bash
@@ -41,10 +42,14 @@ fi
 EOF
 chmod +x "$tmpdir/sudo"
 
+for fake_script in "$tmpdir/smartctl" "$tmpdir/journalctl" "$tmpdir/sudo"; do
+  sed -i "1s|.*|#!${bash_path}|" "$fake_script"
+done
+
 warn_output="$(
   PATH="$tmpdir:$PATH" \
     STORAGE_HEALTH_FIXTURE_DIR="$fixture_dir" \
-    scripts/helpers/storage-health-common.sh --mode warn \
+    bash scripts/helpers/storage-health-common.sh --mode warn \
       clean=/dev/disk/by-id/clean \
       aging=/dev/disk/by-id/aging
 )"
@@ -59,7 +64,7 @@ set +e
 critical_output="$(
   PATH="$tmpdir:$PATH" \
     STORAGE_HEALTH_FIXTURE_DIR="$fixture_dir" \
-    scripts/helpers/storage-health-common.sh --mode strict \
+    bash scripts/helpers/storage-health-common.sh --mode strict \
       critical=/dev/disk/by-id/critical 2>&1
 )"
 critical_status=$?
@@ -75,7 +80,7 @@ transport_output="$(
   PATH="$tmpdir:$PATH" \
     STORAGE_HEALTH_FIXTURE_DIR="$fixture_dir" \
     STORAGE_HEALTH_JOURNAL_FIXTURE="$fixture_dir/transport.journal" \
-    scripts/helpers/storage-health-common.sh --mode warn \
+    bash scripts/helpers/storage-health-common.sh --mode warn \
       transport=/dev/disk/by-id/transport
 )"
 require_match <(printf '%s\n' "$transport_output") '^CRITICAL[[:space:]]+transport[[:space:]]+/dev/disk/by-id/transport$' \
@@ -86,7 +91,7 @@ require_match <(printf '%s\n' "$transport_output") 'recent kernel transport erro
 reported_uncorrect_output="$(
   PATH="$tmpdir:$PATH" \
     STORAGE_HEALTH_FIXTURE_DIR="$fixture_dir" \
-    scripts/helpers/storage-health-common.sh --mode warn \
+    bash scripts/helpers/storage-health-common.sh --mode warn \
       lone=/dev/disk/by-id/reported-uncorrect-alone
 )"
 require_match <(printf '%s\n' "$reported_uncorrect_output") '^OK[[:space:]]+lone[[:space:]]+/dev/disk/by-id/reported-uncorrect-alone$' \

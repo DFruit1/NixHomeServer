@@ -10,7 +10,7 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy-with-validation.sh --target <user@host> [--build-host <user@host> | --local-build] [--action test|switch] [--hostname <flake-hostname>]
+Usage: scripts/deploy-with-validation.sh --target <user@host> [--build-host <user@host> | --local-build] [--action test|switch] [--hostname <flake-hostname>] [--full-check]
 
 Guarded deploy entrypoint for this repo.
 
@@ -23,6 +23,7 @@ Examples:
   ./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action test
   ./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action switch
   ./scripts/deploy-with-validation.sh --target "dsaw@server" --local-build --action test --hostname server
+  ./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action test --full-check
 EOF
 }
 
@@ -31,6 +32,7 @@ build_host=""
 local_build=false
 action="test"
 hostname=""
+full_check=false
 repo_archive=""
 repo_archive_sha=""
 
@@ -55,6 +57,10 @@ while (($# > 0)); do
     --hostname)
       hostname="${2:-}"
       shift 2
+      ;;
+    --full-check)
+      full_check=true
+      shift
       ;;
     -h|--help)
       usage
@@ -188,18 +194,23 @@ ensure_local_build_system_matches() {
 
 run_local_runtime_readiness() {
   local archive_path="$1"
+  local full_check="${2:-false}"
   local remote_archive
 
   remote_archive="$(stage_archive_on_remote "$archive_path" "$target_host" "check-runtime-readiness")"
 
-  ssh -T "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
+  ssh -T "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") FULL_CHECK=$(printf '%q' "$full_check") bash -s" <<'EOF'
 set -euo pipefail
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
 tar -C "$tmpdir" -xf "$REMOTE_ARCHIVE"
 chmod +x "$tmpdir/scripts/check-runtime-readiness.sh"
 cd "$tmpdir"
-sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh --profile deploy
+readiness_args=(--profile deploy)
+if [[ "${FULL_CHECK:-false}" == "true" ]]; then
+  readiness_args+=(--deep)
+fi
+sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh "${readiness_args[@]}"
 EOF
 }
 
@@ -210,6 +221,7 @@ run_remote_deploy() {
     "BUILD_HOST=$(printf '%q' "$build_host")"
     "ACTION=$(printf '%q' "$action")"
     "ARCHIVE_SHA=$(printf '%q' "$repo_archive_sha")"
+    "FULL_CHECK=$(printf '%q' "$full_check")"
   )
 
   if [[ -n "$hostname" ]]; then
@@ -237,6 +249,9 @@ cmd=(./scripts/remote-ops.sh deploy --target "$TARGET_HOST" --build-host "$BUILD
 if [[ -n "${HOSTNAME_ARG:-}" ]]; then
   cmd+=(--hostname "$HOSTNAME_ARG")
 fi
+if [[ "${FULL_CHECK:-false}" == "true" ]]; then
+  cmd+=(--full-check)
+fi
 "${cmd[@]}"
 EOF
 }
@@ -251,7 +266,7 @@ if [[ "$local_build" == true ]]; then
   ensure_local_build_system_matches "$resolved_hostname"
 
   echo "ℹ️ Running local repository checks…"
-  ./scripts/validate-repo.sh --full --skip-flake-check
+  bash ./scripts/validate-repo.sh --full --skip-flake-check
 
   echo "ℹ️ Running local nixos-rebuild test…"
   nix run nixpkgs#nixos-rebuild -- test \
@@ -266,7 +281,7 @@ if [[ "$local_build" == true ]]; then
   echo "ℹ️ Running runtime readiness checks on ${target_host}…"
   repo_archive="$(mktemp /tmp/deploy-with-validation-repo.XXXXXX.tar)"
   create_deploy_repo_archive "$repo_archive"
-  run_local_runtime_readiness "$repo_archive"
+  run_local_runtime_readiness "$repo_archive" "$full_check"
 
   if [[ "$action" == "switch" ]]; then
     echo "ℹ️ Running local nixos-rebuild switch…"

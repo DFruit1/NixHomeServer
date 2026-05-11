@@ -97,6 +97,8 @@ app_state_file="${tmpdir}/app-state.jsonl"
 paths_file="${tmpdir}/paths.jsonl"
 persistence_file="${tmpdir}/persistence.jsonl"
 deep_file="${tmpdir}/deep.jsonl"
+access_local_file="${tmpdir}/access-local.jsonl"
+access_authed_file="${tmpdir}/access-authed.jsonl"
 backup_file="${tmpdir}/backup.json"
 discovery_json_file="${tmpdir}/storage-discovery.json"
 disk_specs_file="${tmpdir}/smart-disk-specs.json"
@@ -110,6 +112,8 @@ disk_specs_file="${tmpdir}/smart-disk-specs.json"
 : >"$paths_file"
 : >"$persistence_file"
 : >"$deep_file"
+: >"$access_local_file"
+: >"$access_authed_file"
 
 failed=0
 
@@ -217,6 +221,26 @@ deep_result_json() {
     '{ kind: $kind, name: $name, target: $target, severity: $severity, detail: $detail }'
 }
 
+access_result_json() {
+  jq -nc \
+    --arg scope "$1" \
+    --arg app "$2" \
+    --arg canary "$3" \
+    --arg severity "$4" \
+    --arg detail "$5" \
+    --arg finalUrl "$6" \
+    --arg httpCode "$7" \
+    '{
+      scope: $scope,
+      app: $app,
+      canary: (if $canary == "" then null else $canary end),
+      severity: $severity,
+      detail: $detail,
+      finalUrl: (if $finalUrl == "" then null else $finalUrl end),
+      httpCode: (if $httpCode == "" then null else $httpCode end)
+    }'
+}
+
 check_unit() {
   local unit="$1"
   local active_state severity detail
@@ -267,6 +291,52 @@ check_http() {
   else
     append_json "$internal_http_file" "$(http_result_json "$scope" "$name" "$url" "$code" "$severity" "$detail" "$expected_json")"
   fi
+  mark_failed_if_critical "$severity"
+}
+
+check_local_access_unauth() {
+  local app_json="$1"
+  local app_name host_name path expected_json redirect_prefix url
+  local headers_file code location severity detail allowed
+
+  app_name="$(jq -r '.name' <<<"$app_json")"
+  host_name="$(jq -r '.localUnauthCheck.host' <<<"$app_json")"
+  path="$(jq -r '.localUnauthCheck.path' <<<"$app_json")"
+  expected_json="$(jq -c '.localUnauthCheck.expected' <<<"$app_json")"
+  redirect_prefix="$(jq -r '.localUnauthCheck.redirectPrefix // ""' <<<"$app_json")"
+  headers_file="$(mktemp "${tmpdir}/access-local-headers.XXXXXX")"
+  url="https://${host_name}${path}"
+
+  code="$(curl -sk -D "$headers_file" -o /dev/null -w '%{http_code}' --resolve "${host_name}:443:127.0.0.1" "$url" || true)"
+  location="$(awk 'BEGIN{IGNORECASE=1} /^Location:/ { sub(/\r$/, "", $2); print $2; exit }' "$headers_file")"
+  rm -f "$headers_file"
+
+  severity="CRITICAL"
+  detail="unexpected http ${code:-<no response>}"
+  while IFS= read -r allowed; do
+    if [[ "$code" == "$allowed" ]]; then
+      severity="OK"
+      detail="http ${code}"
+      break
+    fi
+  done < <(jq -r '.[]' <<<"$expected_json")
+
+  if [[ "$severity" == "OK" && -n "$redirect_prefix" ]]; then
+    if [[ "$location" == "$redirect_prefix"* ]]; then
+      detail="http ${code}, redirect ${location}"
+    else
+      severity="CRITICAL"
+      detail="http ${code}, redirect ${location:-<missing>} did not match ${redirect_prefix}"
+    fi
+  fi
+
+  if [[ "$severity" == "OK" ]]; then
+    emit_text "✅ local access edge ${app_name}: ${detail}"
+  else
+    emit_text "❌ local access edge ${app_name}: ${detail}"
+  fi
+
+  append_json "$access_local_file" "$(access_result_json "local-unauth" "$app_name" "" "$severity" "$detail" "$location" "$code")"
   mark_failed_if_critical "$severity"
 }
 
@@ -479,6 +549,73 @@ check_copyparty_upload_permissions() {
   fi
 }
 
+check_mail_archive_filebrowser_permissions() {
+  local access_json service_user store_root visible_file hidden_root
+  local detail severity present found_hidden_root=0
+
+  access_json="$(runtime_health_snapshot_query '.mailArchiveFilebrowser // {}')"
+  service_user="$(jq -r '.serviceUser // empty' <<<"$access_json")"
+  store_root="$(jq -r '.storeRoot // empty' <<<"$access_json")"
+  if [[ -z "$service_user" || -z "$store_root" ]]; then
+    return 0
+  fi
+
+  visible_file="$(
+    find "$store_root" \
+      -path '*/emails/.internal-sync' -prune \
+      -o -path '*/emails/*.eml' -type f -print 2>/dev/null \
+      | sort \
+      | head -n 1
+  )"
+  if [[ -n "$visible_file" ]]; then
+    if run_as_user "$service_user" test -r "$visible_file" >/dev/null 2>&1; then
+      severity="OK"
+      detail="visible email mirror file is readable by ${service_user}"
+      present=true
+      emit_text "✅ mail archive visible mirror readable by ${service_user}: ${visible_file}"
+    else
+      severity="CRITICAL"
+      detail="visible email mirror file is not readable by ${service_user}"
+      present=true
+      emit_text "❌ mail archive visible mirror not readable by ${service_user}: ${visible_file}"
+    fi
+  else
+    severity="WARN"
+    detail="no visible .eml mirror files discovered yet"
+    present=false
+    visible_file="${store_root}/*/emails/*.eml"
+    emit_text "⚠️  no visible mail archive .eml files found; skipping FileBrowser read probe"
+  fi
+  append_json "$paths_file" "$(path_result_json "mail archive permission" "mail-archive-visible-eml-readable" "$visible_file" "$severity" "$detail" "$present")"
+  mark_failed_if_critical "$severity"
+
+  while IFS= read -r hidden_root; do
+    [[ -n "$hidden_root" ]] || continue
+    found_hidden_root=1
+    if run_as_user "$service_user" test ! -x "$hidden_root" >/dev/null 2>&1; then
+      severity="OK"
+      detail="hidden sync root is not traversable by ${service_user}"
+      present=true
+      emit_text "✅ mail archive hidden sync root blocked from ${service_user}: ${hidden_root}"
+    else
+      severity="CRITICAL"
+      detail="hidden sync root is traversable by ${service_user}"
+      present=true
+      emit_text "❌ mail archive hidden sync root traversable by ${service_user}: ${hidden_root}"
+    fi
+    append_json "$paths_file" "$(path_result_json "mail archive permission" "mail-archive-hidden-sync-not-traversable" "$hidden_root" "$severity" "$detail" "$present")"
+    mark_failed_if_critical "$severity"
+  done < <(
+    find "$store_root" -path '*/emails/.internal-sync' -type d -print 2>/dev/null \
+      | sort
+  )
+
+  if (( found_hidden_root == 0 )); then
+    emit_text "⚠️  no hidden mail archive sync roots found; skipping FileBrowser traversal probe"
+    append_json "$paths_file" "$(path_result_json "mail archive permission" "mail-archive-hidden-sync-not-traversable" "${store_root}/*/emails/.internal-sync" "WARN" "no hidden sync roots discovered yet" "false")"
+  fi
+}
+
 check_app_state_entry() {
   local entry_json="$1"
   local app component state_root severity detail
@@ -671,12 +808,122 @@ run_backup_checks() {
   fi
 }
 
+emit_access_matrix() {
+  local matrix_json canary_json canary_name app_names
+
+  emit_text
+  emit_text "== Access Matrix =="
+
+  matrix_json="$(runtime_health_snapshot_query '.accessChecks.canaries')"
+  while IFS= read -r canary_json; do
+    canary_name="$(jq -r '.accountId' <<<"$canary_json")"
+    app_names="$(jq -r '(.expectedApps | map(.name) | join(", ")) // ""' <<<"$canary_json")"
+    if [[ -n "$app_names" ]]; then
+      emit_text "✅ access matrix ${canary_name}: ${app_names}"
+    else
+      emit_text "⚠️  access matrix ${canary_name}: no expected app access"
+    fi
+  done < <(jq -c '.[]' <<<"$matrix_json")
+}
+
+run_local_access_checks() {
+  local app_json
+
+  emit_text
+  emit_text "== Local Access Edges =="
+
+  while IFS= read -r app_json; do
+    check_local_access_unauth "$app_json"
+  done < <(runtime_health_snapshot_query '.accessChecks.apps[] | select(.localUnauthCheck != null)')
+}
+
+run_deep_access_checks() {
+  local bootstrap_state_file helper_path helper_json_file helper_results helper_status
+  local playwright_module
+  local access_result
+  local bootstrap_failure_summary
+
+  bootstrap_state_file="$(runtime_health_snapshot_query '.accessChecks.bootstrapStateFile' | jq -r '.')"
+  helper_path="$(runtime_health_snapshot_query '.accessChecks.browserHelper' | jq -r '.')"
+
+  if [[ ! -f "$bootstrap_state_file" ]]; then
+    emit_text "❌ access canary bootstrap state missing: ${bootstrap_state_file}"
+    append_json "$access_authed_file" "$(access_result_json "authed" "" "" "CRITICAL" "missing bootstrap state; run sudo ./scripts/bootstrap-access-canaries.sh" "" "")"
+    failed=1
+    return 0
+  fi
+
+  bootstrap_failure_summary="$(
+    jq -r '
+      ([.resetResults[]?, .warmupResults[]?]
+       | map(select(.severity != "OK"))
+       | if length == 0 then empty else map((.accountId // .canary // "unknown") + ": " + (.detail // .severity)) | join("; ") end)
+    ' "$bootstrap_state_file" 2>/dev/null || true
+  )"
+  if [[ -n "$bootstrap_failure_summary" ]]; then
+    emit_text "❌ access canary bootstrap state contains failures: ${bootstrap_failure_summary}"
+    append_json "$access_authed_file" "$(access_result_json "authed" "" "" "CRITICAL" "bootstrap state contains failures: ${bootstrap_failure_summary}" "" "")"
+    failed=1
+    return 0
+  fi
+
+  helper_json_file="${RUNTIME_ACCESS_BROWSER_CHECK_JSON_FILE:-}"
+  if [[ -n "$helper_json_file" ]]; then
+    helper_results="$(cat "$helper_json_file")"
+  else
+    if [[ ! -f "$repo_root/$helper_path" ]]; then
+      emit_text "❌ access browser helper missing: ${repo_root}/${helper_path}"
+      append_json "$access_authed_file" "$(access_result_json "authed" "" "" "CRITICAL" "missing access browser helper ${helper_path}" "" "")"
+      failed=1
+      return 0
+    fi
+
+    playwright_module="$(nix eval --raw nixpkgs#playwright-driver.outPath)/index.mjs"
+    set +e
+    helper_results="$(
+      env \
+        PLAYWRIGHT_NODE_MODULE="$playwright_module" \
+        RUNTIME_HEALTH_SNAPSHOT="$RUNTIME_HEALTH_SNAPSHOT" \
+        RUNTIME_ACCESS_BOOTSTRAP_STATE_FILE="$bootstrap_state_file" \
+        nix shell nixpkgs#nodejs nixpkgs#playwright-driver nixpkgs#chromium -c \
+        bash -c '
+          set -euo pipefail
+          export RUNTIME_ACCESS_BROWSER_EXECUTABLE="$(command -v chromium)"
+          node "$1" verify
+        ' bash "$repo_root/$helper_path" 2>&1
+    )"
+    helper_status=$?
+    set -e
+
+    if (( helper_status != 0 )); then
+      emit_text "❌ access browser helper failed"
+      append_json "$access_authed_file" "$(access_result_json "authed" "" "" "CRITICAL" "${helper_results//$'\n'/ }" "" "")"
+      failed=1
+      return 0
+    fi
+  fi
+
+  while IFS= read -r access_result; do
+    [[ -n "$access_result" ]] || continue
+    append_json "$access_authed_file" "$access_result"
+    if [[ "$(jq -r '.severity' <<<"$access_result")" == "OK" ]]; then
+      emit_text "✅ access $(jq -r '.canary // "check"' <<<"$access_result") -> $(jq -r '.app // "runtime"' <<<"$access_result"): $(jq -r '.detail' <<<"$access_result")"
+    else
+      emit_text "❌ access $(jq -r '.canary // "check"' <<<"$access_result") -> $(jq -r '.app // "runtime"' <<<"$access_result"): $(jq -r '.detail' <<<"$access_result")"
+      failed=1
+    fi
+  done < <(jq -c '.[]' <<<"$helper_results")
+
+}
+
 run_deep_checks() {
   local sqlite_binary sqlite_entry db_name db_path quick_check
   local pg_json pg_enabled pg_binary pg_data_dir pg_dump_file metadata_file
 
   emit_text
   emit_text "== Deep Checks =="
+
+  run_deep_access_checks
 
   sqlite_binary="$(runtime_health_snapshot_query '.databases.sqliteBinary' | jq -r '.')"
   while IFS= read -r sqlite_entry; do
@@ -762,6 +1009,9 @@ while IFS= read -r check_json; do
     "$(jq -c '.expected' <<<"$check_json")"
 done < <(runtime_health_snapshot_query '.services.internalHttp[]')
 
+emit_access_matrix
+run_local_access_checks
+
 emit_text
 emit_text "== DNS via Unbound =="
 emit_text "ℹ️ Validating the server-local Unbound view; LAN client DNS policy may still be mediated by the router."
@@ -834,6 +1084,7 @@ done < <(runtime_health_snapshot_query '.appState.requiredPaths[]')
 emit_text
 emit_text "== Copyparty Upload Permissions =="
 check_copyparty_upload_permissions
+check_mail_archive_filebrowser_permissions
 
 emit_text
 emit_text "== Backups =="
@@ -841,14 +1092,14 @@ run_backup_checks
 
 emit_text
 emit_text "== SMART =="
-"$repo_root/scripts/discover-storage-devices.sh" --format json >"$discovery_json_file"
+bash "$repo_root/scripts/discover-storage-devices.sh" --format json >"$discovery_json_file"
 jq '.allSmartDisks' "$discovery_json_file" >"$disk_specs_file"
 smart_disk_count="$(jq 'length' "$disk_specs_file")"
 if [[ "$smart_disk_count" == "0" ]]; then
   emit_text "⚠️  no storage devices configured for SMART checks"
   smart_json='{"disks":[]}'
 else
-  smart_json="$("$repo_root/scripts/helpers/storage-health-common.sh" --mode warn --format json --disk-spec-file "$disk_specs_file")"
+  smart_json="$(bash "$repo_root/scripts/helpers/storage-health-common.sh" --mode warn --format json --disk-spec-file "$disk_specs_file")"
   printf '%s\n' "$smart_json" | jq -r '
     .disks[] |
     if .severity == "OK" then
@@ -946,6 +1197,9 @@ app_state_json="$(jq -s '.' "$app_state_file")"
 paths_json="$(jq -s '.' "$paths_file")"
 persistence_json="$(jq -s '.' "$persistence_file")"
 deep_json="$(jq -s '.' "$deep_file")"
+access_matrix_json="$(runtime_health_snapshot_query '.accessChecks.canaries' | jq '.')"
+access_local_json="$(jq -s '.' "$access_local_file")"
+access_authed_json="$(jq -s '.' "$access_authed_file")"
 backup_json="$(cat "$backup_file")"
 
 overall_severity="$(
@@ -962,6 +1216,8 @@ overall_severity="$(
     --argjson smart "$smart_json" \
     --argjson zfs "$zfs_json" \
     --argjson deep "$deep_json" \
+    --argjson accessLocal "$access_local_json" \
+    --argjson accessAuthed "$access_authed_json" \
     '
       def escalate($current; $next):
         if $current == "CRITICAL" or $next == "CRITICAL" then "CRITICAL"
@@ -980,6 +1236,8 @@ overall_severity="$(
         + ($persistence | map(.severity))
         + ($smart.disks | map(.severity))
         + ($deep | map(.severity))
+        + ($accessLocal | map(.severity))
+        + ($accessAuthed | map(.severity))
         + [$backup.severity, $zfs.statusSeverity, $zfs.datasetSeverity]
       )[] as $severity ("OK"; escalate(.; $severity))
     '
@@ -1003,6 +1261,9 @@ if [[ "$output_format" == "json" ]]; then
     --argjson smart "$smart_json" \
     --argjson zfs "$zfs_json" \
     --argjson deep "$deep_json" \
+    --argjson accessMatrix "$access_matrix_json" \
+    --argjson accessLocal "$access_local_json" \
+    --argjson accessAuthed "$access_authed_json" \
     '{
       timestamp: $timestamp,
       profile: $profile,
@@ -1019,7 +1280,12 @@ if [[ "$output_format" == "json" ]]; then
       backup: $backup,
       smart: $smart.disks,
       zfs: $zfs,
-      deepChecks: $deep
+      deepChecks: $deep,
+      accessChecks: {
+        matrix: $accessMatrix,
+        localUnauth: $accessLocal,
+        authed: $accessAuthed
+      }
     }'
 fi
 

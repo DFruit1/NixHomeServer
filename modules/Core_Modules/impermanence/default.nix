@@ -11,7 +11,6 @@ let
       "/var/lib/audiobookshelf"
       "/var/lib/copyparty"
       "/var/lib/filebrowser-quantum"
-      "/var/lib/goaccess"
       "/var/lib/immich"
       "/var/lib/immich-public-proxy"
       "/var/lib/jellyfin"
@@ -28,6 +27,7 @@ let
       "/var/lib/system-health-monitoring"
       "/var/lib/systemd/timers"
       "/var/lib/unbound"
+      "/var/lib/vaultwarden"
       "/var/log/journal"
       "/var/log/atop"
     ]

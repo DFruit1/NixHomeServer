@@ -42,7 +42,7 @@ append_lines() {
   done
 }
 
-need nix jq findmnt smartctl journalctl systemctl sha256sum zpool zfs
+need nix jq findmnt smartctl journalctl systemctl sha256sum zpool zfs getent
 
 config_json="$(load_config_json)"
 state_dir="${SYSTEM_HEALTH_MONITORING_STATE_DIR:-/var/lib/system-health-monitoring}"
@@ -70,12 +70,61 @@ runtime_json_file="${tmpdir}/runtime.json"
 : >"$alerts_file"
 
 runtime_status=0
-if "$readiness_script" --profile monitor --format json >"$runtime_json_file"; then
+if bash "$readiness_script" --profile monitor --format json >"$runtime_json_file"; then
   runtime_status=0
 else
   runtime_status=$?
 fi
-runtime_json="$(jq '.' "$runtime_json_file")"
+runtime_json="$(jq -c '.' "$runtime_json_file" 2>/dev/null || true)"
+if [[ -z "$runtime_json" ]]; then
+  runtime_json="$(
+    jq -cn \
+      --arg timestamp "$timestamp" \
+      --arg hostname "$(jq -r '.hostname' <<<"$config_json")" \
+      --arg detail "runtime readiness did not produce valid JSON output" \
+      --argjson exitStatus "$runtime_status" '
+        {
+          timestamp: $timestamp,
+          profile: "monitor",
+          hostname: $hostname,
+          overallSeverity: "CRITICAL",
+          units: [],
+          edgeHttp: [],
+          internalHttp: [],
+          dns: [],
+          mounts: [],
+          appState: [],
+          requiredPaths: [],
+          persistence: [],
+          backup: {
+            severity: "CRITICAL",
+            detail: $detail
+          },
+          smart: [],
+          zfs: {
+            statusSeverity: "CRITICAL",
+            statusSummary: "runtime check failed",
+            datasetSeverity: "CRITICAL",
+            datasetSummary: $detail,
+            runtimeState: "failed"
+          },
+          deepChecks: [],
+          accessChecks: {
+            matrix: [],
+            localUnauth: [],
+            authed: [],
+            vaultwarden: {
+              status: "error",
+              detail: $detail
+            }
+          },
+          warnings: [
+            ("runtime readiness exited before returning JSON (status " + ($exitStatus | tostring) + ")")
+          ]
+        }
+      '
+  )"
+fi
 runtime_severity="$(jq -r '.overallSeverity' <<<"$runtime_json")"
 hostname="$(jq -r '.hostname // empty' <<<"$runtime_json")"
 if [[ -z "$hostname" || "$hostname" == "null" ]]; then
@@ -92,9 +141,9 @@ discovery_args=(--format json)
 if [[ -n "${SYSTEM_HEALTH_MONITORING_CONFIG_JSON_FILE:-}" ]]; then
   discovery_args+=(--config-json-file "$SYSTEM_HEALTH_MONITORING_CONFIG_JSON_FILE")
 fi
-"$repo_root/scripts/discover-storage-devices.sh" "${discovery_args[@]}" >"$discovery_json_file"
+bash "$repo_root/scripts/discover-storage-devices.sh" "${discovery_args[@]}" >"$discovery_json_file"
 jq '.allSmartDisks' "$discovery_json_file" >"$disk_specs_file"
-smart_json="$("$repo_root/scripts/helpers/storage-health-common.sh" --mode warn --format json --disk-spec-file "$disk_specs_file")"
+smart_json="$(bash "$repo_root/scripts/helpers/storage-health-common.sh" --mode warn --format json --disk-spec-file "$disk_specs_file")"
 
 mounts_ok=true
 if jq -e 'select(.severity != "OK")' "$mounts_file" >/dev/null 2>&1; then

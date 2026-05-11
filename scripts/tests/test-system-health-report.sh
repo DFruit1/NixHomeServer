@@ -8,6 +8,7 @@ cd "$TESTS_REPO_ROOT"
 
 ensure_tools jq mktemp rg
 fixture_dir="$TESTS_REPO_ROOT/scripts/tests/fixtures/storage-health"
+bash_path="$(command -v bash)"
 
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -297,6 +298,9 @@ data/users	${mount_root}/data/users
 data/shared	${mount_root}/data/shared
 EOF
 
+find "$bin_dir" "$tmpdir" -maxdepth 1 -type f -perm -0100 \
+  -exec sed -i "1s|.*|#!${bash_path}|" {} +
+
 run_report() {
   local config_json="$1"
   local curl_log="$2"
@@ -315,7 +319,7 @@ run_report() {
     SYSTEM_HEALTH_MONITORING_READINESS_SCRIPT="$readiness_script" \
     STORAGE_ALERT_WEBHOOK_FILE="$tmpdir/webhook-url" \
     SYSTEM_HEALTH_MONITORING_CURL_LOG="$curl_log" \
-    scripts/generate-system-health-report.sh
+    bash scripts/generate-system-health-report.sh
 }
 
 printf '%s\n' 'https://ntfy.example.test/storage' >"$tmpdir/webhook-url"
@@ -382,7 +386,7 @@ PATH="$bin_dir:$PATH" \
   SYSTEM_HEALTH_MONITORING_READINESS_SCRIPT="$tmpdir/readiness.ok.sh" \
   STORAGE_ALERT_WEBHOOK_FILE="$tmpdir/webhook-url" \
   SYSTEM_HEALTH_MONITORING_CURL_LOG="${tmpdir}/curl.critical.log" \
-  scripts/generate-system-health-report.sh
+  bash scripts/generate-system-health-report.sh
 require_json_equal "$(jq -r '.overallSeverity' "$state_dir/latest.json")" 'CRITICAL' \
   "Recent transport errors must escalate the combined report to CRITICAL."
 
@@ -416,6 +420,7 @@ JSON
 exit 1
 EOF
 chmod +x "$readiness_script"
+sed -i "1s|.*|#!${bash_path}|" "$readiness_script"
 
 set +e
 run_report "$config_file" "${tmpdir}/curl.failure.log" "$readiness_script" >/dev/null 2>&1
@@ -429,8 +434,33 @@ require_json_equal "$(jq -r '.runtime.overallSeverity' "$state_dir/latest.json")
 require_match "$state_dir/latest.txt" '^System Health Report$' \
   "generate-system-health-report.sh must render a text summary alongside the JSON payload."
 
+echo "ℹ️ Checking runtime failure fallback when no JSON is produced…"
+readiness_script="${tmpdir}/readiness.empty-fail.sh"
+
+cat >"$readiness_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "runtime probe aborted before emitting JSON" >&2
+exit 1
+EOF
+chmod +x "$readiness_script"
+sed -i "1s|.*|#!${bash_path}|" "$readiness_script"
+
+set +e
+run_report "$config_file" "${tmpdir}/curl.empty-failure.log" "$readiness_script" >/dev/null 2>&1
+status=$?
+set -e
+
+require_json_equal "$status" "1" \
+  "generate-system-health-report.sh must preserve the runtime probe exit status when no JSON is emitted."
+require_json_equal "$(jq -r '.runtime.overallSeverity' "$state_dir/latest.json")" "CRITICAL" \
+  "generate-system-health-report.sh must synthesize a CRITICAL runtime payload when the runtime probe emits no JSON."
+require_json_equal "$(jq -r '.runtime.backup.detail' "$state_dir/latest.json")" "runtime readiness did not produce valid JSON output" \
+  "generate-system-health-report.sh must record why the fallback runtime payload was synthesized."
+
 history_count="$(find "$state_dir/history" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
-require_json_equal "$history_count" "10" \
+require_json_equal "$history_count" "12" \
   "generate-system-health-report.sh must archive JSON and text history artifacts for each run."
 
 echo "✅ System health report tests passed."

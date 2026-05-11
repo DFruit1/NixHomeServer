@@ -11,7 +11,7 @@ use kanidm_admin::{
         },
         context::{doctor, show_context},
         group::{group_members, list_groups, search_groups, show_group},
-        local::stage_jellyfin_password,
+        local::{invite_vaultwarden_user, stage_jellyfin_password},
         membership::{
             add_membership, remove_membership, set_membership, show_membership,
             SetMembershipOptions,
@@ -357,6 +357,7 @@ struct LocalCommand {
 #[derive(Debug, Subcommand)]
 enum LocalSubcommand {
     JellyfinPassword(LocalJellyfinPasswordCommand),
+    Vaultwarden(LocalVaultwardenCommand),
 }
 
 #[derive(Debug, Args)]
@@ -372,6 +373,17 @@ enum LocalJellyfinPasswordSubcommand {
         #[arg(long, default_value = "JELLYFIN_PASSWORD")]
         password_env: String,
     },
+}
+
+#[derive(Debug, Args)]
+struct LocalVaultwardenCommand {
+    #[command(subcommand)]
+    command: LocalVaultwardenSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalVaultwardenSubcommand {
+    Invite { account_id: String },
 }
 
 fn main() {
@@ -398,6 +410,8 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         admin_name: cli.admin_name,
         kanidm_bin: None,
         nix_bin: None,
+        vaultwarden_url: None,
+        vaultwarden_admin_token_file: None,
     })?;
     let kanidm = KanidmCli::new(&context);
 
@@ -641,6 +655,12 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                     stage_jellyfin_password(&account_id, &password_env).map(Some)
                 }
             },
+            LocalSubcommand::Vaultwarden(command) => match command.command {
+                LocalVaultwardenSubcommand::Invite { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    invite_vaultwarden_user(&context, &kanidm, &account_id).map(Some)
+                }
+            },
         },
     }
 }
@@ -797,6 +817,21 @@ mod tests {
                     }
                 })
             })) if account_id == "dsaw" && password_env == "CUSTOM_PASSWORD"
+        ));
+    }
+
+    #[test]
+    fn parses_local_vaultwarden_invite() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "local", "vaultwarden", "invite", "dsaw"])
+            .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Local(LocalCommand {
+                command: LocalSubcommand::Vaultwarden(LocalVaultwardenCommand {
+                    command: LocalVaultwardenSubcommand::Invite { account_id }
+                })
+            })) if account_id == "dsaw"
         ));
     }
 

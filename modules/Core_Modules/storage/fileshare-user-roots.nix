@@ -118,6 +118,10 @@ let
       "$root/books" \
       ${kavitaWritablePaths}
 
+    # FileBrowser may browse and download only the visible hard-linked .eml
+    # mirror. The mail archive app grants read ACLs to those visible file inodes during
+    # mirror rebuild, while this deny rule keeps the hidden sync payload
+    # non-traversable even though the mirror and payload share hard-link inodes.
     apply_readonly_acl filebrowser-quantum "$root/emails"
     apply_noaccess_acl filebrowser-quantum "$root/emails/.internal-sync"
     apply_readonly_acl immich "$root/photos"

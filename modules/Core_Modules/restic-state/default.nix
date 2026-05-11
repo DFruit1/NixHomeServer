@@ -126,6 +126,14 @@ let
       notes = "Application state and local metadata.";
     }
     {
+      app = "vaultwarden";
+      component = "app";
+      stateRoot = "/var/lib/vaultwarden";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/vaultwarden";
+      payloadRoots = [ ];
+      notes = "Encrypted password vault database and attachments.";
+    }
+    {
       app = "paperless";
       component = "redis";
       stateRoot = config.services.redis.servers.paperless.settings.dir;

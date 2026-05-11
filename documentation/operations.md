@@ -14,11 +14,14 @@ bootstrap remains the installer-side exception.
 - Flake-inclusive local gate: `scripts/validate-repo.sh --run-flake-check`
 - Exhaustive local gate: `scripts/validate-repo.sh --full`
 - Guarded deploy: `./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action test`
+- Full guarded deploy: `./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action test --full-check`
 - Guarded switch: `./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action switch`
 - Optional local-build compatibility path: `./scripts/deploy-with-validation.sh --target "dsaw@server" --local-build --action test`
 - Server-side secrets: `ssh dsaw@server 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'`
 - Runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile manual`
 - Strict runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile deploy`
+- Deep runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile deploy --deep`
+- Access canary bootstrap: `sudo ./scripts/bootstrap-access-canaries.sh`
 - Periodic report refresh: `sudo ./scripts/generate-system-health-report.sh`
 - Backup target selection: `manage-backup-target list` then `sudo manage-backup-target select ...`
 
@@ -30,6 +33,7 @@ Immich uses separate private and public hostnames on purpose:
 - Public Immich share links: `https://sharephotos.sydneybasiniot.org`
 - Public Copyparty uploader: `https://uploads.sydneybasiniot.org/`
 - Authenticated FileBrowser Quantum UI and WebDAV: `https://files.sydneybasiniot.org/`
+- Private Vaultwarden: `https://passwords.sydneybasiniot.org`
 
 Use `photos.sydneybasiniot.org` for the owner's normal Immich login on LAN or
 NetBird. Use `sharephotos.sydneybasiniot.org` only for public album or photo
@@ -38,6 +42,8 @@ links sent to other people.
 Use `uploads.sydneybasiniot.org` for large uploads into the authenticated
 user's personal `uploads` folder. Use `files.sydneybasiniot.org` for browsing,
 moving, smaller uploads, and WebDAV access.
+
+Use `passwords.sydneybasiniot.org` only on LAN or NetBird paths. The canonical operator workflow for invites, break-glass local admin handling, and the standard credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 
 Copyparty upload troubleshooting note:
 - if the fix depends on declarative user or group state, a service restart alone is not enough
@@ -81,7 +87,7 @@ sudo systemctl start mail-archive-sync.service
 curl -fsS http://127.0.0.1:9011/healthz | jq .
 ```
 
-Use the dashboard `Sync now` and `Reindex` actions when you need to repair or refresh one mailbox without waiting for the timer. Use `https://emails.sydneybasiniot.org/attachments` to triage indexed document attachments and send qualifying files to Paperless.
+Use the dashboard `Sync now` and `Reindex` actions when you need to repair or refresh one mailbox without waiting for the timer. Use `https://emails.sydneybasiniot.org/attachments` to search indexed document attachments, select individual/page/all matching files, and download them as a ZIP for manual upload through the document-management UI.
 
 After deploying the hidden-sync migration, run this verification pass once:
 
@@ -177,6 +183,27 @@ Only switch after the guarded test path passes.
   --action switch
 ```
 
+For the slower, browser-backed runtime gate:
+
+```bash
+./scripts/deploy-with-validation.sh \
+  --target "dsaw@server" \
+  --build-host "dsaw@server" \
+  --action test \
+  --full-check
+```
+
+`--full-check` keeps the normal guarded deploy ordering, but upgrades the
+runtime step from `--profile deploy` to `--profile deploy --deep`. Use it when
+you want authenticated app-access verification through the synthetic Kanidm
+canaries. Do not use it for routine timer-based monitoring.
+
+The regular guarded deploy path stays intentionally quick. It covers units,
+storage, backups, local upstream HTTP checks, local unauthenticated auth-edge
+checks through Caddy/TLS, and the expected access matrix from config. It does
+not run browser logins, negative auth-path checks, or the full synthetic-canary
+loop.
+
 For server-side secrets generation after local staging or edits:
 
 ```bash
@@ -188,10 +215,37 @@ ssh dsaw@server 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'
 ```bash
 sudo ./scripts/check-runtime-readiness.sh --profile manual
 sudo ./scripts/check-runtime-readiness.sh --profile deploy
+sudo ./scripts/check-runtime-readiness.sh --profile deploy --deep
 sudo ./scripts/generate-system-health-report.sh
 ```
 
 Use `--profile manual` for survivability checks and `--profile deploy` for strict deploy gating.
+Use `--deep` only for explicit operator checks or `deploy-with-validation.sh --full-check`.
+
+Private-host troubleshooting note:
+- if `https://passwords.sydneybasiniot.org/` does not resolve from a workstation browser, do not assume Vaultwarden is down
+- verify the private edge directly with:
+
+```bash
+curl -kI --resolve passwords.sydneybasiniot.org:443:192.168.8.12 https://passwords.sydneybasiniot.org/
+```
+
+- if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
+
+Deep runtime access checks require the canary bootstrap state on the server:
+
+```bash
+sudo ./scripts/bootstrap-access-canaries.sh
+```
+
+That helper:
+- creates short-lived Kanidm reset links for the synthetic canary accounts
+- sets their password from the root-only agenix secrets under `/run/agenix/`
+- warms expected first-login app state
+- writes `/var/lib/runtime-access-canaries/bootstrap-state.json`
+
+The periodic system-health report stays on the shallow runtime path and does not
+run browser logins.
 
 Storage monitoring now discovers disks live at runtime:
 - `system` is the static `vars.mainDisk`

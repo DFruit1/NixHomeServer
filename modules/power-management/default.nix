@@ -4,7 +4,7 @@ let
   cfg = rec {
     enable = true;
     cpuGovernor = "powersave";
-    suspendCalendar = "*-*-* 23:30:00";
+    suspendCalendar = "*-*-* 00:00:00";
     wakeTime = "06:00";
     skipIfSshSessions = true;
     skipIfOtherUserSessions = true;

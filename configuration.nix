@@ -63,18 +63,17 @@ in
     ./modules/Core_Modules/unbound
     ./modules/copyparty
     ./modules/filebrowser-quantum
-    ./modules/goaccess
     ./modules/immich
     ./modules/jellyfin
     ./modules/kiwix
     ./modules/kavita
     ./modules/mail-archive
-    ./modules/mail-archive-paperless
     ./modules/mail-archive-ui
     ./modules/metube
     ./modules/glances
     ./modules/paperless
     ./modules/power-management
+    ./modules/vaultwarden
   ];
 
   disko.enableConfig = true;
@@ -84,7 +83,6 @@ in
     pools = [ vars.zfsDataPool.name ];
   };
   systemd.services.dbus.stopIfChanged = true;
-  services.goaccessDashboard.enable = true;
   services.mail-archive-ui.enable = true;
 
   systemd.tmpfiles.rules = [

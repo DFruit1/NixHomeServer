@@ -26,11 +26,145 @@
         findutils
         gnugrep
         gnused
+        getent
+        gnutar
         jq
         nix
         ripgrep
       ];
       vars = import ./vars.nix { inherit lib; };
+      nixosHost = lib.nixosSystem {
+        inherit system;
+        modules = [
+          ./hardware-configuration.nix
+          ./configuration.nix
+          agenix.nixosModules.default
+          disko.nixosModules.disko
+          impermanence.nixosModules.impermanence
+        ];
+        specialArgs = {
+          inherit self vars disko copyparty pkgsUnstable;
+        };
+      };
+      coreConfigSnapshotFile =
+        let
+          cfg = nixosHost.config;
+          snapshot = {
+            vars = {
+              serverLanGateway = vars.serverLanGateway;
+              serverLanIP = vars.serverLanIP;
+              serverLanPrefixLength = vars.serverLanPrefixLength;
+              dataRoot = vars.dataRoot;
+              netIface = vars.netIface;
+              photosDomain = vars.photosDomain;
+              sharePhotosDomain = vars.sharePhotosDomain;
+              uploadsDomain = vars.uploadsDomain;
+              filebrowserDomain = vars.filebrowserDomain;
+              vaultwardenDomain = vars.vaultwardenDomain;
+              monitorDomain = vars.monitorDomain;
+              runtimeAccessCanaries = vars.runtimeAccessCanaries;
+              personalKavitaLibraries = vars.personalKavitaLibraries;
+              sharedBooksSubdirs = vars.sharedBooksSubdirs;
+            };
+            config = {
+              services = {
+                caddyEnable = cfg.services.caddy.enable;
+                cloudflaredEnable = cfg.services.cloudflared.enable;
+                unboundEnable = cfg.services.unbound.enable;
+                kanidmEnableServer = cfg.services.kanidm.enableServer;
+                netbirdAutostart = cfg.services.netbird.clients.myNetbirdClient.autoStart;
+              };
+              networking = {
+                gatewayAddress = cfg.networking.defaultGateway.address;
+                lanUseDhcp = cfg.networking.interfaces.${vars.netIface}.useDHCP;
+                lanAddresses = cfg.networking.interfaces.${vars.netIface}.ipv4.addresses;
+                lanAllowedTcpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts;
+                lanAllowedUdpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedUDPPorts;
+                nameservers = cfg.networking.nameservers;
+              };
+              fileSystems = {
+                hasDataMount = cfg.fileSystems ? "/mnt/data";
+                dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
+                persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
+                nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
+                hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
+                hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
+              };
+              restic = {
+                repository = cfg.services.restic.backups.system-state.repository;
+                pathCount = builtins.length cfg.services.restic.backups.system-state.paths;
+              };
+              monitoring = {
+                hasSystemHealthService = cfg.systemd.services ? "system-health-report";
+                hasSystemHealthTimer = cfg.systemd.timers ? "system-health-report";
+                hasStorageSmartShortService = cfg.systemd.services ? "storage-smart-short";
+                hasStorageSmartLongService = cfg.systemd.services ? "storage-smart-long";
+                hasStorageSmartShortTimer = cfg.systemd.timers ? "storage-smart-short";
+                hasStorageSmartLongTimer = cfg.systemd.timers ? "storage-smart-long";
+                hasSmartdService = cfg.systemd.services ? "smartd";
+              };
+              storage = {
+                zfsImportScript = cfg.systemd.services.zfs-import-data.script;
+              };
+              apps = {
+                caddyHostNames = builtins.attrNames cfg.services.caddy.virtualHosts;
+                caddyHostCount = builtins.length (builtins.attrNames cfg.services.caddy.virtualHosts);
+                cloudflaredIngressHostNames = builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
+                cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
+                oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
+                provisionGroupNames = builtins.attrNames cfg.services.kanidm.provision.groups;
+                provisionPersonNames = builtins.attrNames cfg.services.kanidm.provision.persons;
+                provisionPersons = cfg.services.kanidm.provision.persons;
+                ageSecretNames = builtins.attrNames cfg.age.secrets;
+                mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
+                mailArchiveVisibleMirrorReadGroup = cfg.services.mail-archive-ui.visibleMirrorReadGroup;
+                hasMailArchiveOauth2ProxyService = cfg.systemd.services ? "mail-archive-oauth2-proxy";
+                mailArchiveOauth2ProxyExecStartPre =
+                  cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [ ];
+                mailArchiveUiMountCondition =
+                  cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
+                mailArchiveUiPath =
+                  map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
+                mailArchiveSyncPath =
+                  map (package: lib.getName package) (cfg.systemd.services."mail-archive-sync".path or [ ]);
+                hasCopypartyService = cfg.systemd.services ? "copyparty";
+                copypartyServiceSupplementaryGroups =
+                  cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
+                hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
+                hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
+                filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
+                copypartyGlobalExtraConfig = cfg.services.copyparty.globalExtraConfig;
+                copypartyRuntimeConfigSyncScript = cfg.systemd.services.copyparty-runtime-config-sync.script;
+                usersGroupMembers = cfg.users.groups.users.members or [ ];
+                hasImmichServerService = cfg.systemd.services ? "immich-server";
+                hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
+                hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
+                paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
+                paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
+                paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
+                hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
+                hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
+                hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
+                hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
+                hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
+                hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
+                hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
+                hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
+                hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
+                hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
+                hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
+                hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
+                jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
+                jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
+                hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
+                hasGlancesService = cfg.systemd.services ? "glances";
+                hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
+                hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
+              };
+            };
+          };
+        in
+        pkgs.writeText "core-config-snapshot.json" (builtins.toJSON snapshot);
       rustLib = import ./rust/lib { inherit lib pkgs crane; };
       rustApps = import ./rust/apps { inherit lib pkgs rustLib; };
       rustPackages = lib.mapAttrs (_: app: app.package) rustApps;
@@ -74,19 +208,7 @@
     in
     {
       ################ NixOS configuration ############################
-      nixosConfigurations.${vars.hostname} = lib.nixosSystem {
-        inherit system;
-        modules = [
-          ./hardware-configuration.nix
-          ./configuration.nix
-          agenix.nixosModules.default
-          disko.nixosModules.disko
-          impermanence.nixosModules.impermanence
-        ];
-        specialArgs = {
-          inherit self vars disko copyparty pkgsUnstable;
-        };
-      };
+      nixosConfigurations.${vars.hostname} = nixosHost;
 
       ################ Packages #######################################
       packages.${system} = rustPackages;
@@ -108,6 +230,7 @@
           bash scripts/tests/test-storage-health-checks.sh
           bash scripts/tests/test-runtime-readiness.sh
           bash scripts/tests/test-system-health-report.sh
+          export CORE_CONFIG_SNAPSHOT_JSON="$(cat ${coreConfigSnapshotFile})"
           bash scripts/tests/test-evaluated-host-config.sh
           touch "$out"
         '';

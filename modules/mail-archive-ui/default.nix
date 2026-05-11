@@ -21,6 +21,7 @@ let
       "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
     ]
+    ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
 in
 {
@@ -82,6 +83,12 @@ in
       default = { };
       description = "Extra environment variables passed to the mail archive UI service.";
     };
+
+    visibleMirrorReadGroup = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = "filebrowser-quantum";
+      description = "Optional local group granted read ACLs on the user-visible email mirror files.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -122,7 +129,7 @@ in
         "data-pool-layout.service"
         "local-fs.target"
       ];
-      path = [ pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
+      path = [ pkgs.acl pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
 
       serviceConfig = {
         Type = "simple";

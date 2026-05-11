@@ -15,6 +15,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 fake_bin="${tmpdir}/bin"
 fake_tests_dir="${tmpdir}/fake-tests"
 mkdir -p "$fake_bin" "${tmpdir}/remote" "$fake_tests_dir"
+bash_path="$(command -v bash)"
 
 cat >"${fake_tests_dir}/run-script-tests.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -27,6 +28,8 @@ nix_log="${tmpdir}/nix.log"
 ssh_log="${tmpdir}/ssh.log"
 scp_log="${tmpdir}/scp.log"
 ssh_stdin_log="${tmpdir}/ssh-stdin.log"
+deploy_script="${TESTS_REPO_ROOT}/scripts/deploy-with-validation.sh"
+validate_remote_script="${TESTS_REPO_ROOT}/scripts/validate-repo-remote.sh"
 
 cat >"${fake_bin}/nix" <<'EOF'
 #!/usr/bin/env bash
@@ -222,15 +225,21 @@ exit 0
 EOF
 chmod +x "${fake_bin}/ssh"
 
+for fake_script in "${fake_bin}"/* "${fake_tests_dir}/run-script-tests.sh"; do
+  sed -i "1s|.*|#!${bash_path}|" "$fake_script"
+done
+
 run_case() {
   local output_file="$1"
   shift
+  local status
 
   : >"$nix_log"
   : >"$ssh_log"
   : >"$scp_log"
   : >"$ssh_stdin_log"
 
+  set +e
   PATH="${fake_bin}:$PATH" \
     VALIDATE_REPO_TESTS_DIR="$fake_tests_dir" \
     DEPLOY_WRAPPER_TEST_NIX_LOG="$nix_log" \
@@ -239,13 +248,19 @@ run_case() {
     DEPLOY_WRAPPER_TEST_SSH_STDIN_LOG="$ssh_stdin_log" \
     DEPLOY_WRAPPER_TEST_REMOTE_ROOT="${tmpdir}/remote" \
     "$@" >"$output_file" 2>&1
+  status=$?
+  set -e
+  if (( status != 0 )); then
+    cat "$output_file" >&2
+    return "$status"
+  fi
 }
 
 success_output="${tmpdir}/success.out"
 run_case \
   "$success_output" \
   env DEPLOY_WRAPPER_TEST_NIX_MODE=deny \
-  scripts/deploy-with-validation.sh \
+  bash "$deploy_script" \
   --target "dsaw@192.0.2.10" \
   --build-host "dsaw@192.0.2.10" \
   --action test \
@@ -255,6 +270,8 @@ require_fixed "$scp_log" 'deploy-with-validation-repo' \
   "Deploy wrapper must stage the repo archive on the build host."
 require_fixed "$ssh_stdin_log" './scripts/remote-ops.sh deploy' \
   "Deploy wrapper must invoke the remote deploy dispatcher from the staged archive."
+require_fixed "$ssh_log" 'FULL_CHECK=false' \
+  "Default deploy wrapper runs must keep the deep runtime flag disabled."
 require_fixed "$success_output" 'Running repository checks on dsaw@192.0.2.10' \
   "Remote deploys must run repository checks on the build host."
 require_fixed "$success_output" 'Running remote nixos-rebuild test' \
@@ -266,7 +283,7 @@ remote_validation_output="${tmpdir}/remote-validate.out"
 run_case \
   "$remote_validation_output" \
   env DEPLOY_WRAPPER_TEST_NIX_MODE=deny DEPLOY_VALIDATION_CACHE_DIR="${tmpdir}/remote-cache" \
-  scripts/validate-repo-remote.sh \
+  bash "$validate_remote_script" \
   --host "dsaw@192.0.2.10" \
   --full
 
@@ -283,7 +300,7 @@ stamped_output="${tmpdir}/stamped.out"
 run_case \
   "$stamped_output" \
   env DEPLOY_WRAPPER_TEST_NIX_MODE=deny DEPLOY_VALIDATION_CACHE_DIR="${tmpdir}/remote-cache" \
-  scripts/deploy-with-validation.sh \
+  bash "$deploy_script" \
   --target "dsaw@192.0.2.10" \
   --build-host "dsaw@192.0.2.10" \
   --action test \
@@ -298,7 +315,7 @@ low_space_output="${tmpdir}/low-space.out"
 if run_case \
   "$low_space_output" \
   env DEPLOY_WRAPPER_TEST_NIX_MODE=deny DEPLOY_WRAPPER_TEST_LOW_SPACE=1 \
-  scripts/deploy-with-validation.sh \
+  bash "$deploy_script" \
   --target "dsaw@192.0.2.10" \
   --build-host "dsaw@192.0.2.10" \
   --action test \
@@ -319,7 +336,7 @@ remote_failure_output="${tmpdir}/remote-failure.out"
 if run_case \
   "$remote_failure_output" \
   env DEPLOY_WRAPPER_TEST_NIX_MODE=deny DEPLOY_WRAPPER_TEST_FAIL_REMOTE_CHECK=1 \
-  scripts/deploy-with-validation.sh \
+  bash "$deploy_script" \
   --target "dsaw@192.0.2.10" \
   --build-host "dsaw@192.0.2.10" \
   --action test \
@@ -340,7 +357,7 @@ local_build_output="${tmpdir}/local-build.out"
 run_case \
   "$local_build_output" \
   env DEPLOY_WRAPPER_TEST_NIX_MODE=allow \
-  scripts/deploy-with-validation.sh \
+  bash "$deploy_script" \
   --target "dsaw@192.0.2.10" \
   --local-build \
   --action test \
@@ -351,11 +368,43 @@ forbid_match "$ssh_stdin_log" './scripts/remote-ops.sh deploy' \
 require_fixed "$nix_log" 'nix run nixpkgs#nixos-rebuild -- test' \
   "Local builds must still run nixos-rebuild test locally."
 
+remote_full_check_output="${tmpdir}/remote-full-check.out"
+run_case \
+  "$remote_full_check_output" \
+  env DEPLOY_WRAPPER_TEST_NIX_MODE=deny \
+  bash "$deploy_script" \
+  --target "dsaw@192.0.2.10" \
+  --build-host "dsaw@192.0.2.10" \
+  --action test \
+  --hostname server \
+  --full-check
+
+require_fixed "$ssh_stdin_log" '--full-check' \
+  "Deploy wrapper --full-check runs must preserve the flag into the remote deploy dispatcher."
+require_fixed "$ssh_log" 'FULL_CHECK=true' \
+  "Deploy wrapper --full-check runs must enable the deep runtime flag in the remote environment."
+
+local_full_check_output="${tmpdir}/local-full-check.out"
+run_case \
+  "$local_full_check_output" \
+  env DEPLOY_WRAPPER_TEST_NIX_MODE=allow \
+  bash "$deploy_script" \
+  --target "dsaw@192.0.2.10" \
+  --local-build \
+  --action test \
+  --hostname server \
+  --full-check
+
+require_fixed "$ssh_log" 'FULL_CHECK=true' \
+  "Local-build --full-check runs must pass the deep runtime flag into the staged readiness invocation."
+require_fixed "$ssh_stdin_log" 'readiness_args+=(--deep)' \
+  "Local-build --full-check runs must prepare the deep runtime readiness arguments."
+
 local_build_mismatch_output="${tmpdir}/local-build-mismatch.out"
 if run_case \
   "$local_build_mismatch_output" \
   env DEPLOY_WRAPPER_TEST_NIX_MODE=allow DEPLOY_WRAPPER_TEST_LOCAL_SYSTEM=aarch64-linux DEPLOY_WRAPPER_TEST_TARGET_SYSTEM=x86_64-linux \
-  scripts/deploy-with-validation.sh \
+  bash "$deploy_script" \
   --target "dsaw@192.0.2.10" \
   --local-build \
   --action test \

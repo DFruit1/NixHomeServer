@@ -1,4 +1,4 @@
-{ config, vars, ... }:
+{ config, lib, vars, ... }:
 
 let
   kanidmPort = 8443;
@@ -18,10 +18,20 @@ in
     adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;
     instanceUrl = kanidmCliUrl;
 
-    persons.${vars.kanidmAdminUser} = {
-      displayName = vars.kanidmAdminUser;
-      mailAddresses = [ vars.kanidmAdminEmail ];
-    };
+    persons =
+      {
+        ${vars.kanidmAdminUser} = {
+          displayName = vars.kanidmAdminUser;
+          mailAddresses = [ vars.kanidmAdminEmail ];
+        };
+      }
+      // lib.mapAttrs (
+        _: canary: {
+          displayName = canary.displayName;
+          mailAddresses = [ canary.mailAddress ];
+          groups = canary.groups;
+        }
+      ) vars.runtimeAccessCanaries;
 
     # Keep the builtin group in the provision inventory so post-start
     # reconciliation does not try to delete it as an orphaned entity.

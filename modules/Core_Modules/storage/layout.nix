@@ -126,18 +126,6 @@ let
       group = "paperless";
     }
     {
-      path = vars.paperlessMailArchiveConsumeRoot;
-      mode = "2770";
-      user = "root";
-      group = "paperless";
-    }
-    {
-      path = vars.paperlessMailArchiveStagingRoot;
-      mode = "0770";
-      user = "mail-archive-ui";
-      group = "mail-archive-ui";
-    }
-    {
       path = vars.paperlessArchiveRoot;
       mode = "0750";
       user = "paperless";
@@ -208,10 +196,6 @@ let
       apply_recursive_acl "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
     }
 
-    apply_recursive_acl \
-      "u:mail-archive-ui:rwX" \
-      "d:u:mail-archive-ui:rwx" \
-      '${vars.paperlessMailArchiveConsumeRoot}'
   '';
 
   zfsContentLayoutScript = lib.concatStringsSep "\n" (

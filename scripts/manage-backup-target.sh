@@ -61,7 +61,7 @@ protected_disks_json() {
     protected_disks_cache="$(
       STORAGE_DEVICE_DISCOVERY_REPO_ROOT="$repo_root" \
       STORAGE_DEVICE_DISCOVERY_DEV_DISK_ROOT="$dev_disk_root" \
-      "$repo_root/scripts/discover-storage-devices.sh" --format json \
+      bash "$repo_root/scripts/discover-storage-devices.sh" --format json \
         | jq '
           {
             mainDisk: (.systemDisk.diskId // ""),

@@ -7,6 +7,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 
 ensure_tools jq mktemp rg
+bash_path="$(command -v bash)"
 
 echo "ℹ️ Checking storage-device discovery and protection helpers…"
 fixture_dir="$TESTS_REPO_ROOT/scripts/tests/fixtures/storage-health"
@@ -226,6 +227,9 @@ set -euo pipefail
 EOF
 chmod +x "$bin_dir/sudo"
 
+find "$bin_dir" -maxdepth 1 -type f -perm -0100 \
+  -exec sed -i "1s|.*|#!${bash_path}|" {} +
+
 discovery_env=(
   "PATH=$bin_dir:$PATH"
   "STORAGE_DEVICE_DISCOVERY_REPO_ROOT=$TESTS_REPO_ROOT"
@@ -235,7 +239,7 @@ discovery_env=(
 
 discovery_json="$(
   env "${discovery_env[@]}" \
-    scripts/discover-storage-devices.sh --format json
+    bash scripts/discover-storage-devices.sh --format json
 )"
 
 require_json_equal "$(jq -r '.systemDisk.label' <<<"$discovery_json")" "system" \
@@ -252,7 +256,7 @@ require_json_equal "$(jq -r '[.allSmartDisks[] | .label] | join(",")' <<<"$disco
 smartd_conf="$(
   env "${discovery_env[@]}" \
     SMARTD_CONFIG_REPO_ROOT="$TESTS_REPO_ROOT" \
-    scripts/generate-smartd-config.sh
+    bash scripts/generate-smartd-config.sh
 )"
 require_match <(printf '%s\n' "$smartd_conf") '^DEFAULT -a$' \
   "generate-smartd-config.sh must emit a smartd DEFAULT stanza."
@@ -266,7 +270,7 @@ list_output="$(
     "BACKUP_TARGET_DEV_DISK_ROOT=$dev_disk_root" \
     "BACKUP_TARGET_STATE_DIR=$state_dir" \
     "STORAGE_DEVICE_DISCOVERY_CONFIG_JSON_FILE=$config_file" \
-    scripts/manage-backup-target.sh list
+    bash scripts/manage-backup-target.sh list
 )"
 require_match <(printf '%s\n' "$list_output") 'usb-Samsung_PSSD_T7_S7MLNS0Y711062N-part1' \
   "manage-backup-target.sh list must retain the eligible USB backup disk."
@@ -283,7 +287,7 @@ protected_status="$(
     "BACKUP_TARGET_DEV_DISK_ROOT=$dev_disk_root" \
     "BACKUP_TARGET_STATE_DIR=$state_dir" \
     "STORAGE_DEVICE_DISCOVERY_CONFIG_JSON_FILE=$config_file" \
-    scripts/manage-backup-target.sh select "${by_id_dir}/ata-ST8000VN002-2ZM188_WPV3997N-part1" 2>&1
+    bash scripts/manage-backup-target.sh select "${by_id_dir}/ata-ST8000VN002-2ZM188_WPV3997N-part1" 2>&1
 )"
 protected_code=$?
 set -e
@@ -298,7 +302,7 @@ env \
   "BACKUP_TARGET_DEV_DISK_ROOT=$dev_disk_root" \
   "BACKUP_TARGET_STATE_DIR=$state_dir" \
   "STORAGE_DEVICE_DISCOVERY_CONFIG_JSON_FILE=$config_file" \
-  scripts/manage-backup-target.sh select "${by_id_dir}/usb-Samsung_PSSD_T7_S7MLNS0Y711062N-part1" >/dev/null
+  bash scripts/manage-backup-target.sh select "${by_id_dir}/usb-Samsung_PSSD_T7_S7MLNS0Y711062N-part1" >/dev/null
 
 require_json_equal "$(cat "$state_dir/selected-device")" "${by_id_dir}/usb-Samsung_PSSD_T7_S7MLNS0Y711062N-part1" \
   "manage-backup-target.sh must still allow selecting an eligible USB backup disk."

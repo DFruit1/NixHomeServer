@@ -16,6 +16,8 @@ pub const ENV_SERVER_URL: &str = "KANIDM_ADMIN_SERVER_URL";
 pub const ENV_ADMIN_NAME: &str = "KANIDM_ADMIN_NAME";
 pub const ENV_KANIDM_BIN: &str = "KANIDM_ADMIN_KANIDM_BIN";
 pub const ENV_NIX_BIN: &str = "KANIDM_ADMIN_NIX_BIN";
+pub const ENV_VAULTWARDEN_URL: &str = "KANIDM_ADMIN_VAULTWARDEN_URL";
+pub const ENV_VAULTWARDEN_ADMIN_TOKEN_FILE: &str = "KANIDM_ADMIN_VAULTWARDEN_ADMIN_TOKEN_FILE";
 
 const NIX_EVAL_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -27,6 +29,8 @@ pub struct ContextOverrides {
     pub admin_name: Option<String>,
     pub kanidm_bin: Option<OsString>,
     pub nix_bin: Option<OsString>,
+    pub vaultwarden_url: Option<String>,
+    pub vaultwarden_admin_token_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +39,8 @@ pub struct ResolvedContext {
     pub server_url: String,
     pub admin_name: String,
     pub kanidm_bin: OsString,
+    pub vaultwarden_url: Option<String>,
+    pub vaultwarden_admin_token_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -43,6 +49,8 @@ struct RepoDefaults {
     server_url: String,
     #[serde(rename = "adminName")]
     admin_name: String,
+    #[serde(rename = "vaultwardenUrl")]
+    vaultwarden_url: Option<String>,
 }
 
 pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, AppError> {
@@ -63,6 +71,12 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
         .nix_bin
         .or_else(|| env::var_os(ENV_NIX_BIN))
         .unwrap_or_else(|| OsString::from("nix"));
+    let vaultwarden_url = overrides
+        .vaultwarden_url
+        .or_else(|| env::var(ENV_VAULTWARDEN_URL).ok());
+    let vaultwarden_admin_token_file = overrides
+        .vaultwarden_admin_token_file
+        .or_else(|| env::var_os(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE).map(PathBuf::from));
 
     if let (Some(server_url), Some(admin_name)) = (&server_url, &admin_name) {
         return Ok(ResolvedContext {
@@ -70,6 +84,8 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
             server_url: server_url.clone(),
             admin_name: admin_name.clone(),
             kanidm_bin,
+            vaultwarden_url,
+            vaultwarden_admin_token_file,
         });
     }
 
@@ -90,6 +106,8 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
         server_url: server_url.unwrap_or(defaults.server_url),
         admin_name: admin_name.unwrap_or(defaults.admin_name),
         kanidm_bin,
+        vaultwarden_url: vaultwarden_url.or(defaults.vaultwarden_url),
+        vaultwarden_admin_token_file,
     })
 }
 
@@ -116,7 +134,7 @@ fn nix_repo_defaults(nix_bin: &OsString, repo_root: &Path) -> Result<RepoDefault
         details: serde_json::json!({ "error": error.to_string(), "repo_root": repo_str }),
     })?;
     let expr = format!(
-        "let repo = {repo_literal}; flake = builtins.getFlake repo; vars = import (builtins.toPath (repo + \"/vars.nix\")) {{ lib = flake.inputs.nixpkgs.lib; }}; in {{ serverUrl = vars.kanidmBaseUrl; adminName = vars.kanidmAdminUser; }}"
+        "let repo = {repo_literal}; flake = builtins.getFlake repo; vars = import (builtins.toPath (repo + \"/vars.nix\")) {{ lib = flake.inputs.nixpkgs.lib; }}; in {{ serverUrl = vars.kanidmBaseUrl; adminName = vars.kanidmAdminUser; vaultwardenUrl = \"https://${{vars.vaultwardenDomain}}\"; }}"
     );
 
     let output = run_nix_eval(nix_bin, &expr)?;
@@ -253,6 +271,8 @@ mod tests {
             admin_name: Some("flag-admin".to_string()),
             kanidm_bin: None,
             nix_bin: None,
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         })
         .expect("resolve context");
 
@@ -278,7 +298,7 @@ mod tests {
         write_script(
             &nix,
             r#"#!/usr/bin/env bash
-printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw"}'
+printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwardenUrl":"https://passwords.example.test"}'
 "#,
         );
 
@@ -288,11 +308,58 @@ printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw"}'
             admin_name: None,
             kanidm_bin: None,
             nix_bin: Some(nix.into_os_string()),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         })
         .expect("resolve defaults");
 
         assert_eq!(resolved.server_url, "https://id.example.test");
         assert_eq!(resolved.admin_name, "admindsaw");
+        assert_eq!(
+            resolved.vaultwarden_url.as_deref(),
+            Some("https://passwords.example.test")
+        );
+    }
+
+    #[test]
+    fn resolves_vaultwarden_values_from_environment() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let original_url = env::var_os(ENV_VAULTWARDEN_URL);
+        let original_token = env::var_os(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE);
+        let temp = tempdir().expect("tempdir");
+        let token_path = temp.path().join("vaultwarden-admin-token");
+
+        env::set_var(ENV_VAULTWARDEN_URL, "https://passwords.example.test");
+        env::set_var(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE, &token_path);
+
+        let resolved = resolve_context(ContextOverrides {
+            repo_root: None,
+            server_url: Some("https://id.example.test".to_string()),
+            admin_name: Some("admindsaw".to_string()),
+            kanidm_bin: None,
+            nix_bin: None,
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+        })
+        .expect("resolve");
+
+        assert_eq!(
+            resolved.vaultwarden_url.as_deref(),
+            Some("https://passwords.example.test")
+        );
+        assert_eq!(
+            resolved.vaultwarden_admin_token_file.as_deref(),
+            Some(token_path.as_path())
+        );
+
+        match original_url {
+            Some(value) => env::set_var(ENV_VAULTWARDEN_URL, value),
+            None => env::remove_var(ENV_VAULTWARDEN_URL),
+        }
+        match original_token {
+            Some(value) => env::set_var(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE, value),
+            None => env::remove_var(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE),
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ ensure_default_nix_config
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/remote-ops.sh deploy --target <user@host> [--build-host <user@host>] [--action test|switch] [--hostname <flake-hostname>] [--archive-sha <sha256>]
+  scripts/remote-ops.sh deploy --target <user@host> [--build-host <user@host>] [--action test|switch] [--hostname <flake-hostname>] [--archive-sha <sha256>] [--full-check]
   scripts/remote-ops.sh validate [--full] [--run-flake-check] [--skip-flake-check] [--archive-sha <sha256>]
   scripts/remote-ops.sh generate-secrets
 EOF
@@ -217,6 +217,7 @@ run_validate_repo() {
 
 run_remote_runtime_readiness() {
   local target_host="$1"
+  local full_check="${2:-false}"
   local repo_archive remote_archive
 
   repo_archive="$(mktemp /tmp/check-runtime-readiness.XXXXXX.tar)"
@@ -224,14 +225,18 @@ run_remote_runtime_readiness() {
   create_deploy_repo_archive "$repo_archive"
   remote_archive="$(stage_archive_on_remote "$repo_archive" "$target_host" "check-runtime-readiness")"
 
-  ssh -T "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") bash -s" <<'EOF'
+  ssh -T "$target_host" "REMOTE_ARCHIVE=$(printf '%q' "$remote_archive") FULL_CHECK=$(printf '%q' "$full_check") bash -s" <<'EOF'
 set -euo pipefail
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir" "$REMOTE_ARCHIVE"' EXIT
 tar -C "$tmpdir" -xf "$REMOTE_ARCHIVE"
 chmod +x "$tmpdir/scripts/check-runtime-readiness.sh"
 cd "$tmpdir"
-sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh --profile deploy
+readiness_args=(--profile deploy)
+if [[ "${FULL_CHECK:-false}" == "true" ]]; then
+  readiness_args+=(--deep)
+fi
+sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh "${readiness_args[@]}"
 EOF
 }
 
@@ -260,6 +265,7 @@ deploy_main() {
   local action="test"
   local hostname=""
   local archive_sha=""
+  local full_check=false
   local resolved_hostname expected_lan_ip
 
   while (($# > 0)); do
@@ -283,6 +289,10 @@ deploy_main() {
       --archive-sha)
         archive_sha="${2:-}"
         shift 2
+        ;;
+      --full-check)
+        full_check=true
+        shift
         ;;
       -h|--help)
         usage
@@ -331,13 +341,17 @@ deploy_main() {
     sudo systemctl --failed --no-pager
 
     echo "ℹ️ Running runtime readiness checks on ${target_host}…"
-    sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh --profile deploy
+    readiness_args=(--profile deploy)
+    if [[ "$full_check" == true ]]; then
+      readiness_args+=(--deep)
+    fi
+    sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh "${readiness_args[@]}"
   else
     echo "ℹ️ Checking for failed units on ${target_host}…"
     ssh "$target_host" "sudo systemctl --failed --no-pager"
 
     echo "ℹ️ Running runtime readiness checks on ${target_host}…"
-    run_remote_runtime_readiness "$target_host"
+    run_remote_runtime_readiness "$target_host" "$full_check"
   fi
 
   if [[ "$action" == "switch" ]]; then

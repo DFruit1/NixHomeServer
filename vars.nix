@@ -22,6 +22,7 @@ rec {
   };
   netIface = "enp34s0";
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
+  kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
 
   mainDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # Live system SSD by-id value used for runtime protection and monitoring.
   zfsDataPool = { # Active mirrored ZFS pool metadata. Member IDs are retained for bootstrap-era workflows only.
@@ -52,8 +53,6 @@ rec {
   paperlessInboxRoot = "${paperlessRoot}/inbox";
   paperlessArchiveRoot = "${paperlessRoot}/archive";
   paperlessExportRoot = "${paperlessRoot}/export";
-  paperlessMailArchiveConsumeRoot = "${paperlessInboxRoot}/mail-archive";
-  paperlessMailArchiveStagingRoot = "${paperlessRoot}/.mail-archive-paperless-staging";
   immichRoot = "${dataRoot}/immich";
   immichManagedRoot = "${immichRoot}/managed";
   immichExternalRoot = "${immichRoot}/external";
@@ -155,14 +154,33 @@ rec {
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
+  runtimeAccessCanaries = {
+    "canary-files" = {
+      displayName = "Runtime Access Canary";
+      mailAddress = "runtime-canary-files@${domain}";
+      groups = [
+        "users"
+        "user-files"
+        "shared-files-read-write-access"
+        "paperless-users"
+        "immich-users"
+        "audiobookshelf-users"
+        "kavita-users"
+        "glances-users"
+        "mail-archive-users"
+        "metube-users"
+      ];
+      passwordSecret = "runtimeCanaryFilesPassword";
+    };
+  };
   glancesAccessUsers = [
     kanidmAdminUser
   ];
   monitorDomain = "monitor.${domain}";
-  trafficDomain = "traffic.${domain}";
   photosDomain = "photos.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
   sharePhotosDomain = "sharephotos.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.
   audiobooksDomain = "audiobooks.${domain}";
+  vaultwardenDomain = "passwords.${domain}";
   uploadsDomain = "uploads.${domain}";
   filebrowserDomain = "files.${domain}";
   filebrowserPort = 8097;

@@ -755,6 +755,8 @@ exit 1
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let error = cli.person_get::<Value>("dsaw").expect_err("not found");
@@ -777,6 +779,8 @@ exit 1
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
         });
 
         let error = cli

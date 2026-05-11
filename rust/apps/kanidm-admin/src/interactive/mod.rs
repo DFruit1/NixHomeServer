@@ -28,7 +28,10 @@ use crate::{
             RecoveryTarget,
         },
         group::{group_members, list_groups, load_group, search_groups, show_group},
-        local::stage_jellyfin_password,
+        local::{
+            invite_vaultwarden_user, lookup_vaultwarden_user, stage_jellyfin_password,
+            VaultwardenUserState, VaultwardenUserStatus,
+        },
         membership::{
             add_membership, membership_diff, normalize_groups, prepare_membership_picker_inventory,
             remove_membership, set_membership, show_membership, SetMembershipOptions,
@@ -37,7 +40,10 @@ use crate::{
             reset_group_auth_expiry, reset_group_privilege_expiry, set_group_auth_expiry,
             set_group_privilege_expiry, show_group_policy,
         },
-        session::{session_login, session_logout, session_reauth, session_status},
+        session::{
+            session_login, session_login_refresh_privileged, session_logout, session_reauth,
+            session_status,
+        },
         user::{
             create_user, delete_user, disable_user, enable_user, load_user, reset_token,
             CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
@@ -88,7 +94,7 @@ fn advanced_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), Ap
             3 => clients_menu(kanidm)?,
             4 => policy_menu(kanidm)?,
             5 => context_menu(context, kanidm)?,
-            6 => local_helpers_menu()?,
+            6 => local_helpers_menu(context, kanidm)?,
             7 => delete_user_flow(kanidm)?,
             _ => break,
         }
@@ -261,7 +267,7 @@ fn context_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), App
     Ok(())
 }
 
-fn local_helpers_menu() -> Result<(), AppError> {
+fn local_helpers_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     while let Some(selection) = forms::contextual_select(
         "Local Helpers",
         Some(
@@ -272,6 +278,58 @@ fn local_helpers_menu() -> Result<(), AppError> {
     )? {
         match selection {
             0 => {
+                let Some(account_id) =
+                    choose_account_id(kanidm, "Select a user to invite into Vaultwarden")?
+                else {
+                    continue;
+                };
+                let Some(user) = require_complete_user_for_action(
+                    kanidm,
+                    &account_id,
+                    "invite into Vaultwarden",
+                )? else {
+                    continue;
+                };
+                let Some(primary_email) = user.value.primary_email.as_deref() else {
+                    render::print_error(&AppError::Config {
+                        message: format!(
+                            "cannot invite '{}' into Vaultwarden because the Kanidm user does not have a primary email",
+                            account_id
+                        ),
+                    });
+                    forms::pause("Press Enter or Esc to continue")?;
+                    continue;
+                };
+                let vaultwarden_status = match lookup_vaultwarden_user(context, primary_email) {
+                    Ok(status) => status,
+                    Err(error) => {
+                        render::print_error(&error);
+                        forms::pause("Press Enter or Esc to continue")?;
+                        continue;
+                    }
+                };
+                render::print_note(
+                    "Review Vaultwarden Invite",
+                    &build_vaultwarden_invite_review(
+                        &user.value,
+                        primary_email,
+                        &vaultwarden_status,
+                        context.vaultwarden_url.as_deref(),
+                    ),
+                );
+                let Some(prompt) = build_vaultwarden_invite_prompt(&vaultwarden_status) else {
+                    forms::pause("Press Enter or Esc to continue")?;
+                    continue;
+                };
+                match forms::confirm(prompt, false)? {
+                    Some(true) => {}
+                    _ => continue,
+                }
+                run_privileged_command("Vaultwarden Invite", kanidm, || {
+                    invite_vaultwarden_user(context, kanidm, &account_id)
+                })?;
+            }
+            1 => {
                 let Some(account_id) = prompt_submitted(forms::input_required_validated(
                     "Jellyfin account id",
                     None,
@@ -1308,9 +1366,53 @@ fn recover_login(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
 
 fn recover_reauth(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
     match forms::confirm(prompt, true)? {
-        Some(true) => run_session_recovery_command("Reauthenticate", || session_reauth(kanidm)),
+        Some(true) => run_privileged_session_recovery_command(kanidm),
         _ => Ok(false),
     }
+}
+
+fn run_privileged_session_recovery_command(kanidm: &KanidmCli) -> Result<bool, AppError> {
+    match session_reauth(kanidm) {
+        Ok(output) => {
+            render_output("Reauthenticate", output)?;
+            Ok(true)
+        }
+        Err(error) if should_offer_full_login_refresh(kanidm) => {
+            render::print_error(&error);
+            render::print_note(
+                "Full Login Refresh Recommended",
+                full_login_refresh_note_message(),
+            );
+            match forms::confirm(full_login_refresh_prompt_message(), true)? {
+                Some(true) => {
+                    run_session_recovery_command("Refresh Login For Privileged Writes", || {
+                        session_login_refresh_privileged(kanidm)
+                    })
+                }
+                _ => Ok(false),
+            }
+        }
+        Err(error) => {
+            render::print_error(&error);
+            forms::pause("Press Enter or Esc to continue")?;
+            Ok(false)
+        }
+    }
+}
+
+fn should_offer_full_login_refresh(kanidm: &KanidmCli) -> bool {
+    kanidm
+        .session_snapshot()
+        .map(|snapshot| snapshot.base_session_present() && !snapshot.privileged_write_ready())
+        .unwrap_or(false)
+}
+
+fn full_login_refresh_note_message() -> &'static str {
+    "Kanidm accepted the reauthentication command, but privileged write access still did not confirm. Refreshing the full delegated login usually clears this state and lets the pending write continue."
+}
+
+fn full_login_refresh_prompt_message() -> &'static str {
+    "Refresh the full delegated login now so privileged writes can continue?"
 }
 
 fn run_session_recovery_command<F>(title: &str, action: F) -> Result<bool, AppError>
@@ -1624,6 +1726,11 @@ fn context_menu_items() -> Vec<forms::ContextualItem> {
 fn local_helpers_menu_items() -> Vec<forms::ContextualItem> {
     vec![
         menu_item(
+            "Invite user to Vaultwarden",
+            "Invite a Kanidm user email into Vaultwarden.",
+            "Use this onboarding helper to standardize password-vault access for less technical users before they store their Kanidm password, TOTP, and passkey details.",
+        ),
+        menu_item(
             "Stage Jellyfin password",
             "Write a local Jellyfin password hash file from an environment variable.",
             "Use this machine-local helper when the Jellyfin password hash needs to be staged outside normal Kanidm identity administration.",
@@ -1889,6 +1996,62 @@ fn build_reset_password_review(user: &UserRecord, ttl_seconds: u64) -> String {
         human_operator_user_summary(user),
         ttl_seconds,
     )
+}
+
+fn build_vaultwarden_invite_review(
+    user: &UserRecord,
+    primary_email: &str,
+    vaultwarden_status: &VaultwardenUserStatus,
+    vaultwarden_url: Option<&str>,
+) -> String {
+    let planned_actions = build_vaultwarden_invite_actions(vaultwarden_status).join("\n");
+    format!(
+        "Account ID: {}\nDisplay Name: {}\nPrimary Email: {}\nVaultwarden URL: {}\nVaultwarden Account State: {}\nLegacy SSO Linked: {}\n\nPlanned Actions:\n{}",
+        user.account_id,
+        user.display_name.as_deref().unwrap_or("-"),
+        primary_email,
+        vaultwarden_url.unwrap_or("(not resolved)"),
+        vaultwarden_status.state_label(),
+        if vaultwarden_status.sso_linked {
+            "yes"
+        } else {
+            "no"
+        },
+        planned_actions,
+    )
+}
+
+fn build_vaultwarden_invite_actions(vaultwarden_status: &VaultwardenUserStatus) -> Vec<String> {
+    let mut actions = Vec::new();
+    match vaultwarden_status.state {
+        VaultwardenUserState::Missing => actions.push(
+            "- Create a pending Vaultwarden signup record through the local admin API.".to_string(),
+        ),
+        VaultwardenUserState::InvitePending => {
+            actions.push("- Refresh the existing pending Vaultwarden signup record.".to_string())
+        }
+        VaultwardenUserState::Active => {
+            actions.push(
+                "- Do not create a new signup because the Vaultwarden account is already active."
+                    .to_string(),
+            );
+        }
+    }
+    actions.push(
+        "- User will open the Vaultwarden signup page and register with the exact invited email."
+            .to_string(),
+    );
+    actions
+}
+
+fn build_vaultwarden_invite_prompt(
+    vaultwarden_status: &VaultwardenUserStatus,
+) -> Option<&'static str> {
+    match vaultwarden_status.state {
+        VaultwardenUserState::Missing => Some("Create the Vaultwarden signup now?"),
+        VaultwardenUserState::InvitePending => Some("Refresh the pending Vaultwarden signup now?"),
+        VaultwardenUserState::Active => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2206,6 +2369,8 @@ mod tests {
             server_url: "https://id.example.test".to_string(),
             admin_name: "admindsaw".to_string(),
             kanidm_bin: script.into_os_string(),
+            vaultwarden_url: Some("https://passwords.example.test".to_string()),
+            vaultwarden_admin_token_file: Some("/run/agenix/vaultwardenAdminToken".into()),
         });
         std::mem::forget(dir);
         cli
@@ -2298,7 +2463,11 @@ mod tests {
                 .into_iter()
                 .map(|item| item.label)
                 .collect::<Vec<_>>(),
-            vec!["Stage Jellyfin password", "Back"]
+            vec![
+                "Invite user to Vaultwarden",
+                "Stage Jellyfin password",
+                "Back"
+            ]
         );
     }
 

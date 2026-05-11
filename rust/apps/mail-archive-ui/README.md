@@ -31,7 +31,7 @@ Functional scope:
 - generates `mbsync` config on demand
 - updates or repairs per-account `notmuch` indexes
 - keeps mailbox payload portable by separating downloaded mail from derived sync and index state
-- optionally extracts qualifying document attachments and hands them to Paperless through the filesystem consume flow
+- lets users search, select, and bulk-download archived attachments as a ZIP
 - indexes supported document attachment text for search, including `pdf`, `doc`, `docx`, `odt`, `rtf`, and `text/plain`
 - exposes metadata-only search results
 - supports mailbox edit, schedule toggle, manual sync, and reindex actions
@@ -43,12 +43,11 @@ Health behavior:
 - `200 OK` means the DB, writable runtime paths, store root, and tool discovery checks passed
 - `503` means the app is degraded before mailbox traffic is attempted
 
-Paperless filing model:
-- filing stays opt-in per mailbox through the UI checkbox
-- the first run after enabling Paperless filing backfills already-downloaded mail for that mailbox
-- later runs only inspect messages that have not been marked with the internal `paperless-reviewed` notmuch tag
-- extracted attachments are deduplicated by SHA-256 before they are moved into `Paperless` under `documents/inbox/mail-archive/`
-- internal `paperless-*` notmuch tags are hidden from the search UI
+Attachment download model:
+- `/attachments` searches the indexed attachment catalog and supports per-row selection, page-visible selection, and server-side download of all matching filters
+- selected attachments are downloaded as a browser ZIP; no attachment action state is recorded
+- local delete/restore tombstones remain available for mail archive maintenance
+- downstream document filing is manual and happens outside this app
 
 ## Development
 

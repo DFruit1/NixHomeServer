@@ -12,7 +12,7 @@ let
     flags:
       fk: 4
       e2d: true
-      chmod_d: 2770
+      chmod_d: 770
       chmod_f: 660
   '';
   buildRuntimeConfig = ''

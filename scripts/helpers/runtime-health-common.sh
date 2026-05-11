@@ -13,6 +13,7 @@ let
   mailArchiveEnabled = cfg.services.mail-archive-ui.enable or false;
   kiwixEnabled = cfg.services.kiwixServe.enable or false;
   metubeEnabled = cfg.systemd.services ? metube-oauth2-proxy;
+  intersects = left: right: builtins.any (value: builtins.elem value right) left;
   persistBackedStateRoot =
     stateRoot:
     if lib.hasPrefix "/persist/" stateRoot then
@@ -94,6 +95,13 @@ let
       payloadRoots = [ vars.paperlessRoot ];
     }
     {
+      app = "vaultwarden";
+      component = "app";
+      stateRoot = "/var/lib/vaultwarden";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/vaultwarden";
+      payloadRoots = [ ];
+    }
+    {
       app = "paperless";
       component = "redis";
       stateRoot = cfg.services.redis.servers.paperless.settings.dir;
@@ -129,13 +137,6 @@ let
       payloadRoots = [ vars.usersRoot vars.sharedRoot vars.kiwixLibraryRoot ];
     }
     {
-      app = "goaccess";
-      component = "app";
-      stateRoot = "/var/lib/goaccess";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/goaccess";
-      payloadRoots = [ ];
-    }
-    {
       app = "mail-archive-ui";
       component = "app";
       stateRoot = cfg.services.mail-archive-ui.dataDir;
@@ -150,15 +151,178 @@ let
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-data"; path = cfg.services.mail-archive-ui.dataDir; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-runtime"; path = cfg.services.mail-archive-ui.runtimeDir; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-locks"; path = cfg.services.mail-archive-ui.lockDir; }
-    ++ optional mailArchiveEnabled { label = "mail-archive-ui-store-root"; path = cfg.services.mail-archive-ui.storeRoot; }
-    ++ optional (mailArchiveEnabled && cfg.services.mail-archive-ui.environment ? MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT) {
-      label = "mail-archive-paperless-consume";
-      path = cfg.services.mail-archive-ui.environment.MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT;
+    ++ optional mailArchiveEnabled { label = "mail-archive-ui-store-root"; path = cfg.services.mail-archive-ui.storeRoot; };
+  accessCheckApps =
+    [
+      {
+        name = "uploads";
+        kind = "oauth2-proxy";
+        entryUrl = "https://${vars.uploadsDomain}/";
+        expectedLandingUrl = "https://${vars.uploadsDomain}/";
+        allowedGroups = [ "user-files" ];
+        localUnauthCheck = {
+          host = vars.uploadsDomain;
+          path = "/";
+          expected = [ 302 303 ];
+          redirectPrefix = "https://id.${vars.domain}/ui/oauth2";
+        };
+        verification = {
+          finalUrlPrefix = "https://${vars.uploadsDomain}/";
+          markerText = "copyparty";
+        };
+      }
+      {
+        name = "files";
+        kind = "oidc-direct";
+        entryUrl = "https://${vars.filebrowserDomain}/";
+        expectedLandingUrl = "https://${vars.filebrowserDomain}/";
+        allowedGroups = [ "user-files" "shared-files-read-write-access" ];
+        localUnauthCheck = {
+          host = vars.filebrowserDomain;
+          path = "/login";
+          expected = [ 302 303 ];
+          redirectPrefix = "/api/auth/oidc/login";
+        };
+        verification = {
+          finalUrlPrefix = "https://${vars.filebrowserDomain}/";
+          markerText = "Files";
+        };
+      }
+      {
+        name = "paperless";
+        kind = "oidc-direct";
+        entryUrl = "https://paperless.${vars.domain}/";
+        expectedLandingUrl = "https://paperless.${vars.domain}";
+        allowedGroups = [ "paperless-users" ];
+        localUnauthCheck = null;
+        verification = {
+          finalUrlPrefix = "https://paperless.${vars.domain}";
+          markerText = "Paperless";
+        };
+      }
+      {
+        name = "photos";
+        kind = "oidc-direct";
+        entryUrl = "https://${vars.photosDomain}/";
+        expectedLandingUrl = "https://${vars.photosDomain}";
+        allowedGroups = [ "immich-users" ];
+        localUnauthCheck = null;
+        verification = {
+          finalUrlPrefix = "https://${vars.photosDomain}";
+          markerText = "Immich";
+        };
+      }
+      {
+        name = "audiobooks";
+        kind = "oidc-direct";
+        entryUrl = "https://${vars.audiobooksDomain}/audiobookshelf/";
+        expectedLandingUrl = "https://${vars.audiobooksDomain}/audiobookshelf/";
+        allowedGroups = [ "audiobookshelf-users" ];
+        localUnauthCheck = null;
+        verification = {
+          finalUrlPrefix = "https://${vars.audiobooksDomain}/audiobookshelf/";
+          markerText = "Audiobookshelf";
+        };
+      }
+      {
+        name = "books";
+        kind = "oidc-direct";
+        entryUrl = "https://${vars.kavitaDomain}/";
+        expectedLandingUrl = "https://${vars.kavitaDomain}/";
+        allowedGroups = [ "kavita-users" ];
+        localUnauthCheck = null;
+        verification = {
+          finalUrlPrefix = "https://${vars.kavitaDomain}/";
+          markerText = "Kavita";
+        };
+      }
+      {
+        name = "monitor";
+        kind = "oauth2-proxy";
+        entryUrl = "https://${vars.monitorDomain}/";
+        expectedLandingUrl = "https://${vars.monitorDomain}";
+        allowedGroups = [ "glances-users" ];
+        localUnauthCheck = {
+          host = vars.monitorDomain;
+          path = "/";
+          expected = [ 302 303 ];
+          redirectPrefix = "https://id.${vars.domain}/ui/oauth2";
+        };
+        verification = {
+          finalUrlPrefix = "https://${vars.monitorDomain}";
+          markerText = vars.monitorDomain;
+        };
+      }
+    ]
+    ++ optional kiwixEnabled {
+      name = "kiwix";
+      kind = "oauth2-proxy";
+      entryUrl = "https://${vars.kiwixDomain}/";
+      expectedLandingUrl = "https://${vars.kiwixDomain}";
+      allowedGroups = [ "users" ];
+      localUnauthCheck = {
+        host = vars.kiwixDomain;
+        path = "/";
+        expected = [ 302 303 ];
+        redirectPrefix = "https://id.${vars.domain}/ui/oauth2";
+      };
+      verification = {
+        finalUrlPrefix = "https://${vars.kiwixDomain}";
+        markerText = vars.kiwixDomain;
+      };
     }
-    ++ optional (mailArchiveEnabled && cfg.services.mail-archive-ui.environment ? MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR) {
-      label = "mail-archive-paperless-staging";
-      path = cfg.services.mail-archive-ui.environment.MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR;
+    ++ optional mailArchiveEnabled {
+      name = "emails";
+      kind = "oauth2-proxy";
+      entryUrl = "https://${vars.emailsDomain}/";
+      expectedLandingUrl = "https://${vars.emailsDomain}";
+      allowedGroups = [ "mail-archive-users" ];
+      localUnauthCheck = {
+        host = vars.emailsDomain;
+        path = "/";
+        expected = [ 302 303 ];
+        redirectPrefix = "https://id.${vars.domain}/ui/oauth2";
+      };
+      verification = {
+        finalUrlPrefix = "https://${vars.emailsDomain}";
+        markerText = "Mail Archive";
+      };
+    }
+    ++ optional metubeEnabled {
+      name = "metube";
+      kind = "oauth2-proxy";
+      entryUrl = "https://${vars.metubeDomain}/";
+      expectedLandingUrl = "https://${vars.metubeDomain}";
+      allowedGroups = [ "metube-users" ];
+      localUnauthCheck = {
+        host = vars.metubeDomain;
+        path = "/";
+        expected = [ 302 303 ];
+        redirectPrefix = "https://id.${vars.domain}/ui/oauth2";
+      };
+      verification = {
+        finalUrlPrefix = "https://${vars.metubeDomain}";
+        markerText = vars.metubeDomain;
+      };
     };
+  accessCheckCanaries = lib.mapAttrsToList (
+    accountId: canary:
+    {
+      inherit accountId;
+      displayName = canary.displayName;
+      mailAddress = canary.mailAddress;
+      groups = canary.groups;
+      passwordSecret = canary.passwordSecret;
+      expectedApps = map (
+        app:
+        {
+          name = app.name;
+          kind = app.kind;
+          expectedLandingUrl = app.expectedLandingUrl;
+        }
+      ) (lib.filter (app: intersects canary.groups app.allowedGroups) accessCheckApps);
+    }
+  ) vars.runtimeAccessCanaries;
   backupMetadataRoot = "/persist/appdata/system-state-backup/metadata";
   backupDumpsRoot = "/persist/appdata/system-state-backup/dumps";
 in
@@ -182,6 +346,7 @@ in
         "copyparty.service"
         "immich-server.service"
         "paperless-web.service"
+        "vaultwarden.service"
         "audiobookshelf.service"
         "audiobookshelf-library-sync.timer"
         "filebrowser-quantum.service"
@@ -189,7 +354,6 @@ in
         "jellyfin.service"
         "glances.service"
         "glances-oauth2-proxy.service"
-        "goaccess-report.service"
       ]
       ++ optional cfg.services.cloudflared.enable "cloudflared-tunnel-${vars.cloudflareTunnelName}.service"
       ++ optional cfg.services.oauth2-proxy.enable "oauth2-proxy.service"
@@ -206,12 +370,12 @@ in
       { name = "uploads"; url = "https://${vars.uploadsDomain}/"; expected = [ 200 302 303 401 403 ]; }
       { name = "files"; url = "https://${vars.filebrowserDomain}/"; expected = [ 200 302 303 ]; }
       { name = "paperless"; url = "https://paperless.${vars.domain}/"; expected = [ 200 302 ]; }
+      { name = "vaultwarden"; url = "https://${vars.vaultwardenDomain}/"; expected = [ 200 302 303 ]; }
       { name = "photos"; url = "https://${vars.photosDomain}/"; expected = [ 200 302 ]; }
       { name = "sharephotos"; url = "https://${vars.sharePhotosDomain}/share/healthcheck"; expected = [ 200 ]; }
       { name = "audiobooks"; url = "https://${vars.audiobooksDomain}/"; expected = [ 200 302 ]; }
       { name = "books"; url = "https://${vars.kavitaDomain}/"; expected = [ 200 302 ]; }
       { name = "monitor"; url = "https://${vars.monitorDomain}/"; expected = [ 200 302 303 401 403 ]; }
-      { name = "traffic"; url = "https://${vars.trafficDomain}/"; expected = [ 200 ]; }
       { name = "videos"; url = "https://${vars.jellyfinDomain}/"; expected = [ 200 302 ]; }
     ]
     ++ optional kiwixEnabled { name = "kiwix"; url = "https://${vars.kiwixDomain}/"; expected = [ 200 302 ]; }
@@ -221,6 +385,7 @@ in
     internalHttp = [
       { name = "copyparty"; url = "http://127.0.0.1:${toString cfg.services.copyparty.settings.p}/"; expected = [ 200 302 401 403 ]; }
       { name = "filebrowser-quantum-health"; url = "http://127.0.0.1:${toString vars.filebrowserPort}/health"; expected = [ 200 ]; }
+      { name = "vaultwarden"; url = "http://127.0.0.1:8222/"; expected = [ 200 302 303 ]; }
       { name = "glances-web"; url = "http://127.0.0.1:61208/"; expected = [ 200 ]; }
       { name = "sharephotos"; url = "http://127.0.0.1:3300/share/healthcheck"; expected = [ 200 ]; }
     ]
@@ -234,10 +399,10 @@ in
         { host = "${vars.photosDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.audiobooksDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.filebrowserDomain}"; expected = localDnsPrivateAnswer; }
+        { host = "${vars.vaultwardenDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.kavitaDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.jellyfinDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.monitorDomain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.trafficDomain}"; expected = localDnsPrivateAnswer; }
       ]
       ++ optional kiwixEnabled { host = "${vars.kiwixDomain}"; expected = localDnsPrivateAnswer; }
       ++ optional mailArchiveEnabled { host = "${vars.emailsDomain}"; expected = localDnsPrivateAnswer; }
@@ -336,6 +501,18 @@ in
         optionalString cfg.services.postgresql.enable "${lib.getExe' cfg.services.postgresql.finalPackage "pg_isready"}";
     };
   };
+
+  accessChecks = {
+    bootstrapStateFile = "/var/lib/runtime-access-canaries/bootstrap-state.json";
+    browserHelper = "scripts/helpers/runtime-access-browser-check.mjs";
+    canaries = accessCheckCanaries;
+    apps = accessCheckApps;
+  };
+
+  mailArchiveFilebrowser = optionalAttrs mailArchiveEnabled {
+    serviceUser = "filebrowser-quantum";
+    storeRoot = cfg.services.mail-archive-ui.storeRoot;
+  };
 }
 EOF
 }
@@ -363,7 +540,7 @@ runtime_health_storage_discovery_json() {
   fi
 
   local discovery_script="${RUNTIME_HEALTH_STORAGE_DISCOVERY_SCRIPT:-$repo_root/scripts/discover-storage-devices.sh}"
-  RUNTIME_HEALTH_STORAGE_DISCOVERY="$("$discovery_script" --format json)"
+  RUNTIME_HEALTH_STORAGE_DISCOVERY="$(bash "$discovery_script" --format json)"
   export RUNTIME_HEALTH_STORAGE_DISCOVERY
   printf '%s\n' "$RUNTIME_HEALTH_STORAGE_DISCOVERY"
 }
