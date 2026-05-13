@@ -509,7 +509,7 @@ cat >"$runtime_bin/id" <<'EOF'
 set -euo pipefail
 
 if [[ "${1:-}" == "-nG" && "${2:-}" == "copyparty" ]]; then
-  printf 'copyparty users mail-archive-ui\n'
+  printf 'copyparty users\n'
   exit 0
 fi
 

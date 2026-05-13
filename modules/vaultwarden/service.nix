@@ -4,6 +4,11 @@ let
   vaultwardenPort = 8222;
   runtimeDir = "/run/vaultwarden";
   environmentFile = "${runtimeDir}/vaultwarden.env";
+  vaultwardenSecretMaterializePath = with pkgs; [
+    coreutils
+    gnugrep
+    gnused
+  ];
 in
 {
   assertions = [
@@ -42,7 +47,7 @@ in
       Type = "oneshot";
       RemainAfterExit = true;
     };
-    path = [ pkgs.coreutils pkgs.gnugrep pkgs.gnused ];
+    path = vaultwardenSecretMaterializePath;
     script = ''
       set -euo pipefail
 

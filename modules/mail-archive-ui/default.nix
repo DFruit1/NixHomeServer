@@ -23,9 +23,20 @@ let
     ]
     ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
+  mailArchiveUiPath = with pkgs; [
+    acl
+    coreutils
+    file
+    isync
+    notmuch
+    ripmime
+  ];
 in
 {
-  imports = [ ./oauth2-proxy.nix ];
+  imports = [
+    ./oauth2-proxy.nix
+    ./storage.nix
+  ];
 
   options.services.mail-archive-ui = {
     enable = lib.mkEnableOption "the private mail archive UI service";
@@ -129,7 +140,7 @@ in
         "data-pool-layout.service"
         "local-fs.target"
       ];
-      path = [ pkgs.acl pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
+      path = mailArchiveUiPath;
 
       serviceConfig = {
         Type = "simple";

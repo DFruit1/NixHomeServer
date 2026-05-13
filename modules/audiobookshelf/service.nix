@@ -1,13 +1,13 @@
-{ lib, ... }:
+{ config, lib, ... }:
 
 let
   audiobookshelfPort = 13378;
-  dataDir = "/var/lib/audiobookshelf";
+  dataDirName = "audiobookshelf";
 in
 {
   services.audiobookshelf = {
     enable = true;
-    dataDir = "audiobookshelf";
+    dataDir = dataDirName;
     port = audiobookshelfPort;
   };
 
@@ -16,7 +16,7 @@ in
   systemd.services.audiobookshelf = {
     after = [ "data-pool-layout.service" ];
     wants = [ "data-pool-layout.service" ];
-    serviceConfig.WorkingDirectory = lib.mkForce dataDir;
+    serviceConfig.WorkingDirectory = lib.mkForce "/var/lib/${config.services.audiobookshelf.dataDir}";
   };
 
   systemd.tmpfiles.rules = [ ];

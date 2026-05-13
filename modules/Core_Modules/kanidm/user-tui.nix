@@ -1,10 +1,16 @@
 { config, pkgs, self, vars, ... }:
 
+let
+  systemPackages =
+    (with pkgs; [
+      kanidm_1_9
+    ])
+    ++ [
+      self.packages.${pkgs.stdenv.hostPlatform.system}.kanidm-admin
+    ];
+in
 {
-  environment.systemPackages = [
-    pkgs.kanidm_1_9
-    self.packages.${pkgs.stdenv.hostPlatform.system}.kanidm-admin
-  ];
+  environment.systemPackages = systemPackages;
 
   environment.variables = {
     KANIDM_ADMIN_REPO_ROOT = "/etc/nixos";

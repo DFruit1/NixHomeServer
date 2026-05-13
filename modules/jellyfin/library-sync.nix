@@ -6,6 +6,12 @@ let
   dataDbPath = "${dataDir}/data/jellyfin.db";
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
   apiKeyName = "nixos-jellyfin-library-sync-v1";
+  jellyfinLibrarySyncPath = with pkgs; [
+    coreutils
+    curl
+    gnugrep
+    sqlite
+  ];
 in
 {
   systemd.services.jellyfin-library-sync = {
@@ -21,12 +27,7 @@ in
       "jellyfin-library-monitor-v1.service"
       "data-pool-layout.service"
     ];
-    path = with pkgs; [
-      coreutils
-      curl
-      gnugrep
-      sqlite
-    ];
+    path = jellyfinLibrarySyncPath;
     script = ''
       set -euo pipefail
 

@@ -3,6 +3,10 @@
 let
   dataDir = "/var/lib/jellyfin";
   managedDir = "${dataDir}/.nixos-managed";
+  jellyfinLibraryMonitorPath = with pkgs; [
+    coreutils
+    perl
+  ];
 in
 {
   systemd.services.jellyfin-library-monitor-v1 = {
@@ -10,7 +14,7 @@ in
     wantedBy = [ "multi-user.target" ];
     wants = [ "jellyfin.service" ];
     after = [ "jellyfin.service" ];
-    path = [ pkgs.coreutils pkgs.perl ];
+    path = jellyfinLibraryMonitorPath;
     script = ''
       set -euo pipefail
 

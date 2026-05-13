@@ -1,6 +1,29 @@
 { config, pkgs, lib, vars, disko, ... }:
 
 let
+  systemPackages = with pkgs; [
+    age
+    bind
+    cryptsetup
+    gitMinimal
+    gptfdisk
+    hdparm
+    jq
+    lsof
+    lvm2
+    mdadm
+    ncdu
+    nix-output-monitor
+    nvme-cli
+    openssl
+    parted
+    pciutils
+    python3
+    ripgrep
+    smartmontools
+    sqlite
+    usbutils
+  ];
   extraBinaryCacheUrls = map (cache: cache.url) vars.binaryCaches;
   extraBinaryCachePublicKeys = map (cache: cache.publicKey) vars.binaryCaches;
 in
@@ -190,29 +213,7 @@ in
     }
   ];
 
-  environment.systemPackages = with pkgs; [
-    age
-    bind
-    cryptsetup
-    gitMinimal
-    gptfdisk
-    hdparm
-    jq
-    lsof
-    lvm2
-    mdadm
-    ncdu
-    nvme-cli
-    nix-output-monitor
-    parted
-    pciutils
-    openssl
-    python3
-    ripgrep
-    smartmontools
-    sqlite
-    usbutils
-  ];
+  environment.systemPackages = systemPackages;
 
   nix = {
     package = pkgs.nixVersions.latest;

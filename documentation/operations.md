@@ -43,6 +43,17 @@ Use `uploads.sydneybasiniot.org` for large uploads into the authenticated
 user's personal `uploads` folder. Use `files.sydneybasiniot.org` for browsing,
 moving, smaller uploads, and WebDAV access.
 
+Long Copyparty browser uploads are most reliable when the client reaches
+`uploads.sydneybasiniot.org` over LAN or NetBird split DNS instead of the
+Cloudflare tunnel. For very large directory trees, archive the tree first or
+upload in smaller batches; hundreds of thousands of tiny files create hundreds
+of thousands of upload handshakes, so a flaky network period is much more
+visible. The server defaults the browser uploader to one chunk connection and
+8 MiB chunks, with 16 MiB as the UI maximum, so slow paths stay below proxy
+request timeouts. If a transfer has already started with larger client-side
+settings, lower the Copyparty upload chunk size in the browser settings before
+resuming.
+
 Use `passwords.sydneybasiniot.org` only on LAN or NetBird paths. The canonical operator workflow for invites, break-glass local admin handling, and the standard credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 
 Copyparty upload troubleshooting note:
@@ -88,15 +99,6 @@ curl -fsS http://127.0.0.1:9011/healthz | jq .
 ```
 
 Use the dashboard `Sync now` and `Reindex` actions when you need to repair or refresh one mailbox without waiting for the timer. Use `https://emails.sydneybasiniot.org/attachments` to search indexed document attachments, select individual/page/all matching files, and download them as a ZIP for manual upload through the document-management UI.
-
-After deploying the hidden-sync migration, run this verification pass once:
-
-```bash
-sudo systemctl start fileshare-user-root-sync.service
-find /mnt/data/users -path '*/emails/accounts/*' -print
-```
-
-Then open the mail archive UI and run `Sync now` or `Reindex` once for every existing mailbox. The `find` command should produce no output after each mailbox has been touched on the new build.
 
 ## Validation Gate
 

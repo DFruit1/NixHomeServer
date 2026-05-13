@@ -16,16 +16,45 @@ rec {
   dnsMode = "split-horizon"; # Either "split-horizon" or "netbird-only".
   dnsPrivacyMode = "encrypted-only"; # Keep recursive upstream DNS on encrypted transports only.
   lanDnsDomain = "home.arpa";
-  lanDnsHosts = { # LAN-only forward and reverse records served by Unbound.
+  lanDnsHosts = {
+    # LAN-only forward and reverse records served by Unbound.
     "${hostname}" = serverLanIP;
     router = serverLanGateway;
   };
   netIface = "enp34s0";
+  powerManagement = {
+    enable = true;
+    cpuGovernor = "powersave";
+    suspendCalendar = "*-*-* 04:30:00"; # Suspend after normal overnight maintenance timers have started.
+    wakeTime = "06:00";
+    skipIfSshSessions = true;
+    skipIfOtherUserSessions = true;
+    blockerUnits = [
+      "zfs-scrub.service"
+      "btrfs-scrub--.service"
+      "restic-backups-system-state.service"
+      "storage-smart-long.service"
+      "storage-smart-short.service"
+    ];
+    wakeOnLan = {
+      enable = true;
+      interface = netIface;
+      policy = [ "magic" ];
+    };
+    powertopAutoTune = false; # Broad auto-tuning can be too aggressive for a storage server.
+    scsiLinkPolicy = null; # Keep the kernel default for SATA/SCSI link power management.
+    usbAutoSuspend = {
+      enable = false;
+      denyList = [ ];
+    };
+    fstrimCalendar = "Sun *-*-* 19:00:00";
+  };
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
 
   mainDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # Live system SSD by-id value used for runtime protection and monitoring.
-  zfsDataPool = { # Active mirrored ZFS pool metadata. Member IDs are retained for bootstrap-era workflows only.
+  zfsDataPool = {
+    # Active mirrored ZFS pool metadata. Member IDs are retained for bootstrap-era workflows only.
     name = "data";
     mountPoint = "/mnt/data";
     mirrorPairs = [
@@ -39,9 +68,6 @@ rec {
       "shared"
     ];
   };
-
-  coldStorageMountPoint = "/mnt/cold-storage";
-  coldStoragePools = [ ]; # Optional manual-import pools kept outside the default Disko path.
 
   cloudflareTunnelName = "metro";
   binaryCaches = [ ]; # Optional extra binary caches: [{ url = "https://example.cachix.org"; publicKey = "example.cachix.org-1:..."; }]
@@ -179,6 +205,7 @@ rec {
   monitorDomain = "monitor.${domain}";
   photosDomain = "photos.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
   sharePhotosDomain = "sharephotos.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.
+  immichPublicProxyPort = 3300;
   audiobooksDomain = "audiobooks.${domain}";
   vaultwardenDomain = "passwords.${domain}";
   uploadsDomain = "uploads.${domain}";

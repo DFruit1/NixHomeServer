@@ -1,9 +1,14 @@
 { config, pkgs, vars, ... }:
 
 let
-  dataDir = "/var/lib/audiobookshelf";
+  dataDir = "/var/lib/${config.services.audiobookshelf.dataDir}";
   configDir = "${dataDir}/config";
   managedDir = "${dataDir}/.nixos-managed";
+  audiobookshelfOidcBootstrapPath = with pkgs; [
+    curl
+    jq
+    sqlite
+  ];
 in
 {
   systemd.services.audiobookshelf-oidc-bootstrap-v1 = {
@@ -19,11 +24,7 @@ in
       "caddy.service"
       "kanidm.service"
     ];
-    path = with pkgs; [
-      curl
-      jq
-      sqlite
-    ];
+    path = audiobookshelfOidcBootstrapPath;
     script = ''
       set -euo pipefail
 

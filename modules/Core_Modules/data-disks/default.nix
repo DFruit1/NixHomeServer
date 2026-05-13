@@ -3,26 +3,31 @@
 let
   repoRoot = ../../..;
   generateSmartdConfigScript = "${repoRoot}/scripts/generate-smartd-config.sh";
+  systemPackages =
+    (with pkgs; [
+      smartmontools
+    ])
+    ++ [
+      config.boot.zfs.package
+    ];
+  smartdPath = with pkgs; [
+    bash
+    coreutils
+    jq
+    smartmontools
+    util-linux
+    zfs
+  ];
 in
 {
-  environment.systemPackages = [
-    config.boot.zfs.package
-    pkgs.smartmontools
-  ];
+  environment.systemPackages = systemPackages;
 
   systemd.services.smartd = {
     description = "S.M.A.R.T. Daemon";
     wantedBy = [ "multi-user.target" ];
     after = [ "local-fs.target" "zfs.target" ];
     wants = [ "zfs.target" ];
-    path = with pkgs; [
-      bash
-      coreutils
-      jq
-      smartmontools
-      util-linux
-      zfs
-    ];
+    path = smartdPath;
     preStart = ''
       install -d -m 0755 /run/storage-smartd
       ${pkgs.bash}/bin/bash ${generateSmartdConfigScript} >/run/storage-smartd/smartd.conf

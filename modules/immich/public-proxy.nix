@@ -7,7 +7,6 @@ let
   proxyGid = 3001;
   proxySubIdStart = 400000;
   proxySubIdCount = 65536;
-  proxyListenPort = 3300;
   proxyImage = "docker.io/alangrainger/immich-public-proxy@sha256:48c4ea4884b04c77a4a4ec93e190dea6cb7dc1b38acb005a35dd56f68212d85a";
   proxyDnsServer = if vars.dnsMode == "split-horizon" then vars.serverLanIP else vars.nbIP;
   proxyImmichHostIP = vars.nbIP;
@@ -48,7 +47,7 @@ in
     AddHost=${vars.photosDomain}:${proxyImmichHostIP}
     Environment=IMMICH_URL=https://${vars.photosDomain}
     Environment=PUBLIC_BASE_URL=https://${vars.sharePhotosDomain}
-    PublishPort=127.0.0.1:${toString proxyListenPort}:3000
+    PublishPort=127.0.0.1:${toString vars.immichPublicProxyPort}:3000
     DNS=${proxyDnsServer}
     Pull=missing
     NoNewPrivileges=true

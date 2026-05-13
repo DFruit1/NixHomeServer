@@ -28,10 +28,6 @@
           service = "https://127.0.0.1:443";
           originRequest.originServerName = vars.uploadsDomain;
         };
-        "${vars.filebrowserDomain}" = {
-          service = "https://127.0.0.1:443";
-          originRequest.originServerName = vars.filebrowserDomain;
-        };
         "${vars.sharePhotosDomain}" = {
           service = "https://127.0.0.1:443";
           originRequest.originServerName = vars.sharePhotosDomain;

@@ -2,7 +2,12 @@
 
 let
   dataDir = "/var/lib/paperless";
-  paperlessLegacyConsumeDir = "${vars.dataRoot}/media/documents/consume";
+  paperlessOidcEnvPath = with pkgs; [
+    jq
+  ];
+  paperlessPermissionsBootstrapPath = with pkgs; [
+    sqlite
+  ];
   paperlessUserDocumentPermissionCodenames = [
     "view_document"
     "add_document"
@@ -49,52 +54,9 @@ in
 {
   systemd.services =
     {
-      paperless-storage-layout-v1 = {
-        description = "Migrate the Paperless consume directory to the inbox layout";
-        wantedBy = [ "multi-user.target" ];
-        wants = [ "data-pool-layout.service" ];
-        after = [ "data-pool-layout.service" ];
-        before = [
-          "copyparty.service"
-          "paperless-consumer.service"
-          "paperless-scheduler.service"
-          "paperless-task-queue.service"
-          "paperless-web.service"
-        ];
-        path = [ pkgs.coreutils ];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-        script = ''
-          set -euo pipefail
-
-          legacy_dir='${paperlessLegacyConsumeDir}'
-          inbox_dir='${vars.paperlessInboxRoot}'
-          archive_dir='${vars.paperlessArchiveRoot}'
-
-          if [[ -L "$legacy_dir" ]]; then
-            rm -f "$legacy_dir"
-          fi
-
-          if [[ -d "$legacy_dir" ]]; then
-            if [[ -d "$inbox_dir" ]]; then
-              cp -a -n "$legacy_dir"/. "$inbox_dir"/
-              rm -rf "$legacy_dir"
-            else
-              mv "$legacy_dir" "$inbox_dir"
-            fi
-          fi
-
-          install -d -m 2770 -o root -g paperless "$inbox_dir"
-          install -d -m 0750 -o paperless -g paperless "$archive_dir"
-          install -d -m 0700 -o copyparty -g copyparty "$archive_dir/.hist"
-        '';
-      };
-
       paperless-oidc-env = {
         description = "Generate Paperless OIDC environment";
-        path = [ pkgs.jq ];
+        path = paperlessOidcEnvPath;
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
@@ -135,7 +97,7 @@ in
         wantedBy = [ "multi-user.target" ];
         wants = [ "paperless-web.service" ];
         after = [ "paperless-web.service" ];
-        path = [ pkgs.sqlite ];
+        path = paperlessPermissionsBootstrapPath;
         serviceConfig = {
           Type = "oneshot";
           User = "paperless";
@@ -203,19 +165,20 @@ in
       "paperless-scheduler"
       "paperless-task-queue"
       "paperless-web"
-    ] (_: {
-      requires = [
-        "paperless-oidc-env.service"
-        "paperless-storage-layout-v1.service"
-      ];
-      after = [
-        "data-pool-layout.service"
-        "paperless-oidc-env.service"
-        "paperless-storage-layout-v1.service"
-      ];
-      wants = [
-        "data-pool-layout.service"
-        "paperless-storage-layout-v1.service"
-      ];
-    });
+    ]
+      (_: {
+        requires = [
+          "paperless-oidc-env.service"
+          "paperless-storage-layout-v1.service"
+        ];
+        after = [
+          "data-pool-layout.service"
+          "paperless-oidc-env.service"
+          "paperless-storage-layout-v1.service"
+        ];
+        wants = [
+          "data-pool-layout.service"
+          "paperless-storage-layout-v1.service"
+        ];
+      });
 }

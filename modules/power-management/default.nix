@@ -1,29 +1,7 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  cfg = rec {
-    enable = true;
-    cpuGovernor = "powersave";
-    suspendCalendar = "*-*-* 00:00:00";
-    wakeTime = "06:00";
-    skipIfSshSessions = true;
-    skipIfOtherUserSessions = true;
-    blockerUnits = [
-      "zfs-scrub-data.service"
-    ];
-    wakeOnLan = {
-      enable = true;
-      interface = vars.netIface;
-      policy = [ "magic" ];
-    };
-    powertopAutoTune = true;
-    scsiLinkPolicy = "med_power_with_dipm";
-    usbAutoSuspend = {
-      enable = true;
-      denyList = [ ];
-    };
-    fstrimCalendar = "Sun *-*-* 19:00:00";
-  };
+  cfg = vars.powerManagement;
   usbCfg = cfg.usbAutoSuspend;
   kernelPackages = config.boot.kernelPackages;
 
@@ -52,6 +30,25 @@ let
 
   blockerUnits = lib.escapeShellArgs cfg.blockerUnits;
   wakeTime = lib.escapeShellArg cfg.wakeTime;
+  nightlySuspendPath = with pkgs; [
+    coreutils
+    gawk
+    gnugrep
+    procps
+    systemd
+    util-linux
+  ];
+  systemPackages =
+    (with pkgs; [
+      ethtool
+      pciutils
+      powertop
+      usbutils
+    ])
+    ++ [
+      kernelPackages.cpupower
+      kernelPackages.turbostat
+    ];
 in
 lib.mkIf cfg.enable {
   networking.interfaces.${cfg.wakeOnLan.interface}.wakeOnLan = lib.mkIf cfg.wakeOnLan.enable {
@@ -59,14 +56,7 @@ lib.mkIf cfg.enable {
     policy = cfg.wakeOnLan.policy;
   };
 
-  environment.systemPackages = with pkgs; [
-    ethtool
-    pciutils
-    powertop
-    usbutils
-    kernelPackages.cpupower
-    kernelPackages.turbostat
-  ];
+  environment.systemPackages = systemPackages;
 
   powerManagement.cpuFreqGovernor = cfg.cpuGovernor;
   powerManagement.powertop.enable = cfg.powertopAutoTune;
@@ -76,8 +66,7 @@ lib.mkIf cfg.enable {
   services.fstrim.interval = cfg.fstrimCalendar;
   services.udev.extraRules = lib.mkIf usbCfg.enable usbAutoSuspendRules;
 
-  environment.etc."systemd/sleep.conf.d/90-power-management.conf".text = ''
-    [Sleep]
+  systemd.sleep.extraConfig = ''
     AllowSuspend=yes
     AllowHibernation=no
     AllowHybridSleep=no
@@ -87,14 +76,7 @@ lib.mkIf cfg.enable {
 
   systemd.services.power-management-nightly-suspend = {
     description = "Nightly suspend with RTC wake scheduling";
-    path = with pkgs; [
-      coreutils
-      gawk
-      gnugrep
-      procps
-      systemd
-      util-linux
-    ];
+    path = nightlySuspendPath;
     serviceConfig = {
       Type = "oneshot";
     };

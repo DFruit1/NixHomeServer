@@ -17,15 +17,15 @@ EOF
 
 while (($# > 0)); do
   case "$1" in
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "❌ Unknown argument: $1" >&2
-      usage >&2
-      exit 1
-      ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "❌ Unknown argument: $1" >&2
+    usage >&2
+    exit 1
+    ;;
   esac
 done
 
@@ -33,124 +33,131 @@ ensure_tools nix jq
 
 export CORE_CONFIG_SNAPSHOT_JSON
 CORE_CONFIG_SNAPSHOT_JSON="${CORE_CONFIG_SNAPSHOT_JSON:-$(nix_eval_host_snapshot_json '
-  {
-    vars = {
-      serverLanGateway = vars.serverLanGateway;
-      serverLanIP = vars.serverLanIP;
-      serverLanPrefixLength = vars.serverLanPrefixLength;
-      dataRoot = vars.dataRoot;
-      netIface = vars.netIface;
-      photosDomain = vars.photosDomain;
-      sharePhotosDomain = vars.sharePhotosDomain;
-      uploadsDomain = vars.uploadsDomain;
-      filebrowserDomain = vars.filebrowserDomain;
-      vaultwardenDomain = vars.vaultwardenDomain;
-      monitorDomain = vars.monitorDomain;
-      runtimeAccessCanaries = vars.runtimeAccessCanaries;
-      personalKavitaLibraries = vars.personalKavitaLibraries;
-      sharedBooksSubdirs = vars.sharedBooksSubdirs;
-    };
-    config = {
-      services = {
-        caddyEnable = cfg.services.caddy.enable;
-        cloudflaredEnable = cfg.services.cloudflared.enable;
-        unboundEnable = cfg.services.unbound.enable;
-        kanidmEnableServer = cfg.services.kanidm.enableServer;
-        netbirdAutostart = cfg.services.netbird.clients.myNetbirdClient.autoStart;
-      };
-      networking = {
-        gatewayAddress = cfg.networking.defaultGateway.address;
-        lanUseDhcp = cfg.networking.interfaces.${vars.netIface}.useDHCP;
-        lanAddresses = cfg.networking.interfaces.${vars.netIface}.ipv4.addresses;
-        lanAllowedTcpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts;
-        lanAllowedUdpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedUDPPorts;
-        nameservers = cfg.networking.nameservers;
-      };
-      fileSystems = {
-        hasDataMount = cfg.fileSystems ? "/mnt/data";
-        dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
-        persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
-        nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
-        hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
-        hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
-      };
-      restic = {
-        repository = cfg.services.restic.backups.system-state.repository;
-        pathCount = builtins.length cfg.services.restic.backups.system-state.paths;
-      };
-      monitoring = {
-        hasSystemHealthService = cfg.systemd.services ? "system-health-report";
-        hasSystemHealthTimer = cfg.systemd.timers ? "system-health-report";
-        hasStorageSmartShortService = cfg.systemd.services ? "storage-smart-short";
-        hasStorageSmartLongService = cfg.systemd.services ? "storage-smart-long";
-        hasStorageSmartShortTimer = cfg.systemd.timers ? "storage-smart-short";
-        hasStorageSmartLongTimer = cfg.systemd.timers ? "storage-smart-long";
-        hasSmartdService = cfg.systemd.services ? "smartd";
-      };
-      storage = {
-        zfsImportScript = cfg.systemd.services.zfs-import-data.script;
-      };
-      apps = {
-        caddyHostNames = builtins.attrNames cfg.services.caddy.virtualHosts;
-        caddyHostCount = builtins.length (builtins.attrNames cfg.services.caddy.virtualHosts);
-        cloudflaredIngressHostNames = builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
-        cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
-        oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
-        provisionGroupNames = builtins.attrNames cfg.services.kanidm.provision.groups;
-        provisionPersonNames = builtins.attrNames cfg.services.kanidm.provision.persons;
-        provisionPersons = cfg.services.kanidm.provision.persons;
-        ageSecretNames = builtins.attrNames cfg.age.secrets;
-        mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
-        mailArchiveVisibleMirrorReadGroup = cfg.services.mail-archive-ui.visibleMirrorReadGroup;
-        hasMailArchiveOauth2ProxyService = cfg.systemd.services ? "mail-archive-oauth2-proxy";
-        mailArchiveOauth2ProxyExecStartPre =
-          cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [ ];
-        mailArchiveUiMountCondition =
-          cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
-        mailArchiveUiEnvironment = cfg.services.mail-archive-ui.environment or { };
-        mailArchiveUiReadWritePaths =
-          cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
-        mailArchiveUiPath =
-          map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
-        mailArchiveSyncPath =
-          map (package: lib.getName package) (cfg.systemd.services."mail-archive-sync".path or [ ]);
-        hasCopypartyService = cfg.systemd.services ? "copyparty";
-        copypartyServiceSupplementaryGroups =
-          cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
-        hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
-        hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
-        filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
-        copypartyGlobalExtraConfig = cfg.services.copyparty.globalExtraConfig;
-        copypartyRuntimeConfigSyncScript = cfg.systemd.services.copyparty-runtime-config-sync.script;
-        usersGroupMembers = cfg.users.groups.users.members or [ ];
-        hasImmichServerService = cfg.systemd.services ? "immich-server";
-        hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
-        hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
-        paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
-        paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
-        paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
-        hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
-        oauth2ProxyExecStart = cfg.systemd.services.oauth2-proxy.serviceConfig.ExecStart;
-        hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
-        hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
-        hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
-        hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
-        hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
-        hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
-        hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
-        hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
-        hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
-        hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
-        hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
-        jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
-        jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
-        hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
-        hasGlancesService = cfg.systemd.services ? "glances";
-        hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
-        hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
-      };
-    };
-  }
+{
+vars = {
+serverLanGateway = vars.serverLanGateway;
+serverLanIP = vars.serverLanIP;
+serverLanPrefixLength = vars.serverLanPrefixLength;
+dataRoot = vars.dataRoot;
+netIface = vars.netIface;
+photosDomain = vars.photosDomain;
+sharePhotosDomain = vars.sharePhotosDomain;
+uploadsDomain = vars.uploadsDomain;
+filebrowserDomain = vars.filebrowserDomain;
+vaultwardenDomain = vars.vaultwardenDomain;
+monitorDomain = vars.monitorDomain;
+runtimeAccessCanaries = vars.runtimeAccessCanaries;
+personalKavitaLibraries = vars.personalKavitaLibraries;
+sharedBooksSubdirs = vars.sharedBooksSubdirs;
+};
+config = {
+services = {
+caddyEnable = cfg.services.caddy.enable;
+cloudflaredEnable = cfg.services.cloudflared.enable;
+unboundEnable = cfg.services.unbound.enable;
+kanidmEnableServer = cfg.services.kanidm.enableServer;
+netbirdAutostart = cfg.services.netbird.clients.myNetbirdClient.autoStart;
+};
+networking = {
+gatewayAddress = cfg.networking.defaultGateway.address;
+lanUseDhcp = cfg.networking.interfaces.${vars.netIface}.useDHCP;
+lanAddresses = cfg.networking.interfaces.${vars.netIface}.ipv4.addresses;
+lanAllowedTcpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts;
+lanAllowedUdpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedUDPPorts;
+nameservers = cfg.networking.nameservers;
+};
+fileSystems = {
+hasDataMount = cfg.fileSystems ? "/mnt/data";
+dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
+persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
+nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
+hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
+hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
+};
+restic = {
+repository = cfg.services.restic.backups.system-state.repository;
+pathCount = builtins.length cfg.services.restic.backups.system-state.paths;
+};
+monitoring = {
+hasSystemHealthService = cfg.systemd.services ? "system-health-report";
+hasSystemHealthTimer = cfg.systemd.timers ? "system-health-report";
+hasStorageSmartShortService = cfg.systemd.services ? "storage-smart-short";
+hasStorageSmartLongService = cfg.systemd.services ? "storage-smart-long";
+hasStorageSmartShortTimer = cfg.systemd.timers ? "storage-smart-short";
+hasStorageSmartLongTimer = cfg.systemd.timers ? "storage-smart-long";
+hasSmartdService = cfg.systemd.services ? "smartd";
+};
+storage = {
+zfsImportScript = cfg.systemd.services.zfs-import-data.script;
+};
+apps = {
+caddyHostNames = builtins.attrNames cfg.services.caddy.virtualHosts;
+caddyHostCount = builtins.length (builtins.attrNames cfg.services.caddy.virtualHosts);
+cloudflaredIngressHostNames = builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
+cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
+oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
+provisionGroupNames = builtins.attrNames cfg.services.kanidm.provision.groups;
+provisionPersonNames = builtins.attrNames cfg.services.kanidm.provision.persons;
+provisionPersons = cfg.services.kanidm.provision.persons;
+ageSecretNames = builtins.attrNames cfg.age.secrets;
+mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
+mailArchiveVisibleMirrorReadGroup = cfg.services.mail-archive-ui.visibleMirrorReadGroup;
+hasMailArchiveOauth2ProxyService = cfg.systemd.services ? "mail-archive-oauth2-proxy";
+mailArchiveOauth2ProxyExecStartPre =
+cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [ ];
+mailArchiveUiMountCondition =
+cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
+mailArchiveUiEnvironment = cfg.services.mail-archive-ui.environment or { };
+mailArchiveUiReadWritePaths =
+cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
+mailArchiveUiPath =
+map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
+mailArchiveSyncPath =
+map (package: lib.getName package) (cfg.systemd.services."mail-archive-sync".path or [ ]);
+hasCopypartyService = cfg.systemd.services ? "copyparty";
+hasCopypartyRuntimeConfigSync = cfg.systemd.services ? "copyparty-runtime-config-sync";
+copypartyServiceSupplementaryGroups =
+cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
+copypartyServiceBindPaths =
+cfg.systemd.services.copyparty.serviceConfig.BindPaths or [ ];
+hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
+hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
+filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
+copypartySettings = cfg.services.copyparty.settings;
+copypartyVolumes = cfg.services.copyparty.volumes;
+copypartyPreStart = cfg.systemd.services.copyparty.preStart;
+usersGroupMembers = cfg.users.groups.users.members or [ ];
+hasImmichServerService = cfg.systemd.services ? "immich-server";
+hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
+hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
+paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
+paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
+paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
+hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
+oauth2ProxyExecStart = cfg.systemd.services.oauth2-proxy.serviceConfig.ExecStart;
+hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
+hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
+hasAudiobookshelfLibraryWatchConfig = cfg.systemd.services ? "audiobookshelf-library-watch-config-v1";
+audiobookshelfLibraryWatchConfigScript =
+cfg.systemd.services."audiobookshelf-library-watch-config-v1".script or "";
+hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
+hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
+hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
+hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
+hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
+hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
+hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
+hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
+hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
+jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
+jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
+hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
+hasGlancesService = cfg.systemd.services ? "glances";
+hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
+hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
+};
+};
+}
 ')}"
 
 snapshot_query() {
@@ -291,6 +298,18 @@ require_match modules/Core_Modules/storage/fileshare-user-roots.nix '\.internal-
   "User email roots must provision a hidden internal sync tree."
 require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_noaccess_acl filebrowser-quantum "\$root/emails/\.internal-sync"' \
   "FileBrowser Quantum must not be able to traverse the hidden internal email sync tree."
+forbid_match modules/audiobookshelf/storage.nix 'audiobookshelf-user-storage-acl-sync-v1' \
+  "Audiobookshelf per-user ACL convergence must stay centralized in fileshare-user-root-sync."
+forbid_match modules/filebrowser-quantum/storage.nix 'filebrowser-quantum-user-storage-acl-sync-v1' \
+  "FileBrowser Quantum per-user ACL convergence must stay centralized in fileshare-user-root-sync."
+forbid_match modules/immich/storage.nix 'immich-user-storage-acl-sync-v1' \
+  "Immich per-user ACL convergence must stay centralized in fileshare-user-root-sync."
+forbid_match modules/kavita/storage.nix 'kavita-media-acl-sync-v1' \
+  "Kavita per-user ACL convergence must stay centralized in fileshare-user-root-sync."
+forbid_match modules/mail-archive-ui/storage.nix 'mail-archive-ui-user-storage-acl-sync-v1' \
+  "Mail Archive UI per-user ACL convergence must stay centralized in fileshare-user-root-sync."
+forbid_match modules/paperless/storage.nix 'paperless-user-storage-acl-sync-v1' \
+  "Paperless per-user ACL convergence must stay centralized in fileshare-user-root-sync."
 require_match scripts/helpers/runtime-health-common.sh 'allowedGroups = \[ "user-files" "shared-files-read-write-access" \];' \
   "Runtime health inventory must keep FileBrowser access scoped to file access groups only."
 forbid_match modules/filebrowser-quantum/default.nix 'ensure_group_membership "mail-archive-users"' \
@@ -318,6 +337,11 @@ if ! jq -e 'index("users") != null' >/dev/null <<<"$copyparty_service_supplement
   echo "   SupplementaryGroups: $copyparty_service_supplementary_groups"
   exit 1
 fi
+if jq -e 'index("mail-archive-ui") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
+  echo "❌ Copyparty must not keep legacy mail-archive-ui supplementary access."
+  echo "   SupplementaryGroups: $copyparty_service_supplementary_groups"
+  exit 1
+fi
 
 users_group_members="$(snapshot_query '.config.apps.usersGroupMembers')"
 if ! jq -e 'index("copyparty") != null' >/dev/null <<<"$users_group_members"; then
@@ -336,16 +360,23 @@ require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGro
 assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiring must remain present."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--upstream-timeout='30m0s'" \
   "Uploads OAuth2 Proxy must allow long Copyparty upload handshakes and chunk posts."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--cookie-expire='336h0m0s'" \
+  "Uploads OAuth2 Proxy must keep browser upload sessions valid beyond multi-day transfer estimates."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--session-cookie-minimal=true" \
   "Uploads OAuth2 Proxy should keep repeated upload request cookies lean."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--skip-auth-preflight=true" \
   "Uploads OAuth2 Proxy should not force auth redirects for upload preflight requests."
-assert_json_true '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf settled scan service must remain present."
-assert_json_true '.config.apps.hasAudiobookshelfLibrarySyncTimer' "Audiobookshelf overnight scan timer must remain present."
-assert_json_false '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf recursive watcher service must remain absent."
+assert_json_false '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf custom scan service must remain absent."
+assert_json_false '.config.apps.hasAudiobookshelfLibrarySyncTimer' "Audiobookshelf custom scan timer must remain absent."
+assert_json_true '.config.apps.hasAudiobookshelfLibraryWatchConfig' "Audiobookshelf native watcher convergence must remain present."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibraryWatchConfigScript' | jq -r '.')") 'scannerDisableWatcher = false' \
+  "Audiobookshelf must keep the global native watcher enabled."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibraryWatchConfigScript' | jq -r '.')") 'disableWatcher = false' \
+  "Audiobookshelf must keep per-library native watchers enabled."
+assert_json_false '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf must not use a separate recursive watcher service."
 assert_json_false '.config.apps.hasKavitaLibrarySync' "Kavita settled scan service must remain absent."
 assert_json_false '.config.apps.hasKavitaLibrarySyncTimer' "Kavita overnight scan timer must remain absent."
-assert_json_true '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence service must remain present."
+assert_json_false '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence must stay centralized in fileshare-user-root-sync."
 assert_json_false '.config.apps.hasKavitaLibraryWatch' "Kavita recursive watcher service must remain absent."
 assert_json_true '.config.apps.hasKiwixLibraryWatch' "Kiwix watcher service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryMonitor' "Jellyfin library monitor config service must remain present."
@@ -355,38 +386,55 @@ assert_json_true '.config.apps.hasGlancesService' "Glances service wiring must r
 assert_json_true '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Proxy wiring must remain present."
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
 
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/\$\{u\}\]' \
-  "Copyparty must map each authenticated user to their own upload-root volume."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/upload/\$\{u\}\]' \
-  "Copyparty must not require a per-user upload subpath on the uploads domain."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") 'rwmda:' \
-  "Copyparty must not expose admin controls on the uploads domain."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '@domain_admins' \
-  "Copyparty must not grant cross-user uploader access through domain_admins."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/shared/' \
-  "Copyparty must retire shared browsing volumes."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") '\[/books/' \
-  "Copyparty must retire book browsing volumes."
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/\$\{u\}\]' \
-  "Copyparty runtime config sync must emit per-user upload-root volumes."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '\[/upload/\$\{u\}\]' \
-  "Copyparty runtime config sync must not require a per-user upload subpath."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'rwmda:' \
-  "Copyparty runtime config sync must not expose admin controls on the uploads domain."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '@domain_admins' \
-  "Copyparty runtime config sync must not grant cross-user uploader access through domain_admins."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/files' \
-  "Copyparty runtime config sync must retire legacy per-user file volumes."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/audiobooks' \
-  "Copyparty runtime config sync must retire legacy per-user audiobook volumes."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") '/\$username/emails' \
-  "Copyparty runtime config sync must retire legacy per-user email volumes."
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyRuntimeConfigSyncScript' | jq -r '.')") 'copyparty -c .+ --exit cfg' \
-  "Copyparty runtime config sync must validate the rendered config before startup."
-forbid_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") 'chmod_d: 2770' \
-  "Copyparty must not request setgid mkdir modes while the systemd unit uses RestrictSUIDSGID."
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyGlobalExtraConfig' | jq -r '.')") 'chmod_d: 770' \
+assert_json_false '.config.apps.hasCopypartyRuntimeConfigSync' "Copyparty must use the native module config renderer, not a duplicate runtime config sync service."
+copyparty_volumes="$(snapshot_query '.config.apps.copypartyVolumes')"
+if ! jq -e '
+has("/${u}") and
+(.["/${u}"].path | test("/\\$\\{u\\}/uploads$"))
+' >/dev/null <<<"$copyparty_volumes"; then
+  echo "❌ Copyparty must map each authenticated user to their own upload-root volume."
+  echo "   volumes: $copyparty_volumes"
+  exit 1
+fi
+if ! jq -e '.["/${u}"].access.rwmd == "${u}"' >/dev/null <<<"$copyparty_volumes"; then
+  echo "❌ Copyparty must grant upload-root access only to the matching authenticated user."
+  echo "   volumes: $copyparty_volumes"
+  exit 1
+fi
+require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.chmod_d')" '770' \
   "Copyparty should let the setgid upload parent directory apply inherited group ownership."
+require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.chmod_f')" '660' \
+  "Copyparty should keep uploaded files private to owner/group."
+require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.fk')" '4' \
+  "Copyparty must keep filekeys enabled for upload-root files."
+require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.e2d')" 'true' \
+  "Copyparty must keep the upload database enabled."
+copyparty_volume_json="$(jq -c '.' <<<"$copyparty_volumes")"
+forbid_match <(printf '%s\n' "$copyparty_volume_json") '/upload/\$\{u\}' \
+  "Copyparty must not require a per-user upload subpath on the uploads domain."
+forbid_match <(printf '%s\n' "$copyparty_volume_json") 'rwmda' \
+  "Copyparty must not expose admin controls on the uploads domain."
+forbid_match <(printf '%s\n' "$copyparty_volume_json") '@domain_admins' \
+  "Copyparty must not grant cross-user uploader access through domain_admins."
+forbid_match <(printf '%s\n' "$copyparty_volume_json") '/shared/' \
+  "Copyparty must retire shared browsing volumes."
+forbid_match <(printf '%s\n' "$copyparty_volume_json") '/books/' \
+  "Copyparty must retire book browsing volumes."
+require_json_equal "$(snapshot_query '.config.apps.copypartySettings."s-tbody"')" '0' \
+  "Copyparty runtime config must not apply a duplicate body timeout behind the reverse proxy."
+require_json_equal "$(snapshot_query '.config.apps.copypartySettings."snap-drop"')" '10080' \
+  "Copyparty runtime config must retain resumable upload state for week-long upload attempts."
+require_json_equal "$(snapshot_query '.config.apps.copypartySettings.u2j')" '1' \
+  "Copyparty runtime config must default the browser uploader to one chunk connection on slow paths."
+require_json_equal "$(snapshot_query '.config.apps.copypartySettings.u2sz')" '"1,8,16"' \
+  "Copyparty runtime config must default browser uploads to proxy-safe chunk sizes."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyPreStart' | jq -r '.')") 'copyparty -c /run/copyparty/copyparty.conf --exit cfg' \
+  "Copyparty must validate the native module-rendered config before startup."
+copyparty_bind_paths="$(snapshot_query '.config.apps.copypartyServiceBindPaths')"
+forbid_match <(printf '%s\n' "$copyparty_bind_paths") '/shared' \
+  "Copyparty must not keep legacy shared-root filesystem exposure."
+forbid_match <(printf '%s\n' "$copyparty_bind_paths") '/kiwix' \
+  "Copyparty must not keep legacy Kiwix-library filesystem exposure."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_document" \
   "Paperless permission bootstrap must grant document view access to paperless-users."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "add_document" \
@@ -480,8 +528,8 @@ if jq -e --arg photos_host "$(snapshot_query '.vars.photosDomain' | jq -r '.')" 
   exit 1
 fi
 
-if ! jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '.')" 'index($file_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
-  echo "❌ Cloudflared must publish the FileBrowser Quantum hostname."
+if jq -e --arg file_host "$(snapshot_query '.vars.filebrowserDomain' | jq -r '.')" 'index($file_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
+  echo "❌ Cloudflared must not publish the private FileBrowser Quantum hostname."
   echo "   ingress hosts: $cloudflared_ingress_host_names"
   exit 1
 fi
@@ -538,16 +586,16 @@ if ! jq -e 'index("canary-files") != null' >/dev/null <<<"$provision_person_name
 fi
 
 if ! jq -e '.["canary-files"].groups == [
-  "users",
-  "user-files",
-  "shared-files-read-write-access",
-  "paperless-users",
-  "immich-users",
-  "audiobookshelf-users",
-  "kavita-users",
-  "glances-users",
-  "mail-archive-users",
-  "metube-users"
+"users",
+"user-files",
+"shared-files-read-write-access",
+"paperless-users",
+"immich-users",
+"audiobookshelf-users",
+"kavita-users",
+"glances-users",
+"mail-archive-users",
+"metube-users"
 ]' >/dev/null <<<"$runtime_canaries"; then
   echo "❌ canary-files must carry all non-admin user-facing access groups."
   echo "   runtimeAccessCanaries: $runtime_canaries"
@@ -555,10 +603,10 @@ if ! jq -e '.["canary-files"].groups == [
 fi
 
 if jq -e '
-  to_entries
-  | map(.value.groups // [])
-  | flatten
-  | any(. == "app-admin" or . == "domain_admins" or . == "system_admins" or . == "idm_admins" or test("(^|[-_])admins?($|[-_])"))
+to_entries
+| map(.value.groups // [])
+| flatten
+| any(. == "app-admin" or . == "domain_admins" or . == "system_admins" or . == "idm_admins" or test("(^|[-_])admins?($|[-_])"))
 ' >/dev/null <<<"$runtime_canaries"; then
   echo "❌ Runtime canaries must never be granted admin groups."
   echo "   runtimeAccessCanaries: $runtime_canaries"

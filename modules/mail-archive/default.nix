@@ -17,12 +17,21 @@ let
     ]
     ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
+  mailArchiveSyncPath = with pkgs; [
+    acl
+    coreutils
+    file
+    isync
+    notmuch
+    ripmime
+  ];
+  systemPackages = with pkgs; [
+    isync
+    notmuch
+  ];
 in
 {
-  environment.systemPackages = [
-    pkgs.isync
-    pkgs.notmuch
-  ];
+  environment.systemPackages = systemPackages;
 
   systemd.services.mail-archive-sync = lib.mkIf cfg.enable {
     description = "Synchronize mail archive UI accounts and refresh notmuch indexes";
@@ -50,7 +59,7 @@ in
         cfg.lockDir
       ];
     };
-    path = [ pkgs.acl pkgs.isync pkgs.notmuch pkgs.coreutils pkgs.file pkgs.ripmime ];
+    path = mailArchiveSyncPath;
   };
 
   systemd.timers.mail-archive-sync = lib.mkIf cfg.enable {

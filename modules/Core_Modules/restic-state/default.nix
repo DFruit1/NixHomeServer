@@ -6,17 +6,26 @@ let
   backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
   backupTargetCommand = pkgs.writeShellApplication {
     name = "manage-backup-target";
-    runtimeInputs = [
-      pkgs.coreutils
-      pkgs.jq
-      pkgs.nix
-      pkgs.util-linux
+    runtimeInputs = with pkgs; [
+      coreutils
+      jq
+      nix
+      util-linux
     ];
     text = ''
       export BACKUP_TARGET_REPO_ROOT=${repoRoot}
       exec ${pkgs.bash}/bin/bash ${backupTargetScript} "$@"
     '';
   };
+  fsPackages = with pkgs; [
+    exfatprogs
+  ];
+  systemPackages = [
+    backupTargetCommand
+  ];
+  resticBackupPath = [
+    backupTargetCommand
+  ];
   selectionStateDir = "/persist/appdata/.nixos-managed/system-state-backup-device-selection";
   selectionFile = "${selectionStateDir}/selected-device";
   mountPoint = "/mnt/backup-system-state";
@@ -219,8 +228,8 @@ let
 in
 {
   boot.supportedFilesystems = [ "exfat" ];
-  system.fsPackages = [ pkgs.exfatprogs ];
-  environment.systemPackages = [ backupTargetCommand ];
+  system.fsPackages = fsPackages;
+  environment.systemPackages = systemPackages;
 
   systemd.tmpfiles.rules = [
     "d ${mountPoint} 0700 root root -"
@@ -469,9 +478,7 @@ in
   systemd.services.restic-backups-system-state = {
     wants = [ "local-fs.target" "data-pool-layout.service" ];
     after = [ "local-fs.target" "data-pool-layout.service" ];
-    path = [
-      backupTargetCommand
-    ];
+    path = resticBackupPath;
     preStart = ''
       ${lib.getExe backupTargetCommand} mount
     '';

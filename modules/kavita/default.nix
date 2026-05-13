@@ -12,10 +12,19 @@ let
       ];
     });
   });
-  sharedKavitaDirs = map (library: "${vars.sharedBooksRoot}/${library.dir}") vars.sharedKavitaLibraries;
-  userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
+  kavitaLibraryWatchConfigPath = with pkgs; [
+    sqlite
+  ];
+  kavitaOidcBootstrapPath = with pkgs; [
+    jq
+    sqlite
+  ];
 in
 {
+  imports = [
+    ./storage.nix
+  ];
+
   services.kavita = {
     enable = true;
     package = kavitaPackage;
@@ -46,18 +55,11 @@ in
     };
   };
 
-  users.users.kavita.extraGroups = lib.mkAfter [ "kavita-media" ];
-
   systemd.services.kavita.preStart = lib.mkAfter ''
     ${pkgs.replace-secret}/bin/replace-secret '@OIDC_SECRET@' \
       ${config.age.secrets.kavitaClientSecret.path} \
       '${dataDir}/config/appsettings.json'
   '';
-
-  systemd.services.kavita = {
-    after = [ "data-pool-layout.service" ];
-    wants = [ "data-pool-layout.service" ];
-  };
 
   systemd.services.kavita-oidc-bootstrap = {
     description = "Synchronize Kavita OIDC settings";
@@ -72,10 +74,7 @@ in
       "caddy.service"
       "kanidm.service"
     ];
-    path = with pkgs; [
-      jq
-      sqlite
-    ];
+    path = kavitaOidcBootstrapPath;
     script = ''
       set -euo pipefail
 
@@ -170,7 +169,7 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "kavita.service" ];
     wants = [ "kavita.service" ];
-    path = with pkgs; [ sqlite ];
+    path = kavitaLibraryWatchConfigPath;
     script = ''
       set -euo pipefail
 
@@ -210,69 +209,6 @@ in
       Restart = "on-failure";
       RestartSec = "5s";
     };
-  };
-
-  systemd.services.kavita-media-acl-sync-v1 = {
-    description = "Converge Kavita media ACLs on book roots";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "data-pool-layout.service"
-      "fileshare-user-root-sync.service"
-    ];
-    wants = [
-      "data-pool-layout.service"
-      "fileshare-user-root-sync.service"
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      Restart = "on-failure";
-      RestartSec = "5s";
-    };
-    path = with pkgs; [
-      acl
-      coreutils
-      findutils
-    ];
-    script = ''
-      set -euo pipefail
-
-      apply_recursive_acl() {
-        local access_spec="$1"
-        local default_spec="$2"
-        shift
-        shift
-
-        for path in "$@"; do
-          [[ -d "$path" ]] || continue
-          ${pkgs.acl}/bin/setfacl -R -m "$access_spec" "$path"
-          ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl -m "$default_spec" '{}' +
-        done
-      }
-
-      apply_writable_acl() {
-        local group_name="$1"
-        shift
-
-        apply_recursive_acl "g:''${group_name}:rwX" "d:g:''${group_name}:rwx" "$@"
-      }
-
-      declare -a book_roots=(
-        ${lib.concatMapStringsSep "\n        " (path: ''"${path}"'') sharedKavitaDirs}
-      )
-
-      if [[ -d ${lib.escapeShellArg vars.usersRoot} ]]; then
-        while IFS= read -r books_root; do
-          book_roots+=("$books_root")
-          for name in ${userBooksSubdirs}; do
-            book_roots+=("$books_root/$name")
-          done
-        done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name books -print | ${pkgs.coreutils}/bin/sort)
-      fi
-
-      if ((''${#book_roots[@]} > 0)); then
-        apply_writable_acl kavita-media "''${book_roots[@]}"
-      fi
-    '';
   };
 
 }

@@ -5,6 +5,11 @@ let
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";
   oauth2ProxyKeyFilePath = "${oauth2ProxyRuntimeDir}/oauth2-proxy.env";
   oauth2ProxyClientSecretPath = "${oauth2ProxyRuntimeDir}/client-secret";
+  oauth2ProxySecretMaterializePath = with pkgs; [
+    coreutils
+    gnugrep
+    gnused
+  ];
 in
 {
   services.oauth2-proxy = {
@@ -21,6 +26,7 @@ in
     keyFile = oauth2ProxyKeyFilePath;
     reverseProxy = true;
     setXauthrequest = true;
+    cookie.expire = "336h0m0s";
     extraConfig = {
       "allowed-group" = [ "user-files" ];
       "code-challenge-method" = "S256";
@@ -68,7 +74,7 @@ in
       chown root:oauth2-proxy ${oauth2ProxyKeyFilePath}
       chmod 0440 ${oauth2ProxyKeyFilePath}
     '';
-    path = [ pkgs.coreutils pkgs.gnugrep pkgs.gnused ];
+    path = oauth2ProxySecretMaterializePath;
   };
 
   systemd.services.oauth2-proxy = {

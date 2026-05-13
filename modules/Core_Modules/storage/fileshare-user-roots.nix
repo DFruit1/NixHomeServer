@@ -6,7 +6,14 @@ let
   userFilesGroup = "user-files";
   userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
-  kavitaWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
+  userBookWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
+  fileshareUserRootSyncPath = with pkgs; [
+    acl
+    coreutils
+    findutils
+    jq
+    kanidm_1_9
+  ];
 
   prepareUserRoot = pkgs.writeShellScript "prepare-fileshare-user-root" ''
     set -euo pipefail
@@ -30,14 +37,7 @@ let
       chmod 2770 "$root/books/$name"
     done
 
-    if [[ -L "$emails" ]]; then
-      legacy_symlink_target="$(readlink -f "$emails" || true)"
-      rm -f "$emails"
-      install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails"
-      if [[ -n "$legacy_symlink_target" && -d "$legacy_symlink_target" ]]; then
-        ${pkgs.rsync}/bin/rsync -a --ignore-existing "$legacy_symlink_target"/ "$emails"/
-      fi
-    elif [[ -e "$emails" ]]; then
+    if [[ -e "$emails" ]]; then
       [[ -d "$emails" ]] || {
         echo "Refusing to replace existing non-directory path: $emails" >&2
         exit 1
@@ -78,15 +78,15 @@ let
       done
     }
 
+    apply_owner_group_writable_acl() {
+      apply_recursive_acl "g::rwX" "d:g::rwx" "$@"
+    }
+
     apply_writable_acl() {
       local group_name="$1"
       shift
 
       apply_recursive_acl "g:''${group_name}:rwX" "d:g:''${group_name}:rwx" "$@"
-    }
-
-    apply_owner_group_writable_acl() {
-      apply_recursive_acl "g::rwX" "d:g::rwx" "$@"
     }
 
     apply_readonly_acl() {
@@ -110,18 +110,18 @@ let
       "$root/photos" \
       "$root/audiobooks" \
       "$root/books" \
-      ${kavitaWritablePaths}
+      ${userBookWritablePaths}
 
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
     apply_writable_acl mail-archive-ui "$root/files"
     apply_writable_acl kavita-media \
       "$root/books" \
-      ${kavitaWritablePaths}
+      ${userBookWritablePaths}
 
     # FileBrowser may browse and download only the visible hard-linked .eml
-    # mirror. The mail archive app grants read ACLs to those visible file inodes during
-    # mirror rebuild, while this deny rule keeps the hidden sync payload
-    # non-traversable even though the mirror and payload share hard-link inodes.
+    # mirror. The mail archive app grants read ACLs to those visible file
+    # inodes during mirror rebuild, while this deny rule keeps the hidden
+    # sync payload non-traversable.
     apply_readonly_acl filebrowser-quantum "$root/emails"
     apply_noaccess_acl filebrowser-quantum "$root/emails/.internal-sync"
     apply_readonly_acl immich "$root/photos"
@@ -173,14 +173,7 @@ in
       "copyparty.service"
     ];
     serviceConfig.Type = "oneshot";
-    path = [
-      pkgs.acl
-      pkgs.coreutils
-      pkgs.findutils
-      pkgs.jq
-      pkgs.kanidm_1_9
-      pkgs.rsync
-    ];
+    path = fileshareUserRootSyncPath;
     script = ''
       ${syncFileshareUserRoots}
     '';

@@ -7,6 +7,16 @@ let
   accessSyncStamp = "${managedDir}/last-sync.json";
   localAdminUsername = "local-admin";
   filebrowserPackage = pkgsUnstable."filebrowser-quantum";
+  filebrowserQuantumPath = with pkgs; [
+    coreutils
+    replace-secret
+  ];
+  filebrowserQuantumAccessSyncPath = with pkgs; [
+    coreutils
+    curl
+    gnused
+    jq
+  ];
   customCssFile = pkgs.writeText "filebrowser-quantum-custom.css" ''
     #sidebar .credits {
       display: none !important;
@@ -103,6 +113,10 @@ let
   };
 in
 {
+  imports = [
+    ./storage.nix
+  ];
+
   users.groups.filebrowser-quantum = { };
   users.users.filebrowser-quantum = {
     isSystemUser = true;
@@ -135,10 +149,7 @@ in
       "fileshare-user-root-sync.service"
       "network-online.target"
     ];
-    path = with pkgs; [
-      coreutils
-      replace-secret
-    ];
+    path = filebrowserQuantumPath;
     preStart = ''
       install -d -m 0750 -o filebrowser-quantum -g filebrowser-quantum '${managedDir}'
       cp ${configTemplate} '${configFile}'
@@ -210,12 +221,7 @@ in
       "data-pool-layout.service"
       "kanidm.service"
     ];
-    path = with pkgs; [
-      curl
-      coreutils
-      gnused
-      jq
-    ];
+    path = filebrowserQuantumAccessSyncPath;
     script = ''
       set -euo pipefail
 

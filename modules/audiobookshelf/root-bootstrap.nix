@@ -1,9 +1,13 @@
 { config, pkgs, vars, ... }:
 
 let
-  audiobookshelfPort = 13378;
-  dataDir = "/var/lib/audiobookshelf";
+  audiobookshelfPort = config.services.audiobookshelf.port;
+  dataDir = "/var/lib/${config.services.audiobookshelf.dataDir}";
   managedDir = "${dataDir}/.nixos-managed";
+  audiobookshelfRootBootstrapPath = with pkgs; [
+    curl
+    jq
+  ];
 in
 {
   systemd.services.audiobookshelf-root-bootstrap-v1 = {
@@ -17,10 +21,7 @@ in
       "audiobookshelf.service"
       "audiobookshelf-oidc-bootstrap-v1.service"
     ];
-    path = with pkgs; [
-      curl
-      jq
-    ];
+    path = audiobookshelfRootBootstrapPath;
     script = ''
       set -euo pipefail
 

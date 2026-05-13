@@ -5,16 +5,15 @@ let
   reportScript = "${repoRoot}/scripts/generate-system-health-report.sh";
   alertSendScript = "${repoRoot}/scripts/helpers/send-storage-health-alert.sh";
   smartSweepScript = "${repoRoot}/scripts/run-storage-smart-sweep.sh";
-in
-{
-  assertions = [
-    {
-      assertion = config.age.secrets ? storageAlertWebhookUrl;
-      message = "Storage monitoring requires age.secrets.storageAlertWebhookUrl to exist, even if it is still a placeholder.";
-    }
+  smartSweepPath = with pkgs; [
+    bash
+    coreutils
+    jq
+    smartmontools
+    util-linux
+    zfs
   ];
-
-  environment.systemPackages = with pkgs; [
+  systemHealthReportPath = with pkgs; [
     bash
     bind
     coreutils
@@ -31,6 +30,17 @@ in
     util-linux
     zfs
   ];
+  systemPackages = systemHealthReportPath;
+in
+{
+  assertions = [
+    {
+      assertion = config.age.secrets ? storageAlertWebhookUrl;
+      message = "Storage monitoring requires age.secrets.storageAlertWebhookUrl to exist, even if it is still a placeholder.";
+    }
+  ];
+
+  environment.systemPackages = systemPackages;
 
   systemd.tmpfiles.rules = [
     "d /var/lib/system-health-monitoring 0750 root root -"
@@ -41,14 +51,7 @@ in
   systemd.services = {
     storage-smart-short = {
       description = "Run SMART short self-test sweep across monitored storage";
-      path = with pkgs; [
-        bash
-        coreutils
-        jq
-        smartmontools
-        util-linux
-        zfs
-      ];
+      path = smartSweepPath;
       script = ''
         exec ${pkgs.bash}/bin/bash ${smartSweepScript} --kind short
       '';
@@ -57,14 +60,7 @@ in
 
     storage-smart-long = {
       description = "Run SMART long self-test sweep across monitored storage";
-      path = with pkgs; [
-        bash
-        coreutils
-        jq
-        smartmontools
-        util-linux
-        zfs
-      ];
+      path = smartSweepPath;
       script = ''
         exec ${pkgs.bash}/bin/bash ${smartSweepScript} --kind long
       '';
@@ -73,23 +69,7 @@ in
 
     system-health-report = {
       description = "Generate combined runtime and storage health report";
-      path = with pkgs; [
-        bash
-        bind
-        coreutils
-        curl
-        findutils
-        gawk
-        glibc.bin
-        gnugrep
-        gnused
-        jq
-        nix
-        smartmontools
-        systemd
-        util-linux
-        zfs
-      ];
+      path = systemHealthReportPath;
       script = ''
         exec ${pkgs.bash}/bin/bash ${reportScript}
       '';

@@ -2,10 +2,10 @@
 
 with pkgs; [
   cargo
-  rustc
-  clippy
-  rustfmt
-  rust-analyzer
   cargo-nextest
+  clippy
+  rust-analyzer
   ripgrep
+  rustc
+  rustfmt
 ]

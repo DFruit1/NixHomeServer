@@ -3,6 +3,9 @@
 let
   kanidmPort = 8443;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
+  kanidmBrandingPath = with pkgs; [
+    kanidm_1_9
+  ];
 in
 {
   systemd.services.kanidm-branding = {
@@ -10,7 +13,7 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "kanidm.service" ];
     wants = [ "kanidm.service" ];
-    path = [ pkgs.kanidm_1_9 ];
+    path = kanidmBrandingPath;
     script = ''
       set -euo pipefail
 

@@ -24,9 +24,9 @@
         bash
         coreutils
         findutils
+        getent
         gnugrep
         gnused
-        getent
         gnutar
         jq
         nix
@@ -128,13 +128,17 @@
                 mailArchiveSyncPath =
                   map (package: lib.getName package) (cfg.systemd.services."mail-archive-sync".path or [ ]);
                 hasCopypartyService = cfg.systemd.services ? "copyparty";
+                hasCopypartyRuntimeConfigSync = cfg.systemd.services ? "copyparty-runtime-config-sync";
                 copypartyServiceSupplementaryGroups =
                   cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
+                copypartyServiceBindPaths =
+                  cfg.systemd.services.copyparty.serviceConfig.BindPaths or [ ];
                 hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
                 hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
                 filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
-                copypartyGlobalExtraConfig = cfg.services.copyparty.globalExtraConfig;
-                copypartyRuntimeConfigSyncScript = cfg.systemd.services.copyparty-runtime-config-sync.script;
+                copypartySettings = cfg.services.copyparty.settings;
+                copypartyVolumes = cfg.services.copyparty.volumes;
+                copypartyPreStart = cfg.systemd.services.copyparty.preStart;
                 usersGroupMembers = cfg.users.groups.users.members or [ ];
                 hasImmichServerService = cfg.systemd.services ? "immich-server";
                 hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
@@ -145,6 +149,9 @@
                 hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
                 hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
                 hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
+                hasAudiobookshelfLibraryWatchConfig = cfg.systemd.services ? "audiobookshelf-library-watch-config-v1";
+                audiobookshelfLibraryWatchConfigScript =
+                  cfg.systemd.services."audiobookshelf-library-watch-config-v1".script or "";
                 hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
                 hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
                 hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";

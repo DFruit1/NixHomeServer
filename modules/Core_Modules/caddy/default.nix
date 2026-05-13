@@ -166,7 +166,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:3300 {
+          reverse_proxy http://127.0.0.1:${toString vars.immichPublicProxyPort} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }

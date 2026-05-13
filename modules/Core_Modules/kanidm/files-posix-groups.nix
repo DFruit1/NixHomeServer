@@ -3,9 +3,15 @@
 let
   kanidmPort = 8443;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  fileAccessPosixGroups = lib.mapAttrsToList (name: gid: {
-    inherit name gid;
-  }) vars.fileAccessPosixGids;
+  fileAccessPosixGroups = lib.mapAttrsToList
+    (name: gid: {
+      inherit name gid;
+    })
+    vars.fileAccessPosixGids;
+  kanidmFilesPosixGroupsPath = with pkgs; [
+    coreutils
+    kanidm_1_9
+  ];
 in
 {
   systemd.services.kanidm-files-posix-groups = {
@@ -16,10 +22,7 @@ in
     before = [
       "fileshare-user-root-sync.service"
     ];
-    path = [
-      pkgs.coreutils
-      pkgs.kanidm_1_9
-    ];
+    path = kanidmFilesPosixGroupsPath;
     script = ''
       set -euo pipefail
 

@@ -348,7 +348,6 @@ in
         "paperless-web.service"
         "vaultwarden.service"
         "audiobookshelf.service"
-        "audiobookshelf-library-sync.timer"
         "filebrowser-quantum.service"
         "kavita.service"
         "jellyfin.service"
