@@ -565,7 +565,7 @@ check_mail_archive_filebrowser_permissions() {
       -path '*/emails/.internal-sync' -prune \
       -o -path '*/emails/*.eml' -type f -print 2>/dev/null \
       | sort \
-      | head -n 1
+      | sed -n '1p'
   )"
   if [[ -n "$visible_file" ]]; then
     if run_as_user "$service_user" test -r "$visible_file" >/dev/null 2>&1; then

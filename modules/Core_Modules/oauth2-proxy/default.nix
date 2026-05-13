@@ -1,6 +1,7 @@
-{ config, vars, pkgs, ... }:
+{ config, lib, vars, pkgs, ... }:
 
 let
+  oauth2Proxy = import ../../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   oauth2ProxyPort = 4180;
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";
   oauth2ProxyKeyFilePath = "${oauth2ProxyRuntimeDir}/oauth2-proxy.env";
@@ -12,32 +13,20 @@ let
   ];
 in
 {
-  services.oauth2-proxy = {
-    enable = true;
-    provider = "oidc";
-    approvalPrompt = "auto";
-    oidcIssuerUrl = vars.kanidmIssuer "oauth2-proxy";
-    scope = "openid profile email groups_name";
-    email.domains = [ "*" ];
-    upstream = [ "http://127.0.0.1:${toString config.services.copyparty.settings.p}" ];
-    redirectURL = "https://${vars.uploadsDomain}/oauth2/callback";
-    httpAddress = "127.0.0.1:${toString oauth2ProxyPort}";
-    clientID = "oauth2-proxy";
-    keyFile = oauth2ProxyKeyFilePath;
-    reverseProxy = true;
-    setXauthrequest = true;
-    cookie.expire = "336h0m0s";
+  services.oauth2-proxy = oauth2Proxy.mkNixosService {
+    clientId = "oauth2-proxy";
+    domain = vars.uploadsDomain;
+    port = oauth2ProxyPort;
+    upstream = "http://127.0.0.1:${toString config.services.copyparty.settings.p}";
+    allowedGroups = [ "user-files" ];
     extraConfig = {
-      "allowed-group" = [ "user-files" ];
-      "code-challenge-method" = "S256";
-      "oidc-groups-claim" = "groups";
-      "pass-user-headers" = true;
-      "provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";
       "session-cookie-minimal" = true;
       "skip-auth-preflight" = true;
-      "skip-provider-button" = true;
       "upstream-timeout" = "30m0s";
     };
+  } // {
+    keyFile = oauth2ProxyKeyFilePath;
+    cookie.expire = "336h0m0s";
   };
 
   systemd.services.oauth2-proxy-secret-materialize = {
