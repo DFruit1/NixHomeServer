@@ -19,7 +19,8 @@ in
 
       export HOME="$(mktemp -d)"
       trap 'rm -rf "$HOME"' EXIT
-      export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
+      KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmSysAdminPass.path})"
+      export KANIDM_PASSWORD
 
       kanidm login \
         -H ${kanidmCliUrl} \

@@ -133,7 +133,8 @@ let
 
     export HOME="$(mktemp -d)"
     trap 'rm -rf "$HOME"' EXIT
-    export KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+    KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+    export KANIDM_PASSWORD
 
     members_json="$(
       ${pkgs.kanidm_1_9}/bin/kanidm login \
