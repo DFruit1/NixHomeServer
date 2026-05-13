@@ -13,18 +13,19 @@ let
   ];
 in
 {
-  services.oauth2-proxy = oauth2Proxy.mkNixosService {
-    clientId = "oauth2-proxy";
-    domain = vars.uploadsDomain;
-    port = oauth2ProxyPort;
-    upstream = "http://127.0.0.1:${toString config.services.copyparty.settings.p}";
-    allowedGroups = [ "user-files" ];
-    extraConfig = {
-      "session-cookie-minimal" = true;
-      "skip-auth-preflight" = true;
-      "upstream-timeout" = "30m0s";
-    };
-  } // {
+  services.oauth2-proxy = oauth2Proxy.mkNixosService
+    {
+      clientId = "oauth2-proxy";
+      domain = vars.uploadsDomain;
+      port = oauth2ProxyPort;
+      upstream = "http://127.0.0.1:${toString config.services.copyparty.settings.p}";
+      allowedGroups = [ "user-files" ];
+      extraConfig = {
+        "session-cookie-minimal" = true;
+        "skip-auth-preflight" = true;
+        "upstream-timeout" = "30m0s";
+      };
+    } // {
     keyFile = oauth2ProxyKeyFilePath;
     cookie.expire = "336h0m0s";
   };

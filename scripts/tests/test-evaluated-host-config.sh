@@ -296,7 +296,7 @@ if jq -e 'index("mail-archive-ui") != null' >/dev/null <<<"$filebrowser_quantum_
 fi
 require_match modules/Core_Modules/storage/fileshare-user-roots.nix '\.internal-sync' \
   "User email roots must provision a hidden internal sync tree."
-require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_noaccess_acl filebrowser-quantum "\$root/emails/\.internal-sync"' \
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_directory_noaccess_acl filebrowser-quantum "\$root/emails/\.internal-sync"' \
   "FileBrowser Quantum must not be able to traverse the hidden internal email sync tree."
 forbid_match modules/audiobookshelf/storage.nix 'audiobookshelf-user-storage-acl-sync-v1' \
   "Audiobookshelf per-user ACL convergence must stay centralized in fileshare-user-root-sync."

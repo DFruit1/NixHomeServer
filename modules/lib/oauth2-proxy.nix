@@ -13,14 +13,14 @@ let
   };
 
   commonProxyArgs =
-    {
-      clientId,
-      domain,
-      port,
-      upstream,
-      scope ? defaultScope,
-      redirectPath ? "/oauth2/callback",
-      issuerUrl ? vars.kanidmIssuer clientId,
+    { clientId
+    , domain
+    , port
+    , upstream
+    , scope ? defaultScope
+    , redirectPath ? "/oauth2/callback"
+    , issuerUrl ? vars.kanidmIssuer clientId
+    ,
     }:
     [
       "--provider=oidc"
@@ -42,9 +42,9 @@ let
     ];
 
   mkDiscoveryWaitScript =
-    {
-      serviceName,
-      clientId,
+    { serviceName
+    , clientId
+    ,
     }:
     pkgs.writeShellScript "${serviceName}-wait-for-discovery" ''
       set -euo pipefail
@@ -63,11 +63,11 @@ let
     '';
 
   mkUpstreamWaitScript =
-    {
-      serviceName,
-      displayName,
-      url,
-      okStatusCodes ? [ "200" ],
+    { serviceName
+    , displayName
+    , url
+    , okStatusCodes ? [ "200" ]
+    ,
     }:
     let
       okPattern = lib.concatStringsSep "|" okStatusCodes;
@@ -100,15 +100,15 @@ rec {
   inherit commonExtraConfig;
 
   mkNixosService =
-    {
-      clientId,
-      domain,
-      port,
-      upstream,
-      allowedGroups ? [ ],
-      scope ? defaultScope,
-      redirectPath ? "/oauth2/callback",
-      extraConfig ? { },
+    { clientId
+    , domain
+    , port
+    , upstream
+    , allowedGroups ? [ ]
+    , scope ? defaultScope
+    , redirectPath ? "/oauth2/callback"
+    , extraConfig ? { }
+    ,
     }:
     {
       enable = true;
@@ -132,23 +132,24 @@ rec {
     };
 
   mkProxyArgs =
-    {
-      clientId,
-      clientSecretFile,
-      cookieSecretFile,
-      cookieName,
-      domain,
-      port,
-      upstream,
-      allowedGroups ? [ ],
-      scope ? defaultScope,
-      redirectPath ? "/oauth2/callback",
-      issuerUrl ? vars.kanidmIssuer clientId,
-      extraArgs ? [ ],
+    { clientId
+    , clientSecretFile
+    , cookieSecretFile
+    , cookieName
+    , domain
+    , port
+    , upstream
+    , allowedGroups ? [ ]
+    , scope ? defaultScope
+    , redirectPath ? "/oauth2/callback"
+    , issuerUrl ? vars.kanidmIssuer clientId
+    , extraArgs ? [ ]
+    ,
     }:
-    commonProxyArgs {
-      inherit clientId domain port upstream scope redirectPath issuerUrl;
-    }
+    commonProxyArgs
+      {
+        inherit clientId domain port upstream scope redirectPath issuerUrl;
+      }
     ++ [
       "--client-secret-file=${clientSecretFile}"
       "--cookie-secret-file=${cookieSecretFile}"
@@ -158,24 +159,24 @@ rec {
     ++ extraArgs;
 
   mkSidecarService =
-    {
-      serviceName,
-      description,
-      clientId,
-      clientSecretFile,
-      cookieSecretFile,
-      cookieName,
-      domain,
-      port,
-      upstream,
-      allowedGroups ? [ ],
-      scope ? defaultScope,
-      redirectPath ? "/oauth2/callback",
-      serviceDependencies ? [ ],
-      upstreamCheck ? null,
-      restartSec ? null,
-      extraProxyArgs ? [ ],
-      extraReadOnlyPaths ? [ ],
+    { serviceName
+    , description
+    , clientId
+    , clientSecretFile
+    , cookieSecretFile
+    , cookieName
+    , domain
+    , port
+    , upstream
+    , allowedGroups ? [ ]
+    , scope ? defaultScope
+    , redirectPath ? "/oauth2/callback"
+    , serviceDependencies ? [ ]
+    , upstreamCheck ? null
+    , restartSec ? null
+    , extraProxyArgs ? [ ]
+    , extraReadOnlyPaths ? [ ]
+    ,
     }:
     let
       proxyArgs = mkProxyArgs {

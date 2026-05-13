@@ -147,6 +147,7 @@
                 paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
                 paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
                 hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
+                oauth2ProxyExecStart = cfg.systemd.services.oauth2-proxy.serviceConfig.ExecStart or "";
                 hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
                 hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
                 hasAudiobookshelfLibraryWatchConfig = cfg.systemd.services ? "audiobookshelf-library-watch-config-v1";

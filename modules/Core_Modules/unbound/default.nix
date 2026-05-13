@@ -8,38 +8,7 @@ let
   netbirdIface = "nb0";
   netbirdCidr = "100.64.0.0/10";
   listenAddresses = [ "127.0.0.1" vars.nbIP ] ++ lib.optional splitDnsMode vars.serverLanIP;
-  mod = value: divisor: value - ((builtins.div value divisor) * divisor);
-  ipv4ToInt =
-    ip:
-    lib.foldl'
-      (acc: octet: (acc * 256) + (builtins.fromJSON octet))
-      0
-      (lib.splitString "." ip);
-  intToIpv4 =
-    value:
-    let
-      octet0 = builtins.div value 16777216;
-      rem0 = mod value 16777216;
-      octet1 = builtins.div rem0 65536;
-      rem1 = mod rem0 65536;
-      octet2 = builtins.div rem1 256;
-      octet3 = mod rem1 256;
-    in
-    lib.concatStringsSep "." (map toString [
-      octet0
-      octet1
-      octet2
-      octet3
-    ]);
-  pow2 = exponent: if exponent == 0 then 1 else 2 * (pow2 (exponent - 1));
-  cidrMask =
-    prefixLength:
-    if prefixLength == 0 then
-      0
-    else
-      ((pow2 prefixLength) - 1) * (pow2 (32 - prefixLength));
-  lanNetworkAddress = intToIpv4 (builtins.bitAnd (ipv4ToInt vars.serverLanIP) (cidrMask vars.serverLanPrefixLength));
-  lanCidr = "${lanNetworkAddress}/${toString vars.serverLanPrefixLength}";
+  lanCidr = "${vars.serverLanIP}/${toString vars.serverLanPrefixLength}";
   normaliseDnsName =
     name:
     if lib.hasSuffix "." name then

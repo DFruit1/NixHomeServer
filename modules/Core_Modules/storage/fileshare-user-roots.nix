@@ -96,11 +96,17 @@ let
       apply_recursive_acl "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
     }
 
-    apply_noaccess_acl() {
+    apply_directory_noaccess_acl() {
       local group_name="$1"
       shift
 
-      apply_recursive_acl "g:''${group_name}:---" "d:g:''${group_name}:---" "$@"
+      for path in "$@"; do
+        [[ -d "$path" ]] || continue
+        ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl \
+          -m "g:''${group_name}:---" \
+          -m "d:g:''${group_name}:---" \
+          '{}' +
+      done
     }
 
     apply_owner_group_writable_acl \
@@ -119,11 +125,10 @@ let
       ${userBookWritablePaths}
 
     # FileBrowser may browse and download only the visible hard-linked .eml
-    # mirror. The mail archive app grants read ACLs to those visible file
-    # inodes during mirror rebuild, while this deny rule keeps the hidden
-    # sync payload non-traversable.
+    # mirror. The hidden sync payload uses the same file inodes, so deny
+    # traversal on hidden directories rather than clobbering file ACLs.
     apply_readonly_acl filebrowser-quantum "$root/emails"
-    apply_noaccess_acl filebrowser-quantum "$root/emails/.internal-sync"
+    apply_directory_noaccess_acl filebrowser-quantum "$root/emails/.internal-sync"
     apply_readonly_acl immich "$root/photos"
     apply_readonly_acl paperless "$root/documents"
   '';
