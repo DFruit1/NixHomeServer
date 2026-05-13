@@ -14,6 +14,7 @@ let
     mdadm
     ncdu
     nix-output-monitor
+    nixpkgs-fmt
     nvme-cli
     openssl
     parted

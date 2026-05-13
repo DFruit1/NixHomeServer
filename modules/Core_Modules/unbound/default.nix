@@ -128,13 +128,13 @@ in
               "127.0.0.0/8 allow"
             ];
             verbosity = 1;
-            qname-minimisation = "yes";
-            harden-glue = "yes";
-            harden-dnssec-stripped = "yes";
-            prefetch = "yes";
-            rrset-roundrobin = "yes";
+            qname-minimisation = true;
+            harden-glue = true;
+            harden-dnssec-stripped = true;
+            prefetch = true;
+            rrset-roundrobin = true;
             auto-trust-anchor-file = "/var/lib/unbound/root.key";
-            do-not-query-localhost = "no";
+            do-not-query-localhost = false;
           }
           // (
             if splitDnsMode then
@@ -162,7 +162,7 @@ in
           // lib.optionalAttrs encryptedOnlyUpstreams {
             # Encrypted-only recursive DNS should fail closed rather than
             # silently downgrade to a plaintext upstream.
-            forward-first = "no";
+            forward-first = false;
           })
         ];
       }
