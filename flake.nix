@@ -20,6 +20,13 @@
       lib = nixpkgs.lib;
       pkgs = nixpkgs.legacyPackages.${system};
       pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
+      impermanencePatched = pkgs.applyPatches {
+        name = "impermanence-patched";
+        src = impermanence;
+        patches = [
+          ./patches/impermanence-nixpkgs-25-11-dir-method.patch
+        ];
+      };
       checkNativeBuildInputs = with pkgs; [
         bash
         coreutils
@@ -40,7 +47,7 @@
           ./configuration.nix
           agenix.nixosModules.default
           disko.nixosModules.disko
-          impermanence.nixosModules.impermanence
+          (impermanencePatched + "/nixos.nix")
         ];
         specialArgs = {
           inherit self vars disko copyparty pkgsUnstable;
@@ -102,6 +109,8 @@
                 hasStorageSmartShortTimer = cfg.systemd.timers ? "storage-smart-short";
                 hasStorageSmartLongTimer = cfg.systemd.timers ? "storage-smart-long";
                 hasSmartdService = cfg.systemd.services ? "smartd";
+                systemHealthReportPath =
+                  map (package: lib.getName package) (cfg.systemd.services."system-health-report".path or [ ]);
               };
               storage = {
                 zfsImportScript = cfg.systemd.services.zfs-import-data.script;

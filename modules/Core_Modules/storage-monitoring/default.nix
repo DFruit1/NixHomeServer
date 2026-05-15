@@ -20,6 +20,7 @@ let
     curl
     findutils
     gawk
+    getent
     glibc.bin
     gnugrep
     gnused

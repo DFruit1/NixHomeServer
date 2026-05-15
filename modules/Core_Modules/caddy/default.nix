@@ -1,11 +1,11 @@
 { lib, vars, config, ... }:
 
 let
-  mailArchiveOauth2ProxyPort = 4181;
-  jellyfinPort = 8096;
-  kanidmPort = 8443;
-  netbirdIface = "nb0";
-  splitDnsMode = vars.dnsMode == "split-horizon";
+  loopback = vars.networking.loopbackIPv4;
+  ports = vars.networking.ports;
+  lanIface = vars.networking.interfaces.lan;
+  netbirdIface = vars.networking.interfaces.netbird;
+  splitDnsMode = vars.networking.dns.mode == "split-horizon";
   accessLogConfig = ''
     log {
       output file /var/log/caddy/access.log {
@@ -45,7 +45,7 @@ in
           ${accessLogConfig}
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
-          reverse_proxy https://127.0.0.1:${toString kanidmPort} {
+          reverse_proxy https://${loopback}:${toString ports.kanidm} {
             transport http {
               tls_server_name ${vars.kanidmDomain}
               tls_trust_pool file /var/lib/acme/${vars.kanidmDomain}/fullchain.pem
@@ -56,11 +56,11 @@ in
         '';
       };
 
-      "paperless.${vars.domain}" = {
+      "${vars.paperlessDomain}" = {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:${toString config.services.paperless.port}
+          reverse_proxy http://${loopback}:${toString config.services.paperless.port}
         '';
       };
 
@@ -68,7 +68,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:${toString config.services.audiobookshelf.port}
+          reverse_proxy http://${loopback}:${toString config.services.audiobookshelf.port}
         '';
       };
 
@@ -92,7 +92,7 @@ in
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
           redir /login /api/auth/oidc/login{?query} temporary
-          reverse_proxy http://127.0.0.1:${toString vars.filebrowserPort} {
+          reverse_proxy http://${loopback}:${toString ports.filebrowserQuantum} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
@@ -103,7 +103,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:${toString mailArchiveOauth2ProxyPort} {
+          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyMailArchive} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
@@ -114,7 +114,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:8222 {
+          reverse_proxy http://${loopback}:${toString ports.vaultwarden} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
@@ -125,7 +125,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:4182 {
+          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyKiwix} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
@@ -136,7 +136,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:4183 {
+          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyMetube} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
@@ -147,7 +147,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:4184 {
+          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyGlances} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
@@ -158,7 +158,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:${toString config.services.immich.port}
+          reverse_proxy http://${loopback}:${toString config.services.immich.port}
         '';
       };
 
@@ -166,7 +166,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:${toString vars.immichPublicProxyPort} {
+          reverse_proxy http://${loopback}:${toString ports.immichPublicProxy} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }
@@ -177,7 +177,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:${toString config.services.kavita.settings.Port}
+          reverse_proxy http://${loopback}:${toString config.services.kavita.settings.Port}
         '';
       };
 
@@ -185,7 +185,7 @@ in
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://127.0.0.1:${toString jellyfinPort} {
+          reverse_proxy http://${loopback}:${toString ports.jellyfin} {
             header_up X-Forwarded-Proto https
           }
         '';
@@ -209,9 +209,9 @@ in
   # local DNS answers remain reachable.
   networking.firewall.interfaces =
     {
-      ${netbirdIface}.allowedTCPPorts = [ 443 ];
+      ${netbirdIface}.allowedTCPPorts = [ ports.https ];
     }
     // lib.optionalAttrs splitDnsMode {
-      ${vars.netIface}.allowedTCPPorts = [ 443 ];
+      ${lanIface}.allowedTCPPorts = [ ports.https ];
     };
 }

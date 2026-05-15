@@ -8,8 +8,12 @@ let
   proxySubIdStart = 400000;
   proxySubIdCount = 65536;
   proxyImage = "docker.io/alangrainger/immich-public-proxy@sha256:48c4ea4884b04c77a4a4ec93e190dea6cb7dc1b38acb005a35dd56f68212d85a";
-  proxyDnsServer = if vars.dnsMode == "split-horizon" then vars.serverLanIP else vars.nbIP;
-  proxyImmichHostIP = vars.nbIP;
+  loopback = vars.networking.loopbackIPv4;
+  proxyListenPort = vars.networking.ports.immichPublicProxy;
+  proxyContainerPort = vars.networking.ports.immichPublicProxyContainer;
+  proxyDnsServer =
+    if vars.networking.dns.mode == "split-horizon" then vars.networking.lan.ip else vars.networking.netbird.ip;
+  proxyImmichHostIP = vars.networking.netbird.ip;
 in
 {
   virtualisation.podman.enable = true;
@@ -47,14 +51,14 @@ in
     AddHost=${vars.photosDomain}:${proxyImmichHostIP}
     Environment=IMMICH_URL=https://${vars.photosDomain}
     Environment=PUBLIC_BASE_URL=https://${vars.sharePhotosDomain}
-    PublishPort=127.0.0.1:${toString vars.immichPublicProxyPort}:3000
+    PublishPort=${loopback}:${toString proxyListenPort}:${toString proxyContainerPort}
     DNS=${proxyDnsServer}
     Pull=missing
     NoNewPrivileges=true
     DropCapability=all
     ReadOnly=true
     Tmpfs=/tmp
-    HealthCmd=curl -fsS http://127.0.0.1:3000/share/healthcheck || exit 1
+    HealthCmd=curl -fsS http://${loopback}:${toString proxyContainerPort}/share/healthcheck || exit 1
     HealthInterval=30s
     HealthTimeout=5s
     HealthRetries=3

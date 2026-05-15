@@ -3,7 +3,8 @@
 let
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   cfg = config.services.mail-archive-ui;
-  mailArchiveOauth2ProxyPort = 4181;
+  loopback = vars.networking.loopbackIPv4;
+  mailArchiveOauth2ProxyPort = vars.networking.ports.oauth2ProxyMailArchive;
 in
 {
   config = lib.mkIf cfg.enable (oauth2Proxy.mkSidecarService {
@@ -15,12 +16,12 @@ in
     cookieName = "_oauth2_proxy_mail_archive";
     domain = vars.emailsDomain;
     port = mailArchiveOauth2ProxyPort;
-    upstream = "http://127.0.0.1:${toString cfg.port}";
+    upstream = "http://${loopback}:${toString cfg.port}";
     allowedGroups = [ "mail-archive-users" ];
     serviceDependencies = [ "mail-archive-ui.service" ];
     upstreamCheck = {
       displayName = "Mail Archive UI";
-      url = "http://127.0.0.1:${toString cfg.port}/healthz";
+      url = "http://${loopback}:${toString cfg.port}/healthz";
       okStatusCodes = [
         "200"
         "503"

@@ -1,7 +1,8 @@
 { config, pkgs, vars, ... }:
 
 let
-  kanidmPort = 8443;
+  loopback = vars.networking.loopbackIPv4;
+  kanidmPort = vars.networking.ports.kanidm;
 in
 {
   assertions = [
@@ -24,7 +25,7 @@ in
     serverSettings = {
       origin = "https://${vars.kanidmDomain}";
       domain = vars.domain;
-      bindaddress = "127.0.0.1:${toString kanidmPort}";
+      bindaddress = "${loopback}:${toString kanidmPort}";
 
       tls_chain = "/var/lib/acme/${vars.kanidmDomain}/fullchain.pem";
       tls_key = "/var/lib/acme/${vars.kanidmDomain}/key.pem";

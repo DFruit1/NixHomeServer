@@ -2,7 +2,8 @@
 
 let
   oauth2Proxy = import ../../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
-  oauth2ProxyPort = 4180;
+  loopback = vars.networking.loopbackIPv4;
+  oauth2ProxyPort = vars.networking.ports.oauth2ProxyUploads;
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";
   oauth2ProxyKeyFilePath = "${oauth2ProxyRuntimeDir}/oauth2-proxy.env";
   oauth2ProxyClientSecretPath = "${oauth2ProxyRuntimeDir}/client-secret";
@@ -18,7 +19,7 @@ in
       clientId = "oauth2-proxy";
       domain = vars.uploadsDomain;
       port = oauth2ProxyPort;
-      upstream = "http://127.0.0.1:${toString config.services.copyparty.settings.p}";
+      upstream = "http://${loopback}:${toString config.services.copyparty.settings.p}";
       allowedGroups = [ "user-files" ];
       extraConfig = {
         "session-cookie-minimal" = true;

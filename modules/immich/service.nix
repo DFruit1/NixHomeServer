@@ -1,12 +1,12 @@
 { vars, config, ... }:
 
 let
-  immichPort = 2283;
+  immichPort = vars.networking.ports.immich;
 in
 {
   services.immich = {
     enable = true;
-    host = "127.0.0.1";
+    host = vars.networking.loopbackIPv4;
     port = immichPort;
     mediaLocation = vars.immichManagedRoot;
     user = "immich";

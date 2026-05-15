@@ -3,7 +3,8 @@
 let
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   cfg = config.services.kiwixServe;
-  kiwixOauth2ProxyPort = 4182;
+  loopback = vars.networking.loopbackIPv4;
+  kiwixOauth2ProxyPort = vars.networking.ports.oauth2ProxyKiwix;
 in
 {
   config = lib.mkIf cfg.enable (oauth2Proxy.mkSidecarService {
@@ -15,7 +16,7 @@ in
     cookieName = "_oauth2_proxy_kiwix";
     domain = vars.kiwixDomain;
     port = kiwixOauth2ProxyPort;
-    upstream = "http://127.0.0.1:${toString cfg.port}";
+    upstream = "http://${loopback}:${toString cfg.port}";
     allowedGroups = [ "users" ];
     serviceDependencies = [
       "caddy.service"

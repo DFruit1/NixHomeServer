@@ -1,7 +1,8 @@
 { lib, config, vars, copyparty, ... }:
 
 let
-  copypartyPort = 3923;
+  copypartyPort = vars.networking.ports.copyparty;
+  loopback = vars.networking.loopbackIPv4;
 in
 
 {
@@ -13,7 +14,7 @@ in
     enable = true;
     openFilesLimit = 8192;
     settings = {
-      i = "127.0.0.1";
+      i = loopback;
       p = copypartyPort;
       auth-ord = "idp";
       idp-h-usr = "x-forwarded-preferred-username";
@@ -30,7 +31,7 @@ in
       u2j = 1;
       u2sz = "1,8,16";
       xff-hdr = "x-forwarded-for";
-      xff-src = "127.0.0.1/32";
+      xff-src = vars.networking.loopbackProxyCidr;
       no-reload = true;
     };
     volumes."/\${u}" = {

@@ -7,8 +7,9 @@ let
   metubeGid = 3002;
   metubeSubIdStart = 465536;
   metubeSubIdCount = 65536;
-  metubeListenPort = 8083;
-  metubeContainerPort = 8081;
+  metubeListenAddress = vars.networking.loopbackIPv4;
+  metubeListenPort = vars.networking.ports.metube;
+  metubeContainerPort = vars.networking.ports.metubeContainer;
   metubeHome = "/var/lib/metube";
   metubeStateDir = "${metubeHome}/state";
   metubeTempDir = "${metubeHome}/tmp";
@@ -90,7 +91,7 @@ in
     [Container]
     Image=${metubeImage}
     ContainerName=metube
-    PublishPort=127.0.0.1:${toString metubeListenPort}:${toString metubeContainerPort}
+    PublishPort=${metubeListenAddress}:${toString metubeListenPort}:${toString metubeContainerPort}
     Volume=${vars.sharedYouTubeRoot}:/downloads:rw
     Volume=${metubeStateDir}:/state:rw
     Volume=${metubeTempDir}:/tmp-downloads:rw

@@ -9,19 +9,84 @@ rec {
   kanidmAdminEmail = "dsaw@tuta.io";
   serverSSHPubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
 
-  serverLanIP = "192.168.8.12"; # Primary LAN IP to assign to the host.
-  serverLanPrefixLength = 24;
-  serverLanGateway = "192.168.8.1"; # Default IPv4 gateway for the LAN uplink.
-  nbIP = "100.72.113.237";
-  dnsMode = "split-horizon"; # Either "split-horizon" or "netbird-only".
-  dnsPrivacyMode = "encrypted-only"; # Keep recursive upstream DNS on encrypted transports only.
-  lanDnsDomain = "home.arpa";
-  lanDnsHosts = {
-    # LAN-only forward and reverse records served by Unbound.
-    "${hostname}" = serverLanIP;
-    router = serverLanGateway;
+  networking = rec {
+    # Central registry for addresses, interfaces, CIDRs, and ports used by modules.
+    loopbackIPv4 = "127.0.0.1";
+    loopbackIPv6 = "::1";
+    loopbackIPv4Cidr = "127.0.0.0/8";
+    loopbackProxyCidr = "127.0.0.1/32";
+    interfaces = {
+      lan = "enp34s0";
+      netbird = "nb0";
+    };
+    lan = {
+      ip = "192.168.8.12"; # Primary LAN IP to assign to the host.
+      prefixLength = 24;
+      gateway = "192.168.8.1"; # Default IPv4 gateway for the LAN uplink.
+    };
+    netbird = {
+      ip = "100.72.113.237";
+      cidr = "100.64.0.0/10";
+    };
+    dns = {
+      mode = "split-horizon"; # Either "split-horizon" or "netbird-only".
+      privacyMode = "encrypted-only"; # Keep recursive upstream DNS on encrypted transports only.
+      lanDomain = "home.arpa";
+      lanHosts = {
+        # LAN-only forward and reverse records served by Unbound.
+        "${hostname}" = lan.ip;
+        router = lan.gateway;
+      };
+      bootstrapResolvers = [
+        {
+          address = "9.9.9.9";
+          port = ports.dns;
+        }
+        {
+          address = "1.1.1.1";
+          port = ports.dns;
+        }
+      ];
+    };
+    ports = {
+      https = 443;
+      dns = 53;
+      dnscryptProxy = 5053;
+      netbirdWireGuard = 51820;
+      kanidm = 8443;
+      oauth2ProxyUploads = 4180;
+      oauth2ProxyMailArchive = 4181;
+      oauth2ProxyKiwix = 4182;
+      oauth2ProxyMetube = 4183;
+      oauth2ProxyGlances = 4184;
+      paperless = 8000;
+      audiobookshelf = 13378;
+      copyparty = 3923;
+      filebrowserQuantum = 8097;
+      mailArchiveUi = 9011;
+      immich = 2283;
+      immichPublicProxy = 3300;
+      immichPublicProxyContainer = 3000;
+      kiwix = 8081;
+      kavita = 5000;
+      vaultwarden = 8222;
+      jellyfin = 8096;
+      jellyfinDiscovery = 7359;
+      metube = 8083;
+      metubeContainer = 8081;
+    };
+    dnsBootstrapResolvers = dns.bootstrapResolvers;
   };
-  netIface = "enp34s0";
+
+  serverLanIP = networking.lan.ip;
+  serverLanPrefixLength = networking.lan.prefixLength;
+  serverLanGateway = networking.lan.gateway;
+  nbIP = networking.netbird.ip;
+  dnsMode = networking.dns.mode;
+  dnsPrivacyMode = networking.dns.privacyMode;
+  lanDnsDomain = networking.dns.lanDomain;
+  lanDnsHosts = networking.dns.lanHosts;
+  netIface = networking.interfaces.lan;
   powerManagement = {
     enable = true;
     cpuGovernor = "powersave";
@@ -203,14 +268,15 @@ rec {
     kanidmAdminUser
   ];
   monitorDomain = "monitor.${domain}";
+  paperlessDomain = "paperless.${domain}";
   photosDomain = "photos.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
   sharePhotosDomain = "sharephotos.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.
-  immichPublicProxyPort = 3300;
+  immichPublicProxyPort = networking.ports.immichPublicProxy;
   audiobooksDomain = "audiobooks.${domain}";
   vaultwardenDomain = "passwords.${domain}";
   uploadsDomain = "uploads.${domain}";
   filebrowserDomain = "files.${domain}";
-  filebrowserPort = 8097;
+  filebrowserPort = networking.ports.filebrowserQuantum;
   filebrowserStateDir = "/var/lib/filebrowser-quantum";
   emailsDomain = "emails.${domain}";
   kiwixDomain = "wiki.${domain}";

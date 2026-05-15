@@ -33,7 +33,7 @@ let
     ]
     ++ lib.optionals cfg.persistDsawHome [ "/home/dsaw" ];
 
-  persistenceFiles = [ "/etc/machine-id" ];
+  persistenceFiles = [ ];
 
   rollbackScript = ''
     set -eu

@@ -1,7 +1,7 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  kanidmPort = 8443;
+  kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   userFilesGroup = "user-files";
   userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;

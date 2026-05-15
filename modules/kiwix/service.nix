@@ -4,14 +4,16 @@ let
   cfg = config.services.kiwixServe;
   libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   kiwixStateDirDefault = "/var/lib/kiwix";
-  kiwixPort = 8081;
+  kiwixPort = vars.networking.ports.kiwix;
   libraryFile = "${cfg.stateDir}/library.xml";
   uploadUsers = lib.unique ([ cfg.uploadUser ] ++ cfg.extraUploadUsers);
   dirWriterAclArgs = lib.concatStringsSep " " (
-    lib.concatMap (user: [
-      ''-m u:${user}:rwx''
-      ''-m d:u:${user}:rwx''
-    ]) uploadUsers
+    lib.concatMap
+      (user: [
+        ''-m u:${user}:rwx''
+        ''-m d:u:${user}:rwx''
+      ])
+      uploadUsers
   );
   prepareLibraryRootScript = pkgs.writeShellScript "kiwix-prepare-library-root" ''
     set -euo pipefail
@@ -28,29 +30,29 @@ let
       "$library_root"
   '';
   syncLibraryScript = pkgs.writeShellScript "kiwix-sync-library" ''
-    set -euo pipefail
+        set -euo pipefail
 
-    library_root=${lib.escapeShellArg cfg.libraryRoot}
-    library_file=${lib.escapeShellArg libraryFile}
-    state_dir=${lib.escapeShellArg cfg.stateDir}
-    tmp_library="$(${pkgs.coreutils}/bin/mktemp "$state_dir/library.XXXXXX.xml")"
-    trap 'rm -f "$tmp_library"' EXIT
+        library_root=${lib.escapeShellArg cfg.libraryRoot}
+        library_file=${lib.escapeShellArg libraryFile}
+        state_dir=${lib.escapeShellArg cfg.stateDir}
+        tmp_library="$(${pkgs.coreutils}/bin/mktemp "$state_dir/library.XXXXXX.xml")"
+        trap 'rm -f "$tmp_library"' EXIT
 
-    cat >"$tmp_library" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<library version="20110515"></library>
-EOF
+        cat >"$tmp_library" <<'EOF'
+    <?xml version="1.0" encoding="UTF-8"?>
+    <library version="20110515"></library>
+    EOF
 
-    while IFS= read -r -d $'\0' zim_path; do
-      if ! ${cfg.package}/bin/kiwix-manage "$tmp_library" add "$zim_path"; then
-        echo "Skipping invalid or incomplete ZIM file: $zim_path" >&2
-      fi
-    done < <(
-      ${pkgs.findutils}/bin/find "$library_root" -maxdepth 1 -type f -name '*.zim' -print0 \
-        | ${pkgs.coreutils}/bin/sort -z
-    )
+        while IFS= read -r -d $'\0' zim_path; do
+          if ! ${cfg.package}/bin/kiwix-manage "$tmp_library" add "$zim_path"; then
+            echo "Skipping invalid or incomplete ZIM file: $zim_path" >&2
+          fi
+        done < <(
+          ${pkgs.findutils}/bin/find "$library_root" -maxdepth 1 -type f -name '*.zim' -print0 \
+            | ${pkgs.coreutils}/bin/sort -z
+        )
 
-    ${pkgs.coreutils}/bin/install -D -m 0640 -o kiwix -g kiwix "$tmp_library" "$library_file"
+        ${pkgs.coreutils}/bin/install -D -m 0640 -o kiwix -g kiwix "$tmp_library" "$library_file"
   '';
   watcherScript = libraryWatchers.mkSettledWatcherScript {
     name = "kiwix-library-watch";
@@ -76,7 +78,7 @@ in
 
     address = lib.mkOption {
       type = lib.types.str;
-      default = "127.0.0.1";
+      default = vars.networking.loopbackIPv4;
       description = "Address the Kiwix server listens on.";
     };
 
@@ -124,10 +126,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = map (user: {
-      assertion = builtins.hasAttr user config.users.users;
-      message = "services.kiwixServe.extraUploadUsers entry '${user}' must name a local Unix account.";
-    }) cfg.extraUploadUsers;
+    assertions = map
+      (user: {
+        assertion = builtins.hasAttr user config.users.users;
+        message = "services.kiwixServe.extraUploadUsers entry '${user}' must name a local Unix account.";
+      })
+      cfg.extraUploadUsers;
 
     users.users.kiwix = {
       isSystemUser = true;

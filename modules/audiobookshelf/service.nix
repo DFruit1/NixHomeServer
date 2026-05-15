@@ -1,7 +1,7 @@
-{ config, lib, ... }:
+{ config, lib, vars, ... }:
 
 let
-  audiobookshelfPort = 13378;
+  audiobookshelfPort = vars.networking.ports.audiobookshelf;
   dataDirName = "audiobookshelf";
 in
 {

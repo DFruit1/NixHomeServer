@@ -3,6 +3,8 @@
 let
   dataDir = "/var/lib/jellyfin";
   logDir = "${dataDir}/log";
+  ports = vars.networking.ports;
+  lanIface = vars.networking.interfaces.lan;
 in
 {
   services.jellyfin = {
@@ -18,9 +20,9 @@ in
     "d ${logDir} 0750 jellyfin jellyfin -"
   ];
 
-  networking.firewall.interfaces.${vars.netIface} = {
-    allowedTCPPorts = [ 8096 ];
-    allowedUDPPorts = [ 7359 ];
+  networking.firewall.interfaces.${lanIface} = {
+    allowedTCPPorts = [ ports.jellyfin ];
+    allowedUDPPorts = [ ports.jellyfinDiscovery ];
   };
 
   systemd.services.jellyfin = {

@@ -1,7 +1,7 @@
 { config, pkgs, vars, ... }:
 
 let
-  kanidmPort = 8443;
+  kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   immichDbName = config.services.immich.database.name;
   immichDbUser = config.services.immich.database.user;

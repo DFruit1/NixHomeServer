@@ -5,6 +5,8 @@ let
   configFile = "${stateDir}/config.yaml";
   managedDir = "${stateDir}/.nixos-managed";
   accessSyncStamp = "${managedDir}/last-sync.json";
+  loopback = vars.networking.loopbackIPv4;
+  filebrowserPort = vars.networking.ports.filebrowserQuantum;
   localAdminUsername = "local-admin";
   filebrowserPackage = pkgsUnstable."filebrowser-quantum";
   filebrowserQuantumPath = with pkgs; [
@@ -25,13 +27,13 @@ let
   yamlFormat = pkgs.formats.yaml { };
   configTemplate = yamlFormat.generate "filebrowser-quantum-config-template.yaml" {
     server = {
-      listen = "127.0.0.1";
-      port = vars.filebrowserPort;
+      listen = loopback;
+      port = filebrowserPort;
       baseURL = "/";
       database = "${stateDir}/database.db";
       cacheDir = "${stateDir}/cache";
       externalUrl = "https://${vars.filebrowserDomain}";
-      internalUrl = "http://127.0.0.1:${toString vars.filebrowserPort}";
+      internalUrl = "http://${loopback}:${toString filebrowserPort}";
       disableUpdateCheck = true;
       filesystem = {
         createFilePermission = "660";
@@ -225,7 +227,7 @@ in
     script = ''
       set -euo pipefail
 
-      api_base="http://127.0.0.1:${toString vars.filebrowserPort}"
+      api_base="http://${loopback}:${toString filebrowserPort}"
       admin_username=${lib.escapeShellArg localAdminUsername}
       admin_password="$(< ${config.age.secrets.filebrowserQuantumAdminPassword.path})"
       admin_password_header="$(jq -nr --arg value "$admin_password" '$value|@uri')"

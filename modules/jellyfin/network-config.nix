@@ -1,8 +1,9 @@
-{ pkgs, ... }:
+{ pkgs, vars, ... }:
 
 let
   dataDir = "/var/lib/jellyfin";
   managedDir = "${dataDir}/.nixos-managed";
+  knownProxiesXml = "<string>${vars.networking.loopbackProxyCidr}</string><string>${vars.networking.loopbackIPv6}/128</string>";
   jellyfinNetworkConfigPath = with pkgs; [
     coreutils
     perl
@@ -38,7 +39,7 @@ in
       current="$(cat "$config_file")"
       updated="$(
         printf '%s' "$current" | ${pkgs.perl}/bin/perl -0pe '
-          s#<KnownProxies(?:\s*/>|>.*?</KnownProxies>)#<KnownProxies><string>127.0.0.1/32</string><string>::1/128</string></KnownProxies>#s;
+          s#<KnownProxies(?:\s*/>|>.*?</KnownProxies>)#<KnownProxies>${knownProxiesXml}</KnownProxies>#s;
         '
       )"
 

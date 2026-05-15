@@ -3,6 +3,7 @@
 let
   defaultScope = "openid profile email groups_name";
   loopCount = 60;
+  loopback = vars.networking.loopbackIPv4;
 
   commonExtraConfig = {
     "code-challenge-method" = "S256";
@@ -29,7 +30,7 @@ let
       "--email-domain=*"
       "--upstream=${upstream}"
       "--redirect-url=https://${domain}${redirectPath}"
-      "--http-address=127.0.0.1:${toString port}"
+      "--http-address=${loopback}:${toString port}"
       "--client-id=${clientId}"
       "--oidc-issuer-url=${issuerUrl}"
       "--reverse-proxy=true"
@@ -119,7 +120,7 @@ rec {
       email.domains = [ "*" ];
       upstream = lib.toList upstream;
       redirectURL = "https://${domain}${redirectPath}";
-      httpAddress = "127.0.0.1:${toString port}";
+      httpAddress = "${loopback}:${toString port}";
       clientID = clientId;
       reverseProxy = true;
       setXauthrequest = true;

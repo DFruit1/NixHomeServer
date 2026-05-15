@@ -1,7 +1,8 @@
 { lib, pkgs, vars, ... }:
 
 let
-  jellyfinPort = 8096;
+  loopback = vars.networking.loopbackIPv4;
+  jellyfinPort = vars.networking.ports.jellyfin;
   dataDir = "/var/lib/jellyfin";
   dataDbPath = "${dataDir}/data/jellyfin.db";
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
@@ -53,7 +54,7 @@ in
           --show-error \
           --fail \
           --max-time 5 \
-          "http://127.0.0.1:${toString jellyfinPort}/System/Info/Public" \
+          "http://${loopback}:${toString jellyfinPort}/System/Info/Public" \
           >/dev/null; then
           ready=1
           break
@@ -116,7 +117,7 @@ in
         --fail \
         --max-time 600 \
         -X POST \
-        "http://127.0.0.1:${toString jellyfinPort}/Library/Refresh?ApiKey=$api_key" \
+        "http://${loopback}:${toString jellyfinPort}/Library/Refresh?ApiKey=$api_key" \
         >/dev/null
     '';
     serviceConfig = {

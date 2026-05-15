@@ -1,8 +1,8 @@
 { lib, config, vars, ... }:
 
 let
-  netbirdIface = "nb0";
-  wgPort = 51820;
+  netbirdIface = vars.networking.interfaces.netbird;
+  wgPort = vars.networking.ports.netbirdWireGuard;
 in
 {
   users.groups."netbird-main" = { };

@@ -86,6 +86,8 @@ hasStorageSmartLongService = cfg.systemd.services ? "storage-smart-long";
 hasStorageSmartShortTimer = cfg.systemd.timers ? "storage-smart-short";
 hasStorageSmartLongTimer = cfg.systemd.timers ? "storage-smart-long";
 hasSmartdService = cfg.systemd.services ? "smartd";
+systemHealthReportPath =
+map (package: lib.getName package) (cfg.systemd.services."system-health-report".path or [ ]);
 };
 storage = {
 zfsImportScript = cfg.systemd.services.zfs-import-data.script;
@@ -232,6 +234,12 @@ assert_json_true '.config.monitoring.hasStorageSmartLongService' "SMART long swe
 assert_json_true '.config.monitoring.hasStorageSmartShortTimer' "SMART short sweep timer must remain defined."
 assert_json_true '.config.monitoring.hasStorageSmartLongTimer' "SMART long sweep timer must remain defined."
 assert_json_true '.config.monitoring.hasSmartdService' "smartd must remain defined."
+system_health_report_path="$(snapshot_query '.config.monitoring.systemHealthReportPath')"
+if ! jq -e 'map(startswith("getent")) | any' >/dev/null <<<"$system_health_report_path"; then
+  echo "❌ System health reporting service path must include getent for runtime readiness checks."
+  echo "   path: $system_health_report_path"
+  exit 1
+fi
 
 require_match <(printf '%s\n' "$(snapshot_query '.config.storage.zfsImportScript' | jq -r '.')") '-d /dev/disk/by-id' \
   "The ZFS import helper must scan the by-id directory generically."

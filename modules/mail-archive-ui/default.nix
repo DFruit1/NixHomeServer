@@ -5,7 +5,7 @@ let
   user = "mail-archive-ui";
   group = "mail-archive-ui";
   defaultTags = [ "new" ];
-  mailArchiveUiPort = 9011;
+  mailArchiveUiPort = vars.networking.ports.mailArchiveUi;
   mailArchiveStoreRoot = vars.usersRoot;
   dataDirDefault = "/persist/appdata/mail-archive-ui";
   runtimeDirDefault = "/run/mail-archive-ui";
@@ -49,7 +49,7 @@ in
 
     address = lib.mkOption {
       type = lib.types.str;
-      default = "127.0.0.1";
+      default = vars.networking.loopbackIPv4;
       description = "Address the mail archive UI listens on.";
     };
 

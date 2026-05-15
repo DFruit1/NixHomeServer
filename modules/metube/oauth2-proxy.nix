@@ -2,8 +2,9 @@
 
 let
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
-  metubeOauth2ProxyPort = 4183;
-  metubeListenPort = 8083;
+  loopback = vars.networking.loopbackIPv4;
+  metubeOauth2ProxyPort = vars.networking.ports.oauth2ProxyMetube;
+  metubeListenPort = vars.networking.ports.metube;
 in
 {
   config = oauth2Proxy.mkSidecarService {
@@ -15,7 +16,7 @@ in
     cookieName = "_oauth2_proxy_metube";
     domain = vars.metubeDomain;
     port = metubeOauth2ProxyPort;
-    upstream = "http://127.0.0.1:${toString metubeListenPort}";
+    upstream = "http://${loopback}:${toString metubeListenPort}";
     allowedGroups = [ "metube-users" ];
     serviceDependencies = [
       "caddy.service"
@@ -23,7 +24,7 @@ in
     ];
     upstreamCheck = {
       displayName = "MeTube";
-      url = "http://127.0.0.1:${toString metubeListenPort}/";
+      url = "http://${loopback}:${toString metubeListenPort}/";
     };
   };
 }

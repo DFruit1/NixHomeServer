@@ -69,7 +69,7 @@ in
       }
 
       discovery="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
-        --resolve '${vars.kanidmDomain}:443:127.0.0.1' \
+        --resolve '${vars.kanidmDomain}:${toString vars.networking.ports.https}:${vars.networking.loopbackIPv4}' \
         '${vars.kanidmDiscoveryUrl "abs-web"}')"
       client_secret="$(< ${config.age.secrets.absClientSecret.path})"
 

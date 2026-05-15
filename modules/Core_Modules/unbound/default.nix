@@ -1,14 +1,23 @@
 { pkgs, lib, vars, ... }:
 
 let
-  dnscryptListenAddress = "127.0.0.1";
-  dnscryptListenPort = 5053;
-  splitDnsMode = vars.dnsMode == "split-horizon";
-  encryptedOnlyUpstreams = vars.dnsPrivacyMode == "encrypted-only";
-  netbirdIface = "nb0";
-  netbirdCidr = "100.64.0.0/10";
-  listenAddresses = [ "127.0.0.1" vars.nbIP ] ++ lib.optional splitDnsMode vars.serverLanIP;
-  lanCidr = "${vars.serverLanIP}/${toString vars.serverLanPrefixLength}";
+  loopback = vars.networking.loopbackIPv4;
+  loopbackCidr = vars.networking.loopbackIPv4Cidr;
+  dnsPort = vars.networking.ports.dns;
+  dnscryptListenAddress = loopback;
+  dnscryptListenPort = vars.networking.ports.dnscryptProxy;
+  splitDnsMode = vars.networking.dns.mode == "split-horizon";
+  encryptedOnlyUpstreams = vars.networking.dns.privacyMode == "encrypted-only";
+  lanIp = vars.networking.lan.ip;
+  lanPrefixLength = vars.networking.lan.prefixLength;
+  lanIface = vars.networking.interfaces.lan;
+  lanDnsDomain = vars.networking.dns.lanDomain;
+  lanDnsHosts = vars.networking.dns.lanHosts;
+  netbirdIp = vars.networking.netbird.ip;
+  netbirdIface = vars.networking.interfaces.netbird;
+  netbirdCidr = vars.networking.netbird.cidr;
+  listenAddresses = [ loopback netbirdIp ] ++ lib.optional splitDnsMode lanIp;
+  lanCidr = "${lanIp}/${toString lanPrefixLength}";
   normaliseDnsName =
     name:
     if lib.hasSuffix "." name then
@@ -16,7 +25,7 @@ let
     else if lib.hasInfix "." name then
       name
     else
-      "${name}.${vars.lanDnsDomain}";
+      "${name}.${lanDnsDomain}";
   hostRecordNames =
     name:
     if lib.hasSuffix "." name || lib.hasInfix "." name then
@@ -41,25 +50,25 @@ let
       octets = lib.splitString "." ip;
     in
     "${lib.concatStringsSep "." (lib.reverseList (lib.take 3 octets))}.in-addr.arpa";
-  lanHostNames = builtins.attrNames vars.lanDnsHosts;
+  lanHostNames = builtins.attrNames lanDnsHosts;
   lanDnsHostRecords =
     lib.concatMap
       (
         hostName:
         let
-          hostIp = vars.lanDnsHosts.${hostName};
+          hostIp = lanDnsHosts.${hostName};
         in
         (mkARecord hostName hostIp)
         ++ [ (mkPtrRecord hostName hostIp) ]
       )
       lanHostNames;
-  lanReverseZones = lib.unique (map (hostName: reverseZoneForIp vars.lanDnsHosts.${hostName}) lanHostNames);
+  lanReverseZones = lib.unique (map (hostName: reverseZoneForIp lanDnsHosts.${hostName}) lanHostNames);
   privateHostedRecords =
     targetIp:
     [
       "\"${vars.domain}                 A ${targetIp}\""
       "\"www.${vars.domain}             A ${targetIp}\""
-      "\"paperless.${vars.domain}       A ${targetIp}\""
+      "\"${vars.paperlessDomain}       A ${targetIp}\""
       "\"${vars.audiobooksDomain}       A ${targetIp}\""
       "\"${vars.filebrowserDomain}      A ${targetIp}\""
       "\"${vars.emailsDomain}           A ${targetIp}\""
@@ -73,16 +82,16 @@ let
     ];
 
   lanHostedRecords =
-    (privateHostedRecords vars.serverLanIP)
+    (privateHostedRecords lanIp)
     ++ [
-      "\"${vars.kanidmDomain}           A ${vars.serverLanIP}\""
-      "\"${vars.uploadsDomain}          A ${vars.serverLanIP}\""
+      "\"${vars.kanidmDomain}           A ${lanIp}\""
+      "\"${vars.uploadsDomain}          A ${lanIp}\""
     ]
     ++ lanDnsHostRecords;
 
-  netbirdHostedRecords = privateHostedRecords vars.nbIP;
+  netbirdHostedRecords = privateHostedRecords netbirdIp;
   lanLocalZones =
-    [ "${vars.domain} transparent" "${vars.lanDnsDomain} static" ]
+    [ "${vars.domain} transparent" "${lanDnsDomain} static" ]
     ++ map (zone: "${zone} static") lanReverseZones;
 in
 
@@ -91,7 +100,7 @@ in
     enable = true;
     settings = {
       listen_addresses = [ "${dnscryptListenAddress}:${toString dnscryptListenPort}" ];
-      bootstrap_resolvers = [ "9.9.9.9:53" "1.1.1.1:53" ];
+      bootstrap_resolvers = map (resolver: "${resolver.address}:${toString resolver.port}") vars.networking.dns.bootstrapResolvers;
       ignore_system_dns = true;
       require_nolog = true;
       require_nofilter = true;
@@ -125,7 +134,7 @@ in
             access-control = [
               "${lanCidr} allow"
               "${netbirdCidr} allow"
-              "127.0.0.0/8 allow"
+              "${loopbackCidr} allow"
             ];
             verbosity = 1;
             qname-minimisation = true;
@@ -141,7 +150,7 @@ in
               {
                 access-control-view = [
                   "${lanCidr} lan"
-                  "127.0.0.0/8 lan"
+                  "${loopbackCidr} lan"
                   "${netbirdCidr} netbird"
                 ];
               }
@@ -190,14 +199,14 @@ in
   networking.firewall.interfaces =
     {
       ${netbirdIface} = {
-        allowedTCPPorts = [ 53 ];
-        allowedUDPPorts = [ 53 ];
+        allowedTCPPorts = [ dnsPort ];
+        allowedUDPPorts = [ dnsPort ];
       };
     }
     // lib.optionalAttrs splitDnsMode {
-      ${vars.netIface} = {
-        allowedTCPPorts = [ 53 ];
-        allowedUDPPorts = [ 53 ];
+      ${lanIface} = {
+        allowedTCPPorts = [ dnsPort ];
+        allowedUDPPorts = [ dnsPort ];
       };
     };
 }

@@ -1,7 +1,7 @@
 { lib, vars, ... }:
 
 let
-  paperlessPort = 8000;
+  paperlessPort = vars.networking.ports.paperless;
   dataDir = "/var/lib/paperless";
   blockedOfficeExtensions = lib.optionals (!vars.paperlessEnableDangerousMacroOfficeParsing) [
     "doc"
@@ -29,14 +29,16 @@ let
   mkCaseInsensitiveExtensionPattern =
     extension:
     "*."
-    + lib.concatMapStrings (
-      char:
-      let
-        lower = lib.toLower char;
-        upper = lib.toUpper char;
-      in
-      if lower == upper then char else "[${lower}${upper}]"
-    ) (lib.stringToCharacters extension);
+    + lib.concatMapStrings
+      (
+        char:
+        let
+          lower = lib.toLower char;
+          upper = lib.toUpper char;
+        in
+        if lower == upper then char else "[${lower}${upper}]"
+      )
+      (lib.stringToCharacters extension);
   paperlessConsumerIgnorePatterns = [
     ".DS_Store"
     ".DS_STORE"
@@ -66,7 +68,7 @@ in
     dataDir = dataDir;
     mediaDir = vars.paperlessArchiveRoot;
     consumptionDir = vars.paperlessInboxRoot;
-    address = "127.0.0.1";
+    address = vars.networking.loopbackIPv4;
     port = paperlessPort;
     exporter = {
       enable = true;
@@ -81,8 +83,8 @@ in
       PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS = "true";
       PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM = "groups";
       PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
-      PAPERLESS_URL = "https://paperless.${vars.domain}";
-      PAPERLESS_ALLOWED_HOSTS = "paperless.${vars.domain}";
+      PAPERLESS_URL = "https://${vars.paperlessDomain}";
+      PAPERLESS_ALLOWED_HOSTS = vars.paperlessDomain;
       PAPERLESS_EXPORT_DIR = vars.paperlessExportRoot;
       PAPERLESS_OCR_LANGUAGE = vars.paperlessOcrLanguage;
       PAPERLESS_OCR_CLEAN = "clean";

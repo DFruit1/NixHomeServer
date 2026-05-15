@@ -1,7 +1,7 @@
 { config, lib, vars, ... }:
 
 let
-  kanidmPort = 8443;
+  kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   oauth2ProxyClientSecretPath = "/run/oauth2-proxy/client-secret";
   mkManualGroup =
@@ -25,13 +25,15 @@ in
           mailAddresses = [ vars.kanidmAdminEmail ];
         };
       }
-      // lib.mapAttrs (
-        _: canary: {
-          displayName = canary.displayName;
-          mailAddresses = [ canary.mailAddress ];
-          groups = canary.groups;
-        }
-      ) vars.runtimeAccessCanaries;
+      // lib.mapAttrs
+        (
+          _: canary: {
+            displayName = canary.displayName;
+            mailAddresses = [ canary.mailAddress ];
+            groups = canary.groups;
+          }
+        )
+        vars.runtimeAccessCanaries;
 
     # Keep the builtin group in the provision inventory so post-start
     # reconciliation does not try to delete it as an orphaned entity.
@@ -67,8 +69,8 @@ in
     systems.oauth2.paperless-web = {
       displayName = "Documents";
       imageFile = ./assets/documents.svg;
-      originUrl = "https://paperless.${vars.domain}/accounts/oidc/kanidm/login/callback/";
-      originLanding = "https://paperless.${vars.domain}";
+      originUrl = "https://${vars.paperlessDomain}/accounts/oidc/kanidm/login/callback/";
+      originLanding = "https://${vars.paperlessDomain}";
       basicSecretFile = config.age.secrets.paperlessClientSecret.path;
       preferShortUsername = true;
       scopeMaps."paperless-users" = [ "openid" "profile" "email" "groups_name" ];

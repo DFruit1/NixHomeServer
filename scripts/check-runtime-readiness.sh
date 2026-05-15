@@ -838,7 +838,7 @@ run_local_access_checks() {
 }
 
 run_deep_access_checks() {
-  local bootstrap_state_file helper_path helper_json_file helper_results helper_status
+  local bootstrap_state_file helper_path helper_json_file helper_results helper_status helper_stderr_file
   local playwright_module
   local access_result
   local bootstrap_failure_summary
@@ -879,6 +879,7 @@ run_deep_access_checks() {
     fi
 
     playwright_module="$(nix eval --raw nixpkgs#playwright-driver.outPath)/index.mjs"
+    helper_stderr_file="$(mktemp "${tmpdir}/access-browser-stderr.XXXXXX")"
     set +e
     helper_results="$(
       env \
@@ -890,12 +891,13 @@ run_deep_access_checks() {
           set -euo pipefail
           export RUNTIME_ACCESS_BROWSER_EXECUTABLE="$(command -v chromium)"
           node "$1" verify
-        ' bash "$repo_root/$helper_path" 2>&1
+        ' bash "$repo_root/$helper_path" 2>"$helper_stderr_file"
     )"
     helper_status=$?
     set -e
 
     if (( helper_status != 0 )); then
+      helper_results="$(cat "$helper_stderr_file"; printf '%s\n' "$helper_results")"
       emit_text "❌ access browser helper failed"
       append_json "$access_authed_file" "$(access_result_json "authed" "" "" "CRITICAL" "${helper_results//$'\n'/ }" "" "")"
       failed=1

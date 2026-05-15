@@ -1,6 +1,7 @@
 { config, pkgs, vars, ... }:
 
 let
+  loopback = vars.networking.loopbackIPv4;
   audiobookshelfPort = config.services.audiobookshelf.port;
   dataDir = "/var/lib/${config.services.audiobookshelf.dataDir}";
   managedDir = "${dataDir}/.nixos-managed";
@@ -38,7 +39,7 @@ in
 
       for _ in $(seq 1 30); do
         if status_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
-          "http://127.0.0.1:${toString audiobookshelfPort}/status")"; then
+          "http://${loopback}:${toString audiobookshelfPort}/status")"; then
           break
         fi
         sleep 1
@@ -67,10 +68,10 @@ in
           --arg username '${vars.kanidmAdminUser}' \
           --arg password "$bootstrap_password" \
           '{ newRoot: { username: $username, password: $password } }')" \
-        "http://127.0.0.1:${toString audiobookshelfPort}/init"
+        "http://${loopback}:${toString audiobookshelfPort}/init"
 
       status_json="$(${pkgs.curl}/bin/curl --silent --show-error --fail \
-        "http://127.0.0.1:${toString audiobookshelfPort}/status")"
+        "http://${loopback}:${toString audiobookshelfPort}/status")"
 
       printf '%s' "$status_json" | ${pkgs.jq}/bin/jq -e '.isInit == true' >/dev/null || {
         echo "Audiobookshelf root bootstrap did not complete successfully" >&2

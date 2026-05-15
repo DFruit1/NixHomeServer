@@ -1,5 +1,9 @@
 { lib, config, vars, ... }:
 
+let
+  loopback = vars.networking.loopbackIPv4;
+  httpsPort = vars.networking.ports.https;
+in
 {
   # The Cloudflare tunnel is intentionally limited to public or
   # authentication-gated endpoints. LAN/NetBird still provide the direct path
@@ -21,15 +25,15 @@
 
       ingress = {
         "${vars.kanidmDomain}" = {
-          service = "https://127.0.0.1:443";
+          service = "https://${loopback}:${toString httpsPort}";
           originRequest.originServerName = vars.kanidmDomain;
         };
         "${vars.uploadsDomain}" = {
-          service = "https://127.0.0.1:443";
+          service = "https://${loopback}:${toString httpsPort}";
           originRequest.originServerName = vars.uploadsDomain;
         };
         "${vars.sharePhotosDomain}" = {
-          service = "https://127.0.0.1:443";
+          service = "https://${loopback}:${toString httpsPort}";
           originRequest.originServerName = vars.sharePhotosDomain;
         };
       };

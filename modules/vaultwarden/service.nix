@@ -1,7 +1,7 @@
 { config, lib, pkgs, pkgsUnstable, vars, ... }:
 
 let
-  vaultwardenPort = 8222;
+  vaultwardenPort = vars.networking.ports.vaultwarden;
   runtimeDir = "/run/vaultwarden";
   environmentFile = "${runtimeDir}/vaultwarden.env";
   vaultwardenSecretMaterializePath = with pkgs; [
@@ -26,7 +26,7 @@ in
     environmentFile = [ environmentFile ];
     config = {
       DOMAIN = "https://${vars.vaultwardenDomain}";
-      ROCKET_ADDRESS = "127.0.0.1";
+      ROCKET_ADDRESS = vars.networking.loopbackIPv4;
       ROCKET_PORT = vaultwardenPort;
       ENABLE_WEBSOCKET = true;
       SIGNUPS_ALLOWED = false;

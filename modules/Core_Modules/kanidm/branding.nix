@@ -1,7 +1,7 @@
 { config, pkgs, vars, ... }:
 
 let
-  kanidmPort = 8443;
+  kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   kanidmBrandingPath = with pkgs; [
     kanidm_1_9

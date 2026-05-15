@@ -1,7 +1,7 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  kavitaPort = 5000;
+  kavitaPort = vars.networking.ports.kavita;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
   baseKavitaPackage = pkgs.callPackage ./package.nix { };
@@ -32,7 +32,7 @@ in
     tokenKeyFile = config.age.secrets.kavitaTokenKey.path;
     settings = {
       Port = kavitaPort;
-      IpAddresses = "127.0.0.1,::1";
+      IpAddresses = "${vars.networking.loopbackIPv4},${vars.networking.loopbackIPv6}";
       OpenIdConnectSettings = {
         Enabled = true;
         Authority = vars.kanidmIssuer "kavita-web";

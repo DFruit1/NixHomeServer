@@ -101,6 +101,7 @@ in
   ];
 
   disko.enableConfig = true;
+  repo.impermanence.enablePersistence = true;
   services.dbus.enable = true;
   services.zfs.autoScrub = {
     enable = true;
