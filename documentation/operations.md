@@ -257,6 +257,17 @@ curl -kI --resolve passwords.sydneybasiniot.org:443:192.168.8.12 https://passwor
 
 - if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
 
+## Upload Quarantine Review
+
+Copyparty uploads land in locked staging first. The upload processor scans staged
+files with ClamAV, performs VirusTotal hash lookups only for high-risk
+extensions, then promotes clean files or moves risky files to quarantine.
+
+Admins can review quarantined uploads through the FileBrowser Quantum
+`Quarantine` source. Manual VirusTotal file uploads, if needed, are an admin
+action against files already in quarantine; the server does not automatically
+upload file bytes to VirusTotal.
+
 Deep runtime access checks require the canary bootstrap state on the server:
 
 ```bash

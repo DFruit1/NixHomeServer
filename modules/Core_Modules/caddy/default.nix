@@ -93,6 +93,9 @@ in
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
           redir /login /api/auth/oidc/login{?query} temporary
+          @download_html_svg path *.html *.svg
+          header @download_html_svg Content-Disposition attachment
+          header @download_html_svg X-Content-Type-Options nosniff
           reverse_proxy http://${loopback}:${toString ports.filebrowserQuantum} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
@@ -138,17 +141,6 @@ in
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
           reverse_proxy http://${loopback}:${toString ports.oauth2ProxyMetube} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.monitorDomain}" = lib.mkIf apps.glances.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyGlances} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }

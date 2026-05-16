@@ -21,6 +21,10 @@
 
       install -d -m 0770 -o mail-archive-ui -g mail-archive-ui '${vars.sharedEmailsRoot}'
       setfacl -m 'g:mail-archive-ui:--x' '${vars.sharedRoot}'
+      setfacl \
+        -m 'g:filebrowser-quantum:r-x' \
+        -m 'd:g:filebrowser-quantum:r-x' \
+        '${vars.sharedEmailsRoot}'
     '';
   };
 

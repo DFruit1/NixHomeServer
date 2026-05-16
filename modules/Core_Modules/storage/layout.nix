@@ -4,6 +4,7 @@ let
   zfsBin = "${pkgs.zfs}/bin/zfs";
   canonicalUsersDataset = "${vars.zfsDataPool.name}/users";
   canonicalSharedDataset = "${vars.zfsDataPool.name}/shared";
+  canonicalUploadStagingDataset = "${vars.zfsDataPool.name}/upload-staging";
 
   mkDirCmd =
     { path
@@ -32,6 +33,18 @@ let
       mode = "2775";
       user = "root";
       group = "users";
+    }
+    {
+      path = vars.uploadSecurity.stagingRoot;
+      mode = "0710";
+      user = "root";
+      group = "upload-staging";
+    }
+    {
+      path = vars.uploadSecurity.quarantineRoot;
+      mode = "0750";
+      user = "upload-processor";
+      group = "upload-review";
     }
   ];
 
@@ -69,6 +82,10 @@ in
 
       ensure_dataset '${canonicalUsersDataset}' '${vars.usersRoot}'
       ensure_dataset '${canonicalSharedDataset}' '${vars.sharedRoot}'
+      ensure_dataset '${canonicalUploadStagingDataset}' '${vars.uploadSecurity.stagingRoot}'
+      ${zfsBin} set exec=off '${canonicalUploadStagingDataset}'
+      ${zfsBin} set devices=off '${canonicalUploadStagingDataset}'
+      ${zfsBin} set setuid=off '${canonicalUploadStagingDataset}'
       ${zfsContentLayoutScript}
     '';
   };

@@ -15,7 +15,18 @@
     script = ''
       set -euo pipefail
       install -d -m 2775 -o root -g users '${vars.sharedRoot}/files'
+      install -d -m 2775 -o root -g users '${vars.sharedRoot}/kiwix'
+      install -d -m 0750 -o root -g kiwix '${vars.kiwixLibraryRoot}'
     '';
+  };
+
+  fileSystems."${vars.sharedRoot}/kiwix" = {
+    device = vars.kiwixLibraryRoot;
+    options = [
+      "bind"
+      "nofail"
+      "x-systemd.requires=data-pool-layout.service"
+    ];
   };
 
   systemd.services.filebrowser-quantum = {

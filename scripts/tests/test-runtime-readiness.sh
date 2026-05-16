@@ -48,7 +48,7 @@ mkdir -p \
   "$runtime_bin" \
   "${mount_root}/data/paperless/archive/.hist" \
   "${mount_root}/data/shared/app-state" \
-  "${mount_root}/data/users/dsaw/uploads" \
+  "${mount_root}/data/upload-staging/dsaw" \
   "${mail_archive_hidden_sync_root}/maildir/cur" \
   "$mail_archive_visible_mirror_dir" \
   "$metadata_root" \
@@ -142,9 +142,9 @@ cat >"$snapshot_file" <<EOF
   "uploadAccess": {
     "copyparty": {
       "serviceUser": "copyparty",
-      "requiredGroup": "users",
-      "uploadRootsParent": "${mount_root}/data/users",
-      "uploadSubdir": "uploads"
+      "requiredGroup": "upload-staging",
+      "uploadRootsParent": "${mount_root}/data/upload-staging",
+      "uploadSubdir": null
     }
   },
   "persistence": {
@@ -242,7 +242,6 @@ cat >"$snapshot_file" <<EOF
           "immich-users",
           "audiobookshelf-users",
           "kavita-users",
-          "glances-users",
           "mail-archive-users",
           "metube-users"
         ],
@@ -506,8 +505,8 @@ cat >"$runtime_bin/getent" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${1:-}" == "group" && "${2:-}" == "users" ]]; then
-  printf 'users:x:100:copyparty,filebrowser-quantum,metube\n'
+if [[ "${1:-}" == "group" && "${2:-}" == "upload-staging" ]]; then
+  printf 'upload-staging:x:100:copyparty,upload-processor\n'
   exit 0
 fi
 
@@ -520,7 +519,7 @@ cat >"$runtime_bin/id" <<'EOF'
 set -euo pipefail
 
 if [[ "${1:-}" == "-nG" && "${2:-}" == "copyparty" ]]; then
-  printf 'copyparty users\n'
+  printf 'copyparty upload-staging\n'
   exit 0
 fi
 
@@ -674,7 +673,7 @@ require_match <(printf '%s\n' "$manual_output") 'continuing because the mirrored
   "check-runtime-readiness.sh must explain why degraded mirrored storage still passes by default."
 require_match <(printf '%s\n' "$manual_output") 'backup state: backup metadata is stale, but the removable target is absent' \
   "check-runtime-readiness.sh must warn when backups are stale but the removable target is absent."
-require_match <(printf '%s\n' "$manual_output") '^✅ upload group users contains copyparty' \
+require_match <(printf '%s\n' "$manual_output") '^✅ upload group upload-staging contains copyparty' \
   "check-runtime-readiness.sh must confirm the Copyparty upload bridge group membership."
 require_match <(printf '%s\n' "$manual_output") '^✅ upload path writable:' \
   "check-runtime-readiness.sh must probe a managed personal upload root for write access."

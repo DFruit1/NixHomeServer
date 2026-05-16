@@ -5,7 +5,6 @@ let
     "audiobookshelf"
     "copyparty"
     "filebrowser-quantum"
-    "glances"
     "immich"
     "jellyfin"
     "kavita"
@@ -40,7 +39,6 @@ rec {
       "paperless"
     ];
     ops = [
-      "glances"
       "vaultwarden"
     ];
     compatibility = appNames;
@@ -62,6 +60,7 @@ rec {
     "cfHomeCreds"
     "cfAPIToken"
     "storageAlertWebhookUrl"
+    "virusTotalApiKey"
   ];
 
   placeholderPrefixes = [

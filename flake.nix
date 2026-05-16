@@ -38,6 +38,7 @@
         jq
         nix
         ripgrep
+        sqlite
       ];
       siteNames = [
         "dsaw"
@@ -89,7 +90,8 @@
               uploadsDomain = vars.uploadsDomain;
               filebrowserDomain = vars.filebrowserDomain;
               vaultwardenDomain = vars.vaultwardenDomain;
-              monitorDomain = vars.monitorDomain;
+              uploadSecurity = vars.uploadSecurity;
+              kanidmAdminUser = vars.kanidmAdminUser;
               runtimeAccessCanaries = vars.runtimeAccessCanaries;
               personalKavitaLibraries = vars.personalKavitaLibraries;
               sharedBooksSubdirs = vars.sharedBooksSubdirs;
@@ -118,6 +120,7 @@
                 dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
                 persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
                 nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
+                persistedDirectories = cfg.repo.impermanence.inventory.persistenceDirectories;
                 hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
                 hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
               };
@@ -146,6 +149,7 @@
                 cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
                 oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
                 provisionGroupNames = builtins.attrNames cfg.services.kanidm.provision.groups;
+                provisionGroups = cfg.services.kanidm.provision.groups;
                 provisionPersonNames = builtins.attrNames cfg.services.kanidm.provision.persons;
                 provisionPersons = cfg.services.kanidm.provision.persons;
                 ageSecretNames = builtins.attrNames cfg.age.secrets;
@@ -156,6 +160,9 @@
                   cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [ ];
                 mailArchiveUiMountCondition =
                   cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
+                mailArchiveUiEnvironment = cfg.services.mail-archive-ui.environment or { };
+                mailArchiveUiReadWritePaths =
+                  cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
                 mailArchiveUiPath =
                   map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
                 mailArchiveSyncPath =
@@ -166,9 +173,13 @@
                   cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
                 copypartyServiceBindPaths =
                   cfg.systemd.services.copyparty.serviceConfig.BindPaths or [ ];
+                copypartyServiceReadWritePaths =
+                  cfg.systemd.services.copyparty.serviceConfig.ReadWritePaths or [ ];
                 hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
                 hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
                 filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
+                filebrowserQuantumReadWritePaths =
+                  cfg.systemd.services."filebrowser-quantum".serviceConfig.ReadWritePaths or [ ];
                 copypartySettings = cfg.services.copyparty.settings;
                 copypartyVolumes = cfg.services.copyparty.volumes;
                 copypartyPreStart = cfg.systemd.services.copyparty.preStart;
@@ -209,6 +220,13 @@
                   vars.sharedVideosRoot
                   vars.usersRoot
                 ];
+                hasUploadProcessorService = cfg.systemd.services ? "upload-processor";
+                hasUploadProcessorRescanService = cfg.systemd.services ? "upload-processor-rescan";
+                hasUploadProcessorRescanTimer = cfg.systemd.timers ? "upload-processor-rescan";
+                uploadProcessorReadWritePaths = cfg.systemd.services."upload-processor".serviceConfig.ReadWritePaths or [ ];
+                clamavDaemonEnable = cfg.services.clamav.daemon.enable;
+                clamavUpdaterEnable = cfg.services.clamav.updater.enable;
+                clamavDaemonSettings = cfg.services.clamav.daemon.settings;
                 hasGlancesService = cfg.systemd.services ? "glances";
                 hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
                 hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
@@ -291,6 +309,7 @@
           bash scripts/tests/test-secret-definitions.sh
           bash scripts/tests/test-deploy-with-validation-remote-preflight.sh
           bash scripts/tests/test-storage-health-checks.sh
+          bash scripts/tests/test-upload-processor.sh
           bash scripts/tests/test-runtime-readiness.sh
           bash scripts/tests/test-system-health-report.sh
           export CORE_CONFIG_SNAPSHOT_JSON="$(cat ${coreConfigSnapshotFile})"

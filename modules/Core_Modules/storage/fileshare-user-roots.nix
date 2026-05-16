@@ -21,6 +21,7 @@ let
     username="$1"
     root="${vars.usersRoot}/$username"
     emails="$root/emails"
+    staging="${vars.uploadSecurity.stagingRoot}/$username"
 
     install -d -m 2750 -g users "$root"
     chown root:users "$root"
@@ -47,6 +48,7 @@ let
       install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails"
     fi
     install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails/.internal-sync"
+    install -d -m 0730 -o root -g upload-staging "$staging"
 
     ${pkgs.acl}/bin/setfacl \
       -m u::rwx \

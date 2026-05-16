@@ -96,10 +96,6 @@ rec {
       enable = false;
       subdomain = "ytdownload";
     };
-    monitoring = {
-      enable = false;
-      subdomain = "monitor";
-    };
     passwords = {
       enable = false;
       subdomain = "passwords";
@@ -158,7 +154,6 @@ rec {
       oauth2ProxyMailArchive = 4181;
       oauth2ProxyKiwix = 4182;
       oauth2ProxyMetube = 4183;
-      oauth2ProxyGlances = 4184;
       paperless = 8000;
       audiobookshelf = 13378;
       copyparty = 3923;
@@ -263,6 +258,84 @@ rec {
   immichExternalRoot = "${immichRoot}/external";
   usersRoot = "${dataRoot}/users";
   sharedRoot = "${dataRoot}/shared";
+  uploadSecurity = {
+    stagingRoot = "${dataRoot}/upload-staging";
+    quarantineRoot = "${dataRoot}/quarantine/uploads";
+    adminReviewGroup = "app-admin";
+    zimPromotionGroup = "app-admin";
+    scanSettleSeconds = 30;
+    rescanInterval = "5m";
+    clamavTimeoutSeconds = 300;
+    virusTotalTimeoutSeconds = 20;
+    virusTotalMaliciousThreshold = 1;
+    virusTotalSuspiciousThreshold = 1;
+    lowRiskExtensions = [
+      "pdf"
+      "docx"
+      "xlsx"
+      "pptx"
+      "jpg"
+      "jpeg"
+      "png"
+      "gif"
+      "webp"
+      "mp3"
+      "flac"
+      "m4a"
+      "opus"
+      "wav"
+      "mp4"
+      "mkv"
+      "webm"
+    ];
+    highRiskExtensions = [
+      "exe"
+      "dll"
+      "scr"
+      "com"
+      "msi"
+      "bat"
+      "cmd"
+      "ps1"
+      "psm1"
+      "vbs"
+      "js"
+      "jse"
+      "hta"
+      "jar"
+      "apk"
+      "deb"
+      "rpm"
+      "appimage"
+      "iso"
+      "img"
+      "dmg"
+      "zip"
+      "7z"
+      "rar"
+      "tar"
+      "gz"
+      "bz2"
+      "xz"
+      "doc"
+      "docm"
+      "dotm"
+      "xls"
+      "xlsm"
+      "xltm"
+      "xlsb"
+      "xlam"
+      "ppt"
+      "pptm"
+      "potm"
+      "pps"
+      "ppsm"
+      "html"
+      "svg"
+      "rtf"
+      "zim"
+    ];
+  };
   fileAccessPosixGids = {
     "user-files" = 2001;
     "shared-files-read-write-access" = 2002;
@@ -349,18 +422,16 @@ rec {
   sharedYouTubeRoot = "${sharedVideosRoot}/youtube";
   sharedOtherVideosRoot = "${sharedVideosRoot}/other";
   userContentSubdirs = [
-    "documents"
-    "photos"
     "audiobooks"
     "books"
     "emails"
     "files"
-    "uploads"
   ];
   sharedContentSubdirs = [
     "audiobooks"
     "books"
     "emails"
+    "kiwix"
     "music"
     "videos"
     "files"
@@ -382,17 +453,12 @@ rec {
         "immich-users"
         "audiobookshelf-users"
         "kavita-users"
-        "glances-users"
         "mail-archive-users"
         "metube-users"
       ];
       passwordSecret = "runtimeCanaryFilesPassword";
     };
   };
-  glancesAccessUsers = [
-    kanidmAdminUser
-  ];
-  monitorDomain = "${apps.monitoring.subdomain}.${domain}";
   paperlessDomain = "${apps.documents.subdomain}.${domain}";
   photosDomain = "${apps.photos.privateSubdomain}.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
   sharePhotosDomain = "${apps.photos.publicShareSubdomain}.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.

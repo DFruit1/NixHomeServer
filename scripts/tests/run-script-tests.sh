@@ -11,6 +11,7 @@ for test_script in \
   scripts/tests/test-deploy-with-validation-remote-preflight.sh \
   scripts/tests/test-storage-health-checks.sh \
   scripts/tests/test-storage-device-discovery.sh \
+  scripts/tests/test-upload-processor.sh \
   scripts/tests/test-runtime-readiness.sh \
   scripts/tests/test-system-health-report.sh \
   scripts/tests/test-evaluated-host-config.sh

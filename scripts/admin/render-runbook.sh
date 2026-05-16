@@ -93,7 +93,6 @@ Core URLs:
 - Identity: \`https://$(jq -r '.kanidmDomain' <<<"$settings_json")\`
 - Files: \`https://$(jq -r '.filebrowserDomain' <<<"$settings_json")\`
 - Uploads: \`https://$(jq -r '.uploadsDomain' <<<"$settings_json")\`
-- Monitoring: \`https://$(jq -r '.monitorDomain' <<<"$settings_json")\`
 
 ## User Onboarding
 

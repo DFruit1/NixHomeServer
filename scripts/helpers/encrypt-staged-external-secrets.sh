@@ -21,7 +21,7 @@ encrypt_staged_secret() {
   local source_file="$clear_file"
   local temp_file=""
 
-  if [[ -s "$age_file" ]]; then
+  if [[ -s "$age_file" && "${REPLACE_EXISTING_EXTERNAL_SECRETS:-0}" != "1" ]]; then
     echo "⏭  $name already encrypted - skipping"
     return
   fi
@@ -52,6 +52,7 @@ encrypt_staged_secret netbirdSetupKey validate_netbird
 encrypt_staged_secret cfHomeCreds validate_cf
 encrypt_staged_secret cfAPIToken validate_cf_api_token
 encrypt_staged_secret storageAlertWebhookUrl validate_webhook_url
+encrypt_staged_secret virusTotalApiKey validate_nonempty_secret
 
 echo
 echo "✅ Validated and encrypted staged external secrets."

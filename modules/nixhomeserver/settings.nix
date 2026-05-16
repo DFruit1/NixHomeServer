@@ -8,7 +8,6 @@ let
     audiobookshelf = vars.apps.audiobooks.enable or false;
     copyparty = vars.apps.uploads.enable or false;
     "filebrowser-quantum" = vars.apps.files.enable or false;
-    glances = vars.apps.monitoring.enable or false;
     immich = vars.apps.photos.enable or false;
     jellyfin = vars.apps.videos.enable or false;
     kavita = vars.apps.books.enable or false;

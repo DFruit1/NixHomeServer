@@ -488,7 +488,7 @@ check_copyparty_upload_permissions() {
   service_user="$(jq -r '.serviceUser' <<<"$access_json")"
   required_group="$(jq -r '.requiredGroup' <<<"$access_json")"
   upload_roots_parent="$(jq -r '.uploadRootsParent' <<<"$access_json")"
-  upload_subdir="$(jq -r '.uploadSubdir' <<<"$access_json")"
+  upload_subdir="$(jq -r '.uploadSubdir // empty' <<<"$access_json")"
 
   group_entry="$(getent group "$required_group" 2>/dev/null || true)"
   group_members="$(awk -F: '{ print $4 }' <<<"$group_entry")"
@@ -539,13 +539,16 @@ check_copyparty_upload_permissions() {
     append_json "$paths_file" "$(path_result_json "upload permission" "copyparty-upload-root" "$upload_dir" "$severity" "$detail" "$present")"
     mark_failed_if_critical "$severity"
   done < <(
-    find "$upload_roots_parent" -mindepth 2 -maxdepth 2 -type d -name "$upload_subdir" -print 2>/dev/null \
-      | sort
+    if [[ -n "$upload_subdir" ]]; then
+      find "$upload_roots_parent" -mindepth 2 -maxdepth 2 -type d -name "$upload_subdir" -print 2>/dev/null
+    else
+      find "$upload_roots_parent" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null
+    fi | sort
   )
 
   if (( found_upload_root == 0 )); then
     emit_text "ℹ️ No managed Copyparty upload roots exist yet under ${upload_roots_parent}; skipping write probe."
-    append_json "$paths_file" "$(path_result_json "upload permission" "copyparty-upload-root" "${upload_roots_parent}/${upload_subdir}" "OK" "no managed upload roots discovered yet" "false")"
+    append_json "$paths_file" "$(path_result_json "upload permission" "copyparty-upload-root" "$upload_roots_parent" "OK" "no managed upload roots discovered yet" "false")"
   fi
 }
 

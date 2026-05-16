@@ -67,6 +67,15 @@ let
             denyByDefault = true;
           };
         }
+        {
+          path = vars.uploadSecurity.quarantineRoot;
+          name = "Quarantine";
+          config = {
+            defaultEnabled = false;
+            defaultUserScope = "/";
+            denyByDefault = true;
+          };
+        }
       ];
     };
     frontend = {
@@ -204,6 +213,7 @@ in
         vars.usersRoot
         vars.sharedRoot
         vars.kiwixLibraryRoot
+        vars.uploadSecurity.quarantineRoot
       ];
       UMask = "0007";
     };
@@ -389,7 +399,8 @@ in
         if [[ "$username" == "$admin_username" ]]; then
           desired_scopes='[
             {"name":"Personal","scope":"/"},
-            {"name":"Shared","scope":"/"}
+            {"name":"Shared","scope":"/"},
+            {"name":"Quarantine","scope":"/"}
           ]'
           desired_permissions='{"api":true,"admin":true,"modify":true,"share":true,"realtime":false,"delete":true,"create":true,"download":true}'
           desired_sidebar_links='[]'
@@ -407,6 +418,9 @@ in
                 else empty end,
                 if has_group("shared-files-read-write-access") then
                   {name:"Shared", scope:"/"}
+                else empty end,
+                if has_group("app-admin") then
+                  {name:"Quarantine", scope:"/"}
                 else empty end
               ]')"
 
@@ -419,13 +433,13 @@ in
           desired_permissions="$(jq -cn --argjson groups "$groups_json" '
             def has_group($group_name): ($groups | index($group_name)) != null;
             {
-              api: (has_group("user-files") or has_group("shared-files-read-write-access")),
+              api: (has_group("user-files") or has_group("shared-files-read-write-access") or has_group("app-admin")),
               admin: false,
-              modify: (has_group("user-files") or has_group("shared-files-read-write-access")),
-              share: (has_group("user-files") or has_group("shared-files-read-write-access")),
+              modify: (has_group("user-files") or has_group("shared-files-read-write-access") or has_group("app-admin")),
+              share: (has_group("user-files") or has_group("shared-files-read-write-access") or has_group("app-admin")),
               realtime: false,
-              delete: (has_group("user-files") or has_group("shared-files-read-write-access")),
-              create: (has_group("user-files") or has_group("shared-files-read-write-access")),
+              delete: (has_group("user-files") or has_group("shared-files-read-write-access") or has_group("app-admin")),
+              create: (has_group("user-files") or has_group("shared-files-read-write-access") or has_group("app-admin")),
               download: true
             }')"
 
@@ -434,18 +448,21 @@ in
             [
               if has_group("user-files") then
                 {name:"Personal", category:"source", target:"/", icon:"", sourceName:"Personal"},
-                {name:"Files", category:"source", target:"/files/", icon:"file_present", sourceName:"Personal"},
-                {name:"Uploads", category:"source", target:"/uploads/", icon:"cloud_upload", sourceName:"Personal"}
+                {name:"Files", category:"source", target:"/files/", icon:"file_present", sourceName:"Personal"}
               else empty end,
-              if has_group("user-files") and has_group("shared-files-read-write-access") then
+              if has_group("user-files") and (has_group("shared-files-read-write-access") or has_group("app-admin")) then
                 {name:"", category:"divider", target:"#", icon:""}
               else empty end,
               if has_group("shared-files-read-write-access") then
                 {name:"Shared", category:"source", target:"/", icon:"", sourceName:"Shared"}
+              else empty end,
+              if has_group("app-admin") then
+                {name:"Quarantine", category:"source", target:"/", icon:"security", sourceName:"Quarantine"}
               else empty end
             ]')"
 
           if jq -e 'index("user-files") != null' >/dev/null <<<"$groups_json"; then
+            ensure_deny_user "Personal" "/$username/uploads" "$username"
             ensure_deny_user "Personal" "/$username/documents" "$username"
             ensure_deny_user "Personal" "/$username/photos" "$username"
           fi
@@ -474,13 +491,14 @@ in
       wait_for_health
       login
 
-      for group_name in user-files shared-files-read-write-access; do
+      for group_name in user-files shared-files-read-write-access app-admin; do
         ensure_group_membership "$group_name"
       done
 
       for group_name in shared-files-read-write-access; do
         ensure_allow_group "Shared" "/" "$group_name"
       done
+      ensure_allow_group "Quarantine" "/" "app-admin"
 
       api_get "/api/users" | jq -c '.[]' | while IFS= read -r user_json; do
         sync_user "$user_json"

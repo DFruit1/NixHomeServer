@@ -238,23 +238,6 @@ let
           markerText = "Kavita";
         };
       }
-      {
-        name = "monitor";
-        kind = "oauth2-proxy";
-        entryUrl = "https://${vars.monitorDomain}/";
-        expectedLandingUrl = "https://${vars.monitorDomain}";
-        allowedGroups = [ "glances-users" ];
-        localUnauthCheck = {
-          host = vars.monitorDomain;
-          path = "/";
-          expected = [ 302 303 ];
-          redirectPrefix = "https://id.${vars.domain}/ui/oauth2";
-        };
-        verification = {
-          finalUrlPrefix = "https://${vars.monitorDomain}";
-          markerText = vars.monitorDomain;
-        };
-      }
     ]
     ++ optional kiwixEnabled {
       name = "kiwix";
@@ -353,8 +336,7 @@ in
         "filebrowser-quantum.service"
         "kavita.service"
         "jellyfin.service"
-        "glances.service"
-        "glances-oauth2-proxy.service"
+        "upload-processor.service"
       ]
       ++ optional cfg.services.cloudflared.enable "cloudflared-tunnel-${vars.cloudflareTunnelName}.service"
       ++ optional cfg.services.oauth2-proxy.enable "oauth2-proxy.service"
@@ -376,7 +358,6 @@ in
       { name = "sharephotos"; url = "https://${vars.sharePhotosDomain}/share/healthcheck"; expected = [ 200 ]; }
       { name = "audiobooks"; url = "https://${vars.audiobooksDomain}/"; expected = [ 200 302 ]; }
       { name = "books"; url = "https://${vars.kavitaDomain}/"; expected = [ 200 302 ]; }
-      { name = "monitor"; url = "https://${vars.monitorDomain}/"; expected = [ 200 302 303 401 403 ]; }
       { name = "videos"; url = "https://${vars.jellyfinDomain}/"; expected = [ 200 302 ]; }
     ]
     ++ optional kiwixEnabled { name = "kiwix"; url = "https://${vars.kiwixDomain}/"; expected = [ 200 302 ]; }
@@ -387,7 +368,6 @@ in
       { name = "copyparty"; url = "http://127.0.0.1:${toString cfg.services.copyparty.settings.p}/"; expected = [ 200 302 401 403 ]; }
       { name = "filebrowser-quantum-health"; url = "http://127.0.0.1:${toString vars.filebrowserPort}/health"; expected = [ 200 ]; }
       { name = "vaultwarden"; url = "http://127.0.0.1:8222/"; expected = [ 200 302 303 ]; }
-      { name = "glances-web"; url = "http://127.0.0.1:61208/"; expected = [ 200 ]; }
       { name = "sharephotos"; url = "http://127.0.0.1:3300/share/healthcheck"; expected = [ 200 ]; }
     ]
     ++ optional mailArchiveEnabled { name = "mail-archive-ui-healthz"; url = "http://127.0.0.1:${toString cfg.services.mail-archive-ui.port}/healthz"; expected = [ 200 ]; }
@@ -403,7 +383,6 @@ in
         { host = "${vars.vaultwardenDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.kavitaDomain}"; expected = localDnsPrivateAnswer; }
         { host = "${vars.jellyfinDomain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.monitorDomain}"; expected = localDnsPrivateAnswer; }
       ]
       ++ optional kiwixEnabled { host = "${vars.kiwixDomain}"; expected = localDnsPrivateAnswer; }
       ++ optional mailArchiveEnabled { host = "${vars.emailsDomain}"; expected = localDnsPrivateAnswer; }
@@ -443,9 +422,9 @@ in
   uploadAccess = {
     copyparty = {
       serviceUser = "copyparty";
-      requiredGroup = "users";
-      uploadRootsParent = vars.usersRoot;
-      uploadSubdir = "uploads";
+      requiredGroup = "upload-staging";
+      uploadRootsParent = vars.uploadSecurity.stagingRoot;
+      uploadSubdir = null;
     };
   };
 

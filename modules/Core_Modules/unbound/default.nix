@@ -75,7 +75,6 @@ let
       "\"${vars.vaultwardenDomain}      A ${targetIp}\""
       "\"${vars.kiwixDomain}            A ${targetIp}\""
       "\"${vars.metubeDomain}           A ${targetIp}\""
-      "\"${vars.monitorDomain}          A ${targetIp}\""
       "\"${vars.photosDomain}           A ${targetIp}\""
       "\"${vars.kavitaDomain}           A ${targetIp}\""
       "\"${vars.jellyfinDomain}         A ${targetIp}\""

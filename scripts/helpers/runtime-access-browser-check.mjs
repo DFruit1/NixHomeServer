@@ -467,7 +467,7 @@ async function verifyFilebrowserUserLevelAccess(page, canary) {
         'button:has-text("Personal")',
         '[data-source-name="Personal"]',
       ],
-      bodyText: ["Personal", "Uploads", "Files"],
+      bodyText: ["Personal", "Files"],
     },
   ]);
   if (!personalVisible) {

@@ -56,14 +56,6 @@
       description = "Cookie secret for the MeTube OAuth2 Proxy.";
       bytes = 32;
     };
-    glancesOauth2ProxyClientSecret = {
-      description = "OIDC client secret for the Glances OAuth2 Proxy.";
-      bytes = 32;
-    };
-    glancesOauth2ProxyCookieSecret = {
-      description = "Cookie secret for the Glances OAuth2 Proxy.";
-      bytes = 32;
-    };
     runtimeCanaryFilesPassword = {
       description = "Password for the synthetic runtime access canary.";
       bytes = 32;
@@ -122,6 +114,11 @@
       description = "Webhook URL for storage health alerts.";
       format = "https URL";
       settingPath = "secrets/top/storageAlertWebhookUrl";
+    };
+    virusTotalApiKey = {
+      description = "VirusTotal API key used for hash-only upload scanning lookups.";
+      format = "plain API key";
+      settingPath = "secrets/top/virusTotalApiKey";
     };
   };
 }

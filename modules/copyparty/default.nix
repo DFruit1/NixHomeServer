@@ -6,7 +6,10 @@ let
 in
 
 {
-  imports = [ copyparty.nixosModules.default ];
+  imports = [
+    copyparty.nixosModules.default
+    ./upload-processing.nix
+  ];
 
   nixpkgs.overlays = [ copyparty.overlays.default ];
 
@@ -35,34 +38,40 @@ in
       no-reload = true;
     };
     volumes."/\${u}" = {
-      path = "${vars.usersRoot}/\${u}/uploads";
-      access.rwmd = "\${u}";
+      path = "${vars.uploadSecurity.stagingRoot}/\${u}";
+      access.w = "\${u}";
       flags = {
         fk = 4;
         e2d = true;
-        chmod_d = 770;
+        chmod_d = 730;
         chmod_f = 660;
+        xau = "f,j,/run/current-system/sw/bin/upload-processor-enqueue";
       };
     };
   };
 
   users.users.copyparty.extraGroups = lib.mkAfter [
-    "users"
+    "upload-staging"
   ];
 
   systemd.services.copyparty = {
     wants = [
       "fileshare-user-root-sync.service"
+      "upload-processor-runtime-layout.service"
     ];
     after = [
       "fileshare-user-root-sync.service"
+      "upload-processor-runtime-layout.service"
     ];
     preStart = lib.mkAfter ''
       ${lib.getExe config.services.copyparty.package} -c /run/copyparty/copyparty.conf --exit cfg
     '';
-    serviceConfig.BindPaths = lib.mkAfter [ vars.usersRoot ];
+    serviceConfig.BindPaths = lib.mkAfter [ vars.uploadSecurity.stagingRoot ];
+    serviceConfig.ReadWritePaths = [
+      vars.uploadSecurity.stagingRoot
+    ];
     serviceConfig.SupplementaryGroups = [
-      "users"
+      "upload-staging"
     ];
   };
 }

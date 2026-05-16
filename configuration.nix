@@ -95,7 +95,6 @@ in
     ./modules/mail-archive
     ./modules/mail-archive-ui
     ./modules/metube
-    ./modules/glances
     ./modules/paperless
     ./modules/power-management
     ./modules/vaultwarden

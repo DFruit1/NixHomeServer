@@ -45,7 +45,8 @@ sharePhotosDomain = vars.sharePhotosDomain;
 uploadsDomain = vars.uploadsDomain;
 filebrowserDomain = vars.filebrowserDomain;
 vaultwardenDomain = vars.vaultwardenDomain;
-monitorDomain = vars.monitorDomain;
+uploadSecurity = vars.uploadSecurity;
+kanidmAdminUser = vars.kanidmAdminUser;
 runtimeAccessCanaries = vars.runtimeAccessCanaries;
 personalKavitaLibraries = vars.personalKavitaLibraries;
 sharedBooksSubdirs = vars.sharedBooksSubdirs;
@@ -74,6 +75,7 @@ hasDataMount = cfg.fileSystems ? "/mnt/data";
 dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
 persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
 nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
+persistedDirectories = cfg.repo.impermanence.inventory.persistenceDirectories;
 hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
 hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
 };
@@ -102,6 +104,7 @@ cloudflaredIngressHostNames = builtins.attrNames cfg.services.cloudflared.tunnel
 cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
 oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
 provisionGroupNames = builtins.attrNames cfg.services.kanidm.provision.groups;
+provisionGroups = cfg.services.kanidm.provision.groups;
 provisionPersonNames = builtins.attrNames cfg.services.kanidm.provision.persons;
 provisionPersons = cfg.services.kanidm.provision.persons;
 ageSecretNames = builtins.attrNames cfg.age.secrets;
@@ -121,13 +124,26 @@ mailArchiveSyncPath =
 map (package: lib.getName package) (cfg.systemd.services."mail-archive-sync".path or [ ]);
 hasCopypartyService = cfg.systemd.services ? "copyparty";
 hasCopypartyRuntimeConfigSync = cfg.systemd.services ? "copyparty-runtime-config-sync";
+hasUploadProcessorService = cfg.systemd.services ? "upload-processor";
+hasUploadProcessorRescanService = cfg.systemd.services ? "upload-processor-rescan";
+hasUploadProcessorRescanTimer = cfg.systemd.timers ? "upload-processor-rescan";
+uploadProcessorReadWritePaths = cfg.systemd.services."upload-processor".serviceConfig.ReadWritePaths or [ ];
+clamavDaemonEnable = cfg.services.clamav.daemon.enable;
+clamavUpdaterEnable = cfg.services.clamav.updater.enable;
+clamavDaemonSettings = cfg.services.clamav.daemon.settings;
+hasGlancesService = cfg.systemd.services ? "glances";
+hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
 copypartyServiceSupplementaryGroups =
 cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
 copypartyServiceBindPaths =
 cfg.systemd.services.copyparty.serviceConfig.BindPaths or [ ];
+copypartyServiceReadWritePaths =
+cfg.systemd.services.copyparty.serviceConfig.ReadWritePaths or [ ];
 hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
 hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
 filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
+filebrowserQuantumReadWritePaths =
+cfg.systemd.services."filebrowser-quantum".serviceConfig.ReadWritePaths or [ ];
 copypartySettings = cfg.services.copyparty.settings;
 copypartyVolumes = cfg.services.copyparty.volumes;
 copypartyPreStart = cfg.systemd.services.copyparty.preStart;
@@ -168,8 +184,6 @@ vars.sharedMusicRoot
 vars.sharedVideosRoot
 vars.usersRoot
 ];
-hasGlancesService = cfg.systemd.services ? "glances";
-hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
 hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
 };
 };
@@ -231,6 +245,14 @@ require_json_equal "$(snapshot_query '.config.fileSystems.dataFsType')" '"zfs"' 
   "The data mount must remain backed by ZFS."
 assert_json_true '.config.fileSystems.persistNeededForBoot' "The persist mount must remain needed for boot."
 assert_json_true '.config.fileSystems.nixNeededForBoot' "The nix mount must remain needed for boot."
+persisted_directories="$(snapshot_query '.config.fileSystems.persistedDirectories')"
+for persisted_dir in /var/lib/copyparty /var/lib/clamav /var/lib/upload-processor /var/lib/filebrowser-quantum; do
+  if ! jq -e --arg persisted_dir "$persisted_dir" 'index($persisted_dir) != null' >/dev/null <<<"$persisted_directories"; then
+    echo "❌ Impermanence must persist ${persisted_dir}."
+    echo "   persisted directories: $persisted_directories"
+    exit 1
+  fi
+done
 assert_json_false '.config.fileSystems.hasLegacyWorkspacesMount' "Legacy workspaces mounts must remain removed."
 assert_json_false '.config.fileSystems.hasLegacyMailArchiveMount' "Legacy mail-archive mounts must remain removed."
 
@@ -336,6 +358,18 @@ require_match scripts/helpers/runtime-health-common.sh 'allowedGroups = \[ "user
   "Runtime health inventory must keep FileBrowser access scoped to file access groups only."
 forbid_match modules/filebrowser-quantum/default.nix 'ensure_group_membership "mail-archive-users"' \
   "FileBrowser access convergence must not grant access from mail-archive-users alone."
+require_match modules/filebrowser-quantum/default.nix 'ensure_deny_user "Personal" "/\$username/uploads" "\$username"' \
+  "Personal FileBrowser access must deny legacy uploads."
+require_match modules/filebrowser-quantum/default.nix 'ensure_deny_user "Personal" "/\$username/documents" "\$username"' \
+  "Personal FileBrowser access must deny documents."
+require_match modules/filebrowser-quantum/default.nix 'ensure_deny_user "Personal" "/\$username/photos" "\$username"' \
+  "Personal FileBrowser access must deny photos."
+forbid_match modules/filebrowser-quantum/default.nix 'name:"Uploads"' \
+  "Personal FileBrowser sidebar must not expose Uploads."
+require_match modules/filebrowser-quantum/default.nix 'name = "Quarantine"' \
+  "FileBrowser Quantum must define a Quarantine source."
+require_match modules/filebrowser-quantum/default.nix 'ensure_allow_group "Quarantine" "/" "app-admin"' \
+  "Quarantine source must be scoped to app-admin."
 forbid_match configuration.nix './modules/mail-archive-paperless' \
   "Mail Archive UI must not import the retired Paperless handoff module."
 
@@ -354,21 +388,14 @@ if jq -e 'map(test("mail-archive|paperless") and test("consume|staging")) | any'
 fi
 
 copyparty_service_supplementary_groups="$(snapshot_query '.config.apps.copypartyServiceSupplementaryGroups')"
-if ! jq -e 'index("users") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
-  echo "❌ Copyparty must declare users as a supplementary runtime group."
+if ! jq -e 'index("upload-staging") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
+  echo "❌ Copyparty must declare upload-staging as a supplementary runtime group."
   echo "   SupplementaryGroups: $copyparty_service_supplementary_groups"
   exit 1
 fi
 if jq -e 'index("mail-archive-ui") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
   echo "❌ Copyparty must not keep legacy mail-archive-ui supplementary access."
   echo "   SupplementaryGroups: $copyparty_service_supplementary_groups"
-  exit 1
-fi
-
-users_group_members="$(snapshot_query '.config.apps.usersGroupMembers')"
-if ! jq -e 'index("copyparty") != null' >/dev/null <<<"$users_group_members"; then
-  echo "❌ The local users group must keep copyparty as a declarative member."
-  echo "   users group members: $users_group_members"
   exit 1
 fi
 
@@ -409,13 +436,31 @@ assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan se
 assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain present."
 assert_json_true '.config.apps.hasMetubeAudioImport' "MeTube audio import service must remain present."
 assert_json_true '.config.apps.hasMetubeAudioImportWatch' "MeTube audio import watcher must remain present."
-assert_json_true '.config.apps.hasGlancesService' "Glances service wiring must remain present."
-assert_json_true '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Proxy wiring must remain present."
+assert_json_true '.config.apps.hasUploadProcessorService' "Upload processor service wiring must be present."
+assert_json_true '.config.apps.hasUploadProcessorRescanService' "Upload processor rescan service wiring must be present."
+assert_json_true '.config.apps.hasUploadProcessorRescanTimer' "Upload processor rescan timer must be present."
+assert_json_true '.config.apps.clamavDaemonEnable' "ClamAV daemon must be enabled."
+assert_json_true '.config.apps.clamavUpdaterEnable' "ClamAV updater must be enabled."
+assert_json_true '.config.apps.clamavDaemonSettings.AlertEncrypted' "ClamAV encrypted-file alerts must be enabled."
+assert_json_true '.config.apps.clamavDaemonSettings.AlertEncryptedArchive' "ClamAV encrypted-archive alerts must be enabled."
+assert_json_true '.config.apps.clamavDaemonSettings.AlertEncryptedDoc' "ClamAV encrypted-document alerts must be enabled."
+if ! jq -e 'index("virusTotalApiKey") != null' >/dev/null <<<"$(snapshot_query '.config.apps.ageSecretNames')"; then
+  echo "❌ Missing VirusTotal agenix secret definition: virusTotalApiKey."
+  exit 1
+fi
+assert_json_false '.config.apps.hasGlancesService' "Glances service must be removed."
+assert_json_false '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Proxy service must be removed."
+require_match scripts/helpers/upload-processor.sh '/api/v3/files/\$\{sha\}' \
+  "Upload processor must use the VirusTotal hash lookup endpoint."
+forbid_match scripts/helpers/upload-processor.sh '/api/v3/files/upload' \
+  "Upload processor must never call the VirusTotal file upload endpoint."
+forbid_match scripts/helpers/upload-processor.sh '/api/v3/files/upload_url' \
+  "Upload processor must never call the VirusTotal upload URL endpoint."
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
 
 shared_content_subdirs="$(snapshot_query '.config.sharedContentSubdirs')"
-if ! jq -e 'index("music") != null' >/dev/null <<<"$shared_content_subdirs"; then
-  echo "❌ Shared content subdirectories must include music."
+if ! jq -e 'index("files") != null and index("videos") != null and index("audiobooks") != null and index("books") != null and index("emails") != null and index("kiwix") != null' >/dev/null <<<"$shared_content_subdirs"; then
+  echo "❌ Shared content subdirectories must include files, videos, audiobooks, books, emails, and kiwix."
   echo "   sharedContentSubdirs: $shared_content_subdirs"
   exit 1
 fi
@@ -431,25 +476,27 @@ assert_json_false '.config.apps.hasCopypartyRuntimeConfigSync' "Copyparty must u
 copyparty_volumes="$(snapshot_query '.config.apps.copypartyVolumes')"
 if ! jq -e '
 has("/${u}") and
-(.["/${u}"].path | test("/\\$\\{u\\}/uploads$"))
+(.["/${u}"].path | test("/upload-staging/\\$\\{u\\}$"))
 ' >/dev/null <<<"$copyparty_volumes"; then
-  echo "❌ Copyparty must map each authenticated user to their own upload-root volume."
+  echo "❌ Copyparty must map each authenticated user to locked upload staging."
   echo "   volumes: $copyparty_volumes"
   exit 1
 fi
-if ! jq -e '.["/${u}"].access.rwmd == "${u}"' >/dev/null <<<"$copyparty_volumes"; then
-  echo "❌ Copyparty must grant upload-root access only to the matching authenticated user."
+if ! jq -e '.["/${u}"].access.w == "${u}" and (.["/${u}"].access.rwmd // null) == null' >/dev/null <<<"$copyparty_volumes"; then
+  echo "❌ Copyparty must grant write-only upload access to the matching authenticated user."
   echo "   volumes: $copyparty_volumes"
   exit 1
 fi
-require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.chmod_d')" '770' \
-  "Copyparty should let the setgid upload parent directory apply inherited group ownership."
+require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.chmod_d')" '730' \
+  "Copyparty should create locked staging directories."
 require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.chmod_f')" '660' \
   "Copyparty should keep uploaded files private to owner/group."
 require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.fk')" '4' \
   "Copyparty must keep filekeys enabled for upload-root files."
 require_json_equal "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.e2d')" 'true' \
   "Copyparty must keep the upload database enabled."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyVolumes["/${u}"].flags.xau' | jq -r '.')") 'f,j' \
+  "Copyparty after-upload hook must be fire-and-forget and JSON-based."
 copyparty_volume_json="$(jq -c '.' <<<"$copyparty_volumes")"
 forbid_match <(printf '%s\n' "$copyparty_volume_json") '/upload/\$\{u\}' \
   "Copyparty must not require a per-user upload subpath on the uploads domain."
@@ -472,8 +519,15 @@ require_json_equal "$(snapshot_query '.config.apps.copypartySettings.u2sz')" '"1
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.copypartyPreStart' | jq -r '.')") 'copyparty -c /run/copyparty/copyparty.conf --exit cfg' \
   "Copyparty must validate the native module-rendered config before startup."
 copyparty_bind_paths="$(snapshot_query '.config.apps.copypartyServiceBindPaths')"
+require_match <(printf '%s\n' "$copyparty_bind_paths") '/upload-staging' \
+  "Copyparty must bind only upload staging."
+copyparty_read_write_paths="$(snapshot_query '.config.apps.copypartyServiceReadWritePaths')"
+require_match <(printf '%s\n' "$copyparty_read_write_paths") '/upload-staging' \
+  "Copyparty ReadWritePaths must include upload staging."
 forbid_match <(printf '%s\n' "$copyparty_bind_paths") '/shared' \
   "Copyparty must not keep legacy shared-root filesystem exposure."
+forbid_match <(printf '%s\n' "$copyparty_bind_paths") '/users' \
+  "Copyparty must not bind user final files."
 forbid_match <(printf '%s\n' "$copyparty_bind_paths") '/kiwix' \
   "Copyparty must not keep legacy Kiwix-library filesystem exposure."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessPermissionsBootstrapScript' | jq -r '.')") "view_document" \
@@ -550,12 +604,6 @@ if ! jq -e --arg vaultwarden_host "$(snapshot_query '.vars.vaultwardenDomain' | 
   exit 1
 fi
 
-if ! jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$caddy_host_names"; then
-  echo "❌ Caddy must expose the private Glances hostname."
-  echo "   hosts: $caddy_host_names"
-  exit 1
-fi
-
 cloudflared_ingress_host_names="$(snapshot_query '.config.apps.cloudflaredIngressHostNames')"
 if ! jq -e --arg share_host "$(snapshot_query '.vars.sharePhotosDomain' | jq -r '.')" 'index($share_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
   echo "❌ Cloudflared must publish the public Immich share hostname."
@@ -587,15 +635,14 @@ if jq -e --arg vaultwarden_host "$(snapshot_query '.vars.vaultwardenDomain' | jq
   exit 1
 fi
 
-if jq -e --arg monitor_host "$(snapshot_query '.vars.monitorDomain' | jq -r '.')" 'index($monitor_host) != null' >/dev/null <<<"$cloudflared_ingress_host_names"; then
-  echo "❌ Cloudflared must not publish the private Glances hostname."
-  echo "   ingress hosts: $cloudflared_ingress_host_names"
+oauth_systems="$(snapshot_query '.config.apps.oauthSystemNames')"
+if ! jq -e 'index("oauth2-proxy") != null and index("filebrowser-quantum-web") != null and index("immich-web") != null and index("paperless-web") != null and index("abs-web") != null' >/dev/null <<<"$oauth_systems"; then
+  echo "❌ Expected OIDC-facing application registrations are missing from Kanidm provisioning."
+  echo "   OAuth systems: $oauth_systems"
   exit 1
 fi
-
-oauth_systems="$(snapshot_query '.config.apps.oauthSystemNames')"
-if ! jq -e 'index("oauth2-proxy") != null and index("filebrowser-quantum-web") != null and index("immich-web") != null and index("paperless-web") != null and index("abs-web") != null and index("glances-web") != null' >/dev/null <<<"$oauth_systems"; then
-  echo "❌ Expected OIDC-facing application registrations are missing from Kanidm provisioning."
+if jq -e 'index("glances-web") != null' >/dev/null <<<"$oauth_systems"; then
+  echo "❌ Glances must not be registered as a Kanidm OAuth2 client."
   echo "   OAuth systems: $oauth_systems"
   exit 1
 fi
@@ -606,6 +653,16 @@ if jq -e 'index("vaultwarden-web") != null' >/dev/null <<<"$oauth_systems"; then
 fi
 
 provision_groups="$(snapshot_query '.config.apps.provisionGroupNames')"
+if ! jq -e --arg admin "$(snapshot_query '.vars.kanidmAdminUser' | jq -r '.')" '.["shared-files-read-write-access"].members | index($admin) != null' >/dev/null <<<"$(snapshot_query '.config.apps.provisionGroups')"; then
+  echo "❌ shared-files-read-write-access must include the Kanidm admin user for admin shared access."
+  echo "   provisioned groups: $(snapshot_query '.config.apps.provisionGroups')"
+  exit 1
+fi
+if jq -e 'index("glances-users") != null' >/dev/null <<<"$provision_groups"; then
+  echo "❌ Kanidm provisioning must not define the removed Glances access group."
+  echo "   provisioned groups: $provision_groups"
+  exit 1
+fi
 if jq -e 'index("vaultwarden-users") != null or index("vaultwarden-user") != null' >/dev/null <<<"$provision_groups"; then
   echo "❌ Kanidm provisioning must not define Vaultwarden access groups for local-auth Vaultwarden."
   echo "   provisioned groups: $provision_groups"
@@ -634,7 +691,6 @@ if ! jq -e '.["canary-files"].groups == [
 "immich-users",
 "audiobookshelf-users",
 "kavita-users",
-"glances-users",
 "mail-archive-users",
 "metube-users"
 ]' >/dev/null <<<"$runtime_canaries"; then
@@ -655,6 +711,11 @@ to_entries
 fi
 
 age_secret_names="$(snapshot_query '.config.apps.ageSecretNames')"
+if jq -e 'index("glancesOauth2ProxyClientSecret") != null or index("glancesOauth2ProxyCookieSecret") != null' >/dev/null <<<"$age_secret_names"; then
+  echo "❌ Glances generated secrets must be removed."
+  echo "   age secrets: $age_secret_names"
+  exit 1
+fi
 if ! jq -e 'index("runtimeCanaryFilesPassword") != null' >/dev/null <<<"$age_secret_names"; then
   echo "❌ Missing runtime canary agenix secret definition: runtimeCanaryFilesPassword."
   echo "   age secrets: $age_secret_names"

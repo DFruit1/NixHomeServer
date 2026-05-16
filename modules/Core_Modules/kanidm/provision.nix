@@ -13,7 +13,6 @@ let
     ++ lib.optionals apps.immich.enable [ "immich-users" ]
     ++ lib.optionals apps.audiobookshelf.enable [ "audiobookshelf-users" ]
     ++ lib.optionals apps.kavita.enable [ "kavita-users" ]
-    ++ lib.optionals apps.glances.enable [ "glances-users" ]
     ++ lib.optionals apps."mail-archive-ui".enable [ "mail-archive-users" ]
     ++ lib.optionals apps.metube.enable [ "metube-users" ];
   mkManualGroup =
@@ -51,11 +50,10 @@ in
     # reconciliation does not try to delete it as an orphaned entity.
     groups."domain_admins" = mkManualGroup [ ];
     groups."user-files" = lib.mkIf (apps.copyparty.enable || apps."filebrowser-quantum".enable) (mkManualGroup [ vars.kanidmAdminUser ]);
-    groups."shared-files-read-write-access" = lib.mkIf apps."filebrowser-quantum".enable (mkManualGroup [ ]);
+    groups."shared-files-read-write-access" = lib.mkIf apps."filebrowser-quantum".enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."app-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."mail-archive-users" = lib.mkIf apps."mail-archive-ui".enable (mkManualGroup [ ]);
     groups."immich-users" = lib.mkIf apps.immich.enable (mkManualGroup [ vars.kanidmAdminUser ]);
-    groups."glances-users" = lib.mkIf apps.glances.enable (mkManualGroup vars.glancesAccessUsers);
     groups."paperless-users" = lib.mkIf apps.paperless.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."audiobookshelf-users" = lib.mkIf apps.audiobookshelf.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."kavita-users" = lib.mkIf apps.kavita.enable (mkManualGroup [ vars.kanidmAdminUser ]);
@@ -147,6 +145,7 @@ in
       preferShortUsername = true;
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
       scopeMaps."shared-files-read-write-access" = [ "openid" "profile" "email" "groups_name" ];
+      supplementaryScopeMaps."app-admin" = [ "groups_name" ];
     };
 
     systems.oauth2.mail-archive-web = lib.mkIf apps."mail-archive-ui".enable {
@@ -157,16 +156,6 @@ in
       basicSecretFile = config.age.secrets.mailArchiveOauth2ProxyClientSecret.path;
       preferShortUsername = true;
       scopeMaps."mail-archive-users" = [ "openid" "profile" "email" "groups_name" ];
-    };
-
-    systems.oauth2.glances-web = lib.mkIf apps.glances.enable {
-      displayName = "Monitoring";
-      imageFile = ./assets/portal.svg;
-      originUrl = "https://${vars.monitorDomain}/oauth2/callback";
-      originLanding = "https://${vars.monitorDomain}";
-      basicSecretFile = config.age.secrets.glancesOauth2ProxyClientSecret.path;
-      preferShortUsername = true;
-      scopeMaps."glances-users" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.kiwix-web = lib.mkIf apps.kiwix.enable {
