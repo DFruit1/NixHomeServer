@@ -4,6 +4,18 @@ let
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   oauth2ProxyClientSecretPath = "/run/oauth2-proxy/client-secret";
+  apps = config.nixhomeserver.apps;
+  enabledCanaryGroups =
+    [ "users" ]
+    ++ lib.optionals (apps.copyparty.enable || apps."filebrowser-quantum".enable) [ "user-files" ]
+    ++ lib.optionals apps."filebrowser-quantum".enable [ "shared-files-read-write-access" ]
+    ++ lib.optionals apps.paperless.enable [ "paperless-users" ]
+    ++ lib.optionals apps.immich.enable [ "immich-users" ]
+    ++ lib.optionals apps.audiobookshelf.enable [ "audiobookshelf-users" ]
+    ++ lib.optionals apps.kavita.enable [ "kavita-users" ]
+    ++ lib.optionals apps.glances.enable [ "glances-users" ]
+    ++ lib.optionals apps."mail-archive-ui".enable [ "mail-archive-users" ]
+    ++ lib.optionals apps.metube.enable [ "metube-users" ];
   mkManualGroup =
     members:
     {
@@ -30,7 +42,7 @@ in
           _: canary: {
             displayName = canary.displayName;
             mailAddresses = [ canary.mailAddress ];
-            groups = canary.groups;
+            groups = builtins.filter (group: builtins.elem group enabledCanaryGroups) canary.groups;
           }
         )
         vars.runtimeAccessCanaries;
@@ -38,19 +50,19 @@ in
     # Keep the builtin group in the provision inventory so post-start
     # reconciliation does not try to delete it as an orphaned entity.
     groups."domain_admins" = mkManualGroup [ ];
-    groups."user-files" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."shared-files-read-write-access" = mkManualGroup [ ];
+    groups."user-files" = lib.mkIf (apps.copyparty.enable || apps."filebrowser-quantum".enable) (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."shared-files-read-write-access" = lib.mkIf apps."filebrowser-quantum".enable (mkManualGroup [ ]);
     groups."app-admin" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."mail-archive-users" = mkManualGroup [ ];
-    groups."immich-users" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."glances-users" = mkManualGroup vars.glancesAccessUsers;
-    groups."paperless-users" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."audiobookshelf-users" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."kavita-users" = mkManualGroup [ vars.kanidmAdminUser ];
-    groups."metube-users" = mkManualGroup [ vars.kanidmAdminUser ];
+    groups."mail-archive-users" = lib.mkIf apps."mail-archive-ui".enable (mkManualGroup [ ]);
+    groups."immich-users" = lib.mkIf apps.immich.enable (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."glances-users" = lib.mkIf apps.glances.enable (mkManualGroup vars.glancesAccessUsers);
+    groups."paperless-users" = lib.mkIf apps.paperless.enable (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."audiobookshelf-users" = lib.mkIf apps.audiobookshelf.enable (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."kavita-users" = lib.mkIf apps.kavita.enable (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."metube-users" = lib.mkIf apps.metube.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
-    systems.oauth2.immich-web = {
+    systems.oauth2.immich-web = lib.mkIf apps.immich.enable {
       displayName = "Photos";
       imageFile = ./assets/photos.svg;
       originUrl = [
@@ -66,7 +78,7 @@ in
       claimMaps.immich_role.valuesByGroup."app-admin" = [ "admin" ];
     };
 
-    systems.oauth2.paperless-web = {
+    systems.oauth2.paperless-web = lib.mkIf apps.paperless.enable {
       displayName = "Documents";
       imageFile = ./assets/documents.svg;
       originUrl = "https://${vars.paperlessDomain}/accounts/oidc/kanidm/login/callback/";
@@ -77,7 +89,7 @@ in
       supplementaryScopeMaps."app-admin" = [ "groups_name" ];
     };
 
-    systems.oauth2.abs-web = {
+    systems.oauth2.abs-web = lib.mkIf apps.audiobookshelf.enable {
       displayName = "Audiobooks";
       imageFile = ./assets/audiobooks.svg;
       originUrl = [
@@ -96,7 +108,7 @@ in
       };
     };
 
-    systems.oauth2.kavita-web = {
+    systems.oauth2.kavita-web = lib.mkIf apps.kavita.enable {
       displayName = "Books";
       imageFile = ./assets/books.svg;
       originUrl = [
@@ -115,7 +127,7 @@ in
       };
     };
 
-    systems.oauth2.oauth2-proxy = {
+    systems.oauth2.oauth2-proxy = lib.mkIf apps.copyparty.enable {
       displayName = "Uploads";
       imageFile = ./assets/files.svg;
       originUrl = "https://${vars.uploadsDomain}/oauth2/callback";
@@ -125,7 +137,7 @@ in
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
     };
 
-    systems.oauth2.filebrowser-quantum-web = {
+    systems.oauth2.filebrowser-quantum-web = lib.mkIf apps."filebrowser-quantum".enable {
       displayName = "Files";
       imageFile = ./assets/files.svg;
       originUrl = "https://${vars.filebrowserDomain}/api/auth/oidc/callback";
@@ -137,7 +149,7 @@ in
       scopeMaps."shared-files-read-write-access" = [ "openid" "profile" "email" "groups_name" ];
     };
 
-    systems.oauth2.mail-archive-web = {
+    systems.oauth2.mail-archive-web = lib.mkIf apps."mail-archive-ui".enable {
       displayName = "Mail Archive";
       imageFile = ./assets/mail.svg;
       originUrl = "https://${vars.emailsDomain}/oauth2/callback";
@@ -147,7 +159,7 @@ in
       scopeMaps."mail-archive-users" = [ "openid" "profile" "email" "groups_name" ];
     };
 
-    systems.oauth2.glances-web = {
+    systems.oauth2.glances-web = lib.mkIf apps.glances.enable {
       displayName = "Monitoring";
       imageFile = ./assets/portal.svg;
       originUrl = "https://${vars.monitorDomain}/oauth2/callback";
@@ -157,7 +169,7 @@ in
       scopeMaps."glances-users" = [ "openid" "profile" "email" "groups_name" ];
     };
 
-    systems.oauth2.kiwix-web = {
+    systems.oauth2.kiwix-web = lib.mkIf apps.kiwix.enable {
       displayName = "Kiwix";
       imageFile = ./assets/books.svg;
       originUrl = "https://${vars.kiwixDomain}/oauth2/callback";
@@ -167,7 +179,7 @@ in
       scopeMaps.users = [ "openid" "profile" "email" "groups_name" ];
     };
 
-    systems.oauth2.metube-web = {
+    systems.oauth2.metube-web = lib.mkIf apps.metube.enable {
       displayName = "Downloads";
       imageFile = ./assets/videos.svg;
       originUrl = "https://${vars.metubeDomain}/oauth2/callback";

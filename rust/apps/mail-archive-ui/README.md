@@ -14,9 +14,10 @@ Storage model:
 - global app state and the app-local encryption key live under `/persist/appdata/mail-archive-ui`
 - per-account derived sync and indexing state lives under `/persist/appdata/mail-archive-ui/accounts/<user>/<account-id>/`
 - downloaded mail payload lives under `/mnt/data/users/<user>/emails/.internal-sync/<account-hidden-root>/maildir/`
+- extracted attachment blobs are materialized content-addressably under `/mnt/data/users/<user>/emails/.internal-sync/<account-hidden-root>/attachments/blobs/sha256/`
 - the user-visible mailbox mirror lives under `/mnt/data/users/<user>/emails/<account-slug>-<mailbox-slug>/YYYY/MM/*.eml`
 - mailbox credentials are not stored in agenix
-- temporary sync material lives only under `/run/mail-archive-ui`
+- temporary sync material and generated browser ZIPs live only under `/run/mail-archive-ui`
 
 Operational checks:
 
@@ -31,9 +32,12 @@ Functional scope:
 - generates `mbsync` config on demand
 - updates or repairs per-account `notmuch` indexes
 - keeps mailbox payload portable by separating downloaded mail from derived sync and index state
-- lets users search, select, and bulk-download archived attachments as a ZIP
+- lets users search, filter, select, and bulk-download archived attachments as a ZIP with an included `manifest.json`
+- persists extracted attachment blobs by SHA-256 so browser downloads and backups do not depend on repeated MIME extraction
+- verifies source `.eml` files, attachment blobs, and catalog metadata through `mail-archive-ui verify-attachments`
 - indexes supported document attachment text for search, including `pdf`, `doc`, `docx`, `odt`, `rtf`, and `text/plain`
 - exposes metadata-only search results
+- lets users mark sender addresses or exact sender domains as high or low priority for UI-only sorting and filtering
 - supports mailbox edit, schedule toggle, manual sync, and reindex actions
 - persists per-user search defaults for query and mailbox filter
 - is intentionally not a webmail frontend
@@ -45,8 +49,11 @@ Health behavior:
 
 Attachment download model:
 - `/attachments` searches the indexed attachment catalog and supports per-row selection, page-visible selection, and server-side download of all matching filters
-- selected attachments are downloaded as a browser ZIP; no attachment action state is recorded
-- local delete/restore tombstones remain available for mail archive maintenance
+- selected attachments are downloaded as a browser ZIP streamed from runtime storage; no attachment action state is recorded
+- ZIPs include `manifest.json` with source mailbox, message, filename, MIME type, size, and SHA-256 metadata for every file
+- ZIP files are organized as `<mailbox>/<yyyy-mm-dd> - <subject>/<filename>`, with duplicate filenames written as `file (1).ext`
+- body fragments extracted by `ripmime` as `textfile0`, `textfile1`, and similar inline artifacts are hidden by default and can be included with the page filter
+- attachment rows show a simple file type and message date by default; full MIME detail is optional
 - downstream document filing is manual and happens outside this app
 
 ## Development
@@ -66,6 +73,15 @@ CLI sync mode:
 ```bash
 cargo run -- sync-due
 ```
+
+CLI attachment verification:
+
+```bash
+cargo run -- verify-attachments --repair --report /tmp/mail-archive-attachments.json
+```
+
+The system-state backup preparation runs the same verifier with `--repair` and
+stores the JSON report in the backup metadata directory.
 
 Repo validation:
 

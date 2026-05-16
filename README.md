@@ -29,6 +29,29 @@ Validation gate: see [Operations](./documentation/operations.md#validation-gate)
 
 Deploy entry point: `./scripts/deploy-with-validation.sh --help`
 
+## New Admin Template Workflow
+
+The current/default deployment keeps operator-facing values in [`vars.nix`](./vars.nix)
+so a new admin can still configure the main install in one place. The reusable
+host layer lives under [`hosts/`](./hosts): `hosts/dsaw` points back to
+`vars.nix`, while `hosts/example` is a template host with placeholder values.
+
+Useful first-run helpers:
+
+- `nix run .#doctor -- --host dsaw`
+- `nix run .#explain -- --host dsaw`
+- `nix run .#storage-plan -- --host dsaw`
+- `nix run .#render-runbook -- --host dsaw`
+- `nix run .#init-site -- --site my-home`
+- `nix run .#admin -- welcome --host dsaw`
+
+`modules/Core_Modules` is the fixed platform layer. Profiles and app enable
+options are for optional app surfaces around that core, not for swapping out
+identity, DNS, edge, storage, or validation foundations.
+
+For a new one-host install, use [`vars.example.nix`](./vars.example.nix) as the
+copyable starting point and keep day-to-day settings in [`vars.nix`](./vars.nix).
+
 Immich sharing: the private app stays on `photos.sydneybasiniot.org`, while
 public share links use `sharephotos.sydneybasiniot.org`. See
 [Operations](./documentation/operations.md#app-hostnames).

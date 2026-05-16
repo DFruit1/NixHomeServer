@@ -20,7 +20,7 @@ use landlock::{
     path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus, ABI,
 };
-use mailparse::MailHeaderMap;
+use mailparse::{MailAddr, MailHeaderMap};
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{
@@ -34,13 +34,14 @@ use std::{
     env,
     fmt::Write as _,
     fs::{self, OpenOptions},
-    io::{Cursor, ErrorKind, Read, Write},
+    io::{ErrorKind, Read},
     net::SocketAddr,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path as FsPath, PathBuf},
     process::{Command, Output},
     sync::Arc,
 };
+use tokio_util::io::ReaderStream;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 const DEFAULT_ADDRESS: &str = "127.0.0.1";
@@ -52,6 +53,7 @@ const DEFAULT_LOCK_DIR: &str = ".";
 const ATTACHMENTS_PER_PAGE: usize = 100;
 const MAX_ZIP_ATTACHMENTS: usize = 500;
 const MAX_ZIP_BYTES: u64 = 1024 * 1024 * 1024;
+const RUNTIME_EXPORT_MAX_AGE_SECONDS: i64 = 6 * 60 * 60;
 const ATTACHMENT_SELECTION_ALL_MATCHING: &str = "all_matching";
 const MASTER_KEY_FILENAME: &str = "master.key";
 const DB_FILENAME: &str = "mail-archive-ui.sqlite3";
@@ -334,18 +336,14 @@ struct SearchPreferenceRecord {
 
 #[derive(Clone, Debug)]
 struct SearchResult {
-    account_id: i64,
     account_name: String,
-    message_key: String,
     message_relpath: String,
     timestamp: i64,
     date_label: String,
     from: String,
     subject: String,
     tags: Vec<String>,
-    deleted_at: Option<String>,
-    restore_pending: bool,
-    is_deleted: bool,
+    sender_priority: SenderPriorityView,
 }
 
 #[allow(dead_code)]
@@ -376,42 +374,12 @@ struct AttachmentRecord {
     mime_type: String,
     size_bytes: i64,
     is_inline_artifact: bool,
+    blob_relpath: Option<String>,
+    source_message_sha256: Option<String>,
+    last_verified_at: Option<String>,
     created_at: String,
     updated_at: String,
     last_seen_at: String,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-struct DeletedMessageRecord {
-    account_id: i64,
-    message_key: String,
-    message_relpath_at_delete: String,
-    subject: String,
-    sender: String,
-    timestamp: i64,
-    deleted_at: String,
-    delete_reason: String,
-    restored_at: Option<String>,
-    restore_pending: bool,
-    last_restore_requested_at: Option<String>,
-    payload_removed: bool,
-    notes: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-struct DeletedMessageAttachmentRecord {
-    account_id: i64,
-    message_key: String,
-    attachment_key: String,
-    attachment_sha256: String,
-    original_filename: String,
-    safe_filename: String,
-    extension: String,
-    mime_type: String,
-    size_bytes: i64,
-    is_inline_artifact: bool,
-    deleted_at: String,
 }
 
 #[derive(Clone, Debug)]
@@ -420,9 +388,7 @@ struct AttachmentListItem {
     message: AttachmentMessageRecord,
     account_name: String,
     date_label: String,
-    deleted_at: Option<String>,
-    restore_pending: bool,
-    is_deleted: bool,
+    sender_priority: SenderPriorityView,
 }
 
 #[allow(dead_code)]
@@ -432,6 +398,8 @@ struct AccountPaths {
     visible_emails_root: PathBuf,
     hidden_sync_root: PathBuf,
     maildir: PathBuf,
+    attachment_blob_root: PathBuf,
+    export_root: PathBuf,
     account_state_root: PathBuf,
     notmuch_config: PathBuf,
     sync_state_dir: PathBuf,
@@ -490,7 +458,6 @@ struct MessageMetadata {
 
 #[derive(Clone, Debug)]
 struct LiveMessageRecord {
-    message_key: String,
     message_relpaths: Vec<String>,
     subject: String,
     from: String,
@@ -502,6 +469,52 @@ struct MaildirInventory {
     archive_file_count: usize,
     logical_message_count: usize,
     overlap_file_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentZipManifest {
+    generated_at: String,
+    source: &'static str,
+    file_count: usize,
+    total_size_bytes: u64,
+    files: Vec<AttachmentZipManifestEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentZipManifestEntry {
+    zip_path: String,
+    account: String,
+    account_id: i64,
+    message_key: String,
+    message_relpath: String,
+    subject: String,
+    sender: String,
+    message_timestamp: i64,
+    original_filename: String,
+    mime_type: String,
+    size_bytes: i64,
+    attachment_sha256: String,
+    blob_relpath: Option<String>,
+    source_message_sha256: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AttachmentVerificationReport {
+    generated_at: String,
+    accounts_checked: usize,
+    messages_checked: usize,
+    attachments_checked: usize,
+    missing_sources: usize,
+    missing_blobs: usize,
+    mismatched_blobs: usize,
+    orphaned_blobs: usize,
+    warnings: Vec<String>,
+}
+
+impl AttachmentVerificationReport {
+    fn has_errors(&self) -> bool {
+        self.missing_sources > 0 || self.missing_blobs > 0 || self.mismatched_blobs > 0
+    }
 }
 
 #[derive(Debug)]
@@ -533,8 +546,16 @@ struct TempExtractionDir {
 
 impl Drop for TempExtractionDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        if !self.path.as_os_str().is_empty() {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
+}
+
+#[derive(Debug)]
+struct TempZipFile {
+    filename: String,
+    path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -571,7 +592,7 @@ struct SearchParams {
     q: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
     account_id: Option<i64>,
-    message_state: Option<String>,
+    priority: Option<String>,
     flash: Option<String>,
     error: Option<String>,
 }
@@ -581,8 +602,10 @@ struct AttachmentListParams {
     q: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
     account_id: Option<i64>,
-    message_state: Option<String>,
+    priority: Option<String>,
     extension: Option<String>,
+    include_inline: Option<String>,
+    show_mime_details: Option<String>,
     page: Option<String>,
     flash: Option<String>,
     error: Option<String>,
@@ -601,13 +624,25 @@ struct AttachmentDownloadForm {
     selection_scope: Option<String>,
     q: Option<String>,
     account_id: Option<String>,
-    message_state: Option<String>,
+    priority: Option<String>,
     extension: Option<String>,
+    include_inline: Option<String>,
+    show_mime_details: Option<String>,
     return_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct MessageActionForm {
+struct SenderPriorityForm {
+    sender_kind: String,
+    sender_value: String,
+    priority: String,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SenderPriorityClearForm {
+    sender_kind: String,
+    sender_value: String,
     return_to: Option<String>,
 }
 
@@ -694,6 +729,8 @@ struct HealthChecks {
     lock_dir: String,
     mbsync: String,
     notmuch: String,
+    ripmime: String,
+    file: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -831,45 +868,181 @@ struct SearchViewState {
     submitted: bool,
     result_count: usize,
     empty_message: Option<String>,
-    message_state: MessageStateFilter,
+    priority_filter: SenderPriorityFilter,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MessageStateFilter {
-    Active,
-    Deleted,
-    All,
+enum SenderPriority {
+    High,
+    Normal,
+    Low,
 }
 
-impl MessageStateFilter {
-    fn from_query(raw: Option<&str>) -> Self {
-        match raw.map(str::trim).filter(|value| !value.is_empty()) {
-            Some("deleted") => Self::Deleted,
-            Some("all") => Self::All,
-            _ => Self::Active,
+impl SenderPriority {
+    fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "high" => Some(Self::High),
+            "low" => Some(Self::Low),
+            _ => None,
         }
     }
 
-    fn as_query_value(self) -> &'static str {
+    fn as_stored_value(self) -> &'static str {
         match self {
-            Self::Active => "active",
-            Self::Deleted => "deleted",
-            Self::All => "all",
+            Self::High => "high",
+            Self::Normal => "normal",
+            Self::Low => "low",
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::Active => "Active only",
-            Self::Deleted => "Deleted only",
-            Self::All => "Active and deleted",
+            Self::High => "High priority",
+            Self::Normal => "Normal priority",
+            Self::Low => "Low priority",
+        }
+    }
+
+    fn sort_rank(self) -> u8 {
+        match self {
+            Self::High => 0,
+            Self::Normal => 1,
+            Self::Low => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SenderPriorityFilter {
+    All,
+    High,
+    Normal,
+    Low,
+}
+
+impl SenderPriorityFilter {
+    fn from_query(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|value| !value.is_empty()) {
+            Some("all") => Self::All,
+            Some("high") => Self::High,
+            Some("normal") => Self::Normal,
+            Some("low") => Self::Low,
+            _ => Self::All,
+        }
+    }
+
+    fn as_query_value(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::High => "high",
+            Self::Normal => "normal",
+            Self::Low => "low",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All priorities",
+            Self::High => "High priority",
+            Self::Normal => "Normal priority",
+            Self::Low => "Low priority",
+        }
+    }
+
+    fn matches(self, priority: SenderPriority) -> bool {
+        match self {
+            Self::All => true,
+            Self::High => priority == SenderPriority::High,
+            Self::Normal => priority == SenderPriority::Normal,
+            Self::Low => priority == SenderPriority::Low,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SenderRuleKind {
+    Address,
+    Domain,
+}
+
+impl SenderRuleKind {
+    fn from_form(value: &str) -> Option<Self> {
+        match value.trim() {
+            "address" => Some(Self::Address),
+            "domain" => Some(Self::Domain),
+            _ => None,
+        }
+    }
+
+    fn as_stored_value(self) -> &'static str {
+        match self {
+            Self::Address => "address",
+            Self::Domain => "domain",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Address => "address",
+            Self::Domain => "domain",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SenderIdentity {
+    address: String,
+    domain: String,
+}
+
+#[derive(Clone, Debug)]
+struct SenderPriorityRule {
+    kind: SenderRuleKind,
+    value: String,
+    priority: SenderPriority,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SenderPriorityRules {
+    addresses: HashMap<String, SenderPriority>,
+    domains: HashMap<String, SenderPriority>,
+}
+
+#[derive(Clone, Debug)]
+struct SenderPriorityView {
+    identity: Option<SenderIdentity>,
+    priority: SenderPriority,
+    address_rule: Option<SenderPriority>,
+    domain_rule: Option<SenderPriority>,
+}
+
+impl SenderPriorityRules {
+    fn view_for_sender(&self, sender: &str) -> SenderPriorityView {
+        let identity = sender_identity_from_header(sender);
+        let (address_rule, domain_rule) = identity
+            .as_ref()
+            .map(|sender| {
+                (
+                    self.addresses.get(&sender.address).copied(),
+                    self.domains.get(&sender.domain).copied(),
+                )
+            })
+            .unwrap_or((None, None));
+        let priority = address_rule
+            .or(domain_rule)
+            .unwrap_or(SenderPriority::Normal);
+        SenderPriorityView {
+            identity,
+            priority,
+            address_rule,
+            domain_rule,
         }
     }
 }
 
 #[derive(Debug)]
 struct AttachmentListViewState {
-    message_state: MessageStateFilter,
+    priority_filter: SenderPriorityFilter,
     page: usize,
     result_count: usize,
     has_previous_page: bool,
@@ -884,6 +1057,8 @@ struct AttachmentPageData {
     selected_account_id: Option<i64>,
     query_text: String,
     extension_filter: String,
+    include_inline: bool,
+    show_mime_details: bool,
     items: Vec<AttachmentListItem>,
     state: AttachmentListViewState,
 }
@@ -896,10 +1071,28 @@ async fn main() {
     reconcile_interrupted_syncs(&config).expect("failed to reconcile interrupted sync state");
     install_filesystem_sandbox(&config);
 
-    if let Some(mode) = env::args().nth(1) {
+    let args = env::args().collect::<Vec<_>>();
+    if let Some(mode) = args.get(1).map(String::as_str) {
         if mode == "sync-due" {
             let had_errors = sync_due(&config).expect("mail archive sync-due failed");
             if had_errors {
+                std::process::exit(1);
+            }
+            return;
+        } else if mode == "verify-attachments" {
+            let repair = args.iter().any(|arg| arg == "--repair");
+            let report_path = args
+                .windows(2)
+                .find(|window| window[0] == "--report")
+                .map(|window| FsPath::new(window[1].as_str()));
+            let report = verify_attachment_archive(&config, repair, report_path)
+                .expect("mail archive attachment verification failed");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .expect("failed to encode attachment verification report")
+            );
+            if report.has_errors() {
                 std::process::exit(1);
             }
             return;
@@ -938,14 +1131,8 @@ fn router(state: AppState) -> Router {
         .route("/accounts/{id}/sync", post(sync_account))
         .route("/accounts/{id}/reindex", post(reindex_account))
         .route("/search", get(search_page))
-        .route(
-            "/accounts/{account_id}/messages/{message_key}/delete",
-            post(delete_message_from_local_archive),
-        )
-        .route(
-            "/accounts/{account_id}/messages/{message_key}/restore",
-            post(restore_message_for_next_sync),
-        )
+        .route("/sender-priorities", post(upsert_sender_priority))
+        .route("/sender-priorities/clear", post(clear_sender_priority))
         .route("/attachments", get(attachments_page))
         .route("/attachments/refresh", post(refresh_attachments))
         .route(
@@ -1264,10 +1451,10 @@ async fn search_page(
     } else {
         preferences.last_query.unwrap_or_default()
     };
-    let message_state = if has_params {
-        MessageStateFilter::from_query(params.message_state.as_deref())
+    let priority_filter = if has_params {
+        SenderPriorityFilter::from_query(params.priority.as_deref())
     } else {
-        MessageStateFilter::Active
+        SenderPriorityFilter::All
     };
     let mut selected_account_id = if has_params {
         params.account_id
@@ -1288,32 +1475,26 @@ async fn search_page(
     }
 
     let should_execute_search = has_params
-        && (!query_text.trim().is_empty() || message_state != MessageStateFilter::Active);
+        && (!query_text.trim().is_empty() || priority_filter != SenderPriorityFilter::All);
     let results = if should_execute_search {
         let config = state.config.clone();
         let username = identity.username.clone();
         let query_clone = query_text.clone();
         match tokio::task::spawn_blocking(move || {
-            let mut results = match message_state {
-                MessageStateFilter::Active => {
-                    search_mail(&config, &username, selected_account_id, &query_clone)?
-                }
-                MessageStateFilter::Deleted => {
-                    search_deleted_messages(&config, &username, selected_account_id, &query_clone)?
-                }
-                MessageStateFilter::All => {
-                    let mut results =
-                        search_mail(&config, &username, selected_account_id, &query_clone)?;
-                    results.extend(search_deleted_messages(
-                        &config,
-                        &username,
-                        selected_account_id,
-                        &query_clone,
-                    )?);
-                    results
-                }
-            };
-            results.sort_by_key(|result| Reverse(result.timestamp));
+            let mut results = search_mail(
+                &config,
+                &username,
+                selected_account_id,
+                &query_clone,
+                priority_filter,
+            )?;
+            results.sort_by(|left, right| {
+                left.sender_priority
+                    .priority
+                    .sort_rank()
+                    .cmp(&right.sender_priority.priority.sort_rank())
+                    .then(right.timestamp.cmp(&left.timestamp))
+            });
             Ok::<_, String>(results)
         })
         .await
@@ -1330,7 +1511,7 @@ async fn search_page(
                         submitted: true,
                         result_count: 0,
                         empty_message: Some(error),
-                        message_state,
+                        priority_filter,
                     },
                     params.flash.as_deref(),
                     params.error.as_deref(),
@@ -1347,7 +1528,7 @@ async fn search_page(
                         submitted: true,
                         result_count: 0,
                         empty_message: Some("Search task failed".to_string()),
-                        message_state,
+                        priority_filter,
                     },
                     params.flash.as_deref(),
                     params.error.as_deref(),
@@ -1372,9 +1553,9 @@ async fn search_page(
         .count();
 
     let empty_message = if !has_explicit_query {
-        if has_params && message_state != MessageStateFilter::Active {
+        if has_params && priority_filter != SenderPriorityFilter::All {
             if results.is_empty() {
-                Some("No deleted messages matched the current filters.".to_string())
+                Some("No messages matched the selected sender priority.".to_string())
             } else {
                 None
             }
@@ -1384,23 +1565,17 @@ async fn search_page(
                     .to_string(),
             )
         }
-    } else if query_text.trim().is_empty() && message_state == MessageStateFilter::Active {
+    } else if query_text.trim().is_empty() && priority_filter == SenderPriorityFilter::All {
         Some("Enter a notmuch query to search your indexed archive.".to_string())
     } else if selected_accounts.is_empty() {
         Some("No mailbox is available for this search filter.".to_string())
-    } else if indexed_selected_accounts == 0 && message_state != MessageStateFilter::Deleted {
+    } else if indexed_selected_accounts == 0 {
         Some(
             "The selected mailbox archive has not been indexed yet. Run Sync now or Reindex first."
                 .to_string(),
         )
     } else if results.is_empty() {
-        Some(match message_state {
-            MessageStateFilter::Active => "No indexed messages matched this query.".to_string(),
-            MessageStateFilter::Deleted => {
-                "No deleted messages matched the current filters.".to_string()
-            }
-            MessageStateFilter::All => "No messages matched this query.".to_string(),
-        })
+        Some("No indexed messages matched the current filters.".to_string())
     } else {
         None
     };
@@ -1409,7 +1584,7 @@ async fn search_page(
         submitted: has_params,
         result_count: results.len(),
         empty_message,
-        message_state,
+        priority_filter,
     };
 
     html_response(render_search(
@@ -1463,11 +1638,10 @@ async fn attachments_page(
     ))
 }
 
-async fn delete_message_from_local_archive(
+async fn upsert_sender_priority(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((account_id, message_key)): Path<(i64, String)>,
-    Form(form): Form<MessageActionForm>,
+    Form(form): Form<SenderPriorityForm>,
 ) -> Response {
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
@@ -1480,35 +1654,46 @@ async fn delete_message_from_local_archive(
 
     let config = state.config.clone();
     let username = identity.username.clone();
+    let return_to = form.return_to.clone();
     let result = tokio::task::spawn_blocking(move || {
-        delete_message_from_archive(&config, &username, account_id, &message_key)
+        upsert_sender_priority_rule(
+            &config,
+            &username,
+            &form.sender_kind,
+            &form.sender_value,
+            &form.priority,
+        )
     })
     .await;
 
     match result {
-        Ok(Ok(())) => redirect_response(&message_redirect_location(
-            form.return_to.as_deref(),
-            Some("Message removed from the local archive"),
+        Ok(Ok(rule)) => redirect_response(&message_redirect_location(
+            return_to.as_deref(),
+            Some(&format!(
+                "Marked {} {} as {} priority",
+                rule.kind.label(),
+                rule.value,
+                rule.priority.as_stored_value()
+            )),
             None,
         )),
         Ok(Err(error)) => redirect_response(&message_redirect_location(
-            form.return_to.as_deref(),
+            return_to.as_deref(),
             None,
             Some(&error),
         )),
         Err(_) => redirect_response(&message_redirect_location(
-            form.return_to.as_deref(),
+            return_to.as_deref(),
             None,
-            Some("Message delete task failed"),
+            Some("Sender priority task failed"),
         )),
     }
 }
 
-async fn restore_message_for_next_sync(
+async fn clear_sender_priority(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((account_id, message_key)): Path<(i64, String)>,
-    Form(form): Form<MessageActionForm>,
+    Form(form): Form<SenderPriorityClearForm>,
 ) -> Response {
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
@@ -1521,26 +1706,27 @@ async fn restore_message_for_next_sync(
 
     let config = state.config.clone();
     let username = identity.username.clone();
+    let return_to = form.return_to.clone();
     let result = tokio::task::spawn_blocking(move || {
-        mark_deleted_message_restore_pending(&config, &username, account_id, &message_key)
+        clear_sender_priority_rule(&config, &username, &form.sender_kind, &form.sender_value)
     })
     .await;
 
     match result {
         Ok(Ok(())) => redirect_response(&message_redirect_location(
-            form.return_to.as_deref(),
-            Some("Message marked for restore on the next sync"),
+            return_to.as_deref(),
+            Some("Sender priority rule cleared"),
             None,
         )),
         Ok(Err(error)) => redirect_response(&message_redirect_location(
-            form.return_to.as_deref(),
+            return_to.as_deref(),
             None,
             Some(&error),
         )),
         Err(_) => redirect_response(&message_redirect_location(
-            form.return_to.as_deref(),
+            return_to.as_deref(),
             None,
-            Some("Message restore task failed"),
+            Some("Sender priority task failed"),
         )),
     }
 }
@@ -1662,7 +1848,7 @@ async fn download_attachments_zip(
         tokio::task::spawn_blocking(move || build_attachments_zip(&config, &username, &form)).await;
 
     match result {
-        Ok(Ok((filename, bytes))) => zip_download_response(&filename, bytes),
+        Ok(Ok(zip_file)) => zip_download_file_response(zip_file).await,
         Ok(Err(error)) => redirect_response(&attachments_redirect_location(
             return_to.as_deref(),
             None,
@@ -1919,6 +2105,9 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 mime_type TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
                 is_inline_artifact INTEGER NOT NULL,
+                blob_relpath TEXT,
+                source_message_sha256 TEXT,
+                last_verified_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL
@@ -1926,6 +2115,12 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_attachment_catalog_message
             ON attachment_catalog (account_id, message_key);
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_catalog_filters
+            ON attachment_catalog (account_id, extension, is_inline_artifact, size_bytes);
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_catalog_sha
+            ON attachment_catalog (account_id, attachment_sha256);
 
             CREATE TABLE IF NOT EXISTS account_progress_snapshots (
                 account_id INTEGER PRIMARY KEY,
@@ -1972,44 +2167,18 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
             CREATE INDEX IF NOT EXISTS idx_message_mailbox_visible_relpath
             ON message_mailbox_instances (account_id, visible_relpath);
 
-            CREATE TABLE IF NOT EXISTS deleted_messages (
-                account_id INTEGER NOT NULL,
-                message_key TEXT NOT NULL,
-                message_relpath_at_delete TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                sender TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                deleted_at TEXT NOT NULL,
-                delete_reason TEXT NOT NULL,
-                restored_at TEXT,
-                restore_pending INTEGER NOT NULL,
-                last_restore_requested_at TEXT,
-                payload_removed INTEGER NOT NULL,
-                notes TEXT,
-                PRIMARY KEY (account_id, message_key)
+            CREATE TABLE IF NOT EXISTS sender_priorities (
+                username TEXT NOT NULL,
+                sender_kind TEXT NOT NULL CHECK(sender_kind IN ('address', 'domain')),
+                sender_value TEXT NOT NULL,
+                priority TEXT NOT NULL CHECK(priority IN ('high', 'low')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (username, sender_kind, sender_value)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_deleted_messages_state
-            ON deleted_messages (account_id, restored_at, restore_pending, timestamp DESC);
-
-            CREATE TABLE IF NOT EXISTS deleted_message_attachments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                account_id INTEGER NOT NULL,
-                message_key TEXT NOT NULL,
-                attachment_key TEXT NOT NULL,
-                attachment_sha256 TEXT NOT NULL,
-                original_filename TEXT NOT NULL,
-                safe_filename TEXT NOT NULL,
-                extension TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                size_bytes INTEGER NOT NULL,
-                is_inline_artifact INTEGER NOT NULL,
-                deleted_at TEXT NOT NULL,
-                UNIQUE (account_id, attachment_key)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_deleted_message_attachments_message
-            ON deleted_message_attachments (account_id, message_key);
+            CREATE INDEX IF NOT EXISTS idx_sender_priorities_user_priority
+            ON sender_priorities (username, priority, sender_kind, sender_value);
             "#,
         )
         .map_err(|error| format!("failed to initialize sqlite schema: {error}"))?;
@@ -2039,9 +2208,11 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
             r#"
             DROP TABLE IF EXISTS attachment_actions;
             DROP TABLE IF EXISTS paperless_attachment_exports;
+            DROP TABLE IF EXISTS deleted_message_attachments;
+            DROP TABLE IF EXISTS deleted_messages;
             "#,
         )
-        .map_err(|error| format!("failed to drop legacy attachment action state: {error}"))?;
+        .map_err(|error| format!("failed to drop legacy app-local state: {error}"))?;
     for column in [
         "paperless_enabled",
         "paperless_last_export_started_at",
@@ -2052,7 +2223,52 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
         drop_account_column_if_exists(&connection, column)?;
     }
 
+    for (table, column, sql) in [
+        (
+            "attachment_catalog",
+            "blob_relpath",
+            "ALTER TABLE attachment_catalog ADD COLUMN blob_relpath TEXT",
+        ),
+        (
+            "attachment_catalog",
+            "source_message_sha256",
+            "ALTER TABLE attachment_catalog ADD COLUMN source_message_sha256 TEXT",
+        ),
+        (
+            "attachment_catalog",
+            "last_verified_at",
+            "ALTER TABLE attachment_catalog ADD COLUMN last_verified_at TEXT",
+        ),
+    ] {
+        ensure_table_column(&connection, table, column, sql)?;
+    }
+
     Ok(())
+}
+
+fn ensure_table_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    sql: &str,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| format!("failed to inspect {table} schema: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("failed to inspect {table} columns: {error}"))?;
+
+    for row in rows {
+        if row.map_err(|error| format!("failed to decode {table} column: {error}"))? == column {
+            return Ok(());
+        }
+    }
+
+    connection
+        .execute(sql, [])
+        .map(|_| ())
+        .map_err(|error| format!("failed to add {table}.{column}: {error}"))
 }
 
 fn ensure_account_column(connection: &Connection, column: &str, sql: &str) -> Result<(), String> {
@@ -2539,6 +2755,45 @@ fn list_accounts_for_user(
     Ok(accounts)
 }
 
+fn list_all_accounts(config: &AppConfig) -> Result<Vec<AccountRecord>, String> {
+    let connection = open_db(config)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                id,
+                username,
+                provider_kind,
+                display_name,
+                imap_host,
+                imap_port,
+                imap_username,
+                folder_mode,
+                folder_patterns_json,
+                encrypted_secret,
+                sync_enabled,
+                created_at,
+                updated_at,
+                last_sync_started_at,
+                last_sync_finished_at,
+                last_sync_status,
+                last_sync_error,
+                last_sync_phase,
+                last_sync_code,
+                last_sync_summary,
+                last_sync_detail
+            FROM accounts
+            ORDER BY username ASC, display_name COLLATE NOCASE ASC, id ASC
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare account inventory query: {error}"))?;
+    let rows = statement
+        .query_map([], map_account_row)
+        .map_err(|error| format!("failed to query account inventory: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode account inventory: {error}"))
+}
+
 fn load_account_for_user(
     config: &AppConfig,
     username: &str,
@@ -2627,6 +2882,118 @@ fn save_search_preferences(
         )
         .map_err(|error| format!("failed to save search preferences: {error}"))?;
 
+    Ok(())
+}
+
+fn load_sender_priority_rules(
+    config: &AppConfig,
+    username: &str,
+) -> Result<SenderPriorityRules, String> {
+    let connection = open_db(config)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT sender_kind, sender_value, priority
+            FROM sender_priorities
+            WHERE username = ?1
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare sender priority query: {error}"))?;
+    let rows = statement
+        .query_map(params![username], |row| {
+            let kind: String = row.get(0)?;
+            let value: String = row.get(1)?;
+            let priority: String = row.get(2)?;
+            Ok((kind, value, priority))
+        })
+        .map_err(|error| format!("failed to query sender priorities: {error}"))?;
+
+    let mut rules = SenderPriorityRules::default();
+    for row in rows {
+        let (kind, value, priority) =
+            row.map_err(|error| format!("failed to decode sender priority: {error}"))?;
+        let Some(priority) = SenderPriority::from_stored(&priority) else {
+            continue;
+        };
+        match kind.as_str() {
+            "address" => {
+                rules.addresses.insert(value, priority);
+            }
+            "domain" => {
+                rules.domains.insert(value, priority);
+            }
+            _ => {}
+        }
+    }
+    Ok(rules)
+}
+
+fn upsert_sender_priority_rule(
+    config: &AppConfig,
+    username: &str,
+    raw_kind: &str,
+    raw_value: &str,
+    raw_priority: &str,
+) -> Result<SenderPriorityRule, String> {
+    let kind = SenderRuleKind::from_form(raw_kind)
+        .ok_or_else(|| "Sender rule kind must be address or domain".to_string())?;
+    let value = normalize_sender_rule_value(kind, raw_value)?;
+    let priority = SenderPriority::from_stored(raw_priority.trim())
+        .ok_or_else(|| "Sender priority must be high or low".to_string())?;
+    let now = Utc::now().to_rfc3339();
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO sender_priorities (
+                username,
+                sender_kind,
+                sender_value,
+                priority,
+                created_at,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            ON CONFLICT(username, sender_kind, sender_value) DO UPDATE SET
+                priority = excluded.priority,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                username,
+                kind.as_stored_value(),
+                value,
+                priority.as_stored_value(),
+                now,
+            ],
+        )
+        .map_err(|error| format!("failed to save sender priority: {error}"))?;
+    Ok(SenderPriorityRule {
+        kind,
+        value,
+        priority,
+    })
+}
+
+fn clear_sender_priority_rule(
+    config: &AppConfig,
+    username: &str,
+    raw_kind: &str,
+    raw_value: &str,
+) -> Result<(), String> {
+    let kind = SenderRuleKind::from_form(raw_kind)
+        .ok_or_else(|| "Sender rule kind must be address or domain".to_string())?;
+    let value = normalize_sender_rule_value(kind, raw_value)?;
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            DELETE FROM sender_priorities
+            WHERE username = ?1
+              AND sender_kind = ?2
+              AND sender_value = ?3
+            "#,
+            params![username, kind.as_stored_value(), value],
+        )
+        .map_err(|error| format!("failed to clear sender priority: {error}"))?;
     Ok(())
 }
 
@@ -2885,14 +3252,6 @@ fn run_account_action(
                         ),
                     ],
                 )?;
-                suppress_deleted_messages_for_account(config, account).map_err(|error| {
-                    SyncDiagnostic::new(
-                        SyncPhase::Reconcile,
-                        "deleted_message_suppression_failed",
-                        "Mail sync completed, but deleted-message reconciliation failed.",
-                        error,
-                    )
-                })?;
                 rebuild_message_catalog_and_visible_mailboxes(config, account).map_err(
                     |error| {
                         SyncDiagnostic::new(
@@ -2936,14 +3295,6 @@ fn run_account_action(
                         ),
                     ],
                 )?;
-                suppress_deleted_messages_for_account(config, account).map_err(|error| {
-                    SyncDiagnostic::new(
-                        SyncPhase::Reconcile,
-                        "deleted_message_suppression_failed",
-                        "Mailbox reindex completed, but deleted-message reconciliation failed.",
-                        error,
-                    )
-                })?;
                 rebuild_message_catalog_and_visible_mailboxes(config, account).map_err(|error| {
                     SyncDiagnostic::new(
                         SyncPhase::Reconcile,
@@ -3094,6 +3445,11 @@ fn ensure_account_paths(
         .join(".internal-sync")
         .join(account_hidden_root_name(account));
     let maildir = hidden_sync_root.join("maildir");
+    let attachment_blob_root = hidden_sync_root
+        .join("attachments")
+        .join("blobs")
+        .join("sha256");
+    let export_root = hidden_sync_root.join("exports");
     let legacy_payload_root = emails_root.join("accounts").join(account.id.to_string());
     let legacy_state_dir = legacy_payload_root.join("state");
     let legacy_notmuch_db_root = legacy_payload_root.join("maildir/.notmuch");
@@ -3110,6 +3466,8 @@ fn ensure_account_paths(
         hidden_sync_root.parent().unwrap_or(&hidden_sync_root),
         &hidden_sync_root,
         &maildir,
+        &attachment_blob_root,
+        &export_root,
         &account_state_root,
     ] {
         fs::create_dir_all(directory)
@@ -3121,6 +3479,8 @@ fn ensure_account_paths(
         visible_emails_root,
         hidden_sync_root,
         maildir,
+        attachment_blob_root,
+        export_root,
         account_state_root,
         notmuch_config,
         sync_state_dir,
@@ -3788,6 +4148,76 @@ fn decoded_header_value(message_bytes: &[u8], target_name: &str) -> Option<Strin
         .filter(|value| !value.is_empty())
 }
 
+fn sender_identity_from_header(raw_sender: &str) -> Option<SenderIdentity> {
+    mailparse::addrparse(raw_sender)
+        .ok()
+        .and_then(|addresses| {
+            addresses.iter().find_map(|address| match address {
+                MailAddr::Single(single) => normalize_sender_address(&single.addr),
+                MailAddr::Group(group) => group
+                    .addrs
+                    .first()
+                    .and_then(|single| normalize_sender_address(&single.addr)),
+            })
+        })
+        .or_else(|| fallback_sender_identity(raw_sender))
+}
+
+fn fallback_sender_identity(raw_sender: &str) -> Option<SenderIdentity> {
+    let candidate = raw_sender
+        .split(|character: char| {
+            character.is_whitespace() || matches!(character, '<' | '>' | ',' | ';' | '"' | '\'')
+        })
+        .find(|part| part.contains('@'))?;
+    normalize_sender_address(candidate)
+}
+
+fn normalize_sender_address(raw_address: &str) -> Option<SenderIdentity> {
+    let address = raw_address
+        .trim()
+        .trim_matches(|character| matches!(character, '<' | '>' | '"' | '\''))
+        .to_ascii_lowercase();
+    let (local, domain) = address.rsplit_once('@')?;
+    let domain = domain.trim().trim_matches('.').to_string();
+    if local.trim().is_empty()
+        || domain.is_empty()
+        || domain.contains('/')
+        || domain.contains('@')
+        || address.contains(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(SenderIdentity { address, domain })
+}
+
+fn normalize_sender_domain(raw_domain: &str) -> Option<String> {
+    let domain = raw_domain
+        .trim()
+        .trim_start_matches('@')
+        .trim_matches(|character| matches!(character, '<' | '>' | '"' | '\''))
+        .trim_matches('.')
+        .to_ascii_lowercase();
+    if domain.is_empty()
+        || domain.contains('@')
+        || domain.contains('/')
+        || domain.contains(char::is_whitespace)
+    {
+        None
+    } else {
+        Some(domain)
+    }
+}
+
+fn normalize_sender_rule_value(kind: SenderRuleKind, raw_value: &str) -> Result<String, String> {
+    match kind {
+        SenderRuleKind::Address => normalize_sender_address(raw_value)
+            .map(|identity| identity.address)
+            .ok_or_else(|| "Sender address rule must be a valid email address".to_string()),
+        SenderRuleKind::Domain => normalize_sender_domain(raw_value)
+            .ok_or_else(|| "Sender domain rule must be a valid mail domain".to_string()),
+    }
+}
+
 fn parse_message_timestamp(raw: &str) -> Option<i64> {
     DateTime::parse_from_rfc2822(raw)
         .ok()
@@ -3883,9 +4313,26 @@ fn fallback_mime_from_extension_str(extension: &str) -> Option<String> {
 }
 
 fn looks_like_inline_artifact(filename: &str, mime_type: &str, size_bytes: u64) -> bool {
-    mime_type.starts_with("image/") && size_bytes <= 1024
+    looks_like_extracted_body_part(filename)
+        || mime_type.starts_with("image/") && size_bytes <= 1024
         || filename.eq_ignore_ascii_case("winmail.dat")
         || filename.eq_ignore_ascii_case("smime.p7s")
+}
+
+fn attachment_is_hidden_artifact(attachment: &AttachmentRecord) -> bool {
+    attachment.is_inline_artifact
+        || looks_like_inline_artifact(
+            &attachment.original_filename,
+            &attachment.mime_type,
+            u64::try_from(attachment.size_bytes.max(0)).unwrap_or_default(),
+        )
+}
+
+fn looks_like_extracted_body_part(filename: &str) -> bool {
+    let lowered = filename.to_ascii_lowercase();
+    lowered.strip_prefix("textfile").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+    })
 }
 
 fn sync_directory(path: &FsPath) -> Result<(), String> {
@@ -3919,6 +4366,93 @@ fn attachment_inventory_root(config: &AppConfig, account_id: i64) -> PathBuf {
     PathBuf::from(config.runtime_dir.as_ref())
         .join("attachment-inventory")
         .join(format!("account-{account_id}"))
+}
+
+fn runtime_export_root(config: &AppConfig) -> PathBuf {
+    PathBuf::from(config.runtime_dir.as_ref()).join("attachment-exports")
+}
+
+fn attachment_blob_relpath(sha256: &str) -> PathBuf {
+    let prefix = sha256.chars().take(2).collect::<String>();
+    PathBuf::from("attachments")
+        .join("blobs")
+        .join("sha256")
+        .join(if prefix.len() == 2 {
+            prefix
+        } else {
+            "unknown".to_string()
+        })
+        .join(sha256)
+}
+
+fn attachment_blob_path(
+    account_paths: &AccountPaths,
+    blob_relpath: &str,
+) -> Result<PathBuf, String> {
+    let relpath = FsPath::new(blob_relpath);
+    if relpath.is_absolute() || blob_relpath.contains("..") {
+        return Err(format!("invalid attachment blob path: {blob_relpath}"));
+    }
+    Ok(account_paths.hidden_sync_root.join(relpath))
+}
+
+fn persist_attachment_blob(
+    account_paths: &AccountPaths,
+    source: &FsPath,
+    sha256: &str,
+) -> Result<String, String> {
+    let relpath = attachment_blob_relpath(sha256);
+    let destination = account_paths.hidden_sync_root.join(&relpath);
+    if destination.exists() {
+        let existing_sha = sha256_file(&destination)?;
+        if existing_sha == sha256 {
+            return Ok(relpath.to_string_lossy().to_string());
+        }
+        fs::remove_file(&destination).map_err(|error| {
+            format!(
+                "failed to replace mismatched attachment blob {}: {error}",
+                destination.display()
+            )
+        })?;
+    }
+
+    let parent = destination.parent().ok_or_else(|| {
+        format!(
+            "attachment blob path has no parent: {}",
+            destination.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+    let temporary = parent.join(format!(".{}.tmp", random_hex(8)));
+    fs::copy(source, &temporary).map_err(|error| {
+        format!(
+            "failed to copy attachment blob {} to {}: {error}",
+            source.display(),
+            temporary.display()
+        )
+    })?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600)).map_err(|error| {
+        format!(
+            "failed to set attachment blob permissions {}: {error}",
+            temporary.display()
+        )
+    })?;
+    let copied_sha = sha256_file(&temporary)?;
+    if copied_sha != sha256 {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!(
+            "attachment blob hash changed while copying: expected {sha256}, got {copied_sha}"
+        ));
+    }
+    fs::rename(&temporary, &destination).map_err(|error| {
+        format!(
+            "failed to publish attachment blob {}: {error}",
+            destination.display()
+        )
+    })?;
+    sync_directory(parent)?;
+    Ok(relpath.to_string_lossy().to_string())
 }
 
 fn create_runtime_extraction_dir(
@@ -4025,9 +4559,11 @@ fn list_notmuch_message_files(
 
 fn scan_message_attachments_for_catalog(
     config: &AppConfig,
+    account_paths: &AccountPaths,
     account_id: i64,
     message_key: &str,
     message_path: &FsPath,
+    source_message_sha256: &str,
 ) -> Result<(TempExtractionDir, Vec<(AttachmentRecord, PathBuf)>), String> {
     let extraction_dir = create_runtime_extraction_dir(config, account_id)?;
     extract_message_attachments(message_path, &extraction_dir.path)?;
@@ -4058,6 +4594,8 @@ fn scan_message_attachments_for_catalog(
             )
         })?;
         let attachment_sha256 = sha256_file(&extracted_file)?;
+        let blob_relpath =
+            persist_attachment_blob(account_paths, &extracted_file, &attachment_sha256)?;
         let attachment_record = AttachmentRecord {
             attachment_key: attachment_key(
                 account_id,
@@ -4080,6 +4618,9 @@ fn scan_message_attachments_for_catalog(
                 &mime_type,
                 metadata.len(),
             ),
+            blob_relpath: Some(blob_relpath),
+            source_message_sha256: Some(source_message_sha256.to_string()),
+            last_verified_at: Some(now.clone()),
             created_at: now.clone(),
             updated_at: now.clone(),
             last_seen_at: now.clone(),
@@ -4142,7 +4683,6 @@ fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Re
 
     let mut connection = open_db(config)?;
     let existing_messages = load_attachment_messages_for_account(&connection, account.id)?;
-    let deleted_message_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
     let existing_by_relpath = existing_messages
         .iter()
         .map(|record| (record.message_relpath.clone(), record.clone()))
@@ -4150,7 +4690,6 @@ fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Re
     let message_files = list_notmuch_message_files(&account_paths, "*")?;
     let mut seen_relpaths = HashSet::new();
     let mut seen_message_keys = HashSet::new();
-    let mut restored_message_keys = HashSet::new();
 
     for message_path in message_files {
         let relpath = message_relative_path(&account_paths, &message_path)?
@@ -4163,14 +4702,7 @@ fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Re
             .map_err(|_| format!("message {} is too large to catalog", message_path.display()))?;
         let message_metadata = read_message_metadata(&message_path)?;
         let message_key = message_key_from_metadata(&message_metadata)?;
-
-        if let Some(tombstone) = deleted_message_map.get(&message_key) {
-            if tombstone.restore_pending {
-                restored_message_keys.insert(message_key.clone());
-            } else {
-                continue;
-            }
-        }
+        let source_message_sha256 = sha256_file(&message_path)?;
 
         if !seen_message_keys.insert(message_key.clone()) {
             continue;
@@ -4185,8 +4717,14 @@ fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Re
             continue;
         }
 
-        let (_extraction_dir, scanned_attachments) =
-            scan_message_attachments_for_catalog(config, account.id, &message_key, &message_path)?;
+        let (_extraction_dir, scanned_attachments) = scan_message_attachments_for_catalog(
+            config,
+            &account_paths,
+            account.id,
+            &message_key,
+            &message_path,
+            &source_message_sha256,
+        )?;
         let now = Utc::now().to_rfc3339();
         let transaction = connection
             .transaction()
@@ -4259,10 +4797,13 @@ fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Re
                         mime_type,
                         size_bytes,
                         is_inline_artifact,
+                        blob_relpath,
+                        source_message_sha256,
+                        last_verified_at,
                         created_at,
                         updated_at,
                         last_seen_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                     "#,
                     params![
                         attachment.attachment_key,
@@ -4276,6 +4817,9 @@ fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Re
                         attachment.mime_type,
                         attachment.size_bytes,
                         if attachment.is_inline_artifact { 1 } else { 0 },
+                        attachment.blob_relpath,
+                        attachment.source_message_sha256,
+                        attachment.last_verified_at,
                         attachment.created_at,
                         attachment.updated_at,
                         attachment.last_seen_at,
@@ -4320,28 +4864,6 @@ fn refresh_attachment_catalog(config: &AppConfig, account: &AccountRecord) -> Re
             .map_err(|error| format!("failed to commit stale attachment cleanup: {error}"))?;
     }
 
-    if !restored_message_keys.is_empty() {
-        let now = Utc::now().to_rfc3339();
-        for message_key in restored_message_keys {
-            connection
-                .execute(
-                    r#"
-                    UPDATE deleted_messages
-                    SET
-                        restored_at = ?3,
-                        restore_pending = 0
-                    WHERE account_id = ?1
-                      AND message_key = ?2
-                      AND restored_at IS NULL
-                    "#,
-                    params![account.id, message_key, now],
-                )
-                .map_err(|error| {
-                    format!("failed to mark restored message after refresh: {error}")
-                })?;
-        }
-    }
-
     Ok(())
 }
 
@@ -4359,637 +4881,6 @@ fn refresh_attachment_catalog_for_user(
     }
     Ok(())
 }
-
-fn load_active_deleted_message_records_for_account(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<Vec<DeletedMessageRecord>, String> {
-    let mut statement = connection
-        .prepare(
-            r#"
-            SELECT
-                account_id,
-                message_key,
-                message_relpath_at_delete,
-                subject,
-                sender,
-                timestamp,
-                deleted_at,
-                delete_reason,
-                restored_at,
-                restore_pending,
-                last_restore_requested_at,
-                payload_removed,
-                notes
-            FROM deleted_messages
-            WHERE account_id = ?1
-              AND restored_at IS NULL
-            ORDER BY timestamp DESC, deleted_at DESC
-            "#,
-        )
-        .map_err(|error| format!("failed to prepare deleted message query: {error}"))?;
-    let rows = statement
-        .query_map(params![account_id], |row| {
-            Ok(DeletedMessageRecord {
-                account_id: row.get(0)?,
-                message_key: row.get(1)?,
-                message_relpath_at_delete: row.get(2)?,
-                subject: row.get(3)?,
-                sender: row.get(4)?,
-                timestamp: row.get(5)?,
-                deleted_at: row.get(6)?,
-                delete_reason: row.get(7)?,
-                restored_at: row.get(8)?,
-                restore_pending: row.get::<_, i64>(9)? != 0,
-                last_restore_requested_at: row.get(10)?,
-                payload_removed: row.get::<_, i64>(11)? != 0,
-                notes: row.get(12)?,
-            })
-        })
-        .map_err(|error| format!("failed to query deleted messages: {error}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to decode deleted messages: {error}"))
-}
-
-fn load_active_deleted_message_map_for_account(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<HashMap<String, DeletedMessageRecord>, String> {
-    Ok(
-        load_active_deleted_message_records_for_account(connection, account_id)?
-            .into_iter()
-            .map(|record| (record.message_key.clone(), record))
-            .collect(),
-    )
-}
-
-fn load_deleted_message_records_for_user(
-    config: &AppConfig,
-    username: &str,
-    selected_account_id: Option<i64>,
-) -> Result<Vec<(AccountRecord, DeletedMessageRecord)>, String> {
-    let connection = open_db(config)?;
-    let mut results = Vec::new();
-    for account in list_accounts_for_user(config, username)?
-        .into_iter()
-        .filter(|account| selected_account_id.is_none_or(|selected| selected == account.id))
-    {
-        for record in load_active_deleted_message_records_for_account(&connection, account.id)? {
-            results.push((account.clone(), record));
-        }
-    }
-    results.sort_by_key(|result| Reverse(result.1.timestamp));
-    Ok(results)
-}
-
-fn load_deleted_message_for_user(
-    config: &AppConfig,
-    username: &str,
-    account_id: i64,
-    message_key: &str,
-) -> Result<(AccountRecord, DeletedMessageRecord), String> {
-    let account = load_account_for_user(config, username, account_id)?;
-    let connection = open_db(config)?;
-    connection
-        .query_row(
-            r#"
-            SELECT
-                account_id,
-                message_key,
-                message_relpath_at_delete,
-                subject,
-                sender,
-                timestamp,
-                deleted_at,
-                delete_reason,
-                restored_at,
-                restore_pending,
-                last_restore_requested_at,
-                payload_removed,
-                notes
-            FROM deleted_messages
-            WHERE account_id = ?1
-              AND message_key = ?2
-              AND restored_at IS NULL
-            LIMIT 1
-            "#,
-            params![account_id, message_key],
-            |row| {
-                Ok(DeletedMessageRecord {
-                    account_id: row.get(0)?,
-                    message_key: row.get(1)?,
-                    message_relpath_at_delete: row.get(2)?,
-                    subject: row.get(3)?,
-                    sender: row.get(4)?,
-                    timestamp: row.get(5)?,
-                    deleted_at: row.get(6)?,
-                    delete_reason: row.get(7)?,
-                    restored_at: row.get(8)?,
-                    restore_pending: row.get::<_, i64>(9)? != 0,
-                    last_restore_requested_at: row.get(10)?,
-                    payload_removed: row.get::<_, i64>(11)? != 0,
-                    notes: row.get(12)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| format!("failed to load deleted message: {error}"))?
-        .map(|record| (account, record))
-        .ok_or_else(|| "Deleted message not found".to_string())
-}
-
-fn load_deleted_message_attachments_for_account(
-    connection: &Connection,
-    account_id: i64,
-) -> Result<Vec<(DeletedMessageRecord, DeletedMessageAttachmentRecord)>, String> {
-    let mut statement = connection
-        .prepare(
-            r#"
-            SELECT
-                m.account_id,
-                m.message_key,
-                m.message_relpath_at_delete,
-                m.subject,
-                m.sender,
-                m.timestamp,
-                m.deleted_at,
-                m.delete_reason,
-                m.restored_at,
-                m.restore_pending,
-                m.last_restore_requested_at,
-                m.payload_removed,
-                m.notes,
-                a.account_id,
-                a.message_key,
-                a.attachment_key,
-                a.attachment_sha256,
-                a.original_filename,
-                a.safe_filename,
-                a.extension,
-                a.mime_type,
-                a.size_bytes,
-                a.is_inline_artifact,
-                a.deleted_at
-            FROM deleted_message_attachments a
-            INNER JOIN deleted_messages m
-                ON m.account_id = a.account_id
-               AND m.message_key = a.message_key
-            WHERE a.account_id = ?1
-              AND m.restored_at IS NULL
-            ORDER BY m.timestamp DESC, a.original_filename ASC
-            "#,
-        )
-        .map_err(|error| format!("failed to prepare deleted attachment query: {error}"))?;
-    let rows = statement
-        .query_map(params![account_id], |row| {
-            Ok((
-                DeletedMessageRecord {
-                    account_id: row.get(0)?,
-                    message_key: row.get(1)?,
-                    message_relpath_at_delete: row.get(2)?,
-                    subject: row.get(3)?,
-                    sender: row.get(4)?,
-                    timestamp: row.get(5)?,
-                    deleted_at: row.get(6)?,
-                    delete_reason: row.get(7)?,
-                    restored_at: row.get(8)?,
-                    restore_pending: row.get::<_, i64>(9)? != 0,
-                    last_restore_requested_at: row.get(10)?,
-                    payload_removed: row.get::<_, i64>(11)? != 0,
-                    notes: row.get(12)?,
-                },
-                DeletedMessageAttachmentRecord {
-                    account_id: row.get(13)?,
-                    message_key: row.get(14)?,
-                    attachment_key: row.get(15)?,
-                    attachment_sha256: row.get(16)?,
-                    original_filename: row.get(17)?,
-                    safe_filename: row.get(18)?,
-                    extension: row.get(19)?,
-                    mime_type: row.get(20)?,
-                    size_bytes: row.get(21)?,
-                    is_inline_artifact: row.get::<_, i64>(22)? != 0,
-                    deleted_at: row.get(23)?,
-                },
-            ))
-        })
-        .map_err(|error| format!("failed to query deleted attachments: {error}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to decode deleted attachments: {error}"))
-}
-
-fn collect_live_messages_for_account(
-    config: &AppConfig,
-    account: &AccountRecord,
-    query: &str,
-) -> Result<Vec<LiveMessageRecord>, String> {
-    let account_paths = ensure_account_paths(config, account)?;
-    if account_index_state(&account_paths) != IndexState::Indexed {
-        return Ok(Vec::new());
-    }
-
-    let mut by_key = HashMap::<String, LiveMessageRecord>::new();
-    for file_path in list_notmuch_message_files(&account_paths, query)? {
-        let relpath = message_relative_path(&account_paths, &file_path)?
-            .to_string_lossy()
-            .to_string();
-        let metadata = read_message_metadata(&file_path)?;
-        let message_key = message_key_from_metadata(&metadata)?;
-        let record = by_key
-            .entry(message_key.clone())
-            .or_insert_with(|| LiveMessageRecord {
-                message_key: message_key.clone(),
-                message_relpaths: Vec::new(),
-                subject: metadata.subject.clone(),
-                from: metadata.from.clone(),
-                timestamp: metadata.timestamp,
-            });
-        record.message_relpaths.push(relpath);
-    }
-
-    let connection = open_db(config)?;
-    let deleted_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
-    let mut messages = by_key
-        .into_values()
-        .filter(|record| !deleted_map.contains_key(&record.message_key))
-        .collect::<Vec<_>>();
-    messages.sort_by_key(|message| Reverse(message.timestamp));
-    Ok(messages)
-}
-
-fn load_live_message_for_user(
-    config: &AppConfig,
-    username: &str,
-    account_id: i64,
-    message_key: &str,
-) -> Result<(AccountRecord, LiveMessageRecord), String> {
-    let account = load_account_for_user(config, username, account_id)?;
-    let mut matches = collect_live_messages_for_account(config, &account, "*")?
-        .into_iter()
-        .filter(|record| record.message_key == message_key)
-        .collect::<Vec<_>>();
-    matches
-        .pop()
-        .map(|record| (account, record))
-        .ok_or_else(|| "Message not found in the local archive".to_string())
-}
-
-fn write_deleted_message_snapshot(
-    transaction: &Connection,
-    account_id: i64,
-    message: &LiveMessageRecord,
-    deleted_at: &str,
-) -> Result<(), String> {
-    transaction
-        .execute(
-            r#"
-            INSERT INTO deleted_messages (
-                account_id,
-                message_key,
-                message_relpath_at_delete,
-                subject,
-                sender,
-                timestamp,
-                deleted_at,
-                delete_reason,
-                restored_at,
-                restore_pending,
-                last_restore_requested_at,
-                payload_removed,
-                notes
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'user_deleted', NULL, 0, NULL, 1, NULL)
-            ON CONFLICT(account_id, message_key) DO UPDATE SET
-                message_relpath_at_delete = excluded.message_relpath_at_delete,
-                subject = excluded.subject,
-                sender = excluded.sender,
-                timestamp = excluded.timestamp,
-                deleted_at = excluded.deleted_at,
-                delete_reason = excluded.delete_reason,
-                restored_at = NULL,
-                restore_pending = 0,
-                last_restore_requested_at = NULL,
-                payload_removed = 1,
-                notes = NULL
-            "#,
-            params![
-                account_id,
-                message.message_key,
-                message
-                    .message_relpaths
-                    .first()
-                    .cloned()
-                    .unwrap_or_default(),
-                message.subject,
-                message.from,
-                message.timestamp,
-                deleted_at,
-            ],
-        )
-        .map_err(|error| format!("failed to store deleted message: {error}"))?;
-    Ok(())
-}
-
-fn delete_message_from_archive(
-    config: &AppConfig,
-    username: &str,
-    account_id: i64,
-    message_key: &str,
-) -> Result<(), String> {
-    if load_deleted_message_for_user(config, username, account_id, message_key).is_ok() {
-        return Ok(());
-    }
-
-    let (account, live_message) =
-        load_live_message_for_user(config, username, account_id, message_key)?;
-    let account_paths = ensure_account_paths(config, &account)?;
-    let existing_connection = open_db(config)?;
-    let mailbox_instances =
-        load_message_mailbox_instances_for_account(&existing_connection, account_id)?
-            .into_iter()
-            .filter(|instance| instance.message_key == message_key)
-            .collect::<Vec<_>>();
-    let mut visible_paths_to_remove = mailbox_instances
-        .iter()
-        .map(|instance| {
-            account_paths
-                .visible_emails_root
-                .join(&instance.visible_relpath)
-        })
-        .collect::<Vec<_>>();
-    visible_paths_to_remove.sort();
-    visible_paths_to_remove.dedup();
-    let mut paths_to_remove = live_message
-        .message_relpaths
-        .iter()
-        .map(|relpath| account_paths.maildir.join(relpath))
-        .collect::<Vec<_>>();
-    paths_to_remove.sort();
-    paths_to_remove.dedup();
-
-    for path in &paths_to_remove {
-        if !path.exists() {
-            return Err(format!(
-                "refusing to delete missing archive payload {}",
-                path.display()
-            ));
-        }
-    }
-
-    for path in &visible_paths_to_remove {
-        if path.exists() {
-            fs::remove_file(path)
-                .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
-            if let Some(parent) = path.parent() {
-                prune_empty_ancestors(parent, &account_paths.visible_emails_root)?;
-            }
-        }
-    }
-    for path in &paths_to_remove {
-        fs::remove_file(path)
-            .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
-        if let Some(parent) = path.parent() {
-            sync_directory(parent)?;
-        }
-    }
-    sync_directory(&account_paths.maildir)?;
-
-    let mut connection = open_db(config)?;
-    let deleted_at = Utc::now().to_rfc3339();
-    let transaction = connection
-        .transaction()
-        .map_err(|error| format!("failed to start delete transaction: {error}"))?;
-    write_deleted_message_snapshot(&transaction, account_id, &live_message, &deleted_at)?;
-    transaction
-        .execute(
-            "DELETE FROM deleted_message_attachments WHERE account_id = ?1 AND message_key = ?2",
-            params![account_id, message_key],
-        )
-        .map_err(|error| format!("failed to clear prior deleted attachment rows: {error}"))?;
-
-    let mut attachment_statement = transaction
-        .prepare(
-            r#"
-            SELECT
-                attachment_key,
-                attachment_sha256,
-                original_filename,
-                safe_filename,
-                extension,
-                mime_type,
-                size_bytes,
-                is_inline_artifact
-            FROM attachment_catalog
-            WHERE account_id = ?1
-              AND message_key = ?2
-            ORDER BY attachment_index ASC
-            "#,
-        )
-        .map_err(|error| format!("failed to prepare attachment snapshot query: {error}"))?;
-    let snapshot_rows = attachment_statement
-        .query_map(params![account_id, message_key], |row| {
-            Ok(DeletedMessageAttachmentRecord {
-                account_id,
-                message_key: message_key.to_string(),
-                attachment_key: row.get(0)?,
-                attachment_sha256: row.get(1)?,
-                original_filename: row.get(2)?,
-                safe_filename: row.get(3)?,
-                extension: row.get(4)?,
-                mime_type: row.get(5)?,
-                size_bytes: row.get(6)?,
-                is_inline_artifact: row.get::<_, i64>(7)? != 0,
-                deleted_at: deleted_at.clone(),
-            })
-        })
-        .map_err(|error| format!("failed to snapshot attachments before delete: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to decode attachment snapshots: {error}"))?;
-    drop(attachment_statement);
-
-    for attachment in snapshot_rows {
-        transaction
-            .execute(
-                r#"
-                INSERT INTO deleted_message_attachments (
-                    account_id,
-                    message_key,
-                    attachment_key,
-                    attachment_sha256,
-                    original_filename,
-                    safe_filename,
-                    extension,
-                    mime_type,
-                    size_bytes,
-                    is_inline_artifact,
-                    deleted_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                "#,
-                params![
-                    attachment.account_id,
-                    attachment.message_key,
-                    attachment.attachment_key,
-                    attachment.attachment_sha256,
-                    attachment.original_filename,
-                    attachment.safe_filename,
-                    attachment.extension,
-                    attachment.mime_type,
-                    attachment.size_bytes,
-                    if attachment.is_inline_artifact { 1 } else { 0 },
-                    attachment.deleted_at,
-                ],
-            )
-            .map_err(|error| format!("failed to store deleted attachment metadata: {error}"))?;
-    }
-
-    transaction
-        .execute(
-            "DELETE FROM attachment_catalog WHERE account_id = ?1 AND message_key = ?2",
-            params![account_id, message_key],
-        )
-        .map_err(|error| format!("failed to delete attachment catalog rows: {error}"))?;
-    transaction
-        .execute(
-            "DELETE FROM attachment_messages WHERE account_id = ?1 AND message_key = ?2",
-            params![account_id, message_key],
-        )
-        .map_err(|error| format!("failed to delete attachment message row: {error}"))?;
-    transaction
-        .execute(
-            "DELETE FROM message_mailbox_instances WHERE account_id = ?1 AND message_key = ?2",
-            params![account_id, message_key],
-        )
-        .map_err(|error| format!("failed to delete mailbox instance rows: {error}"))?;
-    transaction
-        .execute(
-            "DELETE FROM message_catalog WHERE account_id = ?1 AND message_key = ?2",
-            params![account_id, message_key],
-        )
-        .map_err(|error| format!("failed to delete message catalog row: {error}"))?;
-    transaction
-        .commit()
-        .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
-
-    run_command(
-        "notmuch",
-        &["new"],
-        &[
-            (
-                "HOME",
-                account_paths.account_state_root.to_string_lossy().as_ref(),
-            ),
-            (
-                "NOTMUCH_CONFIG",
-                account_paths.notmuch_config.to_string_lossy().as_ref(),
-            ),
-        ],
-    )?;
-    rebuild_message_catalog_and_visible_mailboxes(config, &account)?;
-
-    Ok(())
-}
-
-fn mark_deleted_message_restore_pending(
-    config: &AppConfig,
-    username: &str,
-    account_id: i64,
-    message_key: &str,
-) -> Result<(), String> {
-    let _ = load_deleted_message_for_user(config, username, account_id, message_key)?;
-    let connection = open_db(config)?;
-    let now = Utc::now().to_rfc3339();
-    connection
-        .execute(
-            r#"
-            UPDATE deleted_messages
-            SET
-                restore_pending = 1,
-                last_restore_requested_at = ?3
-            WHERE account_id = ?1
-              AND message_key = ?2
-              AND restored_at IS NULL
-            "#,
-            params![account_id, message_key, now],
-        )
-        .map_err(|error| format!("failed to mark restore pending: {error}"))?;
-    Ok(())
-}
-
-fn suppress_deleted_messages_for_account(
-    config: &AppConfig,
-    account: &AccountRecord,
-) -> Result<(), String> {
-    let account_paths = ensure_account_paths(config, account)?;
-    if account_index_state(&account_paths) != IndexState::Indexed {
-        return Ok(());
-    }
-
-    let connection = open_db(config)?;
-    let tombstones = load_active_deleted_message_map_for_account(&connection, account.id)?;
-    if tombstones.is_empty() {
-        return Ok(());
-    }
-
-    let mut removed_any = false;
-    let mut restored_keys = HashSet::new();
-    for file_path in list_notmuch_message_files(&account_paths, "*")? {
-        let message_key = maildir_message_key(&file_path)?;
-        let Some(tombstone) = tombstones.get(&message_key) else {
-            continue;
-        };
-        if tombstone.restore_pending {
-            restored_keys.insert(message_key);
-            continue;
-        }
-        fs::remove_file(&file_path)
-            .map_err(|error| format!("failed to suppress {}: {error}", file_path.display()))?;
-        if let Some(parent) = file_path.parent() {
-            sync_directory(parent)?;
-        }
-        removed_any = true;
-    }
-
-    if removed_any {
-        run_command(
-            "notmuch",
-            &["new"],
-            &[
-                (
-                    "HOME",
-                    account_paths.account_state_root.to_string_lossy().as_ref(),
-                ),
-                (
-                    "NOTMUCH_CONFIG",
-                    account_paths.notmuch_config.to_string_lossy().as_ref(),
-                ),
-            ],
-        )?;
-    }
-
-    if !restored_keys.is_empty() {
-        let now = Utc::now().to_rfc3339();
-        for message_key in restored_keys {
-            connection
-                .execute(
-                    r#"
-                    UPDATE deleted_messages
-                    SET
-                        restored_at = ?3,
-                        restore_pending = 0
-                    WHERE account_id = ?1
-                      AND message_key = ?2
-                      AND restored_at IS NULL
-                    "#,
-                    params![account.id, message_key, now],
-                )
-                .map_err(|error| format!("failed to mark restored tombstone: {error}"))?;
-        }
-    }
-
-    Ok(())
-}
-
 fn load_attachment_catalog_rows_for_account(
     connection: &Connection,
     account_id: i64,
@@ -5019,6 +4910,9 @@ fn load_attachment_catalog_rows_for_account(
                 c.mime_type,
                 c.size_bytes,
                 c.is_inline_artifact,
+                c.blob_relpath,
+                c.source_message_sha256,
+                c.last_verified_at,
                 c.created_at,
                 c.updated_at,
                 c.last_seen_at
@@ -5058,9 +4952,12 @@ fn load_attachment_catalog_rows_for_account(
                     mime_type: row.get(18)?,
                     size_bytes: row.get(19)?,
                     is_inline_artifact: row.get::<_, i64>(20)? != 0,
-                    created_at: row.get(21)?,
-                    updated_at: row.get(22)?,
-                    last_seen_at: row.get(23)?,
+                    blob_relpath: row.get(21)?,
+                    source_message_sha256: row.get(22)?,
+                    last_verified_at: row.get(23)?,
+                    created_at: row.get(24)?,
+                    updated_at: row.get(25)?,
+                    last_seen_at: row.get(26)?,
                 },
             ))
         })
@@ -5079,8 +4976,10 @@ fn parse_page_number(raw: Option<&str>) -> usize {
 fn build_attachment_base_query(
     query_text: &str,
     selected_account_id: Option<i64>,
-    message_state: MessageStateFilter,
+    priority_filter: SenderPriorityFilter,
     extension_filter: &str,
+    include_inline: bool,
+    show_mime_details: bool,
 ) -> String {
     let mut pairs = Vec::new();
     if !query_text.trim().is_empty() {
@@ -5089,11 +4988,17 @@ fn build_attachment_base_query(
     if let Some(account_id) = selected_account_id {
         pairs.push(("account_id", account_id.to_string()));
     }
-    if message_state != MessageStateFilter::Active {
-        pairs.push(("message_state", message_state.as_query_value().to_string()));
+    if priority_filter != SenderPriorityFilter::All {
+        pairs.push(("priority", priority_filter.as_query_value().to_string()));
     }
     if !extension_filter.trim().is_empty() {
         pairs.push(("extension", extension_filter.trim().to_string()));
+    }
+    if include_inline {
+        pairs.push(("include_inline", "1".to_string()));
+    }
+    if show_mime_details {
+        pairs.push(("show_mime_details", "1".to_string()));
     }
     pairs
         .into_iter()
@@ -5109,7 +5014,7 @@ fn load_attachment_page_data(
 ) -> Result<AttachmentPageData, String> {
     let accounts = list_accounts_for_user(config, username)?;
     let selected_account_id = normalize_selected_account_id(&accounts, params.account_id);
-    let message_state = MessageStateFilter::from_query(params.message_state.as_deref());
+    let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
     let query_text = params.q.clone().unwrap_or_default();
     let extension_filter = params
         .extension
@@ -5117,8 +5022,21 @@ fn load_attachment_page_data(
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    let include_inline = params.include_inline.as_deref().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    });
+    let show_mime_details = params.show_mime_details.as_deref().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    });
     let page = parse_page_number(params.page.as_deref());
     let connection = open_db(config)?;
+    let priority_rules = load_sender_priority_rules(config, username)?;
     let mut items = Vec::new();
     let mut query_relpaths_by_account = HashMap::<i64, HashSet<String>>::new();
 
@@ -5142,105 +5060,49 @@ fn load_attachment_page_data(
             query_relpaths_by_account.insert(account.id, relpaths);
         }
 
-        let deleted_map = load_active_deleted_message_map_for_account(&connection, account.id)?;
-        if message_state != MessageStateFilter::Deleted {
-            for (message, attachment) in
-                load_attachment_catalog_rows_for_account(&connection, account.id)?
+        for (message, attachment) in
+            load_attachment_catalog_rows_for_account(&connection, account.id)?
+        {
+            if !query_text.trim().is_empty()
+                && !query_relpaths_by_account
+                    .get(&account.id)
+                    .is_some_and(|relpaths| relpaths.contains(&message.message_relpath))
             {
-                if deleted_map.contains_key(&message.message_key) {
-                    continue;
-                }
-                if !query_text.trim().is_empty()
-                    && !query_relpaths_by_account
-                        .get(&account.id)
-                        .is_some_and(|relpaths| relpaths.contains(&message.message_relpath))
-                {
-                    continue;
-                }
-                if !extension_filter.is_empty() && attachment.extension != extension_filter {
-                    continue;
-                }
-
-                items.push(AttachmentListItem {
-                    account_name: account.display_name.clone(),
-                    date_label: format_timestamp(message.timestamp),
-                    attachment,
-                    message,
-                    deleted_at: None,
-                    restore_pending: false,
-                    is_deleted: false,
-                });
+                continue;
             }
-        }
-
-        if message_state != MessageStateFilter::Active {
-            let lowered_query = query_text.trim().to_ascii_lowercase();
-            for (deleted_message, deleted_attachment) in
-                load_deleted_message_attachments_for_account(&connection, account.id)?
-            {
-                if !lowered_query.is_empty()
-                    && ![
-                        deleted_message.subject.as_str(),
-                        deleted_message.sender.as_str(),
-                        deleted_message.message_relpath_at_delete.as_str(),
-                        deleted_message.message_key.as_str(),
-                        deleted_attachment.original_filename.as_str(),
-                    ]
-                    .into_iter()
-                    .any(|value| value.to_ascii_lowercase().contains(&lowered_query))
-                {
-                    continue;
-                }
-                if !extension_filter.is_empty() && deleted_attachment.extension != extension_filter
-                {
-                    continue;
-                }
-
-                items.push(AttachmentListItem {
-                    account_name: account.display_name.clone(),
-                    date_label: format_timestamp(deleted_message.timestamp),
-                    attachment: AttachmentRecord {
-                        attachment_key: deleted_attachment.attachment_key.clone(),
-                        account_id: deleted_attachment.account_id,
-                        message_key: deleted_attachment.message_key.clone(),
-                        attachment_index: 0,
-                        attachment_sha256: deleted_attachment.attachment_sha256.clone(),
-                        original_filename: deleted_attachment.original_filename.clone(),
-                        safe_filename: deleted_attachment.safe_filename.clone(),
-                        extension: deleted_attachment.extension.clone(),
-                        mime_type: deleted_attachment.mime_type.clone(),
-                        size_bytes: deleted_attachment.size_bytes,
-                        is_inline_artifact: deleted_attachment.is_inline_artifact,
-                        created_at: deleted_attachment.deleted_at.clone(),
-                        updated_at: deleted_attachment.deleted_at.clone(),
-                        last_seen_at: deleted_attachment.deleted_at.clone(),
-                    },
-                    message: AttachmentMessageRecord {
-                        account_id: deleted_message.account_id,
-                        message_key: deleted_message.message_key.clone(),
-                        message_relpath: deleted_message.message_relpath_at_delete.clone(),
-                        message_mtime: 0,
-                        message_size: 0,
-                        subject: deleted_message.subject.clone(),
-                        from: deleted_message.sender.clone(),
-                        timestamp: deleted_message.timestamp,
-                        last_scanned_at: deleted_message.deleted_at.clone(),
-                        has_attachments: true,
-                    },
-                    deleted_at: Some(deleted_message.deleted_at.clone()),
-                    restore_pending: deleted_message.restore_pending,
-                    is_deleted: true,
-                });
+            if !extension_filter.is_empty() && attachment.extension != extension_filter {
+                continue;
             }
+            if !include_inline && attachment_is_hidden_artifact(&attachment) {
+                continue;
+            }
+
+            let sender_priority = priority_rules.view_for_sender(&message.from);
+            if !priority_filter.matches(sender_priority.priority) {
+                continue;
+            }
+
+            items.push(AttachmentListItem {
+                account_name: account.display_name.clone(),
+                date_label: format_timestamp(message.timestamp),
+                attachment,
+                message,
+                sender_priority,
+            });
         }
     }
 
     items.sort_by(|left, right| {
-        right.message.timestamp.cmp(&left.message.timestamp).then(
-            left.attachment
-                .attachment_index
-                .cmp(&right.attachment.attachment_index),
-        )
+        left.sender_priority
+            .priority
+            .sort_rank()
+            .cmp(&right.sender_priority.priority.sort_rank())
+            .then(right.message.timestamp.cmp(&left.message.timestamp))
+            .then(
+                left.attachment
+                    .attachment_index
+                    .cmp(&right.attachment.attachment_index),
+            )
     });
 
     let total_count = items.len();
@@ -5254,8 +5116,10 @@ fn load_attachment_page_data(
     let base_query = build_attachment_base_query(
         &query_text,
         selected_account_id,
-        message_state,
+        priority_filter,
         &extension_filter,
+        include_inline,
+        show_mime_details,
     );
     let empty_message =
         if selected_account_id.is_some() && page_items.is_empty() && total_count == 0 {
@@ -5271,9 +5135,11 @@ fn load_attachment_page_data(
         selected_account_id,
         query_text,
         extension_filter,
+        include_inline,
+        show_mime_details,
         items: page_items,
         state: AttachmentListViewState {
-            message_state,
+            priority_filter,
             page,
             result_count: total_count,
             has_previous_page: page > 1 && start < total_count,
@@ -5299,14 +5165,16 @@ fn download_attachment_keys_for_form(
             let params = AttachmentListParams {
                 q: form.q.clone(),
                 account_id: selected_account_id,
-                message_state: form.message_state.clone(),
+                priority: form.priority.clone(),
                 extension: form.extension.clone(),
+                include_inline: form.include_inline.clone(),
+                show_mime_details: form.show_mime_details.clone(),
                 page: Some(page.to_string()),
                 flash: None,
                 error: None,
             };
             let data = load_attachment_page_data(config, username, &params)?;
-            for item in data.items.into_iter().filter(|item| !item.is_deleted) {
+            for item in data.items {
                 if seen.insert(item.attachment.attachment_key.clone()) {
                     keys.push(item.attachment.attachment_key);
                 }
@@ -5348,7 +5216,8 @@ fn build_attachments_zip(
     config: &AppConfig,
     username: &str,
     form: &AttachmentDownloadForm,
-) -> Result<(String, Vec<u8>), String> {
+) -> Result<TempZipFile, String> {
+    cleanup_old_runtime_exports(config)?;
     let keys = download_attachment_keys_for_form(config, username, form)?;
     let mut records = Vec::new();
     let mut total_size = 0_u64;
@@ -5364,40 +5233,82 @@ fn build_attachments_zip(
         records.push(record);
     }
 
-    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o600);
-    let mut used_names = HashMap::<String, usize>::new();
-
-    for (account, message, attachment) in records {
-        let (_dir, attachment_path) =
-            resolve_attachment_payload(config, &account, &message, &attachment)?;
-        let bytes = fs::read(&attachment_path).map_err(|error| {
-            format!(
-                "failed to read extracted attachment {}: {error}",
-                attachment_path.display()
-            )
-        })?;
-        let entry_name = unique_zip_entry_name(
-            zip_entry_name(&account, &message, &attachment),
-            &mut used_names,
-        );
-        zip.start_file(entry_name, options)
-            .map_err(|error| format!("failed to start ZIP entry: {error}"))?;
-        zip.write_all(&bytes)
-            .map_err(|error| format!("failed to write ZIP entry: {error}"))?;
-    }
-
-    let bytes = zip
-        .finish()
-        .map_err(|error| format!("failed to finish ZIP archive: {error}"))?
-        .into_inner();
+    let export_root = runtime_export_root(config);
+    fs::create_dir_all(&export_root)
+        .map_err(|error| format!("failed to create {}: {error}", export_root.display()))?;
     let filename = format!(
         "mail-archive-attachments-{}.zip",
         Utc::now().format("%Y%m%d-%H%M%S")
     );
-    Ok((filename, bytes))
+    let zip_path = export_root.join(format!("{}-{}", random_hex(8), filename));
+    let zip_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&zip_path)
+        .map_err(|error| format!("failed to create ZIP file {}: {error}", zip_path.display()))?;
+    let mut zip = ZipWriter::new(zip_file);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o600);
+    let mut used_names = HashMap::<String, usize>::new();
+    let mut manifest_entries = Vec::new();
+
+    for (account, message, attachment) in records {
+        let (_dir, attachment_path) =
+            resolve_attachment_payload(config, &account, &message, &attachment)?;
+        let entry_name = unique_zip_entry_name(
+            zip_entry_name(&account, &message, &attachment),
+            &mut used_names,
+        );
+        zip.start_file(entry_name.clone(), options)
+            .map_err(|error| format!("failed to start ZIP entry: {error}"))?;
+        let mut source = fs::File::open(&attachment_path).map_err(|error| {
+            format!(
+                "failed to open extracted attachment {}: {error}",
+                attachment_path.display()
+            )
+        })?;
+        std::io::copy(&mut source, &mut zip)
+            .map_err(|error| format!("failed to write ZIP entry: {error}"))?;
+        manifest_entries.push(AttachmentZipManifestEntry {
+            zip_path: entry_name,
+            account: account.display_name,
+            account_id: account.id,
+            message_key: message.message_key,
+            message_relpath: message.message_relpath,
+            subject: message.subject,
+            sender: message.from,
+            message_timestamp: message.timestamp,
+            original_filename: attachment.original_filename,
+            mime_type: attachment.mime_type,
+            size_bytes: attachment.size_bytes,
+            attachment_sha256: attachment.attachment_sha256,
+            blob_relpath: attachment.blob_relpath,
+            source_message_sha256: attachment.source_message_sha256,
+        });
+    }
+
+    let manifest = AttachmentZipManifest {
+        generated_at: Utc::now().to_rfc3339(),
+        source: "mail-archive-ui",
+        file_count: manifest_entries.len(),
+        total_size_bytes: total_size,
+        files: manifest_entries,
+    };
+    zip.start_file("manifest.json", options)
+        .map_err(|error| format!("failed to start ZIP manifest: {error}"))?;
+    serde_json::to_writer_pretty(&mut zip, &manifest)
+        .map_err(|error| format!("failed to write ZIP manifest: {error}"))?;
+
+    zip.finish()
+        .map_err(|error| format!("failed to finish ZIP archive: {error}"))?
+        .sync_all()
+        .map_err(|error| format!("failed to sync ZIP archive {}: {error}", zip_path.display()))?;
+    Ok(TempZipFile {
+        filename,
+        path: zip_path,
+    })
 }
 
 fn zip_entry_name(
@@ -5409,29 +5320,264 @@ fn zip_entry_name(
         .map(|value| value.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "unknown-date".to_string());
     let account_slug = slugify_component(&account.display_name, "mailbox");
-    let sha_prefix = attachment
-        .attachment_sha256
-        .chars()
-        .take(8)
-        .collect::<String>();
+    let subject_slug = slugify_component(&message.subject, "message");
     format!(
-        "{}/{}/{}/{}--{}",
-        date,
+        "{}/{} - {}/{}",
         account_slug,
-        short_message_key(&message.message_key),
-        sha_prefix,
+        date,
+        subject_slug,
         safe_filename(&attachment.original_filename)
     )
 }
 
 fn unique_zip_entry_name(base: String, used_names: &mut HashMap<String, usize>) -> String {
     let count = used_names.entry(base.clone()).or_insert(0);
-    *count += 1;
-    if *count == 1 {
+    if *count == 0 {
+        *count = 1;
         base
     } else {
-        format!("{base}--{}", *count)
+        let name = zip_entry_name_with_numeric_suffix(&base, *count);
+        *count += 1;
+        name
     }
+}
+
+fn zip_entry_name_with_numeric_suffix(base: &str, suffix: usize) -> String {
+    let path = FsPath::new(base);
+    let parent = path.parent().filter(|value| !value.as_os_str().is_empty());
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(base);
+    let suffixed = if let Some((stem, extension)) = filename.rsplit_once('.') {
+        if stem.is_empty() || extension.is_empty() {
+            format!("{filename} ({suffix})")
+        } else {
+            format!("{stem} ({suffix}).{extension}")
+        }
+    } else {
+        format!("{filename} ({suffix})")
+    };
+    parent
+        .map(|value| value.join(&suffixed).to_string_lossy().to_string())
+        .unwrap_or(suffixed)
+}
+
+fn cleanup_old_runtime_exports(config: &AppConfig) -> Result<(), String> {
+    let export_root = runtime_export_root(config);
+    let entries = match fs::read_dir(&export_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed to read runtime export directory {}: {error}",
+                export_root.display()
+            ))
+        }
+    };
+    let now = Utc::now().timestamp();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read runtime export directory {}: {error}",
+                export_root.display()
+            )
+        })?;
+        let metadata = entry.metadata().map_err(|error| {
+            format!(
+                "failed to inspect runtime export {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(now);
+        if now.saturating_sub(modified) > RUNTIME_EXPORT_MAX_AGE_SECONDS {
+            fs::remove_file(entry.path()).map_err(|error| {
+                format!(
+                    "failed to remove stale runtime export {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_attachment_archive(
+    config: &AppConfig,
+    repair: bool,
+    report_path: Option<&FsPath>,
+) -> Result<AttachmentVerificationReport, String> {
+    let connection = open_db(config)?;
+    let accounts = list_all_accounts(config)?;
+    let mut report = AttachmentVerificationReport {
+        generated_at: Utc::now().to_rfc3339(),
+        accounts_checked: 0,
+        messages_checked: 0,
+        attachments_checked: 0,
+        missing_sources: 0,
+        missing_blobs: 0,
+        mismatched_blobs: 0,
+        orphaned_blobs: 0,
+        warnings: Vec::new(),
+    };
+
+    for account in accounts {
+        report.accounts_checked += 1;
+        let account_paths = ensure_account_paths(config, &account)?;
+        let rows = load_attachment_catalog_rows_for_account(&connection, account.id)?;
+        let mut seen_messages = HashSet::<String>::new();
+        let mut referenced_blobs = HashSet::<String>::new();
+
+        for (message, attachment) in rows {
+            report.attachments_checked += 1;
+            if seen_messages.insert(message.message_key.clone()) {
+                report.messages_checked += 1;
+            }
+
+            let source_path = account_paths.maildir.join(&message.message_relpath);
+            if !source_path.is_file() {
+                report.missing_sources += 1;
+                report.warnings.push(format!(
+                    "missing source message account={} attachment={} source={}",
+                    account.id,
+                    attachment.attachment_key,
+                    source_path.display()
+                ));
+                continue;
+            }
+
+            let blob_relpath = attachment.blob_relpath.clone().unwrap_or_else(|| {
+                attachment_blob_relpath(&attachment.attachment_sha256)
+                    .to_string_lossy()
+                    .to_string()
+            });
+            let blob_path = attachment_blob_path(&account_paths, &blob_relpath)?;
+            let mut blob_ok = false;
+            let mut blob_missing = false;
+            let mut blob_mismatched = false;
+            if blob_path.is_file() {
+                let blob_sha = sha256_file(&blob_path)?;
+                let blob_size = fs::metadata(&blob_path)
+                    .map_err(|error| format!("failed to inspect {}: {error}", blob_path.display()))?
+                    .len();
+                if blob_sha == attachment.attachment_sha256
+                    && i64::try_from(blob_size).ok() == Some(attachment.size_bytes)
+                {
+                    blob_ok = true;
+                } else {
+                    blob_mismatched = true;
+                    report.mismatched_blobs += 1;
+                    report.warnings.push(format!(
+                        "mismatched attachment blob account={} attachment={} blob={}",
+                        account.id,
+                        attachment.attachment_key,
+                        blob_path.display()
+                    ));
+                }
+            } else {
+                blob_missing = true;
+                report.missing_blobs += 1;
+                report.warnings.push(format!(
+                    "missing attachment blob account={} attachment={} blob={}",
+                    account.id,
+                    attachment.attachment_key,
+                    blob_path.display()
+                ));
+            }
+
+            if !blob_ok && repair {
+                let (_dir, repaired_path) =
+                    resolve_attachment_payload(config, &account, &message, &attachment)?;
+                let repaired_sha = sha256_file(&repaired_path)?;
+                if repaired_sha == attachment.attachment_sha256 {
+                    let repaired_relpath = attachment_blob_relpath(&repaired_sha)
+                        .to_string_lossy()
+                        .to_string();
+                    let now = Utc::now().to_rfc3339();
+                    connection
+                        .execute(
+                            r#"
+                            UPDATE attachment_catalog
+                            SET blob_relpath = ?3,
+                                last_verified_at = ?4
+                            WHERE account_id = ?1
+                              AND attachment_key = ?2
+                            "#,
+                            params![account.id, attachment.attachment_key, repaired_relpath, now],
+                        )
+                        .map_err(|error| {
+                            format!("failed to update repaired attachment metadata: {error}")
+                        })?;
+                    if blob_missing {
+                        report.missing_blobs = report.missing_blobs.saturating_sub(1);
+                    }
+                    if blob_mismatched {
+                        report.mismatched_blobs = report.mismatched_blobs.saturating_sub(1);
+                    }
+                    referenced_blobs.insert(repaired_relpath);
+                    continue;
+                }
+            }
+
+            if blob_ok {
+                let now = Utc::now().to_rfc3339();
+                connection
+                    .execute(
+                        r#"
+                        UPDATE attachment_catalog
+                        SET blob_relpath = ?3,
+                            last_verified_at = ?4
+                        WHERE account_id = ?1
+                          AND attachment_key = ?2
+                        "#,
+                        params![account.id, attachment.attachment_key, blob_relpath, now],
+                    )
+                    .map_err(|error| {
+                        format!("failed to update attachment verification time: {error}")
+                    })?;
+            }
+            referenced_blobs.insert(blob_relpath);
+        }
+
+        for blob in collect_regular_files(&account_paths.attachment_blob_root).unwrap_or_default() {
+            let relpath = blob
+                .strip_prefix(&account_paths.hidden_sync_root)
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|_| blob.to_string_lossy().to_string());
+            if !referenced_blobs.contains(&relpath) {
+                report.orphaned_blobs += 1;
+                report.warnings.push(format!(
+                    "orphaned attachment blob account={} blob={}",
+                    account.id,
+                    blob.display()
+                ));
+            }
+        }
+    }
+
+    if let Some(path) = report_path {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create report directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        let bytes = serde_json::to_vec_pretty(&report)
+            .map_err(|error| format!("failed to encode attachment verification report: {error}"))?;
+        write_private_file(path, &bytes)?;
+    }
+
+    Ok(report)
 }
 
 fn load_attachment_for_user(
@@ -5486,6 +5632,9 @@ fn load_attachment_for_user(
                 c.mime_type,
                 c.size_bytes,
                 c.is_inline_artifact,
+                c.blob_relpath,
+                c.source_message_sha256,
+                c.last_verified_at,
                 c.created_at,
                 c.updated_at,
                 c.last_seen_at
@@ -5550,9 +5699,12 @@ fn load_attachment_for_user(
                     mime_type: row.get(39)?,
                     size_bytes: row.get(40)?,
                     is_inline_artifact: row.get::<_, i64>(41)? != 0,
-                    created_at: row.get(42)?,
-                    updated_at: row.get(43)?,
-                    last_seen_at: row.get(44)?,
+                    blob_relpath: row.get(42)?,
+                    source_message_sha256: row.get(43)?,
+                    last_verified_at: row.get(44)?,
+                    created_at: row.get(45)?,
+                    updated_at: row.get(46)?,
+                    last_seen_at: row.get(47)?,
                 },
             ))
         })
@@ -5568,12 +5720,30 @@ fn resolve_attachment_payload(
     attachment: &AttachmentRecord,
 ) -> Result<(TempExtractionDir, PathBuf), String> {
     let account_paths = ensure_account_paths(config, account)?;
+    if let Some(blob_relpath) = attachment.blob_relpath.as_deref() {
+        let blob_path = attachment_blob_path(&account_paths, blob_relpath)?;
+        if blob_path.is_file() {
+            let blob_sha = sha256_file(&blob_path)?;
+            if blob_sha == attachment.attachment_sha256 {
+                return Ok((
+                    TempExtractionDir {
+                        path: PathBuf::new(),
+                    },
+                    blob_path,
+                ));
+            }
+        }
+    }
+
     let message_path = account_paths.maildir.join(&message.message_relpath);
+    let source_message_sha256 = sha256_file(&message_path)?;
     let (extraction_dir, scanned) = scan_message_attachments_for_catalog(
         config,
+        &account_paths,
         account.id,
         &message.message_key,
         &message_path,
+        &source_message_sha256,
     )?;
     scanned
         .into_iter()
@@ -5586,13 +5756,48 @@ fn resolve_attachment_payload(
         })
 }
 
+fn collect_live_messages_for_account(
+    config: &AppConfig,
+    account: &AccountRecord,
+    query: &str,
+) -> Result<Vec<LiveMessageRecord>, String> {
+    let account_paths = ensure_account_paths(config, account)?;
+    if account_index_state(&account_paths) != IndexState::Indexed {
+        return Ok(Vec::new());
+    }
+
+    let mut by_key = HashMap::<String, LiveMessageRecord>::new();
+    for file_path in list_notmuch_message_files(&account_paths, query)? {
+        let relpath = message_relative_path(&account_paths, &file_path)?
+            .to_string_lossy()
+            .to_string();
+        let metadata = read_message_metadata(&file_path)?;
+        let message_key = message_key_from_metadata(&metadata)?;
+        let record = by_key
+            .entry(message_key.clone())
+            .or_insert_with(|| LiveMessageRecord {
+                message_relpaths: Vec::new(),
+                subject: metadata.subject.clone(),
+                from: metadata.from.clone(),
+                timestamp: metadata.timestamp,
+            });
+        record.message_relpaths.push(relpath);
+    }
+
+    let mut messages = by_key.into_values().collect::<Vec<_>>();
+    messages.sort_by_key(|message| Reverse(message.timestamp));
+    Ok(messages)
+}
+
 fn search_mail(
     config: &AppConfig,
     username: &str,
     selected_account_id: Option<i64>,
     query: &str,
+    priority_filter: SenderPriorityFilter,
 ) -> Result<Vec<SearchResult>, String> {
     let query = query.trim();
+    let priority_rules = load_sender_priority_rules(config, username)?;
     let mut results = Vec::new();
     for account in list_accounts_for_user(config, username)?
         .into_iter()
@@ -5603,66 +5808,30 @@ fn search_mail(
             &account,
             if query.is_empty() { "*" } else { query },
         )? {
+            let sender_priority = priority_rules.view_for_sender(&item.from);
+            if !priority_filter.matches(sender_priority.priority) {
+                continue;
+            }
             results.push(SearchResult {
-                account_id: account.id,
                 account_name: account.display_name.clone(),
-                message_key: item.message_key.clone(),
                 message_relpath: item.message_relpaths.first().cloned().unwrap_or_default(),
                 timestamp: item.timestamp,
                 date_label: format_timestamp(item.timestamp),
                 from: item.from.clone(),
                 subject: item.subject.clone(),
                 tags: Vec::new(),
-                deleted_at: None,
-                restore_pending: false,
-                is_deleted: false,
+                sender_priority,
             });
         }
     }
 
-    results.sort_by_key(|result| Reverse(result.timestamp));
-    Ok(results)
-}
-
-fn search_deleted_messages(
-    config: &AppConfig,
-    username: &str,
-    selected_account_id: Option<i64>,
-    query: &str,
-) -> Result<Vec<SearchResult>, String> {
-    let query = query.trim().to_ascii_lowercase();
-    let mut results = load_deleted_message_records_for_user(config, username, selected_account_id)?
-        .into_iter()
-        .map(|(account, record)| SearchResult {
-            account_id: account.id,
-            account_name: account.display_name,
-            message_key: record.message_key.clone(),
-            message_relpath: record.message_relpath_at_delete.clone(),
-            timestamp: record.timestamp,
-            date_label: format_timestamp(record.timestamp),
-            from: record.sender.clone(),
-            subject: record.subject.clone(),
-            tags: vec!["Deleted".to_string()],
-            deleted_at: Some(record.deleted_at.clone()),
-            restore_pending: record.restore_pending,
-            is_deleted: true,
-        })
-        .collect::<Vec<_>>();
-
-    if !query.is_empty() {
-        results.retain(|result| {
-            [
-                result.subject.as_str(),
-                result.from.as_str(),
-                result.message_relpath.as_str(),
-                result.message_key.as_str(),
-            ]
-            .into_iter()
-            .any(|value| value.to_ascii_lowercase().contains(&query))
-        });
-    }
-
-    results.sort_by_key(|result| Reverse(result.timestamp));
+    results.sort_by(|left, right| {
+        left.sender_priority
+            .priority
+            .sort_rank()
+            .cmp(&right.sender_priority.priority.sort_rank())
+            .then(right.timestamp.cmp(&left.timestamp))
+    });
     Ok(results)
 }
 
@@ -6057,22 +6226,13 @@ fn rebuild_message_catalog_and_visible_mailboxes(
 
     let mut connection = open_db(config)?;
     let previous_instances = load_message_mailbox_instances_for_account(&connection, account.id)?;
-    let tombstones = load_active_deleted_message_map_for_account(&connection, account.id)?;
     let account_slug = visible_account_slug(config, account)?;
-    let mut restored_message_keys = HashSet::new();
     let mut pending_instances = Vec::new();
     let mut catalog_by_key = HashMap::<String, MessageCatalogRecord>::new();
 
     for file_path in list_notmuch_message_files(&account_paths, "*")? {
         let metadata = read_message_metadata(&file_path)?;
         let message_key = message_key_from_metadata(&metadata)?;
-        if let Some(tombstone) = tombstones.get(&message_key) {
-            if tombstone.restore_pending {
-                restored_message_keys.insert(message_key.clone());
-            } else {
-                continue;
-            }
-        }
 
         let hidden_relpath = message_relative_path(&account_paths, &file_path)?
             .to_string_lossy()
@@ -6283,26 +6443,6 @@ fn rebuild_message_catalog_and_visible_mailboxes(
     transaction
         .commit()
         .map_err(|error| format!("failed to commit mailbox rebuild transaction: {error}"))?;
-
-    if !restored_message_keys.is_empty() {
-        let now = Utc::now().to_rfc3339();
-        for message_key in restored_message_keys {
-            connection
-                .execute(
-                    r#"
-                    UPDATE deleted_messages
-                    SET
-                        restored_at = ?3,
-                        restore_pending = 0
-                    WHERE account_id = ?1
-                      AND message_key = ?2
-                      AND restored_at IS NULL
-                    "#,
-                    params![account.id, message_key, now],
-                )
-                .map_err(|error| format!("failed to mark restored message catalog row: {error}"))?;
-        }
-    }
 
     let inventory = MaildirInventory {
         archive_file_count: desired_instances.len(),
@@ -6539,11 +6679,6 @@ fn count_indexed_messages(account_paths: &AccountPaths) -> Result<usize, String>
     })
 }
 
-fn maildir_message_key(message_path: &FsPath) -> Result<String, String> {
-    let metadata = read_message_metadata(message_path)?;
-    message_key_from_metadata(&metadata)
-}
-
 fn message_key_from_metadata(metadata: &MessageMetadata) -> Result<String, String> {
     metadata
         .normalized_message_id
@@ -6556,6 +6691,11 @@ fn message_key_from_metadata(metadata: &MessageMetadata) -> Result<String, Strin
                 .map(|value| format!("sha256:{value}"))
         })
         .ok_or_else(|| "message metadata must provide an identity key".to_string())
+}
+
+fn maildir_message_key(message_path: &FsPath) -> Result<String, String> {
+    let metadata = read_message_metadata(message_path)?;
+    message_key_from_metadata(&metadata)
 }
 
 fn progress_counts(
@@ -7212,11 +7352,17 @@ fn render_attachments_page(
                   {}
                 </select>
               </label>
-              <label>Message state
-                <select name=\"message_state\">{}</select>
+              <label>Sender priority
+                <select name=\"priority\">{}</select>
               </label>
               <label>Extension
                 <input name=\"extension\" value=\"{}\" placeholder=\"pdf\">
+              </label>
+              <label class=\"checkbox-field\">Body parts
+                <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
+              </label>
+              <label class=\"checkbox-field\">MIME detail
+                <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
               </label>
             </div>
             <div class=\"action-row\">
@@ -7241,8 +7387,10 @@ fn render_attachments_page(
         </section>",
         escape_html(&data.query_text),
         render_account_options(&data.accounts, data.selected_account_id),
-        render_message_state_filter_options(data.state.message_state),
+        render_sender_priority_filter_options(data.state.priority_filter),
         escape_html(&data.extension_filter),
+        if data.include_inline { "checked" } else { "" },
+        if data.show_mime_details { "checked" } else { "" },
         filter_hiddens,
         if show_download_all {
             "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
@@ -7285,7 +7433,7 @@ fn render_attachments_page(
             "<section class=\"attachment-list\">{}</section>",
             data.items
                 .iter()
-                .map(|item| render_attachment_item(item, &return_to))
+                .map(|item| render_attachment_item(item, &return_to, data.show_mime_details))
                 .collect::<Vec<_>>()
                 .join("")
         )
@@ -7317,10 +7465,10 @@ fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) 
             account_id
         ));
     }
-    if data.state.message_state != MessageStateFilter::Active {
+    if data.state.priority_filter != SenderPriorityFilter::All {
         fields.push(format!(
-            "<input type=\"hidden\" name=\"message_state\" value=\"{}\">",
-            data.state.message_state.as_query_value()
+            "<input type=\"hidden\" name=\"priority\" value=\"{}\">",
+            data.state.priority_filter.as_query_value()
         ));
     }
     if !data.extension_filter.trim().is_empty() {
@@ -7329,75 +7477,81 @@ fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) 
             escape_html(&data.extension_filter)
         ));
     }
+    if data.include_inline {
+        fields.push("<input type=\"hidden\" name=\"include_inline\" value=\"1\">".to_string());
+    }
+    if data.show_mime_details {
+        fields.push("<input type=\"hidden\" name=\"show_mime_details\" value=\"1\">".to_string());
+    }
     fields.join("")
 }
 
-fn render_attachment_item(item: &AttachmentListItem, return_to: &str) -> String {
-    let badge_label = if item.attachment.extension.is_empty() {
-        item.attachment.mime_type.clone()
+fn simple_attachment_type_label(attachment: &AttachmentRecord) -> String {
+    if !attachment.extension.is_empty() {
+        attachment.extension.clone()
+    } else if attachment.mime_type == "application/pdf" {
+        "pdf".to_string()
+    } else if let Some((_, subtype)) = attachment.mime_type.split_once('/') {
+        subtype.to_string()
     } else {
-        item.attachment.extension.clone()
-    };
-    let type_label = if item.attachment.extension.is_empty() {
-        item.attachment.mime_type.clone()
+        attachment.mime_type.clone()
+    }
+}
+
+fn detailed_attachment_type_label(attachment: &AttachmentRecord) -> String {
+    let simple = simple_attachment_type_label(attachment);
+    if simple == attachment.mime_type {
+        simple
     } else {
+        format!("{} · {}", simple, attachment.mime_type)
+    }
+}
+
+fn attachment_column_date_label(timestamp: i64) -> String {
+    DateTime::<Utc>::from_timestamp(timestamp, 0)
+        .map(|value| value.format("%d %b %Y").to_string())
+        .unwrap_or_else(|| "unknown date".to_string())
+}
+
+fn render_attachment_item(
+    item: &AttachmentListItem,
+    return_to: &str,
+    show_mime_details: bool,
+) -> String {
+    let badge_label = simple_attachment_type_label(&item.attachment);
+    let date_label = attachment_column_date_label(item.message.timestamp);
+    let detail_label = if show_mime_details {
         format!(
             "{} · {}",
-            item.attachment.extension, item.attachment.mime_type
+            date_label,
+            detailed_attachment_type_label(&item.attachment)
         )
+    } else {
+        date_label
     };
     let mut badges = Vec::new();
-    if item.attachment.is_inline_artifact {
-        badges.push("<span class=\"tag\">Inline</span>".to_string());
+    if attachment_is_hidden_artifact(&item.attachment) {
+        badges.push("<span class=\"tag\">Body/inline</span>".to_string());
     }
-    if item.is_deleted {
-        badges.push(format!(
-            "<span class=\"tag deleted-tag\">Deleted {}</span>",
-            escape_html(item.deleted_at.as_deref().unwrap_or(""))
-        ));
-        if item.restore_pending {
-            badges.push("<span class=\"tag\">Restore pending</span>".to_string());
-        }
-    }
+    badges.push(render_sender_priority_badge(&item.sender_priority));
 
-    let selector = if item.is_deleted {
-        "<span class=\"attachment-selector-placeholder\"></span>".to_string()
-    } else {
-        format!(
-            "<input form=\"attachment-download-form\" data-attachment-checkbox type=\"checkbox\" name=\"attachment_keys\" value=\"{}\" aria-label=\"Select attachment {}\">",
-            escape_html(&item.attachment.attachment_key),
-            escape_html(&item.attachment.original_filename)
-        )
-    };
+    let selector = format!(
+        "<input form=\"attachment-download-form\" data-attachment-checkbox type=\"checkbox\" name=\"attachment_keys\" value=\"{}\" aria-label=\"Select attachment {}\">",
+        escape_html(&item.attachment.attachment_key),
+        escape_html(&item.attachment.original_filename)
+    );
 
-    let actions = if item.is_deleted {
-        format!(
-            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\" class=\"icon-form\">
-              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary icon-button\" type=\"submit\" title=\"Restore on next sync\" aria-label=\"Restore on next sync\">↺</button>
-            </form>",
-            item.message.account_id,
-            escape_html(&item.message.message_key),
-            escape_html(return_to),
-        )
-    } else {
-        format!(
-            "<form method=\"post\" action=\"/attachments/{}/download/browser\" class=\"icon-form\">
-              <button class=\"icon-button\" type=\"submit\" title=\"Download attachment\" aria-label=\"Download attachment\">↓</button>
-            </form>
-            <form method=\"post\" action=\"/accounts/{}/messages/{}/delete\" class=\"icon-form\">
-              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary danger icon-button\" type=\"submit\" title=\"Delete local archive copy\" aria-label=\"Delete local archive copy\">🗑</button>
-            </form>",
-            escape_html(&item.attachment.attachment_key),
-            item.message.account_id,
-            escape_html(&item.message.message_key),
-            escape_html(return_to),
-        )
-    };
+    let actions = format!(
+        "<form method=\"post\" action=\"/attachments/{}/download/browser\" class=\"icon-form\">
+          <button class=\"icon-button\" type=\"submit\" title=\"Download attachment\" aria-label=\"Download attachment\">↓</button>
+        </form>
+        {}",
+        escape_html(&item.attachment.attachment_key),
+        render_sender_priority_controls(&item.sender_priority, return_to),
+    );
 
     format!(
-        "<article class=\"attachment-row {}\">
+        "<article class=\"attachment-row\">
           <div class=\"attachment-select\">{}</div>
           <div class=\"attachment-main\">
             <strong class=\"truncate\" title=\"{}\">{}</strong>
@@ -7409,7 +7563,6 @@ fn render_attachment_item(item: &AttachmentListItem, return_to: &str) -> String 
           <div class=\"tag-list compact\">{}</div>
           <div class=\"row-actions\">{}</div>
         </article>",
-        if item.is_deleted { "is-deleted" } else { "" },
         selector,
         escape_html(&item.attachment.original_filename),
         escape_html(&item.attachment.original_filename),
@@ -7421,8 +7574,8 @@ fn render_attachment_item(item: &AttachmentListItem, return_to: &str) -> String 
         escape_html(&format_file_size(item.attachment.size_bytes)),
         escape_html(&badge_label),
         escape_html(&badge_label),
-        escape_html(&type_label),
-        escape_html(&type_label),
+        escape_html(&detail_label),
+        escape_html(&detail_label),
         escape_html(&item.message.message_relpath),
         escape_html(&item.message.message_relpath),
         if badges.is_empty() {
@@ -7547,8 +7700,8 @@ fn render_search(
                 {}
               </select>
             </label>
-            <label>Message state
-              <select name=\"message_state\">{}</select>
+            <label>Sender priority
+              <select name=\"priority\">{}</select>
             </label>
           </div>
 	          <div class=\"action-row\">
@@ -7558,17 +7711,10 @@ fn render_search(
         </form>",
         escape_html(query),
         render_account_options(accounts, selected_account_id),
-        render_message_state_filter_options(state.message_state),
+        render_sender_priority_filter_options(state.priority_filter),
     )
     .ok();
     body.push_str("</section>");
-
-    body.push_str(
-        "<section class=\"notice\">
-          <p class=\"notice-title\">Local archive deletion only</p>
-          <p class=\"notice-copy\">Delete From Local Archive removes the local archived copy only. It does not delete the remote email.</p>
-        </section>",
-    );
 
     if state.submitted {
         writeln!(
@@ -7589,7 +7735,7 @@ fn render_search(
     }
 
     if !results.is_empty() {
-        let return_to = search_page_href(query, selected_account_id, state.message_state);
+        let return_to = search_page_href(query, selected_account_id, state.priority_filter);
         writeln!(
             &mut body,
             "<section class=\"mail-list\">{}</section>",
@@ -7605,11 +7751,12 @@ fn render_search(
     layout("Search Mail", Some(identity), "search", &body)
 }
 
-fn render_message_state_filter_options(selected: MessageStateFilter) -> String {
+fn render_sender_priority_filter_options(selected: SenderPriorityFilter) -> String {
     [
-        MessageStateFilter::Active,
-        MessageStateFilter::Deleted,
-        MessageStateFilter::All,
+        SenderPriorityFilter::All,
+        SenderPriorityFilter::High,
+        SenderPriorityFilter::Normal,
+        SenderPriorityFilter::Low,
     ]
     .into_iter()
     .map(|option| {
@@ -7654,7 +7801,7 @@ fn render_account_options(accounts: &[AccountRecord], selected_account_id: Optio
 fn search_page_href(
     query: &str,
     selected_account_id: Option<i64>,
-    message_state: MessageStateFilter,
+    priority_filter: SenderPriorityFilter,
 ) -> String {
     let mut pairs = Vec::new();
     if !query.trim().is_empty() {
@@ -7663,8 +7810,8 @@ fn search_page_href(
     if let Some(account_id) = selected_account_id {
         pairs.push(("account_id", account_id.to_string()));
     }
-    if message_state != MessageStateFilter::Active {
-        pairs.push(("message_state", message_state.as_query_value().to_string()));
+    if priority_filter != SenderPriorityFilter::All {
+        pairs.push(("priority", priority_filter.as_query_value().to_string()));
     }
     if pairs.is_empty() {
         "/search".to_string()
@@ -7680,33 +7827,126 @@ fn search_page_href(
     }
 }
 
-fn render_search_result(result: &SearchResult, return_to: &str) -> String {
-    let mut actions = String::new();
-    if result.is_deleted {
-        writeln!(
-            &mut actions,
-            "<form method=\"post\" action=\"/accounts/{}/messages/{}/restore\" class=\"icon-form\">
-              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary icon-button\" type=\"submit\" title=\"Restore on next sync\" aria-label=\"Restore on next sync\">↺</button>
-            </form>",
-            result.account_id,
-            escape_html(&result.message_key),
-            escape_html(return_to),
-        )
-        .ok();
-    } else {
-        writeln!(
-            &mut actions,
-            "<form method=\"post\" action=\"/accounts/{}/messages/{}/delete\" class=\"icon-form\">
-              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary danger icon-button\" type=\"submit\" title=\"Delete local archive copy\" aria-label=\"Delete local archive copy\">🗑</button>
-            </form>",
-            result.account_id,
-            escape_html(&result.message_key),
-            escape_html(return_to),
-        )
-        .ok();
+fn render_sender_priority_badge(view: &SenderPriorityView) -> String {
+    format!(
+        "<span class=\"tag priority-{}\">{}</span>",
+        view.priority.as_stored_value(),
+        escape_html(view.priority.label())
+    )
+}
+
+fn render_sender_priority_controls(view: &SenderPriorityView, return_to: &str) -> String {
+    let Some(identity) = view.identity.as_ref() else {
+        return String::new();
+    };
+
+    let mut controls = Vec::new();
+    controls.push(render_sender_priority_button(
+        SenderRuleKind::Address,
+        &identity.address,
+        SenderPriority::High,
+        return_to,
+    ));
+    controls.push(render_sender_priority_button(
+        SenderRuleKind::Address,
+        &identity.address,
+        SenderPriority::Low,
+        return_to,
+    ));
+    controls.push(render_sender_priority_button(
+        SenderRuleKind::Domain,
+        &identity.domain,
+        SenderPriority::High,
+        return_to,
+    ));
+    controls.push(render_sender_priority_button(
+        SenderRuleKind::Domain,
+        &identity.domain,
+        SenderPriority::Low,
+        return_to,
+    ));
+
+    if view.address_rule.is_some() {
+        controls.push(render_sender_priority_clear_button(
+            SenderRuleKind::Address,
+            &identity.address,
+            return_to,
+        ));
     }
+    if view.domain_rule.is_some() {
+        controls.push(render_sender_priority_clear_button(
+            SenderRuleKind::Domain,
+            &identity.domain,
+            return_to,
+        ));
+    }
+
+    format!(
+        "<div class=\"priority-actions\" aria-label=\"Sender priority actions\">{}</div>",
+        controls.join("")
+    )
+}
+
+fn render_sender_priority_button(
+    kind: SenderRuleKind,
+    value: &str,
+    priority: SenderPriority,
+    return_to: &str,
+) -> String {
+    let icon = match (kind, priority) {
+        (SenderRuleKind::Address, SenderPriority::High) => "A↑",
+        (SenderRuleKind::Address, SenderPriority::Low) => "A↓",
+        (SenderRuleKind::Domain, SenderPriority::High) => "D↑",
+        (SenderRuleKind::Domain, SenderPriority::Low) => "D↓",
+        _ => "",
+    };
+    let title = format!(
+        "Mark {} {} as {} priority",
+        kind.label(),
+        value,
+        priority.as_stored_value()
+    );
+    format!(
+        "<form method=\"post\" action=\"/sender-priorities\" class=\"icon-form\">
+          <input type=\"hidden\" name=\"sender_kind\" value=\"{}\">
+          <input type=\"hidden\" name=\"sender_value\" value=\"{}\">
+          <input type=\"hidden\" name=\"priority\" value=\"{}\">
+          <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+          <button class=\"secondary icon-button priority-button\" type=\"submit\" title=\"{}\" aria-label=\"{}\">{}</button>
+        </form>",
+        kind.as_stored_value(),
+        escape_html(value),
+        priority.as_stored_value(),
+        escape_html(return_to),
+        escape_html(&title),
+        escape_html(&title),
+        escape_html(icon),
+    )
+}
+
+fn render_sender_priority_clear_button(
+    kind: SenderRuleKind,
+    value: &str,
+    return_to: &str,
+) -> String {
+    let title = format!("Clear {} priority rule for {}", kind.label(), value);
+    format!(
+        "<form method=\"post\" action=\"/sender-priorities/clear\" class=\"icon-form\">
+          <input type=\"hidden\" name=\"sender_kind\" value=\"{}\">
+          <input type=\"hidden\" name=\"sender_value\" value=\"{}\">
+          <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+          <button class=\"secondary icon-button priority-button\" type=\"submit\" title=\"{}\" aria-label=\"{}\">×</button>
+        </form>",
+        kind.as_stored_value(),
+        escape_html(value),
+        escape_html(return_to),
+        escape_html(&title),
+        escape_html(&title),
+    )
+}
+
+fn render_search_result(result: &SearchResult, return_to: &str) -> String {
+    let actions = render_sender_priority_controls(&result.sender_priority, return_to);
 
     let mut tags = if result.tags.is_empty() {
         vec!["<span class=\"meta\">No tags</span>".to_string()]
@@ -7717,18 +7957,10 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
             .map(|tag| format!("<span class=\"tag\">{}</span>", escape_html(tag)))
             .collect::<Vec<_>>()
     };
-    if result.is_deleted {
-        tags.push(format!(
-            "<span class=\"tag deleted-tag\">Deleted {}</span>",
-            escape_html(result.deleted_at.as_deref().unwrap_or(""))
-        ));
-        if result.restore_pending {
-            tags.push("<span class=\"tag\">Restore pending</span>".to_string());
-        }
-    }
+    tags.push(render_sender_priority_badge(&result.sender_priority));
 
     format!(
-        "<article class=\"mail-row {}\">
+        "<article class=\"mail-row\">
           <span class=\"meta truncate\" title=\"{}\">{}</span>
           <span class=\"meta truncate\" title=\"{}\">{}</span>
           <div class=\"mail-subject\">
@@ -7738,7 +7970,6 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
           <div class=\"tag-list compact\">{}</div>
           <div class=\"row-actions\">{}</div>
         </article>",
-        if result.is_deleted { "is-deleted" } else { "" },
         escape_html(&result.date_label),
         escape_html(&result.date_label),
         escape_html(&result.from),
@@ -7979,15 +8210,39 @@ fn attachment_download_response(filename: &str, mime_type: &str, bytes: Vec<u8>)
     harden_response(response)
 }
 
-fn zip_download_response(filename: &str, bytes: Vec<u8>) -> Response {
-    let mut response = Response::new(Body::from(bytes));
+async fn zip_download_file_response(zip_file: TempZipFile) -> Response {
+    let metadata = match tokio::fs::metadata(&zip_file.path).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return server_error_page(
+                "Download failed",
+                &format!("ZIP file is unavailable: {error}"),
+                None,
+            )
+        }
+    };
+    let file = match tokio::fs::File::open(&zip_file.path).await {
+        Ok(file) => file,
+        Err(error) => {
+            return server_error_page(
+                "Download failed",
+                &format!("ZIP file could not be opened: {error}"),
+                None,
+            )
+        }
+    };
+    let stream = ReaderStream::new(file);
+    let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = StatusCode::OK;
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/zip"));
+    if let Ok(value) = HeaderValue::from_str(&metadata.len().to_string()) {
+        response.headers_mut().insert("Content-Length", value);
+    }
     if let Ok(value) = HeaderValue::from_str(&format!(
         "attachment; filename=\"{}\"",
-        safe_filename(filename)
+        safe_filename(&zip_file.filename)
     )) {
         response.headers_mut().insert(CONTENT_DISPOSITION, value);
     }
@@ -8049,6 +8304,8 @@ fn health_payload(config: &AppConfig) -> (StatusCode, HealthPayload) {
         lock_dir: writable_directory_status(config.lock_dir.as_ref()),
         mbsync: command_status("mbsync"),
         notmuch: command_status("notmuch"),
+        ripmime: command_status("ripmime"),
+        file: command_status("file"),
     };
 
     let ok = [
@@ -8058,6 +8315,8 @@ fn health_payload(config: &AppConfig) -> (StatusCode, HealthPayload) {
         &checks.lock_dir,
         &checks.mbsync,
         &checks.notmuch,
+        &checks.ripmime,
+        &checks.file,
     ]
     .iter()
     .all(|value| value.as_str() == "ok");
@@ -8364,26 +8623,6 @@ mod tests {
             .expect("attachment catalog rows")
     }
 
-    fn count_deleted_message_rows(config: &AppConfig) -> i64 {
-        let connection = open_db(config).expect("db");
-        connection
-            .query_row("SELECT COUNT(*) FROM deleted_messages", [], |row| {
-                row.get(0)
-            })
-            .expect("deleted message rows")
-    }
-
-    fn count_deleted_message_attachment_rows(config: &AppConfig) -> i64 {
-        let connection = open_db(config).expect("db");
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM deleted_message_attachments",
-                [],
-                |row| row.get(0),
-            )
-            .expect("deleted message attachment rows")
-    }
-
     fn count_message_catalog_rows(config: &AppConfig) -> i64 {
         let connection = open_db(config).expect("db");
         connection
@@ -8407,8 +8646,10 @@ mod tests {
             &AttachmentListParams {
                 q: None,
                 account_id: None,
-                message_state: None,
+                priority: None,
                 extension: None,
+                include_inline: None,
+                show_mime_details: None,
                 page: None,
                 flash: None,
                 error: None,
@@ -8430,11 +8671,11 @@ mod tests {
             ),
             (
                 "ripmime",
-                "input=''\noutput=''\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    -i)\n      input=\"$2\"\n      shift 2\n      ;;\n    -d)\n      output=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nmkdir -p \"$output\"\ncontents=\"$(cat \"$input\")\"\nif [[ \"$contents\" == *'ATTACH:none'* ]]; then\n  exit 0\nfi\nif [[ \"$contents\" == *'ATTACH:duplicate-pdf'* ]]; then\n  printf 'duplicate payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf-and-zip'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\n  printf 'zip payload\\n' > \"$output/archive.zip\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:text'* ]]; then\n  printf 'plain text payload\\n' > \"$output/note.txt\"\nfi\nif [[ \"$contents\" == *'ATTACH:tiny-image'* ]]; then\n  printf 'tiny' > \"$output/logo.png\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files-bad'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.bin\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.docx\"\nfi\n",
+                "input=''\noutput=''\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    -i)\n      input=\"$2\"\n      shift 2\n      ;;\n    -d)\n      output=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nmkdir -p \"$output\"\ncontents=\"$(cat \"$input\")\"\nif [[ \"$contents\" == *'ATTACH:none'* ]]; then\n  exit 0\nfi\nif [[ \"$contents\" == *'ATTACH:body-parts'* ]]; then\n  : > \"$output/textfile0\"\n  printf 'plain body\\n' > \"$output/textfile1\"\n  printf '<p>html body</p>\\n' > \"$output/textfile2\"\nfi\nif [[ \"$contents\" == *'ATTACH:duplicate-pdf'* ]]; then\n  printf 'duplicate payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf-and-zip'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\n  printf 'zip payload\\n' > \"$output/archive.zip\"\nfi\nif [[ \"$contents\" == *'ATTACH:pdf'* ]]; then\n  printf 'pdf payload\\n' > \"$output/invoice.pdf\"\nfi\nif [[ \"$contents\" == *'ATTACH:text'* ]]; then\n  printf 'plain text payload\\n' > \"$output/note.txt\"\nfi\nif [[ \"$contents\" == *'ATTACH:tiny-image'* ]]; then\n  printf 'tiny' > \"$output/logo.png\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files-bad'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.bin\"\nfi\nif [[ \"$contents\" == *'ATTACH:two-files'* ]]; then\n  printf 'first payload\\n' > \"$output/good.pdf\"\n  printf 'second payload\\n' > \"$output/second.docx\"\nfi\n",
             ),
             (
                 "file",
-                "target=\"${@: -1}\"\ncase \"$target\" in\n  *.pdf)\n    printf 'application/pdf\\n'\n    ;;\n  *.txt)\n    printf 'text/plain\\n'\n    ;;\n  *.docx)\n    printf 'application/vnd.openxmlformats-officedocument.wordprocessingml.document\\n'\n    ;;\n  *.png)\n    printf 'image/png\\n'\n    ;;\n  *.zip)\n    printf 'application/zip\\n'\n    ;;\n  *.bin)\n    echo 'unknown binary attachment' >&2\n    exit 1\n    ;;\n  *)\n    printf 'application/octet-stream\\n'\n    ;;\nesac\n",
+                "target=\"${@: -1}\"\ncase \"$target\" in\n  *textfile0)\n    printf 'inode/x-empty\\n'\n    ;;\n  *textfile1)\n    printf 'text/plain\\n'\n    ;;\n  *textfile2)\n    printf 'text/html\\n'\n    ;;\n  *.pdf)\n    printf 'application/pdf\\n'\n    ;;\n  *.txt)\n    printf 'text/plain\\n'\n    ;;\n  *.docx)\n    printf 'application/vnd.openxmlformats-officedocument.wordprocessingml.document\\n'\n    ;;\n  *.png)\n    printf 'image/png\\n'\n    ;;\n  *.zip)\n    printf 'application/zip\\n'\n    ;;\n  *.bin)\n    echo 'unknown binary attachment' >&2\n    exit 1\n    ;;\n  *)\n    printf 'application/octet-stream\\n'\n    ;;\nesac\n",
             ),
         ]
     }
@@ -9267,17 +9508,25 @@ mod tests {
 
     #[test]
     fn health_payload_reports_success_with_stubbed_commands() {
-        with_stubbed_path(&[("mbsync", "exit 0\n"), ("notmuch", "exit 0\n")], |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            initialize_db(&config).expect("db");
+        with_stubbed_path(
+            &[
+                ("mbsync", "exit 0\n"),
+                ("notmuch", "exit 0\n"),
+                ("ripmime", "exit 0\n"),
+                ("file", "exit 0\n"),
+            ],
+            |_| {
+                let tempdir = TempDir::new().expect("tempdir");
+                let config = test_config(&tempdir);
+                prepare_test_layout(&config);
+                initialize_db(&config).expect("db");
 
-            let (status, payload) = health_payload(&config);
-            assert_eq!(status, StatusCode::OK);
-            assert_eq!(payload.status, "ok");
-            assert_eq!(payload.checks.mbsync, "ok");
-        });
+                let (status, payload) = health_payload(&config);
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(payload.status, "ok");
+                assert_eq!(payload.checks.mbsync, "ok");
+            },
+        );
     }
 
     #[test]
@@ -9317,10 +9566,135 @@ mod tests {
                 "Message-ID: <search@example.com>\nFrom: Alice Example <alice@example.com>\nSubject: Invoice ready\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nbody\n",
             );
 
-            let results =
-                search_mail(&config, "alice", Some(account_id), "subject:invoice").expect("search");
+            let results = search_mail(
+                &config,
+                "alice",
+                Some(account_id),
+                "subject:invoice",
+                SenderPriorityFilter::All,
+            )
+            .expect("search");
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].subject, "Invoice ready");
+        });
+    }
+
+    #[test]
+    fn sender_identity_parsing_normalizes_address_and_exact_domain() {
+        let parsed =
+            sender_identity_from_header("Billing Team <Billing@Example.COM>").expect("sender");
+        assert_eq!(parsed.address, "billing@example.com");
+        assert_eq!(parsed.domain, "example.com");
+
+        let fallback =
+            sender_identity_from_header("broken <fallback@example.org>").expect("fallback sender");
+        assert_eq!(fallback.address, "fallback@example.org");
+        assert!(sender_identity_from_header("Unknown sender").is_none());
+    }
+
+    #[test]
+    fn sender_priority_rules_are_per_user_and_address_overrides_domain() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+
+        upsert_sender_priority_rule(&config, "alice", "domain", "example.com", "low")
+            .expect("domain rule");
+        upsert_sender_priority_rule(&config, "alice", "address", "vip@example.com", "high")
+            .expect("address rule");
+        upsert_sender_priority_rule(&config, "bob", "domain", "example.com", "high")
+            .expect("bob rule");
+
+        let alice = load_sender_priority_rules(&config, "alice").expect("alice rules");
+        assert_eq!(
+            alice
+                .view_for_sender("Billing <billing@example.com>")
+                .priority,
+            SenderPriority::Low
+        );
+        assert_eq!(
+            alice.view_for_sender("VIP <vip@example.com>").priority,
+            SenderPriority::High
+        );
+        assert_eq!(
+            alice
+                .view_for_sender("Subdomain <person@news.example.com>")
+                .priority,
+            SenderPriority::Normal
+        );
+
+        let bob = load_sender_priority_rules(&config, "bob").expect("bob rules");
+        assert_eq!(
+            bob.view_for_sender("Billing <billing@example.com>")
+                .priority,
+            SenderPriority::High
+        );
+
+        clear_sender_priority_rule(&config, "alice", "address", "vip@example.com").expect("clear");
+        let alice = load_sender_priority_rules(&config, "alice").expect("alice after clear");
+        assert_eq!(
+            alice.view_for_sender("VIP <vip@example.com>").priority,
+            SenderPriority::Low
+        );
+    }
+
+    #[test]
+    fn search_mail_sorts_and_filters_by_sender_priority_without_query_changes() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account(&config, "alice", "secret");
+            let account = read_account(&config, "alice", account_id);
+            let paths = ensure_account_paths(&config, &account).expect("paths");
+            ensure_notmuch_config(&config, &account, &paths).expect("config");
+            fs::create_dir_all(&paths.notmuch_db_root).expect("db");
+            write_maildir_message(
+                &paths,
+                "Inbox/cur/low",
+                "Message-ID: <low@example.com>\nFrom: Low <billing@example.com>\nSubject: Low newest\nDate: Sat, 20 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+            write_maildir_message(
+                &paths,
+                "Inbox/cur/normal",
+                "Message-ID: <normal@example.com>\nFrom: Normal <alerts@news.example.com>\nSubject: Normal middle\nDate: Fri, 19 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+            write_maildir_message(
+                &paths,
+                "Inbox/cur/high",
+                "Message-ID: <high@example.com>\nFrom: High <vip@example.com>\nSubject: High oldest\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nbody\n",
+            );
+            upsert_sender_priority_rule(&config, "alice", "domain", "example.com", "low")
+                .expect("domain low");
+            upsert_sender_priority_rule(&config, "alice", "address", "vip@example.com", "high")
+                .expect("address high");
+
+            let results = search_mail(
+                &config,
+                "alice",
+                Some(account_id),
+                "",
+                SenderPriorityFilter::All,
+            )
+            .expect("search all");
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|result| result.subject.as_str())
+                    .collect::<Vec<_>>(),
+                ["High oldest", "Normal middle", "Low newest"]
+            );
+
+            let low = search_mail(
+                &config,
+                "alice",
+                Some(account_id),
+                "",
+                SenderPriorityFilter::Low,
+            )
+            .expect("search low");
+            assert_eq!(low.len(), 1);
+            assert_eq!(low[0].subject, "Low newest");
         });
     }
 
@@ -9341,7 +9715,7 @@ mod tests {
                 submitted: false,
                 result_count: 0,
                 empty_message: Some("Saved search defaults are prefilled below. Submit a query to search indexed mail.".to_string()),
-                message_state: MessageStateFilter::Active,
+                priority_filter: SenderPriorityFilter::All,
             },
             None,
             None,
@@ -9356,7 +9730,7 @@ mod tests {
                 submitted: true,
                 result_count: 0,
                 empty_message: Some("No indexed messages matched this query.".to_string()),
-                message_state: MessageStateFilter::Active,
+                priority_filter: SenderPriorityFilter::All,
             },
             None,
             None,
@@ -9425,10 +9799,9 @@ mod tests {
 
     #[test]
     fn compact_search_result_markup_truncates_long_values() {
+        let priority_rules = SenderPriorityRules::default();
         let result = SearchResult {
-            account_id: 1,
             account_name: "Personal Gmail".to_string(),
-            message_key: "key".to_string(),
             message_relpath: "Inbox/very/long/path/that/should/not/overflow/message.eml"
                 .to_string(),
             timestamp: 0,
@@ -9436,9 +9809,7 @@ mod tests {
             from: "Billing ✅ <billing@example.com>".to_string(),
             subject: "Invoice ✅ with a very long subject that should truncate".to_string(),
             tags: vec!["inbox".to_string()],
-            deleted_at: None,
-            restore_pending: false,
-            is_deleted: false,
+            sender_priority: priority_rules.view_for_sender("Billing ✅ <billing@example.com>"),
         };
 
         let html = render_search_result(&result, "/search?q=invoice");
@@ -9447,7 +9818,9 @@ mod tests {
         assert!(html.contains("Billing ✅"));
         assert!(html.contains("Invoice ✅"));
         assert!(html.contains("truncate"));
-        assert!(html.contains("aria-label=\"Delete local archive copy\""));
+        assert!(html.contains("Normal priority"));
+        assert!(html.contains("aria-label=\"Mark address billing@example.com as high priority\""));
+        assert!(!html.contains("Delete local archive copy"));
     }
 
     #[test]
@@ -9644,13 +10017,13 @@ mod tests {
     }
 
     #[test]
-    fn deleted_message_tables_are_initialized() {
+    fn sender_priority_table_is_initialized_and_deleted_tables_are_dropped() {
         let tempdir = TempDir::new().expect("tempdir");
         let config = test_config(&tempdir);
         prepare_test_layout(&config);
         let connection = open_db(&config).expect("db");
 
-        let names = ["deleted_messages", "deleted_message_attachments"];
+        let names = ["sender_priorities"];
         for name in names {
             let count = connection
                 .query_row(
@@ -9660,6 +10033,16 @@ mod tests {
                 )
                 .expect("table count");
             assert_eq!(count, 1, "expected table {name} to exist");
+        }
+        for name in ["deleted_messages", "deleted_message_attachments"] {
+            let count = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    params![name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("table count");
+            assert_eq!(count, 0, "expected table {name} to stay absent");
         }
     }
 
@@ -9708,7 +10091,168 @@ mod tests {
             assert_eq!(count_attachment_catalog_rows(&config), 1);
             let item = first_attachment_item(&config, "alice");
             assert_eq!(item.attachment.original_filename, "invoice.pdf");
+            assert!(item.attachment.blob_relpath.is_some());
             assert_eq!(item.message.subject, "Invoice ready");
+        });
+    }
+
+    #[test]
+    fn attachment_page_and_bulk_download_respect_sender_priority_filter() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-low",
+                "Message-ID: <attach-low@example.com>\nFrom: Billing <billing@example.com>\nSubject: Low attachment\nDate: Sat, 20 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-normal",
+                "Message-ID: <attach-normal@example.com>\nFrom: Normal <alerts@news.example.com>\nSubject: Normal attachment\nDate: Fri, 19 Apr 2024 14:32:00 +0000\n\nATTACH:text\n",
+            );
+            upsert_sender_priority_rule(&config, "alice", "domain", "example.com", "low")
+                .expect("domain low");
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let low_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    priority: Some("low".to_string()),
+                    extension: None,
+                    include_inline: None,
+                    show_mime_details: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("low page");
+            assert_eq!(low_page.items.len(), 1);
+            assert_eq!(low_page.items[0].message.subject, "Low attachment");
+            assert_eq!(
+                low_page.items[0].sender_priority.priority,
+                SenderPriority::Low
+            );
+
+            let keys = download_attachment_keys_for_form(
+                &config,
+                "alice",
+                &AttachmentDownloadForm {
+                    attachment_keys: Vec::new(),
+                    selection_scope: Some(ATTACHMENT_SELECTION_ALL_MATCHING.to_string()),
+                    q: None,
+                    account_id: None,
+                    priority: Some("low".to_string()),
+                    extension: None,
+                    include_inline: None,
+                    show_mime_details: None,
+                    return_to: None,
+                },
+            )
+            .expect("bulk keys");
+            assert_eq!(
+                keys,
+                vec![low_page.items[0].attachment.attachment_key.clone()]
+            );
+        });
+    }
+
+    #[test]
+    fn extracted_textfile_body_parts_are_hidden_by_default() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <body-parts@example.com>\nSubject: Body parts\nDate: Fri, 01 May 2026 09:00:00 +0000\n\nATTACH:body-parts\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+            assert_eq!(count_attachment_catalog_rows(&config), 3);
+
+            let default_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    priority: None,
+                    extension: None,
+                    include_inline: None,
+                    show_mime_details: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("default page");
+            assert!(default_page.items.is_empty());
+            assert_eq!(default_page.state.result_count, 0);
+
+            let included_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    priority: None,
+                    extension: None,
+                    include_inline: Some("1".to_string()),
+                    show_mime_details: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("included page");
+            assert_eq!(included_page.state.result_count, 3);
+            assert!(included_page
+                .items
+                .iter()
+                .all(|item| item.attachment.is_inline_artifact));
+        });
+    }
+
+    #[test]
+    fn attachment_verification_checks_materialized_blobs() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <verify@example.com>\nSubject: Verify\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let report_path = tempdir.path().join("report.json");
+            let report =
+                verify_attachment_archive(&config, true, Some(&report_path)).expect("verify");
+            assert_eq!(report.attachments_checked, 1);
+            assert!(!report.has_errors());
+            assert!(report_path.exists());
         });
     }
 
@@ -9814,144 +10358,6 @@ mod tests {
             assert!(error.detail.contains("setfacl denied"));
         });
     }
-
-    #[test]
-    fn delete_message_removes_payload_and_preserves_deleted_attachment_metadata() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            let message_path = write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-delete",
-                "Message-ID: <delete-me@example.com>\nSubject: Delete me\n\nATTACH:pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-            let item = first_attachment_item(&config, "alice");
-            let connection = open_db(&config).expect("db");
-            let visible_path = account_paths.visible_emails_root.join(
-                load_message_mailbox_instances_for_account(&connection, account_id)
-                    .expect("mailbox instances")
-                    .into_iter()
-                    .find(|instance| instance.message_key == item.message.message_key)
-                    .expect("visible mailbox instance")
-                    .visible_relpath,
-            );
-
-            delete_message_from_archive(&config, "alice", account_id, &item.message.message_key)
-                .expect("delete");
-
-            assert!(!message_path.exists());
-            assert!(!visible_path.exists());
-            assert_eq!(count_deleted_message_rows(&config), 1);
-            assert_eq!(count_deleted_message_attachment_rows(&config), 1);
-            assert_eq!(count_attachment_catalog_rows(&config), 0);
-
-            let default_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    message_state: None,
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("default page");
-            assert!(default_page.items.is_empty());
-
-            let deleted_page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    q: None,
-                    account_id: None,
-                    message_state: Some("deleted".to_string()),
-                    extension: None,
-                    page: None,
-                    flash: None,
-                    error: None,
-                },
-            )
-            .expect("deleted page");
-            assert_eq!(deleted_page.items.len(), 1);
-            assert!(deleted_page.items[0].is_deleted);
-        });
-    }
-
-    #[test]
-    fn deleted_messages_do_not_reappear_until_restore_is_requested() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            let message_path = write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-suppress",
-                "Message-ID: <suppress@example.com>\nSubject: Suppress me\n\nbody\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-            let results = search_mail(&config, "alice", Some(account_id), "subject:suppress")
-                .expect("search");
-            assert_eq!(results.len(), 1);
-
-            delete_message_from_archive(&config, "alice", account_id, &results[0].message_key)
-                .expect("delete");
-            assert!(!message_path.exists());
-
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-suppress",
-                "Message-ID: <suppress@example.com>\nSubject: Suppress me\n\nbody\n",
-            );
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Reindex)
-                .expect("reindex");
-
-            assert!(!message_path.exists());
-            assert!(
-                search_mail(&config, "alice", Some(account_id), "subject:suppress")
-                    .expect("search after suppression")
-                    .is_empty()
-            );
-
-            mark_deleted_message_restore_pending(
-                &config,
-                "alice",
-                account_id,
-                &results[0].message_key,
-            )
-            .expect("restore pending");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-suppress",
-                "Message-ID: <suppress@example.com>\nSubject: Suppress me\n\nbody\n",
-            );
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Reindex)
-                .expect("reindex restore");
-
-            assert!(message_path.exists());
-            assert_eq!(
-                search_mail(&config, "alice", Some(account_id), "subject:suppress")
-                    .expect("search after restore")
-                    .len(),
-                1
-            );
-        });
-    }
-
     #[test]
     fn attachment_lookup_is_scoped_to_the_authenticated_user() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
@@ -10011,8 +10417,10 @@ mod tests {
                 &AttachmentListParams {
                     q: None,
                     account_id: None,
-                    message_state: None,
+                    priority: None,
                     extension: None,
+                    include_inline: None,
+                    show_mime_details: None,
                     page: None,
                     flash: None,
                     error: None,
@@ -10027,6 +10435,10 @@ mod tests {
             assert!(html.contains("name=\"attachment_keys\""));
             assert!(html.contains("aria-label=\"Download selected attachments\""));
             assert!(html.contains("title=\"Download attachment\""));
+            assert!(html.contains("Normal priority"));
+            assert!(!html.contains("Delete local archive copy"));
+            assert!(!html.contains("Restore on next sync"));
+            assert!(!html.contains("/messages/"));
         });
     }
 
@@ -10048,7 +10460,7 @@ mod tests {
             run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
                 .expect("sync");
             let item = first_attachment_item(&config, "alice");
-            let (_filename, bytes) = build_attachments_zip(
+            let zip_file = build_attachments_zip(
                 &config,
                 "alice",
                 &AttachmentDownloadForm {
@@ -10056,18 +10468,41 @@ mod tests {
                     selection_scope: None,
                     q: None,
                     account_id: None,
-                    message_state: None,
+                    priority: None,
                     extension: None,
+                    include_inline: None,
+                    show_mime_details: None,
                     return_to: None,
                 },
             )
             .expect("zip");
 
-            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("archive");
-            assert_eq!(archive.len(), 1);
+            let file = fs::File::open(&zip_file.path).expect("zip file");
+            let mut archive = zip::ZipArchive::new(file).expect("archive");
+            assert_eq!(archive.len(), 2);
             let entry = archive.by_index(0).expect("entry");
-            assert!(entry.name().contains("invoice.pdf"));
-            assert!(entry.name().contains("personal-gmail"));
+            assert_eq!(entry.name(), "personal-gmail/2024-04-18 - zip/invoice.pdf");
+            drop(entry);
+            assert!(archive.by_name("manifest.json").is_ok());
         });
+    }
+
+    #[test]
+    fn duplicate_zip_entry_names_get_human_numeric_suffixes() {
+        let mut used = HashMap::new();
+        assert_eq!(
+            unique_zip_entry_name(
+                "mailbox/2026-05-01 - invoice/report.pdf".to_string(),
+                &mut used
+            ),
+            "mailbox/2026-05-01 - invoice/report.pdf"
+        );
+        assert_eq!(
+            unique_zip_entry_name(
+                "mailbox/2026-05-01 - invoice/report.pdf".to_string(),
+                &mut used
+            ),
+            "mailbox/2026-05-01 - invoice/report (1).pdf"
+        );
     }
 }

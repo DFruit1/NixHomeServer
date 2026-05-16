@@ -3,6 +3,7 @@
 let
   loopback = vars.networking.loopbackIPv4;
   ports = vars.networking.ports;
+  apps = config.nixhomeserver.apps;
   lanIface = vars.networking.interfaces.lan;
   netbirdIface = vars.networking.interfaces.netbird;
   splitDnsMode = vars.networking.dns.mode == "split-horizon";
@@ -56,7 +57,7 @@ in
         '';
       };
 
-      "${vars.paperlessDomain}" = {
+      "${vars.paperlessDomain}" = lib.mkIf apps.paperless.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -64,7 +65,7 @@ in
         '';
       };
 
-      "${vars.audiobooksDomain}" = {
+      "${vars.audiobooksDomain}" = lib.mkIf apps.audiobookshelf.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -72,7 +73,7 @@ in
         '';
       };
 
-      "${vars.uploadsDomain}" = {
+      "${vars.uploadsDomain}" = lib.mkIf apps.copyparty.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -87,7 +88,7 @@ in
         '';
       };
 
-      "${vars.filebrowserDomain}" = {
+      "${vars.filebrowserDomain}" = lib.mkIf apps."filebrowser-quantum".enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -99,7 +100,7 @@ in
         '';
       };
 
-      "${vars.emailsDomain}" = {
+      "${vars.emailsDomain}" = lib.mkIf apps."mail-archive-ui".enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -110,7 +111,7 @@ in
         '';
       };
 
-      "${vars.vaultwardenDomain}" = {
+      "${vars.vaultwardenDomain}" = lib.mkIf apps.vaultwarden.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -121,7 +122,7 @@ in
         '';
       };
 
-      "${vars.kiwixDomain}" = {
+      "${vars.kiwixDomain}" = lib.mkIf apps.kiwix.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -132,7 +133,7 @@ in
         '';
       };
 
-      "${vars.metubeDomain}" = {
+      "${vars.metubeDomain}" = lib.mkIf apps.metube.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -143,7 +144,7 @@ in
         '';
       };
 
-      "${vars.monitorDomain}" = {
+      "${vars.monitorDomain}" = lib.mkIf apps.glances.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -154,7 +155,7 @@ in
         '';
       };
 
-      "${vars.photosDomain}" = {
+      "${vars.photosDomain}" = lib.mkIf apps.immich.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -162,7 +163,7 @@ in
         '';
       };
 
-      "${vars.sharePhotosDomain}" = {
+      "${vars.sharePhotosDomain}" = lib.mkIf apps.immich.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -173,7 +174,7 @@ in
         '';
       };
 
-      "${vars.kavitaDomain}" = {
+      "${vars.kavitaDomain}" = lib.mkIf apps.kavita.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -181,7 +182,7 @@ in
         '';
       };
 
-      "${vars.jellyfinDomain}" = {
+      "${vars.jellyfinDomain}" = lib.mkIf apps.jellyfin.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}

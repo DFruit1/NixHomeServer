@@ -73,6 +73,7 @@ in
     ./disko-system.nix
     ./disko.nix
     ./secrets/agenix.nix
+    ./modules/nixhomeserver/settings.nix
     ./modules/audiobookshelf
     ./modules/Core_Modules/caddy
     ./modules/Core_Modules/cloudflared

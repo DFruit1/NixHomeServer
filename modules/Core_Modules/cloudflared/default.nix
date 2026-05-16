@@ -3,6 +3,7 @@
 let
   loopback = vars.networking.loopbackIPv4;
   httpsPort = vars.networking.ports.https;
+  apps = config.nixhomeserver.apps;
 in
 {
   # The Cloudflare tunnel is intentionally limited to public or
@@ -23,20 +24,25 @@ in
       ###############  required  ######################################
       credentialsFile = config.age.secrets.cfHomeCreds.path;
 
-      ingress = {
-        "${vars.kanidmDomain}" = {
-          service = "https://${loopback}:${toString httpsPort}";
-          originRequest.originServerName = vars.kanidmDomain;
+      ingress =
+        {
+          "${vars.kanidmDomain}" = {
+            service = "https://${loopback}:${toString httpsPort}";
+            originRequest.originServerName = vars.kanidmDomain;
+          };
+        }
+        // lib.optionalAttrs apps.copyparty.enable {
+          "${vars.uploadsDomain}" = {
+            service = "https://${loopback}:${toString httpsPort}";
+            originRequest.originServerName = vars.uploadsDomain;
+          };
+        }
+        // lib.optionalAttrs apps.immich.enable {
+          "${vars.sharePhotosDomain}" = {
+            service = "https://${loopback}:${toString httpsPort}";
+            originRequest.originServerName = vars.sharePhotosDomain;
+          };
         };
-        "${vars.uploadsDomain}" = {
-          service = "https://${loopback}:${toString httpsPort}";
-          originRequest.originServerName = vars.uploadsDomain;
-        };
-        "${vars.sharePhotosDomain}" = {
-          service = "https://${loopback}:${toString httpsPort}";
-          originRequest.originServerName = vars.sharePhotosDomain;
-        };
-      };
       default = "http_status:404";
     };
   };

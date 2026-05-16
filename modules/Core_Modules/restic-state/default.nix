@@ -2,6 +2,7 @@
 
 let
   impermanenceCfg = config.repo.impermanence;
+  mailArchiveUiCfg = config.services.mail-archive-ui;
   repoRoot = ../../..;
   backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
   backupTargetCommand = pkgs.writeShellApplication {
@@ -281,8 +282,10 @@ in
         lib.makeBinPath [
           pkgs.coreutils
           pkgs.findutils
+          pkgs.file
           pkgs.gnugrep
           pkgs.gnused
+          pkgs.ripmime
           pkgs.util-linux
           pkgs.zfs
         ]
@@ -471,6 +474,23 @@ in
         } > "$dump_tmp"
         mv "$dump_tmp" "$dump_file"
         chmod 0600 "$dump_file"
+      ''}
+
+      ${lib.optionalString mailArchiveUiCfg.enable ''
+        mail_report="${metadataRoot}/mail-archive-attachments.json"
+        mail_report_tmp="${mailArchiveUiCfg.runtimeDir}/mail-archive-attachments.backup.json"
+        ${pkgs.util-linux}/bin/runuser -u mail-archive-ui -- ${pkgs.coreutils}/bin/env \
+          PATH="$PATH" \
+          MAIL_ARCHIVE_UI_DATA_DIR="${mailArchiveUiCfg.dataDir}" \
+          MAIL_ARCHIVE_UI_STORE_ROOT="${mailArchiveUiCfg.storeRoot}" \
+          MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT="${mailArchiveUiCfg.accountStateRoot}" \
+          MAIL_ARCHIVE_UI_RUNTIME_DIR="${mailArchiveUiCfg.runtimeDir}" \
+          MAIL_ARCHIVE_UI_LOCK_DIR="${mailArchiveUiCfg.lockDir}" \
+          MAIL_ARCHIVE_UI_DEFAULT_TAGS="new" \
+          ${mailArchiveUiCfg.package}/bin/mail-archive-ui \
+          verify-attachments --repair --report "$mail_report_tmp"
+        install -m 0600 "$mail_report_tmp" "$mail_report"
+        rm -f "$mail_report_tmp"
       ''}
     '';
   };

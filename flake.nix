@@ -39,20 +39,41 @@
         nix
         ripgrep
       ];
-      vars = import ./vars.nix { inherit lib; };
-      nixosHost = lib.nixosSystem {
-        inherit system;
-        modules = [
-          ./hardware-configuration.nix
-          ./configuration.nix
-          agenix.nixosModules.default
-          disko.nixosModules.disko
-          (impermanencePatched + "/nixos.nix")
-        ];
-        specialArgs = {
-          inherit self vars disko copyparty pkgsUnstable;
+      siteNames = [
+        "dsaw"
+        "example"
+      ];
+      siteSettingsPath = siteName: ./hosts + "/${siteName}/settings.nix";
+      siteModulePath = siteName: ./hosts + "/${siteName}/default.nix";
+      mkSiteVars = siteName: import (siteSettingsPath siteName) { inherit lib; };
+      mkNixosHost = siteName:
+        let
+          vars = mkSiteVars siteName;
+        in
+        lib.nixosSystem {
+          inherit system;
+          modules = [
+            (siteModulePath siteName)
+            agenix.nixosModules.default
+            disko.nixosModules.disko
+            (impermanencePatched + "/nixos.nix")
+          ];
+          specialArgs = {
+            inherit self vars disko copyparty pkgsUnstable;
+          };
         };
-      };
+      mkSiteHostAttrs = siteName:
+        let
+          vars = mkSiteVars siteName;
+          host = mkNixosHost siteName;
+        in
+        [
+          (lib.nameValuePair siteName host)
+          (lib.nameValuePair vars.hostname host)
+        ];
+      nixosConfigurations = builtins.listToAttrs (lib.concatMap mkSiteHostAttrs siteNames);
+      vars = mkSiteVars "dsaw";
+      nixosHost = nixosConfigurations.dsaw;
       coreConfigSnapshotFile =
         let
           cfg = nixosHost.config;
@@ -215,6 +236,17 @@
           "${name}-test" = app.checks.test;
         })
         rustApps;
+      scriptApp = name: description: runtimeInputs: text:
+        let
+          app = pkgs.writeShellApplication {
+            inherit name runtimeInputs text;
+          };
+        in
+        {
+          type = "app";
+          program = "${app}/bin/${name}";
+          meta = { inherit description; };
+        };
       rustFlakeApps = lib.mapAttrs
         (_: app: {
           type = "app";
@@ -225,7 +257,7 @@
     in
     {
       ################ NixOS configuration ############################
-      nixosConfigurations.${vars.hostname} = nixosHost;
+      inherit nixosConfigurations;
 
       ################ Packages #######################################
       packages.${system} = rustPackages;
@@ -264,6 +296,30 @@
             program = "${disko.packages.${system}.disko}/bin/disko";
             meta = { description = "Disko CLI helper for blank-machine bootstrap only"; };
           };
+          init-site = scriptApp "init-site" "Interactive first-run site initializer" (with pkgs; [ bash coreutils gitMinimal gnused ]) ''
+            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/init-site.sh" "$@"
+          '';
+          doctor = scriptApp "doctor" "Non-destructive install readiness doctor" (with pkgs; [ bash coreutils findutils gitMinimal gnugrep gnused jq nix openssh ripgrep util-linux ]) ''
+            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/doctor.sh" "$@"
+          '';
+          storage-plan = scriptApp "storage-plan" "Read-only storage inventory and settings snippet helper" (with pkgs; [ bash coreutils findutils jq smartmontools util-linux gnused gnugrep ]) ''
+            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/storage-plan.sh" "$@"
+          '';
+          render-runbook = scriptApp "render-runbook" "Render a host-specific admin runbook" (with pkgs; [ bash coreutils jq nix gnused ]) ''
+            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/render-runbook.sh" "$@"
+          '';
+          explain = scriptApp "explain" "Preview evaluated host routes, apps, storage, and secrets" (with pkgs; [ bash coreutils jq nix gnused ]) ''
+            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/explain.sh" "$@"
+          '';
+          admin = scriptApp "admin" "Unified NixHomeServer admin command wrapper" (with pkgs; [ bash coreutils findutils gitMinimal gnused jq nix openssh ripgrep smartmontools util-linux ]) ''
+            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/admin.sh" "$@"
+          '';
         }
         // rustFlakeApps;
     };

@@ -100,6 +100,29 @@ curl -fsS http://127.0.0.1:9011/healthz | jq .
 
 Use the dashboard `Sync now` and `Reindex` actions when you need to repair or refresh one mailbox without waiting for the timer. Use `https://emails.sydneybasiniot.org/attachments` to search indexed document attachments, select individual/page/all matching files, and download them as a ZIP for manual upload through the document-management UI.
 
+Attachment downloads are backed by content-addressed blobs in each mailbox's
+hidden `.internal-sync` tree. ZIP downloads include a `manifest.json` that maps
+each file back to its mailbox, message, MIME type, size, and SHA-256. Inline
+artifacts and `ripmime` body fragments such as `textfile0` are hidden by default
+in the UI and can be included with the body-parts filter. ZIP contents are laid
+out as `<mailbox>/<yyyy-mm-dd> - <subject>/<filename>`, and duplicate filenames
+are suffixed as `file (1).ext`.
+
+To verify attachment backup readiness manually:
+
+```bash
+sudo -u mail-archive-ui env \
+  MAIL_ARCHIVE_UI_DATA_DIR=/persist/appdata/mail-archive-ui \
+  MAIL_ARCHIVE_UI_STORE_ROOT=/mnt/data/users \
+  MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT=/persist/appdata/mail-archive-ui/accounts \
+  MAIL_ARCHIVE_UI_RUNTIME_DIR=/run/mail-archive-ui \
+  MAIL_ARCHIVE_UI_LOCK_DIR=/persist/appdata/mail-archive-ui/locks \
+  mail-archive-ui verify-attachments --repair --report /tmp/mail-archive-attachments.json
+```
+
+The system-state backup preparation runs this verifier with repair enabled and
+stores `mail-archive-attachments.json` in the backup metadata.
+
 ## Validation Gate
 
 The documented day-2 validation path runs on the remote server and does not need

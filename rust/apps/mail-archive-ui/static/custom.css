@@ -413,6 +413,12 @@ form {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
+.checkbox-field {
+  grid-auto-flow: column;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+}
+
 .attachment-filter-actions {
   display: grid;
   align-content: end;
@@ -477,21 +483,29 @@ textarea {
   border: 1px solid rgba(141, 45, 28, 0.18);
 }
 
-.result.is-deleted,
-.attachment-card.is-deleted,
-.mail-row.is-deleted,
-.attachment-row.is-deleted {
-  opacity: 0.72;
-  background: rgba(255, 252, 246, 0.72);
-}
-
-.deleted-tag {
-  background: rgba(141, 45, 28, 0.12);
-  color: var(--danger);
-}
-
 .error.compact {
   margin-bottom: 0;
+}
+
+.priority-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.priority-high {
+  background: rgba(15, 107, 92, 0.14);
+  color: var(--accent-strong);
+}
+
+.priority-low {
+  background: rgba(113, 93, 17, 0.14);
+  color: var(--warning);
+}
+
+.priority-normal {
+  background: rgba(29, 31, 28, 0.06);
+  color: var(--muted);
 }
 
 .notice {

@@ -14,6 +14,28 @@ exists.
 
 ## Generate And Stage Secrets
 
+Before generating secrets, configure the main install in [`vars.nix`](../vars.nix).
+For a new one-host install, start from [`vars.example.nix`](../vars.example.nix):
+
+```bash
+cp vars.example.nix vars.nix
+$EDITOR vars.nix
+```
+
+For a reusable template copy, inspect [`hosts/example/settings.nix`](../hosts/example/settings.nix)
+or create a new site with:
+
+```bash
+nix run .#init-site -- --site my-home
+```
+
+Run the non-destructive install doctor before any deploy or blank-machine work:
+
+```bash
+nix run .#doctor -- --host dsaw
+nix run .#explain -- --host dsaw
+```
+
 Generate repo-managed secrets and encrypt the staged inputs with the single documented secrets entrypoint:
 
 ```bash

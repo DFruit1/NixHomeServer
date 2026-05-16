@@ -8,19 +8,19 @@ rec {
   # ---------------------------------------------------------------------------
 
   identity = {
-    adminUser = "admindsaw"; # Delegated Kanidm operator account.
-    adminEmail = "dsaw@tuta.io"; # Contact email for ACME and the first Kanidm admin user.
-    sshPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
+    adminUser = "admin"; # Delegated Kanidm operator account.
+    adminEmail = "admin@example.test"; # Contact email for ACME and the first Kanidm admin user.
+    sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key";
   };
 
   network = {
-    hostname = "server"; # NixOS hostname and flake hostname alias.
-    domain = "sydneybasiniot.org"; # Public DNS zone used for app hostnames.
-    lanInterface = "enp34s0"; # Target server's wired LAN interface.
-    lanIp = "192.168.8.12"; # Static LAN address for the server.
+    hostname = "example-server"; # NixOS hostname and flake hostname alias.
+    domain = "example.test"; # Public DNS zone used for app hostnames.
+    lanInterface = "eth0"; # Target server's wired LAN interface.
+    lanIp = "192.0.2.10"; # Static LAN address for the server.
     lanPrefixLength = 24;
-    lanGateway = "192.168.8.1";
-    netbirdIp = "100.72.113.237";
+    lanGateway = "192.0.2.1";
+    netbirdIp = "100.64.0.10";
     netbirdCidr = "100.64.0.0/10";
   };
 
@@ -35,18 +35,18 @@ rec {
   };
 
   edge = {
-    cloudflareTunnelName = "metro"; # Cloudflare Tunnel name from `cloudflared tunnel list`.
+    cloudflareTunnelName = "CHANGE_ME_TUNNEL"; # Cloudflare Tunnel name from `cloudflared tunnel list`.
   };
 
   storage = {
-    systemDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # System SSD /dev/disk/by-id basename.
+    systemDisk = "CHANGE_ME_SYSTEM_DISK_BY_ID"; # System SSD /dev/disk/by-id basename.
     dataPool = {
       name = "data";
       mountPoint = "/mnt/data";
       mirrorPairs = [
         [
-          "ata-ST8000VN002-2ZM188_WPV3997N"
-          "ata-ST8000VN002-2ZM188_WPV37712"
+          "CHANGE_ME_DATA_DISK_1_BY_ID"
+          "CHANGE_ME_DATA_DISK_2_BY_ID"
         ]
       ];
       datasets = [
@@ -66,46 +66,46 @@ rec {
       subdomain = "uploads";
     };
     photos = {
-      enable = true;
+      enable = false;
       privateSubdomain = "photos";
       publicShareSubdomain = "sharephotos";
     };
     documents = {
-      enable = true;
+      enable = false;
       subdomain = "paperless";
       ocrLanguage = "eng";
       allowDangerousMacroOfficeParsing = false;
     };
     audiobooks = {
-      enable = true;
+      enable = false;
       subdomain = "audiobooks";
     };
     books = {
-      enable = true;
+      enable = false;
       subdomain = "books";
     };
     videos = {
-      enable = true;
+      enable = false;
       subdomain = "videos";
     };
     wiki = {
-      enable = true;
+      enable = false;
       subdomain = "wiki";
     };
     downloads = {
-      enable = true;
+      enable = false;
       subdomain = "ytdownload";
     };
     monitoring = {
-      enable = true;
+      enable = false;
       subdomain = "monitor";
     };
     passwords = {
-      enable = true;
+      enable = false;
       subdomain = "passwords";
     };
     mail = {
-      enable = true;
+      enable = false;
       subdomain = "emails";
     };
   };

@@ -112,6 +112,10 @@ in
 
     users.groups.${group} = { };
 
+    environment.systemPackages = [
+      cfg.package
+    ];
+
     systemd.tmpfiles.rules = [
       "d ${cfg.dataDir} 0750 ${user} ${group} -"
       "d ${cfg.accountStateRoot} 0750 ${user} ${group} -"
