@@ -93,6 +93,8 @@
               runtimeAccessCanaries = vars.runtimeAccessCanaries;
               personalKavitaLibraries = vars.personalKavitaLibraries;
               sharedBooksSubdirs = vars.sharedBooksSubdirs;
+              sharedContentSubdirs = vars.sharedContentSubdirs;
+              sharedMusicRoot = vars.sharedMusicRoot;
             };
             config = {
               services = {
@@ -110,6 +112,7 @@
                 lanAllowedUdpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedUDPPorts;
                 nameservers = cfg.networking.nameservers;
               };
+              sharedContentSubdirs = vars.sharedContentSubdirs;
               fileSystems = {
                 hasDataMount = cfg.fileSystems ? "/mnt/data";
                 dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
@@ -191,10 +194,21 @@
                 hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
                 hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
                 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
+                hasJellyfinLibraryBootstrap = cfg.systemd.services ? "jellyfin-library-bootstrap-v1";
                 hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
                 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
                 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
                 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
+                jellyfinLibraryWatchAfter = cfg.systemd.services.jellyfin-library-watch.after;
+                jellyfinLibraryWatchWants = cfg.systemd.services.jellyfin-library-watch.wants;
+                hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
+                hasMetubeAudioImportWatch = cfg.systemd.services ? "metube-audio-import-watch";
+                metubeAudioImportWatchAfter = cfg.systemd.services.metube-audio-import-watch.after;
+                jellyfinPayloadRoots = [
+                  vars.sharedMusicRoot
+                  vars.sharedVideosRoot
+                  vars.usersRoot
+                ];
                 hasGlancesService = cfg.systemd.services ? "glances";
                 hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
                 hasVaultwardenService = cfg.systemd.services ? "vaultwarden";

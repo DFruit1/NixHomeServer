@@ -103,6 +103,7 @@ let
       stateRoot = "/var/lib/jellyfin";
       persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
       payloadRoots = [
+        vars.sharedMusicRoot
         vars.sharedVideosRoot
         vars.usersRoot
       ];
@@ -224,6 +225,7 @@ let
     vars.usersRoot
     vars.sharedRoot
     vars.sharedEmailsRoot
+    vars.sharedMusicRoot
     vars.kiwixLibraryRoot
   ];
 in

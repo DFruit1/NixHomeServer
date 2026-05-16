@@ -11,6 +11,8 @@ let
   optionalAttrs = cond: attrs: if cond then attrs else { };
   dataDatasetMounts = map (dataset: "${vars.zfsDataPool.mountPoint}/${dataset}") vars.zfsDataPool.datasets;
   mailArchiveEnabled = cfg.services.mail-archive-ui.enable or false;
+  immichEnabled = cfg.services.immich.enable or false;
+  immichMachineLearning = cfg.services.immich.machine-learning or { };
   kiwixEnabled = cfg.services.kiwixServe.enable or false;
   metubeEnabled = cfg.systemd.services ? metube-oauth2-proxy;
   intersects = left: right: builtins.any (value: builtins.elem value right) left;
@@ -71,7 +73,7 @@ let
       component = "app";
       stateRoot = "/var/lib/jellyfin";
       persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
-      payloadRoots = [ vars.sharedVideosRoot vars.usersRoot ];
+      payloadRoots = [ vars.sharedMusicRoot vars.sharedVideosRoot vars.usersRoot ];
     }
     {
       app = "kavita";
@@ -498,7 +500,18 @@ in
       dataDir = optionalString cfg.services.postgresql.enable cfg.services.postgresql.dataDir;
       pgIsReadyBinary =
         optionalString cfg.services.postgresql.enable "${lib.getExe' cfg.services.postgresql.finalPackage "pg_isready"}";
+      psqlBinary = optionalString cfg.services.postgresql.enable "${lib.getExe' cfg.services.postgresql.finalPackage "psql"}";
     };
+  };
+
+  immich = {
+    enabled = bool immichEnabled;
+    databaseName = optionalString immichEnabled cfg.services.immich.database.name;
+    machineLearningUrl =
+      optionalString
+        (immichEnabled && (immichMachineLearning.enable or false))
+        "http://${immichMachineLearning.host or "127.0.0.1"}:${toString (immichMachineLearning.port or 3003)}";
+    smartSearchCoverageWarnPercent = 95;
   };
 
   accessChecks = {

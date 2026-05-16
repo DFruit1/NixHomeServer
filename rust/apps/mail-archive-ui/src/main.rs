@@ -914,6 +914,14 @@ impl SenderPriority {
         }
     }
 
+    fn dropdown_label(self) -> &'static str {
+        match self {
+            Self::High => "High",
+            Self::Normal => "Normal",
+            Self::Low => "Low",
+        }
+    }
+
     fn sort_rank(self) -> u8 {
         match self {
             Self::High => 0,
@@ -1680,7 +1688,7 @@ async fn upsert_sender_priority(
     let username = identity.username.clone();
     let return_to = form.return_to.clone();
     let result = tokio::task::spawn_blocking(move || {
-        upsert_sender_priority_rule(
+        set_sender_priority_rule(
             &config,
             &username,
             &form.sender_kind,
@@ -1691,7 +1699,7 @@ async fn upsert_sender_priority(
     .await;
 
     match result {
-        Ok(Ok(rule)) => redirect_response(&message_redirect_location(
+        Ok(Ok(Some(rule))) => redirect_response(&message_redirect_location(
             return_to.as_deref(),
             Some(&format!(
                 "Marked {} {} as {} priority",
@@ -1699,6 +1707,11 @@ async fn upsert_sender_priority(
                 rule.value,
                 rule.priority.as_stored_value()
             )),
+            None,
+        )),
+        Ok(Ok(None)) => redirect_response(&message_redirect_location(
+            return_to.as_deref(),
+            Some("Sender priority rule cleared"),
             None,
         )),
         Ok(Err(error)) => redirect_response(&message_redirect_location(
@@ -2995,6 +3008,21 @@ fn upsert_sender_priority_rule(
         value,
         priority,
     })
+}
+
+fn set_sender_priority_rule(
+    config: &AppConfig,
+    username: &str,
+    raw_kind: &str,
+    raw_value: &str,
+    raw_priority: &str,
+) -> Result<Option<SenderPriorityRule>, String> {
+    if raw_priority.trim() == SenderPriority::Normal.as_stored_value() {
+        clear_sender_priority_rule(config, username, raw_kind, raw_value)?;
+        Ok(None)
+    } else {
+        upsert_sender_priority_rule(config, username, raw_kind, raw_value, raw_priority).map(Some)
+    }
 }
 
 fn clear_sender_priority_rule(
@@ -7191,24 +7219,7 @@ fn render_dashboard(
     error: Option<&str>,
 ) -> String {
     let mut body = String::new();
-
-    if let Some(flash) = flash {
-        writeln!(
-            &mut body,
-            "<div class=\"flash\">{}</div>",
-            escape_html(&flash.replace('+', " "))
-        )
-        .ok();
-    }
-
-    if let Some(error) = error {
-        writeln!(
-            &mut body,
-            "<div class=\"error\">{}</div>",
-            escape_html(&error.replace('+', " "))
-        )
-        .ok();
-    }
+    body.push_str(&render_toasts(flash, error));
 
     body.push_str(
         "<section class=\"hero\">
@@ -7255,6 +7266,30 @@ fn render_dashboard_totals(accounts: &[DashboardAccountView]) -> String {
         totals.pending_index_count,
         totals.index_coverage_percent,
     )
+}
+
+fn render_toasts(flash: Option<&str>, error: Option<&str>) -> String {
+    let mut toasts = Vec::new();
+    if let Some(flash) = flash.filter(|value| !value.is_empty()) {
+        toasts.push(format!(
+            "<div class=\"toast success\" role=\"status\">{}</div>",
+            escape_html(&flash.replace('+', " "))
+        ));
+    }
+    if let Some(error) = error.filter(|value| !value.is_empty()) {
+        toasts.push(format!(
+            "<div class=\"toast error\" role=\"alert\">{}</div>",
+            escape_html(&error.replace('+', " "))
+        ));
+    }
+    if toasts.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<div class=\"toast-stack\" aria-live=\"polite\" aria-atomic=\"true\">{}</div>",
+            toasts.join("")
+        )
+    }
 }
 
 fn hidden_class(visible: bool) -> &'static str {
@@ -7552,30 +7587,12 @@ fn render_attachments_page(
     error: Option<&str>,
 ) -> String {
     let mut body = String::new();
-
-    if let Some(flash) = flash {
-        writeln!(
-            &mut body,
-            "<div class=\"flash\">{}</div>",
-            escape_html(&flash.replace('+', " "))
-        )
-        .ok();
-    }
-
-    if let Some(error) = error {
-        writeln!(
-            &mut body,
-            "<div class=\"error\">{}</div>",
-            escape_html(&error.replace('+', " "))
-        )
-        .ok();
-    }
+    body.push_str(&render_toasts(flash, error));
 
     body.push_str(
-        "<section class=\"hero\">
-          <p class=\"eyebrow\">Attachments</p>
-          <h1>Search and download archived mail attachments.</h1>
-          <p class=\"lede\">Select files from indexed mail and download them as one ZIP for manual document filing.</p>
+        "<section class=\"page-heading\">
+          <h1>Attachments</h1>
+          <span class=\"page-heading-icon\" aria-hidden=\"true\">&#128206;</span>
         </section>",
     );
 
@@ -7686,7 +7703,11 @@ fn render_attachments_page(
     if !data.items.is_empty() {
         writeln!(
             &mut body,
-            "<section class=\"attachment-list\">{}</section>",
+            "<section class=\"attachment-list\">
+              {}
+              {}
+            </section>",
+            render_attachment_list_header(),
             data.items
                 .iter()
                 .map(|item| render_attachment_item(item, &return_to, data.show_mime_details))
@@ -7809,14 +7830,14 @@ fn render_attachment_item(
         escape_html(&item.attachment.original_filename)
     );
 
-    let actions = format!(
+    let download_action = format!(
         "<form method=\"post\" action=\"/attachments/{}/download/browser\" class=\"icon-form\">
           <button class=\"icon-button\" type=\"submit\" title=\"Download attachment\" aria-label=\"Download attachment\">↓</button>
-        </form>
-        {}",
+        </form>",
         escape_html(&item.attachment.attachment_key),
-        render_sender_priority_controls(&item.sender_priority, return_to),
     );
+    let (address_priority, domain_priority) =
+        render_sender_priority_select_cells(&item.sender_priority, return_to);
 
     format!(
         "<article class=\"attachment-row\">
@@ -7830,6 +7851,8 @@ fn render_attachment_item(
           <span class=\"meta truncate\" title=\"{}\">{}</span>
           <div class=\"tag-list compact\">{}</div>
           <div class=\"row-actions\">{}</div>
+          <div class=\"priority-cell\">{}</div>
+          <div class=\"priority-cell\">{}</div>
         </article>",
         selector,
         escape_html(&item.attachment.original_filename),
@@ -7851,8 +7874,25 @@ fn render_attachment_item(
         } else {
             badges.join("")
         },
-        actions,
+        download_action,
+        address_priority,
+        domain_priority,
     )
+}
+
+fn render_attachment_list_header() -> String {
+    "<div class=\"attachment-list-header\" aria-hidden=\"true\">
+      <span>Select</span>
+      <span>Attachment</span>
+      <span>Type</span>
+      <span>Date</span>
+      <span>Source</span>
+      <span>Tags</span>
+      <span>Download</span>
+      <span>Address priority</span>
+      <span>Domain priority</span>
+    </div>"
+        .to_string()
 }
 
 fn render_attachment_pagination(state: &AttachmentListViewState) -> String {
@@ -7927,30 +7967,12 @@ fn render_search(
     error: Option<&str>,
 ) -> String {
     let mut body = String::new();
-
-    if let Some(flash) = flash {
-        writeln!(
-            &mut body,
-            "<div class=\"flash\">{}</div>",
-            escape_html(&flash.replace('+', " "))
-        )
-        .ok();
-    }
-
-    if let Some(error) = error {
-        writeln!(
-            &mut body,
-            "<div class=\"error\">{}</div>",
-            escape_html(&error.replace('+', " "))
-        )
-        .ok();
-    }
+    body.push_str(&render_toasts(flash, error));
 
     body.push_str(
-        "<section class=\"hero\">
-          <p class=\"eyebrow\">Search Archive</p>
-          <h1>Query your downloaded mail with notmuch.</h1>
-          <p class=\"lede\">Search runs only across your own archive. Results stay metadata-only, but queries can match indexed message text and supported document attachments.</p>
+        "<section class=\"page-heading\">
+          <h1>Search mail</h1>
+          <span class=\"page-heading-icon\" aria-hidden=\"true\">&#9993;</span>
         </section>",
     );
 
@@ -8006,7 +8028,11 @@ fn render_search(
         let return_to = search_page_href(query, selected_account_id, state.priority_filter);
         writeln!(
             &mut body,
-            "<section class=\"mail-list\">{}</section>",
+            "<section class=\"mail-list\">
+              {}
+              {}
+            </section>",
+            render_mail_list_header(),
             results
                 .iter()
                 .map(|result| render_search_result(result, &return_to))
@@ -8103,119 +8129,78 @@ fn render_sender_priority_badge(view: &SenderPriorityView) -> String {
     )
 }
 
-fn render_sender_priority_controls(view: &SenderPriorityView, return_to: &str) -> String {
+fn render_sender_priority_select_cells(
+    view: &SenderPriorityView,
+    return_to: &str,
+) -> (String, String) {
     let Some(identity) = view.identity.as_ref() else {
-        return String::new();
+        return (String::new(), String::new());
     };
 
-    let mut controls = vec![
-        render_sender_priority_button(
+    (
+        render_sender_priority_select(
             SenderRuleKind::Address,
             &identity.address,
-            SenderPriority::High,
+            view.address_rule.unwrap_or(SenderPriority::Normal),
             return_to,
         ),
-        render_sender_priority_button(
-            SenderRuleKind::Address,
-            &identity.address,
-            SenderPriority::Low,
-            return_to,
-        ),
-        render_sender_priority_button(
+        render_sender_priority_select(
             SenderRuleKind::Domain,
             &identity.domain,
-            SenderPriority::High,
+            view.domain_rule.unwrap_or(SenderPriority::Normal),
             return_to,
         ),
-        render_sender_priority_button(
-            SenderRuleKind::Domain,
-            &identity.domain,
-            SenderPriority::Low,
-            return_to,
-        ),
-    ];
-
-    if view.address_rule.is_some() {
-        controls.push(render_sender_priority_clear_button(
-            SenderRuleKind::Address,
-            &identity.address,
-            return_to,
-        ));
-    }
-    if view.domain_rule.is_some() {
-        controls.push(render_sender_priority_clear_button(
-            SenderRuleKind::Domain,
-            &identity.domain,
-            return_to,
-        ));
-    }
-
-    format!(
-        "<div class=\"priority-actions\" aria-label=\"Sender priority actions\">{}</div>",
-        controls.join("")
     )
 }
 
-fn render_sender_priority_button(
+fn render_sender_priority_select(
     kind: SenderRuleKind,
     value: &str,
-    priority: SenderPriority,
+    selected: SenderPriority,
     return_to: &str,
 ) -> String {
-    let icon = match (kind, priority) {
-        (SenderRuleKind::Address, SenderPriority::High) => "A↑",
-        (SenderRuleKind::Address, SenderPriority::Low) => "A↓",
-        (SenderRuleKind::Domain, SenderPriority::High) => "D↑",
-        (SenderRuleKind::Domain, SenderPriority::Low) => "D↓",
-        _ => "",
+    let label = match kind {
+        SenderRuleKind::Address => "Address priority",
+        SenderRuleKind::Domain => "Domain priority",
     };
-    let title = format!(
-        "Mark {} {} as {} priority",
-        kind.label(),
-        value,
-        priority.as_stored_value()
-    );
+    let options = [
+        SenderPriority::High,
+        SenderPriority::Normal,
+        SenderPriority::Low,
+    ]
+    .into_iter()
+    .map(|priority| {
+        format!(
+            "<option value=\"{}\" {}>{}</option>",
+            priority.as_stored_value(),
+            if priority == selected { "selected" } else { "" },
+            escape_html(priority.dropdown_label())
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("");
     format!(
-        "<form method=\"post\" action=\"/sender-priorities\" class=\"icon-form\">
-          <input type=\"hidden\" name=\"sender_kind\" value=\"{}\">
-          <input type=\"hidden\" name=\"sender_value\" value=\"{}\">
-          <input type=\"hidden\" name=\"priority\" value=\"{}\">
-          <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-          <button class=\"secondary icon-button priority-button\" type=\"submit\" title=\"{}\" aria-label=\"{}\">{}</button>
-        </form>",
-        kind.as_stored_value(),
-        escape_html(value),
-        priority.as_stored_value(),
-        escape_html(return_to),
-        escape_html(&title),
-        escape_html(&title),
-        escape_html(icon),
-    )
-}
-
-fn render_sender_priority_clear_button(
-    kind: SenderRuleKind,
-    value: &str,
-    return_to: &str,
-) -> String {
-    let title = format!("Clear {} priority rule for {}", kind.label(), value);
-    format!(
-        "<form method=\"post\" action=\"/sender-priorities/clear\" class=\"icon-form\">
+        "<form method=\"post\" action=\"/sender-priorities\" class=\"priority-select-form\">
           <input type=\"hidden\" name=\"sender_kind\" value=\"{}\">
           <input type=\"hidden\" name=\"sender_value\" value=\"{}\">
           <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-          <button class=\"secondary icon-button priority-button\" type=\"submit\" title=\"{}\" aria-label=\"{}\">×</button>
+          <select name=\"priority\" aria-label=\"{} for {}\" title=\"{} for {}\" onchange=\"this.form.requestSubmit()\">{}</select>
+          <button class=\"visually-hidden\" type=\"submit\">Apply</button>
         </form>",
         kind.as_stored_value(),
         escape_html(value),
         escape_html(return_to),
-        escape_html(&title),
-        escape_html(&title),
+        escape_html(label),
+        escape_html(value),
+        escape_html(label),
+        escape_html(value),
+        options,
     )
 }
 
 fn render_search_result(result: &SearchResult, return_to: &str) -> String {
-    let actions = render_sender_priority_controls(&result.sender_priority, return_to);
+    let (address_priority, domain_priority) =
+        render_sender_priority_select_cells(&result.sender_priority, return_to);
 
     let mut tags = if result.tags.is_empty() {
         vec!["<span class=\"meta\">No tags</span>".to_string()]
@@ -8237,7 +8222,8 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
             <span class=\"meta truncate\" title=\"{}\">{}</span>
           </div>
           <div class=\"tag-list compact\">{}</div>
-          <div class=\"row-actions\">{}</div>
+          <div class=\"priority-cell\">{}</div>
+          <div class=\"priority-cell\">{}</div>
         </article>",
         escape_html(&result.date_label),
         escape_html(&result.date_label),
@@ -8251,8 +8237,21 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
             result.account_name, result.message_relpath
         )),
         tags.join(""),
-        actions
+        address_priority,
+        domain_priority,
     )
+}
+
+fn render_mail_list_header() -> String {
+    "<div class=\"mail-list-header\" aria-hidden=\"true\">
+      <span>Date</span>
+      <span>Sender</span>
+      <span>Message</span>
+      <span>Tags</span>
+      <span>Address priority</span>
+      <span>Domain priority</span>
+    </div>"
+        .to_string()
 }
 
 fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str) -> String {
@@ -9484,6 +9483,15 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_keeps_large_hero_panel() {
+        let html = render_dashboard(&sample_identity(), &[], None, None);
+
+        assert!(html.contains("class=\"hero\""));
+        assert!(html.contains("Private Mail Archive"));
+        assert!(html.contains("Mailbox sync, repair, and metadata search"));
+    }
+
+    #[test]
     fn metrics_progress_warning_is_exposed_in_status_payload() {
         let tempdir = TempDir::new().expect("tempdir");
         let config = test_config(&tempdir);
@@ -9904,6 +9912,32 @@ mod tests {
     }
 
     #[test]
+    fn sender_priority_setter_clears_rule_when_normal_is_selected() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+
+        set_sender_priority_rule(&config, "alice", "address", "vip@example.com", "high")
+            .expect("set high")
+            .expect("saved rule");
+        let alice = load_sender_priority_rules(&config, "alice").expect("alice rules");
+        assert_eq!(
+            alice.view_for_sender("VIP <vip@example.com>").priority,
+            SenderPriority::High
+        );
+
+        let cleared =
+            set_sender_priority_rule(&config, "alice", "address", "vip@example.com", "normal")
+                .expect("clear normal");
+        assert!(cleared.is_none());
+        let alice = load_sender_priority_rules(&config, "alice").expect("alice after clear");
+        assert_eq!(
+            alice.view_for_sender("VIP <vip@example.com>").priority,
+            SenderPriority::Normal
+        );
+    }
+
+    #[test]
     fn search_mail_sorts_and_filters_by_sender_priority_without_query_changes() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
@@ -10007,6 +10041,69 @@ mod tests {
     }
 
     #[test]
+    fn search_page_uses_compact_heading_and_sticky_result_header() {
+        let priority_rules = SenderPriorityRules::default();
+        let result = SearchResult {
+            account_name: "Personal Gmail".to_string(),
+            message_relpath: "Inbox/message.eml".to_string(),
+            timestamp: 0,
+            date_label: "2024-04-18 14:32 UTC".to_string(),
+            from: "Billing <billing@example.com>".to_string(),
+            subject: "Invoice ready".to_string(),
+            tags: vec!["inbox".to_string()],
+            sender_priority: priority_rules.view_for_sender("Billing <billing@example.com>"),
+        };
+        let html = render_search(
+            &sample_identity(),
+            &[],
+            "subject:invoice",
+            None,
+            &[result],
+            &SearchViewState {
+                submitted: true,
+                result_count: 1,
+                empty_message: None,
+                priority_filter: SenderPriorityFilter::All,
+            },
+            None,
+            None,
+        );
+
+        assert!(html.contains("page-heading"));
+        assert!(html.contains("Search mail"));
+        assert!(html.contains("mail-list-header"));
+        assert!(html.contains("Address priority"));
+        assert!(html.contains("Domain priority"));
+        assert!(!html.contains("Query your downloaded mail with notmuch."));
+    }
+
+    #[test]
+    fn redirect_feedback_renders_as_toasts_not_page_banners() {
+        let html = render_search(
+            &sample_identity(),
+            &[],
+            "",
+            None,
+            &[],
+            &SearchViewState {
+                submitted: false,
+                result_count: 0,
+                empty_message: None,
+                priority_filter: SenderPriorityFilter::All,
+            },
+            Some("Sender+priority+rule+cleared"),
+            Some("Sender+priority+task+failed"),
+        );
+
+        assert!(html.contains("toast-stack"));
+        assert!(html.contains("class=\"toast success\""));
+        assert!(html.contains("class=\"toast error\""));
+        assert!(html.contains("Sender priority rule cleared"));
+        assert!(html.contains("Sender priority task failed"));
+        assert!(!html.contains("class=\"flash\""));
+    }
+
+    #[test]
     fn validate_account_form_requires_secret_only_for_create() {
         let form = CreateAccountForm {
             provider_kind: "gmail".to_string(),
@@ -10084,7 +10181,13 @@ mod tests {
         assert!(html.contains("Invoice ✅"));
         assert!(html.contains("truncate"));
         assert!(html.contains("Normal priority"));
-        assert!(html.contains("aria-label=\"Mark address billing@example.com as high priority\""));
+        assert!(html.contains("Address priority"));
+        assert!(html.contains("Domain priority"));
+        assert!(html.contains("name=\"priority\""));
+        assert!(html.contains("name=\"sender_kind\" value=\"address\""));
+        assert!(html.contains("name=\"sender_kind\" value=\"domain\""));
+        assert!(html.contains("name=\"sender_value\" value=\"billing@example.com\""));
+        assert!(html.contains("name=\"sender_value\" value=\"example.com\""));
         assert!(!html.contains("Delete local archive copy"));
     }
 
@@ -10796,6 +10899,12 @@ mod tests {
             assert!(html.contains("aria-label=\"Download selected attachments\""));
             assert!(html.contains("title=\"Download attachment\""));
             assert!(html.contains("Normal priority"));
+            assert!(html.contains("page-heading"));
+            assert!(html.contains("attachment-list-header"));
+            assert!(html.contains("Address priority"));
+            assert!(html.contains("Domain priority"));
+            assert!(html.contains("name=\"priority\""));
+            assert!(!html.contains("Search and download archived mail attachments."));
             assert!(!html.contains("Delete local archive copy"));
             assert!(!html.contains("Restore on next sync"));
             assert!(!html.contains("/messages/"));

@@ -325,12 +325,22 @@ rec {
   userVideoSubdirs = map (library: library.dir) personalJellyfinLibraries;
   sharedBooksSubdirs = map (library: library.dir) sharedKavitaLibraries;
   sharedVideoSubdirs = map (library: library.dir) sharedJellyfinLibraries;
+  sharedJellyfinMusicLibraries = [
+    {
+      dir = "youtube";
+      collectionType = "music";
+      label = "YouTube Music";
+    }
+  ];
+  sharedMusicSubdirs = map (library: library.dir) sharedJellyfinMusicLibraries;
   sharedAudiobooksRoot = "${sharedRoot}/audiobooks";
   sharedBooksRoot = "${sharedRoot}/books";
   sharedEbooksRoot = "${sharedBooksRoot}/ebooks";
   sharedComicsRoot = "${sharedBooksRoot}/comics";
   sharedMangaRoot = "${sharedBooksRoot}/manga";
   sharedEmailsRoot = "${sharedRoot}/emails";
+  sharedMusicRoot = "${sharedRoot}/music";
+  sharedYouTubeMusicRoot = "${sharedMusicRoot}/youtube";
   sharedVideosRoot = "${sharedRoot}/videos";
   sharedMoviesRoot = "${sharedVideosRoot}/movies";
   sharedShowsRoot = "${sharedVideosRoot}/shows";
@@ -351,6 +361,7 @@ rec {
     "audiobooks"
     "books"
     "emails"
+    "music"
     "videos"
     "files"
   ];

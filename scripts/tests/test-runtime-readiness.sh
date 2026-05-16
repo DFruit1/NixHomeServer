@@ -216,8 +216,15 @@ cat >"$snapshot_file" <<EOF
     "postgresql": {
       "enabled": true,
       "dataDir": "/var/lib/postgresql",
-      "pgIsReadyBinary": "${runtime_bin}/pg_isready"
+      "pgIsReadyBinary": "${runtime_bin}/pg_isready",
+      "psqlBinary": "${runtime_bin}/psql"
     }
+  },
+  "immich": {
+    "enabled": true,
+    "databaseName": "immich",
+    "machineLearningUrl": "http://127.0.0.1:3003",
+    "smartSearchCoverageWarnPercent": 95
   },
   "accessChecks": {
     "bootstrapStateFile": "${bootstrap_state_file}",
@@ -313,10 +320,10 @@ while (($# > 0)); do
       headers_file="$2"
       shift 2
       ;;
-    -o|-w|--resolve)
+    -o|-w|--resolve|--max-time)
       shift 2
       ;;
-    -s|-k|-sk|-ks|-I|-L)
+    -s|-k|-sk|-ks|-I|-L|-f|-S|-fsS|-sfS)
       shift
       ;;
     *)
@@ -329,6 +336,10 @@ done
 code="200"
 location=""
 case "$url" in
+  http://127.0.0.1:3003/ping)
+    printf 'pong'
+    exit 0
+    ;;
   https://uploads.example.test/)
     code="302"
     location="https://id.example.test/ui/oauth2?client_id=oauth2-proxy"
@@ -628,6 +639,13 @@ exit 0
 EOF
 chmod +x "$runtime_bin/pg_isready"
 
+cat >"$runtime_bin/psql" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '100\t97\tt\n'
+EOF
+chmod +x "$runtime_bin/psql"
+
 find "$runtime_bin" "$tmpdir" -maxdepth 1 -type f -perm -0100 -exec sed -i "1s|.*|#!${bash_path}|" {} +
 
 manual_env=(
@@ -783,6 +801,10 @@ require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "sqlite" and .seve
   "check-runtime-readiness.sh deep mode must run sqlite quick_check probes."
 require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "postgresql" and .severity == "OK")] | length' <<<"$deep_json")" "2" \
   "check-runtime-readiness.sh deep mode must validate PostgreSQL connectivity and dump freshness."
+require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "immich" and .severity == "OK")] | length' <<<"$deep_json")" "3" \
+  "check-runtime-readiness.sh deep mode must validate Immich smart-search readiness."
+require_json_equal "$(jq -r '.deepChecks[] | select(.kind == "immich" and .name == "smart-search-coverage") | .detail' <<<"$deep_json")" "97/100 active timeline assets have smart_search rows (97%)" \
+  "check-runtime-readiness.sh deep mode must report Immich smart-search coverage."
 require_json_equal "$(jq -r '[.accessChecks.authed[] | select(.severity == "OK")] | length' <<<"$deep_json")" "1" \
   "check-runtime-readiness.sh deep mode must include authenticated access-check results."
 

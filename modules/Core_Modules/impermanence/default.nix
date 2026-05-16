@@ -11,6 +11,7 @@ let
       "/var/lib/audiobookshelf"
       "/var/lib/copyparty"
       "/var/lib/filebrowser-quantum"
+      "/var/cache/immich"
       "/var/lib/immich"
       "/var/lib/immich-public-proxy"
       "/var/lib/jellyfin"

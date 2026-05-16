@@ -32,7 +32,10 @@ in
       user = "immich";
     };
     redis.enable = true;
-    machine-learning.enable = true;
+    machine-learning = {
+      enable = true;
+      environment.MPLCONFIGDIR = "/var/cache/immich/matplotlib";
+    };
   };
 
   systemd.services.immich-server = {

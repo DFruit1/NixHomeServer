@@ -918,6 +918,109 @@ run_deep_access_checks() {
 
 }
 
+check_immich_smart_search_runtime() {
+  local immich_json immich_enabled ml_url ping_result pg_json psql_binary db_name coverage_threshold
+  local smart_sql query_result active_assets smart_rows clip_index_present coverage_percent detail
+
+  immich_json="$(runtime_health_snapshot_query '.immich // {"enabled":false}')"
+  immich_enabled="$(jq -r '.enabled // false' <<<"$immich_json")"
+  [[ "$immich_enabled" == "true" ]] || return 0
+
+  ml_url="$(jq -r '.machineLearningUrl // ""' <<<"$immich_json")"
+  if [[ -z "$ml_url" ]]; then
+    emit_text "❌ immich machine-learning URL missing from runtime snapshot"
+    append_json "$deep_file" "$(deep_result_json "immich" "machine-learning" "" "CRITICAL" "machine-learning URL missing from runtime snapshot")"
+    failed=1
+  else
+    ping_result="$(curl -fsS --max-time 5 "${ml_url%/}/ping" 2>&1 || true)"
+    if [[ "$ping_result" == "pong" ]]; then
+      emit_text "✅ immich machine-learning ping: ${ml_url%/}/ping"
+      append_json "$deep_file" "$(deep_result_json "immich" "machine-learning" "${ml_url%/}/ping" "OK" "ping returned pong")"
+    else
+      emit_text "❌ immich machine-learning ping failed: ${ml_url%/}/ping"
+      append_json "$deep_file" "$(deep_result_json "immich" "machine-learning" "${ml_url%/}/ping" "CRITICAL" "${ping_result//$'\n'/ }")"
+      failed=1
+    fi
+  fi
+
+  pg_json="$(runtime_health_snapshot_query '.databases.postgresql')"
+  psql_binary="$(jq -r '.psqlBinary // ""' <<<"$pg_json")"
+  db_name="$(jq -r '.databaseName // ""' <<<"$immich_json")"
+  coverage_threshold="$(jq -r '.smartSearchCoverageWarnPercent // 95' <<<"$immich_json")"
+
+  if [[ -z "$psql_binary" || -z "$db_name" ]]; then
+    emit_text "❌ immich smart-search database check unavailable"
+    append_json "$deep_file" "$(deep_result_json "immich" "smart-search-query" "$db_name" "CRITICAL" "psql binary or database name missing from runtime snapshot")"
+    failed=1
+    return 0
+  fi
+
+  smart_sql='
+with counts as (
+  select
+    count(*) filter (where asset."deletedAt" is null and asset.visibility = '"'"'timeline'"'"') as active_assets,
+    count(smart_search."assetId") filter (where asset."deletedAt" is null and asset.visibility = '"'"'timeline'"'"') as smart_rows
+  from asset
+  left join smart_search on asset.id = smart_search."assetId"
+),
+index_state as (
+  select exists (
+    select 1
+    from pg_class c
+    join pg_index i on i.indexrelid = c.oid
+    join pg_class t on t.oid = i.indrelid
+    where c.relname = '"'"'clip_index'"'"'
+      and t.relname = '"'"'smart_search'"'"'
+  ) as clip_index_present
+)
+select active_assets, smart_rows, clip_index_present
+from counts
+cross join index_state;
+'
+
+  if ! query_result="$(run_as_user postgres "$psql_binary" -X -A -F $'\t' -t -d "$db_name" -c "$smart_sql" 2>&1)"; then
+    emit_text "❌ immich smart-search database query failed"
+    append_json "$deep_file" "$(deep_result_json "immich" "smart-search-query" "$db_name" "CRITICAL" "${query_result//$'\n'/ }")"
+    failed=1
+    return 0
+  fi
+
+  query_result="${query_result//$'\r'/}"
+  query_result="$(head -n 1 <<<"$query_result")"
+  IFS=$'\t' read -r active_assets smart_rows clip_index_present <<<"$query_result"
+
+  if ! [[ "$active_assets" =~ ^[0-9]+$ && "$smart_rows" =~ ^[0-9]+$ ]]; then
+    emit_text "❌ immich smart-search database query returned unexpected output"
+    append_json "$deep_file" "$(deep_result_json "immich" "smart-search-query" "$db_name" "CRITICAL" "unexpected query output: ${query_result//$'\n'/ }")"
+    failed=1
+    return 0
+  fi
+
+  if (( active_assets == 0 )); then
+    emit_text "⚠️  immich smart-search coverage: no active timeline assets"
+    append_json "$deep_file" "$(deep_result_json "immich" "smart-search-coverage" "$db_name" "WARN" "no active timeline assets found")"
+  else
+    coverage_percent=$(( smart_rows * 100 / active_assets ))
+    detail="${smart_rows}/${active_assets} active timeline assets have smart_search rows (${coverage_percent}%)"
+    if (( smart_rows * 100 < active_assets * coverage_threshold )); then
+      emit_text "⚠️  immich smart-search coverage low: ${detail}"
+      append_json "$deep_file" "$(deep_result_json "immich" "smart-search-coverage" "$db_name" "WARN" "$detail")"
+    else
+      emit_text "✅ immich smart-search coverage: ${detail}"
+      append_json "$deep_file" "$(deep_result_json "immich" "smart-search-coverage" "$db_name" "OK" "$detail")"
+    fi
+  fi
+
+  if [[ "$clip_index_present" == "t" || "$clip_index_present" == "true" ]]; then
+    emit_text "✅ immich smart-search clip_index present"
+    append_json "$deep_file" "$(deep_result_json "immich" "clip-index" "$db_name" "OK" "clip_index exists on smart_search")"
+  else
+    emit_text "❌ immich smart-search clip_index missing"
+    append_json "$deep_file" "$(deep_result_json "immich" "clip-index" "$db_name" "CRITICAL" "clip_index missing on smart_search")"
+    failed=1
+  fi
+}
+
 run_deep_checks() {
   local sqlite_binary sqlite_entry db_name db_path quick_check
   local pg_json pg_enabled pg_binary pg_data_dir pg_dump_file metadata_file
@@ -973,6 +1076,8 @@ run_deep_checks() {
       failed=1
     fi
   fi
+
+  check_immich_smart_search_runtime
 
   while IFS= read -r metadata_file; do
     if [[ -f "$metadata_file" ]]; then

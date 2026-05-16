@@ -20,12 +20,16 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [
       "jellyfin.service"
+      "jellyfin-library-bootstrap-v1.service"
       "jellyfin-library-monitor-v1.service"
+      "jellyfin-storage-layout-v1.service"
       "data-pool-layout.service"
     ];
     wants = [
       "jellyfin.service"
+      "jellyfin-library-bootstrap-v1.service"
       "jellyfin-library-monitor-v1.service"
+      "jellyfin-storage-layout-v1.service"
       "data-pool-layout.service"
     ];
     path = jellyfinLibrarySyncPath;

@@ -49,6 +49,8 @@ monitorDomain = vars.monitorDomain;
 runtimeAccessCanaries = vars.runtimeAccessCanaries;
 personalKavitaLibraries = vars.personalKavitaLibraries;
 sharedBooksSubdirs = vars.sharedBooksSubdirs;
+sharedContentSubdirs = vars.sharedContentSubdirs;
+sharedMusicRoot = vars.sharedMusicRoot;
 };
 config = {
 services = {
@@ -66,6 +68,7 @@ lanAllowedTcpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowed
 lanAllowedUdpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedUDPPorts;
 nameservers = cfg.networking.nameservers;
 };
+sharedContentSubdirs = vars.sharedContentSubdirs;
 fileSystems = {
 hasDataMount = cfg.fileSystems ? "/mnt/data";
 dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
@@ -150,10 +153,21 @@ hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
 hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
 hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
+hasJellyfinLibraryBootstrap = cfg.systemd.services ? "jellyfin-library-bootstrap-v1";
 hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
+jellyfinLibraryWatchAfter = cfg.systemd.services.jellyfin-library-watch.after;
+jellyfinLibraryWatchWants = cfg.systemd.services.jellyfin-library-watch.wants;
+hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
+hasMetubeAudioImportWatch = cfg.systemd.services ? "metube-audio-import-watch";
+metubeAudioImportWatchAfter = cfg.systemd.services.metube-audio-import-watch.after;
+jellyfinPayloadRoots = [
+vars.sharedMusicRoot
+vars.sharedVideosRoot
+vars.usersRoot
+];
 hasGlancesService = cfg.systemd.services ? "glances";
 hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
 hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
@@ -390,11 +404,28 @@ assert_json_false '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL converg
 assert_json_false '.config.apps.hasKavitaLibraryWatch' "Kavita recursive watcher service must remain absent."
 assert_json_true '.config.apps.hasKiwixLibraryWatch' "Kiwix watcher service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryMonitor' "Jellyfin library monitor config service must remain present."
+assert_json_true '.config.apps.hasJellyfinLibraryBootstrap' "Jellyfin declarative library bootstrap must remain present."
 assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan service must remain present."
-assert_json_false '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain absent."
+assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain present."
+assert_json_true '.config.apps.hasMetubeAudioImport' "MeTube audio import service must remain present."
+assert_json_true '.config.apps.hasMetubeAudioImportWatch' "MeTube audio import watcher must remain present."
 assert_json_true '.config.apps.hasGlancesService' "Glances service wiring must remain present."
 assert_json_true '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Proxy wiring must remain present."
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
+
+shared_content_subdirs="$(snapshot_query '.config.sharedContentSubdirs')"
+if ! jq -e 'index("music") != null' >/dev/null <<<"$shared_content_subdirs"; then
+  echo "❌ Shared content subdirectories must include music."
+  echo "   sharedContentSubdirs: $shared_content_subdirs"
+  exit 1
+fi
+
+jellyfin_payload_roots="$(snapshot_query '.config.apps.jellyfinPayloadRoots')"
+if ! jq -e --arg root "$(snapshot_query '.vars.sharedMusicRoot' | jq -r '.')" 'index($root) != null' >/dev/null <<<"$jellyfin_payload_roots"; then
+  echo "❌ Jellyfin payload roots must include the shared music root."
+  echo "   payloadRoots: $jellyfin_payload_roots"
+  exit 1
+fi
 
 assert_json_false '.config.apps.hasCopypartyRuntimeConfigSync' "Copyparty must use the native module config renderer, not a duplicate runtime config sync service."
 copyparty_volumes="$(snapshot_query '.config.apps.copypartyVolumes')"
@@ -647,16 +678,63 @@ require_match scripts/helpers/runtime-health-common.sh 'http://127\.0\.0\.1:8222
   "Runtime health inventory must probe the Vaultwarden local upstream."
 
 jellyfin_library_sync_after="$(snapshot_query '.config.apps.jellyfinLibrarySyncAfter')"
-if ! jq -e 'index("jellyfin-library-monitor-v1.service") != null and index("data-pool-layout.service") != null' >/dev/null <<<"$jellyfin_library_sync_after"; then
-  echo "❌ Jellyfin library sync must run after the Jellyfin monitor convergence and storage layout services."
+if ! jq -e '
+  index("jellyfin-library-bootstrap-v1.service") != null and
+  index("jellyfin-library-monitor-v1.service") != null and
+  index("jellyfin-storage-layout-v1.service") != null and
+  index("data-pool-layout.service") != null
+' >/dev/null <<<"$jellyfin_library_sync_after"; then
+  echo "❌ Jellyfin library sync must run after the Jellyfin bootstrap, monitor convergence, and storage layout services."
   echo "   after: $jellyfin_library_sync_after"
   exit 1
 fi
 
 jellyfin_library_sync_wants="$(snapshot_query '.config.apps.jellyfinLibrarySyncWants')"
-if ! jq -e 'index("jellyfin-library-monitor-v1.service") != null and index("data-pool-layout.service") != null' >/dev/null <<<"$jellyfin_library_sync_wants"; then
-  echo "❌ Jellyfin library sync must want the Jellyfin monitor convergence and storage layout services."
+if ! jq -e '
+  index("jellyfin-library-bootstrap-v1.service") != null and
+  index("jellyfin-library-monitor-v1.service") != null and
+  index("jellyfin-storage-layout-v1.service") != null and
+  index("data-pool-layout.service") != null
+' >/dev/null <<<"$jellyfin_library_sync_wants"; then
+  echo "❌ Jellyfin library sync must want the Jellyfin bootstrap, monitor convergence, and storage layout services."
   echo "   wants: $jellyfin_library_sync_wants"
+  exit 1
+fi
+
+jellyfin_library_watch_after="$(snapshot_query '.config.apps.jellyfinLibraryWatchAfter')"
+if ! jq -e '
+  index("jellyfin.service") != null and
+  index("jellyfin-library-bootstrap-v1.service") != null and
+  index("jellyfin-library-monitor-v1.service") != null and
+  index("jellyfin-storage-layout-v1.service") != null and
+  index("data-pool-layout.service") != null
+' >/dev/null <<<"$jellyfin_library_watch_after"; then
+  echo "❌ Jellyfin library watcher must run after Jellyfin readiness and storage layout services."
+  echo "   after: $jellyfin_library_watch_after"
+  exit 1
+fi
+
+jellyfin_library_watch_wants="$(snapshot_query '.config.apps.jellyfinLibraryWatchWants')"
+if ! jq -e '
+  index("jellyfin.service") != null and
+  index("jellyfin-library-bootstrap-v1.service") != null and
+  index("jellyfin-library-monitor-v1.service") != null and
+  index("jellyfin-storage-layout-v1.service") != null and
+  index("data-pool-layout.service") != null
+' >/dev/null <<<"$jellyfin_library_watch_wants"; then
+  echo "❌ Jellyfin library watcher must want Jellyfin readiness and storage layout services."
+  echo "   wants: $jellyfin_library_watch_wants"
+  exit 1
+fi
+
+metube_audio_import_watch_after="$(snapshot_query '.config.apps.metubeAudioImportWatchAfter')"
+if ! jq -e '
+  index("metube-quadlet-refresh.service") != null and
+  index("jellyfin-storage-layout-v1.service") != null and
+  index("data-pool-layout.service") != null
+' >/dev/null <<<"$metube_audio_import_watch_after"; then
+  echo "❌ MeTube audio import watcher must run after MeTube refresh and storage layout services."
+  echo "   after: $metube_audio_import_watch_after"
   exit 1
 fi
 
