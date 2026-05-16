@@ -20,7 +20,7 @@ use landlock::{
     path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus, ABI,
 };
-use mailparse::{MailAddr, MailHeaderMap};
+use mailparse::{DispositionType, MailAddr, MailHeaderMap};
 use rand::{rngs::OsRng, RngCore};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{
@@ -391,6 +391,13 @@ struct AttachmentListItem {
     sender_priority: SenderPriorityView,
 }
 
+#[derive(Clone, Debug)]
+struct ExtractedAttachment {
+    path: PathBuf,
+    original_filename: String,
+    is_inline_image: bool,
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 struct AccountPaths {
@@ -605,7 +612,9 @@ struct AttachmentListParams {
     priority: Option<String>,
     extension: Option<String>,
     include_inline: Option<String>,
+    include_inline_images: Option<String>,
     show_mime_details: Option<String>,
+    download_subfolder: Option<String>,
     page: Option<String>,
     flash: Option<String>,
     error: Option<String>,
@@ -627,7 +636,9 @@ struct AttachmentDownloadForm {
     priority: Option<String>,
     extension: Option<String>,
     include_inline: Option<String>,
+    include_inline_images: Option<String>,
     show_mime_details: Option<String>,
+    download_subfolder: Option<String>,
     return_to: Option<String>,
 }
 
@@ -1058,9 +1069,22 @@ struct AttachmentPageData {
     query_text: String,
     extension_filter: String,
     include_inline: bool,
+    include_inline_images: bool,
     show_mime_details: bool,
+    download_subfolder: String,
     items: Vec<AttachmentListItem>,
     state: AttachmentListViewState,
+}
+
+struct AttachmentBaseQuery<'a> {
+    query_text: &'a str,
+    selected_account_id: Option<i64>,
+    priority_filter: SenderPriorityFilter,
+    extension_filter: &'a str,
+    include_inline: bool,
+    include_inline_images: bool,
+    show_mime_details: bool,
+    download_subfolder: &'a str,
 }
 
 #[tokio::main]
@@ -4077,7 +4101,16 @@ fn command_failure_detail(command: &str, output: &Output) -> String {
     }
 }
 
-fn extract_message_attachments(message_path: &FsPath, output_dir: &FsPath) -> Result<(), String> {
+fn extract_message_attachments(
+    message_path: &FsPath,
+    output_dir: &FsPath,
+) -> Result<Vec<ExtractedAttachment>, String> {
+    if let Ok(extracted) = extract_message_attachments_with_mailparse(message_path, output_dir) {
+        if !extracted.is_empty() {
+            return Ok(extracted);
+        }
+    }
+
     run_command(
         "ripmime",
         &[
@@ -4088,7 +4121,101 @@ fn extract_message_attachments(message_path: &FsPath, output_dir: &FsPath) -> Re
             "-q",
         ],
         &[],
-    )
+    )?;
+    collect_regular_files(output_dir)?
+        .into_iter()
+        .map(|path| {
+            let original_filename = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "attachment".to_string());
+            Ok(ExtractedAttachment {
+                is_inline_image: false,
+                path,
+                original_filename,
+            })
+        })
+        .collect()
+}
+
+fn extract_message_attachments_with_mailparse(
+    message_path: &FsPath,
+    output_dir: &FsPath,
+) -> Result<Vec<ExtractedAttachment>, String> {
+    let bytes = fs::read(message_path)
+        .map_err(|error| format!("failed to read {}: {error}", message_path.display()))?;
+    let parsed = mailparse::parse_mail(&bytes).map_err(|error| {
+        format!(
+            "failed to parse MIME message {}: {error}",
+            message_path.display()
+        )
+    })?;
+    let mut attachments = Vec::new();
+    let mut used_names = HashMap::<String, usize>::new();
+
+    for (index, part) in parsed.parts().enumerate() {
+        if !part.subparts.is_empty() {
+            continue;
+        }
+        let disposition_header = part.headers.get_first_value("Content-Disposition");
+        let disposition = part.get_content_disposition();
+        let content_id = part.headers.get_first_value("Content-ID");
+        let filename = disposition
+            .params
+            .get("filename")
+            .or_else(|| part.ctype.params.get("name"))
+            .cloned();
+        let is_attachment = matches!(disposition.disposition, DispositionType::Attachment);
+        let is_inline_image = part.ctype.mimetype.starts_with("image/")
+            && matches!(disposition.disposition, DispositionType::Inline)
+            && (disposition_header.is_some() || content_id.is_some());
+        if !is_attachment && filename.is_none() && !is_inline_image {
+            continue;
+        }
+
+        let fallback = if is_inline_image {
+            inline_image_fallback_name(index, &part.ctype.mimetype)
+        } else {
+            format!("attachment-{index}")
+        };
+        let original_filename = filename
+            .map(|value| filename_component(&value, &fallback))
+            .unwrap_or(fallback);
+        let file_name = unique_zip_entry_name(
+            filename_component(&original_filename, "attachment"),
+            &mut used_names,
+        );
+        let output_path = output_dir.join(file_name);
+        let body = part.get_body_raw().map_err(|error| {
+            format!(
+                "failed to decode MIME attachment {} from {}: {error}",
+                original_filename,
+                message_path.display()
+            )
+        })?;
+        write_private_file(&output_path, &body)?;
+        attachments.push(ExtractedAttachment {
+            path: output_path,
+            original_filename,
+            is_inline_image,
+        });
+    }
+
+    Ok(attachments)
+}
+
+fn inline_image_fallback_name(index: usize, mime_type: &str) -> String {
+    let extension = match mime_type {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/tiff" => "tiff",
+        "image/bmp" => "bmp",
+        _ => "img",
+    };
+    format!("inline-image-{index}.{extension}")
 }
 
 fn collect_regular_files(root: &FsPath) -> Result<Vec<PathBuf>, String> {
@@ -4319,13 +4446,20 @@ fn looks_like_inline_artifact(filename: &str, mime_type: &str, size_bytes: u64) 
         || filename.eq_ignore_ascii_case("smime.p7s")
 }
 
-fn attachment_is_hidden_artifact(attachment: &AttachmentRecord) -> bool {
-    attachment.is_inline_artifact
-        || looks_like_inline_artifact(
-            &attachment.original_filename,
-            &attachment.mime_type,
-            u64::try_from(attachment.size_bytes.max(0)).unwrap_or_default(),
-        )
+fn attachment_is_body_artifact(attachment: &AttachmentRecord) -> bool {
+    looks_like_extracted_body_part(&attachment.original_filename)
+        || attachment
+            .original_filename
+            .eq_ignore_ascii_case("winmail.dat")
+        || attachment
+            .original_filename
+            .eq_ignore_ascii_case("smime.p7s")
+}
+
+fn attachment_is_inline_image(attachment: &AttachmentRecord) -> bool {
+    attachment.mime_type.starts_with("image/")
+        && (attachment.is_inline_artifact
+            || u64::try_from(attachment.size_bytes.max(0)).unwrap_or_default() <= 1024)
 }
 
 fn looks_like_extracted_body_part(filename: &str) -> bool {
@@ -4343,22 +4477,110 @@ fn sync_directory(path: &FsPath) -> Result<(), String> {
 }
 
 fn safe_filename(raw: &str) -> String {
+    filename_component(raw, "attachment")
+}
+
+fn filename_component(raw: &str, fallback: &str) -> String {
     let sanitized = raw
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+            if character == '\0' || character == '/' || character == '\\' || character.is_control()
+            {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|character| matches!(character, '.' | ' '))
+        .to_string();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        fallback.to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn ascii_download_fallback(raw: &str, fallback: &str) -> String {
+    let sanitized = raw
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | ' ') {
                 character
             } else {
                 '_'
             }
         })
         .collect::<String>()
-        .trim_matches('_')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|character| matches!(character, '.' | '_' | ' '))
         .to_string();
     if sanitized.is_empty() {
-        "attachment".to_string()
+        fallback.to_string()
     } else {
         sanitized
+    }
+}
+
+fn rfc5987_encode(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'!'
+            | b'#'
+            | b'$'
+            | b'&'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'^'
+            | b'_'
+            | b'`'
+            | b'|'
+            | b'~' => vec![byte as char],
+            _ => format!("%{byte:02X}").chars().collect::<Vec<_>>(),
+        })
+        .collect()
+}
+
+fn content_disposition_attachment(filename: &str) -> String {
+    let safe = filename_component(filename, "download");
+    let fallback = ascii_download_fallback(&safe, "download").replace('"', "_");
+    format!(
+        "attachment; filename=\"{}\"; filename*=UTF-8''{}",
+        fallback,
+        rfc5987_encode(&safe)
+    )
+}
+
+fn normalize_download_subfolder(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let mut components = Vec::new();
+    for component in trimmed.split(['/', '\\']) {
+        let component = filename_component(component, "");
+        if component.is_empty() {
+            continue;
+        }
+        if component == "." || component == ".." {
+            return Err("Download subfolder cannot contain . or .. path components.".to_string());
+        }
+        components.push(component);
+    }
+    if components.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(components.join("/"))
     }
 }
 
@@ -4566,36 +4788,31 @@ fn scan_message_attachments_for_catalog(
     source_message_sha256: &str,
 ) -> Result<(TempExtractionDir, Vec<(AttachmentRecord, PathBuf)>), String> {
     let extraction_dir = create_runtime_extraction_dir(config, account_id)?;
-    extract_message_attachments(message_path, &extraction_dir.path)?;
-    let extracted_files = collect_regular_files(&extraction_dir.path)?;
+    let extracted_files = extract_message_attachments(message_path, &extraction_dir.path)?;
     let now = Utc::now().to_rfc3339();
     let mut attachments = Vec::new();
 
-    for (index, extracted_file) in extracted_files.into_iter().enumerate() {
-        let metadata = fs::metadata(&extracted_file).map_err(|error| {
+    for (index, extracted) in extracted_files.into_iter().enumerate() {
+        let metadata = fs::metadata(&extracted.path).map_err(|error| {
             format!(
                 "failed to inspect extracted attachment {}: {error}",
-                extracted_file.display()
+                extracted.path.display()
             )
         })?;
-        let original_filename = extracted_file
-            .file_name()
-            .and_then(|value| value.to_str())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "attachment".to_string());
+        let original_filename = extracted.original_filename;
         let safe_name = safe_filename(&original_filename);
         let extension = attachment_extension(&original_filename);
-        let mime_type = detect_attachment_mime_type(&extracted_file)
+        let mime_type = detect_attachment_mime_type(&extracted.path)
             .unwrap_or_else(|_| "application/octet-stream".to_string());
         let size_bytes = i64::try_from(metadata.len()).map_err(|_| {
             format!(
                 "attachment {} is too large to catalog",
-                extracted_file.display()
+                extracted.path.display()
             )
         })?;
-        let attachment_sha256 = sha256_file(&extracted_file)?;
+        let attachment_sha256 = sha256_file(&extracted.path)?;
         let blob_relpath =
-            persist_attachment_blob(account_paths, &extracted_file, &attachment_sha256)?;
+            persist_attachment_blob(account_paths, &extracted.path, &attachment_sha256)?;
         let attachment_record = AttachmentRecord {
             attachment_key: attachment_key(
                 account_id,
@@ -4613,11 +4830,8 @@ fn scan_message_attachments_for_catalog(
             extension,
             mime_type: mime_type.clone(),
             size_bytes,
-            is_inline_artifact: looks_like_inline_artifact(
-                &original_filename,
-                &mime_type,
-                metadata.len(),
-            ),
+            is_inline_artifact: extracted.is_inline_image
+                || looks_like_inline_artifact(&original_filename, &mime_type, metadata.len()),
             blob_relpath: Some(blob_relpath),
             source_message_sha256: Some(source_message_sha256.to_string()),
             last_verified_at: Some(now.clone()),
@@ -4625,7 +4839,7 @@ fn scan_message_attachments_for_catalog(
             updated_at: now.clone(),
             last_seen_at: now.clone(),
         };
-        attachments.push((attachment_record, extracted_file));
+        attachments.push((attachment_record, extracted.path));
     }
 
     Ok((extraction_dir, attachments))
@@ -4973,32 +5187,37 @@ fn parse_page_number(raw: Option<&str>) -> usize {
         .unwrap_or(1)
 }
 
-fn build_attachment_base_query(
-    query_text: &str,
-    selected_account_id: Option<i64>,
-    priority_filter: SenderPriorityFilter,
-    extension_filter: &str,
-    include_inline: bool,
-    show_mime_details: bool,
-) -> String {
+fn build_attachment_base_query(state: AttachmentBaseQuery<'_>) -> String {
     let mut pairs = Vec::new();
-    if !query_text.trim().is_empty() {
-        pairs.push(("q", query_text.trim().to_string()));
+    if !state.query_text.trim().is_empty() {
+        pairs.push(("q", state.query_text.trim().to_string()));
     }
-    if let Some(account_id) = selected_account_id {
+    if let Some(account_id) = state.selected_account_id {
         pairs.push(("account_id", account_id.to_string()));
     }
-    if priority_filter != SenderPriorityFilter::All {
-        pairs.push(("priority", priority_filter.as_query_value().to_string()));
+    if state.priority_filter != SenderPriorityFilter::All {
+        pairs.push((
+            "priority",
+            state.priority_filter.as_query_value().to_string(),
+        ));
     }
-    if !extension_filter.trim().is_empty() {
-        pairs.push(("extension", extension_filter.trim().to_string()));
+    if !state.extension_filter.trim().is_empty() {
+        pairs.push(("extension", state.extension_filter.trim().to_string()));
     }
-    if include_inline {
+    if state.include_inline {
         pairs.push(("include_inline", "1".to_string()));
     }
-    if show_mime_details {
+    if state.include_inline_images {
+        pairs.push(("include_inline_images", "1".to_string()));
+    }
+    if state.show_mime_details {
         pairs.push(("show_mime_details", "1".to_string()));
+    }
+    if !state.download_subfolder.trim().is_empty() {
+        pairs.push((
+            "download_subfolder",
+            state.download_subfolder.trim().to_string(),
+        ));
     }
     pairs
         .into_iter()
@@ -5028,12 +5247,23 @@ fn load_attachment_page_data(
             "1" | "true" | "yes" | "on"
         )
     });
+    let include_inline_images = params
+        .include_inline_images
+        .as_deref()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
     let show_mime_details = params.show_mime_details.as_deref().is_some_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         )
     });
+    let download_subfolder =
+        normalize_download_subfolder(params.download_subfolder.as_deref().unwrap_or_default())?;
     let page = parse_page_number(params.page.as_deref());
     let connection = open_db(config)?;
     let priority_rules = load_sender_priority_rules(config, username)?;
@@ -5073,7 +5303,10 @@ fn load_attachment_page_data(
             if !extension_filter.is_empty() && attachment.extension != extension_filter {
                 continue;
             }
-            if !include_inline && attachment_is_hidden_artifact(&attachment) {
+            if !include_inline && attachment_is_body_artifact(&attachment) {
+                continue;
+            }
+            if !include_inline_images && attachment_is_inline_image(&attachment) {
                 continue;
             }
 
@@ -5113,14 +5346,16 @@ fn load_attachment_page_data(
     } else {
         items[start..end].to_vec()
     };
-    let base_query = build_attachment_base_query(
-        &query_text,
+    let base_query = build_attachment_base_query(AttachmentBaseQuery {
+        query_text: &query_text,
         selected_account_id,
         priority_filter,
-        &extension_filter,
+        extension_filter: &extension_filter,
         include_inline,
+        include_inline_images,
         show_mime_details,
-    );
+        download_subfolder: &download_subfolder,
+    });
     let empty_message =
         if selected_account_id.is_some() && page_items.is_empty() && total_count == 0 {
             Some("No attachments matched this mailbox filter.".to_string())
@@ -5136,7 +5371,9 @@ fn load_attachment_page_data(
         query_text,
         extension_filter,
         include_inline,
+        include_inline_images,
         show_mime_details,
+        download_subfolder,
         items: page_items,
         state: AttachmentListViewState {
             priority_filter,
@@ -5168,7 +5405,9 @@ fn download_attachment_keys_for_form(
                 priority: form.priority.clone(),
                 extension: form.extension.clone(),
                 include_inline: form.include_inline.clone(),
+                include_inline_images: form.include_inline_images.clone(),
                 show_mime_details: form.show_mime_details.clone(),
+                download_subfolder: form.download_subfolder.clone(),
                 page: Some(page.to_string()),
                 flash: None,
                 error: None,
@@ -5219,6 +5458,8 @@ fn build_attachments_zip(
 ) -> Result<TempZipFile, String> {
     cleanup_old_runtime_exports(config)?;
     let keys = download_attachment_keys_for_form(config, username, form)?;
+    let download_subfolder =
+        normalize_download_subfolder(form.download_subfolder.as_deref().unwrap_or_default())?;
     let mut records = Vec::new();
     let mut total_size = 0_u64;
 
@@ -5258,7 +5499,7 @@ fn build_attachments_zip(
         let (_dir, attachment_path) =
             resolve_attachment_payload(config, &account, &message, &attachment)?;
         let entry_name = unique_zip_entry_name(
-            zip_entry_name(&account, &message, &attachment),
+            zip_entry_name(&account, &message, &attachment, &download_subfolder),
             &mut used_names,
         );
         zip.start_file(entry_name.clone(), options)
@@ -5315,19 +5556,25 @@ fn zip_entry_name(
     account: &AccountRecord,
     message: &AttachmentMessageRecord,
     attachment: &AttachmentRecord,
+    download_subfolder: &str,
 ) -> String {
     let date = DateTime::<Utc>::from_timestamp(message.timestamp, 0)
         .map(|value| value.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "unknown-date".to_string());
-    let account_slug = slugify_component(&account.display_name, "mailbox");
-    let subject_slug = slugify_component(&message.subject, "message");
-    format!(
+    let account_name = filename_component(&account.display_name, "mailbox");
+    let subject_name = filename_component(&message.subject, "message");
+    let entry = format!(
         "{}/{} - {}/{}",
-        account_slug,
+        account_name,
         date,
-        subject_slug,
-        safe_filename(&attachment.original_filename)
-    )
+        subject_name,
+        filename_component(&attachment.original_filename, "attachment")
+    );
+    if download_subfolder.trim().is_empty() {
+        entry
+    } else {
+        format!("{download_subfolder}/{entry}")
+    }
 }
 
 fn unique_zip_entry_name(base: String, used_names: &mut HashMap<String, usize>) -> String {
@@ -6056,10 +6303,11 @@ fn visible_message_subject(subject: &str) -> String {
     let sanitized = subject
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, ' ' | '.' | '_' | '-') {
-                character
-            } else {
+            if character == '\0' || character == '/' || character == '\\' || character.is_control()
+            {
                 ' '
+            } else {
+                character
             }
         })
         .collect::<String>()
@@ -6636,7 +6884,8 @@ fn scan_maildir_inventory_inner(
             )?;
         } else if count_files_here && file_type.is_file() {
             *archive_file_count += 1;
-            message_keys.insert(maildir_message_key(&entry.path())?);
+            let metadata = read_message_metadata(&entry.path())?;
+            message_keys.insert(message_key_from_metadata(&metadata)?);
         }
     }
 
@@ -6691,11 +6940,6 @@ fn message_key_from_metadata(metadata: &MessageMetadata) -> Result<String, Strin
                 .map(|value| format!("sha256:{value}"))
         })
         .ok_or_else(|| "message metadata must provide an identity key".to_string())
-}
-
-fn maildir_message_key(message_path: &FsPath) -> Result<String, String> {
-    let metadata = read_message_metadata(message_path)?;
-    message_key_from_metadata(&metadata)
 }
 
 fn progress_counts(
@@ -7361,8 +7605,14 @@ fn render_attachments_page(
               <label class=\"checkbox-field\">Body parts
                 <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
               </label>
+              <label class=\"checkbox-field\">Inline images
+                <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
+              </label>
               <label class=\"checkbox-field\">MIME detail
                 <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
+              </label>
+              <label>ZIP subfolder
+                <input name=\"download_subfolder\" value=\"{}\" placeholder=\"invoices/2026\">
               </label>
             </div>
             <div class=\"action-row\">
@@ -7390,7 +7640,13 @@ fn render_attachments_page(
         render_sender_priority_filter_options(data.state.priority_filter),
         escape_html(&data.extension_filter),
         if data.include_inline { "checked" } else { "" },
+        if data.include_inline_images {
+            "checked"
+        } else {
+            ""
+        },
         if data.show_mime_details { "checked" } else { "" },
+        escape_html(&data.download_subfolder),
         filter_hiddens,
         if show_download_all {
             "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
@@ -7480,8 +7736,18 @@ fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) 
     if data.include_inline {
         fields.push("<input type=\"hidden\" name=\"include_inline\" value=\"1\">".to_string());
     }
+    if data.include_inline_images {
+        fields
+            .push("<input type=\"hidden\" name=\"include_inline_images\" value=\"1\">".to_string());
+    }
     if data.show_mime_details {
         fields.push("<input type=\"hidden\" name=\"show_mime_details\" value=\"1\">".to_string());
+    }
+    if !data.download_subfolder.trim().is_empty() {
+        fields.push(format!(
+            "<input type=\"hidden\" name=\"download_subfolder\" value=\"{}\">",
+            escape_html(&data.download_subfolder)
+        ));
     }
     fields.join("")
 }
@@ -7530,8 +7796,10 @@ fn render_attachment_item(
         date_label
     };
     let mut badges = Vec::new();
-    if attachment_is_hidden_artifact(&item.attachment) {
-        badges.push("<span class=\"tag\">Body/inline</span>".to_string());
+    if attachment_is_body_artifact(&item.attachment) {
+        badges.push("<span class=\"tag\">Body part</span>".to_string());
+    } else if attachment_is_inline_image(&item.attachment) {
+        badges.push("<span class=\"tag\">Inline image</span>".to_string());
     }
     badges.push(render_sender_priority_badge(&item.sender_priority));
 
@@ -7840,31 +8108,32 @@ fn render_sender_priority_controls(view: &SenderPriorityView, return_to: &str) -
         return String::new();
     };
 
-    let mut controls = Vec::new();
-    controls.push(render_sender_priority_button(
-        SenderRuleKind::Address,
-        &identity.address,
-        SenderPriority::High,
-        return_to,
-    ));
-    controls.push(render_sender_priority_button(
-        SenderRuleKind::Address,
-        &identity.address,
-        SenderPriority::Low,
-        return_to,
-    ));
-    controls.push(render_sender_priority_button(
-        SenderRuleKind::Domain,
-        &identity.domain,
-        SenderPriority::High,
-        return_to,
-    ));
-    controls.push(render_sender_priority_button(
-        SenderRuleKind::Domain,
-        &identity.domain,
-        SenderPriority::Low,
-        return_to,
-    ));
+    let mut controls = vec![
+        render_sender_priority_button(
+            SenderRuleKind::Address,
+            &identity.address,
+            SenderPriority::High,
+            return_to,
+        ),
+        render_sender_priority_button(
+            SenderRuleKind::Address,
+            &identity.address,
+            SenderPriority::Low,
+            return_to,
+        ),
+        render_sender_priority_button(
+            SenderRuleKind::Domain,
+            &identity.domain,
+            SenderPriority::High,
+            return_to,
+        ),
+        render_sender_priority_button(
+            SenderRuleKind::Domain,
+            &identity.domain,
+            SenderPriority::Low,
+            return_to,
+        ),
+    ];
 
     if view.address_rule.is_some() {
         controls.push(render_sender_priority_clear_button(
@@ -8201,10 +8470,7 @@ fn attachment_download_response(filename: &str, mime_type: &str, bytes: Vec<u8>)
             HeaderValue::from_static("application/octet-stream"),
         );
     }
-    if let Ok(value) = HeaderValue::from_str(&format!(
-        "attachment; filename=\"{}\"",
-        safe_filename(filename)
-    )) {
+    if let Ok(value) = HeaderValue::from_str(&content_disposition_attachment(filename)) {
         response.headers_mut().insert(CONTENT_DISPOSITION, value);
     }
     harden_response(response)
@@ -8240,10 +8506,7 @@ async fn zip_download_file_response(zip_file: TempZipFile) -> Response {
     if let Ok(value) = HeaderValue::from_str(&metadata.len().to_string()) {
         response.headers_mut().insert("Content-Length", value);
     }
-    if let Ok(value) = HeaderValue::from_str(&format!(
-        "attachment; filename=\"{}\"",
-        safe_filename(&zip_file.filename)
-    )) {
+    if let Ok(value) = HeaderValue::from_str(&content_disposition_attachment(&zip_file.filename)) {
         response.headers_mut().insert(CONTENT_DISPOSITION, value);
     }
     harden_response(response)
@@ -8649,7 +8912,9 @@ mod tests {
                 priority: None,
                 extension: None,
                 include_inline: None,
+                include_inline_images: None,
                 show_mime_details: None,
+                download_subfolder: None,
                 page: None,
                 flash: None,
                 error: None,
@@ -10130,7 +10395,9 @@ mod tests {
                     priority: Some("low".to_string()),
                     extension: None,
                     include_inline: None,
+                    include_inline_images: None,
                     show_mime_details: None,
+                    download_subfolder: None,
                     page: None,
                     flash: None,
                     error: None,
@@ -10155,7 +10422,9 @@ mod tests {
                     priority: Some("low".to_string()),
                     extension: None,
                     include_inline: None,
+                    include_inline_images: None,
                     show_mime_details: None,
+                    download_subfolder: None,
                     return_to: None,
                 },
             )
@@ -10195,7 +10464,9 @@ mod tests {
                     priority: None,
                     extension: None,
                     include_inline: None,
+                    include_inline_images: None,
                     show_mime_details: None,
+                    download_subfolder: None,
                     page: None,
                     flash: None,
                     error: None,
@@ -10214,7 +10485,9 @@ mod tests {
                     priority: None,
                     extension: None,
                     include_inline: Some("1".to_string()),
+                    include_inline_images: None,
                     show_mime_details: None,
+                    download_subfolder: None,
                     page: None,
                     flash: None,
                     error: None,
@@ -10226,6 +10499,91 @@ mod tests {
                 .items
                 .iter()
                 .all(|item| item.attachment.is_inline_artifact));
+        });
+    }
+
+    #[test]
+    fn inline_images_are_excluded_by_default_and_can_be_included() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                concat!(
+                    "Message-ID: <inline-image@example.com>\n",
+                    "Subject: Inline image\n",
+                    "Date: Fri, 01 May 2026 09:00:00 +0000\n",
+                    "MIME-Version: 1.0\n",
+                    "Content-Type: multipart/related; boundary=\"b\"\n",
+                    "\n",
+                    "--b\n",
+                    "Content-Type: text/html; charset=utf-8\n\n",
+                    "<img src=\"cid:logo\">\n",
+                    "--b\n",
+                    "Content-Type: image/png; name=\"logo ✅.png\"\n",
+                    "Content-Disposition: inline; filename=\"logo ✅.png\"\n",
+                    "Content-ID: <logo>\n",
+                    "\n",
+                    "inline image bytes\n",
+                    "--b--\n",
+                ),
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+            assert_eq!(count_attachment_catalog_rows(&config), 1);
+
+            let default_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    priority: None,
+                    extension: None,
+                    include_inline: None,
+                    include_inline_images: None,
+                    show_mime_details: None,
+                    download_subfolder: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("default page");
+            assert!(default_page.items.is_empty());
+
+            let included_page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    q: None,
+                    account_id: None,
+                    priority: None,
+                    extension: None,
+                    include_inline: None,
+                    include_inline_images: Some("1".to_string()),
+                    show_mime_details: None,
+                    download_subfolder: None,
+                    page: None,
+                    flash: None,
+                    error: None,
+                },
+            )
+            .expect("included page");
+            assert_eq!(included_page.items.len(), 1);
+            assert_eq!(
+                included_page.items[0].attachment.original_filename,
+                "logo ✅.png"
+            );
+            assert!(attachment_is_inline_image(
+                &included_page.items[0].attachment
+            ));
         });
     }
 
@@ -10420,7 +10778,9 @@ mod tests {
                     priority: None,
                     extension: None,
                     include_inline: None,
+                    include_inline_images: None,
                     show_mime_details: None,
+                    download_subfolder: None,
                     page: None,
                     flash: None,
                     error: None,
@@ -10471,7 +10831,9 @@ mod tests {
                     priority: None,
                     extension: None,
                     include_inline: None,
+                    include_inline_images: None,
                     show_mime_details: None,
+                    download_subfolder: None,
                     return_to: None,
                 },
             )
@@ -10481,9 +10843,91 @@ mod tests {
             let mut archive = zip::ZipArchive::new(file).expect("archive");
             assert_eq!(archive.len(), 2);
             let entry = archive.by_index(0).expect("entry");
-            assert_eq!(entry.name(), "personal-gmail/2024-04-18 - zip/invoice.pdf");
+            assert_eq!(
+                entry.name(),
+                "Personal Gmail/2024-04-18 - Zip ✅/invoice.pdf"
+            );
             drop(entry);
             assert!(archive.by_name("manifest.json").is_ok());
+        });
+    }
+
+    #[test]
+    fn attachment_downloads_preserve_unicode_filenames_and_zip_subfolder() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                concat!(
+                    "Message-ID: <unicode-attachment@example.com>\n",
+                    "Subject: Résumé ✅ files\n",
+                    "Date: Thu, 18 Apr 2024 14:32:00 +0000\n",
+                    "MIME-Version: 1.0\n",
+                    "Content-Type: multipart/mixed; boundary=\"b\"\n",
+                    "\n",
+                    "--b\n",
+                    "Content-Type: text/plain; charset=utf-8\n\n",
+                    "body\n",
+                    "--b\n",
+                    "Content-Type: application/pdf; name=\"Résumé ✅.pdf\"\n",
+                    "Content-Disposition: attachment; filename=\"Résumé ✅.pdf\"\n",
+                    "\n",
+                    "pdf bytes\n",
+                    "--b--\n",
+                ),
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+            let item = first_attachment_item(&config, "alice");
+            assert_eq!(item.attachment.original_filename, "Résumé ✅.pdf");
+
+            let response = attachment_download_response(
+                &item.attachment.original_filename,
+                &item.attachment.mime_type,
+                Vec::new(),
+            );
+            let disposition = response
+                .headers()
+                .get(CONTENT_DISPOSITION)
+                .expect("content disposition")
+                .to_str()
+                .expect("ascii header");
+            assert!(disposition.contains("filename=\""));
+            assert!(disposition.contains("filename*=UTF-8''R%C3%A9sum%C3%A9%20%E2%9C%85.pdf"));
+
+            let zip_file = build_attachments_zip(
+                &config,
+                "alice",
+                &AttachmentDownloadForm {
+                    attachment_keys: vec![item.attachment.attachment_key],
+                    selection_scope: None,
+                    q: None,
+                    account_id: None,
+                    priority: None,
+                    extension: None,
+                    include_inline: None,
+                    include_inline_images: None,
+                    show_mime_details: None,
+                    download_subfolder: Some("Downloaded/Invoices ✅".to_string()),
+                    return_to: None,
+                },
+            )
+            .expect("zip");
+
+            let file = fs::File::open(&zip_file.path).expect("zip file");
+            let mut archive = zip::ZipArchive::new(file).expect("archive");
+            let entry = archive.by_index(0).expect("entry");
+            assert_eq!(
+                entry.name(),
+                "Downloaded/Invoices ✅/Personal Gmail/2024-04-18 - Résumé ✅ files/Résumé ✅.pdf"
+            );
         });
     }
 

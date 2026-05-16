@@ -242,6 +242,8 @@ rec {
   powerManagement = power;
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
+  uploadsOauth2ProxyCookieExpire = "720h0m0s"; # Copyparty OAuth2 Proxy browser session lifetime.
+  filebrowserTokenExpirationHours = 720; # FileBrowser Quantum web UI token lifetime in hours.
 
   mainDisk = storage.systemDisk;
   zfsDataPool = storage.dataPool;

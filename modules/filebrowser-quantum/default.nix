@@ -78,6 +78,7 @@ let
     };
     auth = {
       key = "@JWT_KEY@";
+      tokenExpirationHours = vars.filebrowserTokenExpirationHours;
       adminUsername = localAdminUsername;
       adminPassword = "@ADMIN_PASSWORD@";
       methods = {

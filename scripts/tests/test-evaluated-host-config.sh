@@ -368,8 +368,10 @@ require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGro
 assert_json_true '.config.apps.hasOauth2ProxyService' "OAuth2 Proxy service wiring must remain present."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--upstream-timeout='30m0s'" \
   "Uploads OAuth2 Proxy must allow long Copyparty upload handshakes and chunk posts."
-require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--cookie-expire='336h0m0s'" \
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--cookie-expire='720h0m0s'" \
   "Uploads OAuth2 Proxy must keep browser upload sessions valid beyond multi-day transfer estimates."
+require_match modules/filebrowser-quantum/default.nix 'tokenExpirationHours = vars\.filebrowserTokenExpirationHours' \
+  "FileBrowser Quantum must keep its web UI session lifetime declarative for long uploads."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--session-cookie-minimal=true" \
   "Uploads OAuth2 Proxy should keep repeated upload request cookies lean."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecStart' | jq -r '.')") "--skip-auth-preflight=true" \

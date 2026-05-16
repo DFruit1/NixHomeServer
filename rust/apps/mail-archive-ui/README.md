@@ -51,8 +51,9 @@ Attachment download model:
 - `/attachments` searches the indexed attachment catalog and supports per-row selection, page-visible selection, and server-side download of all matching filters
 - selected attachments are downloaded as a browser ZIP streamed from runtime storage; no attachment action state is recorded
 - ZIPs include `manifest.json` with source mailbox, message, filename, MIME type, size, and SHA-256 metadata for every file
-- ZIP files are organized as `<mailbox>/<yyyy-mm-dd> - <subject>/<filename>`, with duplicate filenames written as `file (1).ext`
-- body fragments extracted by `ripmime` as `textfile0`, `textfile1`, and similar inline artifacts are hidden by default and can be included with the page filter
+- ZIP files are organized as `<optional-subfolder>/<mailbox>/<yyyy-mm-dd> - <subject>/<filename>`, with duplicate filenames written as `file (1).ext`
+- original attachment filenames, including Unicode and emoji names, are preserved for browser downloads and ZIP entries except for path separators/control characters
+- inline images and body fragments extracted as `textfile0`, `textfile1`, and similar artifacts are hidden by default and can be included with page filters
 - attachment rows show a simple file type and message date by default; full MIME detail is optional
 - downstream document filing is manual and happens outside this app
 

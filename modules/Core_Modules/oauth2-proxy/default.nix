@@ -28,7 +28,7 @@ in
       };
     } // {
     keyFile = oauth2ProxyKeyFilePath;
-    cookie.expire = "336h0m0s";
+    cookie.expire = vars.uploadsOauth2ProxyCookieExpire;
   };
 
   systemd.services.oauth2-proxy-secret-materialize = {
