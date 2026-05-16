@@ -141,6 +141,7 @@ in
       "kavita-media"
       "jellyfin-media"
       "kiwix"
+      "upload-review"
     ];
   };
 

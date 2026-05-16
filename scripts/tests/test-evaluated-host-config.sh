@@ -370,6 +370,9 @@ require_match modules/filebrowser-quantum/default.nix 'name = "Quarantine"' \
   "FileBrowser Quantum must define a Quarantine source."
 require_match modules/filebrowser-quantum/default.nix 'ensure_allow_group "Quarantine" "/" "app-admin"' \
   "Quarantine source must be scoped to app-admin."
+filebrowser_quantum_extra_groups="$(snapshot_query '.config.apps.filebrowserQuantumExtraGroups')"
+require_match <(printf '%s\n' "$filebrowser_quantum_extra_groups") 'upload-review' \
+  "FileBrowser Quantum must have filesystem access to the quarantine review root."
 forbid_match configuration.nix './modules/mail-archive-paperless' \
   "Mail Archive UI must not import the retired Paperless handoff module."
 

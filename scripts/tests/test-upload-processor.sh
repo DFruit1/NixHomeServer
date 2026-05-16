@@ -218,4 +218,32 @@ bash scripts/helpers/upload-processor.sh file "$root/staging/alice/../../outside
 assert_exists "$root/outside/escape.exe"
 assert_missing "$root/users/alice/files/escape.exe"
 
+root="$tmpdir/internal_hist"
+mkdir -p "$root/staging/alice/.hist" "$root/users/alice/files" "$root/quarantine" "$root/kiwix" "$root/run/queue" "$root/state"
+printf 'copyparty-state' >"$root/staging/alice/.hist/up2k.db"
+printf 'vt-key' >"$root/vt.key"
+: >"$root/vt.calls"
+: >"$root/systemctl.calls"
+PATH="$stub_bin:$PATH" \
+UPLOAD_STAGING_ROOT="$root/staging" \
+UPLOAD_USERS_ROOT="$root/users" \
+UPLOAD_QUARANTINE_ROOT="$root/quarantine" \
+UPLOAD_KIWIX_LIBRARY_ROOT="$root/kiwix" \
+UPLOAD_PROCESSOR_QUEUE_DIR="$root/run/queue" \
+UPLOAD_PROCESSOR_STATE_DB="$root/state/state.sqlite" \
+UPLOAD_VIRUSTOTAL_API_KEY_FILE="$root/vt.key" \
+UPLOAD_SCAN_SETTLE_SECONDS=0 \
+UPLOAD_QUARANTINE_OWNER="$(id -un)" \
+UPLOAD_QUARANTINE_GROUP="$(id -gn)" \
+UPLOAD_FINAL_OWNER="$(id -un)" \
+UPLOAD_FINAL_GROUP="$(id -gn)" \
+UPLOAD_KIWIX_OWNER="$(id -un)" \
+UPLOAD_KIWIX_GROUP="$(id -gn)" \
+STUB_VT_CALLS="$root/vt.calls" \
+STUB_SYSTEMCTL_CALLS="$root/systemctl.calls" \
+bash scripts/helpers/upload-processor.sh file "$root/staging/alice/.hist/up2k.db" alice "/alice/.hist/up2k.db"
+assert_exists "$root/staging/alice/.hist/up2k.db"
+assert_missing "$root/quarantine/vt-unknown-manual-review/alice"
+[[ ! -s "$root/vt.calls" ]] || { echo "❌ Internal Copyparty state must not call VirusTotal."; exit 1; }
+
 echo "✅ Upload processor tests passed."

@@ -94,6 +94,11 @@ is_under_root() {
   [[ "$path" == "$root"/* ]]
 }
 
+is_internal_staging_path() {
+  local rel="$1"
+  [[ "$rel" == .hist/* || "$rel" == */.hist/* ]]
+}
+
 safe_component() {
   local value="$1"
   value="${value//[^A-Za-z0-9._-]/_}"
@@ -325,6 +330,9 @@ process_file() {
     return 0
   fi
   rel="${file#"$staging_root"/}"
+  if is_internal_staging_path "$rel"; then
+    return 0
+  fi
   username="${hook_uploader:-${rel%%/*}}"
   username="$(safe_component "$username")"
   rel_after_user="${rel#*/}"
@@ -442,7 +450,7 @@ process_queue() {
 rescan_staging() {
   while IFS= read -r -d '' file; do
     process_file "$file" "" ""
-  done < <(find "$staging_root" -type f -print0)
+  done < <(find "$staging_root" -path '*/.hist/*' -prune -o -type f -print0)
 }
 
 init_state
