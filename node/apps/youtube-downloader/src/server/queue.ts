@@ -4,10 +4,11 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
 import { Database } from './db.js';
+import { runCommand } from './child.js';
 import { assertInside, folderNameFor, mediaRootFor, prepareDirectory, sanitizeSegment, uniqueFolder } from './paths.js';
 import { buildDownloadArgs, parseProgress, probeUrl } from './ytdlp.js';
 import { normalizeDownloadUrl } from '../shared/url.js';
-import type { CreateJobRequest, CurrentUser, Job, JobAlert, ProbeResponse } from '../shared/types.js';
+import type { AudioFormat, Chapter, CreateJobRequest, CurrentUser, Job, JobAlert, ProbeResponse } from '../shared/types.js';
 
 const MEDIA_EXTENSIONS = new Set([
   '.aac',
@@ -25,6 +26,7 @@ const MEDIA_EXTENSIONS = new Set([
   '.wav',
   '.webm',
 ]);
+const THUMBNAIL_EXTENSIONS = new Set(['.jpg', '.jpeg']);
 
 export class JobQueue {
   private readonly running = new Map<string, ChildProcess>();
@@ -206,6 +208,10 @@ export class JobQueue {
     }
 
     await this.db.setStatus(job.id, 'postprocessing');
+    if (request.splitChapters && request.mediaType === 'audio') {
+      await this.db.setProgress(job.id, { phase: 'postprocess' });
+      await splitAudioChapters(tempDir, source, request.audioFormat ?? 'flac');
+    }
     await this.db.setProgress(job.id, { phase: 'move' });
     const sourceDir = request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
     await mkdir(outputFolder, { recursive: true, mode: 0o775 });
@@ -341,6 +347,101 @@ const copyDirectoryContents = async (sourceDir: string, destinationDir: string):
     });
   }
 };
+
+type AudioChapterSpec = {
+  chapter: Chapter;
+  start: number;
+  duration: number;
+};
+
+const splitAudioChapters = async (tempDir: string, source: ProbeResponse, audioFormat: AudioFormat): Promise<void> => {
+  const input = await findDownloadedMedia(tempDir);
+  const chapterDir = path.join(tempDir, 'chapters');
+  await rm(chapterDir, { recursive: true, force: true });
+  await mkdir(chapterDir, { recursive: true, mode: 0o750 });
+  await copyFirstThumbnail(tempDir, chapterDir);
+
+  const specs = audioChapterSpecs(source);
+  for (const spec of specs) {
+    const title = sanitizeSegment(spec.chapter.title, 'Chapter');
+    const output = path.join(chapterDir, `${String(spec.chapter.index).padStart(2, '0')} - ${title}.${audioFormat}`);
+    const args = [
+      '-hide_banner',
+      '-nostdin',
+      '-y',
+      '-ss',
+      formatSeconds(spec.start),
+      '-t',
+      formatSeconds(spec.duration),
+      '-i',
+      input,
+      '-map',
+      '0:a:0',
+      '-map_metadata',
+      '-1',
+      '-map_chapters',
+      '-1',
+      '-vn',
+      '-c:a',
+      'copy',
+      '-avoid_negative_ts',
+      'make_zero',
+      '-metadata',
+      `title=${spec.chapter.title}`,
+      '-metadata',
+      `track=${spec.chapter.index}`,
+      output,
+    ];
+    const result = await runCommand('ffmpeg', args, { timeoutMs: Math.max(120000, Math.ceil(spec.duration + 60) * 1000) });
+    if (result.code !== 0) {
+      throw new Error(result.stderr.trim() || `ffmpeg exited with code ${result.code ?? 'unknown'} while splitting chapter ${spec.chapter.index}`);
+    }
+  }
+};
+
+const findDownloadedMedia = async (tempDir: string): Promise<string> => {
+  const entries = await collectFiles(tempDir);
+  const mediaFiles = entries.filter((entry) => MEDIA_EXTENSIONS.has(path.extname(entry).toLowerCase()));
+  if (mediaFiles.length === 0) {
+    throw new Error('yt-dlp did not produce a source media file for audio chapter splitting');
+  }
+  if (mediaFiles.length > 1) {
+    throw new Error(`expected one source media file for audio chapter splitting, found ${mediaFiles.length}`);
+  }
+  return mediaFiles[0];
+};
+
+const copyFirstThumbnail = async (tempDir: string, chapterDir: string): Promise<void> => {
+  const entries = await collectFiles(tempDir);
+  const thumbnail = entries.find((entry) => THUMBNAIL_EXTENSIONS.has(path.extname(entry).toLowerCase()));
+  if (!thumbnail) {
+    return;
+  }
+  await cp(thumbnail, path.join(chapterDir, 'cover.jpg'), {
+    force: false,
+    errorOnExist: true,
+  });
+};
+
+export const audioChapterSpecs = (source: ProbeResponse): AudioChapterSpec[] =>
+  source.chapters.map((chapter, index) => {
+    const nextChapter = source.chapters[index + 1];
+    const end = chapter.endTime ?? nextChapter?.startTime ?? source.durationSeconds;
+    if (end == null) {
+      throw new Error(`chapter ${chapter.index} is missing an end time and the source duration is unknown`);
+    }
+    const duration = end - chapter.startTime;
+    if (!Number.isFinite(chapter.startTime) || !Number.isFinite(duration) || duration <= 0) {
+      throw new Error(`chapter ${chapter.index} has an invalid start or end time`);
+    }
+    return {
+      chapter,
+      start: chapter.startTime,
+      duration,
+    };
+  });
+
+const formatSeconds = (seconds: number): string => seconds.toFixed(3);
 
 const collectFiles = async (directory: string): Promise<string[]> => {
   const entries = await readdir(directory, { withFileTypes: true });

@@ -48,6 +48,7 @@ let
   personalLibrariesJson = builtins.toJSON vars.personalJellyfinLibraries;
   legacyRenameLibrariesJson = builtins.toJSON legacyRenameLibraries;
   retiredLibrariesJson = builtins.toJSON retiredLibraries;
+  jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or [ vars.kanidmAdminUser ]);
   jellyfinLibraryBootstrapPath = with pkgs; [
     coreutils
     curl
@@ -94,6 +95,7 @@ in
         personal_libraries_json=${lib.escapeShellArg personalLibrariesJson}
         legacy_rename_libraries_json=${lib.escapeShellArg legacyRenameLibrariesJson}
         retired_libraries_json=${lib.escapeShellArg retiredLibrariesJson}
+        jellyfin_admin_users_json=${lib.escapeShellArg jellyfinAdminUsersJson}
 
         install -d -m 0750 -o jellyfin -g jellyfin "$managed_dir"
 
@@ -263,6 +265,12 @@ in
 
         jellyfin_members_json="$(group_members_json jellyfin-users)"
         app_admin_members_json="$(group_members_json app-admin)"
+        jellyfin_admin_members_json="$(
+          jq -n \
+            --argjson appAdmins "$app_admin_members_json" \
+            --argjson allowed "$jellyfin_admin_users_json" \
+            '$appAdmins | map(select($allowed | index(.) != null))'
+        )"
 
         expected_libraries="$(
           jq -n \
@@ -416,7 +424,7 @@ in
           fi
 
           is_admin=false
-          if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$app_admin_members_json"; then
+          if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$jellyfin_admin_members_json"; then
             is_admin=true
           fi
 

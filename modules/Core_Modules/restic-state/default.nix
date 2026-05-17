@@ -660,6 +660,8 @@ in
           MAIL_ARCHIVE_UI_RUNTIME_DIR="${mailArchiveUiCfg.runtimeDir}" \
           MAIL_ARCHIVE_UI_LOCK_DIR="${mailArchiveUiCfg.lockDir}" \
           MAIL_ARCHIVE_UI_DEFAULT_TAGS="new" \
+          TMPDIR="${mailArchiveUiCfg.runtimeDir}" \
+          SQLITE_TMPDIR="${mailArchiveUiCfg.runtimeDir}" \
           ${mailArchiveUiCfg.package}/bin/mail-archive-ui \
           verify-attachments --repair --report "$mail_report_tmp"
         install -m 0600 "$mail_report_tmp" "$mail_report"

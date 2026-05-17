@@ -22,8 +22,28 @@ describe('yt-dlp argv generation', () => {
     expect(args.at(-1)).toBe(baseRequest.url);
   });
 
-  it('generates split chapter output arguments', () => {
+  it('downloads one converted source file for audio chapter splitting', () => {
     const args = buildDownloadArgs({ ...baseRequest, splitChapters: true }, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
+    expect(args).not.toContain('--split-chapters');
+    expect(args).toContain('-x');
+    expect(args).toContain('--audio-format');
+    expect(args).toContain('flac');
+    expect(args).toContain('--embed-chapters');
+  });
+
+  it('generates split chapter output arguments for video', () => {
+    const args = buildDownloadArgs(
+      {
+        ...baseRequest,
+        mediaType: 'video',
+        audioFormat: undefined,
+        videoContainer: 'mkv',
+        videoQuality: '1080p',
+        splitChapters: true,
+      },
+      '/tmp/out.%(ext)s',
+      '/tmp/ch/%(section_title)s.%(ext)s',
+    );
     expect(args).toContain('--split-chapters');
     expect(args).toContain('chapter:/tmp/ch/%(section_title)s.%(ext)s');
   });

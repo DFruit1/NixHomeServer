@@ -408,6 +408,7 @@ rec {
       label = "YouTube";
     }
   ];
+  jellyfinAdminUsers = [ kanidmAdminUser ];
   personalJellyfinLibraries = jellyfinVideoLibraries;
   sharedJellyfinLibraries = jellyfinVideoLibraries;
   sharedKavitaLibraries = personalKavitaLibraries;

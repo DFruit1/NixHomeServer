@@ -87,7 +87,7 @@ export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: str
     outputTemplate,
   ];
 
-  if (request.splitChapters) {
+  if (request.splitChapters && request.mediaType === 'video') {
     args.push('--split-chapters', '-o', `chapter:${chapterTemplate}`);
   } else {
     args.push('--embed-chapters');

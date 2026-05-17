@@ -15,6 +15,7 @@
         "paperless-web.service"
       ];
       path = [
+        pkgs.acl
         pkgs.coreutils
       ];
       serviceConfig = {
@@ -30,6 +31,7 @@
 
         install -d -m 0755 -o root -g root '${vars.paperlessRoot}'
         install -d -m 2770 -o root -g paperless "$inbox_dir"
+        setfacl -x u:mail-archive-ui "$inbox_dir" 2>/dev/null || true
         install -d -m 0750 -o paperless -g paperless "$archive_dir"
         install -d -m 0750 -o paperless -g paperless "$export_dir"
         install -d -m 0700 -o copyparty -g copyparty "$archive_dir/.hist"

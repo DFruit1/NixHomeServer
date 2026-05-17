@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { Database } from '../db.js';
-import { JobQueue, chapterGateFor } from '../queue.js';
+import { JobQueue, audioChapterSpecs, chapterGateFor } from '../queue.js';
 import type { CreateJobRequest, CurrentUser, ProbeResponse } from '../../shared/types.js';
 
 let tempDir = '';
@@ -99,5 +99,23 @@ describe('queue alerts', () => {
         { ...source, chapters: [{ index: 1, title: 'Intro', startTime: 0 }] },
       ),
     ).toBe('download');
+  });
+
+  it('derives audio chapter durations from explicit and adjacent chapter boundaries', () => {
+    expect(
+      audioChapterSpecs({
+        ...source,
+        durationSeconds: 180,
+        chapters: [
+          { index: 1, title: 'One', startTime: 0, endTime: 60 },
+          { index: 2, title: 'Two', startTime: 60 },
+          { index: 3, title: 'Three', startTime: 125 },
+        ],
+      }).map(({ start, duration }) => ({ start, duration })),
+    ).toEqual([
+      { start: 0, duration: 60 },
+      { start: 60, duration: 65 },
+      { start: 125, duration: 55 },
+    ]);
   });
 });

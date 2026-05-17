@@ -14,6 +14,8 @@ let
       "MAIL_ARCHIVE_UI_RUNTIME_DIR=${cfg.runtimeDir}"
       "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
+      "TMPDIR=${cfg.runtimeDir}"
+      "SQLITE_TMPDIR=${cfg.runtimeDir}"
     ]
     ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;

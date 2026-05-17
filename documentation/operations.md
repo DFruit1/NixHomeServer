@@ -137,6 +137,8 @@ sudo -u mail-archive-ui env \
   MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT=/persist/appdata/mail-archive-ui/accounts \
   MAIL_ARCHIVE_UI_RUNTIME_DIR=/run/mail-archive-ui \
   MAIL_ARCHIVE_UI_LOCK_DIR=/persist/appdata/mail-archive-ui/locks \
+  TMPDIR=/run/mail-archive-ui \
+  SQLITE_TMPDIR=/run/mail-archive-ui \
   mail-archive-ui verify-attachments --repair --report /tmp/mail-archive-attachments.json
 ```
 

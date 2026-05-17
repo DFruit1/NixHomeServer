@@ -51,6 +51,7 @@ runtimeAccessCanaries = vars.runtimeAccessCanaries;
 personalKavitaLibraries = vars.personalKavitaLibraries;
 personalJellyfinLibraries = vars.personalJellyfinLibraries;
 sharedJellyfinLibraries = vars.sharedJellyfinLibraries;
+jellyfinAdminUsers = vars.jellyfinAdminUsers or [ vars.kanidmAdminUser ];
 sharedJellyfinMusicLibraries = vars.sharedJellyfinMusicLibraries;
 sharedBooksSubdirs = vars.sharedBooksSubdirs;
 userContentSubdirs = vars.userContentSubdirs;
@@ -168,6 +169,7 @@ usersGroupMembers = cfg.users.groups.users.members or [ ];
 hasImmichServerService = cfg.systemd.services ? "immich-server";
 hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
 hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
+paperlessStorageLayoutScript = cfg.systemd.services.paperless-storage-layout-v1.script;
 paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
 paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
 paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
@@ -316,6 +318,8 @@ require_match <(printf '%s\n' "$restic_backup_prepare_command") 'upload-processo
   "Backup preparation must dump upload processor SQLite state when present."
 require_match <(printf '%s\n' "$restic_backup_prepare_command") 'verify-attachments --repair --report' \
   "Backup preparation must verify and repair mail archive attachment blobs."
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'SQLITE_TMPDIR=' \
+  "Backup preparation must keep Mail Archive SQLite temp files inside a sandbox-writable runtime directory."
 require_match modules/Core_Modules/restic-state/default.nix 'app = "upload-processor";' \
   "Upload processor state must be represented in backup app-state metadata."
 require_match modules/Core_Modules/restic-state/default.nix 'vars\.uploadSecurity\.quarantineRoot' \
@@ -480,6 +484,8 @@ require_match <(printf '%s\n' "$mail_archive_ui_service_environment") 'MAIL_ARCH
   "Mail Archive UI must explicitly expose the Paperless consume root for attachment handoff."
 require_match <(printf '%s\n' "$mail_archive_ui_service_environment") "$(snapshot_query '.vars.paperlessInboxRoot' | jq -r '.')" \
   "Mail Archive UI Paperless handoff must use vars.paperlessInboxRoot."
+require_match <(printf '%s\n' "$mail_archive_ui_service_environment") 'SQLITE_TMPDIR=' \
+  "Mail Archive UI must keep SQLite temp files inside a sandbox-writable runtime directory."
 require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiPaperlessConsumeRoot')" "$(snapshot_query '.vars.paperlessInboxRoot')" \
   "Mail Archive UI Paperless consume root option must follow vars.paperlessInboxRoot."
 
@@ -495,6 +501,12 @@ fi
 mail_archive_ui_extra_groups="$(snapshot_query '.config.apps.mailArchiveUiExtraGroups')"
 require_match <(printf '%s\n' "$mail_archive_ui_extra_groups") 'paperless' \
   "Mail Archive UI user must have paperless group access for consume-root handoff."
+
+paperless_storage_layout_script="$(snapshot_query '.config.apps.paperlessStorageLayoutScript' | jq -r '.')"
+require_match <(printf '%s\n' "$paperless_storage_layout_script") 'install -d -m 2770 -o root -g paperless "\$inbox_dir"' \
+  "Paperless inbox must stay group-writable for consume-root handoff."
+require_match <(printf '%s\n' "$paperless_storage_layout_script") 'setfacl -x u:mail-archive-ui "\$inbox_dir"' \
+  "Paperless storage layout must prune stale mail-archive-ui user ACLs from the consume inbox."
 
 copyparty_service_supplementary_groups="$(snapshot_query '.config.apps.copypartyServiceSupplementaryGroups')"
 if ! jq -e 'index("upload-staging") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
@@ -665,6 +677,7 @@ fi
 shared_jellyfin_libraries="$(snapshot_query '.vars.sharedJellyfinLibraries')"
 personal_jellyfin_libraries="$(snapshot_query '.vars.personalJellyfinLibraries')"
 shared_jellyfin_music_libraries="$(snapshot_query '.vars.sharedJellyfinMusicLibraries')"
+jellyfin_admin_users="$(snapshot_query '.vars.jellyfinAdminUsers')"
 expected_jellyfin_dirs='["movies","shows","home","music-videos","youtube"]'
 if ! jq -e --argjson expected "$expected_jellyfin_dirs" 'map(.dir) == $expected' >/dev/null <<<"$shared_jellyfin_libraries"; then
   echo "❌ Shared Jellyfin libraries must be exactly movies, shows, home, music-videos, and youtube."
@@ -684,6 +697,8 @@ if ! jq -e --argjson shared "$shared_jellyfin_libraries" '. == $shared' >/dev/nu
 fi
 require_json_equal "$(jq 'length' <<<"$shared_jellyfin_music_libraries")" "0" \
   "Shared Jellyfin music libraries must be retired."
+require_json_equal "$jellyfin_admin_users" '["admindsaw"]' \
+  "Jellyfin library-wide admin visibility must be limited to the delegated admin account by default."
 if ! jq -e 'index("jellyfin-users") != null' >/dev/null <<<"$(snapshot_query '.config.apps.provisionGroupNames')"; then
   echo "❌ Kanidm provisioning must include jellyfin-users when Jellyfin is enabled."
   exit 1
@@ -721,6 +736,8 @@ for suffix_name in 'Movies \(Shared\)' 'Shows \(Shared\)' 'Home Videos \(Shared\
   require_match <(printf '%s\n' "$jellyfin_library_bootstrap_script") "$suffix_name" \
     "Jellyfin bootstrap must know how to rename legacy shared library $suffix_name."
 done
+require_match <(printf '%s\n' "$jellyfin_library_bootstrap_script") 'jellyfin_admin_members_json' \
+  "Jellyfin bootstrap must intersect app-admin with jellyfinAdminUsers before enabling all folders."
 
 assert_json_false '.config.apps.hasCopypartyRuntimeConfigSync' "Copyparty must use the native module config renderer, not a duplicate runtime config sync service."
 copyparty_volumes="$(snapshot_query '.config.apps.copypartyVolumes')"

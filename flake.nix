@@ -97,6 +97,7 @@
               personalKavitaLibraries = vars.personalKavitaLibraries;
               personalJellyfinLibraries = vars.personalJellyfinLibraries;
               sharedJellyfinLibraries = vars.sharedJellyfinLibraries;
+              jellyfinAdminUsers = vars.jellyfinAdminUsers or [ vars.kanidmAdminUser ];
               sharedJellyfinMusicLibraries = vars.sharedJellyfinMusicLibraries;
               sharedBooksSubdirs = vars.sharedBooksSubdirs;
               userContentSubdirs = vars.userContentSubdirs;

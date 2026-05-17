@@ -278,7 +278,7 @@ Expected result:
 - Paperless: `paperless-users` grants normal login and `app-admin` adds the Paperless admin flags when combined with `paperless-users`.
 - Audiobookshelf: `audiobookshelf-users` grants normal login and `app-admin` adds the admin role when combined with `audiobookshelf-users`.
 - Kavita: `kavita-users` grants normal login and `app-admin` adds the admin role when combined with `kavita-users`.
-- Jellyfin sign-in remains local-auth. `jellyfin-users` is the source of truth for managed Jellyfin local-account and per-library policy; `app-admin` plus `jellyfin-users` grants Jellyfin app-admin/library-wide access. Missing local Jellyfin accounts are created disabled until an operator sets and enables credentials. OAuth2 Proxy is not used to inject Jellyfin passwords.
+- Jellyfin sign-in remains local-auth. `jellyfin-users` is the source of truth for managed Jellyfin local-account and per-library policy; `app-admin` plus `jellyfin-users` grants Jellyfin app-admin/library-wide access only for accounts listed in `jellyfinAdminUsers`. Missing local Jellyfin accounts are created disabled until an operator sets and enables credentials. OAuth2 Proxy is not used to inject Jellyfin passwords.
 - Jellyfin manages five video folders for shared and per-user libraries: movies, shows, home videos, music videos, and YouTube video. The old `Other Videos` library and Jellyfin YouTube Music library are retired; pure audio with thumbnails belongs in Audiobookshelf.
 
 ## Troubleshooting Flow
@@ -305,7 +305,7 @@ kanidm-admin client show files
 4. If the live group state looks correct but the app role is still wrong, treat it as an app-local role or bootstrap issue.
    - Immich and Paperless should provision the local account at first successful OIDC login.
    - Audiobookshelf and Kavita can still require app-local admin or bootstrap work after identity is correct.
-   - Jellyfin sign-in is still local-auth, but `jellyfin-users` and `app-admin` drive the managed local-account and library policy reconciler.
+   - Jellyfin sign-in is still local-auth, but `jellyfin-users`, `app-admin`, and `jellyfinAdminUsers` drive the managed local-account and library policy reconciler.
 
 ## After Identity Changes
 

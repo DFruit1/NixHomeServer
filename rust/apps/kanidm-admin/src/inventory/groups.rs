@@ -241,7 +241,7 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
         },
         "jellyfin-users" => GroupHelp {
             summary: "Grants managed Jellyfin local-account and library access.",
-            detail: "Add this when the user should have a managed Jellyfin local account and their personal video libraries. Combine it with `app-admin` only for trusted Jellyfin administrators who should see all libraries.",
+            detail: "Add this when the user should have a managed Jellyfin local account and their personal video libraries. Jellyfin library-wide admin visibility also requires `app-admin` and inclusion in `jellyfinAdminUsers`.",
             category: GroupCategory::AppUser,
         },
         "paperless-users" => GroupHelp {

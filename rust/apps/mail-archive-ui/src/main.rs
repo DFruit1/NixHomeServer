@@ -7126,6 +7126,20 @@ fn resolve_attachment_payload(
             }
         }
     }
+    let canonical_blob_relpath = attachment_blob_relpath(&attachment.attachment_sha256);
+    let canonical_blob_relpath = canonical_blob_relpath.to_string_lossy().to_string();
+    let canonical_blob_path = attachment_blob_path(&account_paths, &canonical_blob_relpath)?;
+    if canonical_blob_path.is_file() {
+        let blob_sha = sha256_file(&canonical_blob_path)?;
+        if blob_sha == attachment.attachment_sha256 {
+            return Ok((
+                TempExtractionDir {
+                    path: PathBuf::new(),
+                },
+                canonical_blob_path,
+            ));
+        }
+    }
 
     let message_path = account_paths.maildir.join(&message.message_relpath);
     let source_message_sha256 = sha256_file(&message_path)?;
@@ -12139,6 +12153,68 @@ mod tests {
             assert_eq!(report.attachments_checked, 1);
             assert!(!report.has_errors());
             assert!(report_path.exists());
+        });
+    }
+
+    #[test]
+    fn attachment_payload_resolves_legacy_null_blob_relpath_from_canonical_blob() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <legacy-blob@example.com>\nSubject: Legacy Blob\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Legacy Blob".to_string()),
+                    extension: Some("pdf".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            let key = page.items[0].attachment.attachment_key.clone();
+            open_db(&config)
+                .expect("db")
+                .execute(
+                    "UPDATE attachment_catalog SET blob_relpath = NULL WHERE attachment_key = ?1",
+                    params![key],
+                )
+                .expect("clear blob relpath");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Legacy Blob".to_string()),
+                    extension: Some("pdf".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("legacy page");
+            let item = &page.items[0];
+            assert!(item.attachment.blob_relpath.is_none());
+            fs::remove_file(account_paths.maildir.join(&item.message.message_relpath))
+                .expect("remove source message");
+
+            let (_dir, payload_path) =
+                resolve_attachment_payload(&config, &account, &item.message, &item.attachment)
+                    .expect("resolve payload from canonical blob");
+            assert!(payload_path.is_file());
+            assert_eq!(
+                sha256_file(&payload_path).expect("payload sha"),
+                item.attachment.attachment_sha256
+            );
         });
     }
 
