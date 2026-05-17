@@ -74,8 +74,17 @@ if [[ "$refresh" == true ]]; then
 fi
 
 if [[ -n "$target" ]]; then
-  report_json="$(ssh "$target" "sudo cat '$report_path'")"
+  if ! report_json="$(ssh "$target" "sudo test -s '$report_path' && sudo cat '$report_path'")"; then
+    echo "blocked: no health report exists yet on ${target}: ${report_path}" >&2
+    echo "hint: run nix run .#admin -- status --host ${host} --target ${target} --refresh" >&2
+    exit 1
+  fi
 else
+  if [[ ! -s "$report_path" ]]; then
+    echo "blocked: no local health report exists yet: ${report_path}" >&2
+    echo "hint: run nix run .#admin -- status --host ${host} --refresh" >&2
+    exit 1
+  fi
   report_json="$(cat "$report_path")"
 fi
 

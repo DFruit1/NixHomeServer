@@ -1,4 +1,4 @@
-{ lib, vars, ... }:
+{ config, lib, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
@@ -16,6 +16,7 @@ let
   netbirdIp = vars.networking.netbird.ip;
   netbirdIface = vars.networking.interfaces.netbird;
   netbirdCidr = vars.networking.netbird.cidr;
+  apps = config.nixhomeserver.apps;
   listenAddresses = [ loopback netbirdIp ] ++ lib.optional splitDnsMode lanIp;
   lanCidr = "${lanIp}/${toString lanPrefixLength}";
   normaliseDnsName =
@@ -68,24 +69,24 @@ let
     [
       "\"${vars.domain}                 A ${targetIp}\""
       "\"www.${vars.domain}             A ${targetIp}\""
-      "\"${vars.paperlessDomain}       A ${targetIp}\""
-      "\"${vars.audiobooksDomain}       A ${targetIp}\""
-      "\"${vars.filebrowserDomain}      A ${targetIp}\""
-      "\"${vars.emailsDomain}           A ${targetIp}\""
-      "\"${vars.vaultwardenDomain}      A ${targetIp}\""
-      "\"${vars.kiwixDomain}            A ${targetIp}\""
-      "\"${vars.metubeDomain}           A ${targetIp}\""
-      "\"${vars.photosDomain}           A ${targetIp}\""
-      "\"${vars.kavitaDomain}           A ${targetIp}\""
-      "\"${vars.jellyfinDomain}         A ${targetIp}\""
-    ];
+    ]
+    ++ lib.optionals apps.paperless.enable [ "\"${vars.paperlessDomain}       A ${targetIp}\"" ]
+    ++ lib.optionals apps.audiobookshelf.enable [ "\"${vars.audiobooksDomain}       A ${targetIp}\"" ]
+    ++ lib.optionals apps."filebrowser-quantum".enable [ "\"${vars.filebrowserDomain}      A ${targetIp}\"" ]
+    ++ lib.optionals apps."mail-archive-ui".enable [ "\"${vars.emailsDomain}           A ${targetIp}\"" ]
+    ++ lib.optionals apps.vaultwarden.enable [ "\"${vars.vaultwardenDomain}      A ${targetIp}\"" ]
+    ++ lib.optionals apps.kiwix.enable [ "\"${vars.kiwixDomain}            A ${targetIp}\"" ]
+    ++ lib.optionals apps.metube.enable [ "\"${vars.metubeDomain}           A ${targetIp}\"" ]
+    ++ lib.optionals apps.immich.enable [ "\"${vars.photosDomain}           A ${targetIp}\"" ]
+    ++ lib.optionals apps.kavita.enable [ "\"${vars.kavitaDomain}           A ${targetIp}\"" ]
+    ++ lib.optionals apps.jellyfin.enable [ "\"${vars.jellyfinDomain}         A ${targetIp}\"" ];
 
   lanHostedRecords =
     (privateHostedRecords lanIp)
     ++ [
       "\"${vars.kanidmDomain}           A ${lanIp}\""
-      "\"${vars.uploadsDomain}          A ${lanIp}\""
     ]
+    ++ lib.optionals apps.copyparty.enable [ "\"${vars.uploadsDomain}          A ${lanIp}\"" ]
     ++ lanDnsHostRecords;
 
   netbirdHostedRecords = privateHostedRecords netbirdIp;

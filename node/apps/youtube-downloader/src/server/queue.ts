@@ -6,6 +6,7 @@ import type { AppConfig } from './config.js';
 import { Database } from './db.js';
 import { assertInside, folderNameFor, mediaRootFor, prepareDirectory, sanitizeSegment, uniqueFolder } from './paths.js';
 import { buildDownloadArgs, parseProgress, probeUrl } from './ytdlp.js';
+import { normalizeDownloadUrl } from '../shared/url.js';
 import type { CreateJobRequest, CurrentUser, Job } from '../shared/types.js';
 
 const MEDIA_EXTENSIONS = new Set([
@@ -41,12 +42,16 @@ export class JobQueue {
   }
 
   async enqueue(user: CurrentUser, request: CreateJobRequest): Promise<string> {
-    if (request.destination === 'shared' && !user.canWriteShared) {
+    const normalizedRequest = {
+      ...request,
+      url: normalizeDownloadUrl(request.url),
+    };
+    validateRequest(normalizedRequest);
+    if (normalizedRequest.destination === 'shared' && !user.canWriteShared) {
       throw new Error('shared downloads require shared-files-read-write-access');
     }
-    validateRequest(request);
     const id = randomUUID();
-    await this.db.createJob({ id, createdBy: user.username, request });
+    await this.db.createJob({ id, createdBy: user.username, request: normalizedRequest });
     this.pump();
     return id;
   }

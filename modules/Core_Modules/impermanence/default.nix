@@ -2,6 +2,7 @@
 
 let
   cfg = config.repo.impermanence;
+  apps = config.nixhomeserver.apps;
   localAdminUser = config.nixhomeserver.localAdmin.user;
   persistLocalAdminHome =
     if cfg.persistDsawHome != null then cfg.persistDsawHome else cfg.persistLocalAdminHome;
@@ -11,32 +12,38 @@ let
       "/etc/ssh"
       "/etc/agenix"
       "/var/lib/acme"
-      "/var/lib/audiobookshelf"
-      "/var/lib/clamav"
-      "/var/lib/copyparty"
-      "/var/lib/filebrowser-quantum"
-      "/var/cache/immich"
-      "/var/lib/immich"
-      "/var/lib/immich-public-proxy"
-      "/var/lib/jellyfin"
       "/var/lib/kanidm"
-      "/var/lib/kavita"
-      "/var/lib/kiwix"
-      "/var/lib/metube"
       "/var/lib/netbird-main"
       "/var/lib/nixos"
-      "/var/lib/paperless"
-      "/var/lib/postgresql/16"
-      "/var/lib/redis-immich"
-      "/var/lib/redis-paperless"
       "/var/lib/system-health-monitoring"
       "/var/lib/systemd/timers"
       "/var/lib/unbound"
-      "/var/lib/upload-processor"
-      "/var/lib/vaultwarden"
       "/var/log/journal"
       "/var/log/atop"
     ]
+    ++ lib.optionals apps.audiobookshelf.enable [ "/var/lib/audiobookshelf" ]
+    ++ lib.optionals apps.copyparty.enable [
+      "/var/lib/clamav"
+      "/var/lib/copyparty"
+      "/var/lib/upload-processor"
+    ]
+    ++ lib.optionals apps."filebrowser-quantum".enable [ "/var/lib/filebrowser-quantum" ]
+    ++ lib.optionals apps.immich.enable [
+      "/var/cache/immich"
+      "/var/lib/immich"
+      "/var/lib/immich-public-proxy"
+      "/var/lib/postgresql/16"
+      "/var/lib/redis-immich"
+    ]
+    ++ lib.optionals apps.jellyfin.enable [ "/var/lib/jellyfin" ]
+    ++ lib.optionals apps.kavita.enable [ "/var/lib/kavita" ]
+    ++ lib.optionals apps.kiwix.enable [ "/var/lib/kiwix" ]
+    ++ lib.optionals apps.metube.enable [ "/var/lib/metube" ]
+    ++ lib.optionals apps.paperless.enable [
+      "/var/lib/paperless"
+      "/var/lib/redis-paperless"
+    ]
+    ++ lib.optionals apps.vaultwarden.enable [ "/var/lib/vaultwarden" ]
     ++ lib.optionals persistLocalAdminHome [ "/home/${localAdminUser}" ];
 
   persistenceFiles = [ ];

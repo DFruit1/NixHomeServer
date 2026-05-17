@@ -4,6 +4,7 @@ let
   impermanenceCfg = config.repo.impermanence;
   mailArchiveUiCfg = config.services.mail-archive-ui;
   resourceCfg = config.nixhomeserver.resources;
+  apps = config.nixhomeserver.apps;
   repoRoot = ../../..;
   backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
   restoreVerifyScript = "${repoRoot}/scripts/verify-system-state-restore.sh";
@@ -90,6 +91,8 @@ let
       payloadRoots = [ ];
       notes = "Resolver trust-anchor state.";
     }
+  ]
+  ++ lib.optionals apps.audiobookshelf.enable [
     {
       app = "audiobookshelf";
       component = "app";
@@ -101,6 +104,8 @@ let
       ];
       notes = "Local users, metadata, and server config.";
     }
+  ]
+  ++ lib.optionals apps.immich.enable [
     {
       app = "immich";
       component = "app";
@@ -109,17 +114,22 @@ let
       payloadRoots = [ vars.immichRoot ];
       notes = "Immich service state directory.";
     }
+  ]
+  ++ lib.optionals apps.jellyfin.enable [
     {
       app = "jellyfin";
       component = "app";
       stateRoot = "/var/lib/jellyfin";
       persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
       payloadRoots = [
+        vars.sharedMusicRoot
         vars.sharedVideosRoot
         vars.usersRoot
       ];
       notes = "Local users, libraries, and server config.";
     }
+  ]
+  ++ lib.optionals apps.kavita.enable [
     {
       app = "kavita";
       component = "app";
@@ -131,6 +141,8 @@ let
       ];
       notes = "Library database, local users, and server settings.";
     }
+  ]
+  ++ lib.optionals apps.metube.enable [
     {
       app = "metube";
       component = "app";
@@ -143,6 +155,8 @@ let
       ];
       notes = "SQLite queue history, temporary state, and downloader config.";
     }
+  ]
+  ++ lib.optionals apps.paperless.enable [
     {
       app = "paperless";
       component = "app";
@@ -151,6 +165,8 @@ let
       payloadRoots = [ vars.paperlessRoot ];
       notes = "Application state and local metadata.";
     }
+  ]
+  ++ lib.optionals apps.vaultwarden.enable [
     {
       app = "vaultwarden";
       component = "app";
@@ -159,6 +175,8 @@ let
       payloadRoots = [ ];
       notes = "Encrypted password vault database and attachments.";
     }
+  ]
+  ++ lib.optionals apps.copyparty.enable [
     {
       app = "upload-processor";
       component = "app";
@@ -170,6 +188,8 @@ let
       ];
       notes = "Upload scan queue state, promotion ledger, staging, and quarantine metadata.";
     }
+  ]
+  ++ lib.optionals apps.paperless.enable [
     {
       app = "paperless";
       component = "redis";
@@ -178,6 +198,8 @@ let
       payloadRoots = [ vars.paperlessRoot ];
       notes = "Paperless Redis persistence.";
     }
+  ]
+  ++ lib.optionals apps.immich.enable [
     {
       app = "immich";
       component = "postgresql";
@@ -186,6 +208,8 @@ let
       payloadRoots = [ vars.immichManagedRoot ];
       notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
     }
+  ]
+  ++ lib.optionals apps.immich.enable [
     {
       app = "immich";
       component = "redis";
@@ -194,6 +218,8 @@ let
       payloadRoots = [ vars.immichManagedRoot ];
       notes = "Immich Redis persistence.";
     }
+  ]
+  ++ lib.optionals apps.copyparty.enable [
     {
       app = "copyparty";
       component = "app";
@@ -204,6 +230,8 @@ let
       ];
       notes = "Local state directory for Copyparty; uploaded payloads enter locked staging before promotion.";
     }
+  ]
+  ++ lib.optionals apps."filebrowser-quantum".enable [
     {
       app = "filebrowser-quantum";
       component = "app";
@@ -212,11 +240,13 @@ let
       payloadRoots = [
         vars.usersRoot
         vars.sharedRoot
-        vars.kiwixLibraryRoot
-        vars.uploadSecurity.quarantineRoot
-      ];
+      ]
+      ++ lib.optionals apps.kiwix.enable [ vars.kiwixLibraryRoot ]
+      ++ lib.optionals apps.copyparty.enable [ vars.uploadSecurity.quarantineRoot ];
       notes = "FileBrowser Quantum database, cache, and config state.";
     }
+  ]
+  ++ lib.optionals apps."mail-archive-ui".enable [
     {
       app = "mail-archive-ui";
       component = "app";
@@ -244,20 +274,30 @@ let
     appStateEntries;
   criticalPaths = [
     vars.dataRoot
-    vars.paperlessRoot
-    vars.immichRoot
-    vars.immichManagedRoot
     vars.usersRoot
     vars.sharedRoot
-    vars.sharedEmailsRoot
+  ]
+  ++ lib.optionals apps.paperless.enable [
+    vars.paperlessRoot
     vars.paperlessInboxRoot
     vars.paperlessArchiveRoot
     vars.paperlessExportRoot
-    vars.uploadSecurity.stagingRoot
-    vars.uploadSecurity.quarantineRoot
+  ]
+  ++ lib.optionals apps.immich.enable [
+    vars.immichRoot
+    vars.immichManagedRoot
+  ]
+  ++ lib.optionals apps."mail-archive-ui".enable [
+    vars.sharedEmailsRoot
     mailArchiveUiCfg.dataDir
     mailArchiveUiCfg.accountStateRoot
     mailArchiveUiCfg.storeRoot
+  ]
+  ++ lib.optionals apps.copyparty.enable [
+    vars.uploadSecurity.stagingRoot
+    vars.uploadSecurity.quarantineRoot
+  ]
+  ++ lib.optionals apps.kiwix.enable [
     vars.kiwixLibraryRoot
   ];
 in

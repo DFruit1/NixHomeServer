@@ -45,6 +45,9 @@ let
       install -d -m 2770 -g users "$root/books/$name"
       chown root:users "$root/books/$name"
       chmod 2770 "$root/books/$name"
+      install -d -m 2770 -g users "$root/books/$name/_Anon"
+      chown root:users "$root/books/$name/_Anon"
+      chmod 2770 "$root/books/$name/_Anon"
     done
 
     if [[ -e "$emails" ]]; then

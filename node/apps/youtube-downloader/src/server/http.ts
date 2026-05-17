@@ -7,6 +7,7 @@ import { currentUserFromHeaders } from './auth.js';
 import { Database } from './db.js';
 import { JobQueue } from './queue.js';
 import { probeUrl } from './ytdlp.js';
+import { normalizeDownloadUrl } from '../shared/url.js';
 import type { CreateJobRequest } from '../shared/types.js';
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -60,7 +61,7 @@ const handleApi = async (
     if (!body.url) {
       throw new Error('url is required');
     }
-    sendJson(response, 200, await probeUrl(config, body.url));
+    sendJson(response, 200, await probeUrl(config, normalizeDownloadUrl(body.url)));
     return;
   }
 

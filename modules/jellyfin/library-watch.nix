@@ -1,4 +1,4 @@
-{ pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
@@ -16,27 +16,29 @@ let
   };
 in
 {
-  systemd.services.jellyfin-library-watch = {
-    description = "Watch Jellyfin media roots for settled file changes";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "jellyfin.service"
-      "jellyfin-library-bootstrap-v1.service"
-      "jellyfin-library-monitor-v1.service"
-      "jellyfin-storage-layout-v1.service"
-      "data-pool-layout.service"
-    ];
-    wants = [
-      "jellyfin.service"
-      "jellyfin-library-bootstrap-v1.service"
-      "jellyfin-library-monitor-v1.service"
-      "jellyfin-storage-layout-v1.service"
-      "data-pool-layout.service"
-    ];
-    serviceConfig = {
-      ExecStart = watcherScript;
-      Restart = "on-failure";
-      RestartSec = "5s";
+  config = lib.mkIf config.nixhomeserver.apps.jellyfin.enable {
+    systemd.services.jellyfin-library-watch = {
+      description = "Watch Jellyfin media roots for settled file changes";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "jellyfin.service"
+        "jellyfin-library-bootstrap-v1.service"
+        "jellyfin-library-monitor-v1.service"
+        "jellyfin-storage-layout-v1.service"
+        "data-pool-layout.service"
+      ];
+      wants = [
+        "jellyfin.service"
+        "jellyfin-library-bootstrap-v1.service"
+        "jellyfin-library-monitor-v1.service"
+        "jellyfin-storage-layout-v1.service"
+        "data-pool-layout.service"
+      ];
+      serviceConfig = {
+        ExecStart = watcherScript;
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
     };
   };
 }

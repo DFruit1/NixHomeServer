@@ -401,6 +401,10 @@ forbid_match modules/immich/storage.nix 'immich-user-storage-acl-sync-v1' \
   "Immich per-user ACL convergence must stay centralized in fileshare-user-root-sync."
 forbid_match modules/kavita/storage.nix 'kavita-media-acl-sync-v1' \
   "Kavita per-user ACL convergence must stay centralized in fileshare-user-root-sync."
+require_match modules/kavita/storage.nix 'sharedKavitaAnonDirs = map \(library: "\$\{vars\.sharedBooksRoot\}/\$\{library\.dir\}/_Anon"\) vars\.sharedKavitaLibraries;' \
+  "Kavita shared book libraries must create _Anon child directories so root-volume files are not ignored."
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'install -d -m 2770 -g users "\$root/books/\$name/_Anon"' \
+  "Kavita per-user book libraries must create _Anon child directories so root-volume files are not ignored."
 forbid_match modules/mail-archive-ui/storage.nix 'mail-archive-ui-user-storage-acl-sync-v1' \
   "Mail Archive UI per-user ACL convergence must stay centralized in fileshare-user-root-sync."
 forbid_match modules/paperless/storage.nix 'paperless-user-storage-acl-sync-v1' \
@@ -505,6 +509,14 @@ assert_json_true '.config.apps.hasJellyfinLibraryBootstrap' "Jellyfin declarativ
 assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain present."
 assert_json_true '.config.apps.hasYoutubeDownloaderService' "The custom YouTube downloader service must replace the MeTube container."
+require_match configuration.nix '\./modules/youtube-downloader' \
+  "The YouTube downloader service must be imported as its own module."
+forbid_match modules/metube/default.nix '\./service\.nix' \
+  "The MeTube module must not import the YouTube downloader service module."
+if [[ -e modules/metube/service.nix ]]; then
+  echo "❌ The YouTube downloader service must not live under modules/metube/service.nix."
+  exit 1
+fi
 assert_json_false '.config.apps.hasLegacyMetubeContainer' "The legacy rootless MeTube container must not be active."
 assert_json_false '.config.apps.hasMetubeAudioImport' "MeTube audio import service must stay retired; downloads now target final media roots directly."
 assert_json_false '.config.apps.hasMetubeAudioImportWatch' "MeTube audio import watcher must stay retired; downloads now target final media roots directly."

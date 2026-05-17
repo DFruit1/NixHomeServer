@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildDownloadArgs, parseProgress } from '../ytdlp.js';
+import { normalizeDownloadUrl } from '../../shared/url.js';
 import type { CreateJobRequest } from '../../shared/types.js';
 
 const baseRequest = {
@@ -49,5 +50,17 @@ describe('yt-dlp argv generation', () => {
       speed: '1.00MiB/s',
       eta: '00:05',
     });
+  });
+
+  it('strips YouTube watch context and tracking parameters from single-video URLs', () => {
+    expect(
+      normalizeDownloadUrl(' https://www.youtube.com/watch?si=abc&v=fiwd5hMQsEU&list=RDfiwd5hMQsEU&radio-start=1&t=20s '),
+    ).toBe('https://www.youtube.com/watch?v=fiwd5hMQsEU');
+  });
+
+  it('keeps YouTube playlist IDs on playlist URLs', () => {
+    expect(normalizeDownloadUrl('https://www.youtube.com/playlist?list=PL123&si=abc&radio-start=1')).toBe(
+      'https://www.youtube.com/playlist?list=PL123',
+    );
   });
 });

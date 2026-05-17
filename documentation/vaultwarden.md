@@ -12,13 +12,13 @@ Guarded deploys, runtime readiness, and DNS checks live in [Operations](./operat
 ## Service Model
 
 Vaultwarden is intentionally private-only in this stack:
-- private hostname: `https://passwords.sydneybasiniot.org`
+- private hostname: the evaluated `vaultwardenDomain` from the site runbook
 - reachable on LAN and NetBird
 - not published through Cloudflare Tunnel
 - all users sign in with Vaultwarden local login
 - invites create pending local signup records; no SMTP is required
 - Kanidm is only used by the helper as an address book for resolving a user's primary email
-- `admindsaw` keeps a local Vaultwarden login for break-glass access
+- the delegated operator keeps a local Vaultwarden login for break-glass access
 
 Operational rule:
 - normal users should sign in with their local Vaultwarden credentials
@@ -43,7 +43,7 @@ Before deploying the local-login-only config:
 3. Confirm each user can unlock their vault on at least one intended device with local Vaultwarden credentials.
 4. Deploy the config change.
 5. After deploy, verify the SSO button/path is gone and normal login requires Vaultwarden-local credentials.
-6. Keep `admindsaw` local login as the operator break-glass account.
+6. Keep the delegated operator's local login as the break-glass account.
 
 If live Kanidm retains orphaned objects after provisioning converges, delete or disable OAuth2 client `vaultwarden-web`, then delete group `vaultwarden-users` only after confirming no repo references remain.
 
@@ -54,7 +54,7 @@ After a guarded deploy or switch:
 ```bash
 systemctl status vaultwarden vaultwarden-secret-materialize
 sudo ./scripts/check-runtime-readiness.sh --profile manual
-curl -I https://passwords.sydneybasiniot.org/
+curl -I https://<passwords-domain>/
 curl -I http://127.0.0.1:8222/
 ```
 
@@ -68,7 +68,7 @@ Expected result:
 If the hostname does not resolve from a workstation browser, test the private edge directly against the server LAN IP:
 
 ```bash
-curl -kI --resolve passwords.sydneybasiniot.org:443:192.168.8.12 https://passwords.sydneybasiniot.org/
+curl -kI --resolve <passwords-domain>:443:<server-lan-ip> https://<passwords-domain>/
 ```
 
 If that returns a healthy response while normal DNS still fails, Vaultwarden itself is up and the problem is the workstation path to the private hostname. Check local DNS, Unbound reachability, or NetBird routing before changing the Vaultwarden service config.
@@ -84,9 +84,9 @@ echo "$KANIDM_ADMIN_VAULTWARDEN_ADMIN_TOKEN_FILE"
 ```
 
 Use the local break-glass account path for initial admin setup:
-1. Open `https://passwords.sydneybasiniot.org`.
-2. Use the invite flow below for `admindsaw`.
-3. Open `https://passwords.sydneybasiniot.org/#/signup` and activate the local Vaultwarden account for `admindsaw` with the exact invited email.
+1. Open `https://<passwords-domain>`.
+2. Use the invite flow below for the delegated operator.
+3. Open `https://<passwords-domain>/#/signup` and activate the local Vaultwarden account for that operator with the exact invited email.
 4. Keep that local login available for break-glass use.
 
 Do not treat the Vaultwarden admin token as a day-to-day user login secret. It is only for the admin backend and operator helpers.
@@ -122,16 +122,16 @@ The helper does this in one flow:
 - skips redundant work when the Vaultwarden account is already active
 
 Expected result:
-- the user opens `https://passwords.sydneybasiniot.org/#/signup`
+- the user opens `https://<passwords-domain>/#/signup`
 - the user registers with the exact email resolved by the helper
 - the user creates local Vaultwarden credentials
 - the user can then store Kanidm credentials inside Vaultwarden as an item
 
 ## Break-Glass Admin Pattern
 
-Invite `admindsaw` into Vaultwarden first and keep that account maintained manually.
+Invite the delegated operator into Vaultwarden first and keep that account maintained manually.
 
-Break-glass categories that `admindsaw` should create manually in Vaultwarden include:
+Break-glass categories that the delegated operator should create manually in Vaultwarden include:
 - Kanidm admin and recovery credentials
 - `idm_admin` and similar emergency identities
 - NetBird administrative credentials or recovery notes
@@ -151,7 +151,7 @@ Each user should create one Vaultwarden login item for Kanidm and keep these tog
 That gives less technical users one predictable place to manage all three credential types.
 
 Suggested operator guidance for users:
-1. Open `https://passwords.sydneybasiniot.org/#/signup`.
+1. Open `https://<passwords-domain>/#/signup`.
 2. Register with the exact email address invited by the operator.
 3. Create or confirm local Vaultwarden credentials.
 4. Create the initial Kanidm login item in Vaultwarden.

@@ -38,6 +38,14 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   checkPhase = ''
     runHook preCheck
     pnpm run check
+    test -f dist/client/index.html || {
+      echo "youtube-downloader client build did not produce dist/client/index.html" >&2
+      exit 1
+    }
+    test -f dist/client/q-manifest.json || {
+      echo "youtube-downloader client build did not produce dist/client/q-manifest.json" >&2
+      exit 1
+    }
     runHook postCheck
   '';
 

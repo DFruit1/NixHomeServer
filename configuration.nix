@@ -96,6 +96,7 @@ in
     ./modules/mail-archive
     ./modules/mail-archive-ui
     ./modules/metube
+    ./modules/youtube-downloader
     ./modules/paperless
     ./modules/power-management
     ./modules/vaultwarden
@@ -109,7 +110,6 @@ in
     pools = [ vars.zfsDataPool.name ];
   };
   systemd.services.dbus.stopIfChanged = true;
-  services.mail-archive-ui.enable = true;
 
   systemd.tmpfiles.rules = [
     "d /run/secrets 0750 root root -"

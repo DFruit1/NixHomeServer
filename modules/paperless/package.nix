@@ -1,4 +1,4 @@
-{ lib, pkgs, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   patchedPaperlessFetchFromGitHubNativeBuildInputs = with pkgs; [
@@ -117,5 +117,7 @@ let
   };
 in
 {
-  services.paperless.package = paperlessPackage;
+  config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
+    services.paperless.package = paperlessPackage;
+  };
 }

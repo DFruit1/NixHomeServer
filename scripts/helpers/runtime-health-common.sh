@@ -11,10 +11,18 @@ let
   optionalAttrs = cond: attrs: if cond then attrs else { };
   dataDatasetMounts = map (dataset: "${vars.zfsDataPool.mountPoint}/${dataset}") vars.zfsDataPool.datasets;
   mailArchiveEnabled = cfg.services.mail-archive-ui.enable or false;
-  immichEnabled = cfg.services.immich.enable or false;
+  apps = cfg.nixhomeserver.apps;
+  audiobookshelfEnabled = apps.audiobookshelf.enable or false;
+  copypartyEnabled = apps.copyparty.enable or false;
+  filebrowserEnabled = apps."filebrowser-quantum".enable or false;
+  immichEnabled = apps.immich.enable or false;
+  jellyfinEnabled = apps.jellyfin.enable or false;
+  kavitaEnabled = apps.kavita.enable or false;
   immichMachineLearning = cfg.services.immich.machine-learning or { };
-  kiwixEnabled = cfg.services.kiwixServe.enable or false;
-  metubeEnabled = cfg.systemd.services ? metube-oauth2-proxy;
+  kiwixEnabled = apps.kiwix.enable or false;
+  metubeEnabled = apps.metube.enable or false;
+  paperlessEnabled = apps.paperless.enable or false;
+  vaultwardenEnabled = apps.vaultwarden.enable or false;
   intersects = left: right: builtins.any (value: builtins.elem value right) left;
   persistBackedStateRoot =
     stateRoot:
@@ -54,114 +62,115 @@ let
       persistentStateRoot = persistBackedStateRoot "/var/lib/unbound";
       payloadRoots = [ ];
     }
-    {
+    ] ++ optional immichEnabled {
       app = "immich";
       component = "app";
       stateRoot = "/var/lib/immich";
       persistentStateRoot = persistBackedStateRoot "/var/lib/immich";
       payloadRoots = [ vars.immichRoot ];
     }
-    {
+    ++ optional audiobookshelfEnabled {
       app = "audiobookshelf";
       component = "app";
       stateRoot = "/var/lib/audiobookshelf";
       persistentStateRoot = persistBackedStateRoot "/var/lib/audiobookshelf";
       payloadRoots = [ vars.sharedAudiobooksRoot vars.usersRoot ];
     }
-    {
+    ++ optional jellyfinEnabled {
       app = "jellyfin";
       component = "app";
       stateRoot = "/var/lib/jellyfin";
       persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
-      payloadRoots = [ vars.sharedVideosRoot vars.usersRoot ];
+      payloadRoots = [ vars.sharedMusicRoot vars.sharedVideosRoot vars.usersRoot ];
     }
-    {
+    ++ optional kavitaEnabled {
       app = "kavita";
       component = "app";
       stateRoot = "/var/lib/kavita";
       persistentStateRoot = persistBackedStateRoot "/var/lib/kavita";
       payloadRoots = [ vars.sharedBooksRoot vars.usersRoot ];
     }
-    {
+    ++ optional metubeEnabled {
       app = "metube";
       component = "app";
       stateRoot = "/var/lib/metube";
       persistentStateRoot = persistBackedStateRoot "/var/lib/metube";
       payloadRoots = [ vars.sharedYouTubeRoot vars.sharedAudiobooksRoot vars.usersRoot ];
     }
-    {
+    ++ optional paperlessEnabled {
       app = "paperless";
       component = "app";
       stateRoot = "/var/lib/paperless";
       persistentStateRoot = persistBackedStateRoot "/var/lib/paperless";
       payloadRoots = [ vars.paperlessRoot ];
     }
-    {
+    ++ optional vaultwardenEnabled {
       app = "vaultwarden";
       component = "app";
       stateRoot = "/var/lib/vaultwarden";
       persistentStateRoot = persistBackedStateRoot "/var/lib/vaultwarden";
       payloadRoots = [ ];
     }
-    {
+    ++ optional copypartyEnabled {
       app = "upload-processor";
       component = "app";
       stateRoot = "/var/lib/upload-processor";
       persistentStateRoot = persistBackedStateRoot "/var/lib/upload-processor";
       payloadRoots = [ vars.uploadSecurity.stagingRoot vars.uploadSecurity.quarantineRoot ];
     }
-    {
+    ++ optional paperlessEnabled {
       app = "paperless";
       component = "redis";
       stateRoot = cfg.services.redis.servers.paperless.settings.dir;
       persistentStateRoot = persistBackedStateRoot cfg.services.redis.servers.paperless.settings.dir;
       payloadRoots = [ vars.paperlessRoot ];
     }
-    {
+    ++ optional immichEnabled {
       app = "immich";
       component = "postgresql";
       stateRoot = cfg.services.postgresql.dataDir;
       persistentStateRoot = persistBackedStateRoot cfg.services.postgresql.dataDir;
       payloadRoots = [ vars.immichManagedRoot ];
     }
-    {
+    ++ optional immichEnabled {
       app = "immich";
       component = "redis";
       stateRoot = cfg.services.redis.servers.immich.settings.dir;
       persistentStateRoot = persistBackedStateRoot cfg.services.redis.servers.immich.settings.dir;
       payloadRoots = [ vars.immichManagedRoot ];
     }
-    {
+    ++ optional copypartyEnabled {
       app = "copyparty";
       component = "app";
       stateRoot = "/var/lib/copyparty";
       persistentStateRoot = persistBackedStateRoot "/var/lib/copyparty";
       payloadRoots = [ vars.uploadSecurity.stagingRoot ];
     }
-    {
+    ++ optional filebrowserEnabled {
       app = "filebrowser-quantum";
       component = "app";
       stateRoot = vars.filebrowserStateDir;
       persistentStateRoot = persistBackedStateRoot vars.filebrowserStateDir;
-      payloadRoots = [ vars.usersRoot vars.sharedRoot vars.kiwixLibraryRoot vars.uploadSecurity.quarantineRoot ];
+      payloadRoots =
+        [ vars.usersRoot vars.sharedRoot ]
+        ++ optional kiwixEnabled vars.kiwixLibraryRoot
+        ++ optional copypartyEnabled vars.uploadSecurity.quarantineRoot;
     }
-    {
+    ++ optional mailArchiveEnabled {
       app = "mail-archive-ui";
       component = "app";
       stateRoot = cfg.services.mail-archive-ui.dataDir;
       persistentStateRoot = persistBackedStateRoot cfg.services.mail-archive-ui.dataDir;
       payloadRoots = [ vars.usersRoot vars.sharedEmailsRoot ];
-    }
-  ];
+    };
   requiredPathEntries =
-    [
-      { label = "copyparty-archive-metadata"; path = "${vars.paperlessArchiveRoot}/.hist"; }
-      { label = "upload-staging-root"; path = vars.uploadSecurity.stagingRoot; }
-      { label = "upload-quarantine-root"; path = vars.uploadSecurity.quarantineRoot; }
-      { label = "paperless-inbox"; path = vars.paperlessInboxRoot; }
-      { label = "paperless-archive"; path = vars.paperlessArchiveRoot; }
-      { label = "paperless-export"; path = vars.paperlessExportRoot; }
-    ]
+    [ ]
+    ++ optional paperlessEnabled { label = "paperless-inbox"; path = vars.paperlessInboxRoot; }
+    ++ optional paperlessEnabled { label = "paperless-archive"; path = vars.paperlessArchiveRoot; }
+    ++ optional paperlessEnabled { label = "paperless-export"; path = vars.paperlessExportRoot; }
+    ++ optional (copypartyEnabled && paperlessEnabled) { label = "copyparty-archive-metadata"; path = "${vars.paperlessArchiveRoot}/.hist"; }
+    ++ optional copypartyEnabled { label = "upload-staging-root"; path = vars.uploadSecurity.stagingRoot; }
+    ++ optional copypartyEnabled { label = "upload-quarantine-root"; path = vars.uploadSecurity.quarantineRoot; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-data"; path = cfg.services.mail-archive-ui.dataDir; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-account-state"; path = cfg.services.mail-archive-ui.accountStateRoot; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-runtime"; path = cfg.services.mail-archive-ui.runtimeDir; }
@@ -170,8 +179,8 @@ let
     ++ optional metubeEnabled { label = "youtube-downloader-state"; path = "/var/lib/metube/state"; }
     ++ optional metubeEnabled { label = "youtube-downloader-sqlite"; path = "/var/lib/metube/state/youtube-downloader.sqlite"; };
   accessCheckApps =
-    [
-      {
+    [ ]
+    ++ optional copypartyEnabled {
         name = "uploads";
         kind = "oauth2-proxy";
         entryUrl = "https://${vars.uploadsDomain}/";
@@ -188,7 +197,7 @@ let
           markerText = "copyparty";
         };
       }
-      {
+    ++ optional filebrowserEnabled {
         name = "files";
         kind = "oidc-direct";
         entryUrl = "https://${vars.filebrowserDomain}/";
@@ -205,7 +214,7 @@ let
           markerText = "Files";
         };
       }
-      {
+    ++ optional paperlessEnabled {
         name = "paperless";
         kind = "oidc-direct";
         entryUrl = "https://paperless.${vars.domain}/";
@@ -217,7 +226,7 @@ let
           markerText = "Paperless";
         };
       }
-      {
+    ++ optional immichEnabled {
         name = "photos";
         kind = "oidc-direct";
         entryUrl = "https://${vars.photosDomain}/";
@@ -229,7 +238,7 @@ let
           markerText = "Immich";
         };
       }
-      {
+    ++ optional audiobookshelfEnabled {
         name = "audiobooks";
         kind = "oidc-direct";
         entryUrl = "https://${vars.audiobooksDomain}/audiobookshelf/";
@@ -241,7 +250,7 @@ let
           markerText = "Audiobookshelf";
         };
       }
-      {
+    ++ optional kavitaEnabled {
         name = "books";
         kind = "oidc-direct";
         entryUrl = "https://${vars.kavitaDomain}/";
@@ -253,7 +262,6 @@ let
           markerText = "Kavita";
         };
       }
-    ]
     ++ optional kiwixEnabled {
       name = "kiwix";
       kind = "oauth2-proxy";
@@ -343,19 +351,19 @@ in
         "kanidm.service"
         "caddy.service"
         "unbound.service"
-        "copyparty.service"
-        "immich-server.service"
-        "paperless-web.service"
-        "vaultwarden.service"
-        "audiobookshelf.service"
-        "filebrowser-quantum.service"
-        "kavita.service"
-        "jellyfin.service"
-        "upload-processor.service"
       ]
       ++ optional cfg.services.cloudflared.enable "cloudflared-tunnel-${vars.cloudflareTunnelName}.service"
       ++ optional cfg.services.oauth2-proxy.enable "oauth2-proxy.service"
       ++ optional (cfg.services.netbird.clients ? myNetbirdClient) "netbird-main.service"
+      ++ optional copypartyEnabled "copyparty.service"
+      ++ optional copypartyEnabled "upload-processor.service"
+      ++ optional immichEnabled "immich-server.service"
+      ++ optional paperlessEnabled "paperless-web.service"
+      ++ optional vaultwardenEnabled "vaultwarden.service"
+      ++ optional audiobookshelfEnabled "audiobookshelf.service"
+      ++ optional filebrowserEnabled "filebrowser-quantum.service"
+      ++ optional kavitaEnabled "kavita.service"
+      ++ optional jellyfinEnabled "jellyfin.service"
       ++ optional kiwixEnabled "kiwix.service"
       ++ optional kiwixEnabled "kiwix-library-watch.service"
       ++ optional kiwixEnabled "kiwix-oauth2-proxy.service"
@@ -365,50 +373,48 @@ in
 
     edgeHttp = [
       { name = "kanidm"; url = "https://${vars.kanidmDomain}/"; expected = [ 200 303 ]; }
-      { name = "uploads"; url = "https://${vars.uploadsDomain}/"; expected = [ 200 302 303 401 403 ]; }
-      { name = "files"; url = "https://${vars.filebrowserDomain}/"; expected = [ 200 302 303 ]; }
-      { name = "paperless"; url = "https://paperless.${vars.domain}/"; expected = [ 200 302 ]; }
-      { name = "vaultwarden"; url = "https://${vars.vaultwardenDomain}/"; expected = [ 200 302 303 ]; }
-      { name = "photos"; url = "https://${vars.photosDomain}/"; expected = [ 200 302 ]; }
-      { name = "sharephotos"; url = "https://${vars.sharePhotosDomain}/share/healthcheck"; expected = [ 200 ]; }
-      { name = "audiobooks"; url = "https://${vars.audiobooksDomain}/"; expected = [ 200 302 ]; }
-      { name = "books"; url = "https://${vars.kavitaDomain}/"; expected = [ 200 302 ]; }
-      { name = "videos"; url = "https://${vars.jellyfinDomain}/"; expected = [ 200 302 ]; }
     ]
+    ++ optional copypartyEnabled { name = "uploads"; url = "https://${vars.uploadsDomain}/"; expected = [ 200 302 303 401 403 ]; }
+    ++ optional filebrowserEnabled { name = "files"; url = "https://${vars.filebrowserDomain}/"; expected = [ 200 302 303 ]; }
+    ++ optional paperlessEnabled { name = "paperless"; url = "https://paperless.${vars.domain}/"; expected = [ 200 302 ]; }
+    ++ optional vaultwardenEnabled { name = "vaultwarden"; url = "https://${vars.vaultwardenDomain}/"; expected = [ 200 302 303 ]; }
+    ++ optional immichEnabled { name = "photos"; url = "https://${vars.photosDomain}/"; expected = [ 200 302 ]; }
+    ++ optional immichEnabled { name = "sharephotos"; url = "https://${vars.sharePhotosDomain}/share/healthcheck"; expected = [ 200 ]; }
+    ++ optional audiobookshelfEnabled { name = "audiobooks"; url = "https://${vars.audiobooksDomain}/"; expected = [ 200 302 ]; }
+    ++ optional kavitaEnabled { name = "books"; url = "https://${vars.kavitaDomain}/"; expected = [ 200 302 ]; }
+    ++ optional jellyfinEnabled { name = "videos"; url = "https://${vars.jellyfinDomain}/"; expected = [ 200 302 ]; }
     ++ optional kiwixEnabled { name = "kiwix"; url = "https://${vars.kiwixDomain}/"; expected = [ 200 302 ]; }
     ++ optional mailArchiveEnabled { name = "mail-archive"; url = "https://${vars.emailsDomain}/"; expected = [ 200 302 303 401 403 ]; }
     ++ optional metubeEnabled { name = "metube"; url = "https://${vars.metubeDomain}/"; expected = [ 200 302 303 401 403 ]; };
 
-    internalHttp = [
-      { name = "copyparty"; url = "http://127.0.0.1:${toString cfg.services.copyparty.settings.p}/"; expected = [ 200 302 401 403 ]; }
-      { name = "filebrowser-quantum-health"; url = "http://127.0.0.1:${toString vars.filebrowserPort}/health"; expected = [ 200 ]; }
-      { name = "vaultwarden"; url = "http://127.0.0.1:8222/"; expected = [ 200 302 303 ]; }
-      { name = "sharephotos"; url = "http://127.0.0.1:3300/share/healthcheck"; expected = [ 200 ]; }
-    ]
+    internalHttp = [ ]
+    ++ optional copypartyEnabled { name = "copyparty"; url = "http://127.0.0.1:${toString cfg.services.copyparty.settings.p}/"; expected = [ 200 302 401 403 ]; }
+    ++ optional filebrowserEnabled { name = "filebrowser-quantum-health"; url = "http://127.0.0.1:${toString vars.filebrowserPort}/health"; expected = [ 200 ]; }
+    ++ optional vaultwardenEnabled { name = "vaultwarden"; url = "http://127.0.0.1:8222/"; expected = [ 200 302 303 ]; }
+    ++ optional immichEnabled { name = "sharephotos"; url = "http://127.0.0.1:3300/share/healthcheck"; expected = [ 200 ]; }
     ++ optional mailArchiveEnabled { name = "mail-archive-ui-healthz"; url = "http://127.0.0.1:${toString cfg.services.mail-archive-ui.port}/healthz"; expected = [ 200 ]; }
     ++ optional metubeEnabled { name = "metube-upstream"; url = "http://127.0.0.1:8083/healthz"; expected = [ 200 ]; };
 
     dns = {
-      resolve = [ "example.com" "${vars.sharePhotosDomain}" ];
-      private = [
-        { host = "paperless.${vars.domain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.photosDomain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.audiobooksDomain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.filebrowserDomain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.vaultwardenDomain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.kavitaDomain}"; expected = localDnsPrivateAnswer; }
-        { host = "${vars.jellyfinDomain}"; expected = localDnsPrivateAnswer; }
-      ]
+      resolve = [ "example.com" ] ++ optional immichEnabled "${vars.sharePhotosDomain}";
+      private = [ ]
+      ++ optional paperlessEnabled { host = "paperless.${vars.domain}"; expected = localDnsPrivateAnswer; }
+      ++ optional immichEnabled { host = "${vars.photosDomain}"; expected = localDnsPrivateAnswer; }
+      ++ optional audiobookshelfEnabled { host = "${vars.audiobooksDomain}"; expected = localDnsPrivateAnswer; }
+      ++ optional filebrowserEnabled { host = "${vars.filebrowserDomain}"; expected = localDnsPrivateAnswer; }
+      ++ optional vaultwardenEnabled { host = "${vars.vaultwardenDomain}"; expected = localDnsPrivateAnswer; }
+      ++ optional kavitaEnabled { host = "${vars.kavitaDomain}"; expected = localDnsPrivateAnswer; }
+      ++ optional jellyfinEnabled { host = "${vars.jellyfinDomain}"; expected = localDnsPrivateAnswer; }
       ++ optional kiwixEnabled { host = "${vars.kiwixDomain}"; expected = localDnsPrivateAnswer; }
       ++ optional mailArchiveEnabled { host = "${vars.emailsDomain}"; expected = localDnsPrivateAnswer; }
       ++ optional metubeEnabled { host = "${vars.metubeDomain}"; expected = localDnsPrivateAnswer; };
       splitHorizon = {
         private = [
           { host = "${vars.kanidmDomain}"; expected = vars.serverLanIP; }
-          { host = "${vars.filebrowserDomain}"; expected = vars.serverLanIP; }
-          { host = "${vars.uploadsDomain}"; expected = vars.serverLanIP; }
           { host = "${vars.hostname}.${vars.lanDnsDomain}"; expected = vars.serverLanIP; }
-        ];
+        ]
+        ++ optional filebrowserEnabled { host = "${vars.filebrowserDomain}"; expected = vars.serverLanIP; }
+        ++ optional copypartyEnabled { host = "${vars.uploadsDomain}"; expected = vars.serverLanIP; };
         ptr = [
           { ip = vars.serverLanIP; expected = "${vars.hostname}.${vars.lanDnsDomain}"; }
         ];
@@ -416,8 +422,8 @@ in
       netbirdOnly = {
         public = [
           { host = "${vars.kanidmDomain}"; forbidden = vars.nbIP; }
-          { host = "${vars.uploadsDomain}"; forbidden = vars.nbIP; }
-        ];
+        ]
+        ++ optional copypartyEnabled { host = "${vars.uploadsDomain}"; forbidden = vars.nbIP; };
       };
     };
   };
@@ -436,6 +442,7 @@ in
 
   uploadAccess = {
     copyparty = {
+      enabled = bool copypartyEnabled;
       serviceUser = "copyparty";
       requiredGroup = "upload-staging";
       uploadRootsParent = vars.uploadSecurity.stagingRoot;
@@ -470,32 +477,31 @@ in
     entries = appStateEntries;
       criticalPaths = [
         vars.dataRoot
-        vars.paperlessRoot
-        vars.paperlessInboxRoot
-        vars.paperlessArchiveRoot
-        vars.paperlessExportRoot
-        vars.immichRoot
-        vars.immichManagedRoot
         vars.usersRoot
         vars.sharedRoot
-        vars.sharedEmailsRoot
-        vars.uploadSecurity.stagingRoot
-        vars.uploadSecurity.quarantineRoot
-        cfg.services.mail-archive-ui.dataDir
-        cfg.services.mail-archive-ui.accountStateRoot
-        cfg.services.mail-archive-ui.storeRoot
-        vars.kiwixLibraryRoot
-      ];
+      ]
+      ++ optional paperlessEnabled vars.paperlessRoot
+      ++ optional paperlessEnabled vars.paperlessInboxRoot
+      ++ optional paperlessEnabled vars.paperlessArchiveRoot
+      ++ optional paperlessEnabled vars.paperlessExportRoot
+      ++ optional immichEnabled vars.immichRoot
+      ++ optional immichEnabled vars.immichManagedRoot
+      ++ optional mailArchiveEnabled vars.sharedEmailsRoot
+      ++ optional mailArchiveEnabled cfg.services.mail-archive-ui.dataDir
+      ++ optional mailArchiveEnabled cfg.services.mail-archive-ui.accountStateRoot
+      ++ optional mailArchiveEnabled cfg.services.mail-archive-ui.storeRoot
+      ++ optional copypartyEnabled vars.uploadSecurity.stagingRoot
+      ++ optional copypartyEnabled vars.uploadSecurity.quarantineRoot
+      ++ optional kiwixEnabled vars.kiwixLibraryRoot;
     requiredPaths = requiredPathEntries;
   };
 
   databases = {
     sqliteBinary = "${lib.getExe pkgs.sqlite}";
-    sqlite = [
-      { name = "paperless"; path = "/var/lib/paperless/db.sqlite3"; }
-      { name = "audiobookshelf"; path = "/var/lib/audiobookshelf/config/absdatabase.sqlite"; }
-      { name = "kavita"; path = "/var/lib/kavita/config/kavita.db"; }
-    ]
+    sqlite = [ ]
+    ++ optional paperlessEnabled { name = "paperless"; path = "/var/lib/paperless/db.sqlite3"; }
+    ++ optional audiobookshelfEnabled { name = "audiobookshelf"; path = "/var/lib/audiobookshelf/config/absdatabase.sqlite"; }
+    ++ optional kavitaEnabled { name = "kavita"; path = "/var/lib/kavita/config/kavita.db"; }
     ++ optional mailArchiveEnabled { name = "mail-archive-ui"; path = "${cfg.services.mail-archive-ui.dataDir}/mail-archive-ui.sqlite3"; };
     postgresql = {
       enabled = bool cfg.services.postgresql.enable;

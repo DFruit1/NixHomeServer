@@ -1,5 +1,5 @@
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::{Form, Path, Query, State},
     http::{
         header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, HOST},
@@ -843,7 +843,7 @@ struct AttachmentDownloadForm {
     return_to: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct AttachmentPaperlessForm {
     #[serde(default)]
     attachment_keys: Vec<String>,
@@ -2209,7 +2209,7 @@ async fn download_attachment_browser(
 async fn download_attachments_zip(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(form): Form<AttachmentDownloadForm>,
+    body: Bytes,
 ) -> Response {
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
@@ -2220,6 +2220,7 @@ async fn download_attachments_zip(
         return auth_error(status, &message);
     }
 
+    let form = parse_attachment_download_form_body(&body);
     let config = state.config.clone();
     let username = identity.username.clone();
     let return_to = form.return_to.clone();
@@ -2244,7 +2245,7 @@ async fn download_attachments_zip(
 async fn send_attachments_paperless(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(form): Form<AttachmentPaperlessForm>,
+    body: Bytes,
 ) -> Response {
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
@@ -2255,6 +2256,7 @@ async fn send_attachments_paperless(
         return auth_error(status, &message);
     }
 
+    let form = parse_attachment_paperless_form_body(&body);
     let config = state.config.clone();
     let username = identity.username.clone();
     let return_to = form.return_to.clone();
@@ -6381,6 +6383,59 @@ fn download_attachment_keys_for_form(
     }
 
     Ok(keys)
+}
+
+fn parse_attachment_download_form_body(body: &[u8]) -> AttachmentDownloadForm {
+    let mut form = AttachmentDownloadForm::default();
+
+    for (key, value) in form_urlencoded::parse(body) {
+        let value = value.into_owned();
+        match key.as_ref() {
+            "attachment_keys" | "attachment_keys[]" => form.attachment_keys.push(value),
+            "selection_scope" => form.selection_scope = Some(value),
+            "q" => form.q = Some(value),
+            "account_id" => form.account_id = Some(value),
+            "priority" => form.priority = Some(value),
+            "sender_address" => form.sender_address = Some(value),
+            "sender_name" => form.sender_name = Some(value),
+            "sender_domain" => form.sender_domain = Some(value),
+            "subject" => form.subject = Some(value),
+            "body_text" => form.body_text = Some(value),
+            "date_from" => form.date_from = Some(value),
+            "date_to" => form.date_to = Some(value),
+            "has_attachments" => form.has_attachments = Some(value),
+            "extension" => form.extension = Some(value),
+            "attachment_name" => form.attachment_name = Some(value),
+            "mime_type" => form.mime_type = Some(value),
+            "min_size" => form.min_size = Some(value),
+            "max_size" => form.max_size = Some(value),
+            "min_attachments" => form.min_attachments = Some(value),
+            "max_attachments" => form.max_attachments = Some(value),
+            "include_inline" => form.include_inline = Some(value),
+            "include_inline_images" => form.include_inline_images = Some(value),
+            "show_mime_details" => form.show_mime_details = Some(value),
+            "download_subfolder" => form.download_subfolder = Some(value),
+            "return_to" => form.return_to = Some(value),
+            _ => {}
+        }
+    }
+
+    form
+}
+
+fn parse_attachment_paperless_form_body(body: &[u8]) -> AttachmentPaperlessForm {
+    let mut form = AttachmentPaperlessForm::default();
+
+    for (key, value) in form_urlencoded::parse(body) {
+        let value = value.into_owned();
+        match key.as_ref() {
+            "attachment_keys" | "attachment_keys[]" => form.attachment_keys.push(value),
+            "return_to" => form.return_to = Some(value),
+            _ => {}
+        }
+    }
+
+    form
 }
 
 fn build_attachments_zip(
@@ -12415,6 +12470,39 @@ mod tests {
             drop(entry);
             assert!(archive.by_name("manifest.json").is_ok());
         });
+    }
+
+    #[test]
+    fn attachment_action_forms_accept_single_and_repeated_keys() {
+        let single_download =
+            parse_attachment_download_form_body(b"attachment_keys=one&return_to=%2Fattachments");
+        assert_eq!(single_download.attachment_keys, vec!["one".to_string()]);
+        assert_eq!(single_download.return_to.as_deref(), Some("/attachments"));
+
+        let repeated_download = parse_attachment_download_form_body(
+            b"attachment_keys=one&attachment_keys=two&selection_scope=all_matching&q=invoice",
+        );
+        assert_eq!(
+            repeated_download.attachment_keys,
+            vec!["one".to_string(), "two".to_string()]
+        );
+        assert_eq!(
+            repeated_download.selection_scope.as_deref(),
+            Some(ATTACHMENT_SELECTION_ALL_MATCHING)
+        );
+        assert_eq!(repeated_download.q.as_deref(), Some("invoice"));
+
+        let paperless = parse_attachment_paperless_form_body(
+            b"attachment_keys=one&attachment_keys=two&return_to=%2Fattachments%3Fextension%3Dpdf",
+        );
+        assert_eq!(
+            paperless.attachment_keys,
+            vec!["one".to_string(), "two".to_string()]
+        );
+        assert_eq!(
+            paperless.return_to.as_deref(),
+            Some("/attachments?extension=pdf")
+        );
     }
 
     #[test]

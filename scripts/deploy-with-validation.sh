@@ -20,10 +20,10 @@ explicit compatibility path for operators who still want workstation-side
 evaluation and builds.
 
 Examples:
-  ./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action test
-  ./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action switch
-  ./scripts/deploy-with-validation.sh --target "dsaw@server" --local-build --action test --hostname server
-  ./scripts/deploy-with-validation.sh --target "dsaw@server" --build-host "dsaw@server" --action test --full-check
+  ./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test
+  ./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action switch
+  ./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --local-build --action test --hostname <flake-hostname>
+  ./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test --full-check
 EOF
 }
 

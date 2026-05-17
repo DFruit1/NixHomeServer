@@ -7,7 +7,7 @@ let
   metubeListenPort = vars.networking.ports.metube;
 in
 {
-  config = oauth2Proxy.mkSidecarService {
+  config = lib.mkIf config.nixhomeserver.apps.metube.enable (oauth2Proxy.mkSidecarService {
     serviceName = "metube-oauth2-proxy";
     description = "Dedicated OAuth2 Proxy for MeTube";
     clientId = "metube-web";
@@ -24,7 +24,7 @@ in
     ];
     upstreamCheck = {
       displayName = "YouTube downloader";
-      url = "http://${loopback}:${toString metubeListenPort}/";
+      url = "http://${loopback}:${toString metubeListenPort}/healthz";
     };
-  };
+  });
 }

@@ -1,4 +1,4 @@
-{ config, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   kanidmPort = vars.networking.ports.kanidm;
@@ -114,34 +114,36 @@ let
   };
 in
 {
-  systemd.services.immich-admin-reconcile = {
-    description = "Reconcile Immich admin users from Kanidm group membership";
-    wantedBy = [ "multi-user.target" ];
-    after = [
-      "immich-server.service"
-      "kanidm.service"
-      "postgresql.service"
-      "redis-immich.service"
-    ];
-    wants = [
-      "immich-server.service"
-      "kanidm.service"
-      "postgresql.service"
-      "redis-immich.service"
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      ExecStart = "${immichAdminReconcile}/bin/immich-admin-reconcile";
+  config = lib.mkIf config.nixhomeserver.apps.immich.enable {
+    systemd.services.immich-admin-reconcile = {
+      description = "Reconcile Immich admin users from Kanidm group membership";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "immich-server.service"
+        "kanidm.service"
+        "postgresql.service"
+        "redis-immich.service"
+      ];
+      wants = [
+        "immich-server.service"
+        "kanidm.service"
+        "postgresql.service"
+        "redis-immich.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${immichAdminReconcile}/bin/immich-admin-reconcile";
+      };
     };
-  };
 
-  systemd.timers.immich-admin-reconcile = {
-    description = "Periodically reconcile Immich admin users from Kanidm";
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnBootSec = "5m";
-      OnUnitActiveSec = "15m";
-      Unit = "immich-admin-reconcile.service";
+    systemd.timers.immich-admin-reconcile = {
+      description = "Periodically reconcile Immich admin users from Kanidm";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "5m";
+        OnUnitActiveSec = "15m";
+        Unit = "immich-admin-reconcile.service";
+      };
     };
   };
 }

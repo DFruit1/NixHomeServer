@@ -66,7 +66,7 @@ in
   options.services.kiwixServe = {
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = config.nixhomeserver.apps.kiwix.enable;
       description = "Whether to run the internal Kiwix server.";
     };
 

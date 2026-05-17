@@ -31,7 +31,7 @@ let
   ];
 in
 {
-  environment.systemPackages = systemPackages;
+  environment.systemPackages = lib.mkIf cfg.enable systemPackages;
 
   systemd.services.mail-archive-sync = lib.mkIf cfg.enable {
     description = "Synchronize mail archive UI accounts and refresh notmuch indexes";

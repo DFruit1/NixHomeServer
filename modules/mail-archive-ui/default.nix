@@ -41,7 +41,11 @@ in
   ];
 
   options.services.mail-archive-ui = {
-    enable = lib.mkEnableOption "the private mail archive UI service";
+    enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.nixhomeserver.apps."mail-archive-ui".enable;
+      description = "Whether to run the private mail archive UI service.";
+    };
 
     package = lib.mkOption {
       type = lib.types.package;

@@ -49,6 +49,13 @@ describe('media paths', () => {
     );
   });
 
+  it('uses shared roots for shared audio and video downloads', () => {
+    expect(mediaRootFor(config, user, { ...request, destination: 'shared' })).toBe('/data/shared/audiobooks/youtube');
+    expect(mediaRootFor(config, user, { ...request, mediaType: 'video', destination: 'shared' })).toBe(
+      '/data/shared/videos/youtube',
+    );
+  });
+
   it('rejects paths escaping their root', () => {
     expect(() => assertInside('/data/users/dsaw/audiobooks/youtube/item', '/data/users')).not.toThrow();
     expect(() => assertInside('/data/elsewhere/item', '/data/users')).toThrow(/escaped/);

@@ -485,6 +485,9 @@ check_copyparty_upload_permissions() {
   local group_entry group_members id_groups upload_dir probe_path detail severity present found_upload_root=0
 
   access_json="$(runtime_health_snapshot_query '.uploadAccess.copyparty')"
+  if [[ "$(jq -r '.enabled // true' <<<"$access_json")" != "true" ]]; then
+    return 0
+  fi
   service_user="$(jq -r '.serviceUser' <<<"$access_json")"
   required_group="$(jq -r '.requiredGroup' <<<"$access_json")"
   upload_roots_parent="$(jq -r '.uploadRootsParent' <<<"$access_json")"

@@ -1,4 +1,4 @@
-{ pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   mkDirCmd =
@@ -59,25 +59,27 @@ let
   );
 in
 {
-  systemd.services.immich-storage-layout-v1 = {
-    description = "Provision Immich storage layout";
-    wantedBy = [ "multi-user.target" ];
-    wants = [ "data-pool-layout.service" "local-fs.target" ];
-    after = [ "data-pool-layout.service" "local-fs.target" ];
-    before = [ "immich-server.service" ];
-    unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
+  config = lib.mkIf config.nixhomeserver.apps.immich.enable {
+    systemd.services.immich-storage-layout-v1 = {
+      description = "Provision Immich storage layout";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "data-pool-layout.service" "local-fs.target" ];
+      after = [ "data-pool-layout.service" "local-fs.target" ];
+      before = [ "immich-server.service" ];
+      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+        ${immichStorageLayoutScript}
+      '';
     };
-    script = ''
-      set -euo pipefail
-      ${immichStorageLayoutScript}
-    '';
-  };
 
-  systemd.services.immich-server = {
-    wants = [ "immich-storage-layout-v1.service" ];
-    after = [ "immich-storage-layout-v1.service" ];
+    systemd.services.immich-server = {
+      wants = [ "immich-storage-layout-v1.service" ];
+      after = [ "immich-storage-layout-v1.service" ];
+    };
   };
 }

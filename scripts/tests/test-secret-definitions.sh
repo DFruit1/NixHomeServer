@@ -6,10 +6,17 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools find rg sort comm mktemp
+ensure_tools find git rg sort comm mktemp tar
 
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+archive_secret_probe="secrets/top/archive-filter-test-secret"
+archive_cache_probe_dir=".cache/archive-filter-test"
+cleanup() {
+  rm -rf "$tmpdir"
+  rm -f "$archive_secret_probe"
+  rm -rf "$archive_cache_probe_dir"
+}
+trap cleanup EXIT
 
 definitions_file="${tmpdir}/definitions.txt"
 references_file="${tmpdir}/references.txt"
@@ -50,5 +57,23 @@ while IFS= read -r age_file; do
     exit 1
   fi
 done <"$tracked_age_files"
+
+mkdir -p secrets/top "$archive_cache_probe_dir"
+printf 'do-not-archive\n' >"$archive_secret_probe"
+printf 'do-not-archive\n' >"${archive_cache_probe_dir}/cache-file"
+
+archive_file="${tmpdir}/deploy-repo.tar"
+create_deploy_repo_archive "$archive_file"
+
+if tar -tf "$archive_file" | rg -q '(^|/)secrets/top/|(^|/)\.cache/|(^|/)SensitivePrivateSecrets(/|$)'; then
+  echo "❌ Deploy archive includes ignored local secret/cache paths."
+  tar -tf "$archive_file" | rg '(^|/)secrets/top/|(^|/)\.cache/|(^|/)SensitivePrivateSecrets(/|$)' || true
+  exit 1
+fi
+
+if ! tar -tf "$archive_file" | rg -q '(^|/)scripts/helpers/repo-common\.sh$'; then
+  echo "❌ Deploy archive did not include tracked repository files."
+  exit 1
+fi
 
 echo "✅ Secret structure tests passed."

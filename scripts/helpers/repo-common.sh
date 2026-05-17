@@ -73,11 +73,31 @@ sha256_file() {
 
 create_deploy_repo_archive() {
   local archive_path="$1"
+  local manifest
+
+  if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    manifest="$(mktemp /tmp/deploy-repo-manifest.XXXXXX)"
+    trap 'rm -f "$manifest"' RETURN
+
+    while IFS= read -r -d '' path; do
+      if [[ -f "$repo_root/$path" || -L "$repo_root/$path" ]]; then
+        printf '%s\0' "$path"
+      fi
+    done < <(
+      git -C "$repo_root" ls-files -z --cached --modified --others --exclude-standard
+    ) >"$manifest"
+
+    tar -C "$repo_root" --null -T "$manifest" -cf "$archive_path"
+    return 0
+  fi
 
   tar -C "$repo_root" \
     --exclude=.git \
     --exclude='./result' \
     --exclude='./result-*' \
+    --exclude='./.cache' \
+    --exclude='./secrets/top' \
+    --exclude='./SensitivePrivateSecrets' \
     --exclude='./rust/apps/mail-archive-ui/target' \
     --exclude='./rust/apps/kanidm-admin/target' \
     -cf "$archive_path" .

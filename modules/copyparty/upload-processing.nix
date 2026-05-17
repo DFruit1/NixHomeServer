@@ -96,185 +96,187 @@ let
   };
 in
 {
-  users.groups.upload-staging = { };
-  users.groups.upload-review = { };
-  users.users.upload-processor = {
-    isSystemUser = true;
-    group = "upload-processor";
-    home = "/var/lib/upload-processor";
-    createHome = false;
-    extraGroups = [
+  config = lib.mkIf config.nixhomeserver.apps.copyparty.enable {
+    users.groups.upload-staging = { };
+    users.groups.upload-review = { };
+    users.users.upload-processor = {
+      isSystemUser = true;
+      group = "upload-processor";
+      home = "/var/lib/upload-processor";
+      createHome = false;
+      extraGroups = [
+        "upload-staging"
+        "upload-review"
+        "users"
+        "kiwix"
+      ];
+    };
+    users.groups.upload-processor = { };
+
+    users.users.copyparty.extraGroups = lib.mkAfter [
       "upload-staging"
-      "upload-review"
-      "users"
-      "kiwix"
     ];
-  };
-  users.groups.upload-processor = { };
 
-  users.users.copyparty.extraGroups = lib.mkAfter [
-    "upload-staging"
-  ];
+    services.kiwixServe.extraUploadUsers = lib.mkAfter [
+      "upload-processor"
+    ];
 
-  services.kiwixServe.extraUploadUsers = lib.mkAfter [
-    "upload-processor"
-  ];
+    environment.systemPackages = [
+      enqueueScript
+      uploadProcessorPackage
+    ];
 
-  environment.systemPackages = [
-    enqueueScript
-    uploadProcessorPackage
-  ];
+    services.clamav = {
+      daemon = {
+        enable = true;
+        settings = {
+          AlertEncrypted = true;
+          AlertEncryptedArchive = true;
+          AlertEncryptedDoc = true;
+        };
+      };
+      updater.enable = true;
+    };
 
-  services.clamav = {
-    daemon = {
-      enable = true;
-      settings = {
-        AlertEncrypted = true;
-        AlertEncryptedArchive = true;
-        AlertEncryptedDoc = true;
+    systemd.services.clamav-daemon.serviceConfig.MemoryMax = config.nixhomeserver.resources.clamav.memoryMax;
+
+    systemd.tmpfiles.rules = [
+      "d /run/upload-processor 0770 upload-processor upload-staging -"
+      "d /run/upload-processor/queue 0770 upload-processor upload-staging -"
+      "d /var/lib/upload-processor 0750 upload-processor upload-processor -"
+      "d ${uploadSecurity.stagingRoot} 0710 root upload-staging -"
+      "d ${uploadSecurity.quarantineRoot} 0750 upload-processor upload-review -"
+    ];
+
+    systemd.services.upload-processor-runtime-layout = {
+      description = "Create upload processor runtime directories";
+      wantedBy = [ "multi-user.target" ];
+      before = [
+        "copyparty.service"
+        "upload-processor.service"
+        "upload-processor-rescan.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      path = [ pkgs.coreutils ];
+      script = ''
+        set -euo pipefail
+        install -d -m 0770 -o upload-processor -g upload-staging /run/upload-processor
+        install -d -m 0770 -o upload-processor -g upload-staging /run/upload-processor/queue
+      '';
+    };
+
+    systemd.services.upload-processor = {
+      description = "Scan and promote staged Copyparty uploads";
+      wantedBy = [ "multi-user.target" ];
+      wants = [
+        "clamav-daemon.service"
+        "data-pool-layout.service"
+        "fileshare-user-root-sync.service"
+        "local-fs.target"
+        "upload-processor-runtime-layout.service"
+      ];
+      after = [
+        "clamav-daemon.service"
+        "data-pool-layout.service"
+        "fileshare-user-root-sync.service"
+        "local-fs.target"
+        "upload-processor-runtime-layout.service"
+      ];
+      path = [ uploadProcessorPackage ];
+      environment = processorEnvironment;
+      serviceConfig = {
+        Type = "simple";
+        User = "upload-processor";
+        Group = "upload-processor";
+        ExecStart = "${uploadProcessorPackage}/bin/upload-processor daemon";
+        Restart = "on-failure";
+        RestartSec = "10s";
+        StateDirectory = "upload-processor";
+        StateDirectoryMode = "0750";
+        UMask = "0007";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectProc = "invisible";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        LockPersonality = true;
+        RemoveIPC = true;
+        RestrictSUIDSGID = true;
+        RestrictRealtime = true;
+        AmbientCapabilities = [
+          "CAP_CHOWN"
+          "CAP_DAC_OVERRIDE"
+          "CAP_FOWNER"
+        ];
+        CapabilityBoundingSet = [
+          "CAP_CHOWN"
+          "CAP_DAC_OVERRIDE"
+          "CAP_FOWNER"
+        ];
+        ReadWritePaths = processorReadWritePaths;
+        ReadOnlyPaths = processorReadOnlyPaths;
       };
     };
-    updater.enable = true;
-  };
 
-  systemd.services.clamav-daemon.serviceConfig.MemoryMax = config.nixhomeserver.resources.clamav.memoryMax;
-
-  systemd.tmpfiles.rules = [
-    "d /run/upload-processor 0770 upload-processor upload-staging -"
-    "d /run/upload-processor/queue 0770 upload-processor upload-staging -"
-    "d /var/lib/upload-processor 0750 upload-processor upload-processor -"
-    "d ${uploadSecurity.stagingRoot} 0710 root upload-staging -"
-    "d ${uploadSecurity.quarantineRoot} 0750 upload-processor upload-review -"
-  ];
-
-  systemd.services.upload-processor-runtime-layout = {
-    description = "Create upload processor runtime directories";
-    wantedBy = [ "multi-user.target" ];
-    before = [
-      "copyparty.service"
-      "upload-processor.service"
-      "upload-processor-rescan.service"
-    ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
+    systemd.services.upload-processor-rescan = {
+      description = "Ask upload processor to rescan staged uploads";
+      wants = [
+        "clamav-daemon.service"
+        "data-pool-layout.service"
+        "local-fs.target"
+        "upload-processor-runtime-layout.service"
+      ];
+      after = [
+        "clamav-daemon.service"
+        "data-pool-layout.service"
+        "local-fs.target"
+        "upload-processor-runtime-layout.service"
+      ];
+      environment = processorEnvironment;
+      serviceConfig = {
+        Type = "oneshot";
+        User = "upload-processor";
+        Group = "upload-processor";
+        UMask = "0007";
+        AmbientCapabilities = [
+          "CAP_CHOWN"
+          "CAP_DAC_OVERRIDE"
+          "CAP_FOWNER"
+        ];
+        CapabilityBoundingSet = [
+          "CAP_CHOWN"
+          "CAP_DAC_OVERRIDE"
+          "CAP_FOWNER"
+        ];
+        ReadWritePaths = processorReadWritePaths;
+        ReadOnlyPaths = processorReadOnlyPaths;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+      };
+      path = [ uploadProcessorPackage ];
+      script = ''
+        ${uploadProcessorPackage}/bin/upload-processor once
+      '';
     };
-    path = [ pkgs.coreutils ];
-    script = ''
-      set -euo pipefail
-      install -d -m 0770 -o upload-processor -g upload-staging /run/upload-processor
-      install -d -m 0770 -o upload-processor -g upload-staging /run/upload-processor/queue
-    '';
-  };
 
-  systemd.services.upload-processor = {
-    description = "Scan and promote staged Copyparty uploads";
-    wantedBy = [ "multi-user.target" ];
-    wants = [
-      "clamav-daemon.service"
-      "data-pool-layout.service"
-      "fileshare-user-root-sync.service"
-      "local-fs.target"
-      "upload-processor-runtime-layout.service"
-    ];
-    after = [
-      "clamav-daemon.service"
-      "data-pool-layout.service"
-      "fileshare-user-root-sync.service"
-      "local-fs.target"
-      "upload-processor-runtime-layout.service"
-    ];
-    path = [ uploadProcessorPackage ];
-    environment = processorEnvironment;
-    serviceConfig = {
-      Type = "simple";
-      User = "upload-processor";
-      Group = "upload-processor";
-      ExecStart = "${uploadProcessorPackage}/bin/upload-processor daemon";
-      Restart = "on-failure";
-      RestartSec = "10s";
-      StateDirectory = "upload-processor";
-      StateDirectoryMode = "0750";
-      UMask = "0007";
-      NoNewPrivileges = true;
-      PrivateTmp = true;
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      ProtectProc = "invisible";
-      ProtectClock = true;
-      ProtectControlGroups = true;
-      ProtectKernelLogs = true;
-      ProtectKernelModules = true;
-      ProtectKernelTunables = true;
-      LockPersonality = true;
-      RemoveIPC = true;
-      RestrictSUIDSGID = true;
-      RestrictRealtime = true;
-      AmbientCapabilities = [
-        "CAP_CHOWN"
-        "CAP_DAC_OVERRIDE"
-        "CAP_FOWNER"
-      ];
-      CapabilityBoundingSet = [
-        "CAP_CHOWN"
-        "CAP_DAC_OVERRIDE"
-        "CAP_FOWNER"
-      ];
-      ReadWritePaths = processorReadWritePaths;
-      ReadOnlyPaths = processorReadOnlyPaths;
-    };
-  };
-
-  systemd.services.upload-processor-rescan = {
-    description = "Ask upload processor to rescan staged uploads";
-    wants = [
-      "clamav-daemon.service"
-      "data-pool-layout.service"
-      "local-fs.target"
-      "upload-processor-runtime-layout.service"
-    ];
-    after = [
-      "clamav-daemon.service"
-      "data-pool-layout.service"
-      "local-fs.target"
-      "upload-processor-runtime-layout.service"
-    ];
-    environment = processorEnvironment;
-    serviceConfig = {
-      Type = "oneshot";
-      User = "upload-processor";
-      Group = "upload-processor";
-      UMask = "0007";
-      AmbientCapabilities = [
-        "CAP_CHOWN"
-        "CAP_DAC_OVERRIDE"
-        "CAP_FOWNER"
-      ];
-      CapabilityBoundingSet = [
-        "CAP_CHOWN"
-        "CAP_DAC_OVERRIDE"
-        "CAP_FOWNER"
-      ];
-      ReadWritePaths = processorReadWritePaths;
-      ReadOnlyPaths = processorReadOnlyPaths;
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      PrivateTmp = true;
-      NoNewPrivileges = true;
-    };
-    path = [ uploadProcessorPackage ];
-    script = ''
-      ${uploadProcessorPackage}/bin/upload-processor once
-    '';
-  };
-
-  systemd.timers.upload-processor-rescan = {
-    description = "Periodic upload processor rescan";
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnBootSec = "2m";
-      OnUnitActiveSec = uploadSecurity.rescanInterval;
-      Unit = "upload-processor-rescan.service";
+    systemd.timers.upload-processor-rescan = {
+      description = "Periodic upload processor rescan";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "2m";
+        OnUnitActiveSec = uploadSecurity.rescanInterval;
+        Unit = "upload-processor-rescan.service";
+      };
     };
   };
 }

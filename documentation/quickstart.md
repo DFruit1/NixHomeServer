@@ -51,7 +51,7 @@ For normal day-2 operations, you can instead sync the repo to the running
 server and execute the same entrypoint there:
 
 ```bash
-ssh dsaw@server 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'
+ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'
 ```
 
 ## Blank-Machine Bootstrap

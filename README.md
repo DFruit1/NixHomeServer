@@ -52,12 +52,18 @@ identity, DNS, edge, storage, or validation foundations.
 For a new one-host install, use [`vars.example.nix`](./vars.example.nix) as the
 copyable starting point and keep day-to-day settings in [`vars.nix`](./vars.nix).
 
-Immich sharing: the private app stays on `photos.sydneybasiniot.org`, while
-public share links use `sharephotos.sydneybasiniot.org`. See
-[Operations](./documentation/operations.md#app-hostnames).
+Immich sharing uses separate private-app and public-share hostnames. Render the
+site runbook with `nix run .#render-runbook -- --host <host>` for concrete URLs,
+and see [Operations](./documentation/operations.md#app-hostnames) for the access
+model.
 
 Mail archive control plane: see [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private UI, sync flow, and storage model.
 
-Files now split cleanly by role: `https://uploads.sydneybasiniot.org/` is the Copyparty bulk-uploader surface and lands each signed-in user directly in their own uploads root, while `https://files.sydneybasiniot.org/` is the authenticated FileBrowser Quantum UI and WebDAV entrypoint. Kavita-managed book roots now only include `ebooks`, `comics`, and `manga`.
+Files split cleanly by role: the uploads hostname is the Copyparty bulk-uploader
+surface and lands each signed-in user directly in their own uploads root, while
+the files hostname is the authenticated FileBrowser Quantum UI and WebDAV
+entrypoint. Kavita-managed book roots use `ebooks`, `comics`, and `manga`.
 
-Vaultwarden stays private at `https://passwords.sydneybasiniot.org` and is intended for LAN and NetBird use only. See [Vaultwarden Guide](./documentation/vaultwarden.md) for the local-login invite flow and break-glass local admin model.
+Vaultwarden stays private and is intended for LAN and NetBird use only. See
+[Vaultwarden Guide](./documentation/vaultwarden.md) for the local-login invite
+flow and break-glass local admin model.

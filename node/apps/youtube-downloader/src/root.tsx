@@ -1,6 +1,7 @@
 import { component$, $, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { CurrentUser, Job, CreateJobRequest } from './shared/types.js';
 import { AUDIO_FORMATS, VIDEO_CONTAINERS, VIDEO_QUALITIES } from './shared/types.js';
+import { normalizeDownloadUrl } from './shared/url.js';
 import './client/styles.css';
 
 export default component$(() => {
@@ -43,8 +44,10 @@ export default component$(() => {
   const submit = $(async () => {
     error.value = '';
     submitting.value = true;
+    const normalizedUrl = normalizeDownloadUrl(url.value);
+    url.value = normalizedUrl;
     const request: CreateJobRequest = {
-      url: url.value,
+      url: normalizedUrl,
       destination: destination.value,
       mediaType: mediaType.value,
       audioFormat: mediaType.value === 'audio' ? audioFormat.value : undefined,
@@ -88,27 +91,53 @@ export default component$(() => {
       <section class="download-form">
         <label class="url-field">
           <span>URL</span>
-          <input value={url.value} onInput$={(_, target) => (url.value = target.value)} placeholder="https://..." />
+          <input
+            type="url"
+            value={url.value}
+            onInput$={(_, target) => (url.value = target.value)}
+            onBlur$={() => (url.value = normalizeDownloadUrl(url.value))}
+            placeholder="https://..."
+          />
         </label>
 
         <div class="control-grid">
           <fieldset>
             <legend>Type</legend>
-            <button type="button" class={{ selected: mediaType.value === 'audio' }} onClick$={() => (mediaType.value = 'audio')}>
+            <button
+              type="button"
+              class={{ selected: mediaType.value === 'audio' }}
+              aria-pressed={mediaType.value === 'audio'}
+              onClick$={() => (mediaType.value = 'audio')}
+            >
               Audio
             </button>
-            <button type="button" class={{ selected: mediaType.value === 'video' }} onClick$={() => (mediaType.value = 'video')}>
+            <button
+              type="button"
+              class={{ selected: mediaType.value === 'video' }}
+              aria-pressed={mediaType.value === 'video'}
+              onClick$={() => (mediaType.value = 'video')}
+            >
               Video
             </button>
           </fieldset>
 
           <fieldset>
             <legend>Destination</legend>
-            <button type="button" class={{ selected: destination.value === 'personal' }} onClick$={() => (destination.value = 'personal')}>
+            <button
+              type="button"
+              class={{ selected: destination.value === 'personal' }}
+              aria-pressed={destination.value === 'personal'}
+              onClick$={() => (destination.value = 'personal')}
+            >
               Personal
             </button>
             {me.value?.canWriteShared && (
-              <button type="button" class={{ selected: destination.value === 'shared' }} onClick$={() => (destination.value = 'shared')}>
+              <button
+                type="button"
+                class={{ selected: destination.value === 'shared' }}
+                aria-pressed={destination.value === 'shared'}
+                onClick$={() => (destination.value = 'shared')}
+              >
                 Shared
               </button>
             )}
@@ -167,7 +196,7 @@ export default component$(() => {
         </div>
 
         {error.value && <p class="error">{error.value}</p>}
-        <button class="primary" type="button" disabled={!url.value || submitting.value} onClick$={submit}>
+        <button class="primary" type="button" disabled={!url.value.trim() || submitting.value} onClick$={submit}>
           {submitting.value ? 'Queueing' : 'Queue'}
         </button>
       </section>
