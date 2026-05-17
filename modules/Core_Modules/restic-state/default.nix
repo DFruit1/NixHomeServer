@@ -3,8 +3,10 @@
 let
   impermanenceCfg = config.repo.impermanence;
   mailArchiveUiCfg = config.services.mail-archive-ui;
+  resourceCfg = config.nixhomeserver.resources;
   repoRoot = ../../..;
   backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
+  restoreVerifyScript = "${repoRoot}/scripts/verify-system-state-restore.sh";
   backupTargetCommand = pkgs.writeShellApplication {
     name = "manage-backup-target";
     runtimeInputs = with pkgs; [
@@ -26,6 +28,16 @@ let
   ];
   resticBackupPath = [
     backupTargetCommand
+  ];
+  restoreVerifyPath = with pkgs; [
+    bash
+    coreutils
+    findutils
+    gnugrep
+    jq
+    nix
+    restic
+    sqlite
   ];
   selectionStateDir = "/persist/appdata/.nixos-managed/system-state-backup-device-selection";
   selectionFile = "${selectionStateDir}/selected-device";
@@ -103,7 +115,6 @@ let
       stateRoot = "/var/lib/jellyfin";
       persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
       payloadRoots = [
-        vars.sharedMusicRoot
         vars.sharedVideosRoot
         vars.usersRoot
       ];
@@ -125,8 +136,12 @@ let
       component = "app";
       stateRoot = "/var/lib/metube";
       persistentStateRoot = persistBackedStateRoot "/var/lib/metube";
-      payloadRoots = [ vars.sharedYouTubeRoot ];
-      notes = "Queue history, temporary state, and downloader config.";
+      payloadRoots = [
+        vars.sharedYouTubeRoot
+        vars.sharedAudiobooksRoot
+        vars.usersRoot
+      ];
+      notes = "SQLite queue history, temporary state, and downloader config.";
     }
     {
       app = "paperless";
@@ -143,6 +158,17 @@ let
       persistentStateRoot = persistBackedStateRoot "/var/lib/vaultwarden";
       payloadRoots = [ ];
       notes = "Encrypted password vault database and attachments.";
+    }
+    {
+      app = "upload-processor";
+      component = "app";
+      stateRoot = "/var/lib/upload-processor";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/upload-processor";
+      payloadRoots = [
+        vars.uploadSecurity.stagingRoot
+        vars.uploadSecurity.quarantineRoot
+      ];
+      notes = "Upload scan queue state, promotion ledger, staging, and quarantine metadata.";
     }
     {
       app = "paperless";
@@ -174,11 +200,9 @@ let
       stateRoot = "/var/lib/copyparty";
       persistentStateRoot = persistBackedStateRoot "/var/lib/copyparty";
       payloadRoots = [
-        vars.usersRoot
-        vars.sharedRoot
-        vars.paperlessRoot
+        vars.uploadSecurity.stagingRoot
       ];
-      notes = "Local state directory for Copyparty.";
+      notes = "Local state directory for Copyparty; uploaded payloads enter locked staging before promotion.";
     }
     {
       app = "filebrowser-quantum";
@@ -189,16 +213,17 @@ let
         vars.usersRoot
         vars.sharedRoot
         vars.kiwixLibraryRoot
+        vars.uploadSecurity.quarantineRoot
       ];
       notes = "FileBrowser Quantum database, cache, and config state.";
     }
     {
       app = "mail-archive-ui";
       component = "app";
-      stateRoot = "/persist/appdata/mail-archive-ui";
-      persistentStateRoot = persistBackedStateRoot "/persist/appdata/mail-archive-ui";
+      stateRoot = mailArchiveUiCfg.dataDir;
+      persistentStateRoot = persistBackedStateRoot mailArchiveUiCfg.dataDir;
       payloadRoots = [
-        vars.usersRoot
+        mailArchiveUiCfg.storeRoot
         vars.sharedEmailsRoot
       ];
       notes = "SQLite state, locks, and the app master key.";
@@ -225,7 +250,14 @@ let
     vars.usersRoot
     vars.sharedRoot
     vars.sharedEmailsRoot
-    vars.sharedMusicRoot
+    vars.paperlessInboxRoot
+    vars.paperlessArchiveRoot
+    vars.paperlessExportRoot
+    vars.uploadSecurity.stagingRoot
+    vars.uploadSecurity.quarantineRoot
+    mailArchiveUiCfg.dataDir
+    mailArchiveUiCfg.accountStateRoot
+    mailArchiveUiCfg.storeRoot
     vars.kiwixLibraryRoot
   ];
 in
@@ -241,6 +273,7 @@ in
     "d ${metadataRoot} 0700 root root -"
     "d ${dumpsRoot} 0700 root root -"
     "d ${inventoryRoot} 0700 root root -"
+    "d /var/lib/system-health-monitoring 0750 root root -"
   ];
 
   services.restic.backups.system-state = {
@@ -288,6 +321,7 @@ in
           pkgs.gnugrep
           pkgs.gnused
           pkgs.ripmime
+          pkgs.sqlite
           pkgs.util-linux
           pkgs.zfs
         ]
@@ -362,6 +396,10 @@ in
       timestamp_file="${metadataRoot}/timestamp.txt"
       app_state_file="${metadataRoot}/app-state-roots.tsv"
       critical_paths_file="${metadataRoot}/critical-paths.tsv"
+      mail_archive_roots_file="${metadataRoot}/mail-archive-roots.tsv"
+      youtube_downloader_db="/var/lib/metube/state/youtube-downloader.sqlite"
+      youtube_downloader_dump="${dumpsRoot}/youtube-downloader.sqlite"
+      upload_flow_roots_file="${metadataRoot}/upload-flow-roots.tsv"
       zpool_status_file="${metadataRoot}/zpool-status.txt"
       zpool_list_file="${metadataRoot}/zpool-list.txt"
       zfs_list_file="${metadataRoot}/zfs-list.txt"
@@ -369,6 +407,12 @@ in
       findmnt_file="${metadataRoot}/findmnt-data-root.txt"
 
       date --iso-8601=seconds > "$timestamp_file"
+
+      if [[ -r "$youtube_downloader_db" ]]; then
+        sqlite3 "$youtube_downloader_db" ".backup '$youtube_downloader_dump'"
+      else
+        rm -f "$youtube_downloader_dump"
+      fi
 
       printf 'app\tcomponent\tstate_root\tpersistent_state_root\tstate_status\tstate_type\towner\tgroup\tmode\tpayload_roots\tpayload_status\tnotes\n' > "$app_state_file"
       while IFS=$'\t' read -r app component state_root persistent_state_root payload_roots notes; do
@@ -429,6 +473,33 @@ in
         fi
       done
 
+      write_path_inventory_row() {
+        local label="$1"
+        local path="$2"
+        local status path_type owner group mode
+
+        if [[ -e "$path" ]]; then
+          status="present"
+          IFS=$'\t' read -r path_type owner group mode < <(stat -c '%F\t%U\t%G\t%a' "$path")
+        else
+          status="missing"
+          path_type="-"
+          owner="-"
+          group="-"
+          mode="-"
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$label" "$path" "$status" "$path_type" "$owner" "$group" "$mode"
+      }
+
+      printf 'label\tpath\tstatus\ttype\towner\tgroup\tmode\n' > "$upload_flow_roots_file"
+      write_path_inventory_row upload-staging "${vars.uploadSecurity.stagingRoot}" >> "$upload_flow_roots_file"
+      write_path_inventory_row upload-quarantine "${vars.uploadSecurity.quarantineRoot}" >> "$upload_flow_roots_file"
+      write_path_inventory_row paperless-inbox "${vars.paperlessInboxRoot}" >> "$upload_flow_roots_file"
+      write_path_inventory_row paperless-archive "${vars.paperlessArchiveRoot}" >> "$upload_flow_roots_file"
+      write_path_inventory_row paperless-export "${vars.paperlessExportRoot}" >> "$upload_flow_roots_file"
+      write_path_inventory_row kiwix-library "${vars.kiwixLibraryRoot}" >> "$upload_flow_roots_file"
+
       if mountpoint -q "${vars.dataRoot}"; then
         zpool status -P "${zfsPoolName}" > "$zpool_status_file"
         zpool list -v "${zfsPoolName}" > "$zpool_list_file"
@@ -445,6 +516,8 @@ in
             "users:${vars.usersRoot}"
             "shared:${vars.sharedRoot}"
             "kiwix:${vars.kiwixLibraryRoot}"
+            "upload-staging:${vars.uploadSecurity.stagingRoot}"
+            "upload-quarantine:${vars.uploadSecurity.quarantineRoot}"
           ]
         }; do
           IFS=: read -r label root_path <<< "$spec"
@@ -452,20 +525,75 @@ in
           if [[ -d "$root_path" ]]; then
             (
               printf 'relative_path\ttype\tmode\towner\tgroup\tsize\n'
-              find "$root_path" -mindepth 1 -maxdepth 2 -printf '%P\t%y\t%M\t%u\t%g\t%s\n' \
+              find "$root_path" -mindepth 1 -maxdepth 3 \
+                \( -path '*/.hist' -o -path '*/.hist/*' \) -prune -o \
+                -printf '%P\t%y\t%M\t%u\t%g\t%s\n' \
                 | sort
             ) > "$inventory_file"
           else
             printf 'missing\t-\t-\t-\t-\t-\n' > "$inventory_file"
           fi
         done
+
+        printf 'username\temails_root\temails_root_status\thidden_sync_root\thidden_sync_status\tvisible_eml_count\tattachment_blob_count\n' > "$mail_archive_roots_file"
+        if [[ -d "${mailArchiveUiCfg.storeRoot}" ]]; then
+          while IFS= read -r user_root; do
+            username="$(basename -- "$user_root")"
+            emails_root="$user_root/emails"
+            hidden_sync_root="$emails_root/.internal-sync"
+
+            if [[ -d "$emails_root" ]]; then
+              emails_status="present"
+              visible_eml_count="$(find "$emails_root" -path "$hidden_sync_root" -prune -o -type f -name '*.eml' -print 2>/dev/null | wc -l | tr -d ' ')"
+            else
+              emails_status="missing"
+              visible_eml_count="0"
+            fi
+
+            if [[ -d "$hidden_sync_root" ]]; then
+              hidden_status="present"
+              attachment_blob_count="$(find "$hidden_sync_root" -path '*/attachments/blobs/*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+            else
+              hidden_status="missing"
+              attachment_blob_count="0"
+            fi
+
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$username" \
+              "$emails_root" \
+              "$emails_status" \
+              "$hidden_sync_root" \
+              "$hidden_status" \
+              "$visible_eml_count" \
+              "$attachment_blob_count"
+          done < <(find "${mailArchiveUiCfg.storeRoot}" -mindepth 1 -maxdepth 1 -type d | sort) >> "$mail_archive_roots_file"
+        else
+          printf '%s\t%s\tmissing\t%s\tmissing\t0\t0\n' "-" "${mailArchiveUiCfg.storeRoot}" "-" >> "$mail_archive_roots_file"
+        fi
       else
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_status_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_list_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_list_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_props_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$findmnt_file"
+        printf 'username\temails_root\temails_root_status\thidden_sync_root\thidden_sync_status\tvisible_eml_count\tattachment_blob_count\n' > "$mail_archive_roots_file"
+        printf '%s\t%s\tdata-root-not-mounted\t%s\tdata-root-not-mounted\t0\t0\n' "-" "${mailArchiveUiCfg.storeRoot}" "-" >> "$mail_archive_roots_file"
       fi
+
+      backup_sqlite_db() {
+        local source_db="$1"
+        local output_file="$2"
+        local tmp_file="''${output_file}.tmp"
+
+        if [[ -f "$source_db" ]]; then
+          rm -f "$tmp_file"
+          sqlite3 "$source_db" ".backup '$tmp_file'"
+          mv "$tmp_file" "$output_file"
+          chmod 0600 "$output_file"
+        else
+          rm -f "$tmp_file" "$output_file"
+        fi
+      }
 
       ${lib.optionalString config.services.postgresql.enable ''
         dump_tmp="${dumpsRoot}/postgresql.sql.tmp"
@@ -477,6 +605,9 @@ in
         mv "$dump_tmp" "$dump_file"
         chmod 0600 "$dump_file"
       ''}
+
+      backup_sqlite_db "${mailArchiveUiCfg.dataDir}/mail-archive-ui.sqlite3" "${dumpsRoot}/mail-archive-ui.sqlite3"
+      backup_sqlite_db "/var/lib/upload-processor/state.sqlite" "${dumpsRoot}/upload-processor-state.sqlite3"
 
       ${lib.optionalString mailArchiveUiCfg.enable ''
         mail_report="${metadataRoot}/mail-archive-attachments.json"
@@ -501,11 +632,52 @@ in
     wants = [ "local-fs.target" "data-pool-layout.service" ];
     after = [ "local-fs.target" "data-pool-layout.service" ];
     path = resticBackupPath;
+    serviceConfig = {
+      CPUQuota = resourceCfg.restic.cpuQuota;
+      IOWeight = resourceCfg.restic.ioWeight;
+    };
     preStart = ''
       ${lib.getExe backupTargetCommand} mount
     '';
     postStop = ''
       ${lib.getExe backupTargetCommand} unmount
     '';
+  };
+
+  systemd.services.system-state-restore-verify = {
+    description = "Verify system-state backup restoreability";
+    wants = [ "local-fs.target" "data-pool-layout.service" ];
+    after = [ "local-fs.target" "data-pool-layout.service" "restic-backups-system-state.service" ];
+    unitConfig.ConditionPathExists = selectionFile;
+    path = restoreVerifyPath;
+    serviceConfig = {
+      Type = "oneshot";
+      Environment = [
+        "RESTORE_VERIFY_REPO_ROOT=${repoRoot}"
+      ];
+    };
+    script = ''
+      set -euo pipefail
+      tmp_json="$(mktemp)"
+      if ${pkgs.bash}/bin/bash ${restoreVerifyScript} --format json > "$tmp_json"; then
+        install -m 0600 "$tmp_json" /var/lib/system-health-monitoring/restore-verify-latest.json
+        rm -f "$tmp_json"
+      else
+        status=$?
+        install -m 0600 "$tmp_json" /var/lib/system-health-monitoring/restore-verify-latest.json
+        rm -f "$tmp_json"
+        exit "$status"
+      fi
+    '';
+  };
+
+  systemd.timers.system-state-restore-verify = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "Sun *-*-* 05:30:00";
+      RandomizedDelaySec = "2h";
+      Persistent = true;
+      Unit = "system-state-restore-verify.service";
+    };
   };
 }

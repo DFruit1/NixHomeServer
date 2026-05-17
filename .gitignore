@@ -10,4 +10,6 @@
 /result
 /.cache/deploy-validation/
 /rust/apps/*/target/
+/node/apps/*/node_modules/
+/node/apps/*/dist/
 /secrets/

@@ -1,4 +1,4 @@
-{ lib, pkgs, rustLib }:
+{ rustLib, ... }:
 
 rustLib.mkRustApp {
   name = "mail-archive-ui";

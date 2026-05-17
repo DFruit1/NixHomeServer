@@ -1,0 +1,27 @@
+--- a/Kavita.Services/Scanner/LibraryWatcher.cs
++++ b/Kavita.Services/Scanner/LibraryWatcher.cs
+@@ -290,7 +290,11 @@
+
+         var rootFolder = _directoryService.GetFoldersTillRoot(libraryFolder, filePath).ToList();
+         _logger.LogTrace("[LibraryWatcher] Root Folders: {RootFolders}", rootFolder);
+-        if (rootFolder.Count == 0) return string.Empty;
++        if (rootFolder.Count == 0)
++        {
++            _logger.LogInformation("[LibraryWatcher] Change from {FilePath} is directly under library root {LibraryFolder}; scheduling library scan", filePath, libraryFolder);
++            return libraryFolder;
++        }
+
+         // Select the first folder and join with library folder, this should give us the folder to scan.
+         return Parser.NormalizePath(_directoryService.FileSystem.Path.Join(libraryFolder, rootFolder[^1]));
+--- a/Kavita.Services/Scanner/ParseScannedFiles.cs
++++ b/Kavita.Services/Scanner/ParseScannedFiles.cs
+@@ -91,6 +91,9 @@
+         var processedDirs = new HashSet<string>();
+
+         _logger.LogDebug("[ScannerService] Step 1.C Found {DirectoryCount} directories to process for {FolderPath}", allDirectories.Count, folderPath);
++
++        CheckSurfaceFiles(result, folderPath, folderPath, fileExtensions, matcher, true);
++
+         foreach (var directory in allDirectories)
+         {
+             // Don't process any folders where we've already scanned everything below

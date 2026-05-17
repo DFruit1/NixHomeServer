@@ -36,7 +36,7 @@ Functional scope:
 - persists extracted attachment blobs by SHA-256 so browser downloads and backups do not depend on repeated MIME extraction
 - verifies source `.eml` files, attachment blobs, and catalog metadata through `mail-archive-ui verify-attachments`
 - indexes supported document attachment text for search, including `pdf`, `doc`, `docx`, `odt`, `rtf`, and `text/plain`
-- exposes metadata-only search results
+- exposes metadata-only search results with URL query parameters for sender address, sender name, sender domain, subject, body text, date range, and attachment presence
 - lets users mark sender addresses or exact sender domains as high or low priority for UI-only sorting and filtering
 - supports mailbox edit, schedule toggle, manual sync, and reindex actions
 - persists per-user search defaults for query and mailbox filter
@@ -48,14 +48,17 @@ Health behavior:
 - `503` means the app is degraded before mailbox traffic is attempted
 
 Attachment download model:
-- `/attachments` searches the indexed attachment catalog and supports per-row selection, page-visible selection, and server-side download of all matching filters
-- selected attachments are downloaded as a browser ZIP streamed from runtime storage; no attachment action state is recorded
+- `/attachments` searches the indexed attachment catalog and supports row selection, page-visible selection, and server-side download of all matching filters
+- shared search filters use normal GET parameters: `q`, `sender_address`, `sender_name`, `sender_domain`, `subject`, `body_text`, `date_from`, `date_to`, and `has_attachments`
+- attachment-specific GET parameters include `extension`, `attachment_name`, `mime_type`, `min_size`, `max_size`, `min_attachments`, and `max_attachments`
+- selected attachments are downloaded as a browser ZIP streamed from runtime storage
+- selected attachments can also be copied into the configured Paperless consume inbox; successful handoffs are recorded per user and attachment key
 - ZIPs include `manifest.json` with source mailbox, message, filename, MIME type, size, and SHA-256 metadata for every file
 - ZIP files are organized as `<optional-subfolder>/<mailbox>/<yyyy-mm-dd> - <subject>/<filename>`, with duplicate filenames written as `file (1).ext`
 - original attachment filenames, including Unicode and emoji names, are preserved for browser downloads and ZIP entries except for path separators/control characters
 - inline images and body fragments extracted as `textfile0`, `textfile1`, and similar artifacts are hidden by default and can be included with page filters
 - attachment rows show a simple file type and message date by default; full MIME detail is optional
-- downstream document filing is manual and happens outside this app
+- Paperless handoff uses the consume directory; Paperless ownership and post-processing follow the normal Paperless consumer behavior
 
 ## Development
 

@@ -2,6 +2,9 @@
 
 let
   cfg = config.repo.impermanence;
+  localAdminUser = config.nixhomeserver.localAdmin.user;
+  persistLocalAdminHome =
+    if cfg.persistDsawHome != null then cfg.persistDsawHome else cfg.persistLocalAdminHome;
 
   persistenceDirectories =
     [
@@ -34,7 +37,7 @@ let
       "/var/log/journal"
       "/var/log/atop"
     ]
-    ++ lib.optionals cfg.persistDsawHome [ "/home/dsaw" ];
+    ++ lib.optionals persistLocalAdminHome [ "/home/${localAdminUser}" ];
 
   persistenceFiles = [ ];
 
@@ -76,10 +79,16 @@ in
 
     enableRootRollback = lib.mkEnableOption "rollback to a blank Btrfs root subvolume on boot";
 
-    persistDsawHome = lib.mkOption {
+    persistLocalAdminHome = lib.mkOption {
       type = lib.types.bool;
-      default = true;
-      description = "Whether to persist the dsaw operator home directory.";
+      default = config.nixhomeserver.localAdmin.persistHome;
+      description = "Whether to persist the configured local admin home directory.";
+    };
+
+    persistDsawHome = lib.mkOption {
+      type = lib.types.nullOr lib.types.bool;
+      default = null;
+      description = "Deprecated compatibility alias for persistLocalAdminHome.";
     };
 
     rootSubvolume = lib.mkOption {
@@ -126,6 +135,10 @@ in
       {
         assertion = !cfg.enableRootRollback || cfg.enablePersistence;
         message = "repo.impermanence.enableRootRollback requires repo.impermanence.enablePersistence.";
+      }
+      {
+        assertion = cfg.persistDsawHome == null || cfg.persistDsawHome == cfg.persistLocalAdminHome;
+        message = "repo.impermanence.persistDsawHome is deprecated; use repo.impermanence.persistLocalAdminHome instead.";
       }
     ];
 

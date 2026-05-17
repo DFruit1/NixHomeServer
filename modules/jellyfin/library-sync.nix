@@ -115,14 +115,22 @@ in
       printf '%s\n' "$api_key" >"$api_key_file"
       chmod 0600 "$api_key_file"
 
-      ${pkgs.curl}/bin/curl \
-        --silent \
-        --show-error \
-        --fail \
-        --max-time 600 \
-        -X POST \
-        "http://${loopback}:${toString jellyfinPort}/Library/Refresh?ApiKey=$api_key" \
-        >/dev/null
+      for _ in $(seq 1 30); do
+        if ${pkgs.curl}/bin/curl \
+          --silent \
+          --show-error \
+          --fail \
+          --max-time 600 \
+          -X POST \
+          "http://${loopback}:${toString jellyfinPort}/Library/Refresh?ApiKey=$api_key" \
+          >/dev/null; then
+          exit 0
+        fi
+        sleep 2
+      done
+
+      echo "Jellyfin library refresh endpoint is not ready yet; skipping scan"
+      exit 0
     '';
     serviceConfig = {
       Type = "oneshot";

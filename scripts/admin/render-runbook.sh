@@ -31,8 +31,7 @@ while (($# > 0)); do
 done
 
 if [[ -z "$host" ]]; then
-  usage >&2
-  exit 1
+  host="$(default_host)"
 fi
 
 settings_json="$(nix_json_for_host "$host" "removeAttrs cfg.nixhomeserver.settings [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
@@ -42,6 +41,7 @@ hostname="$(jq -r '.hostname' <<<"$settings_json")"
 domain="$(jq -r '.domain' <<<"$settings_json")"
 admin_user="$(jq -r '.kanidmAdminUser' <<<"$settings_json")"
 admin_email="$(jq -r '.kanidmAdminEmail' <<<"$settings_json")"
+local_admin_user="$(jq -r '.localAdminUser // .kanidmAdminUser' <<<"$settings_json")"
 lan_ip="$(jq -r '.serverLanIP' <<<"$settings_json")"
 lan_iface="$(jq -r '.netIface' <<<"$settings_json")"
 
@@ -53,6 +53,7 @@ cat <<EOF
 - Hostname: \`${hostname}\`
 - Domain: \`${domain}\`
 - Delegated admin: \`${admin_user}\` / \`${admin_email}\`
+- Local SSH/sudo admin: \`${local_admin_user}\`
 - LAN interface: \`${lan_iface}\`
 - LAN address: \`${lan_ip}\`
 - System disk by-id: \`$(jq -r '.mainDisk' <<<"$settings_json")\`
@@ -71,9 +72,10 @@ Stage these files under \`secrets/top/\`, then run \`./scripts/generate-all-secr
 
 \`\`\`bash
 nix run .#doctor -- --host ${host}
-./scripts/validate-repo-remote.sh --host "${admin_user}@${hostname}" --full
-./scripts/deploy-with-validation.sh --target "${admin_user}@${hostname}" --build-host "${admin_user}@${hostname}" --action test --hostname ${hostname}
-./scripts/deploy-with-validation.sh --target "${admin_user}@${hostname}" --build-host "${admin_user}@${hostname}" --action switch --hostname ${hostname}
+./scripts/validate-repo-remote.sh --host "${local_admin_user}@${hostname}" --full
+./scripts/deploy-with-validation.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action test --hostname ${hostname}
+./scripts/deploy-with-validation.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action switch --hostname ${hostname}
+nix run .#admin -- status --host ${host} --target "${local_admin_user}@${hostname}"
 \`\`\`
 
 ## App URLs
@@ -108,6 +110,8 @@ Grant app-specific groups only when the user needs that app. Use \`app-admin\` o
 ## Recovery Pointers
 
 - Runtime readiness: \`sudo ./scripts/check-runtime-readiness.sh --profile manual\`
+- Health report refresh: \`sudo systemctl start system-health-report.service\`
+- Restore verification: \`sudo systemctl start system-state-restore-verify.service\`
 - Data mirror status: \`sudo zpool status $(jq -r '.zfsDataPool.name' <<<"$settings_json")\`
 - Backup target selection: \`manage-backup-target list\`
 - System-state restore: see \`documentation/restore-and-recovery.md\`

@@ -1,4 +1,4 @@
-{ lib, pkgs, rustLib }:
+{ pkgs, rustLib, ... }:
 
 rustLib.mkRustApp {
   name = "kanidm-admin";

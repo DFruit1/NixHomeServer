@@ -1,0 +1,65 @@
+--- a/Kavita.Services/VersionUpdaterService.cs
++++ b/Kavita.Services/VersionUpdaterService.cs
+@@ -103,22 +103,8 @@
+     /// <returns>Latest update</returns>
+     public async Task<UpdateNotificationDto?> CheckForUpdate(CancellationToken ct = default)
+     {
+-        // Attempt to fetch from cache
+-        var cachedRelease = await TryGetCachedLatestRelease();
+-        if (cachedRelease != null)
+-        {
+-            return cachedRelease;
+-        }
+-
+-        var update = await GetGithubRelease();
+-        var dto = CreateDto(update);
+-
+-        if (dto != null)
+-        {
+-            await CacheLatestReleaseAsync(dto);
+-        }
+-
+-        return dto;
++        await Task.CompletedTask;
++        return null;
+     }
+
+     /// <summary>
+@@ -482,17 +468,8 @@
+     /// <returns></returns>
+     public async Task<int> GetNumberOfReleasesBehind(bool stableOnly = false, CancellationToken ct = default)
+     {
+-        var updates = await GetAllReleases(ct: ct);
+-
+-        // If the user is on nightly, then we need to handle releases behind differently
+-        if (!stableOnly && (updates[0].IsPrerelease || updates[0].IsOnNightlyInRelease))
+-        {
+-            return updates.Count(u => u.IsReleaseNewer);
+-        }
+-
+-        return updates
+-            .Where(update => !update.IsPrerelease)
+-            .Count(u => u.IsReleaseNewer);
++        await Task.CompletedTask;
++        return 0;
+     }
+
+     /// <summary>
+@@ -558,16 +535,7 @@
+
+     public async Task PushUpdate(UpdateNotificationDto update, CancellationToken ct = default)
+     {
+-        if (update == null) return;
+-
+-        var updateVersion = new Version(update.UpdateVersion);
+-
+-        if (BuildInfo.Version < updateVersion)
+-        {
+-            _logger.LogWarning("Server is out of date. Current: {CurrentVersion}. Available: {AvailableUpdate}", BuildInfo.Version, updateVersion);
+-            await _eventHub.SendMessageAsync(MessageFactory.UpdateAvailable, MessageFactory.UpdateVersionEvent(update),
+-                true, ct);
+-        }
++        await Task.CompletedTask;
+     }
+
+     private async Task<string?> GetVersionFromCommit(string commitSha)

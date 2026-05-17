@@ -1,4 +1,4 @@
-{ config, lib, pkgs, pkgsUnstable, vars, ... }:
+{ config, pkgs, pkgsUnstable, vars, ... }:
 
 let
   vaultwardenPort = vars.networking.ports.vaultwarden;

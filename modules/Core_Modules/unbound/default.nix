@@ -1,4 +1,4 @@
-{ pkgs, lib, vars, ... }:
+{ lib, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;

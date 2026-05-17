@@ -1,4 +1,4 @@
-{ lib, craneLib, toolchain }:
+{ craneLib, toolchain, ... }:
 
 { name ? "rust"
 , checks ? { }

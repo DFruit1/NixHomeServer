@@ -2,6 +2,7 @@
 
 let
   immichPort = vars.networking.ports.immich;
+  resources = config.nixhomeserver.resources;
 in
 {
   services.immich = {
@@ -41,6 +42,11 @@ in
   systemd.services.immich-server = {
     after = [ "data-pool-layout.service" ];
     wants = [ "data-pool-layout.service" ];
+  };
+
+  systemd.services.immich-machine-learning.serviceConfig = {
+    MemoryMax = resources.immichMachineLearning.memoryMax;
+    CPUQuota = resources.immichMachineLearning.cpuQuota;
   };
 
   systemd.tmpfiles.rules = [ ];

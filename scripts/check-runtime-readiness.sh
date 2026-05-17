@@ -622,7 +622,7 @@ check_mail_archive_filebrowser_permissions() {
 check_app_state_entry() {
   local entry_json="$1"
   local app component state_root severity detail
-  local payload_roots payload_root missing_payloads=0
+  local payload_root
 
   app="$(jq -r '.app' <<<"$entry_json")"
   component="$(jq -r '.component' <<<"$entry_json")"
@@ -641,7 +641,6 @@ check_app_state_entry() {
   while IFS= read -r payload_root; do
     [[ -n "$payload_root" ]] || continue
     if [[ ! -e "$payload_root" ]]; then
-      missing_payloads=1
       if [[ "$severity" != "CRITICAL" ]]; then
         severity="CRITICAL"
         detail="payload root missing"
@@ -672,7 +671,7 @@ run_backup_checks() {
   local selection_state="configured"
   local selected_real="" mounted_real="" target_present=false
   local selected_uuid="" mounted_uuid="" selected_partuuid="" mounted_partuuid=""
-  local mount_info="" mount_target="" mounted_fstype=""
+  local mount_info="" mount_target=""
 
   backup_json="$(runtime_health_snapshot_query '.backup')"
   timer="$(jq -r '.timer' <<<"$backup_json")"
@@ -706,14 +705,12 @@ run_backup_checks() {
 
   mount_info="$(findmnt -rn -o TARGET,SOURCE,FSTYPE --target "$mount_point" 2>/dev/null || true)"
   if [[ -n "$mount_info" ]]; then
-    read -r mount_target mounted_source mounted_fstype <<<"$mount_info"
+    read -r mount_target mounted_source _mounted_fstype <<<"$mount_info"
     if [[ "$mount_target" != "$mount_point" ]]; then
       mounted_source=""
-      mounted_fstype=""
     fi
   else
     mounted_source=""
-    mounted_fstype=""
   fi
   if [[ -n "$mounted_source" || ( -n "$selected_device" && -e "$selected_device" ) ]]; then
     target_present=true

@@ -11,6 +11,7 @@ let
     ++ lib.optionals apps."filebrowser-quantum".enable [ "shared-files-read-write-access" ]
     ++ lib.optionals apps.paperless.enable [ "paperless-users" ]
     ++ lib.optionals apps.immich.enable [ "immich-users" ]
+    ++ lib.optionals apps.jellyfin.enable [ "jellyfin-users" ]
     ++ lib.optionals apps.audiobookshelf.enable [ "audiobookshelf-users" ]
     ++ lib.optionals apps.kavita.enable [ "kavita-users" ]
     ++ lib.optionals apps."mail-archive-ui".enable [ "mail-archive-users" ]
@@ -54,6 +55,7 @@ in
     groups."app-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."mail-archive-users" = lib.mkIf apps."mail-archive-ui".enable (mkManualGroup [ ]);
     groups."immich-users" = lib.mkIf apps.immich.enable (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."jellyfin-users" = lib.mkIf apps.jellyfin.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."paperless-users" = lib.mkIf apps.paperless.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."audiobookshelf-users" = lib.mkIf apps.audiobookshelf.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."kavita-users" = lib.mkIf apps.kavita.enable (mkManualGroup [ vars.kanidmAdminUser ]);

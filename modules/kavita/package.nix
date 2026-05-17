@@ -13,8 +13,8 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   version = "0.9.0";
 
   src = fetchFromGitHub {
-    owner = "kareadita";
-    repo = "kavita";
+    owner = "Kareadita";
+    repo = "Kavita";
     rev = "v${finalAttrs.version}";
     hash = "sha256-kFtzSOJYzPQf4QtdOLPLtRHIQj5nTZMB+cE42yZRTmc=";
   };

@@ -55,8 +55,42 @@ finish_report() {
   fi
 }
 
+discovered_hosts() {
+  find "$repo_root/hosts" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+    | while IFS= read -r host; do
+        if [[ -f "$repo_root/hosts/$host/default.nix" && -f "$repo_root/hosts/$host/settings.nix" ]]; then
+          printf '%s\n' "$host"
+        fi
+      done \
+    | sort
+}
+
+default_host() {
+  local non_example_hosts host_count
+
+  if [[ -n "${NIXHOMESERVER_DEFAULT_HOST:-}" ]]; then
+    printf '%s\n' "$NIXHOMESERVER_DEFAULT_HOST"
+    return 0
+  fi
+
+  if [[ -d "$repo_root/hosts/dsaw" ]]; then
+    printf '%s\n' "dsaw"
+    return 0
+  fi
+
+  non_example_hosts="$(discovered_hosts | awk '$0 != "example"')"
+  host_count="$(printf '%s\n' "$non_example_hosts" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [[ "$host_count" == "1" ]]; then
+    printf '%s\n' "$non_example_hosts"
+    return 0
+  fi
+
+  echo "blocked: pass --host; no unambiguous default host is available" >&2
+  exit 1
+}
+
 host_arg_or_default() {
-  local host="dsaw"
+  local host=""
   while (($# > 0)); do
     case "$1" in
       --host)
@@ -65,9 +99,12 @@ host_arg_or_default() {
         ;;
       *)
         shift
-        ;;
+      ;;
     esac
   done
+  if [[ -z "$host" ]]; then
+    host="$(default_host)"
+  fi
   printf '%s\n' "$host"
 }
 

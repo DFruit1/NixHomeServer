@@ -11,6 +11,8 @@ rec {
     adminUser = "admin"; # Delegated Kanidm operator account.
     adminEmail = "admin@example.test"; # Contact email for ACME and the first Kanidm admin user.
     sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key";
+    localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
+    localAdminPersistHome = true;
   };
 
   network = {
@@ -183,6 +185,20 @@ rec {
     binaryCaches = [ ]; # Optional extra binary caches: [{ url = "https://example.cachix.org"; publicKey = "example.cachix.org-1:..."; }]
   };
 
+  resourceLimits = {
+    immichMachineLearning = {
+      memoryMax = "6G";
+      cpuQuota = "250%";
+    };
+    clamav.memoryMax = "3G";
+    restic = {
+      cpuQuota = "150%";
+      ioWeight = 100;
+    };
+    metube.cpuQuota = "200%";
+    mediaIndexers.cpuQuota = "150%";
+  };
+
   # ---------------------------------------------------------------------------
   # Compatibility and derived values. Modules consume these names today.
   # New admins usually should not edit below this line directly.
@@ -195,6 +211,8 @@ rec {
   kanidmAdminUser = identity.adminUser;
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
+  localAdminUser = identity.localAdminUser;
+  localAdminPersistHome = identity.localAdminPersistHome;
 
   networking = rec {
     loopbackIPv4 = advanced.loopbackIPv4;
@@ -360,8 +378,7 @@ rec {
       label = "Manga";
     }
   ];
-  personalJellyfinLibraries = [ ];
-  sharedJellyfinLibraries = [
+  jellyfinVideoLibraries = [
     {
       dir = "movies";
       collectionType = "movies";
@@ -387,24 +404,15 @@ rec {
       collectionType = "homevideos";
       label = "YouTube";
     }
-    {
-      dir = "other";
-      collectionType = "homevideos";
-      label = "Other Videos";
-    }
   ];
+  personalJellyfinLibraries = jellyfinVideoLibraries;
+  sharedJellyfinLibraries = jellyfinVideoLibraries;
   sharedKavitaLibraries = personalKavitaLibraries;
   userBooksSubdirs = map (library: library.dir) personalKavitaLibraries;
   userVideoSubdirs = map (library: library.dir) personalJellyfinLibraries;
   sharedBooksSubdirs = map (library: library.dir) sharedKavitaLibraries;
   sharedVideoSubdirs = map (library: library.dir) sharedJellyfinLibraries;
-  sharedJellyfinMusicLibraries = [
-    {
-      dir = "youtube";
-      collectionType = "music";
-      label = "YouTube Music";
-    }
-  ];
+  sharedJellyfinMusicLibraries = [ ];
   sharedMusicSubdirs = map (library: library.dir) sharedJellyfinMusicLibraries;
   sharedAudiobooksRoot = "${sharedRoot}/audiobooks";
   sharedBooksRoot = "${sharedRoot}/books";
@@ -426,13 +434,13 @@ rec {
     "books"
     "emails"
     "files"
+    "videos"
   ];
   sharedContentSubdirs = [
     "audiobooks"
     "books"
     "emails"
     "kiwix"
-    "music"
     "videos"
     "files"
   ];
@@ -451,6 +459,7 @@ rec {
         "shared-files-read-write-access"
         "paperless-users"
         "immich-users"
+        "jellyfin-users"
         "audiobookshelf-users"
         "kavita-users"
         "mail-archive-users"

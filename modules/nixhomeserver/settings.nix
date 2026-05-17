@@ -64,6 +64,20 @@ in
       };
     };
 
+    localAdmin = {
+      user = lib.mkOption {
+        type = lib.types.str;
+        default = vars.localAdminUser or vars.kanidmAdminUser;
+        description = "Local Unix admin account used for SSH, sudo, and bootstrap operations.";
+      };
+
+      persistHome = lib.mkOption {
+        type = lib.types.bool;
+        default = vars.localAdminPersistHome or true;
+        description = "Whether to persist the local Unix admin home directory.";
+      };
+    };
+
     networking = {
       domain = lib.mkOption {
         type = lib.types.str;
@@ -113,6 +127,48 @@ in
         type = lib.types.bool;
         default = true;
         description = "Whether the system-state backup integration is expected for this host.";
+      };
+    };
+
+    resources = {
+      immichMachineLearning = {
+        memoryMax = lib.mkOption {
+          type = lib.types.str;
+          default = vars.resourceLimits.immichMachineLearning.memoryMax or "6G";
+          description = "MemoryMax for Immich machine-learning.";
+        };
+        cpuQuota = lib.mkOption {
+          type = lib.types.str;
+          default = vars.resourceLimits.immichMachineLearning.cpuQuota or "250%";
+          description = "CPUQuota for Immich machine-learning.";
+        };
+      };
+      clamav.memoryMax = lib.mkOption {
+        type = lib.types.str;
+        default = vars.resourceLimits.clamav.memoryMax or "3G";
+        description = "MemoryMax for ClamAV daemon.";
+      };
+      restic = {
+        cpuQuota = lib.mkOption {
+          type = lib.types.str;
+          default = vars.resourceLimits.restic.cpuQuota or "150%";
+          description = "CPUQuota for system-state restic backups.";
+        };
+        ioWeight = lib.mkOption {
+          type = lib.types.int;
+          default = vars.resourceLimits.restic.ioWeight or 100;
+          description = "IOWeight for system-state restic backups.";
+        };
+      };
+      metube.cpuQuota = lib.mkOption {
+        type = lib.types.str;
+        default = vars.resourceLimits.metube.cpuQuota or "200%";
+        description = "CPUQuota for MeTube downloads.";
+      };
+      mediaIndexers.cpuQuota = lib.mkOption {
+        type = lib.types.str;
+        default = vars.resourceLimits.mediaIndexers.cpuQuota or "150%";
+        description = "CPUQuota for media library index and sync helpers.";
       };
     };
 

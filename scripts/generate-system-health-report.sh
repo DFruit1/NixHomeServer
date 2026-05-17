@@ -51,6 +51,7 @@ timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 stamp_file="$(date -u +%Y%m%dT%H%M%S%NZ)"
 latest_json="${state_dir}/latest.json"
 latest_txt="${state_dir}/latest.txt"
+restore_verify_json="${state_dir}/restore-verify-latest.json"
 history_json="${history_dir}/${stamp_file}.json"
 history_txt="${history_dir}/${stamp_file}.txt"
 tmpdir="$(mktemp -d)"
@@ -144,6 +145,11 @@ fi
 bash "$repo_root/scripts/discover-storage-devices.sh" "${discovery_args[@]}" >"$discovery_json_file"
 jq '.allSmartDisks' "$discovery_json_file" >"$disk_specs_file"
 smart_json="$(bash "$repo_root/scripts/helpers/storage-health-common.sh" --mode warn --format json --disk-spec-file "$disk_specs_file")"
+if [[ -s "$restore_verify_json" ]]; then
+  restore_json="$(jq -c '.' "$restore_verify_json")"
+else
+  restore_json="$(jq -cn '{overallSeverity: "WARN", detail: "restore verification has not run yet", results: []}')"
+fi
 
 mounts_ok=true
 if jq -e 'select(.severity != "OK")' "$mounts_file" >/dev/null 2>&1; then
@@ -211,6 +217,9 @@ done < <(jq -r 'select(.severity != "OK") | "\(.target): \(.detail)"' "$mounts_f
 while IFS= read -r line; do
   echo "$line" >>"$alerts_file"
 done < <(jq -r 'select(.severity != "OK") | "\(.unit): \(.detail)"' "$timers_file")
+if [[ "$(jq -r '.overallSeverity // "WARN"' <<<"$restore_json")" != "OK" ]]; then
+  echo "restore verification: $(jq -r '.overallSeverity // "WARN"' <<<"$restore_json")" >>"$alerts_file"
+fi
 
 mounts_json="$(jq -s '.' "$mounts_file")"
 timers_json="$(jq -s '.' "$timers_file")"
@@ -222,6 +231,7 @@ storage_overall_severity="$(
     --argjson smart "$smart_json" \
     --argjson mounts "$mounts_json" \
     --argjson timers "$timers_json" \
+    --argjson restore "$restore_json" \
     --argjson zfsStatus "$zfs_json" \
     '
       def escalate($current; $next):
@@ -234,6 +244,7 @@ storage_overall_severity="$(
         ($smart.disks | map(.severity))
         + ($mounts | map(.severity))
         + ($timers | map(.severity))
+        + [$restore.overallSeverity]
         + [$zfsStatus.statusSeverity, $zfsStatus.datasetSeverity]
       )[] as $severity ("OK"; escalate(.; $severity))
     '
@@ -256,6 +267,7 @@ storage_json="$(
     --argjson groupedDisks "$grouped_disks" \
     --argjson mounts "$mounts_json" \
     --argjson timers "$timers_json" \
+    --argjson restore "$restore_json" \
     --argjson zfsStatus "$zfs_json" \
     --argjson alerts "$alerts_json" '
       {
@@ -270,6 +282,7 @@ storage_json="$(
           lastSelfTestStatus
         })),
         timers: $timers,
+        restoreVerification: $restore,
         zfs: $zfsStatus,
         alerts: $alerts
       }
@@ -320,7 +333,7 @@ cp "$latest_json" "$history_json"
   jq -r '"- profile: \(.runtime.profile)\n- severity: \(.runtime.overallSeverity)\n- zfs runtime: \(.runtime.zfs.runtimeState)\n- backup: \(.runtime.backup.severity) (\(.runtime.backup.detail))"' "$latest_json"
   echo
   echo "Storage:"
-  jq -r '"- severity: \(.storage.overallSeverity)\n- pool: \(.storage.zfs.statusSeverity) (\(.storage.zfs.statusSummary))\n- runtime: \(.storage.zfs.runtimeState)\n- datasets: \(.storage.zfs.datasetSeverity) (\(.storage.zfs.datasetSummary))"' "$latest_json"
+  jq -r '"- severity: \(.storage.overallSeverity)\n- pool: \(.storage.zfs.statusSeverity) (\(.storage.zfs.statusSummary))\n- runtime: \(.storage.zfs.runtimeState)\n- datasets: \(.storage.zfs.datasetSeverity) (\(.storage.zfs.datasetSummary))\n- restore verification: \(.storage.restoreVerification.overallSeverity)"' "$latest_json"
   echo
   echo "Mounts:"
   jq -r '.storage.mounts[] | "- \(.label) \(.target): \(.severity) (\(.detail))"' "$latest_json"

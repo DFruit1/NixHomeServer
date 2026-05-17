@@ -98,7 +98,7 @@ sudo systemctl start mail-archive-sync.service
 curl -fsS http://127.0.0.1:9011/healthz | jq .
 ```
 
-Use the dashboard `Sync now` and `Reindex` actions when you need to repair or refresh one mailbox without waiting for the timer. Use `https://emails.sydneybasiniot.org/attachments` to search indexed document attachments, select individual/page/all matching files, and download them as a ZIP for manual upload through the document-management UI.
+Use the dashboard `Sync now` and `Reindex` actions when you need to repair or refresh one mailbox without waiting for the timer. Use `https://emails.sydneybasiniot.org/search` and `https://emails.sydneybasiniot.org/attachments` to search by structured GET parameters such as `sender_address`, `sender_name`, `sender_domain`, `subject`, `body_text`, `date_from`, `date_to`, and `has_attachments`. Attachment search also accepts `attachment_name`, `extension`, `mime_type`, `min_size`, `max_size`, `min_attachments`, and `max_attachments`, so future tooling can scrape stable URLs without browser automation.
 
 Attachment downloads are backed by content-addressed blobs in each mailbox's
 hidden `.internal-sync` tree. ZIP downloads include a `manifest.json` that maps
@@ -107,6 +107,13 @@ artifacts and `ripmime` body fragments such as `textfile0` are hidden by default
 in the UI and can be included with the body-parts filter. ZIP contents are laid
 out as `<mailbox>/<yyyy-mm-dd> - <subject>/<filename>`, and duplicate filenames
 are suffixed as `file (1).ext`.
+
+Attachment rows can be selected with normal click, Ctrl/Cmd-click, and
+Shift-click conventions. Selected attachments can be downloaded locally as a ZIP
+or copied into the configured Paperless consume inbox. The Paperless handoff is
+recorded per user and attachment after the consume-file rename succeeds;
+Paperless ownership and post-processing follow the normal Paperless consumer
+behavior.
 
 To verify attachment backup readiness manually:
 
@@ -121,7 +128,11 @@ sudo -u mail-archive-ui env \
 ```
 
 The system-state backup preparation runs this verifier with repair enabled and
-stores `mail-archive-attachments.json` in the backup metadata.
+stores `mail-archive-attachments.json` in the backup metadata. The same backup
+preparation also stores `mail-archive-roots.tsv` and a
+`dumps/mail-archive-ui.sqlite3` SQLite backup, which includes attachment catalog
+state and Paperless handoff records. Mail payload bytes remain on the mirrored
+`/mnt/data/users` pool rather than in the Restic `system-state` snapshot.
 
 ## Validation Gate
 
@@ -262,6 +273,18 @@ curl -kI --resolve passwords.sydneybasiniot.org:443:192.168.8.12 https://passwor
 Copyparty uploads land in locked staging first. The upload processor scans staged
 files with ClamAV, performs VirusTotal hash lookups only for high-risk
 extensions, then promotes clean files or moves risky files to quarantine.
+
+Backup policy for the upload flow:
+
+- promoted user uploads live under `/mnt/data/users/<user>/files`
+- pending uploads live under `/mnt/data/upload-staging`
+- quarantined uploads live under `/mnt/data/quarantine/uploads`
+- upload processor state lives under `/var/lib/upload-processor`
+
+The `system-state` Restic backup records upload-flow metadata, shallow staging
+and quarantine inventories, and `dumps/upload-processor-state.sqlite3`. It does
+not copy data-pool payload bytes; the mirrored ZFS pool remains the recovery
+boundary for uploaded file contents.
 
 Admins can review quarantined uploads through the FileBrowser Quantum
 `Quarantine` source. Manual VirusTotal file uploads, if needed, are an admin

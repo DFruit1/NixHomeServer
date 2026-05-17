@@ -2,8 +2,6 @@
 
 let
   sharedJellyfinDirs = map (library: "${vars.sharedVideosRoot}/${library.dir}") vars.sharedJellyfinLibraries;
-  sharedJellyfinMusicDirs = map (library: "${vars.sharedMusicRoot}/${library.dir}") vars.sharedJellyfinMusicLibraries;
-  sharedJellyfinMediaDirs = sharedJellyfinDirs ++ sharedJellyfinMusicDirs;
 in
 {
   users.groups.jellyfin-media = { };
@@ -31,10 +29,6 @@ in
       for path in ${lib.escapeShellArgs sharedJellyfinDirs}; do
         install -d -m 2775 -o root -g users "$path"
       done
-      install -d -m 2775 -o root -g users ${vars.sharedMusicRoot}
-      for path in ${lib.escapeShellArgs sharedJellyfinMusicDirs}; do
-        install -d -m 2775 -o root -g users "$path"
-      done
 
       apply_recursive_acl() {
         local access_spec="$1"
@@ -49,7 +43,7 @@ in
         done
       }
 
-      apply_recursive_acl "g:jellyfin-media:rwX" "d:g:jellyfin-media:rwx" ${lib.escapeShellArgs sharedJellyfinMediaDirs}
+      apply_recursive_acl "g:jellyfin-media:rwX" "d:g:jellyfin-media:rwx" ${lib.escapeShellArgs sharedJellyfinDirs}
     '';
   };
 

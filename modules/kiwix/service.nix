@@ -97,10 +97,8 @@ in
     uploadUser = lib.mkOption {
       type = lib.types.str;
       default =
-        if builtins.hasAttr vars.kanidmAdminUser config.users.users then
-          vars.kanidmAdminUser
-        else if builtins.hasAttr "dsaw" config.users.users then
-          "dsaw"
+        if builtins.hasAttr config.nixhomeserver.localAdmin.user config.users.users then
+          config.nixhomeserver.localAdmin.user
         else
           throw "services.kiwixServe.uploadUser must name a local Unix account.";
       description = ''

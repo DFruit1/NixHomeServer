@@ -1,4 +1,4 @@
-{ config, pkgs, lib, vars, disko, ... }:
+{ config, pkgs, lib, vars, ... }:
 
 let
   systemPackages = with pkgs; [
@@ -27,6 +27,7 @@ let
   ];
   extraBinaryCacheUrls = map (cache: cache.url) vars.binaryCaches;
   extraBinaryCachePublicKeys = map (cache: cache.publicKey) vars.binaryCaches;
+  localAdminUser = config.nixhomeserver.localAdmin.user;
 in
 {
   ###############################################################################
@@ -191,7 +192,7 @@ in
     };
   };
 
-  users.users.dsaw = {
+  users.users.${localAdminUser} = {
     isNormalUser = true;
     extraGroups = [ "wheel" ];
     shell = pkgs.bashInteractive;
@@ -205,7 +206,7 @@ in
 
   security.sudo.extraRules = [
     {
-      users = [ "dsaw" ];
+      users = [ localAdminUser ];
       commands = [
         {
           command = "ALL";
@@ -228,7 +229,7 @@ in
       trusted-public-keys = [
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ] ++ extraBinaryCachePublicKeys;
-      trusted-users = [ "root" "dsaw" ];
+      trusted-users = [ "root" localAdminUser ];
       auto-optimise-store = true;
       builders-use-substitutes = true;
     };

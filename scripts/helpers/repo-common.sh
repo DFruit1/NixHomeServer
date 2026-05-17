@@ -13,7 +13,7 @@ init_repo_root() {
 }
 
 cd_repo_root() {
-  cd "$repo_root"
+  cd "$repo_root" || exit
 }
 
 ensure_default_nix_config() {

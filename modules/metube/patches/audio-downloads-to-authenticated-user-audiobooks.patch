@@ -1,0 +1,203 @@
+diff --git a/app/main.py b/app/main.py
+index 59e703a..f6d8b46 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -45,6 +45,7 @@ class Config:
+         'PUBLIC_HOST_AUDIO_URL': 'audio_download/',
+         'OUTPUT_TEMPLATE': '%(title)s.%(ext)s',
+         'OUTPUT_TEMPLATE_CHAPTER': '%(title)s - %(section_number)02d - %(section_title)s.%(ext)s',
++        'AUDIO_OUTPUT_TEMPLATE': '%(title)s.%(ext)s',
+         'OUTPUT_TEMPLATE_PLAYLIST': '%(playlist_title)s/%(title)s.%(ext)s',
+         'OUTPUT_TEMPLATE_CHANNEL': '%(channel)s/%(title)s.%(ext)s',
+         'DEFAULT_OPTION_PLAYLIST_ITEM_LIMIT' : '0',
+@@ -706,6 +707,52 @@ def parse_download_options(post: dict) -> dict:
+     }
+
+
++def _normalise_authenticated_username(value):
++    if not value:
++        return None
++
++    candidate = str(value).split(',', 1)[0].strip()
++    if not candidate:
++        return None
++
++    local_part = candidate.split('@', 1)[0]
++    if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', local_part):
++        return None
++    return local_part
++
++
++def _authenticated_audio_download_dir(request):
++    for header_name in (
++        'X-Forwarded-User',
++        'X-Auth-Request-User',
++        'X-Forwarded-Email',
++        'X-Auth-Request-Email',
++    ):
++        username = _normalise_authenticated_username(request.headers.get(header_name))
++        if username:
++            break
++    else:
++        raise web.HTTPUnauthorized(reason='missing authenticated user header for audio download')
++
++    audio_root = os.path.realpath(config.AUDIO_DOWNLOAD_DIR)
++    target_dir = os.path.realpath(os.path.join(audio_root, username, 'audiobooks'))
++    audio_root_with_sep = audio_root if audio_root.endswith(os.sep) else audio_root + os.sep
++    if target_dir != audio_root and not target_dir.startswith(audio_root_with_sep):
++        raise web.HTTPBadRequest(reason='authenticated audio download directory resolved outside the audio root')
++    if not os.path.isdir(target_dir):
++        raise web.HTTPBadRequest(
++            reason=f'audiobooks directory for authenticated user "{username}" does not exist',
++        )
++    return target_dir
++
++
++def _apply_authenticated_audio_target(request, download_options):
++    if download_options['download_type'] == 'audio':
++        download_options['download_dir_override'] = _authenticated_audio_download_dir(request)
++    else:
++        download_options['download_dir_override'] = None
++
++
+ @routes.post(config.URL_PREFIX + 'add')
+ async def add(request):
+     log.info("Received request to add download")
+@@ -715,6 +758,7 @@ async def add(request):
+     except web.HTTPBadRequest as e:
+         log.error("Bad request: %s", e.reason)
+         raise
++    _apply_authenticated_audio_target(request, o)
+     log.info(
+         "Add download request: type=%s quality=%s format=%s has_folder=%s auto_start=%s",
+         o['download_type'],
+@@ -741,6 +785,7 @@ async def add(request):
+         o['ytdl_options_overrides'],
+         o['clip_start'],
+         o['clip_end'],
++        o['download_dir_override'],
+     )
+     return web.Response(text=serializer.encode(status))
+
+@@ -765,6 +810,8 @@ async def subscribe(request):
+         o = parse_download_options(post)
+     except web.HTTPBadRequest:
+         raise
++    if o['download_type'] == 'audio':
++        raise web.HTTPBadRequest(reason='audio subscriptions cannot target the authenticated user once they run in the background')
+     cic = post.get('check_interval_minutes')
+     if cic is None:
+         cic = config.SUBSCRIPTION_DEFAULT_CHECK_INTERVAL
+diff --git a/app/ytdl.py b/app/ytdl.py
+index 09d1f99..70cb8f0 100644
+--- a/app/ytdl.py
++++ b/app/ytdl.py
+@@ -197,6 +197,7 @@ class DownloadInfo:
+         ytdl_options_overrides=None,
+         clip_start=None,
+         clip_end=None,
++        download_dir_override=None,
+     ):
+         self.id = id if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{id}'
+         self.title = title if len(custom_name_prefix) == 0 else f'{custom_name_prefix}.{title}'
+@@ -222,6 +223,7 @@ class DownloadInfo:
+         self.ytdl_options_overrides = dict(ytdl_options_overrides or {})
+         self.clip_start = clip_start
+         self.clip_end = clip_end
++        self.download_dir_override = download_dir_override
+         self.subtitle_files = []
+
+     def __setstate__(self, state):
+@@ -285,6 +287,8 @@ class DownloadInfo:
+             self.clip_start = None
+         if not hasattr(self, "clip_end"):
+             self.clip_end = None
++        if not hasattr(self, "download_dir_override"):
++            self.download_dir_override = None
+
+
+ _PERSISTED_DOWNLOAD_FIELDS = (
+@@ -315,6 +319,7 @@ _PERSISTED_DOWNLOAD_FIELDS = (
+     "ytdl_options_overrides",
+     "clip_start",
+     "clip_end",
++    "download_dir_override",
+     "status",
+     "timestamp",
+     "error",
+@@ -862,11 +867,25 @@ class DownloadQueue:
+             dldirectory = base_directory
+         return dldirectory, None
+
++    def __calc_download_path_override(self, download_type, override):
++        if not override:
++            return None
++        base_directory = self.config.AUDIO_DOWNLOAD_DIR if download_type == 'audio' else self.config.DOWNLOAD_DIR
++        real_base_directory = os.path.realpath(base_directory)
++        dldirectory = os.path.realpath(override)
++        real_base_directory_with_sep = real_base_directory if real_base_directory.endswith(os.sep) else real_base_directory + os.sep
++        if dldirectory != real_base_directory and not dldirectory.startswith(real_base_directory_with_sep):
++            return None, {'status': 'error', 'msg': 'download directory override must resolve inside the configured base directory'}
++        if not os.path.isdir(dldirectory):
++            return None, {'status': 'error', 'msg': f'download directory override "{dldirectory}" does not exist'}
++        return dldirectory, None
++
+     async def __add_download(self, dl, auto_start):
+-        dldirectory, error_message = self.__calc_download_path(dl.download_type, dl.folder)
++        dldirectory, error_message = self.__calc_download_path_override(dl.download_type, getattr(dl, 'download_dir_override', None)) or self.__calc_download_path(dl.download_type, dl.folder)
+         if error_message is not None:
+             return error_message
+-        output = self.config.OUTPUT_TEMPLATE if len(dl.custom_name_prefix) == 0 else f'{dl.custom_name_prefix}.{self.config.OUTPUT_TEMPLATE}'
++        output_template = self.config.AUDIO_OUTPUT_TEMPLATE if dl.download_type == 'audio' else self.config.OUTPUT_TEMPLATE
++        output = output_template if len(dl.custom_name_prefix) == 0 else f'{dl.custom_name_prefix}.{output_template}'
+         output_chapter = self.config.OUTPUT_TEMPLATE_CHAPTER
+         entry = getattr(dl, 'entry', None)
+         if entry is not None and entry.get('playlist_index') is not None:
+@@ -918,6 +937,7 @@ class DownloadQueue:
+         ytdl_options_overrides,
+         clip_start,
+         clip_end,
++        download_dir_override,
+         already,
+         _add_gen=None,
+     ):
+@@ -978,6 +998,7 @@ class DownloadQueue:
+                 ytdl_options_overrides,
+                 clip_start,
+                 clip_end,
++                download_dir_override,
+                 already,
+                 _add_gen,
+             )
+@@ -1022,6 +1043,7 @@ class DownloadQueue:
+                         ytdl_options_overrides,
+                         clip_start,
+                         clip_end,
++                        download_dir_override,
+                         already,
+                         _add_gen,
+                     )
+@@ -1058,6 +1080,7 @@ class DownloadQueue:
+                     ytdl_options_overrides=ytdl_options_overrides,
+                     clip_start=clip_start,
+                     clip_end=clip_end,
++                    download_dir_override=download_dir_override,
+                 )
+                 await self.__add_download(dl, auto_start)
+             return {'status': 'ok'}
+@@ -1082,6 +1105,7 @@ class DownloadQueue:
+         ytdl_options_overrides=None,
+         clip_start=None,
+         clip_end=None,
++        download_dir_override=None,
+         already=None,
+         _add_gen=None,
+     ):
+@@ -1120,6 +1144,7 @@ class DownloadQueue:
+             ytdl_options_overrides,
+             clip_start,
+             clip_end,
++            download_dir_override,
+             already,
+             _add_gen,
+         )

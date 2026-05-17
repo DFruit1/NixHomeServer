@@ -4,7 +4,7 @@ let
   libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   watchedRoots =
     (map (library: "${vars.sharedVideosRoot}/${library.dir}") vars.sharedJellyfinLibraries)
-    ++ (map (library: "${vars.sharedMusicRoot}/${library.dir}") vars.sharedJellyfinMusicLibraries);
+    ++ [ vars.usersRoot ];
   mediaIncludeRegex = ".*\\.(mkv|mp4|m4v|avi|mov|webm|m4a|mp3|opus|ogg|oga|flac|wav|aac)$";
   watcherScript = libraryWatchers.mkSettledWatcherScript {
     name = "jellyfin-library-watch";

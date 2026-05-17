@@ -240,6 +240,33 @@ sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh
 EOF
 }
 
+target_generation() {
+  local target_host="$1"
+  local build_host="$2"
+
+  if [[ "$target_host" == "$build_host" ]]; then
+    readlink -f /nix/var/nix/profiles/system 2>/dev/null || true
+  else
+    ssh "$target_host" "readlink -f /nix/var/nix/profiles/system 2>/dev/null || true"
+  fi
+}
+
+print_rollback_guidance() {
+  local target_host="$1"
+  local build_host="$2"
+  local previous_generation="$3"
+  local new_generation="$4"
+
+  echo "❌ Post-switch runtime readiness failed."
+  echo "   Previous system generation: ${previous_generation:-unknown}"
+  echo "   New system generation: ${new_generation:-unknown}"
+  if [[ "$target_host" == "$build_host" ]]; then
+    echo "   Roll back with: sudo nixos-rebuild switch --rollback"
+  else
+    echo "   Roll back with: ssh ${target_host@Q} 'sudo nixos-rebuild switch --rollback'"
+  fi
+}
+
 run_rebuild() {
   local rebuild_action="$1"
   local hostname="$2"
@@ -355,8 +382,27 @@ deploy_main() {
   fi
 
   if [[ "$action" == "switch" ]]; then
+    previous_generation="$(target_generation "$target_host" "$build_host")"
     echo "ℹ️ Running remote nixos-rebuild switch…"
     run_rebuild switch "$resolved_hostname" "$target_host" "$build_host"
+
+    new_generation="$(target_generation "$target_host" "$build_host")"
+    echo "ℹ️ Running post-switch runtime readiness checks on ${target_host}…"
+    if [[ "$target_host" == "$build_host" ]]; then
+      readiness_args=(--profile deploy)
+      if [[ "$full_check" == true ]]; then
+        readiness_args+=(--deep)
+      fi
+      if ! sudo env RUNTIME_READINESS_REPO_ROOT="$PWD" ./scripts/check-runtime-readiness.sh "${readiness_args[@]}"; then
+        print_rollback_guidance "$target_host" "$build_host" "$previous_generation" "$new_generation"
+        exit 1
+      fi
+    else
+      if ! run_remote_runtime_readiness "$target_host" "$full_check"; then
+        print_rollback_guidance "$target_host" "$build_host" "$previous_generation" "$new_generation"
+        exit 1
+      fi
+    fi
   fi
 }
 

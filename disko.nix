@@ -24,7 +24,7 @@ let
       };
     };
 
-  mkDataVdev = idx: members: {
+  mkDataVdev = idx: _: {
     mode = "mirror";
     members = map (memberIdx: "data${toString memberIdx}") [
       ((idx * 2) + 1)

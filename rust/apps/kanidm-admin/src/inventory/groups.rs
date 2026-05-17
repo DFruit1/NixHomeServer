@@ -239,6 +239,11 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             detail: "Add this when the user should use the Photos app. First successful OIDC login provisions the local Immich account.",
             category: GroupCategory::AppUser,
         },
+        "jellyfin-users" => GroupHelp {
+            summary: "Grants managed Jellyfin local-account and library access.",
+            detail: "Add this when the user should have a managed Jellyfin local account and their personal video libraries. Combine it with `app-admin` only for trusted Jellyfin administrators who should see all libraries.",
+            category: GroupCategory::AppUser,
+        },
         "paperless-users" => GroupHelp {
             summary: "Grants normal non-admin Paperless access.",
             detail: "Add this when the user should use the Documents app day to day. First successful OIDC login creates or links the local Paperless account and grants normal document-management access without app administration.",

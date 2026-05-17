@@ -4,6 +4,7 @@ let
   cfg = config.services.mail-archive-ui;
   user = "mail-archive-ui";
   group = "mail-archive-ui";
+  hardening = import ../lib/systemd-hardening.nix { inherit lib; };
   defaultTags = [ "new" ];
   mailArchiveUiPort = vars.networking.ports.mailArchiveUi;
   mailArchiveStoreRoot = vars.usersRoot;
@@ -21,6 +22,7 @@ let
       "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
     ]
+    ++ lib.optional (cfg.paperlessConsumeRoot != null) "MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT=${cfg.paperlessConsumeRoot}"
     ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
   mailArchiveUiPath = with pkgs; [
@@ -100,6 +102,12 @@ in
       default = "filebrowser-quantum";
       description = "Optional local group granted read ACLs on the user-visible email mirror files.";
     };
+
+    paperlessConsumeRoot = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = if (config.services.paperless.enable or false) then vars.paperlessInboxRoot else null;
+      description = "Optional Paperless consume directory where attachment handoffs are copied.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -108,6 +116,7 @@ in
       group = group;
       home = cfg.dataDir;
       createHome = false;
+      extraGroups = lib.optional (cfg.paperlessConsumeRoot != null) "paperless";
     };
 
     users.groups.${group} = { };
@@ -134,7 +143,7 @@ in
           cfg.accountStateRoot
           cfg.runtimeDir
           cfg.lockDir
-        ];
+        ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot;
       };
       wants = [
         "data-pool-layout.service"
@@ -146,7 +155,7 @@ in
       ];
       path = mailArchiveUiPath;
 
-      serviceConfig = {
+      serviceConfig = hardening.merge hardening.networkProxy {
         Type = "simple";
         User = user;
         Group = group;
@@ -156,18 +165,13 @@ in
         Restart = "on-failure";
         UMask = "0077";
         DynamicUser = false;
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
         ReadWritePaths = [
           cfg.dataDir
           cfg.storeRoot
           cfg.accountStateRoot
           cfg.runtimeDir
           cfg.lockDir
-        ];
+        ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot;
       };
     };
   };

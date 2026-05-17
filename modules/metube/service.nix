@@ -5,57 +5,17 @@ let
   metubeGroup = "metube";
   metubeUid = 3002;
   metubeGid = 3002;
-  metubeSubIdStart = 465536;
-  metubeSubIdCount = 65536;
-  metubeListenAddress = vars.networking.loopbackIPv4;
-  metubeListenPort = vars.networking.ports.metube;
-  metubeContainerPort = vars.networking.ports.metubeContainer;
-  metubeHome = "/var/lib/metube";
-  metubeStateDir = "${metubeHome}/state";
-  metubeTempDir = "${metubeHome}/tmp";
-  metubeImage = "ghcr.io/alexta69/metube@sha256:ee9a49b477215d33a8c330e9b9bb5c70588e265637cba9ff3888b75b87c00bf0";
-  metubeVersion = "2026.04.26";
-  metubePatchedMain = pkgs.stdenvNoCC.mkDerivation {
-    pname = "metube-patched-main";
-    version = metubeVersion;
-    src = pkgs.fetchFromGitHub {
-      owner = "alexta69";
-      repo = "metube";
-      rev = metubeVersion;
-      hash = "sha256-WTirLBPCOZQod0GasJl+LvM2FzQKbep3SEx5996X5wA=";
-    };
-    patches = [ ./patches/ignore-url-t-clip-start.patch ];
-    installPhase = ''
-      mkdir -p $out
-      cp app/main.py $out/main.py
-    '';
-  };
-  outputTemplate = "%(channel,uploader,creator|Unknown Channel)S/%(upload_date>%Y,release_date>%Y|Unknown Year)s/%(upload_date>%Y-%m-%d,release_date>%Y-%m-%d|Unknown Date)s - %(title|Unknown Title)S [%(id|NOID)s].%(ext)s";
-  outputTemplateChapter = "%(channel,uploader,creator|Unknown Channel)S/%(upload_date>%Y,release_date>%Y|Unknown Year)s/%(upload_date>%Y-%m-%d,release_date>%Y-%m-%d|Unknown Date)s - %(title|Unknown Title)S [%(id|NOID)s] - %(section_number)02d %(section_title|Chapter)S.%(ext)s";
-  escapedOutputTemplate = builtins.replaceStrings [ "%" ] [ "%%" ] outputTemplate;
-  escapedOutputTemplateChapter = builtins.replaceStrings [ "%" ] [ "%%" ] outputTemplateChapter;
-  ytOptionsJson = builtins.toJSON {
-    format = "bestvideo[vcodec*=avc1]+bestaudio[acodec*=mp4a]/best";
-    merge_output_format = "mkv";
-    writethumbnail = true;
-    postprocessors = [
-      {
-        key = "FFmpegMetadata";
-        add_metadata = true;
-        add_chapters = true;
-        add_infojson = "if_exists";
-      }
-      {
-        key = "EmbedThumbnail";
-      }
-    ];
-  };
-  ytOptionsEnv = builtins.replaceStrings [ "\"" ] [ "\\\"" ] ytOptionsJson;
+  listenAddress = vars.networking.loopbackIPv4;
+  listenPort = vars.networking.ports.metube;
+  stateRoot = "/var/lib/metube";
+  stateDir = "${stateRoot}/state";
+  cacheRoot = "/var/cache/youtube-downloader";
+  tempDir = "${cacheRoot}/tmp";
+  sharedAudioRoot = "${vars.sharedAudiobooksRoot}/youtube";
+  youtubeDownloader = pkgs.callPackage ../../node/apps/youtube-downloader { };
+  resources = config.nixhomeserver.resources;
 in
 {
-  virtualisation.podman.enable = true;
-  users.manageLingering = true;
-
   users.groups.${metubeGroup} = {
     gid = metubeGid;
   };
@@ -65,89 +25,105 @@ in
     uid = metubeUid;
     group = metubeGroup;
     extraGroups = [ "users" ];
-    home = metubeHome;
+    home = stateRoot;
     createHome = true;
-    linger = true;
-    subUidRanges = [
-      {
-        startUid = metubeSubIdStart;
-        count = metubeSubIdCount;
-      }
-    ];
-    subGidRanges = [
-      {
-        startGid = metubeSubIdStart;
-        count = metubeSubIdCount;
-      }
-    ];
   };
 
   systemd.tmpfiles.rules = [
-    "d ${metubeStateDir} 0750 ${metubeUser} ${metubeGroup} -"
-    "d ${metubeTempDir} 0750 ${metubeUser} ${metubeGroup} -"
+    "d ${stateRoot} 0750 ${metubeUser} ${metubeGroup} -"
+    "d ${stateDir} 0750 ${metubeUser} ${metubeGroup} -"
+    "d ${cacheRoot} 0750 ${metubeUser} ${metubeGroup} -"
+    "d ${tempDir} 0750 ${metubeUser} ${metubeGroup} -"
   ];
 
-  environment.etc."containers/systemd/users/${toString metubeUid}/metube.container".text = ''
-    [Container]
-    Image=${metubeImage}
-    ContainerName=metube
-    PublishPort=${metubeListenAddress}:${toString metubeListenPort}:${toString metubeContainerPort}
-    Volume=${vars.sharedYouTubeRoot}:/downloads:rw
-    Volume=${metubeStateDir}:/state:rw
-    Volume=${metubeTempDir}:/tmp-downloads:rw
-    Volume=${metubePatchedMain}/main.py:/app/app/main.py:ro
-    Environment=DOWNLOAD_DIR=/downloads
-    Environment=STATE_DIR=/state
-    Environment=TEMP_DIR=/tmp-downloads
-    Environment=PUID=${toString metubeUid}
-    Environment=PGID=${toString metubeGid}
-    Environment=UMASK=002
-    Environment=CHOWN_DIRS=false
-    Environment=CUSTOM_DIRS=false
-    Environment=CREATE_CUSTOM_DIRS=false
-    Environment=DOWNLOAD_DIRS_INDEXABLE=false
-    Environment=ALLOW_YTDL_OPTIONS_OVERRIDES=false
-    Environment="OUTPUT_TEMPLATE=${escapedOutputTemplate}"
-    Environment=OUTPUT_TEMPLATE_PLAYLIST=
-    Environment=OUTPUT_TEMPLATE_CHANNEL=
-    Environment="OUTPUT_TEMPLATE_CHAPTER=${escapedOutputTemplateChapter}"
-    Environment="YTDL_OPTIONS=${ytOptionsEnv}"
-    Pull=missing
-    NoNewPrivileges=true
-    DropCapability=all
-    PodmanArgs=--userns=keep-id
-    PodmanArgs=--group-add=keep-groups
-
-    [Service]
-    Restart=on-failure
-    TimeoutStartSec=900
-
-    [Install]
-    WantedBy=default.target
-  '';
-
-  systemd.services.metube-quadlet-refresh = {
-    description = "Refresh MeTube rootless quadlet";
-    after = [
-      "data-pool-layout.service"
-      "network-online.target"
-      "user@${toString metubeUid}.service"
-    ];
-    requires = [
-      "data-pool-layout.service"
-      "user@${toString metubeUid}.service"
-    ];
-    wants = [ "network-online.target" ];
+  systemd.services.youtube-downloader = {
+    description = "Authenticated YouTube media downloader";
     wantedBy = [ "multi-user.target" ];
-    restartTriggers = [
-      config.environment.etc."containers/systemd/users/${toString metubeUid}/metube.container".source
+    wants = [
+      "metube-legacy-container-cleanup.service"
+      "network-online.target"
+      "data-pool-layout.service"
+      "jellyfin-storage-layout-v1.service"
+      "audiobookshelf-storage-layout-v1.service"
     ];
-    serviceConfig.Type = "oneshot";
+    after = [
+      "metube-legacy-container-cleanup.service"
+      "network-online.target"
+      "data-pool-layout.service"
+      "jellyfin-storage-layout-v1.service"
+      "audiobookshelf-storage-layout-v1.service"
+    ];
+    path = with pkgs; [
+      coreutils
+      ffmpeg
+      sqlite
+      yt-dlp
+    ];
+    environment = {
+      YOUTUBE_DOWNLOADER_HOST = listenAddress;
+      YOUTUBE_DOWNLOADER_PORT = toString listenPort;
+      YOUTUBE_DOWNLOADER_STATE_DIR = stateDir;
+      YOUTUBE_DOWNLOADER_DATABASE = "${stateDir}/youtube-downloader.sqlite";
+      YOUTUBE_DOWNLOADER_TEMP_DIR = tempDir;
+      YOUTUBE_DOWNLOADER_SHARED_VIDEO_ROOT = vars.sharedYouTubeRoot;
+      YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT = sharedAudioRoot;
+      YOUTUBE_DOWNLOADER_USERS_ROOT = vars.usersRoot;
+      YOUTUBE_DOWNLOADER_CONCURRENCY = "1";
+      YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP = "shared-files-read-write-access";
+    };
+    serviceConfig = {
+      Type = "simple";
+      User = metubeUser;
+      Group = metubeGroup;
+      SupplementaryGroups = [ "users" ];
+      ExecStart = "${youtubeDownloader}/bin/youtube-downloader";
+      Restart = "on-failure";
+      RestartSec = "5s";
+      TimeoutStartSec = "60s";
+      UMask = "0002";
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ReadWritePaths = [
+        stateRoot
+        cacheRoot
+        vars.sharedYouTubeRoot
+        vars.sharedAudiobooksRoot
+        vars.usersRoot
+      ];
+      CPUQuota = resources.metube.cpuQuota;
+    };
+  };
+
+  systemd.services.metube-legacy-container-cleanup = {
+    description = "Stop legacy MeTube container before starting native downloader";
+    before = [ "youtube-downloader.service" ];
+    wantedBy = [ "multi-user.target" ];
+    path = with pkgs; [
+      procps
+      shadow
+      systemd
+      util-linux
+      podman
+    ];
     script = ''
+      set -euo pipefail
+
       export XDG_RUNTIME_DIR=/run/user/${toString metubeUid}
       export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${toString metubeUid}/bus
-      ${pkgs.util-linux}/bin/runuser -u ${metubeUser} -- ${pkgs.systemd}/bin/systemctl --user daemon-reload
-      ${pkgs.util-linux}/bin/runuser -u ${metubeUser} -- ${pkgs.systemd}/bin/systemctl --user restart metube.service
+
+      if [[ -S "$XDG_RUNTIME_DIR/bus" ]]; then
+        runuser -u ${metubeUser} -- systemctl --user stop metube.service 2>/dev/null || true
+        runuser -u ${metubeUser} -- systemctl --user daemon-reload 2>/dev/null || true
+      fi
+
+      runuser -u ${metubeUser} -- podman stop metube 2>/dev/null || true
+      pkill -u ${metubeUser} -f 'podman/(pasta|passt).*127\.0\.0\.1/8083' 2>/dev/null || true
     '';
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
   };
 }

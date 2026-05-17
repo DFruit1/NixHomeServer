@@ -240,6 +240,7 @@ cat >"$snapshot_file" <<EOF
           "shared-files-read-write-access",
           "paperless-users",
           "immich-users",
+          "jellyfin-users",
           "audiobookshelf-users",
           "kavita-users",
           "mail-archive-users",

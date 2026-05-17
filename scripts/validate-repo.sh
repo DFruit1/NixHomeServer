@@ -96,6 +96,9 @@ run_rust_checks() {
   system="$(current_system)"
 
   for check_name in \
+    shellcheck \
+    deadnix \
+    statix \
     kanidm-admin-clippy \
     kanidm-admin-test \
     mail-archive-ui-test

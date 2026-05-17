@@ -20,13 +20,6 @@
       lib = nixpkgs.lib;
       pkgs = nixpkgs.legacyPackages.${system};
       pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
-      impermanencePatched = pkgs.applyPatches {
-        name = "impermanence-patched";
-        src = impermanence;
-        patches = [
-          ./patches/impermanence-nixpkgs-25-11-dir-method.patch
-        ];
-      };
       checkNativeBuildInputs = with pkgs; [
         bash
         coreutils
@@ -39,11 +32,17 @@
         nix
         ripgrep
         sqlite
+        util-linux
       ];
-      siteNames = [
-        "dsaw"
-        "example"
-      ];
+      hostEntries = builtins.readDir ./hosts;
+      siteNames =
+        lib.sort (a: b: a < b)
+          (lib.filter
+            (siteName:
+              hostEntries.${siteName} == "directory"
+              && builtins.pathExists (./hosts + "/${siteName}/default.nix")
+              && builtins.pathExists (./hosts + "/${siteName}/settings.nix"))
+            (builtins.attrNames hostEntries));
       siteSettingsPath = siteName: ./hosts + "/${siteName}/settings.nix";
       siteModulePath = siteName: ./hosts + "/${siteName}/default.nix";
       mkSiteVars = siteName: import (siteSettingsPath siteName) { inherit lib; };
@@ -57,7 +56,7 @@
             (siteModulePath siteName)
             agenix.nixosModules.default
             disko.nixosModules.disko
-            (impermanencePatched + "/nixos.nix")
+            impermanence.nixosModules.impermanence
           ];
           specialArgs = {
             inherit self vars disko copyparty pkgsUnstable;
@@ -80,6 +79,7 @@
           cfg = nixosHost.config;
           snapshot = {
             vars = {
+              discoveredSiteNames = siteNames;
               serverLanGateway = vars.serverLanGateway;
               serverLanIP = vars.serverLanIP;
               serverLanPrefixLength = vars.serverLanPrefixLength;
@@ -92,11 +92,19 @@
               vaultwardenDomain = vars.vaultwardenDomain;
               uploadSecurity = vars.uploadSecurity;
               kanidmAdminUser = vars.kanidmAdminUser;
+              localAdminUser = vars.localAdminUser or vars.kanidmAdminUser;
               runtimeAccessCanaries = vars.runtimeAccessCanaries;
               personalKavitaLibraries = vars.personalKavitaLibraries;
+              personalJellyfinLibraries = vars.personalJellyfinLibraries;
+              sharedJellyfinLibraries = vars.sharedJellyfinLibraries;
+              sharedJellyfinMusicLibraries = vars.sharedJellyfinMusicLibraries;
               sharedBooksSubdirs = vars.sharedBooksSubdirs;
+              userContentSubdirs = vars.userContentSubdirs;
               sharedContentSubdirs = vars.sharedContentSubdirs;
               sharedMusicRoot = vars.sharedMusicRoot;
+              paperlessInboxRoot = vars.paperlessInboxRoot;
+              paperlessArchiveRoot = vars.paperlessArchiveRoot;
+              paperlessExportRoot = vars.paperlessExportRoot;
             };
             config = {
               services = {
@@ -127,6 +135,8 @@
               restic = {
                 repository = cfg.services.restic.backups.system-state.repository;
                 pathCount = builtins.length cfg.services.restic.backups.system-state.paths;
+                paths = cfg.services.restic.backups.system-state.paths;
+                backupPrepareCommand = cfg.services.restic.backups.system-state.backupPrepareCommand;
               };
               monitoring = {
                 hasSystemHealthService = cfg.systemd.services ? "system-health-report";
@@ -161,8 +171,14 @@
                 mailArchiveUiMountCondition =
                   cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
                 mailArchiveUiEnvironment = cfg.services.mail-archive-ui.environment or { };
+                mailArchiveUiServiceEnvironment =
+                  cfg.systemd.services."mail-archive-ui".serviceConfig.Environment or [ ];
                 mailArchiveUiReadWritePaths =
                   cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
+                mailArchiveUiSupplementaryGroups =
+                  cfg.systemd.services."mail-archive-ui".serviceConfig.SupplementaryGroups or [ ];
+                mailArchiveUiExtraGroups = cfg.users.users.mail-archive-ui.extraGroups or [ ];
+                mailArchiveUiPaperlessConsumeRoot = cfg.services.mail-archive-ui.paperlessConsumeRoot;
                 mailArchiveUiPath =
                   map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
                 mailArchiveSyncPath =
@@ -206,17 +222,26 @@
                 hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
                 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
                 hasJellyfinLibraryBootstrap = cfg.systemd.services ? "jellyfin-library-bootstrap-v1";
+                jellyfinLibraryBootstrapScript = cfg.systemd.services."jellyfin-library-bootstrap-v1".script or "";
+                fileshareUserRootSyncScript = cfg.systemd.services."fileshare-user-root-sync".script or "";
+                jellyfinStorageLayoutScript = cfg.systemd.services."jellyfin-storage-layout-v1".script or "";
                 hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
                 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
                 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
                 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
                 jellyfinLibraryWatchAfter = cfg.systemd.services.jellyfin-library-watch.after;
                 jellyfinLibraryWatchWants = cfg.systemd.services.jellyfin-library-watch.wants;
+                hasYoutubeDownloaderService = cfg.systemd.services ? "youtube-downloader";
+                youtubeDownloaderEnvironment = cfg.systemd.services."youtube-downloader".environment or { };
+                youtubeDownloaderReadWritePaths =
+                  cfg.systemd.services."youtube-downloader".serviceConfig.ReadWritePaths or [ ];
+                youtubeDownloaderPath =
+                  map (package: lib.getName package) (cfg.systemd.services."youtube-downloader".path or [ ]);
+                hasLegacyMetubeContainer =
+                  cfg.environment.etc ? "containers/systemd/users/3002/metube.container";
                 hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
                 hasMetubeAudioImportWatch = cfg.systemd.services ? "metube-audio-import-watch";
-                metubeAudioImportWatchAfter = cfg.systemd.services.metube-audio-import-watch.after;
                 jellyfinPayloadRoots = [
-                  vars.sharedMusicRoot
                   vars.sharedVideosRoot
                   vars.usersRoot
                 ];
@@ -238,6 +263,7 @@
       rustLib = import ./rust/lib { inherit lib pkgs crane; };
       rustApps = import ./rust/apps { inherit lib pkgs rustLib; };
       rustPackages = lib.mapAttrs (_: app: app.package) rustApps;
+      nodePackages = import ./node/apps { inherit lib pkgs; };
       rustShells =
         {
           rust = rustLib.mkRustShell {
@@ -292,13 +318,44 @@
       inherit nixosConfigurations;
 
       ################ Packages #######################################
-      packages.${system} = rustPackages;
+      packages.${system} = rustPackages // nodePackages;
 
       ################ Formatter ######################################
       formatter.${system} = pkgs.nixpkgs-fmt;
 
       ################ Checks #########################################
       checks.${system} = {
+        youtube-downloader = nodePackages.youtube-downloader;
+        shellcheck = pkgs.runCommand "shellcheck"
+          {
+            nativeBuildInputs = with pkgs; [
+              shellcheck
+            ];
+          } ''
+          cd ${self}
+          shellcheck -x -e SC1091,SC2016,SC2154,SC2029 scripts/*.sh scripts/helpers/*.sh scripts/admin/*.sh scripts/tests/*.sh
+          touch "$out"
+        '';
+        deadnix = pkgs.runCommand "deadnix"
+          {
+            nativeBuildInputs = with pkgs; [
+              deadnix
+            ];
+          } ''
+          cd ${self}
+          deadnix --fail .
+          touch "$out"
+        '';
+        statix = pkgs.runCommand "statix"
+          {
+            nativeBuildInputs = with pkgs; [
+              statix
+            ];
+          } ''
+          cd ${self}
+          statix check .
+          touch "$out"
+        '';
         repo-policy = pkgs.runCommand "repo-policy"
           {
             nativeBuildInputs = checkNativeBuildInputs;

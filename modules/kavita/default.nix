@@ -8,7 +8,9 @@ let
   kavitaPackage = baseKavitaPackage.overrideAttrs (old: {
     backend = old.backend.overrideAttrs (backendOld: {
       patches = (backendOld.patches or [ ]) ++ [
+        ./patches/disable-update-notifications.patch
         ./patches/fix-epub-relative-resource-resolution.patch
+        ./patches/scan-root-level-library-files.patch
       ];
     });
   });

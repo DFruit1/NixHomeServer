@@ -12,7 +12,7 @@ Validate first-install readiness without changing the system.
 EOF
 }
 
-host="dsaw"
+host=""
 while (($# > 0)); do
   case "$1" in
     --host)
@@ -29,6 +29,10 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+if [[ -z "$host" ]]; then
+  host="$(default_host)"
+fi
 
 echo "NixHomeServer install doctor"
 echo "host: ${host}"

@@ -111,8 +111,7 @@ load_inventory_json() {
               mountpoints: ((.mountpoints // []) | map(select(type == "string" and . != "")))
             }
         ]
-      '
-      <<<"$lsblk_json"
+      ' <<<"$lsblk_json"
     )"
   fi
   printf '%s\n' "$inventory_json"

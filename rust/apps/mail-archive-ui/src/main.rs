@@ -14,7 +14,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
 };
-use chrono::{DateTime, Local, Timelike, Utc};
+use chrono::{DateTime, Local, NaiveDate, Timelike, Utc};
 #[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,
@@ -267,15 +267,100 @@ if (DASHBOARD_ROOT) {
   fetchStatus();
 }
 "#;
-const ATTACHMENTS_JS: &str = r#"const selectPage = document.querySelector("[data-select-page]");
-if (selectPage) {
-  selectPage.addEventListener("change", () => {
-    document.querySelectorAll("[data-attachment-checkbox]").forEach((checkbox) => {
-      checkbox.checked = selectPage.checked;
+const ATTACHMENTS_JS: &str = r##"const attachmentRows = Array.from(document.querySelectorAll("[data-attachment-row]"));
+const bulkForms = [
+  document.querySelector("#attachment-download-form"),
+  document.querySelector("#attachment-paperless-form"),
+].filter(Boolean);
+const selectedKeys = new Set();
+let selectionAnchor = null;
+
+const interactiveSelector = "a, button, input, select, textarea, form, label";
+
+const syncSelectedInputs = () => {
+  attachmentRows.forEach((row) => {
+    const selected = selectedKeys.has(row.dataset.attachmentKey);
+    row.classList.toggle("attachment-row-selected", selected);
+    row.setAttribute("aria-selected", selected ? "true" : "false");
+  });
+
+  bulkForms.forEach((form) => {
+    form.querySelectorAll('input[data-selection-hidden]').forEach((input) => input.remove());
+    selectedKeys.forEach((key) => {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "attachment_keys";
+      input.value = key;
+      input.dataset.selectionHidden = "true";
+      form.appendChild(input);
     });
   });
+};
+
+const setRange = (fromIndex, toIndex) => {
+  const [start, end] = fromIndex <= toIndex ? [fromIndex, toIndex] : [toIndex, fromIndex];
+  selectedKeys.clear();
+  attachmentRows.slice(start, end + 1).forEach((row) => selectedKeys.add(row.dataset.attachmentKey));
+};
+
+const selectRow = (row, event) => {
+  const key = row.dataset.attachmentKey;
+  const index = attachmentRows.indexOf(row);
+
+  if (event.shiftKey && selectionAnchor !== null) {
+    setRange(selectionAnchor, index);
+  } else if (event.ctrlKey || event.metaKey) {
+    if (selectedKeys.has(key)) {
+      selectedKeys.delete(key);
+    } else {
+      selectedKeys.add(key);
+    }
+    selectionAnchor = index;
+  } else {
+    selectedKeys.clear();
+    selectedKeys.add(key);
+    selectionAnchor = index;
+  }
+
+  syncSelectedInputs();
+};
+
+attachmentRows.forEach((row) => {
+  row.addEventListener("mousedown", (event) => {
+    if (event.target.closest(interactiveSelector)) {
+      return;
+    }
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+    }
+  });
+
+  row.addEventListener("click", (event) => {
+    if (event.target.closest(interactiveSelector)) {
+      return;
+    }
+    selectRow(row, event);
+  });
+
+  row.addEventListener("keydown", (event) => {
+    if (![" ", "Enter"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    selectRow(row, event);
+  });
+});
+
+const selectPage = document.querySelector("[data-select-page]");
+if (selectPage) {
+  selectPage.addEventListener("click", () => {
+    selectedKeys.clear();
+    attachmentRows.forEach((row) => selectedKeys.add(row.dataset.attachmentKey));
+    selectionAnchor = attachmentRows.length > 0 ? 0 : null;
+    syncSelectedInputs();
+  });
 }
-"#;
+"##;
 const PRIORITY_JS: &str = r#"const priorityClassPrefix = "priority-select-";
 const priorityValues = ["high", "normal", "low"];
 
@@ -365,6 +450,7 @@ struct AppConfig {
     account_state_root: Arc<str>,
     runtime_dir: Arc<str>,
     lock_dir: Arc<str>,
+    paperless_consume_root: Option<Arc<str>>,
     visible_mirror_read_group: Option<Arc<str>>,
     default_tags: Arc<[String]>,
 }
@@ -466,6 +552,7 @@ struct AttachmentListItem {
     message: AttachmentMessageRecord,
     account_name: String,
     sender_priority: SenderPriorityView,
+    paperless_sent_at: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -542,6 +629,7 @@ struct MessageMetadata {
 
 #[derive(Clone, Debug)]
 struct LiveMessageRecord {
+    message_key: String,
     message_relpaths: Vec<String>,
     subject: String,
     from: String,
@@ -677,17 +765,39 @@ struct SearchParams {
     #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
     account_id: Option<i64>,
     priority: Option<String>,
+    sender_address: Option<String>,
+    sender_name: Option<String>,
+    sender_domain: Option<String>,
+    subject: Option<String>,
+    body_text: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    has_attachments: Option<String>,
     flash: Option<String>,
     error: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 struct AttachmentListParams {
     q: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_query_i64")]
     account_id: Option<i64>,
     priority: Option<String>,
+    sender_address: Option<String>,
+    sender_name: Option<String>,
+    sender_domain: Option<String>,
+    subject: Option<String>,
+    body_text: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    has_attachments: Option<String>,
     extension: Option<String>,
+    attachment_name: Option<String>,
+    mime_type: Option<String>,
+    min_size: Option<String>,
+    max_size: Option<String>,
+    min_attachments: Option<String>,
+    max_attachments: Option<String>,
     include_inline: Option<String>,
     include_inline_images: Option<String>,
     show_mime_details: Option<String>,
@@ -703,7 +813,7 @@ struct AttachmentRefreshForm {
     return_to: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct AttachmentDownloadForm {
     #[serde(default)]
     attachment_keys: Vec<String>,
@@ -711,11 +821,32 @@ struct AttachmentDownloadForm {
     q: Option<String>,
     account_id: Option<String>,
     priority: Option<String>,
+    sender_address: Option<String>,
+    sender_name: Option<String>,
+    sender_domain: Option<String>,
+    subject: Option<String>,
+    body_text: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    has_attachments: Option<String>,
     extension: Option<String>,
+    attachment_name: Option<String>,
+    mime_type: Option<String>,
+    min_size: Option<String>,
+    max_size: Option<String>,
+    min_attachments: Option<String>,
+    max_attachments: Option<String>,
     include_inline: Option<String>,
     include_inline_images: Option<String>,
     show_mime_details: Option<String>,
     download_subfolder: Option<String>,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentPaperlessForm {
+    #[serde(default)]
+    attachment_keys: Vec<String>,
     return_to: Option<String>,
 }
 
@@ -966,6 +1097,50 @@ struct SearchViewState {
     priority_filter: SenderPriorityFilter,
 }
 
+#[derive(Clone, Debug, Default)]
+struct MessageSearchFilters {
+    q: String,
+    sender_address: String,
+    sender_name: String,
+    sender_domain: String,
+    subject: String,
+    body_text: String,
+    date_from: String,
+    date_to: String,
+    has_attachments: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ParsedMessageSearchFilters {
+    raw: MessageSearchFilters,
+    normalized_sender_address: Option<String>,
+    normalized_sender_domain: Option<String>,
+    date_from_timestamp: Option<i64>,
+    date_to_timestamp: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AttachmentSearchFilters {
+    message: MessageSearchFilters,
+    extension: String,
+    attachment_name: String,
+    mime_type: String,
+    min_size: String,
+    max_size: String,
+    min_attachments: String,
+    max_attachments: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ParsedAttachmentSearchFilters {
+    raw: AttachmentSearchFilters,
+    message: ParsedMessageSearchFilters,
+    min_size_bytes: Option<i64>,
+    max_size_bytes: Option<i64>,
+    min_attachment_count: Option<usize>,
+    max_attachment_count: Option<usize>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SenderPriority {
     High,
@@ -1156,8 +1331,7 @@ struct AttachmentListViewState {
 struct AttachmentPageData {
     accounts: Vec<AccountRecord>,
     selected_account_id: Option<i64>,
-    query_text: String,
-    extension_filter: String,
+    filters: AttachmentSearchFilters,
     include_inline: bool,
     include_inline_images: bool,
     show_mime_details: bool,
@@ -1167,10 +1341,9 @@ struct AttachmentPageData {
 }
 
 struct AttachmentBaseQuery<'a> {
-    query_text: &'a str,
+    filters: &'a AttachmentSearchFilters,
     selected_account_id: Option<i64>,
     priority_filter: SenderPriorityFilter,
-    extension_filter: &'a str,
     include_inline: bool,
     include_inline_images: bool,
     show_mime_details: bool,
@@ -1254,6 +1427,10 @@ fn router(state: AppState) -> Router {
             post(download_attachment_browser),
         )
         .route("/attachments/download", post(download_attachments_zip))
+        .route(
+            "/attachments/send-paperless",
+            post(send_attachments_paperless),
+        )
         .route("/healthz", get(healthz))
         .route("/static/custom.css", get(custom_css))
         .route("/static/dashboard.js", get(dashboard_js))
@@ -1546,6 +1723,7 @@ async fn search_page(
 
     let has_params = uri.query().is_some();
     let has_explicit_query = uri.query().is_some_and(has_explicit_query_param);
+    let has_explicit_search = uri.query().is_some_and(has_explicit_search_param);
     let preferences = if has_params {
         SearchPreferenceRecord::default()
     } else {
@@ -1561,11 +1739,12 @@ async fn search_page(
         }
     };
 
-    let query_text = if has_params {
-        params.q.unwrap_or_default()
+    let saved_query = if has_params {
+        String::new()
     } else {
         preferences.last_query.unwrap_or_default()
     };
+    let filters = message_filters_from_search_params(&params, saved_query);
     let priority_filter = if has_params {
         SenderPriorityFilter::from_query(params.priority.as_deref())
     } else {
@@ -1582,7 +1761,7 @@ async fn search_page(
         if let Err(error) = save_search_preferences(
             &state.config,
             &identity.username,
-            query_text.trim(),
+            filters.q.trim(),
             selected_account_id,
         ) {
             return server_error_page("Failed to save search preferences", &error, Some(&identity));
@@ -1590,17 +1769,17 @@ async fn search_page(
     }
 
     let should_execute_search = has_params
-        && (!query_text.trim().is_empty() || priority_filter != SenderPriorityFilter::All);
+        && (message_filters_have_terms(&filters) || priority_filter != SenderPriorityFilter::All);
     let results = if should_execute_search {
         let config = state.config.clone();
         let username = identity.username.clone();
-        let query_clone = query_text.clone();
+        let filters_clone = filters.clone();
         match tokio::task::spawn_blocking(move || {
             let mut results = search_mail(
                 &config,
                 &username,
                 selected_account_id,
-                &query_clone,
+                filters_clone,
                 priority_filter,
             )?;
             results.sort_by(|left, right| {
@@ -1619,7 +1798,7 @@ async fn search_page(
                 return html_response(render_search(
                     &identity,
                     &accounts,
-                    &query_text,
+                    &filters,
                     selected_account_id,
                     &[],
                     &SearchViewState {
@@ -1636,7 +1815,7 @@ async fn search_page(
                 return html_response(render_search(
                     &identity,
                     &accounts,
-                    &query_text,
+                    &filters,
                     selected_account_id,
                     &[],
                     &SearchViewState {
@@ -1667,7 +1846,7 @@ async fn search_page(
         })
         .count();
 
-    let empty_message = if !has_explicit_query {
+    let empty_message = if !has_explicit_search {
         if has_params && priority_filter != SenderPriorityFilter::All {
             if results.is_empty() {
                 Some("No messages matched the selected sender priority.".to_string())
@@ -1680,7 +1859,8 @@ async fn search_page(
                     .to_string(),
             )
         }
-    } else if query_text.trim().is_empty() && priority_filter == SenderPriorityFilter::All {
+    } else if !message_filters_have_terms(&filters) && priority_filter == SenderPriorityFilter::All
+    {
         Some("Enter a notmuch query to search your indexed archive.".to_string())
     } else if selected_accounts.is_empty() {
         Some("No mailbox is available for this search filter.".to_string())
@@ -1705,7 +1885,7 @@ async fn search_page(
     html_response(render_search(
         &identity,
         &accounts,
-        &query_text,
+        &filters,
         selected_account_id,
         &results,
         &view_state,
@@ -2061,6 +2241,50 @@ async fn download_attachments_zip(
     }
 }
 
+async fn send_attachments_paperless(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AttachmentPaperlessForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let return_to = form.return_to.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        send_attachments_to_paperless(&config, &username, &form.attachment_keys)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(count)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            Some(&format!(
+                "{} sent to Paperless",
+                pluralize_attachments(count)
+            )),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some("Paperless handoff task failed"),
+        )),
+    }
+}
+
 async fn healthz(State(state): State<AppState>) -> Response {
     let (status, payload) = health_payload(&state.config);
     json_response(status, payload)
@@ -2119,6 +2343,11 @@ fn load_config() -> AppConfig {
         env::var("MAIL_ARCHIVE_UI_RUNTIME_DIR").unwrap_or_else(|_| DEFAULT_RUNTIME_DIR.to_string());
     let lock_dir =
         env::var("MAIL_ARCHIVE_UI_LOCK_DIR").unwrap_or_else(|_| DEFAULT_LOCK_DIR.to_string());
+    let paperless_consume_root = env::var("MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Arc::<str>::from);
     let visible_mirror_read_group = env::var("MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2145,6 +2374,7 @@ fn load_config() -> AppConfig {
         account_state_root: Arc::<str>::from(account_state_root),
         runtime_dir: Arc::<str>::from(runtime_dir),
         lock_dir: Arc::<str>::from(lock_dir),
+        paperless_consume_root,
         visible_mirror_read_group,
         default_tags: Arc::from(default_tags),
     }
@@ -2227,6 +2457,7 @@ fn landlock_roots(config: &AppConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
         Some(PathBuf::from(config.account_state_root.as_ref())),
         Some(PathBuf::from(config.runtime_dir.as_ref())),
         Some(PathBuf::from(config.lock_dir.as_ref())),
+        config.paperless_consume_root.as_deref().map(PathBuf::from),
     ]);
 
     (read_only_roots, read_write_roots)
@@ -2387,6 +2618,16 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_sender_priorities_user_priority
             ON sender_priorities (username, priority, sender_kind, sender_value);
+
+            CREATE TABLE IF NOT EXISTS attachment_paperless_handoffs (
+                username TEXT NOT NULL,
+                attachment_key TEXT NOT NULL,
+                attachment_sha256 TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                consume_filename TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                PRIMARY KEY (username, attachment_key)
+            );
             "#,
         )
         .map_err(|error| format!("failed to initialize sqlite schema: {error}"))?;
@@ -5445,17 +5686,367 @@ fn load_attachment_catalog_rows_for_account(
         .map_err(|error| format!("failed to decode attachment catalog rows: {error}"))
 }
 
+fn message_catalog_has_attachments(
+    connection: &Connection,
+    account_id: i64,
+    message_key: &str,
+) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT has_attachments FROM attachment_messages WHERE account_id = ?1 AND message_key = ?2 LIMIT 1",
+            params![account_id, message_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed to query attachment message state: {error}"))
+        .map(|value| value.unwrap_or(0) != 0)
+}
+
 fn parse_page_number(raw: Option<&str>) -> usize {
     raw.and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(1)
 }
 
+fn optional_trimmed(raw: Option<&String>) -> String {
+    raw.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+}
+
+fn parse_query_bool(raw: Option<&str>) -> Result<Option<bool>, String> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(Some(true)),
+            "0" | "false" | "no" | "off" => Ok(Some(false)),
+            _ => Err(format!("invalid boolean query value '{value}'")),
+        },
+        None => Ok(None),
+    }
+}
+
+fn query_bool_is_true(raw: Option<&str>) -> bool {
+    matches!(parse_query_bool(raw).ok().flatten(), Some(true))
+}
+
+fn parse_optional_usize(raw: Option<&str>, label: &str) -> Result<Option<usize>, String> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|error| format!("invalid {label} '{value}': {error}")),
+        None => Ok(None),
+    }
+}
+
+fn parse_optional_nonnegative_i64(raw: Option<&str>, label: &str) -> Result<Option<i64>, String> {
+    match parse_optional_query_i64(raw)? {
+        Some(value) if value < 0 => Err(format!("{label} cannot be negative")),
+        value => Ok(value),
+    }
+}
+
+fn parse_date_start(raw: &str, label: &str) -> Result<Option<i64>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+        .map_err(|error| format!("invalid {label} date '{trimmed}': {error}"))?
+        .and_hms_opt(0, 0, 0)
+        .and_then(|value| value.and_local_timezone(Utc).single())
+        .map(|value| value.timestamp())
+        .ok_or_else(|| format!("invalid {label} date '{trimmed}'"))
+        .map(Some)
+}
+
+fn parse_date_end(raw: &str, label: &str) -> Result<Option<i64>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+        .map_err(|error| format!("invalid {label} date '{trimmed}': {error}"))?
+        .and_hms_opt(23, 59, 59)
+        .and_then(|value| value.and_local_timezone(Utc).single())
+        .map(|value| value.timestamp())
+        .ok_or_else(|| format!("invalid {label} date '{trimmed}'"))
+        .map(Some)
+}
+
+fn message_filters_from_search_params(
+    params: &SearchParams,
+    fallback_query: String,
+) -> MessageSearchFilters {
+    MessageSearchFilters {
+        q: optional_trimmed(params.q.as_ref()).if_empty_then(fallback_query),
+        sender_address: optional_trimmed(params.sender_address.as_ref()),
+        sender_name: optional_trimmed(params.sender_name.as_ref()),
+        sender_domain: optional_trimmed(params.sender_domain.as_ref()),
+        subject: optional_trimmed(params.subject.as_ref()),
+        body_text: optional_trimmed(params.body_text.as_ref()),
+        date_from: optional_trimmed(params.date_from.as_ref()),
+        date_to: optional_trimmed(params.date_to.as_ref()),
+        has_attachments: parse_query_bool(params.has_attachments.as_deref())
+            .ok()
+            .flatten(),
+    }
+}
+
+trait EmptyStringFallback {
+    fn if_empty_then(self, fallback: String) -> String;
+}
+
+impl EmptyStringFallback for String {
+    fn if_empty_then(self, fallback: String) -> String {
+        if self.is_empty() {
+            fallback
+        } else {
+            self
+        }
+    }
+}
+
+fn message_filters_from_attachment_params(params: &AttachmentListParams) -> MessageSearchFilters {
+    MessageSearchFilters {
+        q: optional_trimmed(params.q.as_ref()),
+        sender_address: optional_trimmed(params.sender_address.as_ref()),
+        sender_name: optional_trimmed(params.sender_name.as_ref()),
+        sender_domain: optional_trimmed(params.sender_domain.as_ref()),
+        subject: optional_trimmed(params.subject.as_ref()),
+        body_text: optional_trimmed(params.body_text.as_ref()),
+        date_from: optional_trimmed(params.date_from.as_ref()),
+        date_to: optional_trimmed(params.date_to.as_ref()),
+        has_attachments: parse_query_bool(params.has_attachments.as_deref())
+            .ok()
+            .flatten(),
+    }
+}
+
+fn attachment_filters_from_params(params: &AttachmentListParams) -> AttachmentSearchFilters {
+    AttachmentSearchFilters {
+        message: message_filters_from_attachment_params(params),
+        extension: optional_trimmed(params.extension.as_ref()).to_ascii_lowercase(),
+        attachment_name: optional_trimmed(params.attachment_name.as_ref()),
+        mime_type: optional_trimmed(params.mime_type.as_ref()).to_ascii_lowercase(),
+        min_size: optional_trimmed(params.min_size.as_ref()),
+        max_size: optional_trimmed(params.max_size.as_ref()),
+        min_attachments: optional_trimmed(params.min_attachments.as_ref()),
+        max_attachments: optional_trimmed(params.max_attachments.as_ref()),
+    }
+}
+
+fn parse_message_search_filters(
+    filters: MessageSearchFilters,
+) -> Result<ParsedMessageSearchFilters, String> {
+    let normalized_sender_address = if filters.sender_address.trim().is_empty() {
+        None
+    } else {
+        Some(
+            normalize_sender_address(&filters.sender_address)
+                .map(|identity| identity.address)
+                .ok_or_else(|| "Sender address must be a valid email address.".to_string())?,
+        )
+    };
+    let normalized_sender_domain = if filters.sender_domain.trim().is_empty() {
+        None
+    } else {
+        Some(
+            normalize_sender_domain(&filters.sender_domain)
+                .ok_or_else(|| "Sender domain must be a valid mail domain.".to_string())?,
+        )
+    };
+    let date_from_timestamp = parse_date_start(&filters.date_from, "from")?;
+    let date_to_timestamp = parse_date_end(&filters.date_to, "to")?;
+    if let (Some(from), Some(to)) = (date_from_timestamp, date_to_timestamp) {
+        if from > to {
+            return Err("Date from must be before date to.".to_string());
+        }
+    }
+
+    Ok(ParsedMessageSearchFilters {
+        raw: filters,
+        normalized_sender_address,
+        normalized_sender_domain,
+        date_from_timestamp,
+        date_to_timestamp,
+    })
+}
+
+fn parse_attachment_search_filters(
+    filters: AttachmentSearchFilters,
+) -> Result<ParsedAttachmentSearchFilters, String> {
+    let message = parse_message_search_filters(filters.message.clone())?;
+    let min_size_bytes = parse_optional_nonnegative_i64(Some(&filters.min_size), "minimum size")?;
+    let max_size_bytes = parse_optional_nonnegative_i64(Some(&filters.max_size), "maximum size")?;
+    if let (Some(min), Some(max)) = (min_size_bytes, max_size_bytes) {
+        if min > max {
+            return Err("Minimum size must be less than or equal to maximum size.".to_string());
+        }
+    }
+    let min_attachment_count =
+        parse_optional_usize(Some(&filters.min_attachments), "minimum attachment count")?;
+    let max_attachment_count =
+        parse_optional_usize(Some(&filters.max_attachments), "maximum attachment count")?;
+    if let (Some(min), Some(max)) = (min_attachment_count, max_attachment_count) {
+        if min > max {
+            return Err(
+                "Minimum attachment count must be less than or equal to maximum attachment count."
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(ParsedAttachmentSearchFilters {
+        raw: filters,
+        message,
+        min_size_bytes,
+        max_size_bytes,
+        min_attachment_count,
+        max_attachment_count,
+    })
+}
+
+fn notmuch_quote(value: &str) -> String {
+    format!(
+        "\"{}\"",
+        value.replace('\\', "\\\\").replace('"', "\\\"").trim()
+    )
+}
+
+fn notmuch_query_for_filters(filters: &ParsedMessageSearchFilters) -> String {
+    let mut terms = Vec::new();
+    if !filters.raw.q.trim().is_empty() {
+        terms.push(filters.raw.q.trim().to_string());
+    }
+    if let Some(address) = filters.normalized_sender_address.as_deref() {
+        terms.push(format!("from:{}", notmuch_quote(address)));
+    }
+    if !filters.raw.sender_name.trim().is_empty() {
+        terms.push(format!("from:{}", notmuch_quote(&filters.raw.sender_name)));
+    }
+    if let Some(domain) = filters.normalized_sender_domain.as_deref() {
+        terms.push(format!("from:{}", notmuch_quote(domain)));
+    }
+    if !filters.raw.subject.trim().is_empty() {
+        terms.push(format!("subject:{}", notmuch_quote(&filters.raw.subject)));
+    }
+    if !filters.raw.body_text.trim().is_empty() {
+        terms.push(notmuch_quote(&filters.raw.body_text));
+    }
+    if terms.is_empty() {
+        "*".to_string()
+    } else {
+        terms.join(" ")
+    }
+}
+
+fn message_matches_filters(
+    metadata: &LiveMessageRecord,
+    filters: &ParsedMessageSearchFilters,
+    has_attachments: Option<bool>,
+) -> bool {
+    if let Some(from_timestamp) = filters.date_from_timestamp {
+        if metadata.timestamp < from_timestamp {
+            return false;
+        }
+    }
+    if let Some(to_timestamp) = filters.date_to_timestamp {
+        if metadata.timestamp > to_timestamp {
+            return false;
+        }
+    }
+    if let Some(expected) = filters.normalized_sender_address.as_deref() {
+        if sender_identity_from_header(&metadata.from)
+            .is_none_or(|identity| identity.address != expected)
+        {
+            return false;
+        }
+    }
+    if let Some(expected) = filters.normalized_sender_domain.as_deref() {
+        if sender_identity_from_header(&metadata.from)
+            .is_none_or(|identity| identity.domain != expected)
+        {
+            return false;
+        }
+    }
+    if !filters.raw.sender_name.trim().is_empty() {
+        let needle = filters.raw.sender_name.to_ascii_lowercase();
+        let display = sender_display_from_header(&metadata.from);
+        if !display.primary.to_ascii_lowercase().contains(&needle)
+            && !metadata.from.to_ascii_lowercase().contains(&needle)
+        {
+            return false;
+        }
+    }
+    if !filters.raw.subject.trim().is_empty()
+        && !metadata
+            .subject
+            .to_ascii_lowercase()
+            .contains(&filters.raw.subject.to_ascii_lowercase())
+    {
+        return false;
+    }
+    if let Some(expected) = filters.raw.has_attachments {
+        if has_attachments != Some(expected) {
+            return false;
+        }
+    }
+    true
+}
+
+fn attachment_matches_filters(
+    item: &AttachmentListItem,
+    filters: &ParsedAttachmentSearchFilters,
+    attachment_count: usize,
+) -> bool {
+    if !filters.raw.extension.is_empty() && item.attachment.extension != filters.raw.extension {
+        return false;
+    }
+    if !filters.raw.attachment_name.is_empty()
+        && !item
+            .attachment
+            .original_filename
+            .to_ascii_lowercase()
+            .contains(&filters.raw.attachment_name.to_ascii_lowercase())
+    {
+        return false;
+    }
+    if !filters.raw.mime_type.is_empty()
+        && !item
+            .attachment
+            .mime_type
+            .to_ascii_lowercase()
+            .contains(&filters.raw.mime_type)
+    {
+        return false;
+    }
+    if let Some(min_size) = filters.min_size_bytes {
+        if item.attachment.size_bytes < min_size {
+            return false;
+        }
+    }
+    if let Some(max_size) = filters.max_size_bytes {
+        if item.attachment.size_bytes > max_size {
+            return false;
+        }
+    }
+    if let Some(min_count) = filters.min_attachment_count {
+        if attachment_count < min_count {
+            return false;
+        }
+    }
+    if let Some(max_count) = filters.max_attachment_count {
+        if attachment_count > max_count {
+            return false;
+        }
+    }
+    true
+}
+
 fn build_attachment_base_query(state: AttachmentBaseQuery<'_>) -> String {
     let mut pairs = Vec::new();
-    if !state.query_text.trim().is_empty() {
-        pairs.push(("q", state.query_text.trim().to_string()));
-    }
+    append_message_filter_query_pairs(&mut pairs, &state.filters.message);
     if let Some(account_id) = state.selected_account_id {
         pairs.push(("account_id", account_id.to_string()));
     }
@@ -5465,9 +6056,7 @@ fn build_attachment_base_query(state: AttachmentBaseQuery<'_>) -> String {
             state.priority_filter.as_query_value().to_string(),
         ));
     }
-    if !state.extension_filter.trim().is_empty() {
-        pairs.push(("extension", state.extension_filter.trim().to_string()));
-    }
+    append_attachment_filter_query_pairs(&mut pairs, state.filters);
     if state.include_inline {
         pairs.push(("include_inline", "1".to_string()));
     }
@@ -5490,6 +6079,64 @@ fn build_attachment_base_query(state: AttachmentBaseQuery<'_>) -> String {
         .join("&")
 }
 
+fn append_message_filter_query_pairs(
+    pairs: &mut Vec<(&'static str, String)>,
+    filters: &MessageSearchFilters,
+) {
+    for (key, value) in [
+        ("q", filters.q.trim()),
+        ("sender_address", filters.sender_address.trim()),
+        ("sender_name", filters.sender_name.trim()),
+        ("sender_domain", filters.sender_domain.trim()),
+        ("subject", filters.subject.trim()),
+        ("body_text", filters.body_text.trim()),
+        ("date_from", filters.date_from.trim()),
+        ("date_to", filters.date_to.trim()),
+    ] {
+        if !value.is_empty() {
+            pairs.push((key, value.to_string()));
+        }
+    }
+    if let Some(value) = filters.has_attachments {
+        pairs.push(("has_attachments", if value { "1" } else { "0" }.to_string()));
+    }
+}
+
+fn append_attachment_filter_query_pairs(
+    pairs: &mut Vec<(&'static str, String)>,
+    filters: &AttachmentSearchFilters,
+) {
+    for (key, value) in [
+        ("extension", filters.extension.trim()),
+        ("attachment_name", filters.attachment_name.trim()),
+        ("mime_type", filters.mime_type.trim()),
+        ("min_size", filters.min_size.trim()),
+        ("max_size", filters.max_size.trim()),
+        ("min_attachments", filters.min_attachments.trim()),
+        ("max_attachments", filters.max_attachments.trim()),
+    ] {
+        if !value.is_empty() {
+            pairs.push((key, value.to_string()));
+        }
+    }
+}
+
+fn message_filters_have_terms(filters: &MessageSearchFilters) -> bool {
+    [
+        filters.q.as_str(),
+        filters.sender_address.as_str(),
+        filters.sender_name.as_str(),
+        filters.sender_domain.as_str(),
+        filters.subject.as_str(),
+        filters.body_text.as_str(),
+        filters.date_from.as_str(),
+        filters.date_to.as_str(),
+    ]
+    .iter()
+    .any(|value| !value.trim().is_empty())
+        || filters.has_attachments.is_some()
+}
+
 fn load_attachment_page_data(
     config: &AppConfig,
     username: &str,
@@ -5498,34 +6145,11 @@ fn load_attachment_page_data(
     let accounts = list_accounts_for_user(config, username)?;
     let selected_account_id = normalize_selected_account_id(&accounts, params.account_id);
     let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
-    let query_text = params.q.clone().unwrap_or_default();
-    let extension_filter = params
-        .extension
-        .clone()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let include_inline = params.include_inline.as_deref().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    });
-    let include_inline_images = params
-        .include_inline_images
-        .as_deref()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        });
-    let show_mime_details = params.show_mime_details.as_deref().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    });
+    let raw_filters = attachment_filters_from_params(params);
+    let filters = parse_attachment_search_filters(raw_filters)?;
+    let include_inline = query_bool_is_true(params.include_inline.as_deref());
+    let include_inline_images = query_bool_is_true(params.include_inline_images.as_deref());
+    let show_mime_details = query_bool_is_true(params.show_mime_details.as_deref());
     let download_subfolder =
         normalize_download_subfolder(params.download_subfolder.as_deref().unwrap_or_default())?;
     let page = parse_page_number(params.page.as_deref());
@@ -5543,28 +6167,34 @@ fn load_attachment_page_data(
             continue;
         }
 
-        if !query_text.trim().is_empty() {
-            let relpaths = list_notmuch_message_files(&account_paths, query_text.trim())?
-                .into_iter()
-                .map(|path| {
-                    message_relative_path(&account_paths, &path)
-                        .map(|relative| relative.to_string_lossy().to_string())
-                })
-                .collect::<Result<HashSet<_>, _>>()?;
+        if message_filters_have_terms(&filters.raw.message) {
+            let relpaths = list_notmuch_message_files(
+                &account_paths,
+                &notmuch_query_for_filters(&filters.message),
+            )?
+            .into_iter()
+            .map(|path| {
+                message_relative_path(&account_paths, &path)
+                    .map(|relative| relative.to_string_lossy().to_string())
+            })
+            .collect::<Result<HashSet<_>, _>>()?;
             query_relpaths_by_account.insert(account.id, relpaths);
         }
 
-        for (message, attachment) in
-            load_attachment_catalog_rows_for_account(&connection, account.id)?
-        {
-            if !query_text.trim().is_empty()
+        let catalog_rows = load_attachment_catalog_rows_for_account(&connection, account.id)?;
+        let mut attachment_counts = HashMap::<String, usize>::new();
+        for (message, _) in &catalog_rows {
+            *attachment_counts
+                .entry(message.message_key.clone())
+                .or_insert(0) += 1;
+        }
+
+        for (message, attachment) in catalog_rows {
+            if message_filters_have_terms(&filters.raw.message)
                 && !query_relpaths_by_account
                     .get(&account.id)
                     .is_some_and(|relpaths| relpaths.contains(&message.message_relpath))
             {
-                continue;
-            }
-            if !extension_filter.is_empty() && attachment.extension != extension_filter {
                 continue;
             }
             if !include_inline && attachment_is_body_artifact(&attachment) {
@@ -5579,12 +6209,39 @@ fn load_attachment_page_data(
                 continue;
             }
 
-            items.push(AttachmentListItem {
+            let mut item = AttachmentListItem {
                 account_name: account.display_name.clone(),
                 attachment,
                 message,
                 sender_priority,
-            });
+                paperless_sent_at: None,
+            };
+            if !message_matches_filters(
+                &LiveMessageRecord {
+                    message_key: item.message.message_key.clone(),
+                    message_relpaths: vec![item.message.message_relpath.clone()],
+                    subject: item.message.subject.clone(),
+                    from: item.message.from.clone(),
+                    timestamp: item.message.timestamp,
+                },
+                &filters.message,
+                Some(item.message.has_attachments),
+            ) {
+                continue;
+            }
+            let attachment_count = attachment_counts
+                .get(&item.message.message_key)
+                .copied()
+                .unwrap_or(0);
+            if !attachment_matches_filters(&item, &filters, attachment_count) {
+                continue;
+            }
+            item.paperless_sent_at = load_attachment_paperless_handoff(
+                &connection,
+                username,
+                &item.attachment.attachment_key,
+            )?;
+            items.push(item);
         }
     }
 
@@ -5610,10 +6267,9 @@ fn load_attachment_page_data(
         items[start..end].to_vec()
     };
     let base_query = build_attachment_base_query(AttachmentBaseQuery {
-        query_text: &query_text,
+        filters: &filters.raw,
         selected_account_id,
         priority_filter,
-        extension_filter: &extension_filter,
         include_inline,
         include_inline_images,
         show_mime_details,
@@ -5631,8 +6287,7 @@ fn load_attachment_page_data(
     Ok(AttachmentPageData {
         accounts,
         selected_account_id,
-        query_text,
-        extension_filter,
+        filters: filters.raw,
         include_inline,
         include_inline_images,
         show_mime_details,
@@ -5666,7 +6321,21 @@ fn download_attachment_keys_for_form(
                 q: form.q.clone(),
                 account_id: selected_account_id,
                 priority: form.priority.clone(),
+                sender_address: form.sender_address.clone(),
+                sender_name: form.sender_name.clone(),
+                sender_domain: form.sender_domain.clone(),
+                subject: form.subject.clone(),
+                body_text: form.body_text.clone(),
+                date_from: form.date_from.clone(),
+                date_to: form.date_to.clone(),
+                has_attachments: form.has_attachments.clone(),
                 extension: form.extension.clone(),
+                attachment_name: form.attachment_name.clone(),
+                mime_type: form.mime_type.clone(),
+                min_size: form.min_size.clone(),
+                max_size: form.max_size.clone(),
+                min_attachments: form.min_attachments.clone(),
+                max_attachments: form.max_attachments.clone(),
                 include_inline: form.include_inline.clone(),
                 include_inline_images: form.include_inline_images.clone(),
                 show_mime_details: form.show_mime_details.clone(),
@@ -5813,6 +6482,164 @@ fn build_attachments_zip(
         filename,
         path: zip_path,
     })
+}
+
+fn load_attachment_paperless_handoff(
+    connection: &Connection,
+    username: &str,
+    attachment_key: &str,
+) -> Result<Option<String>, String> {
+    connection
+        .query_row(
+            "SELECT sent_at FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2 LIMIT 1",
+            params![username, attachment_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed to query Paperless handoff state: {error}"))
+}
+
+fn record_attachment_paperless_handoff(
+    config: &AppConfig,
+    username: &str,
+    attachment: &AttachmentRecord,
+    consume_filename: &str,
+    sent_at: &str,
+) -> Result<(), String> {
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO attachment_paperless_handoffs (
+                username,
+                attachment_key,
+                attachment_sha256,
+                original_filename,
+                consume_filename,
+                sent_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(username, attachment_key) DO UPDATE SET
+                attachment_sha256 = excluded.attachment_sha256,
+                original_filename = excluded.original_filename,
+                consume_filename = excluded.consume_filename,
+                sent_at = excluded.sent_at
+            "#,
+            params![
+                username,
+                attachment.attachment_key,
+                attachment.attachment_sha256,
+                attachment.original_filename,
+                consume_filename,
+                sent_at,
+            ],
+        )
+        .map_err(|error| format!("failed to record Paperless handoff: {error}"))?;
+    Ok(())
+}
+
+fn send_attachments_to_paperless(
+    config: &AppConfig,
+    username: &str,
+    attachment_keys: &[String],
+) -> Result<usize, String> {
+    let consume_root = config
+        .paperless_consume_root
+        .as_deref()
+        .map(PathBuf::from)
+        .ok_or_else(|| "Paperless handoff is not configured.".to_string())?;
+    fs::create_dir_all(&consume_root).map_err(|error| {
+        format!(
+            "failed to prepare Paperless consume directory {}: {error}",
+            consume_root.display()
+        )
+    })?;
+
+    let mut seen = HashSet::new();
+    let mut sent_count = 0;
+    for key in attachment_keys {
+        let key = key.trim();
+        if key.is_empty() || !seen.insert(key.to_string()) {
+            continue;
+        }
+
+        let connection = open_db(config)?;
+        if load_attachment_paperless_handoff(&connection, username, key)?.is_some() {
+            continue;
+        }
+
+        let (account, message, attachment) = load_attachment_for_user(config, username, key)?;
+        let (_dir, attachment_path) =
+            resolve_attachment_payload(config, &account, &message, &attachment)?;
+        let sent_at = Utc::now().to_rfc3339();
+        let consume_filename = paperless_consume_filename(&attachment.original_filename);
+        let final_path = consume_root.join(&consume_filename);
+        let tmp_path = consume_root.join(format!(".{}.tmp", paperless_consume_filename(key)));
+        copy_attachment_to_paperless(&attachment_path, &tmp_path, &final_path)?;
+        record_attachment_paperless_handoff(
+            config,
+            username,
+            &attachment,
+            &consume_filename,
+            &sent_at,
+        )?;
+        sent_count += 1;
+    }
+
+    if sent_count == 0 {
+        return Err("Select at least one attachment that has not already been sent.".to_string());
+    }
+
+    Ok(sent_count)
+}
+
+fn paperless_consume_filename(original_filename: &str) -> String {
+    format!(
+        "mail-archive-{}-{}-{}",
+        Utc::now().format("%Y%m%d-%H%M%S"),
+        random_hex(8),
+        filename_component(original_filename, "attachment")
+    )
+}
+
+fn copy_attachment_to_paperless(
+    source_path: &FsPath,
+    tmp_path: &FsPath,
+    final_path: &FsPath,
+) -> Result<(), String> {
+    let mut source = fs::File::open(source_path).map_err(|error| {
+        format!(
+            "failed to open attachment {}: {error}",
+            source_path.display()
+        )
+    })?;
+    let mut target = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o660)
+        .open(tmp_path)
+        .map_err(|error| format!("failed to create {}: {error}", tmp_path.display()))?;
+    std::io::copy(&mut source, &mut target)
+        .map_err(|error| format!("failed to copy attachment to Paperless: {error}"))?;
+    target
+        .sync_all()
+        .map_err(|error| format!("failed to sync {}: {error}", tmp_path.display()))?;
+    fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o660)).map_err(|error| {
+        format!(
+            "failed to set permissions on {}: {error}",
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(tmp_path, final_path).map_err(|error| {
+        let _ = fs::remove_file(tmp_path);
+        format!(
+            "failed to publish Paperless consume file {}: {error}",
+            final_path.display()
+        )
+    })?;
+    if let Some(parent) = final_path.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(())
 }
 
 fn zip_entry_name(
@@ -6286,6 +7113,7 @@ fn collect_live_messages_for_account(
         let record = by_key
             .entry(message_key.clone())
             .or_insert_with(|| LiveMessageRecord {
+                message_key: message_key.clone(),
                 message_relpaths: Vec::new(),
                 subject: metadata.subject.clone(),
                 from: metadata.from.clone(),
@@ -6303,21 +7131,24 @@ fn search_mail(
     config: &AppConfig,
     username: &str,
     selected_account_id: Option<i64>,
-    query: &str,
+    filters: MessageSearchFilters,
     priority_filter: SenderPriorityFilter,
 ) -> Result<Vec<SearchResult>, String> {
-    let query = query.trim();
+    let filters = parse_message_search_filters(filters)?;
+    let query = notmuch_query_for_filters(&filters);
+    let connection = open_db(config)?;
     let priority_rules = load_sender_priority_rules(config, username)?;
     let mut results = Vec::new();
     for account in list_accounts_for_user(config, username)?
         .into_iter()
         .filter(|account| selected_account_id.is_none_or(|selected| selected == account.id))
     {
-        for item in collect_live_messages_for_account(
-            config,
-            &account,
-            if query.is_empty() { "*" } else { query },
-        )? {
+        for item in collect_live_messages_for_account(config, &account, &query)? {
+            let has_attachments =
+                message_catalog_has_attachments(&connection, account.id, &item.message_key)?;
+            if !message_matches_filters(&item, &filters, Some(has_attachments)) {
+                continue;
+            }
             let sender_priority = priority_rules.view_for_sender(&item.from);
             if !priority_filter.matches(sender_priority.priority) {
                 continue;
@@ -7836,49 +8667,105 @@ fn render_attachments_page(
     let show_download_all = data.state.result_count > data.items.len();
     writeln!(
         &mut body,
-        "<section class=\"panel stack\">
-          <form method=\"get\" action=\"/attachments\" class=\"fields\">
-            <div class=\"fields four\">
-              <label>Notmuch query
-                <input name=\"q\" value=\"{}\" placeholder=\"from:billing@example.com invoice\">
+        "<section class=\"panel search-panel\">
+          <form method=\"get\" action=\"/attachments\" class=\"search-form\">
+            <div class=\"primary-search-row\">
+              <label class=\"primary-search-field\">Search attachments
+                <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
               </label>
-              <label>Mailbox
+              <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search attachments\" aria-label=\"Search attachments\">⌕</button>
+            </div>
+            <details class=\"filter-accordion\">
+              <summary>Basic filters</summary>
+              <div class=\"filter-grid\">
+                <label class=\"field-wide\">Mailbox
                 <select name=\"account_id\">
                   <option value=\"\">All mailboxes</option>
                   {}
                 </select>
-              </label>
-              <label>Sender priority
+                </label>
+                <label>Sender priority
                 <select name=\"priority\">{}</select>
-              </label>
-              <label>Extension
-                <input name=\"extension\" value=\"{}\" placeholder=\"pdf\">
-              </label>
-              <label class=\"checkbox-field\">Body parts
+                </label>
+                <label class=\"field-short\">Extension
+                  <input name=\"extension\" value=\"{}\">
+                </label>
+                <label class=\"field-wide\">Sender address
+                  <input name=\"sender_address\" value=\"{}\">
+                </label>
+                <label>Sender name
+                  <input name=\"sender_name\" value=\"{}\">
+                </label>
+                <label>Sender domain
+                  <input name=\"sender_domain\" value=\"{}\">
+                </label>
+                <label class=\"field-wide\">Subject
+                  <input name=\"subject\" value=\"{}\">
+                </label>
+                <label class=\"field-wide\">Body text
+                  <input name=\"body_text\" value=\"{}\">
+                </label>
+                <label>Date from
+                  <input type=\"date\" name=\"date_from\" value=\"{}\">
+                </label>
+                <label>Date to
+                  <input type=\"date\" name=\"date_to\" value=\"{}\">
+                </label>
+              </div>
+            </details>
+            <details class=\"filter-accordion\">
+              <summary>Advanced filters</summary>
+              <div class=\"filter-grid\">
+                <label>Has attachments
+                <select name=\"has_attachments\">{}</select>
+                </label>
+                <label class=\"field-wide\">Attachment name
+                  <input name=\"attachment_name\" value=\"{}\">
+                </label>
+                <label class=\"field-wide\">MIME type
+                  <input name=\"mime_type\" value=\"{}\">
+                </label>
+                <label class=\"field-short\">Min size
+                  <input name=\"min_size\" value=\"{}\" inputmode=\"numeric\">
+                </label>
+                <label class=\"field-short\">Max size
+                  <input name=\"max_size\" value=\"{}\" inputmode=\"numeric\">
+                </label>
+                <label class=\"field-short\">Min attachments
+                  <input name=\"min_attachments\" value=\"{}\" inputmode=\"numeric\">
+                </label>
+                <label class=\"field-short\">Max attachments
+                  <input name=\"max_attachments\" value=\"{}\" inputmode=\"numeric\">
+                </label>
+                <label class=\"checkbox-field\">Body parts
                 <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
-              </label>
-              <label class=\"checkbox-field\">Inline images
+                </label>
+                <label class=\"checkbox-field\">Inline images
                 <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
-              </label>
-              <label class=\"checkbox-field\">MIME detail
+                </label>
+                <label class=\"checkbox-field\">MIME detail
                 <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
-              </label>
-              <label>ZIP subfolder
-                <input name=\"download_subfolder\" value=\"{}\" placeholder=\"invoices/2026\">
-              </label>
-            </div>
+                </label>
+                <label class=\"field-wide\">ZIP subfolder
+                  <input name=\"download_subfolder\" value=\"{}\">
+                </label>
+              </div>
+            </details>
             <div class=\"action-row\">
-              <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search attachments\" aria-label=\"Search attachments\">⌕</button>
               <a class=\"button-link secondary icon-button\" href=\"/attachments\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
               <a class=\"button-link secondary icon-button\" href=\"/search\" title=\"Back to search\" aria-label=\"Back to search\">↩</a>
             </div>
           </form>
           <div class=\"attachment-toolbar\">
-            <label class=\"select-page\"><input type=\"checkbox\" data-select-page> Select page</label>
+            <button class=\"secondary\" type=\"button\" data-select-page title=\"Select visible attachments\">Select page</button>
             <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
               {}
               <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\">↓</button>
               {}
+            </form>
+            <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\">&#8594;</button>
             </form>
             <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\">
               <input type=\"hidden\" name=\"account_id\" value=\"{}\">
@@ -7887,10 +8774,24 @@ fn render_attachments_page(
             </form>
           </div>
         </section>",
-        escape_html(&data.query_text),
+        escape_html(&data.filters.message.q),
         render_account_options(&data.accounts, data.selected_account_id),
         render_sender_priority_filter_options(data.state.priority_filter),
-        escape_html(&data.extension_filter),
+        escape_html(&data.filters.extension),
+        escape_html(&data.filters.message.sender_address),
+        escape_html(&data.filters.message.sender_name),
+        escape_html(&data.filters.message.sender_domain),
+        escape_html(&data.filters.message.subject),
+        escape_html(&data.filters.message.body_text),
+        escape_html(&data.filters.message.date_from),
+        escape_html(&data.filters.message.date_to),
+        render_optional_bool_options(data.filters.message.has_attachments),
+        escape_html(&data.filters.attachment_name),
+        escape_html(&data.filters.mime_type),
+        escape_html(&data.filters.min_size),
+        escape_html(&data.filters.max_size),
+        escape_html(&data.filters.min_attachments),
+        escape_html(&data.filters.max_attachments),
         if data.include_inline { "checked" } else { "" },
         if data.include_inline_images {
             "checked"
@@ -7905,6 +8806,7 @@ fn render_attachments_page(
         } else {
             ""
         },
+        escape_html(&return_to),
         data.selected_account_id
             .map(|value| value.to_string())
             .unwrap_or_default(),
@@ -7921,8 +8823,8 @@ fn render_attachments_page(
 
     body.push_str(
         "<section class=\"notice\">
-          <p class=\"notice-title\">Manual document filing</p>
-          <p class=\"notice-copy\">This page only downloads attachments. Review the ZIP contents locally before uploading them to your document system.</p>
+          <p class=\"notice-title\">Document filing</p>
+          <p class=\"notice-copy\">Attachments can be downloaded locally or handed to the Paperless consume inbox.</p>
         </section>",
     );
 
@@ -7965,12 +8867,7 @@ fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) 
         "<input type=\"hidden\" name=\"return_to\" value=\"{}\">",
         escape_html(return_to)
     ));
-    if !data.query_text.trim().is_empty() {
-        fields.push(format!(
-            "<input type=\"hidden\" name=\"q\" value=\"{}\">",
-            escape_html(&data.query_text)
-        ));
-    }
+    append_hidden_fields_for_message_filters(&mut fields, &data.filters.message);
     if let Some(account_id) = data.selected_account_id {
         fields.push(format!(
             "<input type=\"hidden\" name=\"account_id\" value=\"{}\">",
@@ -7983,12 +8880,7 @@ fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) 
             data.state.priority_filter.as_query_value()
         ));
     }
-    if !data.extension_filter.trim().is_empty() {
-        fields.push(format!(
-            "<input type=\"hidden\" name=\"extension\" value=\"{}\">",
-            escape_html(&data.extension_filter)
-        ));
-    }
+    append_hidden_fields_for_attachment_filters(&mut fields, &data.filters);
     if data.include_inline {
         fields.push("<input type=\"hidden\" name=\"include_inline\" value=\"1\">".to_string());
     }
@@ -8006,6 +8898,59 @@ fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) 
         ));
     }
     fields.join("")
+}
+
+fn append_hidden_fields_for_message_filters(
+    fields: &mut Vec<String>,
+    filters: &MessageSearchFilters,
+) {
+    for (key, value) in [
+        ("q", filters.q.trim()),
+        ("sender_address", filters.sender_address.trim()),
+        ("sender_name", filters.sender_name.trim()),
+        ("sender_domain", filters.sender_domain.trim()),
+        ("subject", filters.subject.trim()),
+        ("body_text", filters.body_text.trim()),
+        ("date_from", filters.date_from.trim()),
+        ("date_to", filters.date_to.trim()),
+    ] {
+        if !value.is_empty() {
+            fields.push(format!(
+                "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+                key,
+                escape_html(value)
+            ));
+        }
+    }
+    if let Some(value) = filters.has_attachments {
+        fields.push(format!(
+            "<input type=\"hidden\" name=\"has_attachments\" value=\"{}\">",
+            if value { "1" } else { "0" }
+        ));
+    }
+}
+
+fn append_hidden_fields_for_attachment_filters(
+    fields: &mut Vec<String>,
+    filters: &AttachmentSearchFilters,
+) {
+    for (key, value) in [
+        ("extension", filters.extension.trim()),
+        ("attachment_name", filters.attachment_name.trim()),
+        ("mime_type", filters.mime_type.trim()),
+        ("min_size", filters.min_size.trim()),
+        ("max_size", filters.max_size.trim()),
+        ("min_attachments", filters.min_attachments.trim()),
+        ("max_attachments", filters.max_attachments.trim()),
+    ] {
+        if !value.is_empty() {
+            fields.push(format!(
+                "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+                key,
+                escape_html(value)
+            ));
+        }
+    }
 }
 
 fn simple_attachment_type_label(attachment: &AttachmentRecord) -> String {
@@ -8042,52 +8987,53 @@ fn render_attachment_item(
     let date_label = attachment_column_date_label(item.message.timestamp);
     let date_tooltip = format_timestamp_tooltip_label(item.message.timestamp);
     let source = format!("{} · {}", item.account_name, item.message.message_relpath);
-    let detail_label = if show_mime_details {
-        format!(
-            "{} · {}",
-            date_label,
-            detailed_attachment_type_label(&item.attachment)
-        )
+    let type_label = if show_mime_details {
+        detailed_attachment_type_label(&item.attachment)
     } else {
-        date_label
+        badge_label.clone()
     };
-    let mut badges = Vec::new();
-    if attachment_is_body_artifact(&item.attachment) {
-        badges.push("<span class=\"tag\">Body part</span>".to_string());
-    } else if attachment_is_inline_image(&item.attachment) {
-        badges.push("<span class=\"tag\">Inline image</span>".to_string());
-    }
-
-    let selector = format!(
-        "<input form=\"attachment-download-form\" data-attachment-checkbox type=\"checkbox\" name=\"attachment_keys\" value=\"{}\" aria-label=\"Select attachment {}\">",
-        escape_html(&item.attachment.attachment_key),
-        escape_html(&item.attachment.original_filename)
-    );
 
     let download_action = format!(
         "<form method=\"post\" action=\"/attachments/{}/download/browser\" class=\"icon-form\">
-          <button class=\"icon-button\" type=\"submit\" title=\"Download attachment\" aria-label=\"Download attachment\">↓</button>
+          <button class=\"icon-button\" type=\"submit\" title=\"Download attachment locally\" aria-label=\"Download attachment locally\">↓</button>
         </form>",
         escape_html(&item.attachment.attachment_key),
     );
+    let paperless_action = if let Some(sent_at) = item.paperless_sent_at.as_deref() {
+        format!(
+            "<button class=\"icon-button paperless-sent-button\" type=\"button\" title=\"Successfully sent to Paperless on {}\" aria-label=\"Successfully sent to Paperless on {}\">✓</button>",
+            escape_html(sent_at),
+            escape_html(sent_at),
+        )
+    } else {
+        format!(
+            "<form method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\">
+              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+              <input type=\"hidden\" name=\"attachment_keys\" value=\"{}\">
+              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send attachment to Paperless\" aria-label=\"Send attachment to Paperless\">&#8594;</button>
+            </form>",
+            escape_html(return_to),
+            escape_html(&item.attachment.attachment_key),
+        )
+    };
     let (address_priority, domain_priority) =
         render_sender_priority_select_cells(&item.sender_priority, return_to);
 
     format!(
-        "<article class=\"attachment-row\">
-          <div class=\"attachment-select\">{}</div>
+        "<article class=\"attachment-row\" data-attachment-row data-attachment-key=\"{}\" tabindex=\"0\" aria-selected=\"false\">
+          <span class=\"meta truncate\" title=\"{}\">{}</span>
           <div class=\"attachment-main\">
             <strong class=\"truncate\" title=\"{}\">{}</strong>
             <span class=\"meta truncate\" title=\"{}\">{} · {} · {} · {}</span>
           </div>
           <span class=\"badge truncate\" title=\"{}\">{}</span>
-          <span class=\"meta truncate\" title=\"{}\">{}</span>
-          <div class=\"tag-list compact\">{}</div>
-          <div class=\"row-actions\">{}</div>
+          <div class=\"row-actions\">{}{}</div>
           <div class=\"priority-cell\">{}</div>
           <div class=\"priority-cell\">{}</div>
         </article>",
-        selector,
+        escape_html(&item.attachment.attachment_key),
+        escape_html(&date_tooltip),
+        escape_html(&date_label),
         escape_html(&format!(
             "{} · Source: {}",
             item.attachment.original_filename, source
@@ -8098,16 +9044,10 @@ fn render_attachment_item(
         escape_html(&item.account_name),
         escape_html(&item.message.from),
         escape_html(&format_file_size(item.attachment.size_bytes)),
-        escape_html(&badge_label),
-        escape_html(&badge_label),
-        escape_html(&date_tooltip),
-        escape_html(&detail_label),
-        if badges.is_empty() {
-            String::new()
-        } else {
-            badges.join("")
-        },
+        escape_html(&type_label),
+        escape_html(&type_label),
         download_action,
+        paperless_action,
         address_priority,
         domain_priority,
     )
@@ -8115,12 +9055,10 @@ fn render_attachment_item(
 
 fn render_attachment_list_header() -> String {
     "<div class=\"attachment-list-header\" aria-hidden=\"true\">
-      <span>Select</span>
+      <span>Date</span>
       <span>Attachment</span>
       <span>Type</span>
-      <span>Date</span>
-      <span>Tags</span>
-      <span>Download</span>
+      <span>Actions</span>
       <span>Address priority</span>
       <span>Domain priority</span>
     </div>"
@@ -8191,7 +9129,7 @@ fn format_file_size(size_bytes: i64) -> String {
 fn render_search(
     identity: &Identity,
     accounts: &[AccountRecord],
-    query: &str,
+    filters: &MessageSearchFilters,
     selected_account_id: Option<i64>,
     results: &[SearchResult],
     state: &SearchViewState,
@@ -8208,35 +9146,73 @@ fn render_search(
         </section>",
     );
 
-    body.push_str("<section class=\"panel stack\">");
     writeln!(
         &mut body,
-        "<form method=\"get\" action=\"/search\" class=\"fields\">
-          <div class=\"fields three\">
-            <label>Search query
-              <input name=\"q\" value=\"{}\" placeholder=\"from:billing@example.com subject:invoice\">
-            </label>
-            <label>Mailbox
-              <select name=\"account_id\">
-                <option value=\"\">All mailboxes</option>
-                {}
-              </select>
-            </label>
-            <label>Sender priority
-              <select name=\"priority\">{}</select>
-            </label>
-          </div>
-	          <div class=\"action-row\">
-		            <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search mail\" aria-label=\"Search mail\">⌕</button>
-	            <a class=\"button-link secondary icon-button\" href=\"/\" title=\"Back to dashboard\" aria-label=\"Back to dashboard\">↩</a>
-	          </div>
-        </form>",
-        escape_html(query),
+        "<section class=\"panel search-panel\">
+          <form method=\"get\" action=\"/search\" class=\"search-form\">
+            <div class=\"primary-search-row\">
+              <label class=\"primary-search-field\">Search mail
+                <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
+              </label>
+              <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search mail\" aria-label=\"Search mail\">⌕</button>
+            </div>
+            <details class=\"filter-accordion\">
+              <summary>Basic filters</summary>
+              <div class=\"filter-grid\">
+                <label class=\"field-wide\">Mailbox
+                  <select name=\"account_id\">
+                    <option value=\"\">All mailboxes</option>
+                    {}
+                  </select>
+                </label>
+                <label>Sender priority
+                  <select name=\"priority\">{}</select>
+                </label>
+                <label class=\"field-wide\">Sender address
+                  <input name=\"sender_address\" value=\"{}\">
+                </label>
+                <label>Sender name
+                  <input name=\"sender_name\" value=\"{}\">
+                </label>
+                <label>Sender domain
+                  <input name=\"sender_domain\" value=\"{}\">
+                </label>
+                <label class=\"field-wide\">Subject
+                  <input name=\"subject\" value=\"{}\">
+                </label>
+                <label class=\"field-wide\">Body text
+                  <input name=\"body_text\" value=\"{}\">
+                </label>
+                <label>Has attachments
+                  <select name=\"has_attachments\">{}</select>
+                </label>
+                <label>Date from
+                  <input type=\"date\" name=\"date_from\" value=\"{}\">
+                </label>
+                <label>Date to
+                  <input type=\"date\" name=\"date_to\" value=\"{}\">
+                </label>
+              </div>
+            </details>
+            <div class=\"action-row\">
+              <a class=\"button-link secondary icon-button\" href=\"/search\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
+              <a class=\"button-link secondary icon-button\" href=\"/\" title=\"Back to dashboard\" aria-label=\"Back to dashboard\">↩</a>
+            </div>
+          </form>
+        </section>",
+        escape_html(&filters.q),
         render_account_options(accounts, selected_account_id),
         render_sender_priority_filter_options(state.priority_filter),
+        escape_html(&filters.sender_address),
+        escape_html(&filters.sender_name),
+        escape_html(&filters.sender_domain),
+        escape_html(&filters.subject),
+        escape_html(&filters.body_text),
+        render_optional_bool_options(filters.has_attachments),
+        escape_html(&filters.date_from),
+        escape_html(&filters.date_to),
     )
     .ok();
-    body.push_str("</section>");
 
     if state.submitted {
         writeln!(
@@ -8257,7 +9233,7 @@ fn render_search(
     }
 
     if !results.is_empty() {
-        let return_to = search_page_href(query, selected_account_id, state.priority_filter);
+        let return_to = search_page_href(filters, selected_account_id, state.priority_filter);
         writeln!(
             &mut body,
             "<section class=\"mail-list\">
@@ -8297,11 +9273,38 @@ fn render_sender_priority_filter_options(selected: SenderPriorityFilter) -> Stri
     .join("")
 }
 
+fn render_optional_bool_options(selected: Option<bool>) -> String {
+    [
+        ("", selected.is_none(), "Any"),
+        ("1", selected == Some(true), "Yes"),
+        ("0", selected == Some(false), "No"),
+    ]
+    .into_iter()
+    .map(|(value, is_selected, label)| {
+        format!(
+            "<option value=\"{}\" {}>{}</option>",
+            value,
+            if is_selected { "selected" } else { "" },
+            label
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("")
+}
+
 fn pluralize_results(count: usize) -> String {
     if count == 1 {
         "1 result".to_string()
     } else {
         format!("{count} results")
+    }
+}
+
+fn pluralize_attachments(count: usize) -> String {
+    if count == 1 {
+        "1 attachment".to_string()
+    } else {
+        format!("{count} attachments")
     }
 }
 
@@ -8325,14 +9328,12 @@ fn render_account_options(accounts: &[AccountRecord], selected_account_id: Optio
 }
 
 fn search_page_href(
-    query: &str,
+    filters: &MessageSearchFilters,
     selected_account_id: Option<i64>,
     priority_filter: SenderPriorityFilter,
 ) -> String {
     let mut pairs = Vec::new();
-    if !query.trim().is_empty() {
-        pairs.push(("q", query.trim().to_string()));
-    }
+    append_message_filter_query_pairs(&mut pairs, filters);
     if let Some(account_id) = selected_account_id {
         pairs.push(("account_id", account_id.to_string()));
     }
@@ -8671,6 +9672,25 @@ fn has_explicit_query_param(raw_query: &str) -> bool {
         .any(|part| part == "q" || part.starts_with("q="))
 }
 
+fn has_explicit_search_param(raw_query: &str) -> bool {
+    const SEARCH_KEYS: &[&str] = &[
+        "q",
+        "sender_address",
+        "sender_name",
+        "sender_domain",
+        "subject",
+        "body_text",
+        "date_from",
+        "date_to",
+        "has_attachments",
+        "priority",
+    ];
+    raw_query.split('&').any(|part| {
+        let key = part.split_once('=').map(|(key, _)| key).unwrap_or(part);
+        SEARCH_KEYS.contains(&key)
+    })
+}
+
 fn url_encode_component(value: &str) -> String {
     value
         .bytes()
@@ -8960,6 +9980,7 @@ mod tests {
             account_state_root: Arc::<str>::from(account_state_root.to_string_lossy().to_string()),
             runtime_dir: Arc::<str>::from(runtime_dir.to_string_lossy().to_string()),
             lock_dir: Arc::<str>::from(lock_dir.to_string_lossy().to_string()),
+            paperless_consume_root: None,
             visible_mirror_read_group: None,
             default_tags: Arc::from(vec!["new".to_string()]),
         }
@@ -9057,6 +10078,13 @@ mod tests {
             username: "alice".to_string(),
             email: Some("alice@example.com".to_string()),
             groups: vec!["mail-archive-users".to_string()],
+        }
+    }
+
+    fn test_message_filters(query: &str) -> MessageSearchFilters {
+        MessageSearchFilters {
+            q: query.to_string(),
+            ..Default::default()
         }
     }
 
@@ -9189,6 +10217,7 @@ mod tests {
                 page: None,
                 flash: None,
                 error: None,
+                ..Default::default()
             },
         )
         .expect("attachment page");
@@ -10115,7 +11144,7 @@ mod tests {
                 &config,
                 "alice",
                 Some(account_id),
-                "subject:invoice",
+                test_message_filters("subject:invoice"),
                 SenderPriorityFilter::All,
             )
             .expect("search");
@@ -10244,7 +11273,7 @@ mod tests {
                 &config,
                 "alice",
                 Some(account_id),
-                "",
+                test_message_filters(""),
                 SenderPriorityFilter::All,
             )
             .expect("search all");
@@ -10260,12 +11289,63 @@ mod tests {
                 &config,
                 "alice",
                 Some(account_id),
-                "",
+                test_message_filters(""),
                 SenderPriorityFilter::Low,
             )
             .expect("search low");
             assert_eq!(low.len(), 1);
             assert_eq!(low[0].subject, "Low newest");
+        });
+    }
+
+    #[test]
+    fn search_mail_applies_structured_sender_subject_date_and_attachment_filters() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let config = test_config(&tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-match",
+                "Message-ID: <match@example.com>\nFrom: Billing Team <billing@example.com>\nSubject: Invoice ready\nDate: Sat, 20 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-no-attachment",
+                "Message-ID: <plain@example.com>\nFrom: Billing Team <billing@example.com>\nSubject: Invoice ready\nDate: Sat, 20 Apr 2024 14:32:00 +0000\n\nATTACH:none\n",
+            );
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-domain",
+                "Message-ID: <other@example.net>\nFrom: Billing Team <billing@example.net>\nSubject: Invoice ready\nDate: Sat, 20 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let results = search_mail(
+                &config,
+                "alice",
+                Some(account_id),
+                MessageSearchFilters {
+                    sender_name: "Billing".to_string(),
+                    sender_domain: "example.com".to_string(),
+                    subject: "invoice".to_string(),
+                    date_from: "2024-04-20".to_string(),
+                    date_to: "2024-04-20".to_string(),
+                    has_attachments: Some(true),
+                    ..Default::default()
+                },
+                SenderPriorityFilter::All,
+            )
+            .expect("search");
+
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].subject, "Invoice ready");
+            assert_eq!(results[0].from, "Billing Team <billing@example.com>");
         });
     }
 
@@ -10279,7 +11359,7 @@ mod tests {
         let html_prefill = render_search(
             &identity,
             &[],
-            "",
+            &test_message_filters(""),
             None,
             &[],
             &SearchViewState {
@@ -10294,7 +11374,7 @@ mod tests {
         let html_submitted = render_search(
             &identity,
             &[],
-            "from:billing",
+            &test_message_filters("from:billing"),
             None,
             &[],
             &SearchViewState {
@@ -10328,7 +11408,7 @@ mod tests {
         let html = render_search(
             &sample_identity(),
             &[],
-            "subject:invoice",
+            &test_message_filters("subject:invoice"),
             None,
             &[result],
             &SearchViewState {
@@ -10355,7 +11435,7 @@ mod tests {
         let html = render_search(
             &sample_identity(),
             &[],
-            "",
+            &test_message_filters(""),
             None,
             &[],
             &SearchViewState {
@@ -10641,7 +11721,11 @@ mod tests {
         prepare_test_layout(&config);
         let connection = open_db(&config).expect("db");
 
-        let names = ["attachment_messages", "attachment_catalog"];
+        let names = [
+            "attachment_messages",
+            "attachment_catalog",
+            "attachment_paperless_handoffs",
+        ];
         for name in names {
             let count = connection
                 .query_row(
@@ -10784,6 +11868,7 @@ mod tests {
                     page: None,
                     flash: None,
                     error: None,
+                    ..Default::default()
                 },
             )
             .expect("low page");
@@ -10809,6 +11894,7 @@ mod tests {
                     show_mime_details: None,
                     download_subfolder: None,
                     return_to: None,
+                    ..Default::default()
                 },
             )
             .expect("bulk keys");
@@ -10853,6 +11939,7 @@ mod tests {
                     page: None,
                     flash: None,
                     error: None,
+                    ..Default::default()
                 },
             )
             .expect("default page");
@@ -10874,6 +11961,7 @@ mod tests {
                     page: None,
                     flash: None,
                     error: None,
+                    ..Default::default()
                 },
             )
             .expect("included page");
@@ -10936,6 +12024,7 @@ mod tests {
                     page: None,
                     flash: None,
                     error: None,
+                    ..Default::default()
                 },
             )
             .expect("default page");
@@ -10956,6 +12045,7 @@ mod tests {
                     page: None,
                     flash: None,
                     error: None,
+                    ..Default::default()
                 },
             )
             .expect("included page");
@@ -11167,20 +12257,26 @@ mod tests {
                     page: None,
                     flash: None,
                     error: None,
+                    ..Default::default()
                 },
             )
             .expect("page");
             let html = render_attachments_page(&sample_identity(), &page, None, None);
             assert!(!html.contains("save_state"));
-            assert!(!html.contains("Paperless"));
             assert!(!html.contains("/save/files"));
             assert!(!html.contains("/save/paperless"));
-            assert!(html.contains("name=\"attachment_keys\""));
             assert!(html.contains("aria-label=\"Download selected attachments\""));
-            assert!(html.contains("title=\"Download attachment\""));
+            assert!(html.contains("aria-label=\"Send selected attachments to Paperless\""));
+            assert!(html.contains("title=\"Download attachment locally\""));
+            assert!(html.contains("/attachments/send-paperless"));
+            assert!(html.contains("data-attachment-row"));
+            assert!(html.contains("data-attachment-key"));
             assert!(html.contains("priority-select-normal"));
             assert!(html.contains("page-heading"));
             assert!(html.contains("attachment-list-header"));
+            assert!(html.contains("<span>Date</span>"));
+            assert!(!html.contains("<span>Select</span>"));
+            assert!(!html.contains("<span>Tags</span>"));
             assert!(html.contains("Address priority"));
             assert!(html.contains("Domain priority"));
             assert!(html.contains("name=\"priority\""));
@@ -11191,6 +12287,82 @@ mod tests {
             assert!(!html.contains("Delete local archive copy"));
             assert!(!html.contains("Restore on next sync"));
             assert!(!html.contains("/messages/"));
+        });
+    }
+
+    #[test]
+    fn attachment_search_filters_by_structured_fields_and_paperless_handoff_records_state() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            config.paperless_consume_root = Some(Arc::from(
+                tempdir
+                    .path()
+                    .join("paperless-consume")
+                    .to_string_lossy()
+                    .to_string(),
+            ));
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <paperless@example.com>\nFrom: Docs <docs@example.com>\nSubject: Paperless invoice\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf-and-zip\n",
+            );
+
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("invoice".to_string()),
+                    sender_address: Some("docs@example.com".to_string()),
+                    attachment_name: Some("invoice".to_string()),
+                    extension: Some("pdf".to_string()),
+                    mime_type: Some("pdf".to_string()),
+                    min_attachments: Some("2".to_string()),
+                    max_attachments: Some("2".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            assert_eq!(page.items.len(), 1);
+            let key = page.items[0].attachment.attachment_key.clone();
+
+            let sent = send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&key))
+                .expect("send");
+            assert_eq!(sent, 1);
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            let consume_files = fs::read_dir(&consume_root)
+                .expect("consume dir")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("consume files");
+            assert_eq!(consume_files.len(), 1);
+            assert!(consume_files[0]
+                .file_name()
+                .to_string_lossy()
+                .contains("invoice.pdf"));
+
+            let refreshed = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    attachment_name: Some("invoice".to_string()),
+                    extension: Some("pdf".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("refreshed page");
+            assert!(refreshed.items[0].paperless_sent_at.is_some());
+            let html = render_attachment_item(&refreshed.items[0], "/attachments", false);
+            assert!(html.contains("Successfully sent to Paperless on"));
+            assert!(html.contains("paperless-sent-button"));
+
+            assert!(send_attachments_to_paperless(&config, "alice", &[key]).is_err());
         });
     }
 
@@ -11227,6 +12399,7 @@ mod tests {
                     show_mime_details: None,
                     download_subfolder: None,
                     return_to: None,
+                    ..Default::default()
                 },
             )
             .expect("zip");
@@ -11309,6 +12482,7 @@ mod tests {
                     show_mime_details: None,
                     download_subfolder: Some("Downloaded/Invoices ✅".to_string()),
                     return_to: None,
+                    ..Default::default()
                 },
             )
             .expect("zip");

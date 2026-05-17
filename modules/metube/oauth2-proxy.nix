@@ -20,10 +20,10 @@ in
     allowedGroups = [ "metube-users" ];
     serviceDependencies = [
       "caddy.service"
-      "metube-quadlet-refresh.service"
+      "youtube-downloader.service"
     ];
     upstreamCheck = {
-      displayName = "MeTube";
+      displayName = "YouTube downloader";
       url = "http://${loopback}:${toString metubeListenPort}/";
     };
   };

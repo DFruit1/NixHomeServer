@@ -23,6 +23,7 @@
       set -euo pipefail
 
       install -d -m 2775 -o root -g users ${vars.sharedAudiobooksRoot}
+      install -d -m 2775 -o root -g users ${vars.sharedAudiobooksRoot}/youtube
 
       apply_recursive_acl() {
         local access_spec="$1"

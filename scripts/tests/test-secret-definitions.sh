@@ -27,7 +27,7 @@ rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' secrets/agenix.nix -r '$1' 
 missing_refs="$(comm -23 "$references_file" "$definitions_file" || true)"
 if [[ -n "$missing_refs" ]]; then
   echo "❌ Some referenced agenix secrets are not defined in secrets/agenix.nix:"
-  printf '   %s\n' $missing_refs
+  printf '   %s\n' "$missing_refs"
   exit 1
 fi
 

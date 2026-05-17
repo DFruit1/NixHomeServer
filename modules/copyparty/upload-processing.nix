@@ -137,6 +137,8 @@ in
     updater.enable = true;
   };
 
+  systemd.services.clamav-daemon.serviceConfig.MemoryMax = config.nixhomeserver.resources.clamav.memoryMax;
+
   systemd.tmpfiles.rules = [
     "d /run/upload-processor 0770 upload-processor upload-staging -"
     "d /run/upload-processor/queue 0770 upload-processor upload-staging -"

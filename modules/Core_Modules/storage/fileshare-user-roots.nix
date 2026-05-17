@@ -3,9 +3,13 @@
 let
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  userFilesGroup = "user-files";
+  userRootGroups = [
+    "user-files"
+    "jellyfin-users"
+  ];
   userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
+  userVideoSubdirs = lib.escapeShellArgs vars.userVideoSubdirs;
   userBookWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
   fileshareUserRootSyncPath = with pkgs; [
     acl
@@ -31,6 +35,11 @@ let
       install -d -m 2770 -g users "$root/$name"
       chown root:users "$root/$name"
       chmod 2770 "$root/$name"
+    done
+    for name in ${userVideoSubdirs}; do
+      install -d -m 2770 -g users "$root/videos/$name"
+      chown root:users "$root/videos/$name"
+      chmod 2770 "$root/videos/$name"
     done
     for name in ${userBooksSubdirs}; do
       install -d -m 2770 -g users "$root/books/$name"
@@ -65,6 +74,7 @@ let
       -m g:paperless:--x \
       -m g:audiobookshelf-media:rwx \
       -m d:g:audiobookshelf-media:rwx \
+      -m g:jellyfin-media:--x \
       "$root"
 
     apply_recursive_acl() {
@@ -117,10 +127,12 @@ let
       "$root/documents" \
       "$root/photos" \
       "$root/audiobooks" \
+      "$root/videos" \
       "$root/books" \
       ${userBookWritablePaths}
 
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
+    apply_writable_acl jellyfin-media "$root/videos"
     apply_writable_acl mail-archive-ui "$root/files"
     apply_writable_acl kavita-media \
       "$root/books" \
@@ -148,13 +160,17 @@ let
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 
-      ${pkgs.kanidm_1_9}/bin/kanidm group get \
-        ${lib.escapeShellArg userFilesGroup} \
-        -H ${kanidmCliUrl} \
-        -D idm_admin \
-        -o json \
-        | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]' \
-        | ${pkgs.coreutils}/bin/sort -u
+      for group_name in ${lib.escapeShellArgs userRootGroups}; do
+        if group_json="$(
+          ${pkgs.kanidm_1_9}/bin/kanidm group get \
+            "$group_name" \
+            -H ${kanidmCliUrl} \
+            -D idm_admin \
+            -o json
+        )"; then
+          printf '%s\n' "$group_json" | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]'
+        fi
+      done | ${pkgs.coreutils}/bin/sort -u
     )"
 
     while IFS= read -r username; do

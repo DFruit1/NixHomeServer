@@ -10,6 +10,7 @@ Usage:
   scripts/admin/admin.sh doctor [--host <site-or-hostname>]
   scripts/admin/admin.sh init-site [--site <name>]
   scripts/admin/admin.sh storage-plan [--host <site-or-hostname>]
+  scripts/admin/admin.sh status [--host <site-or-hostname>] [--target <user@host>] [--refresh]
   scripts/admin/admin.sh explain [--host <site-or-hostname>]
   scripts/admin/admin.sh render-runbook --host <site-or-hostname>
   scripts/admin/admin.sh secrets check
@@ -35,6 +36,9 @@ case "$subcommand" in
     ;;
   storage-plan)
     exec "$admin_script_dir/storage-plan.sh" "$@"
+    ;;
+  status)
+    exec "$admin_script_dir/status.sh" "$@"
     ;;
   explain)
     exec "$admin_script_dir/explain.sh" "$@"

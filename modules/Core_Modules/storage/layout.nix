@@ -1,4 +1,4 @@
-{ pkgs, vars, ... }:
+{ lib, pkgs, vars, ... }:
 
 let
   zfsBin = "${pkgs.zfs}/bin/zfs";
@@ -48,7 +48,56 @@ let
     }
   ];
 
+  datasetSpecs = [
+    {
+      dataset = canonicalUsersDataset;
+      mountpoint = vars.usersRoot;
+      properties = {
+        compression = "zstd";
+        atime = "off";
+        acltype = "posixacl";
+        xattr = "sa";
+        recordsize = "1M";
+      };
+    }
+    {
+      dataset = canonicalSharedDataset;
+      mountpoint = vars.sharedRoot;
+      properties = {
+        compression = "zstd";
+        atime = "off";
+        acltype = "posixacl";
+        xattr = "sa";
+        recordsize = "1M";
+      };
+    }
+    {
+      dataset = canonicalUploadStagingDataset;
+      mountpoint = vars.uploadSecurity.stagingRoot;
+      properties = {
+        compression = "zstd";
+        atime = "off";
+        exec = "off";
+        devices = "off";
+        setuid = "off";
+      };
+    }
+  ];
+
+  mkDatasetEnsure = spec:
+    let
+      propertyCommands = lib.concatStringsSep "\n"
+        (lib.mapAttrsToList
+          (property: value: "${zfsBin} set ${property}='${value}' '${spec.dataset}'")
+          spec.properties);
+    in
+    ''
+      ensure_dataset '${spec.dataset}' '${spec.mountpoint}'
+      ${propertyCommands}
+    '';
+
   zfsContentLayoutScript = builtins.concatStringsSep "\n" (map mkDirCmd zfsContentDirs);
+  zfsDatasetLayoutScript = builtins.concatStringsSep "\n" (map mkDatasetEnsure datasetSpecs);
 in
 {
   systemd.tmpfiles.rules = [
@@ -80,12 +129,7 @@ in
         fi
       }
 
-      ensure_dataset '${canonicalUsersDataset}' '${vars.usersRoot}'
-      ensure_dataset '${canonicalSharedDataset}' '${vars.sharedRoot}'
-      ensure_dataset '${canonicalUploadStagingDataset}' '${vars.uploadSecurity.stagingRoot}'
-      ${zfsBin} set exec=off '${canonicalUploadStagingDataset}'
-      ${zfsBin} set devices=off '${canonicalUploadStagingDataset}'
-      ${zfsBin} set setuid=off '${canonicalUploadStagingDataset}'
+      ${zfsDatasetLayoutScript}
       ${zfsContentLayoutScript}
     '';
   };

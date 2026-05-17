@@ -284,12 +284,23 @@ if [[ "$local_build" == true ]]; then
   run_local_runtime_readiness "$repo_archive" "$full_check"
 
   if [[ "$action" == "switch" ]]; then
+    previous_generation="$(ssh "$target_host" "readlink -f /nix/var/nix/profiles/system 2>/dev/null || true")"
     echo "ℹ️ Running local nixos-rebuild switch…"
     nix run nixpkgs#nixos-rebuild -- switch \
       --flake ".#${resolved_hostname}" \
       --target-host "$target_host" \
       --sudo \
       --ask-sudo-password
+
+    new_generation="$(ssh "$target_host" "readlink -f /nix/var/nix/profiles/system 2>/dev/null || true")"
+    echo "ℹ️ Running post-switch runtime readiness checks on ${target_host}…"
+    if ! run_local_runtime_readiness "$repo_archive" "$full_check"; then
+      echo "❌ Post-switch runtime readiness failed."
+      echo "   Previous system generation: ${previous_generation:-unknown}"
+      echo "   New system generation: ${new_generation:-unknown}"
+      echo "   Roll back with: ssh ${target_host@Q} 'sudo nixos-rebuild switch --rollback'"
+      exit 1
+    fi
   fi
 
   echo "✅ Deploy validation completed."

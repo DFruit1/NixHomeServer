@@ -12,7 +12,7 @@ Print a non-destructive storage inventory and a settings.nix snippet.
 EOF
 }
 
-host="dsaw"
+host=""
 while (($# > 0)); do
   case "$1" in
     --host)
@@ -29,6 +29,10 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+if [[ -z "$host" ]]; then
+  host="$(default_host)"
+fi
 
 need jq lsblk
 if ((status_blocked > 0)); then

@@ -73,7 +73,7 @@ let
       component = "app";
       stateRoot = "/var/lib/jellyfin";
       persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
-      payloadRoots = [ vars.sharedMusicRoot vars.sharedVideosRoot vars.usersRoot ];
+      payloadRoots = [ vars.sharedVideosRoot vars.usersRoot ];
     }
     {
       app = "kavita";
@@ -87,7 +87,7 @@ let
       component = "app";
       stateRoot = "/var/lib/metube";
       persistentStateRoot = persistBackedStateRoot "/var/lib/metube";
-      payloadRoots = [ vars.sharedYouTubeRoot ];
+      payloadRoots = [ vars.sharedYouTubeRoot vars.sharedAudiobooksRoot vars.usersRoot ];
     }
     {
       app = "paperless";
@@ -102,6 +102,13 @@ let
       stateRoot = "/var/lib/vaultwarden";
       persistentStateRoot = persistBackedStateRoot "/var/lib/vaultwarden";
       payloadRoots = [ ];
+    }
+    {
+      app = "upload-processor";
+      component = "app";
+      stateRoot = "/var/lib/upload-processor";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/upload-processor";
+      payloadRoots = [ vars.uploadSecurity.stagingRoot vars.uploadSecurity.quarantineRoot ];
     }
     {
       app = "paperless";
@@ -129,14 +136,14 @@ let
       component = "app";
       stateRoot = "/var/lib/copyparty";
       persistentStateRoot = persistBackedStateRoot "/var/lib/copyparty";
-      payloadRoots = [ vars.usersRoot vars.sharedRoot vars.paperlessRoot ];
+      payloadRoots = [ vars.uploadSecurity.stagingRoot ];
     }
     {
       app = "filebrowser-quantum";
       component = "app";
       stateRoot = vars.filebrowserStateDir;
       persistentStateRoot = persistBackedStateRoot vars.filebrowserStateDir;
-      payloadRoots = [ vars.usersRoot vars.sharedRoot vars.kiwixLibraryRoot ];
+      payloadRoots = [ vars.usersRoot vars.sharedRoot vars.kiwixLibraryRoot vars.uploadSecurity.quarantineRoot ];
     }
     {
       app = "mail-archive-ui";
@@ -149,11 +156,19 @@ let
   requiredPathEntries =
     [
       { label = "copyparty-archive-metadata"; path = "${vars.paperlessArchiveRoot}/.hist"; }
+      { label = "upload-staging-root"; path = vars.uploadSecurity.stagingRoot; }
+      { label = "upload-quarantine-root"; path = vars.uploadSecurity.quarantineRoot; }
+      { label = "paperless-inbox"; path = vars.paperlessInboxRoot; }
+      { label = "paperless-archive"; path = vars.paperlessArchiveRoot; }
+      { label = "paperless-export"; path = vars.paperlessExportRoot; }
     ]
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-data"; path = cfg.services.mail-archive-ui.dataDir; }
+    ++ optional mailArchiveEnabled { label = "mail-archive-ui-account-state"; path = cfg.services.mail-archive-ui.accountStateRoot; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-runtime"; path = cfg.services.mail-archive-ui.runtimeDir; }
     ++ optional mailArchiveEnabled { label = "mail-archive-ui-locks"; path = cfg.services.mail-archive-ui.lockDir; }
-    ++ optional mailArchiveEnabled { label = "mail-archive-ui-store-root"; path = cfg.services.mail-archive-ui.storeRoot; };
+    ++ optional mailArchiveEnabled { label = "mail-archive-ui-store-root"; path = cfg.services.mail-archive-ui.storeRoot; }
+    ++ optional metubeEnabled { label = "youtube-downloader-state"; path = "/var/lib/metube/state"; }
+    ++ optional metubeEnabled { label = "youtube-downloader-sqlite"; path = "/var/lib/metube/state/youtube-downloader.sqlite"; };
   accessCheckApps =
     [
       {
@@ -287,7 +302,7 @@ let
       };
       verification = {
         finalUrlPrefix = "https://${vars.metubeDomain}";
-        markerText = vars.metubeDomain;
+        markerText = "Downloads";
       };
     };
   accessCheckCanaries = lib.mapAttrsToList (
@@ -371,7 +386,7 @@ in
       { name = "sharephotos"; url = "http://127.0.0.1:3300/share/healthcheck"; expected = [ 200 ]; }
     ]
     ++ optional mailArchiveEnabled { name = "mail-archive-ui-healthz"; url = "http://127.0.0.1:${toString cfg.services.mail-archive-ui.port}/healthz"; expected = [ 200 ]; }
-    ++ optional metubeEnabled { name = "metube-upstream"; url = "http://127.0.0.1:8083/"; expected = [ 200 ]; };
+    ++ optional metubeEnabled { name = "metube-upstream"; url = "http://127.0.0.1:8083/healthz"; expected = [ 200 ]; };
 
     dns = {
       resolve = [ "example.com" "${vars.sharePhotosDomain}" ];
@@ -453,16 +468,24 @@ in
 
   appState = {
     entries = appStateEntries;
-    criticalPaths = [
-      vars.dataRoot
-      vars.paperlessRoot
-      vars.immichRoot
-      vars.immichManagedRoot
-      vars.usersRoot
-      vars.sharedRoot
-      vars.sharedEmailsRoot
-      vars.kiwixLibraryRoot
-    ];
+      criticalPaths = [
+        vars.dataRoot
+        vars.paperlessRoot
+        vars.paperlessInboxRoot
+        vars.paperlessArchiveRoot
+        vars.paperlessExportRoot
+        vars.immichRoot
+        vars.immichManagedRoot
+        vars.usersRoot
+        vars.sharedRoot
+        vars.sharedEmailsRoot
+        vars.uploadSecurity.stagingRoot
+        vars.uploadSecurity.quarantineRoot
+        cfg.services.mail-archive-ui.dataDir
+        cfg.services.mail-archive-ui.accountStateRoot
+        cfg.services.mail-archive-ui.storeRoot
+        vars.kiwixLibraryRoot
+      ];
     requiredPaths = requiredPathEntries;
   };
 

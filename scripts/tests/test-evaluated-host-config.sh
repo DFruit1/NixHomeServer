@@ -49,9 +49,16 @@ uploadSecurity = vars.uploadSecurity;
 kanidmAdminUser = vars.kanidmAdminUser;
 runtimeAccessCanaries = vars.runtimeAccessCanaries;
 personalKavitaLibraries = vars.personalKavitaLibraries;
+personalJellyfinLibraries = vars.personalJellyfinLibraries;
+sharedJellyfinLibraries = vars.sharedJellyfinLibraries;
+sharedJellyfinMusicLibraries = vars.sharedJellyfinMusicLibraries;
 sharedBooksSubdirs = vars.sharedBooksSubdirs;
+userContentSubdirs = vars.userContentSubdirs;
 sharedContentSubdirs = vars.sharedContentSubdirs;
 sharedMusicRoot = vars.sharedMusicRoot;
+paperlessInboxRoot = vars.paperlessInboxRoot;
+paperlessArchiveRoot = vars.paperlessArchiveRoot;
+paperlessExportRoot = vars.paperlessExportRoot;
 };
 config = {
 services = {
@@ -82,6 +89,8 @@ hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
 restic = {
 repository = cfg.services.restic.backups.system-state.repository;
 pathCount = builtins.length cfg.services.restic.backups.system-state.paths;
+paths = cfg.services.restic.backups.system-state.paths;
+backupPrepareCommand = cfg.services.restic.backups.system-state.backupPrepareCommand;
 };
 monitoring = {
 hasSystemHealthService = cfg.systemd.services ? "system-health-report";
@@ -116,8 +125,12 @@ cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [
 mailArchiveUiMountCondition =
 cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
 mailArchiveUiEnvironment = cfg.services.mail-archive-ui.environment or { };
+mailArchiveUiServiceEnvironment =
+cfg.systemd.services."mail-archive-ui".serviceConfig.Environment or [ ];
 mailArchiveUiReadWritePaths =
 cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
+mailArchiveUiExtraGroups = cfg.users.users.mail-archive-ui.extraGroups or [ ];
+mailArchiveUiPaperlessConsumeRoot = cfg.services.mail-archive-ui.paperlessConsumeRoot;
 mailArchiveUiPath =
 map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
 mailArchiveSyncPath =
@@ -170,17 +183,26 @@ hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
 hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
 hasJellyfinLibraryBootstrap = cfg.systemd.services ? "jellyfin-library-bootstrap-v1";
+jellyfinLibraryBootstrapScript = cfg.systemd.services."jellyfin-library-bootstrap-v1".script or "";
+fileshareUserRootSyncScript = cfg.systemd.services."fileshare-user-root-sync".script or "";
+jellyfinStorageLayoutScript = cfg.systemd.services."jellyfin-storage-layout-v1".script or "";
 hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
 jellyfinLibraryWatchAfter = cfg.systemd.services.jellyfin-library-watch.after;
 jellyfinLibraryWatchWants = cfg.systemd.services.jellyfin-library-watch.wants;
+hasYoutubeDownloaderService = cfg.systemd.services ? "youtube-downloader";
+youtubeDownloaderEnvironment = cfg.systemd.services."youtube-downloader".environment or { };
+youtubeDownloaderReadWritePaths =
+cfg.systemd.services."youtube-downloader".serviceConfig.ReadWritePaths or [ ];
+youtubeDownloaderPath =
+map (package: lib.getName package) (cfg.systemd.services."youtube-downloader".path or [ ]);
+hasLegacyMetubeContainer =
+cfg.environment.etc ? "containers/systemd/users/3002/metube.container";
 hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
 hasMetubeAudioImportWatch = cfg.systemd.services ? "metube-audio-import-watch";
-metubeAudioImportWatchAfter = cfg.systemd.services.metube-audio-import-watch.after;
 jellyfinPayloadRoots = [
-vars.sharedMusicRoot
 vars.sharedVideosRoot
 vars.usersRoot
 ];
@@ -262,6 +284,35 @@ if [[ "$(snapshot_query '.config.restic.pathCount')" == "0" ]]; then
   echo "❌ System-state Restic backups must include at least one path."
   exit 1
 fi
+require_json_equal "$(snapshot_query '.config.restic.paths')" '["/persist"]' \
+  "System-state Restic backups must stay scoped to persisted SSD-backed state."
+if jq -e 'map(startswith("/mnt/data")) | any' >/dev/null <<<"$(snapshot_query '.config.restic.paths')"; then
+  echo "❌ System-state Restic paths must not include data-pool payload content."
+  echo "   paths: $(snapshot_query '.config.restic.paths')"
+  exit 1
+fi
+
+restic_backup_prepare_command="$(snapshot_query '.config.restic.backupPrepareCommand' | jq -r '.')"
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'mail-archive-roots\.tsv' \
+  "Backup preparation must write mail archive root metadata."
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'upload-flow-roots\.tsv' \
+  "Backup preparation must write upload flow root metadata."
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'upload-staging.*upload-staging' \
+  "Backup preparation must inventory upload staging."
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'upload-quarantine.*quarantine/uploads' \
+  "Backup preparation must inventory upload quarantine."
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'mail-archive-ui\.sqlite3' \
+  "Backup preparation must dump Mail Archive UI SQLite state when present."
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'upload-processor-state\.sqlite3' \
+  "Backup preparation must dump upload processor SQLite state when present."
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'verify-attachments --repair --report' \
+  "Backup preparation must verify and repair mail archive attachment blobs."
+require_match modules/Core_Modules/restic-state/default.nix 'app = "upload-processor";' \
+  "Upload processor state must be represented in backup app-state metadata."
+require_match modules/Core_Modules/restic-state/default.nix 'vars\.uploadSecurity\.quarantineRoot' \
+  "Backup policy must include quarantine root metadata coverage."
+require_match modules/Core_Modules/restic-state/default.nix 'vars\.paperlessInboxRoot' \
+  "Backup policy must include Paperless consume inbox metadata coverage."
 
 assert_json_true '.config.monitoring.hasSystemHealthService' "System health reporting service must remain defined."
 assert_json_true '.config.monitoring.hasSystemHealthTimer' "System health reporting timer must remain defined."
@@ -377,18 +428,32 @@ forbid_match configuration.nix './modules/mail-archive-paperless' \
   "Mail Archive UI must not import the retired Paperless handoff module."
 
 mail_archive_ui_environment="$(snapshot_query '.config.apps.mailArchiveUiEnvironment')"
-if jq -e 'has("MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT") or has("MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR")' >/dev/null <<<"$mail_archive_ui_environment"; then
-  echo "❌ Mail Archive UI environment must not expose Paperless consume/staging paths."
+if jq -e 'has("MAIL_ARCHIVE_UI_PAPERLESS_STAGING_DIR")' >/dev/null <<<"$mail_archive_ui_environment"; then
+  echo "❌ Mail Archive UI extra environment must not expose Paperless staging paths."
   echo "   environment: $mail_archive_ui_environment"
   exit 1
 fi
 
+mail_archive_ui_service_environment="$(snapshot_query '.config.apps.mailArchiveUiServiceEnvironment')"
+require_match <(printf '%s\n' "$mail_archive_ui_service_environment") 'MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT=' \
+  "Mail Archive UI must explicitly expose the Paperless consume root for attachment handoff."
+require_match <(printf '%s\n' "$mail_archive_ui_service_environment") "$(snapshot_query '.vars.paperlessInboxRoot' | jq -r '.')" \
+  "Mail Archive UI Paperless handoff must use vars.paperlessInboxRoot."
+require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiPaperlessConsumeRoot')" "$(snapshot_query '.vars.paperlessInboxRoot')" \
+  "Mail Archive UI Paperless consume root option must follow vars.paperlessInboxRoot."
+
 mail_archive_ui_read_write_paths="$(snapshot_query '.config.apps.mailArchiveUiReadWritePaths')"
-if jq -e 'map(test("mail-archive|paperless") and test("consume|staging")) | any' >/dev/null <<<"$mail_archive_ui_read_write_paths"; then
-  echo "❌ Mail Archive UI ReadWritePaths must not include Paperless consume/staging paths."
+require_match <(printf '%s\n' "$mail_archive_ui_read_write_paths") "$(snapshot_query '.vars.paperlessInboxRoot' | jq -r '.')" \
+  "Mail Archive UI ReadWritePaths must include Paperless consume root for attachment handoff."
+if jq -e 'map(test("paperless") and test("staging")) | any' >/dev/null <<<"$mail_archive_ui_read_write_paths"; then
+  echo "❌ Mail Archive UI ReadWritePaths must not include Paperless staging paths."
   echo "   ReadWritePaths: $mail_archive_ui_read_write_paths"
   exit 1
 fi
+
+mail_archive_ui_extra_groups="$(snapshot_query '.config.apps.mailArchiveUiExtraGroups')"
+require_match <(printf '%s\n' "$mail_archive_ui_extra_groups") 'paperless' \
+  "Mail Archive UI user must have paperless group access for consume-root handoff."
 
 copyparty_service_supplementary_groups="$(snapshot_query '.config.apps.copypartyServiceSupplementaryGroups')"
 if ! jq -e 'index("upload-staging") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then
@@ -432,13 +497,60 @@ assert_json_false '.config.apps.hasKavitaLibrarySync' "Kavita settled scan servi
 assert_json_false '.config.apps.hasKavitaLibrarySyncTimer' "Kavita overnight scan timer must remain absent."
 assert_json_false '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence must stay centralized in fileshare-user-root-sync."
 assert_json_false '.config.apps.hasKavitaLibraryWatch' "Kavita recursive watcher service must remain absent."
+require_match modules/kavita/default.nix 'disable-update-notifications\.patch' \
+  "Kavita must keep in-app update notifications disabled; Nix owns application updates."
 assert_json_true '.config.apps.hasKiwixLibraryWatch' "Kiwix watcher service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryMonitor' "Jellyfin library monitor config service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryBootstrap' "Jellyfin declarative library bootstrap must remain present."
 assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain present."
-assert_json_true '.config.apps.hasMetubeAudioImport' "MeTube audio import service must remain present."
-assert_json_true '.config.apps.hasMetubeAudioImportWatch' "MeTube audio import watcher must remain present."
+assert_json_true '.config.apps.hasYoutubeDownloaderService' "The custom YouTube downloader service must replace the MeTube container."
+assert_json_false '.config.apps.hasLegacyMetubeContainer' "The legacy rootless MeTube container must not be active."
+assert_json_false '.config.apps.hasMetubeAudioImport' "MeTube audio import service must stay retired; downloads now target final media roots directly."
+assert_json_false '.config.apps.hasMetubeAudioImportWatch' "MeTube audio import watcher must stay retired; downloads now target final media roots directly."
+youtube_downloader_env="$(snapshot_query '.config.apps.youtubeDownloaderEnvironment')"
+require_json_equal "$(jq -c '.YOUTUBE_DOWNLOADER_DATABASE' <<<"$youtube_downloader_env")" '"/var/lib/metube/state/youtube-downloader.sqlite"' \
+  "YouTube downloader state must use the persisted SQLite database path."
+require_json_equal "$(jq -c '.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP' <<<"$youtube_downloader_env")" '"shared-files-read-write-access"' \
+  "YouTube downloader shared writes must use the existing shared-files Kanidm group."
+require_json_equal "$(jq -c '.YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT' <<<"$youtube_downloader_env")" '"/mnt/data/shared/audiobooks/youtube"' \
+  "YouTube downloader shared audio must target the shared Audiobookshelf YouTube root."
+youtube_downloader_readwrite="$(snapshot_query '.config.apps.youtubeDownloaderReadWritePaths')"
+for rw_path in /var/lib/metube /var/cache/youtube-downloader /mnt/data/shared/videos/youtube /mnt/data/shared/audiobooks /mnt/data/users; do
+  if ! jq -e --arg rw_path "$rw_path" 'index($rw_path) != null' >/dev/null <<<"$youtube_downloader_readwrite"; then
+    echo "❌ YouTube downloader ReadWritePaths must include ${rw_path}."
+    echo "   ReadWritePaths: $youtube_downloader_readwrite"
+    exit 1
+  fi
+done
+youtube_downloader_path="$(snapshot_query '.config.apps.youtubeDownloaderPath')"
+for package_name in sqlite yt-dlp ffmpeg; do
+  if ! jq -e --arg package_name "$package_name" 'map(startswith($package_name)) | any' >/dev/null <<<"$youtube_downloader_path"; then
+    echo "❌ YouTube downloader service path must include ${package_name}."
+    echo "   path: $youtube_downloader_path"
+    exit 1
+  fi
+done
+persisted_directories="$(snapshot_query '.config.fileSystems.persistedDirectories')"
+if ! jq -e 'index("/var/lib/metube") != null' >/dev/null <<<"$persisted_directories"; then
+  echo "❌ Impermanence must persist /var/lib/metube for YouTube downloader SQLite state."
+  echo "   persisted directories: $persisted_directories"
+  exit 1
+fi
+require_match <(printf '%s\n' "$restic_backup_prepare_command") 'youtube-downloader\.sqlite' \
+  "Backup preparation must dump the YouTube downloader SQLite state."
+require_match node/apps/youtube-downloader/package.json '"packageManager": "pnpm@' \
+  "YouTube downloader must pin pnpm as its package manager."
+for forbidden in package-lock.json npm-shrinkwrap.json; do
+  if [[ -e "node/apps/youtube-downloader/$forbidden" ]]; then
+    echo "❌ YouTube downloader must not use ${forbidden}."
+    exit 1
+  fi
+done
+for file in node/apps/youtube-downloader/package.json node/apps/youtube-downloader/default.nix; do
+  forbid_match "$file" '(^|[^[:alpha:]])npm([^[:alpha:]]|$)|buildNpmPackage' \
+    "YouTube downloader must use pnpm workflows and avoid npm builders."
+done
 assert_json_true '.config.apps.hasUploadProcessorService' "Upload processor service wiring must be present."
 assert_json_true '.config.apps.hasUploadProcessorRescanService' "Upload processor rescan service wiring must be present."
 assert_json_true '.config.apps.hasUploadProcessorRescanTimer' "Upload processor rescan timer must be present."
@@ -462,18 +574,86 @@ forbid_match scripts/helpers/upload-processor.sh '/api/v3/files/upload_url' \
 assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
 
 shared_content_subdirs="$(snapshot_query '.config.sharedContentSubdirs')"
-if ! jq -e 'index("files") != null and index("videos") != null and index("audiobooks") != null and index("books") != null and index("emails") != null and index("kiwix") != null' >/dev/null <<<"$shared_content_subdirs"; then
+if ! jq -e 'index("files") != null and index("videos") != null and index("audiobooks") != null and index("books") != null and index("emails") != null and index("kiwix") != null and index("music") == null' >/dev/null <<<"$shared_content_subdirs"; then
   echo "❌ Shared content subdirectories must include files, videos, audiobooks, books, emails, and kiwix."
   echo "   sharedContentSubdirs: $shared_content_subdirs"
   exit 1
 fi
 
+user_content_subdirs="$(snapshot_query '.vars.userContentSubdirs')"
+if ! jq -e 'index("files") != null and index("videos") != null and index("audiobooks") != null and index("books") != null and index("emails") != null' >/dev/null <<<"$user_content_subdirs"; then
+  echo "❌ User content subdirectories must include files, videos, audiobooks, books, and emails."
+  echo "   userContentSubdirs: $user_content_subdirs"
+  exit 1
+fi
+
 jellyfin_payload_roots="$(snapshot_query '.config.apps.jellyfinPayloadRoots')"
-if ! jq -e --arg root "$(snapshot_query '.vars.sharedMusicRoot' | jq -r '.')" 'index($root) != null' >/dev/null <<<"$jellyfin_payload_roots"; then
-  echo "❌ Jellyfin payload roots must include the shared music root."
+jellyfin_shared_music_root="$(snapshot_query '.vars.sharedMusicRoot' | jq -r '.')"
+if jq -e --arg root "$jellyfin_shared_music_root" 'index($root) != null' >/dev/null <<<"$jellyfin_payload_roots"; then
+  echo "❌ Jellyfin payload roots must not include the shared music root."
   echo "   payloadRoots: $jellyfin_payload_roots"
   exit 1
 fi
+
+shared_jellyfin_libraries="$(snapshot_query '.vars.sharedJellyfinLibraries')"
+personal_jellyfin_libraries="$(snapshot_query '.vars.personalJellyfinLibraries')"
+shared_jellyfin_music_libraries="$(snapshot_query '.vars.sharedJellyfinMusicLibraries')"
+expected_jellyfin_dirs='["movies","shows","home","music-videos","youtube"]'
+if ! jq -e --argjson expected "$expected_jellyfin_dirs" 'map(.dir) == $expected' >/dev/null <<<"$shared_jellyfin_libraries"; then
+  echo "❌ Shared Jellyfin libraries must be exactly movies, shows, home, music-videos, and youtube."
+  echo "   sharedJellyfinLibraries: $shared_jellyfin_libraries"
+  exit 1
+fi
+if jq -e 'map(.dir) | index("other") != null' >/dev/null <<<"$shared_jellyfin_libraries"; then
+  echo "❌ Shared Jellyfin libraries must not include the retired other folder."
+  echo "   sharedJellyfinLibraries: $shared_jellyfin_libraries"
+  exit 1
+fi
+if ! jq -e --argjson shared "$shared_jellyfin_libraries" '. == $shared' >/dev/null <<<"$personal_jellyfin_libraries"; then
+  echo "❌ Personal Jellyfin libraries must match shared Jellyfin libraries."
+  echo "   personalJellyfinLibraries: $personal_jellyfin_libraries"
+  echo "   sharedJellyfinLibraries: $shared_jellyfin_libraries"
+  exit 1
+fi
+require_json_equal "$(jq 'length' <<<"$shared_jellyfin_music_libraries")" "0" \
+  "Shared Jellyfin music libraries must be retired."
+if ! jq -e 'index("jellyfin-users") != null' >/dev/null <<<"$(snapshot_query '.config.apps.provisionGroupNames')"; then
+  echo "❌ Kanidm provisioning must include jellyfin-users when Jellyfin is enabled."
+  exit 1
+fi
+
+jellyfin_storage_layout_script="$(snapshot_query '.config.apps.jellyfinStorageLayoutScript' | jq -r '.')"
+for path in /mnt/data/shared/videos/movies /mnt/data/shared/videos/shows /mnt/data/shared/videos/home /mnt/data/shared/videos/music-videos /mnt/data/shared/videos/youtube; do
+  require_match <(printf '%s\n' "$jellyfin_storage_layout_script") "$path" \
+    "Jellyfin storage layout must create $path."
+done
+for forbidden_path in /mnt/data/shared/music /mnt/data/shared/videos/other; do
+  forbid_match <(printf '%s\n' "$jellyfin_storage_layout_script") "$forbidden_path" \
+    "Jellyfin storage layout must not create retired path $forbidden_path."
+done
+
+fileshare_user_root_sync_source="modules/Core_Modules/storage/fileshare-user-roots.nix"
+require_match "$fileshare_user_root_sync_source" 'root/videos/\$name' \
+  "Fileshare user root sync must create per-user Jellyfin video subdirectories."
+for forbidden_path in 'videos/other' 'videos/music/youtube'; do
+  forbid_match "$fileshare_user_root_sync_source" "$forbidden_path" \
+    "Fileshare user root sync must not create retired per-user Jellyfin path $forbidden_path."
+done
+
+jellyfin_library_bootstrap_source="modules/jellyfin/library-bootstrap.nix"
+jellyfin_library_bootstrap_script="$(snapshot_query '.config.apps.jellyfinLibraryBootstrapScript' | jq -r '.')"
+for name in 'Shared Movies' 'Shared Shows' 'Shared Home Videos' 'Shared Music Videos' 'Shared YouTube'; do
+  require_match <(printf '%s\n' "$jellyfin_library_bootstrap_script") "$name" \
+    "Jellyfin bootstrap must use prefix shared library name $name."
+done
+for retired_name in 'Other Videos \(Shared\)' 'Shared Other Videos' 'YouTube Music \(Shared\)' 'Shared YouTube Music'; do
+  require_match "$jellyfin_library_bootstrap_source" "$retired_name" \
+    "Jellyfin bootstrap must know how to retire managed legacy library $retired_name."
+done
+for suffix_name in 'Movies \(Shared\)' 'Shows \(Shared\)' 'Home Videos \(Shared\)' 'Music Videos \(Shared\)' 'YouTube \(Shared\)'; do
+  require_match <(printf '%s\n' "$jellyfin_library_bootstrap_script") "$suffix_name" \
+    "Jellyfin bootstrap must know how to rename legacy shared library $suffix_name."
+done
 
 assert_json_false '.config.apps.hasCopypartyRuntimeConfigSync' "Copyparty must use the native module config renderer, not a duplicate runtime config sync service."
 copyparty_volumes="$(snapshot_query '.config.apps.copypartyVolumes')"
@@ -692,6 +872,7 @@ if ! jq -e '.["canary-files"].groups == [
 "shared-files-read-write-access",
 "paperless-users",
 "immich-users",
+"jellyfin-users",
 "audiobookshelf-users",
 "kavita-users",
 "mail-archive-users",
@@ -788,17 +969,6 @@ if ! jq -e '
 ' >/dev/null <<<"$jellyfin_library_watch_wants"; then
   echo "❌ Jellyfin library watcher must want Jellyfin readiness and storage layout services."
   echo "   wants: $jellyfin_library_watch_wants"
-  exit 1
-fi
-
-metube_audio_import_watch_after="$(snapshot_query '.config.apps.metubeAudioImportWatchAfter')"
-if ! jq -e '
-  index("metube-quadlet-refresh.service") != null and
-  index("jellyfin-storage-layout-v1.service") != null and
-  index("data-pool-layout.service") != null
-' >/dev/null <<<"$metube_audio_import_watch_after"; then
-  echo "❌ MeTube audio import watcher must run after MeTube refresh and storage layout services."
-  echo "   after: $metube_audio_import_watch_after"
   exit 1
 fi
 

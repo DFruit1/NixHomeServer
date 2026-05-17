@@ -1,39 +1,79 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
   jellyfinPort = vars.networking.ports.jellyfin;
+  kanidmPort = vars.networking.ports.kanidm;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   dataDir = "/var/lib/jellyfin";
   dataDbPath = "${dataDir}/data/jellyfin.db";
+  managedDir = "${dataDir}/.nixos-managed";
+  managedUsersFile = "${managedDir}/users.json";
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
   apiKeyName = "nixos-jellyfin-library-sync-v1";
-  sharedMusicLibraries = map
+  sharedLibraries = map
     (library: library // {
-      name = "${library.label} (Shared)";
-      path = "${vars.sharedMusicRoot}/${library.dir}";
+      name = "Shared ${library.label}";
+      path = "${vars.sharedVideosRoot}/${library.dir}";
+      owner = null;
     })
-    vars.sharedJellyfinMusicLibraries;
-  librariesJson = builtins.toJSON sharedMusicLibraries;
+    vars.sharedJellyfinLibraries;
+  legacyRenameLibraries = map
+    (library: {
+      oldName = "${library.label} (Shared)";
+      newName = "Shared ${library.label}";
+      path = "${vars.sharedVideosRoot}/${library.dir}";
+      collectionType = library.collectionType;
+    })
+    vars.sharedJellyfinLibraries;
+  retiredLibraries = [
+    {
+      names = [
+        "Other Videos (Shared)"
+        "Shared Other Videos"
+      ];
+      path = "${vars.sharedVideosRoot}/other";
+      collectionType = "homevideos";
+    }
+    {
+      names = [
+        "YouTube Music (Shared)"
+        "Shared YouTube Music"
+      ];
+      path = "${vars.sharedMusicRoot}/youtube";
+      collectionType = "music";
+    }
+  ];
+  sharedLibrariesJson = builtins.toJSON sharedLibraries;
+  personalLibrariesJson = builtins.toJSON vars.personalJellyfinLibraries;
+  legacyRenameLibrariesJson = builtins.toJSON legacyRenameLibraries;
+  retiredLibrariesJson = builtins.toJSON retiredLibraries;
   jellyfinLibraryBootstrapPath = with pkgs; [
     coreutils
     curl
     gnugrep
     jq
+    kanidm_1_9
+    openssl
     sqlite
   ];
 in
 {
   systemd.services.jellyfin-library-bootstrap-v1 = {
-    description = "Converge declarative Jellyfin shared music libraries";
+    description = "Converge declarative Jellyfin libraries and managed user policies";
     wantedBy = [ "multi-user.target" ];
     after = [
       "jellyfin.service"
       "jellyfin-storage-layout-v1.service"
+      "fileshare-user-root-sync.service"
+      "kanidm.service"
       "data-pool-layout.service"
     ];
     wants = [
       "jellyfin.service"
       "jellyfin-storage-layout-v1.service"
+      "fileshare-user-root-sync.service"
+      "kanidm.service"
       "data-pool-layout.service"
     ];
     path = jellyfinLibraryBootstrapPath;
@@ -41,11 +81,20 @@ in
       set -euo pipefail
 
       db=${lib.escapeShellArg dataDbPath}
+      managed_dir=${lib.escapeShellArg managedDir}
+      managed_users_file=${lib.escapeShellArg managedUsersFile}
       api_key_file=${lib.escapeShellArg apiKeyFile}
       api_key_name=${lib.escapeShellArg apiKeyName}
+      base_url="http://${loopback}:${toString jellyfinPort}"
       api_keys_table=""
       api_key=""
-      libraries_json=${lib.escapeShellArg librariesJson}
+      changed=0
+      shared_libraries_json=${lib.escapeShellArg sharedLibrariesJson}
+      personal_libraries_json=${lib.escapeShellArg personalLibrariesJson}
+      legacy_rename_libraries_json=${lib.escapeShellArg legacyRenameLibrariesJson}
+      retired_libraries_json=${lib.escapeShellArg retiredLibrariesJson}
+
+      install -d -m 0750 -o jellyfin -g jellyfin "$managed_dir"
 
       for _ in $(seq 1 60); do
         [[ -f "$db" ]] && break
@@ -63,7 +112,7 @@ in
           --show-error \
           --fail \
           --max-time 5 \
-          "http://${loopback}:${toString jellyfinPort}/System/Info/Public" \
+          "$base_url/System/Info/Public" \
           >/dev/null; then
           ready=1
           break
@@ -121,57 +170,333 @@ in
       chown jellyfin:jellyfin "$api_key_file"
       chmod 0600 "$api_key_file"
 
-      virtual_folders="$(
-        curl \
-          --silent \
-          --show-error \
-          --fail \
-          --max-time 30 \
-          -H "X-Emby-Token: $api_key" \
-          "http://${loopback}:${toString jellyfinPort}/Library/VirtualFolders"
-      )"
-
-      created=0
-      while IFS=$'\t' read -r name collection_type path; do
-        [[ -n "$name" ]] || continue
-
-        existing_count="$(
-          jq --arg name "$name" '[.[] | select(.Name == $name)] | length' <<<"$virtual_folders"
-        )"
-        if [[ "$existing_count" != "0" ]]; then
-          if jq -e --arg name "$name" --arg path "$path" --arg collectionType "$collection_type" '
-            any(.[]; .Name == $name and .CollectionType == $collectionType and ((.Locations // []) | index($path) != null))
-          ' >/dev/null <<<"$virtual_folders"; then
-            echo "Jellyfin library already converged: $name"
-            continue
-          fi
-
-          echo "Jellyfin library '$name' already exists but does not match collection type '$collection_type' and path '$path'." >&2
-          echo "Refusing to rewrite a user-managed Jellyfin library." >&2
-          exit 1
-        fi
-
-        echo "Creating Jellyfin library '$name' at $path"
+      curl_jellyfin() {
         curl \
           --silent \
           --show-error \
           --fail \
           --max-time 60 \
+          -H "X-Emby-Token: $api_key" \
+          "$@"
+      }
+
+      refresh_virtual_folders() {
+        virtual_folders="$(
+          curl_jellyfin "$base_url/Library/VirtualFolders"
+        )"
+      }
+
+      refresh_users() {
+        jellyfin_users="$(
+          curl_jellyfin "$base_url/Users"
+        )"
+      }
+
+      post_policy() {
+        local user_id="$1"
+        local policy_json="$2"
+
+        curl_jellyfin \
+          -X POST \
+          -H "Content-Type: application/json" \
+          --data-binary "$policy_json" \
+          "$base_url/Users/$user_id/Policy" \
+          >/dev/null
+      }
+
+      library_matches() {
+        local name="$1"
+        local collection_type="$2"
+        local path="$3"
+
+        jq -e \
+          --arg name "$name" \
+          --arg collectionType "$collection_type" \
+          --arg path "$path" \
+          'any(.[]; .Name == $name and .CollectionType == $collectionType and ((.Locations // []) | index($path) != null))' \
+          >/dev/null <<<"$virtual_folders"
+      }
+
+      library_exists() {
+        local name="$1"
+
+        jq -e --arg name "$name" 'any(.[]; .Name == $name)' >/dev/null <<<"$virtual_folders"
+      }
+
+      library_item_id() {
+        local name="$1"
+        local path="$2"
+
+        jq -r \
+          --arg name "$name" \
+          --arg path "$path" \
+          '.[] | select(.Name == $name and ((.Locations // []) | index($path) != null)) | .ItemId // empty' \
+          <<<"$virtual_folders" \
+          | head -n 1
+      }
+
+      export HOME="$(mktemp -d)"
+      trap 'rm -rf "$HOME"' EXIT
+      KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+      export KANIDM_PASSWORD
+      kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
+
+      group_members_json() {
+        local group_name="$1"
+        local group_json
+
+        if group_json="$(
+          kanidm group get \
+            "$group_name" \
+            -H ${kanidmCliUrl} \
+            -D idm_admin \
+            -o json
+        )"; then
+          jq -r '.attrs.member[]? | split("@")[0]' <<<"$group_json" \
+            | sort -u \
+            | jq -R -s 'split("\n") | map(select(length > 0))'
+        else
+          printf '[]\n'
+        fi
+      }
+
+      jellyfin_members_json="$(group_members_json jellyfin-users)"
+      app_admin_members_json="$(group_members_json app-admin)"
+
+      expected_libraries="$(
+        jq -n \
+          --arg usersRoot ${lib.escapeShellArg vars.usersRoot} \
+          --argjson shared "$shared_libraries_json" \
+          --argjson personal "$personal_libraries_json" \
+          --argjson users "$jellyfin_members_json" \
+          '$shared + [ $users[] as $user | $personal[] | . + {
+            name: ($user + " " + .label),
+            path: ($usersRoot + "/" + $user + "/videos/" + .dir),
+            owner: $user
+          } ]'
+      )"
+
+      refresh_virtual_folders
+
+      while IFS=$'\t' read -r old_name new_name collection_type path; do
+        [[ -n "$old_name" ]] || continue
+        if ! library_exists "$old_name"; then
+          continue
+        fi
+        if ! library_matches "$old_name" "$collection_type" "$path"; then
+          echo "Jellyfin library '$old_name' exists but does not match managed path '$path' and type '$collection_type'." >&2
+          echo "Refusing to rename a user-managed Jellyfin library." >&2
+          exit 1
+        fi
+        if library_exists "$new_name"; then
+          if library_matches "$new_name" "$collection_type" "$path"; then
+            continue
+          fi
+          echo "Jellyfin library '$new_name' already exists but does not match managed path '$path' and type '$collection_type'." >&2
+          echo "Refusing to overwrite a user-managed Jellyfin library." >&2
+          exit 1
+        fi
+
+        echo "Renaming Jellyfin library '$old_name' to '$new_name'"
+        curl_jellyfin \
           -X POST \
           -G \
-          -H "X-Emby-Token: $api_key" \
+          --data-urlencode "name=$old_name" \
+          --data-urlencode "newName=$new_name" \
+          --data-urlencode "refreshLibrary=false" \
+          "$base_url/Library/VirtualFolders/Name" \
+          >/dev/null
+        changed=1
+        refresh_virtual_folders
+      done < <(
+        jq -r '.[] | [.oldName, .newName, .collectionType, .path] | @tsv' <<<"$legacy_rename_libraries_json"
+      )
+
+      while IFS=$'\t' read -r name collection_type path; do
+        [[ -n "$name" ]] || continue
+        if ! library_exists "$name"; then
+          continue
+        fi
+        if ! library_matches "$name" "$collection_type" "$path"; then
+          echo "Jellyfin retired library '$name' exists but does not match managed path '$path' and type '$collection_type'." >&2
+          echo "Refusing to remove a user-managed Jellyfin library." >&2
+          exit 1
+        fi
+
+        echo "Removing retired Jellyfin library '$name'"
+        curl_jellyfin \
+          -X DELETE \
+          -G \
+          --data-urlencode "name=$name" \
+          --data-urlencode "refreshLibrary=false" \
+          "$base_url/Library/VirtualFolders" \
+          >/dev/null
+        changed=1
+        refresh_virtual_folders
+      done < <(
+        jq -r '.[] | . as $library | .names[] | [., $library.collectionType, $library.path] | @tsv' <<<"$retired_libraries_json"
+      )
+
+      while IFS=$'\t' read -r name collection_type path; do
+        [[ -n "$name" ]] || continue
+        if library_exists "$name"; then
+          if library_matches "$name" "$collection_type" "$path"; then
+            echo "Jellyfin library already converged: $name"
+            continue
+          fi
+
+          echo "Jellyfin library '$name' already exists but does not match managed path '$path' and type '$collection_type'." >&2
+          echo "Refusing to rewrite a user-managed Jellyfin library." >&2
+          exit 1
+        fi
+
+        echo "Creating Jellyfin library '$name' at $path"
+        curl_jellyfin \
+          -X POST \
+          -G \
           --data-urlencode "name=$name" \
           --data-urlencode "collectionType=$collection_type" \
           --data-urlencode "paths=$path" \
           --data-urlencode "refreshLibrary=false" \
-          "http://${loopback}:${toString jellyfinPort}/Library/VirtualFolders" \
+          "$base_url/Library/VirtualFolders" \
           >/dev/null
-        created=1
+        changed=1
+        refresh_virtual_folders
       done < <(
-        jq -r '.[] | [.name, .collectionType, .path] | @tsv' <<<"$libraries_json"
+        jq -r '.[] | [.name, .collectionType, .path] | @tsv' <<<"$expected_libraries"
       )
 
-      if (( created == 1 )); then
+      refresh_virtual_folders
+      refresh_users
+
+      if [[ -f "$managed_users_file" ]]; then
+        managed_users_json="$(jq 'map(select((.name // "") != "" and (.id // "") != ""))' "$managed_users_file")"
+      else
+        managed_users_json='[]'
+      fi
+
+      while IFS= read -r username; do
+        [[ -n "$username" ]] || continue
+
+        user_id="$(jq -r --arg name "$username" '.[] | select(.Name == $name) | .Id // empty' <<<"$jellyfin_users" | head -n 1)"
+        if [[ -z "$user_id" ]]; then
+          password="$(openssl rand -base64 48)"
+          echo "Creating disabled managed Jellyfin user '$username'"
+          created_user="$(
+            jq -n --arg name "$username" --arg password "$password" '{Name: $name, Password: $password}' \
+              | curl_jellyfin \
+                -X POST \
+                -H "Content-Type: application/json" \
+                --data-binary @- \
+                "$base_url/Users/New"
+          )"
+          user_id="$(jq -r '.Id // empty' <<<"$created_user")"
+          [[ -n "$user_id" ]] || {
+            echo "Jellyfin did not return an Id for newly created user '$username'." >&2
+            exit 1
+          }
+          initial_policy="$(
+            jq -c '
+              (.Policy // {})
+              | .IsAdministrator = false
+              | .IsHidden = true
+              | .IsDisabled = true
+              | .EnableAllFolders = false
+              | .EnabledFolders = []
+            ' <<<"$created_user"
+          )"
+          post_policy "$user_id" "$initial_policy"
+          managed_users_json="$(
+            jq --arg name "$username" --arg id "$user_id" '
+              (. + [{name: $name, id: $id}]) | unique_by(.name)
+            ' <<<"$managed_users_json"
+          )"
+          refresh_users
+        fi
+
+        is_admin=false
+        if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$app_admin_members_json"; then
+          is_admin=true
+        fi
+
+        current_policy="$(jq -c --arg id "$user_id" '.[] | select(.Id == $id) | .Policy // {}' <<<"$jellyfin_users" | head -n 1)"
+        [[ -n "$current_policy" ]] || current_policy='{}'
+
+        if [[ "$is_admin" == "true" ]]; then
+          desired_policy="$(
+            jq -c '
+              .IsAdministrator = true
+              | .EnableAllFolders = true
+              | .EnabledFolders = []
+              | .EnableMediaPlayback = true
+            ' <<<"$current_policy"
+          )"
+        else
+          expected_count="$(
+            jq --arg name "$username" '[.[] | select((.owner == null) or (.owner == $name))] | length' <<<"$expected_libraries"
+          )"
+          folder_ids="$(
+            jq -n \
+              --arg name "$username" \
+              --argjson expected "$expected_libraries" \
+              --argjson folders "$virtual_folders" \
+              '[ $expected[] | select((.owner == null) or (.owner == $name)) as $spec |
+                ($folders[] | select(.Name == $spec.name and ((.Locations // []) | index($spec.path) != null)) | .ItemId // empty)
+              ] | unique'
+          )"
+          actual_count="$(jq 'length' <<<"$folder_ids")"
+          if [[ "$actual_count" != "$expected_count" ]]; then
+            echo "Expected $expected_count Jellyfin folder IDs for '$username' but found $actual_count." >&2
+            exit 1
+          fi
+
+          desired_policy="$(
+            jq -c --argjson folderIds "$folder_ids" '
+              .IsAdministrator = false
+              | .EnableAllFolders = false
+              | .EnabledFolders = $folderIds
+              | .EnableMediaPlayback = true
+            ' <<<"$current_policy"
+          )"
+        fi
+
+        if [[ "$current_policy" != "$desired_policy" ]]; then
+          echo "Updating Jellyfin policy for '$username'"
+          post_policy "$user_id" "$desired_policy"
+        fi
+      done < <(jq -r '.[]' <<<"$jellyfin_members_json")
+
+      while IFS=$'\t' read -r username user_id; do
+        [[ -n "$username" && -n "$user_id" ]] || continue
+        if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$jellyfin_members_json"; then
+          continue
+        fi
+        if ! jq -e --arg id "$user_id" 'any(.[]; .Id == $id)' >/dev/null <<<"$jellyfin_users"; then
+          continue
+        fi
+
+        current_policy="$(jq -c --arg id "$user_id" '.[] | select(.Id == $id) | .Policy // {}' <<<"$jellyfin_users" | head -n 1)"
+        [[ -n "$current_policy" ]] || current_policy='{}'
+        desired_policy="$(
+          jq -c '
+            .IsAdministrator = false
+            | .IsDisabled = true
+            | .EnableAllFolders = false
+            | .EnabledFolders = []
+          ' <<<"$current_policy"
+        )"
+        if [[ "$current_policy" != "$desired_policy" ]]; then
+          echo "Disabling managed Jellyfin user '$username' removed from jellyfin-users"
+          post_policy "$user_id" "$desired_policy"
+        fi
+      done < <(jq -r '.[] | [.name, .id] | @tsv' <<<"$managed_users_json")
+
+      tmp_users="$(mktemp)"
+      printf '%s\n' "$managed_users_json" >"$tmp_users"
+      install -m 0600 -o jellyfin -g jellyfin "$tmp_users" "$managed_users_file"
+      rm -f "$tmp_users"
+
+      if (( changed == 1 )); then
         /run/current-system/sw/bin/systemctl start --no-block jellyfin-library-sync.service
       fi
     '';
