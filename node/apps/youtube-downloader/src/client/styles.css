@@ -84,6 +84,7 @@ legend {
 }
 
 input[type="text"],
+input[type="url"],
 input:not([type]),
 select {
   width: 100%;
@@ -92,6 +93,10 @@ select {
   border-radius: 6px;
   padding: 8px 10px;
   background: white;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
 }
 
 input[type="url"]:focus,

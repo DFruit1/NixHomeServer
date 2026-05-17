@@ -42,6 +42,9 @@ export default component$(() => {
   });
 
   const submit = $(async () => {
+    if (!url.value.trim() || submitting.value) {
+      return;
+    }
     error.value = '';
     submitting.value = true;
     const normalizedUrl = normalizeDownloadUrl(url.value);

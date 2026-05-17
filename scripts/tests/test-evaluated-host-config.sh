@@ -157,6 +157,10 @@ hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-ac
 filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
 filebrowserQuantumReadWritePaths =
 cfg.systemd.services."filebrowser-quantum".serviceConfig.ReadWritePaths or [ ];
+filebrowserQuantumAfter = cfg.systemd.services."filebrowser-quantum".after or [ ];
+filebrowserQuantumWants = cfg.systemd.services."filebrowser-quantum".wants or [ ];
+uploadProcessorRuntimeLayoutScript = cfg.systemd.services."upload-processor-runtime-layout".script or "";
+systemdTmpfilesRules = cfg.systemd.tmpfiles.rules or [ ];
 copypartySettings = cfg.services.copyparty.settings;
 copypartyVolumes = cfg.services.copyparty.volumes;
 copypartyPreStart = cfg.systemd.services.copyparty.preStart;
@@ -198,6 +202,8 @@ youtubeDownloaderReadWritePaths =
 cfg.systemd.services."youtube-downloader".serviceConfig.ReadWritePaths or [ ];
 youtubeDownloaderPath =
 map (package: lib.getName package) (cfg.systemd.services."youtube-downloader".path or [ ]);
+metubeOauth2ProxyExecStart =
+cfg.systemd.services."metube-oauth2-proxy".serviceConfig.ExecStart or "";
 hasLegacyMetubeContainer =
 cfg.environment.etc ? "containers/systemd/users/3002/metube.container";
 hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
@@ -393,6 +399,10 @@ require_match modules/Core_Modules/storage/fileshare-user-roots.nix '\.internal-
   "User email roots must provision a hidden internal sync tree."
 require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_directory_noaccess_acl filebrowser-quantum "\$root/emails/\.internal-sync"' \
   "FileBrowser Quantum must not be able to traverse the hidden internal email sync tree."
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_writable_acl filebrowser-quantum' \
+  "FileBrowser Quantum must receive writable ACLs on managed personal content roots."
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix '"\$root/files"' \
+  "FileBrowser Quantum personal writable ACLs must include the files root."
 forbid_match modules/audiobookshelf/storage.nix 'audiobookshelf-user-storage-acl-sync-v1' \
   "Audiobookshelf per-user ACL convergence must stay centralized in fileshare-user-root-sync."
 forbid_match modules/filebrowser-quantum/storage.nix 'filebrowser-quantum-user-storage-acl-sync-v1' \
@@ -428,6 +438,28 @@ require_match modules/filebrowser-quantum/default.nix 'ensure_allow_group "Quara
 filebrowser_quantum_extra_groups="$(snapshot_query '.config.apps.filebrowserQuantumExtraGroups')"
 require_match <(printf '%s\n' "$filebrowser_quantum_extra_groups") 'upload-review' \
   "FileBrowser Quantum must have filesystem access to the quarantine review root."
+filebrowser_quantum_read_write_paths="$(snapshot_query '.config.apps.filebrowserQuantumReadWritePaths')"
+quarantine_root="$(snapshot_query '.vars.uploadSecurity.quarantineRoot' | jq -r '.')"
+if ! jq -e --arg quarantine_root "$quarantine_root" 'index($quarantine_root) != null' >/dev/null <<<"$filebrowser_quantum_read_write_paths"; then
+  echo "❌ FileBrowser Quantum must have a writable systemd sandbox path for upload quarantine."
+  echo "   ReadWritePaths: $filebrowser_quantum_read_write_paths"
+  exit 1
+fi
+for ordering_field in filebrowserQuantumAfter filebrowserQuantumWants; do
+  if ! jq -e 'index("upload-processor-runtime-layout.service") != null' >/dev/null <<<"$(snapshot_query ".config.apps.${ordering_field}")"; then
+    echo "❌ FileBrowser Quantum must order with upload-processor-runtime-layout.service through ${ordering_field}."
+    exit 1
+  fi
+done
+if ! jq -e --arg rule "d ${quarantine_root} 0770 upload-processor upload-review -" 'index($rule) != null' >/dev/null <<<"$(snapshot_query '.config.apps.systemdTmpfilesRules')"; then
+  echo "❌ Upload quarantine root tmpfiles rule must be group-writable for upload-review."
+  exit 1
+fi
+upload_processor_runtime_layout_script="$(snapshot_query '.config.apps.uploadProcessorRuntimeLayoutScript' | jq -r '.')"
+require_match <(printf '%s\n' "$upload_processor_runtime_layout_script") 'chgrp -R upload-review' \
+  "Upload processor runtime layout must normalize existing quarantine directory groups."
+require_match <(printf '%s\n' "$upload_processor_runtime_layout_script") 'find .*quarantine/uploads.* -type d -exec chmod 0770' \
+  "Upload processor runtime layout must normalize existing quarantine directories to group-writable."
 forbid_match configuration.nix './modules/mail-archive-paperless' \
   "Mail Archive UI must not import the retired Paperless handoff module."
 
@@ -543,6 +575,9 @@ for package_name in sqlite yt-dlp ffmpeg; do
     exit 1
   fi
 done
+metube_oauth2_proxy_exec_start="$(snapshot_query '.config.apps.metubeOauth2ProxyExecStart' | jq -r '.')"
+require_match <(printf '%s\n' "$metube_oauth2_proxy_exec_start") "'--api-route=\\^/api/'" \
+  "YouTube downloader API fetches must receive 401 instead of starting competing OAuth2 PKCE flows."
 persisted_directories="$(snapshot_query '.config.fileSystems.persistedDirectories')"
 if ! jq -e 'index("/var/lib/metube") != null' >/dev/null <<<"$persisted_directories"; then
   echo "❌ Impermanence must persist /var/lib/metube for YouTube downloader SQLite state."

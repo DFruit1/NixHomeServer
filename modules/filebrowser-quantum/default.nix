@@ -159,12 +159,14 @@ in
         "data-pool-layout.service"
         "fileshare-user-root-sync.service"
         "network-online.target"
-      ];
+      ]
+      ++ lib.optionals apps.copyparty.enable [ "upload-processor-runtime-layout.service" ];
       after = [
         "data-pool-layout.service"
         "fileshare-user-root-sync.service"
         "network-online.target"
-      ];
+      ]
+      ++ lib.optionals apps.copyparty.enable [ "upload-processor-runtime-layout.service" ];
       path = filebrowserQuantumPath;
       preStart = ''
         install -d -m 0750 -o filebrowser-quantum -g filebrowser-quantum '${managedDir}'

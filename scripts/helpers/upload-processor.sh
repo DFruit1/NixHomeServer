@@ -203,11 +203,13 @@ write_metadata() {
 
 quarantine_file() {
   local file="$1" uploader="$2" virtual="$3" sha="$4" ext="$5" clamav="$6" vt="$7" reason="$8"
-  local ts safe_name dest_dir dest
+  local ts safe_name reason_dir dest_dir dest
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   safe_name="$(safe_component "$(basename -- "$file")")"
-  dest_dir="${quarantine_root}/${reason}/${uploader}"
-  install_managed_dir 0750 "$quarantine_owner" "$quarantine_group" "$dest_dir"
+  reason_dir="${quarantine_root}/${reason}"
+  dest_dir="${reason_dir}/${uploader}"
+  install_managed_dir 0770 "$quarantine_owner" "$quarantine_group" "$reason_dir"
+  install_managed_dir 0770 "$quarantine_owner" "$quarantine_group" "$dest_dir"
   dest="$(collision_safe_path "${dest_dir}/${ts}-${safe_name}")"
   mv -- "$file" "$dest"
   chown "${quarantine_owner}:${quarantine_group}" "$dest" >/dev/null 2>&1 || true

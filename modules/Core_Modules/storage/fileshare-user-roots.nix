@@ -11,6 +11,7 @@ let
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
   userVideoSubdirs = lib.escapeShellArgs vars.userVideoSubdirs;
   userBookWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
+  userVideoWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/videos/${name}"'') vars.userVideoSubdirs;
   fileshareUserRootSyncPath = with pkgs; [
     acl
     coreutils
@@ -137,6 +138,13 @@ let
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
     apply_writable_acl jellyfin-media "$root/videos"
     apply_writable_acl mail-archive-ui "$root/files"
+    apply_writable_acl filebrowser-quantum \
+      "$root/files" \
+      "$root/audiobooks" \
+      "$root/videos" \
+      "$root/books" \
+      ${userVideoWritablePaths} \
+      ${userBookWritablePaths}
     apply_writable_acl kavita-media \
       "$root/books" \
       ${userBookWritablePaths}

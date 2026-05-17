@@ -179,7 +179,7 @@ spn: admindsaw@example.test
 uuid: 00000000-0000-0000-0000-000000000001
 display: Dan
 expiry: 2030-01-01T00:00:00Z
-purpose: read write (expiry: none)
+purpose: read only
 EOF
   exit 0
 fi

@@ -26,5 +26,11 @@ in
       displayName = "YouTube downloader";
       url = "http://${loopback}:${toString metubeListenPort}/healthz";
     };
+    extraProxyArgs = [
+      "--api-route=^/api/"
+      "--api-route=^/ngsw-worker\\.js$"
+      "--api-route=^/ngsw\\.json"
+      "--api-route=^/custom-service-worker\\.js$"
+    ];
   });
 }

@@ -142,7 +142,7 @@ export class JobQueue {
     await this.db.setProgress(job.id, { phase: 'move' });
     const sourceDir = job.request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
     await mkdir(outputFolder, { recursive: true, mode: 0o775 });
-    await cp(sourceDir, outputFolder, { recursive: true, force: false, errorOnExist: true });
+    await copyDirectoryContents(sourceDir, outputFolder);
     await this.recordFiles(job.id, outputFolder);
     await rm(tempDir, { recursive: true, force: true });
     await this.db.setProgress(job.id, null);
@@ -237,6 +237,17 @@ const killChildGroup = (child: ChildProcess, signal: NodeJS.Signals): void => {
     if (code !== 'ESRCH') {
       throw error;
     }
+  }
+};
+
+const copyDirectoryContents = async (sourceDir: string, destinationDir: string): Promise<void> => {
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    await cp(path.join(sourceDir, entry.name), path.join(destinationDir, entry.name), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
   }
 };
 

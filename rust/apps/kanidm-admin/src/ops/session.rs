@@ -89,10 +89,17 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
 }
 
 pub fn session_login(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
-    let verification = verify_session_recovery(cli, RecoveryTarget::BaseSession, || cli.login())?;
-    let mut output = recovery_command_output(cli, "Login", verification.clone());
-    output.details["snapshot"] = session_snapshot_details(&verification.snapshot);
-    Ok(output)
+    match verify_session_recovery(cli, RecoveryTarget::BaseSession, || cli.login()) {
+        Ok(verification) => {
+            let mut output = recovery_command_output(cli, "Login", verification.clone());
+            output.details["snapshot"] = session_snapshot_details(&verification.snapshot);
+            Ok(output)
+        }
+        Err(AppError::Verification { message, details }) => {
+            Ok(login_verification_warning_output(cli, &message, details))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn session_reauth(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
@@ -129,6 +136,35 @@ pub fn session_logout(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
         }),
         warnings: Vec::new(),
     })
+}
+
+fn login_verification_warning_output(
+    cli: &KanidmCli,
+    verification_message: &str,
+    verification_details: serde_json::Value,
+) -> CommandOutput {
+    CommandOutput {
+        message: "Kanidm login command completed, but session verification was inconclusive"
+            .to_string(),
+        human: format!(
+            "Login completed for '{}', but the follow-up session check could not confirm the cached session yet.\n\nRun `kanidm-admin session status` before making changes if you want to confirm the session state.",
+            cli.admin_name()
+        ),
+        details: json!({
+            "authenticated": null,
+            "base_session_present": null,
+            "state": "verification_inconclusive",
+            "privileged_write_access": "unknown",
+            "verification": {
+                "message": verification_message,
+                "details": verification_details,
+            },
+        }),
+        warnings: vec![
+            "The upstream `kanidm login` command exited successfully; only the post-login verification failed.".to_string(),
+            "If the next Kanidm operation still reports a missing session, rerun `kanidm-admin session login` from a plain terminal.".to_string(),
+        ],
+    }
 }
 
 fn session_snapshot_details(snapshot: &SessionSnapshot) -> serde_json::Value {
@@ -182,8 +218,15 @@ fn parsed_expiry_label(expiry: &ParsedExpiry) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
+    use std::{
+        ffi::OsString, fs, os::unix::fs::PermissionsExt, path::Path,
+        process::Command as ProcessCommand, sync::Arc,
+    };
 
+    use crate::backend::{
+        BackendCrashKind, BackendExecError, ExitStatusSummary, KanidmBackend, RawCommandRequest,
+        RawCommandResult,
+    };
     use crate::context::ResolvedContext;
 
     use super::*;
@@ -203,6 +246,29 @@ mod tests {
         let mut permissions = fs::metadata(path).expect("metadata").permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("chmod");
+    }
+
+    #[derive(Debug)]
+    struct LoginSucceedsButStatusProbeFails;
+
+    impl KanidmBackend for LoginSucceedsButStatusProbeFails {
+        fn exec(&self, request: RawCommandRequest) -> Result<RawCommandResult, BackendExecError> {
+            if request.args.first().map(String::as_str) == Some("login") {
+                return Ok(RawCommandResult {
+                    status: ExitStatusSummary {
+                        success: true,
+                        code: Some(0),
+                    },
+                    stdout: "Login Success for admindsaw@example.test\n".to_string(),
+                    stderr: String::new(),
+                });
+            }
+
+            Err(BackendExecError::Io {
+                message: "session status probe failed".to_string(),
+                crash_kind: Some(BackendCrashKind::UnexpectedFailure),
+            })
+        }
     }
 
     #[test]
@@ -269,7 +335,7 @@ spn: admindsaw@example.test
 uuid: 00000000-0000-0000-0000-000000000001
 display: Dan
 expiry: 2030-01-01T00:00:00Z
-purpose: read write (expiry: none)
+purpose: read only
 EOF
 "#,
         );
@@ -291,7 +357,7 @@ EOF
     }
 
     #[test]
-    fn session_login_accepts_base_session_requiring_reauth() {
+    fn session_login_accepts_never_expiring_privileged_session() {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = dir.path().join("kanidm-stub.sh");
         write_script(
@@ -327,14 +393,33 @@ exit 1
         });
 
         let output = session_login(&cli).expect("session login");
-        assert_eq!(output.details["state"], "reauth_required");
+        assert_eq!(output.details["state"], "authenticated");
         assert_eq!(output.details["base_session_present"], true);
+        assert!(output.human.contains("Login succeeded for 'admindsaw'."));
+        assert_eq!(output.details["privileged_write_access"], "ready");
+        assert_eq!(output.warnings.len(), 0);
+    }
+
+    #[test]
+    fn session_login_warns_when_post_login_verification_is_inconclusive() {
+        let cli = KanidmCli::with_backend(
+            OsString::from("kanidm"),
+            "https://id.example.test".to_string(),
+            "admindsaw".to_string(),
+            Arc::new(LoginSucceedsButStatusProbeFails),
+        );
+
+        let output = session_login(&cli).expect("login should complete with warning");
+
+        assert_eq!(output.details["state"], "verification_inconclusive");
+        assert_eq!(
+            output.details["base_session_present"],
+            serde_json::Value::Null
+        );
+        assert!(output.human.contains("Login completed for 'admindsaw'"));
         assert!(output
-            .human
-            .contains("Base login successful for 'admindsaw'."));
-        assert!(output
-            .human
-            .contains("Some actions require reauthentication for added security."));
-        assert_eq!(output.warnings.len(), 1);
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("exited successfully")));
     }
 }

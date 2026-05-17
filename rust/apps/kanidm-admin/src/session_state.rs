@@ -659,7 +659,8 @@ impl ParsedSession {
             ParsedSessionPurpose::ReadOnly => PrivilegedWriteState::ReauthRequired,
             ParsedSessionPurpose::ReadWrite { expiry } => match expiry {
                 ParsedExpiry::At(expiry) if now < *expiry => PrivilegedWriteState::Ready,
-                ParsedExpiry::At(_) | ParsedExpiry::Never | ParsedExpiry::Unknown(_) => {
+                ParsedExpiry::Never => PrivilegedWriteState::Ready,
+                ParsedExpiry::At(_) | ParsedExpiry::Unknown(_) => {
                     PrivilegedWriteState::ReauthRequired
                 }
             },
@@ -884,6 +885,20 @@ purpose: read write (expiry: 2030-01-01T00:30:00Z)
             snapshot.privileged_write_state,
             PrivilegedWriteState::ReauthRequired
         );
+    }
+
+    #[test]
+    fn session_listing_with_never_expiring_privileges_is_ready() {
+        let listing =
+            session_listing_block("admindsaw@example.test", "2030-01-01T01:00:00Z", "none");
+        let snapshot = classify_session_snapshot(
+            &listing,
+            "admindsaw",
+            "https://id.example.test",
+            OffsetDateTime::parse("2030-01-01T00:00:00Z", &Rfc3339).expect("now"),
+        );
+        assert_eq!(snapshot.base_session_state, BaseSessionState::Present);
+        assert_eq!(snapshot.privileged_write_state, PrivilegedWriteState::Ready);
     }
 
     #[test]

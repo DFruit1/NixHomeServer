@@ -196,6 +196,11 @@
                 filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
                 filebrowserQuantumReadWritePaths =
                   cfg.systemd.services."filebrowser-quantum".serviceConfig.ReadWritePaths or [ ];
+                filebrowserQuantumAfter = cfg.systemd.services."filebrowser-quantum".after or [ ];
+                filebrowserQuantumWants = cfg.systemd.services."filebrowser-quantum".wants or [ ];
+                uploadProcessorRuntimeLayoutScript =
+                  cfg.systemd.services."upload-processor-runtime-layout".script or "";
+                systemdTmpfilesRules = cfg.systemd.tmpfiles.rules or [ ];
                 copypartySettings = cfg.services.copyparty.settings;
                 copypartyVolumes = cfg.services.copyparty.volumes;
                 copypartyPreStart = cfg.systemd.services.copyparty.preStart;
@@ -237,6 +242,8 @@
                   cfg.systemd.services."youtube-downloader".serviceConfig.ReadWritePaths or [ ];
                 youtubeDownloaderPath =
                   map (package: lib.getName package) (cfg.systemd.services."youtube-downloader".path or [ ]);
+                metubeOauth2ProxyExecStart =
+                  cfg.systemd.services."metube-oauth2-proxy".serviceConfig.ExecStart or "";
                 hasLegacyMetubeContainer =
                   cfg.environment.etc ? "containers/systemd/users/3002/metube.container";
                 hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
