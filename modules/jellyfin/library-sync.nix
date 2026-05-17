@@ -16,6 +16,19 @@ let
 in
 {
   config = lib.mkIf config.nixhomeserver.apps.jellyfin.enable {
+    systemd.timers.jellyfin-library-sync = {
+      description = "Periodically rescan Jellyfin libraries for watcher misses";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "10m";
+        OnUnitActiveSec = vars.apps.videos.libraryScanInterval or "15m";
+        AccuracySec = "1m";
+        RandomizedDelaySec = "2m";
+        Persistent = true;
+        Unit = "jellyfin-library-sync.service";
+      };
+    };
+
     systemd.services.jellyfin-library-sync = {
       description = "Run settled Jellyfin library scans";
       wantedBy = [ "multi-user.target" ];

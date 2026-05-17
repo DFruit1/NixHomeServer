@@ -1,6 +1,7 @@
 export type Destination = 'personal' | 'shared';
 export type MediaType = 'audio' | 'video';
 export type AudioFormat = 'flac' | 'm4a' | 'mp3' | 'opus' | 'wav';
+export type AudioQuality = 'best' | 'high' | 'medium' | 'low';
 export type VideoContainer = 'mkv' | 'mp4' | 'webm';
 export type VideoQuality = 'best' | '2160p' | '1440p' | '1080p' | '720p' | '480p';
 
@@ -38,11 +39,14 @@ export type CreateJobRequest = {
   destination: Destination;
   mediaType: MediaType;
   audioFormat?: AudioFormat;
+  audioQuality?: AudioQuality;
   videoContainer?: VideoContainer;
   videoQuality?: VideoQuality;
   splitChapters: boolean;
   includeChannel: boolean;
   includeDate: boolean;
+  duplicateConfirmed?: boolean;
+  chaptersConfirmed?: boolean;
 };
 
 export type CreateJobResponse = {
@@ -51,12 +55,21 @@ export type CreateJobResponse = {
 
 export type JobStatus =
   | 'queued'
+  | 'alert'
   | 'probing'
   | 'running'
   | 'postprocessing'
   | 'completed'
   | 'failed'
   | 'cancelled';
+
+export type AlertKind = 'duplicate' | 'chapters';
+
+export type JobAlert = {
+  kind: AlertKind;
+  message: string;
+  duplicateJobId?: string;
+};
 
 export type JobProgress = {
   percent?: number;
@@ -74,6 +87,7 @@ export type Job = {
   request: CreateJobRequest;
   status: JobStatus;
   progress?: JobProgress;
+  alert?: JobAlert;
   source?: ProbeResponse;
   outputRoot?: string;
   outputFolder?: string;
@@ -82,5 +96,6 @@ export type Job = {
 };
 
 export const AUDIO_FORMATS: AudioFormat[] = ['flac', 'm4a', 'mp3', 'opus', 'wav'];
+export const AUDIO_QUALITIES: AudioQuality[] = ['best', 'high', 'medium', 'low'];
 export const VIDEO_CONTAINERS: VideoContainer[] = ['mkv', 'mp4', 'webm'];
 export const VIDEO_QUALITIES: VideoQuality[] = ['best', '2160p', '1440p', '1080p', '720p', '480p'];

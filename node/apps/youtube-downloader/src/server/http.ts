@@ -97,6 +97,20 @@ const handleApi = async (
       sendJson(response, 201, { jobIds: [await queue.retry(jobId, user)] });
       return;
     }
+    if (request.method === 'POST' && action === 'resolve-alert') {
+      const body = await readJson<{ action?: string }>(request);
+      if (
+        body.action !== 'download-again' &&
+        body.action !== 'split-chapters' &&
+        body.action !== 'single-file' &&
+        body.action !== 'cancel'
+      ) {
+        throw new Error('invalid alert action');
+      }
+      await queue.resolveAlert(jobId, body.action);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
     if (request.method === 'DELETE' && !action) {
       await db.deleteJob(jobId);
       sendJson(response, 204, {});

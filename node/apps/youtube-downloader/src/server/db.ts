@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { runCommand } from './child.js';
-import type { CreateJobRequest, Job, JobProgress, JobStatus, ProbeResponse } from '../shared/types.js';
+import { normalizeDownloadUrl } from '../shared/url.js';
+import type { CreateJobRequest, Job, JobAlert, JobProgress, JobStatus, ProbeResponse } from '../shared/types.js';
 
 const sqlValue = (value: string | number | null | undefined): string => {
   if (value === null || value === undefined) {
@@ -24,6 +25,7 @@ type JobRow = {
   created_by: string;
   status: JobStatus;
   request_json: string;
+  alert_json?: string | null;
   source_json?: string | null;
   progress_json?: string | null;
   output_root?: string | null;
@@ -77,6 +79,7 @@ export class Database {
         created_by text not null,
         status text not null,
         request_json text not null,
+        alert_json text,
         source_json text,
         progress_json text,
         output_root text,
@@ -110,6 +113,13 @@ export class Database {
 
       insert or ignore into schema_migrations(version, applied_at) values (1, datetime('now'));
     `);
+
+    const columns = await this.query<{ name: string }>(`select name from pragma_table_info('jobs');`);
+    if (!columns.some((column) => column.name === 'alert_json')) {
+      await this.exec(`alter table jobs add column alert_json text;`);
+    }
+
+    await this.exec(`insert or ignore into schema_migrations(version, applied_at) values (2, datetime('now'));`);
   }
 
   async markInterrupted(): Promise<void> {
@@ -128,20 +138,24 @@ export class Database {
     parentId?: string;
     createdBy: string;
     request: CreateJobRequest;
+    initialStatus?: JobStatus;
+    alert?: JobAlert;
   }): Promise<void> {
+    const status = params.initialStatus ?? 'queued';
     await this.exec(`
-      insert into jobs(id, parent_id, created_at, updated_at, created_by, status, request_json)
+      insert into jobs(id, parent_id, created_at, updated_at, created_by, status, request_json, alert_json)
       values (
         ${sqlValue(params.id)},
         ${sqlValue(params.parentId)},
         datetime('now'),
         datetime('now'),
         ${sqlValue(params.createdBy)},
-        'queued',
-        ${jsonValue(params.request)}
+        ${sqlValue(status)},
+        ${jsonValue(params.request)},
+        ${params.alert ? jsonValue(params.alert) : 'null'}
       );
     `);
-    await this.addEvent(params.id, 'queued', 'Job queued');
+    await this.addEvent(params.id, status, status === 'alert' ? params.alert?.message : 'Job queued');
   }
 
   async addEvent(jobId: string, eventType: string, message?: string, data?: unknown): Promise<void> {
@@ -163,10 +177,47 @@ export class Database {
       update jobs
       set status = ${sqlValue(status)},
           updated_at = datetime('now'),
-          error = ${sqlValue(error)}
+          error = ${sqlValue(error)},
+          alert_json = ${status === 'alert' ? 'alert_json' : 'null'}
       where id = ${sqlValue(jobId)};
     `);
     await this.addEvent(jobId, status, error);
+  }
+
+  async setAlert(jobId: string, alert: JobAlert): Promise<void> {
+    await this.exec(`
+      update jobs
+      set status = 'alert',
+          updated_at = datetime('now'),
+          error = null,
+          progress_json = null,
+          alert_json = ${jsonValue(alert)}
+      where id = ${sqlValue(jobId)};
+    `);
+    await this.addEvent(jobId, 'alert', alert.message, alert);
+  }
+
+  async clearAlertAndQueue(jobId: string, request?: CreateJobRequest): Promise<void> {
+    await this.exec(`
+      update jobs
+      set status = 'queued',
+          updated_at = datetime('now'),
+          request_json = ${request ? jsonValue(request) : 'request_json'},
+          alert_json = null,
+          error = null,
+          progress_json = null
+      where id = ${sqlValue(jobId)} and status = 'alert';
+    `);
+    await this.addEvent(jobId, 'queued', 'Job queued');
+  }
+
+  async updateRequest(jobId: string, request: CreateJobRequest): Promise<void> {
+    await this.exec(`
+      update jobs
+      set request_json = ${jsonValue(request)},
+          updated_at = datetime('now')
+      where id = ${sqlValue(jobId)};
+    `);
   }
 
   async setProgress(jobId: string, progress: JobProgress | null): Promise<void> {
@@ -222,6 +273,26 @@ export class Database {
     return Promise.all(rows.map((row) => this.rowToJob(row)));
   }
 
+  async findCompletedDownload(request: CreateJobRequest, excludeJobId?: string): Promise<Job | undefined> {
+    const rows = await this.query<JobRow>(`
+      select *
+      from jobs
+      where status = 'completed'
+      order by updated_at desc, created_at desc;
+    `);
+    const normalizedUrl = normalizeDownloadUrl(request.url);
+    for (const row of rows) {
+      if (row.id === excludeJobId) {
+        continue;
+      }
+      const rowRequest = JSON.parse(row.request_json) as CreateJobRequest;
+      if (rowRequest.mediaType === request.mediaType && normalizeDownloadUrl(rowRequest.url) === normalizedUrl) {
+        return this.rowToJob(row);
+      }
+    }
+    return undefined;
+  }
+
   async deleteJob(id: string): Promise<void> {
     await this.exec(`delete from jobs where id = ${sqlValue(id)} and status in ('completed', 'failed', 'cancelled');`);
   }
@@ -242,6 +313,7 @@ export class Database {
       request: JSON.parse(row.request_json) as CreateJobRequest,
       status: row.status,
       progress: row.progress_json ? (JSON.parse(row.progress_json) as JobProgress) : undefined,
+      alert: row.alert_json ? (JSON.parse(row.alert_json) as JobAlert) : undefined,
       source: row.source_json ? (JSON.parse(row.source_json) as ProbeResponse) : undefined,
       outputRoot: row.output_root ?? undefined,
       outputFolder: row.output_folder ?? undefined,

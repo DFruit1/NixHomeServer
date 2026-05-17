@@ -1,6 +1,6 @@
 import { component$, $, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { CurrentUser, Job, CreateJobRequest } from './shared/types.js';
-import { AUDIO_FORMATS, VIDEO_CONTAINERS, VIDEO_QUALITIES } from './shared/types.js';
+import { AUDIO_FORMATS, AUDIO_QUALITIES, VIDEO_CONTAINERS, VIDEO_QUALITIES } from './shared/types.js';
 import { normalizeDownloadUrl } from './shared/url.js';
 import './client/styles.css';
 
@@ -12,6 +12,7 @@ export default component$(() => {
   const mediaType = useSignal<'audio' | 'video'>('audio');
   const destination = useSignal<'personal' | 'shared'>('personal');
   const audioFormat = useSignal<'flac' | 'm4a' | 'mp3' | 'opus' | 'wav'>('flac');
+  const audioQuality = useSignal<'best' | 'high' | 'medium' | 'low'>('best');
   const videoContainer = useSignal<'mkv' | 'mp4' | 'webm'>('mkv');
   const videoQuality = useSignal<'best' | '2160p' | '1440p' | '1080p' | '720p' | '480p'>('1080p');
   const splitChapters = useSignal(false);
@@ -54,6 +55,7 @@ export default component$(() => {
       destination: destination.value,
       mediaType: mediaType.value,
       audioFormat: mediaType.value === 'audio' ? audioFormat.value : undefined,
+      audioQuality: mediaType.value === 'audio' ? audioQuality.value : undefined,
       videoContainer: mediaType.value === 'video' ? videoContainer.value : undefined,
       videoQuality: mediaType.value === 'video' ? videoQuality.value : undefined,
       splitChapters: splitChapters.value,
@@ -79,8 +81,10 @@ export default component$(() => {
     }
   });
 
-  const activeJobs = jobs.value.filter((job) => ['queued', 'probing', 'running', 'postprocessing'].includes(job.status));
-  const historyJobs = jobs.value.filter((job) => !['queued', 'probing', 'running', 'postprocessing'].includes(job.status));
+  const activeJobs = jobs.value
+    .filter((job) => ['queued', 'alert', 'probing', 'running', 'postprocessing'].includes(job.status))
+    .sort((left, right) => activeJobRank(left) - activeJobRank(right) || left.createdAt.localeCompare(right.createdAt));
+  const historyJobs = jobs.value.filter((job) => !['queued', 'alert', 'probing', 'running', 'postprocessing'].includes(job.status));
 
   return (
     <main class="shell">
@@ -147,16 +151,28 @@ export default component$(() => {
           </fieldset>
 
           {mediaType.value === 'audio' ? (
-            <label>
-              <span>Format</span>
-              <select value={audioFormat.value} onChange$={(_, target) => (audioFormat.value = target.value as typeof audioFormat.value)}>
-                {AUDIO_FORMATS.map((format) => (
-                  <option key={format} value={format}>
-                    {format.toUpperCase()}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <>
+              <label>
+                <span>Format</span>
+                <select value={audioFormat.value} onChange$={(_, target) => (audioFormat.value = target.value as typeof audioFormat.value)}>
+                  {AUDIO_FORMATS.map((format) => (
+                    <option key={format} value={format}>
+                      {format.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Quality</span>
+                <select value={audioQuality.value} onChange$={(_, target) => (audioQuality.value = target.value as typeof audioQuality.value)}>
+                  {AUDIO_QUALITIES.map((quality) => (
+                    <option key={quality} value={quality}>
+                      {quality}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
           ) : (
             <>
               <label>
@@ -226,6 +242,17 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
     }
   });
 
+  const resolveAlert = $(async (job: Job, command: 'download-again' | 'split-chapters' | 'single-file' | 'cancel') => {
+    const response = await fetch(`/api/jobs/${job.id}/resolve-alert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: command }),
+    });
+    if (response.ok) {
+      await refresh();
+    }
+  });
+
   return (
     <section class="jobs">
       <h2>{title}</h2>
@@ -240,15 +267,42 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
                   <strong>{job.source?.title || job.request.url}</strong>
                   <p>{job.outputFolder || job.request.mediaType}</p>
                 </div>
-                <span>{job.status}</span>
+                <span class={`status-badge ${job.status}`}>{job.status}</span>
               </div>
-              {job.progress?.percent != null && (
-                <div class="progress">
-                  <div style={{ width: `${Math.max(0, Math.min(100, job.progress.percent))}%` }} />
+              {job.status === 'alert' && <p class="alert-message">{job.alert?.message || job.error || 'Confirmation is required before this download can continue.'}</p>}
+              {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
+                <div class="progress-block">
+                  <div class={{ progress: true, indeterminate: job.progress?.percent == null }}>
+                    <div style={{ width: `${Math.max(0, Math.min(100, job.progress?.percent ?? 0))}%` }} />
+                  </div>
+                  <p class="progress-label">{progressLabel(job)}</p>
                 </div>
               )}
               {job.error && <p class="error">{job.error}</p>}
               <div class="job-actions">
+                {job.status === 'alert' && job.alert?.kind === 'duplicate' && (
+                  <>
+                    <button type="button" onClick$={() => resolveAlert(job, 'download-again')}>
+                      Download again
+                    </button>
+                    <button type="button" onClick$={() => resolveAlert(job, 'cancel')}>
+                      Cancel
+                    </button>
+                  </>
+                )}
+                {job.status === 'alert' && job.alert?.kind === 'chapters' && (
+                  <>
+                    <button type="button" onClick$={() => resolveAlert(job, 'split-chapters')}>
+                      Yes, split
+                    </button>
+                    <button type="button" onClick$={() => resolveAlert(job, 'single-file')}>
+                      No, single file
+                    </button>
+                    <button type="button" onClick$={() => resolveAlert(job, 'cancel')}>
+                      Cancel
+                    </button>
+                  </>
+                )}
                 {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
                   <button type="button" onClick$={() => action(job, 'cancel')}>
                     Cancel
@@ -272,3 +326,41 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
     </section>
   );
 });
+
+const activeJobRank = (job: Job): number => {
+  switch (job.status) {
+    case 'probing':
+    case 'running':
+    case 'postprocessing':
+      return 0;
+    case 'queued':
+      return 1;
+    case 'alert':
+      return 2;
+    default:
+      return 3;
+  }
+};
+
+const progressLabel = (job: Job): string => {
+  if (job.progress?.percent != null) {
+    const parts = [`${job.progress.phase} ${job.progress.percent.toFixed(1)}%`];
+    if (job.progress.speed) {
+      parts.push(job.progress.speed);
+    }
+    if (job.progress.eta) {
+      parts.push(`ETA ${job.progress.eta}`);
+    }
+    return parts.join(' · ');
+  }
+  if (job.status === 'queued') {
+    return 'Waiting for an available worker';
+  }
+  if (job.status === 'probing') {
+    return 'Reading media information';
+  }
+  if (job.status === 'postprocessing') {
+    return job.progress?.phase === 'move' ? 'Moving files into the library' : 'Post-processing media';
+  }
+  return 'Starting download';
+};

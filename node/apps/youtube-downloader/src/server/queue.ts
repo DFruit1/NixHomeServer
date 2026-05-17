@@ -7,7 +7,7 @@ import { Database } from './db.js';
 import { assertInside, folderNameFor, mediaRootFor, prepareDirectory, sanitizeSegment, uniqueFolder } from './paths.js';
 import { buildDownloadArgs, parseProgress, probeUrl } from './ytdlp.js';
 import { normalizeDownloadUrl } from '../shared/url.js';
-import type { CreateJobRequest, CurrentUser, Job } from '../shared/types.js';
+import type { CreateJobRequest, CurrentUser, Job, JobAlert, ProbeResponse } from '../shared/types.js';
 
 const MEDIA_EXTENSIONS = new Set([
   '.aac',
@@ -51,6 +51,17 @@ export class JobQueue {
       throw new Error('shared downloads require shared-files-read-write-access');
     }
     const id = randomUUID();
+    const duplicate = normalizedRequest.duplicateConfirmed ? undefined : await this.db.findCompletedDownload(normalizedRequest);
+    if (duplicate) {
+      await this.db.createJob({
+        id,
+        createdBy: user.username,
+        request: normalizedRequest,
+        initialStatus: 'alert',
+        alert: duplicateAlert(normalizedRequest, duplicate.id),
+      });
+      return id;
+    }
     await this.db.createJob({ id, createdBy: user.username, request: normalizedRequest });
     this.pump();
     return id;
@@ -73,9 +84,48 @@ export class JobQueue {
       }, 5000).unref();
     }
     const job = await this.db.getJob(id);
-    if (job?.status === 'queued') {
+    if (job?.status === 'queued' || job?.status === 'alert') {
       await this.db.setStatus(id, 'cancelled', 'cancelled before starting');
     }
+  }
+
+  async resolveAlert(id: string, action: 'download-again' | 'split-chapters' | 'single-file' | 'cancel'): Promise<void> {
+    const job = await this.db.getJob(id);
+    if (!job) {
+      throw new Error('job not found');
+    }
+    if (job.status !== 'alert' || !job.alert) {
+      throw new Error('job is not waiting for confirmation');
+    }
+    if (action === 'cancel') {
+      await this.db.setStatus(id, 'cancelled', 'cancelled before starting');
+      return;
+    }
+
+    if (job.alert.kind === 'duplicate') {
+      if (action !== 'download-again') {
+        throw new Error('invalid duplicate confirmation action');
+      }
+      await this.db.clearAlertAndQueue(id, { ...job.request, duplicateConfirmed: true });
+      this.pump();
+      return;
+    }
+
+    if (job.alert.kind === 'chapters') {
+      if (action === 'split-chapters') {
+        await this.db.clearAlertAndQueue(id, { ...job.request, splitChapters: true, chaptersConfirmed: true });
+        this.pump();
+        return;
+      }
+      if (action === 'single-file') {
+        await this.db.clearAlertAndQueue(id, { ...job.request, splitChapters: false, chaptersConfirmed: true });
+        this.pump();
+        return;
+      }
+      throw new Error('invalid chapter confirmation action');
+    }
+
+    throw new Error('unknown alert kind');
   }
 
   private pump(): void {
@@ -102,22 +152,39 @@ export class JobQueue {
   }
 
   private async runJob(job: Job): Promise<void> {
+    let request = job.request;
     const tempDir = path.join(this.config.tempRoot, job.id);
     await rm(tempDir, { recursive: true, force: true });
     await mkdir(tempDir, { recursive: true, mode: 0o750 });
 
     await this.db.setStatus(job.id, 'probing');
-    const source = await probeUrl(this.config, job.request.url);
+    const source = await probeUrl(this.config, request.url);
     await this.db.setSource(job.id, source);
-    if (job.request.splitChapters && source.chapters.length === 0) {
-      throw new Error('chapter splitting was requested, but this item has no chapters');
+    if (!request.duplicateConfirmed) {
+      const duplicate = await this.db.findCompletedDownload(request, job.id);
+      if (duplicate) {
+        await rm(tempDir, { recursive: true, force: true });
+        await this.db.setAlert(job.id, duplicateAlert(request, duplicate.id));
+        return;
+      }
+    }
+    const chapterGate = chapterGateFor(request, source);
+    if (chapterGate === 'single-file') {
+      request = { ...request, splitChapters: false };
+      await this.db.updateRequest(job.id, request);
+      await this.db.addEvent(job.id, 'chapters', 'chapter splitting was requested, but this item has no chapters; downloading as a single file');
+    }
+    if (chapterGate === 'alert') {
+      await rm(tempDir, { recursive: true, force: true });
+      await this.db.setAlert(job.id, chaptersAlert());
+      return;
     }
 
     const syntheticUser = { username: job.createdBy, canWriteShared: true } as CurrentUser;
-    const outputRoot = mediaRootFor(this.config, syntheticUser, job.request);
-    const safeRoot = assertInside(outputRoot, job.request.destination === 'shared' ? outputRoot : this.config.usersRoot);
+    const outputRoot = mediaRootFor(this.config, syntheticUser, request);
+    const safeRoot = assertInside(outputRoot, request.destination === 'shared' ? outputRoot : this.config.usersRoot);
     await prepareDirectory(safeRoot);
-    const outputFolder = await uniqueFolder(safeRoot, folderNameFor(source, job.request));
+    const outputFolder = await uniqueFolder(safeRoot, folderNameFor(source, request));
     assertInside(outputFolder, safeRoot);
     await this.db.setOutput(job.id, safeRoot, outputFolder);
 
@@ -125,7 +192,7 @@ export class JobQueue {
     const id = sanitizeSegment(source.id, 'NOID');
     const baseTemplate = path.join(tempDir, `${title} [${id}].%(ext)s`);
     const chapterTemplate = path.join(tempDir, 'chapters', '%(section_number)02d - %(section_title|Chapter)S.%(ext)s');
-    const args = buildDownloadArgs(job.request, baseTemplate, chapterTemplate);
+    const args = buildDownloadArgs(request, baseTemplate, chapterTemplate);
     await this.db.setStatus(job.id, 'running');
     try {
       await this.runYtDlp(job.id, args);
@@ -140,7 +207,7 @@ export class JobQueue {
 
     await this.db.setStatus(job.id, 'postprocessing');
     await this.db.setProgress(job.id, { phase: 'move' });
-    const sourceDir = job.request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
+    const sourceDir = request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
     await mkdir(outputFolder, { recursive: true, mode: 0o775 });
     await copyDirectoryContents(sourceDir, outputFolder);
     await this.recordFiles(job.id, outputFolder);
@@ -213,6 +280,9 @@ export const validateRequest = (request: CreateJobRequest): void => {
     if (!request.audioFormat || !['flac', 'm4a', 'mp3', 'opus', 'wav'].includes(request.audioFormat)) {
       throw new Error('unsupported audio format');
     }
+    if (request.audioQuality && !['best', 'high', 'medium', 'low'].includes(request.audioQuality)) {
+      throw new Error('unsupported audio quality');
+    }
   } else if (request.mediaType === 'video') {
     if (!request.videoContainer || !['mkv', 'mp4', 'webm'].includes(request.videoContainer)) {
       throw new Error('unsupported video container');
@@ -224,6 +294,27 @@ export const validateRequest = (request: CreateJobRequest): void => {
     throw new Error('media type must be audio or video');
   }
 };
+
+export const chapterGateFor = (request: CreateJobRequest, source: ProbeResponse): 'download' | 'single-file' | 'alert' => {
+  if (request.splitChapters && source.chapters.length === 0) {
+    return 'single-file';
+  }
+  if (!request.splitChapters && source.chapters.length > 0 && !request.chaptersConfirmed) {
+    return 'alert';
+  }
+  return 'download';
+};
+
+const duplicateAlert = (request: CreateJobRequest, duplicateJobId: string): JobAlert => ({
+  kind: 'duplicate',
+  message: `This ${request.mediaType} has been downloaded before. Do you want to download again?`,
+  duplicateJobId,
+});
+
+const chaptersAlert = (): JobAlert => ({
+  kind: 'chapters',
+  message: 'This item has chapters. Would you like to download it with chapters split?',
+});
 
 const killChildGroup = (child: ChildProcess, signal: NodeJS.Signals): void => {
   try {

@@ -3,10 +3,14 @@ import type { AppConfig } from './config.js';
 import type { CurrentUser } from '../shared/types.js';
 
 const USER_HEADERS = [
-  'x-forwarded-user',
-  'x-auth-request-user',
+  'x-forwarded-preferred-username',
+  'x-auth-request-preferred-username',
+  'x-forwarded-login',
+  'x-auth-request-login',
   'x-forwarded-email',
   'x-auth-request-email',
+  'x-forwarded-user',
+  'x-auth-request-user',
 ] as const;
 
 const EMAIL_HEADERS = ['x-forwarded-email', 'x-auth-request-email'] as const;

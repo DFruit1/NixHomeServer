@@ -5,6 +5,7 @@ let
   kavitaPort = vars.networking.ports.kavita;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
+  kavitaScanCronExpression = vars.apps.books.autoScanCronExpression or "*/15 * * * *";
   baseKavitaPackage = pkgs.callPackage ./package.nix { };
   kavitaPackage = baseKavitaPackage.overrideAttrs (old: {
     backend = old.backend.overrideAttrs (backendOld: {
@@ -16,6 +17,8 @@ let
     });
   });
   kavitaLibraryWatchConfigPath = with pkgs; [
+    coreutils
+    perl
     sqlite
   ];
   kavitaOidcBootstrapPath = with pkgs; [
@@ -178,6 +181,7 @@ in
         set -euo pipefail
 
         db=${lib.escapeShellArg dbPath}
+        scan_cron=${lib.escapeShellArg kavitaScanCronExpression}
 
         for _ in $(seq 1 30); do
           [[ -f "$db" ]] && break
@@ -191,16 +195,50 @@ in
 
         global_folder_watching="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
           "select Value from ServerSetting where Key = 17;" 2>/dev/null || true)"
+        task_scan="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+          "select Value from ServerSetting where Key = 0;" 2>/dev/null || true)"
 
         changed=0
 
+        escape_sql() {
+          printf '%s' "$1" | perl -pe 's/\x27/\x27\x27/g'
+        }
+
+        run_sqlite_write() {
+          local sql="$1"
+          local attempt_output=""
+
+          for _ in $(seq 1 30); do
+            if attempt_output="$(${pkgs.sqlite}/bin/sqlite3 "$db" "$sql" 2>&1)"; then
+              return 0
+            fi
+
+            if [[ "$attempt_output" == *"database is locked"* ]]; then
+              sleep 1
+              continue
+            fi
+
+            printf '%s\n' "$attempt_output" >&2
+            return 1
+          done
+
+          printf '%s\n' "Timed out waiting for Kavita database write lock to clear" >&2
+          return 1
+        }
+
         if [[ "$libraries_needing_watchers" != "0" ]]; then
-          ${pkgs.sqlite}/bin/sqlite3 "$db" "update Library set FolderWatching = 1 where FolderWatching != 1;"
+          run_sqlite_write "update Library set FolderWatching = 1 where FolderWatching != 1;"
           changed=1
         fi
 
         if [[ "$global_folder_watching" != "true" ]]; then
-          ${pkgs.sqlite}/bin/sqlite3 "$db" "update ServerSetting set Value = 'true' where Key = 17;"
+          run_sqlite_write "update ServerSetting set Value = 'true' where Key = 17;"
+          changed=1
+        fi
+
+        if [[ "$task_scan" != "$scan_cron" ]]; then
+          escaped_scan_cron="$(escape_sql "$scan_cron")"
+          run_sqlite_write "update ServerSetting set Value = '$escaped_scan_cron' where Key = 0;"
           changed=1
         fi
 

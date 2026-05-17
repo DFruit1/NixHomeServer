@@ -27,6 +27,7 @@ in
       url = "http://${loopback}:${toString metubeListenPort}/healthz";
     };
     extraProxyArgs = [
+      "--prefer-email-to-user=true"
       "--api-route=^/api/"
       "--api-route=^/ngsw-worker\\.js$"
       "--api-route=^/ngsw\\.json"

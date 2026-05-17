@@ -1,6 +1,6 @@
 import type { AppConfig } from './config.js';
 import { runCommand } from './child.js';
-import type { AudioFormat, CreateJobRequest, ProbeResponse, VideoQuality } from '../shared/types.js';
+import type { AudioFormat, AudioQuality, CreateJobRequest, ProbeResponse, VideoQuality } from '../shared/types.js';
 
 type RawChapter = {
   title?: string;
@@ -27,6 +27,19 @@ const videoSelector = (quality: VideoQuality): string => {
   }
   const height = quality.replace('p', '');
   return `bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`;
+};
+
+const audioQualityValue = (quality: AudioQuality): string => {
+  switch (quality) {
+    case 'best':
+      return '0';
+    case 'high':
+      return '2';
+    case 'medium':
+      return '5';
+    case 'low':
+      return '7';
+  }
 };
 
 export const probeUrl = async (config: AppConfig, url: string): Promise<ProbeResponse> => {
@@ -82,7 +95,7 @@ export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: str
 
   if (request.mediaType === 'audio') {
     const audioFormat: AudioFormat = request.audioFormat ?? 'flac';
-    args.push('-x', '--audio-format', audioFormat, '--audio-quality', '0', '-f', 'bestaudio/best');
+    args.push('-x', '--audio-format', audioFormat, '--audio-quality', audioQualityValue(request.audioQuality ?? 'best'), '-f', 'bestaudio/best');
   } else {
     args.push(
       '-f',

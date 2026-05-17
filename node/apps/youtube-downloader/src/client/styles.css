@@ -216,8 +216,12 @@ fieldset button.selected:hover,
   border-left-color: #b42318;
 }
 
+.job.alert {
+  border-left-color: #b7791f;
+}
+
 .job.completed {
-  border-left-color: #7f1d1d;
+  border-left-color: #15803d;
 }
 
 .job-head {
@@ -230,7 +234,7 @@ fieldset button.selected:hover,
   overflow-wrap: anywhere;
 }
 
-.job-head span {
+.status-badge {
   align-self: start;
   border-radius: 999px;
   padding: 3px 8px;
@@ -240,9 +244,34 @@ fieldset button.selected:hover,
   font-weight: 700;
 }
 
+.status-badge.completed {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-badge.alert {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge.failed {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-badge.cancelled {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.progress-block {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
 .progress {
   height: 7px;
-  margin-top: 12px;
   overflow: hidden;
   border-radius: 999px;
   background: #eadada;
@@ -251,6 +280,16 @@ fieldset button.selected:hover,
 .progress div {
   height: 100%;
   background: var(--accent);
+}
+
+.progress.indeterminate div {
+  width: 35%;
+  animation: progress-sweep 1.3s ease-in-out infinite;
+}
+
+.progress-label {
+  color: #725b5b;
+  font-size: 13px;
 }
 
 .job-actions {
@@ -262,6 +301,22 @@ fieldset button.selected:hover,
 .error {
   color: #b42318;
   overflow-wrap: anywhere;
+}
+
+.alert-message {
+  margin-top: 10px;
+  color: #7c4a03;
+  overflow-wrap: anywhere;
+}
+
+@keyframes progress-sweep {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  100% {
+    transform: translateX(290%);
+  }
 }
 
 @media (max-width: 640px) {

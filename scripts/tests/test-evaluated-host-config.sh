@@ -183,6 +183,8 @@ hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
 hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
 hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
 hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
+kavitaLibraryWatchConfigScript =
+cfg.systemd.services."kavita-library-watch-config-v1".script or "";
 hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
 hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
@@ -191,6 +193,7 @@ jellyfinLibraryBootstrapScript = cfg.systemd.services."jellyfin-library-bootstra
 fileshareUserRootSyncScript = cfg.systemd.services."fileshare-user-root-sync".script or "";
 jellyfinStorageLayoutScript = cfg.systemd.services."jellyfin-storage-layout-v1".script or "";
 hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
+hasJellyfinLibrarySyncTimer = cfg.systemd.timers ? "jellyfin-library-sync";
 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
@@ -403,6 +406,8 @@ require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_writa
   "FileBrowser Quantum must receive writable ACLs on managed personal content roots."
 require_match modules/Core_Modules/storage/fileshare-user-roots.nix '"\$root/files"' \
   "FileBrowser Quantum personal writable ACLs must include the files root."
+require_match modules/Core_Modules/storage/fileshare-user-roots.nix 'apply_writable_acl metube' \
+  "YouTube downloader service user must receive writable ACLs on personal media roots."
 forbid_match modules/audiobookshelf/storage.nix 'audiobookshelf-user-storage-acl-sync-v1' \
   "Audiobookshelf per-user ACL convergence must stay centralized in fileshare-user-root-sync."
 forbid_match modules/filebrowser-quantum/storage.nix 'filebrowser-quantum-user-storage-acl-sync-v1' \
@@ -528,17 +533,24 @@ require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibr
   "Audiobookshelf must keep the global native watcher enabled."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibraryWatchConfigScript' | jq -r '.')") 'disableWatcher = false' \
   "Audiobookshelf must keep per-library native watchers enabled."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibraryWatchConfigScript' | jq -r '.')") 'autoScanCronExpression' \
+  "Audiobookshelf must keep a native scan cron fallback for watcher misses."
 assert_json_false '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf must not use a separate recursive watcher service."
 assert_json_false '.config.apps.hasKavitaLibrarySync' "Kavita settled scan service must remain absent."
 assert_json_false '.config.apps.hasKavitaLibrarySyncTimer' "Kavita overnight scan timer must remain absent."
 assert_json_false '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence must stay centralized in fileshare-user-root-sync."
 assert_json_false '.config.apps.hasKavitaLibraryWatch' "Kavita recursive watcher service must remain absent."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.kavitaLibraryWatchConfigScript' | jq -r '.')") 'Key = 0' \
+  "Kavita must keep its native recurring Library Scan task declaratively converged."
+require_match modules/kavita/default.nix 'vars\.apps\.books\.autoScanCronExpression' \
+  "Kavita must source its scan cadence from vars.apps.books.autoScanCronExpression."
 require_match modules/kavita/default.nix 'disable-update-notifications\.patch' \
   "Kavita must keep in-app update notifications disabled; Nix owns application updates."
 assert_json_true '.config.apps.hasKiwixLibraryWatch' "Kiwix watcher service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryMonitor' "Jellyfin library monitor config service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibraryBootstrap' "Jellyfin declarative library bootstrap must remain present."
 assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan service must remain present."
+assert_json_true '.config.apps.hasJellyfinLibrarySyncTimer' "Jellyfin must keep a periodic scan fallback for watcher misses."
 assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain present."
 assert_json_true '.config.apps.hasYoutubeDownloaderService' "The custom YouTube downloader service must replace the MeTube container."
 require_match configuration.nix '\./modules/youtube-downloader' \
@@ -576,8 +588,16 @@ for package_name in sqlite yt-dlp ffmpeg; do
   fi
 done
 metube_oauth2_proxy_exec_start="$(snapshot_query '.config.apps.metubeOauth2ProxyExecStart' | jq -r '.')"
+require_match <(printf '%s\n' "$metube_oauth2_proxy_exec_start") "'--prefer-email-to-user=true'" \
+  "YouTube downloader must receive a stable username header instead of the opaque OIDC subject."
 require_match <(printf '%s\n' "$metube_oauth2_proxy_exec_start") "'--api-route=\\^/api/'" \
   "YouTube downloader API fetches must receive 401 instead of starting competing OAuth2 PKCE flows."
+require_match node/apps/youtube-downloader/src/shared/types.ts 'AudioQuality' \
+  "YouTube downloader API must expose an audio quality field."
+require_match node/apps/youtube-downloader/src/root.tsx 'AUDIO_QUALITIES' \
+  "YouTube downloader form must expose audio quality choices."
+require_match node/apps/youtube-downloader/src/root.tsx 'progressLabel' \
+  "YouTube downloader job cards must show per-job progress details."
 persisted_directories="$(snapshot_query '.config.fileSystems.persistedDirectories')"
 if ! jq -e 'index("/var/lib/metube") != null' >/dev/null <<<"$persisted_directories"; then
   echo "❌ Impermanence must persist /var/lib/metube for YouTube downloader SQLite state."

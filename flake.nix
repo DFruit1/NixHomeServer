@@ -223,6 +223,8 @@
                 hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
                 hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
                 hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
+                kavitaLibraryWatchConfigScript =
+                  cfg.systemd.services."kavita-library-watch-config-v1".script or "";
                 hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
                 hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
                 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
@@ -231,6 +233,7 @@
                 fileshareUserRootSyncScript = cfg.systemd.services."fileshare-user-root-sync".script or "";
                 jellyfinStorageLayoutScript = cfg.systemd.services."jellyfin-storage-layout-v1".script or "";
                 hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
+                hasJellyfinLibrarySyncTimer = cfg.systemd.timers ? "jellyfin-library-sync";
                 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
                 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
                 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";

@@ -81,14 +81,17 @@ rec {
     audiobooks = {
       enable = false;
       subdomain = "audiobooks";
+      autoScanCronExpression = "*/15 * * * *";
     };
     books = {
       enable = false;
       subdomain = "books";
+      autoScanCronExpression = "*/15 * * * *";
     };
     videos = {
       enable = false;
       subdomain = "videos";
+      libraryScanInterval = "15m";
     };
     wiki = {
       enable = false;

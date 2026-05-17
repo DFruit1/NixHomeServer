@@ -138,6 +138,10 @@ let
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
     apply_writable_acl jellyfin-media "$root/videos"
     apply_writable_acl mail-archive-ui "$root/files"
+    apply_writable_acl metube \
+      "$root/audiobooks" \
+      "$root/videos" \
+      ${userVideoWritablePaths}
     apply_writable_acl filebrowser-quantum \
       "$root/files" \
       "$root/audiobooks" \

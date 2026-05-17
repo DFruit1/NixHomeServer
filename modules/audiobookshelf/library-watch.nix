@@ -1,9 +1,10 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   dataDir = "/var/lib/${config.services.audiobookshelf.dataDir}";
   dbPath = "${dataDir}/config/absdatabase.sqlite";
   audiobookshelfLibraryWatchConfigPath = with pkgs; [
+    coreutils
     jq
     perl
     sqlite
@@ -47,7 +48,9 @@ in
 
         while IFS=$'\x1f' read -r library_id settings_json; do
           [[ -n "$library_id" ]] || continue
-          updated_settings="$(printf '%s' "$settings_json" | jq -c '.disableWatcher = false')"
+          updated_settings="$(printf '%s' "$settings_json" | jq -c \
+            --arg autoScanCronExpression ${lib.escapeShellArg vars.apps.audiobooks.autoScanCronExpression} \
+            '.disableWatcher = false | .autoScanCronExpression = $autoScanCronExpression')"
           if [[ "$settings_json" == "$updated_settings" ]]; then
             continue
           fi
