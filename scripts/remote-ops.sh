@@ -22,42 +22,6 @@ validation_stamp_max_age_seconds="${DEPLOY_VALIDATION_STAMP_MAX_AGE_SECONDS:-864
 min_build_host_free_bytes=$((10 * 1024 * 1024 * 1024))
 min_remote_tmp_free_bytes=$((1 * 1024 * 1024 * 1024))
 
-host_part() {
-  local host_spec="$1"
-  if [[ "$host_spec" == *@* ]]; then
-    printf '%s\n' "${host_spec##*@}"
-  else
-    printf '%s\n' "$host_spec"
-  fi
-}
-
-host_matches_expected_lan_ip() {
-  local host_spec="$1"
-  local expected_lan_ip="$2"
-  local host_value resolved
-
-  host_value="$(host_part "$host_spec")"
-  if [[ "$host_value" == "$expected_lan_ip" ]]; then
-    return 0
-  fi
-
-  if [[ "$host_value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    return 1
-  fi
-
-  if ! command -v getent >/dev/null 2>&1; then
-    return 1
-  fi
-
-  while read -r resolved _; do
-    if [[ "$resolved" == "$expected_lan_ip" ]]; then
-      return 0
-    fi
-  done < <(getent ahostsv4 "$host_value" 2>/dev/null || true)
-
-  return 1
-}
-
 print_transition_notice_if_needed() {
   local target_host="$1"
   local build_host="$2"
@@ -356,8 +320,8 @@ deploy_main() {
   if has_fresh_validation_stamp "$archive_sha"; then
     echo "ℹ️ Reusing remote validation stamp for archive ${archive_sha}; skipping remote repository checks."
   else
-    echo "ℹ️ Running repository checks on ${build_host}…"
-    run_validate_repo true false true "$archive_sha"
+    echo "ℹ️ Running lean repository checks on ${build_host}…"
+    run_validate_repo false false true "$archive_sha"
   fi
 
   echo "ℹ️ Running remote nixos-rebuild test…"

@@ -172,7 +172,7 @@ MSG
     if [[ -n "$stamp_file" && -f "$stamp_file" ]]; then
       echo "ℹ️ Reusing remote validation stamp for archive ${ARCHIVE_SHA}; skipping remote repository checks."
     else
-      echo "ℹ️ Running repository checks on ${BUILD_HOST}…"
+      echo "ℹ️ Running lean repository checks on ${BUILD_HOST}…"
       if [[ "${DEPLOY_WRAPPER_TEST_FAIL_REMOTE_CHECK:-0}" == "1" ]]; then
         exit 1
       fi
@@ -272,8 +272,8 @@ require_fixed "$ssh_stdin_log" './scripts/remote-ops.sh deploy' \
   "Deploy wrapper must invoke the remote deploy dispatcher from the staged archive."
 require_fixed "$ssh_log" 'FULL_CHECK=false' \
   "Default deploy wrapper runs must keep the deep runtime flag disabled."
-require_fixed "$success_output" 'Running repository checks on dsaw@192.0.2.10' \
-  "Remote deploys must run repository checks on the build host."
+require_fixed "$success_output" 'Running lean repository checks on dsaw@192.0.2.10' \
+  "Remote deploys must run lean repository checks on the build host."
 require_fixed "$success_output" 'Running remote nixos-rebuild test' \
   "Remote deploys must continue into remote nixos-rebuild test after remote preflight passes."
 forbid_match "$nix_log" '^nix ' \

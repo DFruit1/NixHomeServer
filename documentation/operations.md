@@ -178,7 +178,7 @@ scripts/validate-repo.sh
 ```
 
 Default local `scripts/validate-repo.sh` behavior:
-- runs the fixed shell suite through `scripts/tests/run-script-tests.sh`
+- runs the lean script suite through `scripts/tests/run-script-tests.sh`
 - does not rerun `nix flake check --no-build`
 - does not run Rust derivation checks
 
@@ -196,7 +196,7 @@ scripts/validate-repo.sh --full
 
 That mode runs:
 - `nix flake check --no-build` unless `--skip-flake-check` is used
-- `scripts/tests/run-script-tests.sh`
+- `scripts/tests/run-script-tests.sh --full`
 - `kanidm-admin-clippy`
 - `kanidm-admin-test`
 - `mail-archive-ui-test`
@@ -211,8 +211,10 @@ That mode runs:
 ```
 
 That path stages the current repo archive on the build host and keeps all Nix
-evaluation, builds, activation, and validation on the server. The server also
-carries the resulting `/nix/store` churn.
+evaluation, builds, activation, and validation on the server. Routine deploys
+use the lean repository gate before `nixos-rebuild`; run
+`validate-repo-remote.sh --full` separately when you want the exhaustive suite.
+The server also carries the resulting `/nix/store` churn.
 
 Use `--local-build` only when you intentionally want the workstation to build
 the same target system directly.

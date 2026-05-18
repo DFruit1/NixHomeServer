@@ -71,6 +71,42 @@ sha256_file() {
   return 1
 }
 
+host_part() {
+  local host_spec="$1"
+  if [[ "$host_spec" == *@* ]]; then
+    printf '%s\n' "${host_spec##*@}"
+  else
+    printf '%s\n' "$host_spec"
+  fi
+}
+
+host_matches_expected_lan_ip() {
+  local host_spec="$1"
+  local expected_lan_ip="$2"
+  local host_value resolved
+
+  host_value="$(host_part "$host_spec")"
+  if [[ "$host_value" == "$expected_lan_ip" ]]; then
+    return 0
+  fi
+
+  if [[ "$host_value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    return 1
+  fi
+
+  if ! command -v getent >/dev/null 2>&1; then
+    return 1
+  fi
+
+  while read -r resolved _; do
+    if [[ "$resolved" == "$expected_lan_ip" ]]; then
+      return 0
+    fi
+  done < <(getent ahostsv4 "$host_value" 2>/dev/null || true)
+
+  return 1
+}
+
 create_deploy_repo_archive() {
   local archive_path="$1"
   local manifest

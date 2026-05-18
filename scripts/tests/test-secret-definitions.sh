@@ -63,15 +63,17 @@ printf 'do-not-archive\n' >"$archive_secret_probe"
 printf 'do-not-archive\n' >"${archive_cache_probe_dir}/cache-file"
 
 archive_file="${tmpdir}/deploy-repo.tar"
+archive_listing="${tmpdir}/deploy-repo-files.txt"
 create_deploy_repo_archive "$archive_file"
+tar -tf "$archive_file" >"$archive_listing"
 
-if tar -tf "$archive_file" | rg -q '(^|/)secrets/top/|(^|/)\.cache/|(^|/)SensitivePrivateSecrets(/|$)'; then
+if rg -q '(^|/)secrets/top/|(^|/)\.cache/|(^|/)SensitivePrivateSecrets(/|$)' "$archive_listing"; then
   echo "❌ Deploy archive includes ignored local secret/cache paths."
-  tar -tf "$archive_file" | rg '(^|/)secrets/top/|(^|/)\.cache/|(^|/)SensitivePrivateSecrets(/|$)' || true
+  rg '(^|/)secrets/top/|(^|/)\.cache/|(^|/)SensitivePrivateSecrets(/|$)' "$archive_listing" || true
   exit 1
 fi
 
-if ! tar -tf "$archive_file" | rg -q '(^|/)scripts/helpers/repo-common\.sh$'; then
+if ! rg -q '(^|/)scripts/helpers/repo-common\.sh$' "$archive_listing"; then
   echo "❌ Deploy archive did not include tracked repository files."
   exit 1
 fi

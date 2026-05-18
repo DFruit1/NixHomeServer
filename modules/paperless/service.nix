@@ -95,6 +95,45 @@ in
       };
     };
 
+    systemd.timers.paperless-stale-reference-check = {
+      description = "Regularly report Paperless stale file references";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = "daily";
+        AccuracySec = "1h";
+        RandomizedDelaySec = "30m";
+        Persistent = true;
+        Unit = "paperless-stale-reference-check.service";
+      };
+    };
+
+    systemd.services.paperless-stale-reference-check = {
+      description = "Report Paperless missing, inaccessible, corrupt, and orphaned files";
+      after = [
+        "paperless-web.service"
+        "paperless-storage-layout-v1.service"
+        "data-pool-layout.service"
+      ];
+      wants = [
+        "paperless-web.service"
+        "paperless-storage-layout-v1.service"
+        "data-pool-layout.service"
+      ];
+      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      path = [ config.services.paperless.manage ];
+      script = ''
+        set -euo pipefail
+
+        paperless-manage document_sanity_checker
+      '';
+      serviceConfig = {
+        Type = "oneshot";
+        User = "paperless";
+        Group = "paperless";
+        WorkingDirectory = dataDir;
+      };
+    };
+
     systemd.tmpfiles.rules = [ ];
   };
 }

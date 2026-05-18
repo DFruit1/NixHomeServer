@@ -57,10 +57,14 @@ sharedBooksSubdirs = vars.sharedBooksSubdirs;
 userContentSubdirs = vars.userContentSubdirs;
 sharedContentSubdirs = vars.sharedContentSubdirs;
 sharedMusicRoot = vars.sharedMusicRoot;
+staleReferenceCleanup = vars.staleReferenceCleanup or { users = false; shared = false; };
 paperlessInboxRoot = vars.paperlessInboxRoot;
 paperlessHandoffStagingRoot = vars.paperlessHandoffStagingRoot;
 paperlessArchiveRoot = vars.paperlessArchiveRoot;
 paperlessExportRoot = vars.paperlessExportRoot;
+};
+exampleVars = {
+staleReferenceCleanup = (import ./vars.example.nix { inherit lib; }).staleReferenceCleanup or { users = false; shared = false; };
 };
 config = {
 services = {
@@ -85,8 +89,6 @@ dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".f
 persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
 nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
 persistedDirectories = cfg.repo.impermanence.inventory.persistenceDirectories;
-hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
-hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
 };
 restic = {
 repository = cfg.services.restic.backups.system-state.repository;
@@ -147,8 +149,6 @@ uploadProcessorReadWritePaths = cfg.systemd.services."upload-processor".serviceC
 clamavDaemonEnable = cfg.services.clamav.daemon.enable;
 clamavUpdaterEnable = cfg.services.clamav.updater.enable;
 clamavDaemonSettings = cfg.services.clamav.daemon.settings;
-hasGlancesService = cfg.systemd.services ? "glances";
-hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
 copypartyServiceSupplementaryGroups =
 cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
 copypartyServiceBindPaths =
@@ -171,6 +171,9 @@ usersGroupMembers = cfg.users.groups.users.members or [ ];
 hasImmichServerService = cfg.systemd.services ? "immich-server";
 hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
 hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
+hasPaperlessStaleReferenceCheck = cfg.systemd.services ? "paperless-stale-reference-check";
+hasPaperlessStaleReferenceCheckTimer = cfg.systemd.timers ? "paperless-stale-reference-check";
+paperlessStaleReferenceCheckScript = cfg.systemd.services."paperless-stale-reference-check".script or "";
 paperlessStorageLayoutScript = cfg.systemd.services.paperless-storage-layout-v1.script;
 paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
 paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
@@ -182,6 +185,10 @@ hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library
 hasAudiobookshelfLibraryWatchConfig = cfg.systemd.services ? "audiobookshelf-library-watch-config-v1";
 audiobookshelfLibraryWatchConfigScript =
 cfg.systemd.services."audiobookshelf-library-watch-config-v1".script or "";
+hasAudiobookshelfStaleReferenceCleanup = cfg.systemd.services ? "audiobookshelf-stale-reference-cleanup";
+hasAudiobookshelfStaleReferenceCleanupTimer = cfg.systemd.timers ? "audiobookshelf-stale-reference-cleanup";
+audiobookshelfStaleReferenceCleanupScript =
+cfg.systemd.services."audiobookshelf-stale-reference-cleanup".script or "";
 hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
 hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
 hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
@@ -189,8 +196,11 @@ hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
 hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
 kavitaLibraryWatchConfigScript =
 cfg.systemd.services."kavita-library-watch-config-v1".script or "";
+hasKavitaStaleReferenceCleanup = cfg.systemd.services ? "kavita-stale-reference-cleanup";
+hasKavitaStaleReferenceCleanupTimer = cfg.systemd.timers ? "kavita-stale-reference-cleanup";
+kavitaStaleReferenceCleanupScript =
+cfg.systemd.services."kavita-stale-reference-cleanup".script or "";
 hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
-hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
 hasJellyfinLibraryBootstrap = cfg.systemd.services ? "jellyfin-library-bootstrap-v1";
 jellyfinLibraryBootstrapScript = cfg.systemd.services."jellyfin-library-bootstrap-v1".script or "";
@@ -200,6 +210,7 @@ hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
 hasJellyfinLibrarySyncTimer = cfg.systemd.timers ? "jellyfin-library-sync";
 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
+jellyfinLibrarySyncScript = cfg.systemd.services.jellyfin-library-sync.script or "";
 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
 jellyfinLibraryWatchAfter = cfg.systemd.services.jellyfin-library-watch.after;
 jellyfinLibraryWatchWants = cfg.systemd.services.jellyfin-library-watch.wants;
@@ -211,8 +222,6 @@ youtubeDownloaderPath =
 map (package: lib.getName package) (cfg.systemd.services."youtube-downloader".path or [ ]);
 metubeOauth2ProxyExecStart =
 cfg.systemd.services."metube-oauth2-proxy".serviceConfig.ExecStart or "";
-hasLegacyMetubeContainer =
-cfg.environment.etc ? "containers/systemd/users/3002/metube.container";
 hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
 hasMetubeAudioImportWatch = cfg.systemd.services ? "metube-audio-import-watch";
 jellyfinPayloadRoots = [
@@ -244,6 +253,11 @@ assert_json_false() {
 }
 
 echo "ℹ️ Checking coarse evaluated host configuration invariants…"
+
+assert_json_true '.vars.staleReferenceCleanup.users' "Real vars.nix must enable user stale reference cleanup."
+assert_json_true '.vars.staleReferenceCleanup.shared' "Real vars.nix must enable shared stale reference cleanup."
+assert_json_false '.exampleVars.staleReferenceCleanup.users' "Example vars must keep user stale reference cleanup disabled by default."
+assert_json_false '.exampleVars.staleReferenceCleanup.shared' "Example vars must keep shared stale reference cleanup disabled by default."
 
 assert_json_true '.config.services.caddyEnable' "Caddy must remain enabled."
 assert_json_true '.config.services.cloudflaredEnable' "Cloudflared must remain enabled."
@@ -288,9 +302,6 @@ for persisted_dir in /var/lib/copyparty /var/lib/clamav /var/lib/upload-processo
     exit 1
   fi
 done
-assert_json_false '.config.fileSystems.hasLegacyWorkspacesMount' "Legacy workspaces mounts must remain removed."
-assert_json_false '.config.fileSystems.hasLegacyMailArchiveMount' "Legacy mail-archive mounts must remain removed."
-
 require_json_equal "$(snapshot_query '.config.restic.repository')" '"/mnt/backup-system-state/restic/system-state"' \
   "System-state Restic backups must remain configured."
 if [[ "$(snapshot_query '.config.restic.pathCount')" == "0" ]]; then
@@ -535,6 +546,10 @@ fi
 assert_json_true '.config.apps.hasImmichServerService' "Immich service wiring must remain present."
 assert_json_true '.config.apps.hasPaperlessWebService' "Paperless service wiring must remain present."
 assert_json_true '.config.apps.hasPaperlessPermissionsBootstrap' "Paperless permission bootstrap wiring must remain present."
+assert_json_true '.config.apps.hasPaperlessStaleReferenceCheck' "Paperless stale reference check service must be present."
+assert_json_true '.config.apps.hasPaperlessStaleReferenceCheckTimer' "Paperless stale reference check timer must be present."
+require_match <(printf '%s\n' "$(snapshot_query '.config.apps.paperlessStaleReferenceCheckScript' | jq -r '.')") 'document_sanity_checker' \
+  "Paperless stale reference check must report via document_sanity_checker only."
 require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGroups')" '"true"' \
   "Paperless must keep OIDC group sync enabled."
 require_json_equal "$(snapshot_query '.config.apps.paperlessSocialAccountSyncGroupsClaim')" '"groups"' \
@@ -553,19 +568,37 @@ require_match <(printf '%s\n' "$(snapshot_query '.config.apps.oauth2ProxyExecSta
 assert_json_false '.config.apps.hasAudiobookshelfLibrarySync' "Audiobookshelf custom scan service must remain absent."
 assert_json_false '.config.apps.hasAudiobookshelfLibrarySyncTimer' "Audiobookshelf custom scan timer must remain absent."
 assert_json_true '.config.apps.hasAudiobookshelfLibraryWatchConfig' "Audiobookshelf native watcher convergence must remain present."
+assert_json_true '.config.apps.hasAudiobookshelfStaleReferenceCleanup' "Audiobookshelf stale reference cleanup service must be present."
+assert_json_true '.config.apps.hasAudiobookshelfStaleReferenceCleanupTimer' "Audiobookshelf stale reference cleanup timer must be present."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibraryWatchConfigScript' | jq -r '.')") 'scannerDisableWatcher = false' \
   "Audiobookshelf must keep the global native watcher enabled."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibraryWatchConfigScript' | jq -r '.')") 'disableWatcher = false' \
   "Audiobookshelf must keep per-library native watchers enabled."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.audiobookshelfLibraryWatchConfigScript' | jq -r '.')") 'autoScanCronExpression' \
   "Audiobookshelf must keep a native scan cron fallback for watcher misses."
+audiobookshelf_stale_reference_cleanup_script="$(snapshot_query '.config.apps.audiobookshelfStaleReferenceCleanupScript' | jq -r '.')"
+require_match <(printf '%s\n' "$audiobookshelf_stale_reference_cleanup_script") '/api/libraries/\$library_id/scan' \
+  "Audiobookshelf stale cleanup must scan each scoped library before deleting issue records."
+require_match <(printf '%s\n' "$audiobookshelf_stale_reference_cleanup_script") '/api/libraries/\$library_id/issues' \
+  "Audiobookshelf stale cleanup must use the issue cleanup endpoint."
+require_match <(printf '%s\n' "$audiobookshelf_stale_reference_cleanup_script") 'cleanup_users=true' \
+  "Audiobookshelf stale cleanup must receive the enabled user-scope flag from vars."
+require_match <(printf '%s\n' "$audiobookshelf_stale_reference_cleanup_script") 'cleanup_shared=true' \
+  "Audiobookshelf stale cleanup must receive the enabled shared-scope flag from vars."
 assert_json_false '.config.apps.hasAudiobookshelfLibraryWatch' "Audiobookshelf must not use a separate recursive watcher service."
 assert_json_false '.config.apps.hasKavitaLibrarySync' "Kavita settled scan service must remain absent."
 assert_json_false '.config.apps.hasKavitaLibrarySyncTimer' "Kavita overnight scan timer must remain absent."
 assert_json_false '.config.apps.hasKavitaMediaAclSync' "Kavita media ACL convergence must stay centralized in fileshare-user-root-sync."
 assert_json_false '.config.apps.hasKavitaLibraryWatch' "Kavita recursive watcher service must remain absent."
+assert_json_true '.config.apps.hasKavitaStaleReferenceCleanup' "Kavita stale reference cleanup service must be present."
+assert_json_true '.config.apps.hasKavitaStaleReferenceCleanupTimer' "Kavita stale reference cleanup timer must be present."
 require_match <(printf '%s\n' "$(snapshot_query '.config.apps.kavitaLibraryWatchConfigScript' | jq -r '.')") 'Key = 0' \
   "Kavita must keep its native recurring Library Scan task declaratively converged."
+kavita_stale_reference_cleanup_script="$(snapshot_query '.config.apps.kavitaStaleReferenceCleanupScript' | jq -r '.')"
+require_match <(printf '%s\n' "$kavita_stale_reference_cleanup_script") '/api/Server/cleanup' \
+  "Kavita stale cleanup must call the server cleanup API when authentication is available."
+require_match <(printf '%s\n' "$kavita_stale_reference_cleanup_script") 'relying on native folder watching and scan cron' \
+  "Kavita stale cleanup must fall back to native scan mechanisms without direct database deletion."
 require_match modules/kavita/default.nix 'vars\.apps\.books\.autoScanCronExpression' \
   "Kavita must source its scan cadence from vars.apps.books.autoScanCronExpression."
 require_match modules/kavita/default.nix 'disable-update-notifications\.patch' \
@@ -576,6 +609,13 @@ assert_json_true '.config.apps.hasJellyfinLibraryBootstrap' "Jellyfin declarativ
 assert_json_true '.config.apps.hasJellyfinLibrarySync' "Jellyfin settled scan service must remain present."
 assert_json_true '.config.apps.hasJellyfinLibrarySyncTimer' "Jellyfin must keep a periodic scan fallback for watcher misses."
 assert_json_true '.config.apps.hasJellyfinLibraryWatch' "Jellyfin recursive watcher service must remain present."
+jellyfin_library_sync_script="$(snapshot_query '.config.apps.jellyfinLibrarySyncScript' | jq -r '.')"
+require_match <(printf '%s\n' "$jellyfin_library_sync_script") 'IncludeItemTypes=Movie,Episode,Video,Audio,MusicVideo' \
+  "Jellyfin stale cleanup must enumerate media items with filesystem paths."
+require_match <(printf '%s\n' "$jellyfin_library_sync_script") '\[\[ -e "\$media_path" \]\]' \
+  "Jellyfin stale cleanup must skip existing files before calling the delete endpoint."
+require_match <(printf '%s\n' "$jellyfin_library_sync_script") '\$base_url/Items/\$item_id' \
+  "Jellyfin stale cleanup must remove only verified missing item references through the Jellyfin API."
 assert_json_true '.config.apps.hasYoutubeDownloaderService' "The custom YouTube downloader service must replace the MeTube container."
 require_match configuration.nix '\./modules/youtube-downloader' \
   "The YouTube downloader service must be imported as its own module."
@@ -585,7 +625,6 @@ if [[ -e modules/metube/service.nix ]]; then
   echo "❌ The YouTube downloader service must not live under modules/metube/service.nix."
   exit 1
 fi
-assert_json_false '.config.apps.hasLegacyMetubeContainer' "The legacy rootless MeTube container must not be active."
 assert_json_false '.config.apps.hasMetubeAudioImport' "MeTube audio import service must stay retired; downloads now target final media roots directly."
 assert_json_false '.config.apps.hasMetubeAudioImportWatch' "MeTube audio import watcher must stay retired; downloads now target final media roots directly."
 youtube_downloader_env="$(snapshot_query '.config.apps.youtubeDownloaderEnvironment')"
@@ -654,16 +693,12 @@ if ! jq -e 'index("virusTotalApiKey") != null' >/dev/null <<<"$(snapshot_query '
   echo "❌ Missing VirusTotal agenix secret definition: virusTotalApiKey."
   exit 1
 fi
-assert_json_false '.config.apps.hasGlancesService' "Glances service must be removed."
-assert_json_false '.config.apps.hasGlancesOauth2ProxyService' "Glances OAuth2 Proxy service must be removed."
 require_match scripts/helpers/upload-processor.sh '/api/v3/files/\$\{sha\}' \
   "Upload processor must use the VirusTotal hash lookup endpoint."
 forbid_match scripts/helpers/upload-processor.sh '/api/v3/files/upload' \
   "Upload processor must never call the VirusTotal file upload endpoint."
 forbid_match scripts/helpers/upload-processor.sh '/api/v3/files/upload_url' \
   "Upload processor must never call the VirusTotal upload URL endpoint."
-assert_json_false '.config.apps.hasLegacyKiwixLibraryTimer' "Legacy Kiwix polling timer must remain absent."
-
 shared_content_subdirs="$(snapshot_query '.config.sharedContentSubdirs')"
 if ! jq -e 'index("files") != null and index("videos") != null and index("audiobooks") != null and index("books") != null and index("emails") != null and index("kiwix") != null and index("music") == null' >/dev/null <<<"$shared_content_subdirs"; then
   echo "❌ Shared content subdirectories must include files, videos, audiobooks, books, emails, and kiwix."
@@ -734,19 +769,10 @@ for forbidden_path in 'videos/other' 'videos/music/youtube'; do
     "Fileshare user root sync must not create retired per-user Jellyfin path $forbidden_path."
 done
 
-jellyfin_library_bootstrap_source="modules/jellyfin/library-bootstrap.nix"
 jellyfin_library_bootstrap_script="$(snapshot_query '.config.apps.jellyfinLibraryBootstrapScript' | jq -r '.')"
 for name in 'Shared Movies' 'Shared Shows' 'Shared Home Videos' 'Shared Music Videos' 'Shared YouTube'; do
   require_match <(printf '%s\n' "$jellyfin_library_bootstrap_script") "$name" \
     "Jellyfin bootstrap must use prefix shared library name $name."
-done
-for retired_name in 'Other Videos \(Shared\)' 'Shared Other Videos' 'YouTube Music \(Shared\)' 'Shared YouTube Music'; do
-  require_match "$jellyfin_library_bootstrap_source" "$retired_name" \
-    "Jellyfin bootstrap must know how to retire managed legacy library $retired_name."
-done
-for suffix_name in 'Movies \(Shared\)' 'Shows \(Shared\)' 'Home Videos \(Shared\)' 'Music Videos \(Shared\)' 'YouTube \(Shared\)'; do
-  require_match <(printf '%s\n' "$jellyfin_library_bootstrap_script") "$suffix_name" \
-    "Jellyfin bootstrap must know how to rename legacy shared library $suffix_name."
 done
 require_match <(printf '%s\n' "$jellyfin_library_bootstrap_script") 'jellyfin_admin_members_json' \
   "Jellyfin bootstrap must intersect app-admin with jellyfinAdminUsers before enabling all folders."
@@ -920,11 +946,6 @@ if ! jq -e 'index("oauth2-proxy") != null and index("filebrowser-quantum-web") !
   echo "   OAuth systems: $oauth_systems"
   exit 1
 fi
-if jq -e 'index("glances-web") != null' >/dev/null <<<"$oauth_systems"; then
-  echo "❌ Glances must not be registered as a Kanidm OAuth2 client."
-  echo "   OAuth systems: $oauth_systems"
-  exit 1
-fi
 if jq -e 'index("vaultwarden-web") != null' >/dev/null <<<"$oauth_systems"; then
   echo "❌ Vaultwarden must not be registered as a Kanidm OAuth2 client."
   echo "   OAuth systems: $oauth_systems"
@@ -935,11 +956,6 @@ provision_groups="$(snapshot_query '.config.apps.provisionGroupNames')"
 if ! jq -e --arg admin "$(snapshot_query '.vars.kanidmAdminUser' | jq -r '.')" '.["shared-files-read-write-access"].members | index($admin) != null' >/dev/null <<<"$(snapshot_query '.config.apps.provisionGroups')"; then
   echo "❌ shared-files-read-write-access must include the Kanidm admin user for admin shared access."
   echo "   provisioned groups: $(snapshot_query '.config.apps.provisionGroups')"
-  exit 1
-fi
-if jq -e 'index("glances-users") != null' >/dev/null <<<"$provision_groups"; then
-  echo "❌ Kanidm provisioning must not define the removed Glances access group."
-  echo "   provisioned groups: $provision_groups"
   exit 1
 fi
 if jq -e 'index("vaultwarden-users") != null or index("vaultwarden-user") != null' >/dev/null <<<"$provision_groups"; then
@@ -991,11 +1007,6 @@ to_entries
 fi
 
 age_secret_names="$(snapshot_query '.config.apps.ageSecretNames')"
-if jq -e 'index("glancesOauth2ProxyClientSecret") != null or index("glancesOauth2ProxyCookieSecret") != null' >/dev/null <<<"$age_secret_names"; then
-  echo "❌ Glances generated secrets must be removed."
-  echo "   age secrets: $age_secret_names"
-  exit 1
-fi
 if ! jq -e 'index("runtimeCanaryFilesPassword") != null' >/dev/null <<<"$age_secret_names"; then
   echo "❌ Missing runtime canary agenix secret definition: runtimeCanaryFilesPassword."
   echo "   age secrets: $age_secret_names"

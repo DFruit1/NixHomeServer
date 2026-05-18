@@ -24,6 +24,7 @@
         bash
         coreutils
         findutils
+        gitMinimal
         getent
         gnugrep
         gnused
@@ -103,9 +104,14 @@
               userContentSubdirs = vars.userContentSubdirs;
               sharedContentSubdirs = vars.sharedContentSubdirs;
               sharedMusicRoot = vars.sharedMusicRoot;
+              staleReferenceCleanup = vars.staleReferenceCleanup or { users = false; shared = false; };
               paperlessInboxRoot = vars.paperlessInboxRoot;
+              paperlessHandoffStagingRoot = vars.paperlessHandoffStagingRoot;
               paperlessArchiveRoot = vars.paperlessArchiveRoot;
               paperlessExportRoot = vars.paperlessExportRoot;
+            };
+            exampleVars = {
+              staleReferenceCleanup = (import ./vars.example.nix { inherit lib; }).staleReferenceCleanup or { users = false; shared = false; };
             };
             config = {
               services = {
@@ -130,8 +136,6 @@
                 persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
                 nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
                 persistedDirectories = cfg.repo.impermanence.inventory.persistenceDirectories;
-                hasLegacyWorkspacesMount = cfg.fileSystems ? "/mnt/data/workspaces";
-                hasLegacyMailArchiveMount = cfg.fileSystems ? "/mnt/data/mail-archive";
               };
               restic = {
                 repository = cfg.services.restic.backups.system-state.repository;
@@ -180,6 +184,7 @@
                   cfg.systemd.services."mail-archive-ui".serviceConfig.SupplementaryGroups or [ ];
                 mailArchiveUiExtraGroups = cfg.users.users.mail-archive-ui.extraGroups or [ ];
                 mailArchiveUiPaperlessConsumeRoot = cfg.services.mail-archive-ui.paperlessConsumeRoot;
+                mailArchiveUiPaperlessHandoffStagingRoot = cfg.services.mail-archive-ui.paperlessHandoffStagingRoot;
                 mailArchiveUiPath =
                   map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
                 mailArchiveSyncPath =
@@ -209,6 +214,10 @@
                 hasImmichServerService = cfg.systemd.services ? "immich-server";
                 hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
                 hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
+                hasPaperlessStaleReferenceCheck = cfg.systemd.services ? "paperless-stale-reference-check";
+                hasPaperlessStaleReferenceCheckTimer = cfg.systemd.timers ? "paperless-stale-reference-check";
+                paperlessStaleReferenceCheckScript = cfg.systemd.services."paperless-stale-reference-check".script or "";
+                paperlessStorageLayoutScript = cfg.systemd.services.paperless-storage-layout-v1.script;
                 paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
                 paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
                 paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
@@ -219,6 +228,10 @@
                 hasAudiobookshelfLibraryWatchConfig = cfg.systemd.services ? "audiobookshelf-library-watch-config-v1";
                 audiobookshelfLibraryWatchConfigScript =
                   cfg.systemd.services."audiobookshelf-library-watch-config-v1".script or "";
+                hasAudiobookshelfStaleReferenceCleanup = cfg.systemd.services ? "audiobookshelf-stale-reference-cleanup";
+                hasAudiobookshelfStaleReferenceCleanupTimer = cfg.systemd.timers ? "audiobookshelf-stale-reference-cleanup";
+                audiobookshelfStaleReferenceCleanupScript =
+                  cfg.systemd.services."audiobookshelf-stale-reference-cleanup".script or "";
                 hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
                 hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
                 hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
@@ -226,8 +239,11 @@
                 hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
                 kavitaLibraryWatchConfigScript =
                   cfg.systemd.services."kavita-library-watch-config-v1".script or "";
+                hasKavitaStaleReferenceCleanup = cfg.systemd.services ? "kavita-stale-reference-cleanup";
+                hasKavitaStaleReferenceCleanupTimer = cfg.systemd.timers ? "kavita-stale-reference-cleanup";
+                kavitaStaleReferenceCleanupScript =
+                  cfg.systemd.services."kavita-stale-reference-cleanup".script or "";
                 hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
-                hasLegacyKiwixLibraryTimer = cfg.systemd.timers ? "kiwix-library-sync";
                 hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
                 hasJellyfinLibraryBootstrap = cfg.systemd.services ? "jellyfin-library-bootstrap-v1";
                 jellyfinLibraryBootstrapScript = cfg.systemd.services."jellyfin-library-bootstrap-v1".script or "";
@@ -237,6 +253,7 @@
                 hasJellyfinLibrarySyncTimer = cfg.systemd.timers ? "jellyfin-library-sync";
                 jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
                 jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
+                jellyfinLibrarySyncScript = cfg.systemd.services.jellyfin-library-sync.script or "";
                 hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
                 jellyfinLibraryWatchAfter = cfg.systemd.services.jellyfin-library-watch.after;
                 jellyfinLibraryWatchWants = cfg.systemd.services.jellyfin-library-watch.wants;
@@ -248,8 +265,6 @@
                   map (package: lib.getName package) (cfg.systemd.services."youtube-downloader".path or [ ]);
                 metubeOauth2ProxyExecStart =
                   cfg.systemd.services."metube-oauth2-proxy".serviceConfig.ExecStart or "";
-                hasLegacyMetubeContainer =
-                  cfg.environment.etc ? "containers/systemd/users/3002/metube.container";
                 hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
                 hasMetubeAudioImportWatch = cfg.systemd.services ? "metube-audio-import-watch";
                 jellyfinPayloadRoots = [
@@ -263,8 +278,6 @@
                 clamavDaemonEnable = cfg.services.clamav.daemon.enable;
                 clamavUpdaterEnable = cfg.services.clamav.updater.enable;
                 clamavDaemonSettings = cfg.services.clamav.daemon.settings;
-                hasGlancesService = cfg.systemd.services ? "glances";
-                hasGlancesOauth2ProxyService = cfg.systemd.services ? "glances-oauth2-proxy";
                 hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
               };
             };
@@ -371,18 +384,14 @@
           {
             nativeBuildInputs = checkNativeBuildInputs;
           } ''
-          export HOME="$TMPDIR"
-          export NIX_CONFIG="experimental-features = nix-command flakes"
-          cd ${self}
-          bash scripts/tests/test-secret-definitions.sh
-          bash scripts/tests/test-deploy-with-validation-remote-preflight.sh
-          bash scripts/tests/test-storage-health-checks.sh
-          bash scripts/tests/test-upload-processor.sh
-          bash scripts/tests/test-runtime-readiness.sh
-          bash scripts/tests/test-system-health-report.sh
-          export CORE_CONFIG_SNAPSHOT_JSON="$(cat ${coreConfigSnapshotFile})"
-          bash scripts/tests/test-evaluated-host-config.sh
-          touch "$out"
+            export HOME="$TMPDIR"
+            export NIX_CONFIG="experimental-features = nix-command flakes"
+            cp -R ${self} "$TMPDIR/source"
+            chmod -R u+w "$TMPDIR/source"
+            cd "$TMPDIR/source"
+            export CORE_CONFIG_SNAPSHOT_JSON="$(cat ${coreConfigSnapshotFile})"
+            bash scripts/tests/run-script-tests.sh --full
+            touch "$out"
         '';
       } // rustChecks;
 

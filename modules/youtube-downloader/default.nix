@@ -41,14 +41,12 @@ in
       description = "Authenticated YouTube media downloader";
       wantedBy = [ "multi-user.target" ];
       wants = [
-        "metube-legacy-container-cleanup.service"
         "network-online.target"
         "data-pool-layout.service"
         "jellyfin-storage-layout-v1.service"
         "audiobookshelf-storage-layout-v1.service"
       ];
       after = [
-        "metube-legacy-container-cleanup.service"
         "network-online.target"
         "data-pool-layout.service"
         "jellyfin-storage-layout-v1.service"
@@ -94,37 +92,6 @@ in
           vars.usersRoot
         ];
         CPUQuota = resources.metube.cpuQuota;
-      };
-    };
-
-    systemd.services.metube-legacy-container-cleanup = {
-      description = "Stop legacy MeTube container before starting native downloader";
-      before = [ "youtube-downloader.service" ];
-      wantedBy = [ "multi-user.target" ];
-      path = with pkgs; [
-        procps
-        shadow
-        systemd
-        util-linux
-        podman
-      ];
-      script = ''
-        set -euo pipefail
-
-        export XDG_RUNTIME_DIR=/run/user/${toString metubeUid}
-        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${toString metubeUid}/bus
-
-        if [[ -S "$XDG_RUNTIME_DIR/bus" ]]; then
-          runuser -u ${metubeUser} -- systemctl --user stop metube.service 2>/dev/null || true
-          runuser -u ${metubeUser} -- systemctl --user daemon-reload 2>/dev/null || true
-        fi
-
-        runuser -u ${metubeUser} -- podman stop metube 2>/dev/null || true
-        pkill -u ${metubeUser} -f 'podman/(pasta|passt).*127\.0\.0\.1/8083' 2>/dev/null || true
-      '';
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
       };
     };
   };

@@ -1,6 +1,0 @@
-warning: Git tree '/home/dsaw/Projects/NixOS' is dirty
-building the system configuration...
-warning: Git tree '/home/dsaw/Projects/NixOS' is dirty
-root@192.168.0.144: Permission denied (publickey).
-error: failed to start SSH connection to '192.168.0.144'
-Command 'nix-copy-closure --to root@192.168.0.144 /nix/store/9v13ibgwxgcbmgkz9ky0c8n93rjvp7l2-nixos-system-server-25.11.20260328.0a3d6d3.drv' returned non-zero exit status 1.

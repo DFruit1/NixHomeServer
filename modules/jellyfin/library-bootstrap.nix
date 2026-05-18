@@ -18,36 +18,8 @@ let
       owner = null;
     })
     vars.sharedJellyfinLibraries;
-  legacyRenameLibraries = map
-    (library: {
-      oldName = "${library.label} (Shared)";
-      newName = "Shared ${library.label}";
-      path = "${vars.sharedVideosRoot}/${library.dir}";
-      collectionType = library.collectionType;
-    })
-    vars.sharedJellyfinLibraries;
-  retiredLibraries = [
-    {
-      names = [
-        "Other Videos (Shared)"
-        "Shared Other Videos"
-      ];
-      path = "${vars.sharedVideosRoot}/other";
-      collectionType = "homevideos";
-    }
-    {
-      names = [
-        "YouTube Music (Shared)"
-        "Shared YouTube Music"
-      ];
-      path = "${vars.sharedMusicRoot}/youtube";
-      collectionType = "music";
-    }
-  ];
   sharedLibrariesJson = builtins.toJSON sharedLibraries;
   personalLibrariesJson = builtins.toJSON vars.personalJellyfinLibraries;
-  legacyRenameLibrariesJson = builtins.toJSON legacyRenameLibraries;
-  retiredLibrariesJson = builtins.toJSON retiredLibraries;
   jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or [ vars.kanidmAdminUser ]);
   jellyfinLibraryBootstrapPath = with pkgs; [
     coreutils
@@ -93,8 +65,6 @@ in
         changed=0
         shared_libraries_json=${lib.escapeShellArg sharedLibrariesJson}
         personal_libraries_json=${lib.escapeShellArg personalLibrariesJson}
-        legacy_rename_libraries_json=${lib.escapeShellArg legacyRenameLibrariesJson}
-        retired_libraries_json=${lib.escapeShellArg retiredLibrariesJson}
         jellyfin_admin_users_json=${lib.escapeShellArg jellyfinAdminUsersJson}
 
         install -d -m 0750 -o jellyfin -g jellyfin "$managed_dir"
@@ -286,65 +256,6 @@ in
         )"
 
         refresh_virtual_folders
-
-        while IFS=$'\t' read -r old_name new_name collection_type path; do
-          [[ -n "$old_name" ]] || continue
-          if ! library_exists "$old_name"; then
-            continue
-          fi
-          if ! library_matches "$old_name" "$collection_type" "$path"; then
-            echo "Jellyfin library '$old_name' exists but does not match managed path '$path' and type '$collection_type'." >&2
-            echo "Refusing to rename a user-managed Jellyfin library." >&2
-            exit 1
-          fi
-          if library_exists "$new_name"; then
-            if library_matches "$new_name" "$collection_type" "$path"; then
-              continue
-            fi
-            echo "Jellyfin library '$new_name' already exists but does not match managed path '$path' and type '$collection_type'." >&2
-            echo "Refusing to overwrite a user-managed Jellyfin library." >&2
-            exit 1
-          fi
-
-          echo "Renaming Jellyfin library '$old_name' to '$new_name'"
-          curl_jellyfin \
-            -X POST \
-            -G \
-            --data-urlencode "name=$old_name" \
-            --data-urlencode "newName=$new_name" \
-            --data-urlencode "refreshLibrary=false" \
-            "$base_url/Library/VirtualFolders/Name" \
-            >/dev/null
-          changed=1
-          refresh_virtual_folders
-        done < <(
-          jq -r '.[] | [.oldName, .newName, .collectionType, .path] | @tsv' <<<"$legacy_rename_libraries_json"
-        )
-
-        while IFS=$'\t' read -r name collection_type path; do
-          [[ -n "$name" ]] || continue
-          if ! library_exists "$name"; then
-            continue
-          fi
-          if ! library_matches "$name" "$collection_type" "$path"; then
-            echo "Jellyfin retired library '$name' exists but does not match managed path '$path' and type '$collection_type'." >&2
-            echo "Refusing to remove a user-managed Jellyfin library." >&2
-            exit 1
-          fi
-
-          echo "Removing retired Jellyfin library '$name'"
-          curl_jellyfin \
-            -X DELETE \
-            -G \
-            --data-urlencode "name=$name" \
-            --data-urlencode "refreshLibrary=false" \
-            "$base_url/Library/VirtualFolders" \
-            >/dev/null
-          changed=1
-          refresh_virtual_folders
-        done < <(
-          jq -r '.[] | . as $library | .names[] | [., $library.collectionType, $library.path] | @tsv' <<<"$retired_libraries_json"
-        )
 
         while IFS=$'\t' read -r name collection_type path; do
           [[ -n "$name" ]] || continue

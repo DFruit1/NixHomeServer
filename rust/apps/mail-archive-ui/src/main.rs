@@ -63,8 +63,6 @@ const PAPERLESS_PUBLISH_RETRY_ATTEMPTS: usize = 30;
 const PAPERLESS_PUBLISH_RETRY_ATTEMPTS: usize = 2;
 #[cfg(not(test))]
 const PAPERLESS_PUBLISH_RETRY_DELAY_MS: u64 = 1000;
-#[cfg(test)]
-const PAPERLESS_PUBLISH_RETRY_DELAY_MS: u64 = 0;
 const ATTACHMENT_SELECTION_ALL_MATCHING: &str = "all_matching";
 const MASTER_KEY_FILENAME: &str = "master.key";
 const DB_FILENAME: &str = "mail-archive-ui.sqlite3";
@@ -3947,9 +3945,6 @@ fn ensure_account_paths(
         .join("blobs")
         .join("sha256");
     let export_root = hidden_sync_root.join("exports");
-    let legacy_payload_root = emails_root.join("accounts").join(account.id.to_string());
-    let legacy_state_dir = legacy_payload_root.join("state");
-    let legacy_notmuch_db_root = legacy_payload_root.join("maildir/.notmuch");
     let account_state_root = PathBuf::from(config.account_state_root.as_ref())
         .join(&account.username)
         .join(account.id.to_string());
@@ -3983,11 +3978,6 @@ fn ensure_account_paths(
         sync_state_dir,
         notmuch_db_root,
     };
-
-    migrate_legacy_account_state(&legacy_state_dir, &legacy_notmuch_db_root, &account_paths)?;
-    migrate_legacy_maildir_payload(&legacy_payload_root.join("maildir"), &account_paths.maildir)?;
-    migrate_account_state_root_layout(&account_paths)?;
-    remove_legacy_email_payload_tree(&legacy_payload_root)?;
 
     fs::create_dir_all(&account_paths.sync_state_dir).map_err(|error| {
         format!(
@@ -4068,225 +4058,6 @@ fn ensure_notmuch_config(
     }
 
     write_private_file(&account_paths.notmuch_config, contents.as_bytes())
-}
-
-fn migrate_legacy_account_state(
-    legacy_state_dir: &FsPath,
-    legacy_notmuch_db_root: &FsPath,
-    account_paths: &AccountPaths,
-) -> Result<(), String> {
-    move_or_prune_legacy_path(
-        &legacy_state_dir.join("mbsync-state"),
-        &account_paths.sync_state_dir,
-    )?;
-    move_prefixed_files_if_missing_or_stale(
-        legacy_state_dir,
-        "mbsync-state",
-        &account_paths.sync_state_dir,
-        "state",
-    )?;
-    move_or_prune_legacy_path(
-        &legacy_state_dir.join("notmuch-config"),
-        &account_paths.notmuch_config,
-    )?;
-    remove_path_recursive_if_exists(legacy_notmuch_db_root)?;
-    remove_dir_if_empty(legacy_state_dir)?;
-    Ok(())
-}
-
-fn migrate_legacy_maildir_payload(legacy_maildir: &FsPath, maildir: &FsPath) -> Result<(), String> {
-    if !legacy_maildir.is_dir() {
-        return Ok(());
-    }
-
-    fs::create_dir_all(maildir)
-        .map_err(|error| format!("failed to create {}: {error}", maildir.display()))?;
-
-    let entries = fs::read_dir(legacy_maildir)
-        .map_err(|error| format!("failed to read {}: {error}", legacy_maildir.display()))?;
-    for entry in entries {
-        let entry = entry
-            .map_err(|error| format!("failed to read {}: {error}", legacy_maildir.display()))?;
-        if entry.file_name() == ".notmuch" {
-            remove_path_recursive(&entry.path())?;
-            continue;
-        }
-
-        let destination = maildir.join(entry.file_name());
-        move_legacy_payload_path(&entry.path(), &destination)?;
-    }
-
-    remove_dir_if_empty(legacy_maildir)
-}
-
-fn migrate_account_state_root_layout(account_paths: &AccountPaths) -> Result<(), String> {
-    move_prefixed_files_if_missing_or_stale(
-        &account_paths.account_state_root,
-        "mbsync-state",
-        &account_paths.sync_state_dir,
-        "state",
-    )
-}
-
-fn move_or_prune_legacy_path(src: &FsPath, dst: &FsPath) -> Result<(), String> {
-    if !src.exists() {
-        return Ok(());
-    }
-
-    if dst.exists() {
-        return remove_path_recursive(src);
-    }
-
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
-    }
-
-    copy_path_recursive(src, dst)?;
-    remove_path_recursive(src)?;
-    Ok(())
-}
-
-fn move_prefixed_files_if_missing_or_stale(
-    src_dir: &FsPath,
-    src_prefix: &str,
-    dst_dir: &FsPath,
-    dst_prefix: &str,
-) -> Result<(), String> {
-    if !src_dir.is_dir() {
-        return Ok(());
-    }
-
-    fs::create_dir_all(dst_dir)
-        .map_err(|error| format!("failed to create {}: {error}", dst_dir.display()))?;
-
-    let entries = fs::read_dir(src_dir)
-        .map_err(|error| format!("failed to read {}: {error}", src_dir.display()))?;
-    for entry in entries {
-        let entry =
-            entry.map_err(|error| format!("failed to read {}: {error}", src_dir.display()))?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-        if !file_name.starts_with(src_prefix) {
-            continue;
-        }
-        if file_name == src_prefix {
-            continue;
-        }
-
-        let suffix = &file_name[src_prefix.len()..];
-        let dst = dst_dir.join(format!("{dst_prefix}{suffix}"));
-        let src = entry.path();
-        if dst.exists() {
-            remove_path_recursive(&src)?;
-            continue;
-        }
-
-        copy_path_recursive(&src, &dst)?;
-        remove_path_recursive(&src)?;
-    }
-
-    Ok(())
-}
-
-fn move_legacy_payload_path(src: &FsPath, dst: &FsPath) -> Result<(), String> {
-    if dst.exists() {
-        return Err(format!(
-            "refusing to overwrite existing migrated mail payload path: {}",
-            dst.display()
-        ));
-    }
-
-    copy_path_recursive(src, dst)?;
-    remove_path_recursive(src)
-}
-
-fn copy_path_recursive(src: &FsPath, dst: &FsPath) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(src)
-        .map_err(|error| format!("failed to inspect {}: {error}", src.display()))?;
-
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "refusing to migrate symlinked legacy path: {}",
-            src.display()
-        ));
-    }
-
-    if metadata.is_dir() {
-        fs::create_dir_all(dst)
-            .map_err(|error| format!("failed to create {}: {error}", dst.display()))?;
-        fs::set_permissions(dst, metadata.permissions())
-            .map_err(|error| format!("failed to chmod {}: {error}", dst.display()))?;
-        let entries = fs::read_dir(src)
-            .map_err(|error| format!("failed to read {}: {error}", src.display()))?;
-        for entry in entries {
-            let entry =
-                entry.map_err(|error| format!("failed to read {}: {error}", src.display()))?;
-            copy_path_recursive(&entry.path(), &dst.join(entry.file_name()))?;
-        }
-        return Ok(());
-    }
-
-    if !metadata.is_file() {
-        return Err(format!(
-            "refusing to migrate unsupported legacy path: {}",
-            src.display()
-        ));
-    }
-
-    fs::copy(src, dst).map_err(|error| {
-        format!(
-            "failed to copy {} to {}: {error}",
-            src.display(),
-            dst.display()
-        )
-    })?;
-    fs::set_permissions(dst, metadata.permissions())
-        .map_err(|error| format!("failed to chmod {}: {error}", dst.display()))?;
-    Ok(())
-}
-
-fn remove_path_recursive(path: &FsPath) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(path)
-            .map_err(|error| format!("failed to remove {}: {error}", path.display()))
-    } else {
-        fs::remove_file(path)
-            .map_err(|error| format!("failed to remove {}: {error}", path.display()))
-    }
-}
-
-fn remove_path_recursive_if_exists(path: &FsPath) -> Result<(), String> {
-    if path.exists() {
-        remove_path_recursive(path)?;
-    }
-    Ok(())
-}
-
-fn remove_legacy_email_payload_tree(legacy_payload_root: &FsPath) -> Result<(), String> {
-    if legacy_payload_root.exists() {
-        remove_path_recursive(legacy_payload_root)?;
-    }
-    remove_dir_if_empty(
-        legacy_payload_root
-            .parent()
-            .ok_or_else(|| "legacy payload root parent missing".to_string())?,
-    )
-}
-
-fn remove_dir_if_empty(path: &FsPath) -> Result<(), String> {
-    if !path.is_dir() {
-        return Ok(());
-    }
-
-    match fs::remove_dir(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::DirectoryNotEmpty => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("failed to remove {}: {error}", path.display())),
-    }
 }
 
 fn write_temp_secret(
@@ -6846,6 +6617,13 @@ fn paperless_handoff_staging_filename(attachment_key: &str) -> String {
     )
 }
 
+fn sleep_before_paperless_publish_retry() {
+    #[cfg(not(test))]
+    std::thread::sleep(std::time::Duration::from_millis(
+        PAPERLESS_PUBLISH_RETRY_DELAY_MS,
+    ));
+}
+
 fn publish_staged_paperless_file(tmp_path: &FsPath, final_path: &FsPath) -> Result<(), String> {
     for attempt in 0..PAPERLESS_PUBLISH_RETRY_ATTEMPTS {
         match fs::hard_link(tmp_path, final_path) {
@@ -6863,11 +6641,7 @@ fn publish_staged_paperless_file(tmp_path: &FsPath, final_path: &FsPath) -> Resu
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 if attempt + 1 < PAPERLESS_PUBLISH_RETRY_ATTEMPTS {
-                    if PAPERLESS_PUBLISH_RETRY_DELAY_MS > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(
-                            PAPERLESS_PUBLISH_RETRY_DELAY_MS,
-                        ));
-                    }
+                    sleep_before_paperless_publish_retry();
                     continue;
                 }
                 let _ = fs::remove_file(tmp_path);
@@ -7383,20 +7157,6 @@ fn resolve_attachment_payload(
                     blob_path,
                 ));
             }
-        }
-    }
-    let canonical_blob_relpath = attachment_blob_relpath(&attachment.attachment_sha256);
-    let canonical_blob_relpath = canonical_blob_relpath.to_string_lossy().to_string();
-    let canonical_blob_path = attachment_blob_path(&account_paths, &canonical_blob_relpath)?;
-    if canonical_blob_path.is_file() {
-        let blob_sha = sha256_file(&canonical_blob_path)?;
-        if blob_sha == attachment.attachment_sha256 {
-            return Ok((
-                TempExtractionDir {
-                    path: PathBuf::new(),
-                },
-                canonical_blob_path,
-            ));
         }
     }
 
@@ -10651,117 +10411,6 @@ mod tests {
     }
 
     #[test]
-    fn account_path_migration_moves_legacy_state_off_the_mail_payload_tree() {
-        let tempdir = TempDir::new().expect("tempdir");
-        let config = test_config(&tempdir);
-        prepare_test_layout(&config);
-        let account = example_account();
-        let legacy_root = tempdir
-            .path()
-            .join("store")
-            .join("alice")
-            .join("emails")
-            .join("accounts")
-            .join("42");
-        let legacy_sync_state = legacy_root.join("state/mbsync-state/state.dat");
-        let legacy_notmuch_config = legacy_root.join("state/notmuch-config");
-        let legacy_notmuch_db = legacy_root.join("maildir/.notmuch/metadata");
-        fs::create_dir_all(legacy_sync_state.parent().expect("legacy sync parent"))
-            .expect("legacy sync dir");
-        fs::create_dir_all(legacy_notmuch_db.parent().expect("legacy db parent"))
-            .expect("legacy db dir");
-        write_private_file(&legacy_sync_state, b"sync").expect("legacy sync state");
-        write_private_file(&legacy_notmuch_config, b"config").expect("legacy config");
-        write_private_file(&legacy_notmuch_db, b"db").expect("legacy db");
-
-        let paths = ensure_account_paths(&config, &account).expect("paths");
-
-        assert!(paths.sync_state_dir.join("state.dat").exists());
-        assert!(paths.notmuch_config.exists());
-        assert!(!paths.notmuch_db_root.join("metadata").exists());
-        assert!(!legacy_root.join("state").exists());
-        assert!(!legacy_root.join("maildir/.notmuch").exists());
-        assert!(!legacy_root.exists());
-    }
-
-    #[test]
-    fn account_path_migration_moves_legacy_maildir_payload_into_hidden_sync_tree() {
-        let tempdir = TempDir::new().expect("tempdir");
-        let config = test_config(&tempdir);
-        prepare_test_layout(&config);
-        let account = example_account();
-        let legacy_root = tempdir
-            .path()
-            .join("store")
-            .join("alice")
-            .join("emails")
-            .join("accounts")
-            .join("42");
-        let legacy_message = legacy_root.join("maildir/Inbox/cur/msg-1");
-        let legacy_notmuch_db = legacy_root.join("maildir/.notmuch/metadata");
-        fs::create_dir_all(legacy_message.parent().expect("legacy message parent"))
-            .expect("legacy message dir");
-        fs::create_dir_all(legacy_notmuch_db.parent().expect("legacy db parent"))
-            .expect("legacy db dir");
-        write_private_file(&legacy_message, b"Message-ID: <legacy@example.com>\n\nbody")
-            .expect("legacy message");
-        write_private_file(&legacy_notmuch_db, b"db").expect("legacy db");
-
-        let paths = ensure_account_paths(&config, &account).expect("paths");
-
-        assert!(paths.maildir.join("Inbox/cur/msg-1").exists());
-        assert!(!paths.maildir.join(".notmuch/metadata").exists());
-        assert!(!legacy_root.exists());
-    }
-
-    #[test]
-    fn account_path_migration_moves_flat_legacy_mbsync_state_files_into_the_state_dir() {
-        let tempdir = TempDir::new().expect("tempdir");
-        let config = test_config(&tempdir);
-        prepare_test_layout(&config);
-        let account = example_account();
-        let legacy_root = tempdir
-            .path()
-            .join("store")
-            .join("alice")
-            .join("emails")
-            .join("accounts")
-            .join("42");
-        let legacy_state_dir = legacy_root.join("state");
-        fs::create_dir_all(&legacy_state_dir).expect("legacy state dir");
-        write_private_file(&legacy_state_dir.join("mbsync-stateINBOX"), b"sync")
-            .expect("legacy sync state");
-
-        let paths = ensure_account_paths(&config, &account).expect("paths");
-
-        assert!(paths.sync_state_dir.join("stateINBOX").exists());
-        assert!(!legacy_state_dir.join("mbsync-stateINBOX").exists());
-        assert!(!legacy_state_dir.exists());
-    }
-
-    #[test]
-    fn account_path_migration_moves_flat_ssd_mbsync_state_files_into_the_state_dir() {
-        let tempdir = TempDir::new().expect("tempdir");
-        let config = test_config(&tempdir);
-        prepare_test_layout(&config);
-        let account = example_account();
-        let account_state_root = tempdir
-            .path()
-            .join("data")
-            .join("accounts")
-            .join("alice")
-            .join("42");
-        fs::create_dir_all(&account_state_root).expect("account state root");
-        write_private_file(&account_state_root.join("mbsync-stateINBOX"), b"sync")
-            .expect("wrong-root sync state");
-
-        let paths = ensure_account_paths(&config, &account).expect("paths");
-
-        assert!(paths.sync_state_dir.join("stateINBOX").exists());
-        assert!(!account_state_root.join("mbsync-stateINBOX").exists());
-    }
-
-    #[test]
     fn visible_message_filename_caps_long_subjects() {
         let long_subject = "10197254.".to_string() + &"LongToken".repeat(80);
         let filename = visible_message_filename(
@@ -12443,68 +12092,6 @@ mod tests {
             assert_eq!(report.attachments_checked, 1);
             assert!(!report.has_errors());
             assert!(report_path.exists());
-        });
-    }
-
-    #[test]
-    fn attachment_payload_resolves_legacy_null_blob_relpath_from_canonical_blob() {
-        with_stubbed_path(&mail_export_stub_commands(), |_| {
-            let tempdir = TempDir::new().expect("tempdir");
-            let config = test_config(&tempdir);
-            prepare_test_layout(&config);
-            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
-            let account = read_account(&config, "alice", account_id);
-            let account_paths = ensure_account_paths(&config, &account).expect("paths");
-            write_maildir_message(
-                &account_paths,
-                "Inbox/cur/msg-1",
-                "Message-ID: <legacy-blob@example.com>\nSubject: Legacy Blob\n\nATTACH:pdf\n",
-            );
-
-            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
-                .expect("sync");
-            let page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    subject: Some("Legacy Blob".to_string()),
-                    extension: Some("pdf".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("page");
-            let key = page.items[0].attachment.attachment_key.clone();
-            open_db(&config)
-                .expect("db")
-                .execute(
-                    "UPDATE attachment_catalog SET blob_relpath = NULL WHERE attachment_key = ?1",
-                    params![key],
-                )
-                .expect("clear blob relpath");
-
-            let page = load_attachment_page_data(
-                &config,
-                "alice",
-                &AttachmentListParams {
-                    subject: Some("Legacy Blob".to_string()),
-                    extension: Some("pdf".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("legacy page");
-            let item = &page.items[0];
-            assert!(item.attachment.blob_relpath.is_none());
-            fs::remove_file(account_paths.maildir.join(&item.message.message_relpath))
-                .expect("remove source message");
-
-            let (_dir, payload_path) =
-                resolve_attachment_payload(&config, &account, &item.message, &item.attachment)
-                    .expect("resolve payload from canonical blob");
-            assert!(payload_path.is_file());
-            assert_eq!(
-                sha256_file(&payload_path).expect("payload sha"),
-                item.attachment.attachment_sha256
-            );
         });
     }
 

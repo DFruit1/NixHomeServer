@@ -8,6 +8,7 @@
 /.jj
 /ss
 /result
+/rebuild.log
 /.cache/
 /rust/apps/*/target/
 /node/apps/*/node_modules/

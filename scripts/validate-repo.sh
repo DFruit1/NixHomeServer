@@ -15,16 +15,16 @@ Usage: scripts/validate-repo.sh [--full] [--run-flake-check] [--skip-flake-check
 Run the local repository validation gate.
 
 Default mode:
-  - runs the fixed shell suite through scripts/tests/run-script-tests.sh
+  - runs the lean script suite through scripts/tests/run-script-tests.sh
   - does not run the flake check by default
-  - does not run Rust checks
+  - does not build lint or Rust check derivations
 
   Use --run-flake-check to include `nix flake check --no-build`.
 
 Full mode:
   - runs `nix flake check --no-build` unless --skip-flake-check is used
-  - runs the fixed shell suite through scripts/tests/run-script-tests.sh
-  - builds all explicit Rust check derivations
+  - runs the broad script suite through scripts/tests/run-script-tests.sh --full
+  - builds selected lint and Rust check derivations
 
 Examples:
   scripts/validate-repo.sh
@@ -86,7 +86,7 @@ current_system() {
   nix eval --impure --raw --expr 'builtins.currentSystem'
 }
 
-run_rust_checks() {
+run_full_derivation_checks() {
   local system check_name
 
   if [[ "$full_mode" != true ]]; then
@@ -109,7 +109,13 @@ run_rust_checks() {
 }
 
 run_shell_tests() {
-  echo "ℹ️ Running repository policy tests…"
+  if [[ "$full_mode" == true ]]; then
+    echo "ℹ️ Running full repository policy tests…"
+    "${tests_dir}/run-script-tests.sh" --full
+    return 0
+  fi
+
+  echo "ℹ️ Running lean repository policy tests…"
   "${tests_dir}/run-script-tests.sh"
 }
 
@@ -121,7 +127,7 @@ if [[ "$skip_flake_check" == false ]]; then
   fi
 fi
 
-run_rust_checks
+run_full_derivation_checks
 run_shell_tests
 
 write_validation_stamp() {

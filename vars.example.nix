@@ -280,6 +280,10 @@ rec {
   immichExternalRoot = "${immichRoot}/external";
   usersRoot = "${dataRoot}/users";
   sharedRoot = "${dataRoot}/shared";
+  staleReferenceCleanup = {
+    users = false;
+    shared = false;
+  };
   uploadSecurity = {
     stagingRoot = "${dataRoot}/upload-staging";
     quarantineRoot = "${dataRoot}/quarantine/uploads";
