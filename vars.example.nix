@@ -272,6 +272,7 @@ rec {
   dataRoot = zfsDataPool.mountPoint;
   paperlessRoot = "${dataRoot}/paperless";
   paperlessInboxRoot = "${paperlessRoot}/inbox";
+  paperlessHandoffStagingRoot = "${paperlessRoot}/handoff-staging";
   paperlessArchiveRoot = "${paperlessRoot}/archive";
   paperlessExportRoot = "${paperlessRoot}/export";
   immichRoot = "${dataRoot}/immich";

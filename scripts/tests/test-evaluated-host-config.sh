@@ -58,6 +58,7 @@ userContentSubdirs = vars.userContentSubdirs;
 sharedContentSubdirs = vars.sharedContentSubdirs;
 sharedMusicRoot = vars.sharedMusicRoot;
 paperlessInboxRoot = vars.paperlessInboxRoot;
+paperlessHandoffStagingRoot = vars.paperlessHandoffStagingRoot;
 paperlessArchiveRoot = vars.paperlessArchiveRoot;
 paperlessExportRoot = vars.paperlessExportRoot;
 };
@@ -132,6 +133,7 @@ mailArchiveUiReadWritePaths =
 cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
 mailArchiveUiExtraGroups = cfg.users.users.mail-archive-ui.extraGroups or [ ];
 mailArchiveUiPaperlessConsumeRoot = cfg.services.mail-archive-ui.paperlessConsumeRoot;
+mailArchiveUiPaperlessHandoffStagingRoot = cfg.services.mail-archive-ui.paperlessHandoffStagingRoot;
 mailArchiveUiPath =
 map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
 mailArchiveSyncPath =
@@ -484,16 +486,24 @@ require_match <(printf '%s\n' "$mail_archive_ui_service_environment") 'MAIL_ARCH
   "Mail Archive UI must explicitly expose the Paperless consume root for attachment handoff."
 require_match <(printf '%s\n' "$mail_archive_ui_service_environment") "$(snapshot_query '.vars.paperlessInboxRoot' | jq -r '.')" \
   "Mail Archive UI Paperless handoff must use vars.paperlessInboxRoot."
+require_match <(printf '%s\n' "$mail_archive_ui_service_environment") 'MAIL_ARCHIVE_UI_PAPERLESS_HANDOFF_STAGING_ROOT=' \
+  "Mail Archive UI must explicitly expose the Paperless handoff staging root."
+require_match <(printf '%s\n' "$mail_archive_ui_service_environment") "$(snapshot_query '.vars.paperlessHandoffStagingRoot' | jq -r '.')" \
+  "Mail Archive UI Paperless handoff staging must use vars.paperlessHandoffStagingRoot."
 require_match <(printf '%s\n' "$mail_archive_ui_service_environment") 'SQLITE_TMPDIR=' \
   "Mail Archive UI must keep SQLite temp files inside a sandbox-writable runtime directory."
 require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiPaperlessConsumeRoot')" "$(snapshot_query '.vars.paperlessInboxRoot')" \
   "Mail Archive UI Paperless consume root option must follow vars.paperlessInboxRoot."
+require_json_equal "$(snapshot_query '.config.apps.mailArchiveUiPaperlessHandoffStagingRoot')" "$(snapshot_query '.vars.paperlessHandoffStagingRoot')" \
+  "Mail Archive UI Paperless handoff staging root option must follow vars.paperlessHandoffStagingRoot."
 
 mail_archive_ui_read_write_paths="$(snapshot_query '.config.apps.mailArchiveUiReadWritePaths')"
 require_match <(printf '%s\n' "$mail_archive_ui_read_write_paths") "$(snapshot_query '.vars.paperlessInboxRoot' | jq -r '.')" \
   "Mail Archive UI ReadWritePaths must include Paperless consume root for attachment handoff."
-if jq -e 'map(test("paperless") and test("staging")) | any' >/dev/null <<<"$mail_archive_ui_read_write_paths"; then
-  echo "❌ Mail Archive UI ReadWritePaths must not include Paperless staging paths."
+require_match <(printf '%s\n' "$mail_archive_ui_read_write_paths") "$(snapshot_query '.vars.paperlessHandoffStagingRoot' | jq -r '.')" \
+  "Mail Archive UI ReadWritePaths must include Paperless handoff staging root for race-free attachment handoff."
+if jq -e --arg allowed "$(snapshot_query '.vars.paperlessHandoffStagingRoot' | jq -r '.')" 'map((test("paperless") and test("staging")) and . != $allowed) | any' >/dev/null <<<"$mail_archive_ui_read_write_paths"; then
+  echo "❌ Mail Archive UI ReadWritePaths must not include unexpected Paperless staging paths."
   echo "   ReadWritePaths: $mail_archive_ui_read_write_paths"
   exit 1
 fi
@@ -507,6 +517,8 @@ require_match <(printf '%s\n' "$paperless_storage_layout_script") 'install -d -m
   "Paperless inbox must stay group-writable for consume-root handoff."
 require_match <(printf '%s\n' "$paperless_storage_layout_script") 'setfacl -x u:mail-archive-ui "\$inbox_dir"' \
   "Paperless storage layout must prune stale mail-archive-ui user ACLs from the consume inbox."
+require_match <(printf '%s\n' "$paperless_storage_layout_script") 'install -d -m 2770 -o root -g paperless "\$handoff_staging_dir"' \
+  "Paperless storage layout must create a group-writable handoff staging directory."
 
 copyparty_service_supplementary_groups="$(snapshot_query '.config.apps.copypartyServiceSupplementaryGroups')"
 if ! jq -e 'index("upload-staging") != null' >/dev/null <<<"$copyparty_service_supplementary_groups"; then

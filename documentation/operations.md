@@ -255,6 +255,27 @@ checks through Caddy/TLS, and the expected access matrix from config. It does
 not run browser logins, negative auth-path checks, or the full synthetic-canary
 loop.
 
+## Fast Remote Rebuild
+
+For custom app iteration only:
+
+```bash
+./scripts/rebuild-remote-fast.sh
+```
+
+This resolves the SSH target from `vars.localAdminUser` and `vars.hostname`,
+stages the current repo archive, and runs `nixos-rebuild switch` on the remote
+host. It intentionally skips repository validation, flake checks, failed-unit
+checks, runtime readiness, storage checks, and the guarded test-before-switch
+flow.
+
+Use `--action test` when you want a temporary activation without changing the
+boot default:
+
+```bash
+./scripts/rebuild-remote-fast.sh --action test
+```
+
 For server-side secrets generation after local staging or edits:
 
 ```bash

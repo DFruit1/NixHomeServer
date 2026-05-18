@@ -15,6 +15,7 @@ Usage:
   scripts/admin/admin.sh render-runbook --host <site-or-hostname>
   scripts/admin/admin.sh secrets check
   scripts/admin/admin.sh deploy test|switch [deploy-with-validation args...]
+  scripts/admin/admin.sh fast-rebuild [rebuild-remote-fast args...]
   scripts/admin/admin.sh users [kanidm-admin args...]
   scripts/admin/admin.sh welcome [--host <site-or-hostname>]
 EOF
@@ -62,6 +63,9 @@ case "$subcommand" in
     action="${1:-test}"
     shift || true
     exec ./scripts/deploy-with-validation.sh --action "$action" "$@"
+    ;;
+  fast-rebuild)
+    exec ./scripts/rebuild-remote-fast.sh "$@"
     ;;
   users)
     exec nix run .#kanidm-admin -- "$@"

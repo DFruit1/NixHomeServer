@@ -9,6 +9,7 @@ cd "$TESTS_REPO_ROOT"
 for test_script in \
   scripts/tests/test-secret-definitions.sh \
   scripts/tests/test-deploy-with-validation-remote-preflight.sh \
+  scripts/tests/test-rebuild-remote-fast.sh \
   scripts/tests/test-storage-health-checks.sh \
   scripts/tests/test-storage-device-discovery.sh \
   scripts/tests/test-upload-processor.sh \

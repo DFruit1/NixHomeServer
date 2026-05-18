@@ -417,6 +417,10 @@
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
             exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/explain.sh" "$@"
           '';
+          fast-rebuild = scriptApp "fast-rebuild" "Fast no-check remote nixos-rebuild helper for custom app iteration" (with pkgs; [ bash coreutils gitMinimal gnutar nix openssh gnused ]) ''
+            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/rebuild-remote-fast.sh" "$@"
+          '';
           admin = scriptApp "admin" "Unified NixHomeServer admin command wrapper" (with pkgs; [ bash coreutils findutils gitMinimal gnused jq nix openssh ripgrep smartmontools util-linux ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
             exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/admin.sh" "$@"

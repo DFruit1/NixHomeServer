@@ -54,6 +54,17 @@ const ATTACHMENTS_PER_PAGE: usize = 100;
 const MAX_ZIP_ATTACHMENTS: usize = 500;
 const MAX_ZIP_BYTES: u64 = 1024 * 1024 * 1024;
 const RUNTIME_EXPORT_MAX_AGE_SECONDS: i64 = 6 * 60 * 60;
+const PAPERLESS_HANDOFF_STAGING_MAX_AGE_SECONDS: i64 = 6 * 60 * 60;
+const PAPERLESS_HANDOFF_STAGING_PREFIX: &str = ".mail-archive-";
+const PAPERLESS_HANDOFF_STAGING_SUFFIX: &str = ".tmp";
+#[cfg(not(test))]
+const PAPERLESS_PUBLISH_RETRY_ATTEMPTS: usize = 30;
+#[cfg(test)]
+const PAPERLESS_PUBLISH_RETRY_ATTEMPTS: usize = 2;
+#[cfg(not(test))]
+const PAPERLESS_PUBLISH_RETRY_DELAY_MS: u64 = 1000;
+#[cfg(test)]
+const PAPERLESS_PUBLISH_RETRY_DELAY_MS: u64 = 0;
 const ATTACHMENT_SELECTION_ALL_MATCHING: &str = "all_matching";
 const MASTER_KEY_FILENAME: &str = "master.key";
 const DB_FILENAME: &str = "mail-archive-ui.sqlite3";
@@ -451,6 +462,7 @@ struct AppConfig {
     runtime_dir: Arc<str>,
     lock_dir: Arc<str>,
     paperless_consume_root: Option<Arc<str>>,
+    paperless_handoff_staging_root: Option<Arc<str>>,
     visible_mirror_read_group: Option<Arc<str>>,
     default_tags: Arc<[String]>,
 }
@@ -2266,13 +2278,22 @@ async fn send_attachments_paperless(
     .await;
 
     match result {
-        Ok(Ok(count)) => redirect_response(&attachments_redirect_location(
+        Ok(Ok(summary)) if summary.sent > 0 => {
+            let failure_message = if summary.failures.is_empty() {
+                None
+            } else {
+                Some(summary.failure_message())
+            };
+            redirect_response(&attachments_redirect_location(
+                return_to.as_deref(),
+                Some(&summary.flash_message()),
+                failure_message.as_deref(),
+            ))
+        }
+        Ok(Ok(summary)) => redirect_response(&attachments_redirect_location(
             return_to.as_deref(),
-            Some(&format!(
-                "{} sent to Paperless",
-                pluralize_attachments(count)
-            )),
             None,
+            Some(&summary.failure_message()),
         )),
         Ok(Err(error)) => redirect_response(&attachments_redirect_location(
             return_to.as_deref(),
@@ -2350,6 +2371,11 @@ fn load_config() -> AppConfig {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(Arc::<str>::from);
+    let paperless_handoff_staging_root = env::var("MAIL_ARCHIVE_UI_PAPERLESS_HANDOFF_STAGING_ROOT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Arc::<str>::from);
     let visible_mirror_read_group = env::var("MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2377,6 +2403,7 @@ fn load_config() -> AppConfig {
         runtime_dir: Arc::<str>::from(runtime_dir),
         lock_dir: Arc::<str>::from(lock_dir),
         paperless_consume_root,
+        paperless_handoff_staging_root,
         visible_mirror_read_group,
         default_tags: Arc::from(default_tags),
     }
@@ -2460,6 +2487,10 @@ fn landlock_roots(config: &AppConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
         Some(PathBuf::from(config.runtime_dir.as_ref())),
         Some(PathBuf::from(config.lock_dir.as_ref())),
         config.paperless_consume_root.as_deref().map(PathBuf::from),
+        config
+            .paperless_handoff_staging_root
+            .as_deref()
+            .map(PathBuf::from),
     ]);
 
     (read_only_roots, read_write_roots)
@@ -6554,6 +6585,63 @@ fn load_attachment_paperless_handoff(
         .map_err(|error| format!("failed to query Paperless handoff state: {error}"))
 }
 
+#[derive(Debug, Default)]
+struct PaperlessHandoffSummary {
+    sent: usize,
+    skipped: usize,
+    failures: Vec<PaperlessHandoffFailure>,
+}
+
+#[derive(Debug)]
+struct PaperlessHandoffFailure {
+    attachment_key: String,
+    filename: String,
+    error: String,
+}
+
+impl PaperlessHandoffSummary {
+    fn flash_message(&self) -> String {
+        let base = format!("{} sent to Paperless", pluralize_attachments(self.sent));
+        if self.failures.is_empty() {
+            base
+        } else {
+            format!("{base}; {} failed", self.failures.len())
+        }
+    }
+
+    fn failure_message(&self) -> String {
+        let prefix = if self.sent == 0 {
+            format!("No attachments were sent; {} failed", self.failures.len())
+        } else {
+            format!("{} failed", self.failures.len())
+        };
+        let details = self
+            .failures
+            .iter()
+            .take(3)
+            .map(|failure| {
+                let label = if failure.filename.is_empty() {
+                    failure.attachment_key.as_str()
+                } else {
+                    failure.filename.as_str()
+                };
+                format!("{label}: {}", failure.error)
+            })
+            .collect::<Vec<_>>();
+        if details.is_empty() {
+            prefix
+        } else if self.failures.len() > details.len() {
+            format!(
+                "{prefix}: {}; and {} more",
+                details.join("; "),
+                self.failures.len() - details.len()
+            )
+        } else {
+            format!("{prefix}: {}", details.join("; "))
+        }
+    }
+}
+
 fn record_attachment_paperless_handoff(
     config: &AppConfig,
     username: &str,
@@ -6596,21 +6684,29 @@ fn send_attachments_to_paperless(
     config: &AppConfig,
     username: &str,
     attachment_keys: &[String],
-) -> Result<usize, String> {
+) -> Result<PaperlessHandoffSummary, String> {
     let consume_root = config
         .paperless_consume_root
         .as_deref()
         .map(PathBuf::from)
         .ok_or_else(|| "Paperless handoff is not configured.".to_string())?;
+    let handoff_staging_root = paperless_handoff_staging_root(config, &consume_root);
     fs::create_dir_all(&consume_root).map_err(|error| {
         format!(
             "failed to prepare Paperless consume directory {}: {error}",
             consume_root.display()
         )
     })?;
+    fs::create_dir_all(&handoff_staging_root).map_err(|error| {
+        format!(
+            "failed to prepare Paperless handoff staging directory {}: {error}",
+            handoff_staging_root.display()
+        )
+    })?;
+    cleanup_old_paperless_handoff_staging(&handoff_staging_root)?;
 
     let mut seen = HashSet::new();
-    let mut sent_count = 0;
+    let mut summary = PaperlessHandoffSummary::default();
     for key in attachment_keys {
         let key = key.trim();
         if key.is_empty() || !seen.insert(key.to_string()) {
@@ -6619,48 +6715,87 @@ fn send_attachments_to_paperless(
 
         let connection = open_db(config)?;
         if load_attachment_paperless_handoff(&connection, username, key)?.is_some() {
+            summary.skipped += 1;
             continue;
         }
 
-        let (account, message, attachment) = load_attachment_for_user(config, username, key)?;
-        let (_dir, attachment_path) =
-            resolve_attachment_payload(config, &account, &message, &attachment)?;
-        let sent_at = Utc::now().to_rfc3339();
+        let (account, message, attachment) = match load_attachment_for_user(config, username, key) {
+            Ok(record) => record,
+            Err(error) => {
+                summary.failures.push(PaperlessHandoffFailure {
+                    attachment_key: key.to_string(),
+                    filename: "attachment".to_string(),
+                    error,
+                });
+                continue;
+            }
+        };
         let consume_filename = paperless_consume_filename(&attachment.original_filename);
+        let (_dir, attachment_path) =
+            match resolve_attachment_payload(config, &account, &message, &attachment) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    summary.failures.push(PaperlessHandoffFailure {
+                        attachment_key: key.to_string(),
+                        filename: consume_filename,
+                        error,
+                    });
+                    continue;
+                }
+            };
+        let sent_at = Utc::now().to_rfc3339();
         let final_path = consume_root.join(&consume_filename);
-        let tmp_path = consume_root.join(format!(".{}.tmp", paperless_consume_filename(key)));
-        copy_attachment_to_paperless(&attachment_path, &tmp_path, &final_path)?;
-        record_attachment_paperless_handoff(
+        if let Err(error) =
+            copy_attachment_to_paperless(&attachment_path, &handoff_staging_root, &final_path, key)
+        {
+            summary.failures.push(PaperlessHandoffFailure {
+                attachment_key: key.to_string(),
+                filename: consume_filename,
+                error,
+            });
+            continue;
+        }
+        if let Err(error) = record_attachment_paperless_handoff(
             config,
             username,
             &attachment,
             &consume_filename,
             &sent_at,
-        )?;
-        sent_count += 1;
+        ) {
+            summary.failures.push(PaperlessHandoffFailure {
+                attachment_key: key.to_string(),
+                filename: consume_filename,
+                error,
+            });
+            continue;
+        }
+        summary.sent += 1;
     }
 
-    if sent_count == 0 {
+    if summary.sent == 0 && summary.failures.is_empty() {
         return Err("Select at least one attachment that has not already been sent.".to_string());
     }
 
-    Ok(sent_count)
+    Ok(summary)
 }
 
 fn paperless_consume_filename(original_filename: &str) -> String {
-    format!(
-        "mail-archive-{}-{}-{}",
-        Utc::now().format("%Y%m%d-%H%M%S"),
-        random_hex(8),
-        filename_component(original_filename, "attachment")
-    )
+    filename_component(original_filename, "attachment")
 }
 
 fn copy_attachment_to_paperless(
     source_path: &FsPath,
-    tmp_path: &FsPath,
+    handoff_staging_root: &FsPath,
     final_path: &FsPath,
+    attachment_key: &str,
 ) -> Result<(), String> {
+    fs::create_dir_all(handoff_staging_root).map_err(|error| {
+        format!(
+            "failed to create Paperless handoff staging directory {}: {error}",
+            handoff_staging_root.display()
+        )
+    })?;
+    let tmp_path = handoff_staging_root.join(paperless_handoff_staging_filename(attachment_key));
     let mut source = fs::File::open(source_path).map_err(|error| {
         format!(
             "failed to open attachment {}: {error}",
@@ -6671,28 +6806,152 @@ fn copy_attachment_to_paperless(
         .write(true)
         .create_new(true)
         .mode(0o660)
-        .open(tmp_path)
+        .open(&tmp_path)
         .map_err(|error| format!("failed to create {}: {error}", tmp_path.display()))?;
     std::io::copy(&mut source, &mut target)
         .map_err(|error| format!("failed to copy attachment to Paperless: {error}"))?;
     target
         .sync_all()
         .map_err(|error| format!("failed to sync {}: {error}", tmp_path.display()))?;
-    fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o660)).map_err(|error| {
+    fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o660)).map_err(|error| {
         format!(
             "failed to set permissions on {}: {error}",
             tmp_path.display()
         )
     })?;
-    fs::rename(tmp_path, final_path).map_err(|error| {
-        let _ = fs::remove_file(tmp_path);
-        format!(
-            "failed to publish Paperless consume file {}: {error}",
-            final_path.display()
-        )
-    })?;
-    if let Some(parent) = final_path.parent() {
-        sync_directory(parent)?;
+    sync_directory(handoff_staging_root)?;
+    publish_staged_paperless_file(&tmp_path, final_path)
+}
+
+fn paperless_handoff_staging_root(config: &AppConfig, consume_root: &FsPath) -> PathBuf {
+    config
+        .paperless_handoff_staging_root
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| {
+            consume_root
+                .parent()
+                .map(|parent| parent.join("handoff-staging"))
+        })
+        .unwrap_or_else(|| consume_root.join("handoff-staging"))
+}
+
+fn paperless_handoff_staging_filename(attachment_key: &str) -> String {
+    format!(
+        "{}{}-{}{}",
+        PAPERLESS_HANDOFF_STAGING_PREFIX,
+        random_hex(8),
+        filename_component(attachment_key, "attachment-key"),
+        PAPERLESS_HANDOFF_STAGING_SUFFIX
+    )
+}
+
+fn publish_staged_paperless_file(tmp_path: &FsPath, final_path: &FsPath) -> Result<(), String> {
+    for attempt in 0..PAPERLESS_PUBLISH_RETRY_ATTEMPTS {
+        match fs::hard_link(tmp_path, final_path) {
+            Ok(()) => {
+                fs::remove_file(tmp_path).map_err(|error| {
+                    format!(
+                        "failed to remove staged Paperless handoff file {}: {error}",
+                        tmp_path.display()
+                    )
+                })?;
+                if let Some(parent) = final_path.parent() {
+                    sync_directory(parent)?;
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                if attempt + 1 < PAPERLESS_PUBLISH_RETRY_ATTEMPTS {
+                    if PAPERLESS_PUBLISH_RETRY_DELAY_MS > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            PAPERLESS_PUBLISH_RETRY_DELAY_MS,
+                        ));
+                    }
+                    continue;
+                }
+                let _ = fs::remove_file(tmp_path);
+                return Err(format!(
+                    "Paperless consume file {} already exists after waiting",
+                    final_path.display()
+                ));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(tmp_path);
+                return Err(format!(
+                    "failed to publish Paperless consume file {}: {error}",
+                    final_path.display()
+                ));
+            }
+        }
+    }
+
+    let _ = fs::remove_file(tmp_path);
+    Err(format!(
+        "failed to publish Paperless consume file {}",
+        final_path.display()
+    ))
+}
+
+fn cleanup_old_paperless_handoff_staging(handoff_staging_root: &FsPath) -> Result<(), String> {
+    cleanup_paperless_handoff_staging_older_than(
+        handoff_staging_root,
+        PAPERLESS_HANDOFF_STAGING_MAX_AGE_SECONDS,
+    )
+}
+
+fn cleanup_paperless_handoff_staging_older_than(
+    handoff_staging_root: &FsPath,
+    max_age_seconds: i64,
+) -> Result<(), String> {
+    let entries = match fs::read_dir(handoff_staging_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed to read Paperless handoff staging directory {}: {error}",
+                handoff_staging_root.display()
+            ))
+        }
+    };
+    let now = Utc::now().timestamp();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read Paperless handoff staging directory {}: {error}",
+                handoff_staging_root.display()
+            )
+        })?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !file_name.starts_with(PAPERLESS_HANDOFF_STAGING_PREFIX)
+            || !file_name.ends_with(PAPERLESS_HANDOFF_STAGING_SUFFIX)
+        {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|error| {
+            format!(
+                "failed to inspect Paperless handoff staging file {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(now);
+        if now.saturating_sub(modified) > max_age_seconds {
+            fs::remove_file(entry.path()).map_err(|error| {
+                format!(
+                    "failed to remove stale Paperless handoff staging file {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -10050,6 +10309,7 @@ mod tests {
             runtime_dir: Arc::<str>::from(runtime_dir.to_string_lossy().to_string()),
             lock_dir: Arc::<str>::from(lock_dir.to_string_lossy().to_string()),
             paperless_consume_root: None,
+            paperless_handoff_staging_root: None,
             visible_mirror_read_group: None,
             default_tags: Arc::from(vec!["new".to_string()]),
         }
@@ -10075,6 +10335,19 @@ mod tests {
         assert!(read_write.contains(&PathBuf::from(config.account_state_root.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.runtime_dir.as_ref())));
         assert!(read_write.contains(&PathBuf::from(config.lock_dir.as_ref())));
+
+        let mut config = config;
+        config.paperless_handoff_staging_root = Some(Arc::from(
+            tempdir
+                .path()
+                .join("handoff-staging")
+                .to_string_lossy()
+                .to_string(),
+        ));
+        let (_read_only, read_write) = landlock_roots(&config);
+        assert!(read_write.contains(&PathBuf::from(
+            config.paperless_handoff_staging_root.as_deref().unwrap()
+        )));
     }
 
     fn example_account() -> AccountRecord {
@@ -10291,6 +10564,23 @@ mod tests {
         )
         .expect("attachment page");
         page.items.into_iter().next().expect("attachment item")
+    }
+
+    fn configure_test_paperless_handoff(config: &mut AppConfig, tempdir: &TempDir) {
+        config.paperless_consume_root = Some(Arc::from(
+            tempdir
+                .path()
+                .join("paperless-consume")
+                .to_string_lossy()
+                .to_string(),
+        ));
+        config.paperless_handoff_staging_root = Some(Arc::from(
+            tempdir
+                .path()
+                .join("paperless-handoff-staging")
+                .to_string_lossy()
+                .to_string(),
+        ));
     }
 
     fn mail_export_stub_commands() -> [(&'static str, &'static str); 4] {
@@ -12426,13 +12716,7 @@ mod tests {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
             let mut config = test_config(&tempdir);
-            config.paperless_consume_root = Some(Arc::from(
-                tempdir
-                    .path()
-                    .join("paperless-consume")
-                    .to_string_lossy()
-                    .to_string(),
-            ));
+            configure_test_paperless_handoff(&mut config, &tempdir);
             prepare_test_layout(&config);
             let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);
@@ -12466,17 +12750,41 @@ mod tests {
 
             let sent = send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&key))
                 .expect("send");
-            assert_eq!(sent, 1);
+            assert_eq!(sent.sent, 1);
+            assert!(sent.failures.is_empty());
             let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
             let consume_files = fs::read_dir(&consume_root)
                 .expect("consume dir")
                 .collect::<Result<Vec<_>, _>>()
                 .expect("consume files");
             assert_eq!(consume_files.len(), 1);
-            assert!(consume_files[0]
+            assert_eq!(
+                consume_files[0].file_name().to_string_lossy(),
+                "invoice.pdf"
+            );
+            assert!(!consume_files[0]
                 .file_name()
                 .to_string_lossy()
-                .contains("invoice.pdf"));
+                .starts_with("mail-archive-"));
+            let staging_root =
+                PathBuf::from(config.paperless_handoff_staging_root.as_deref().unwrap());
+            assert_eq!(
+                fs::read_dir(&staging_root)
+                    .expect("staging dir")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("staging files")
+                    .len(),
+                0
+            );
+            let recorded_consume_filename = open_db(&config)
+                .expect("db")
+                .query_row(
+                    "SELECT consume_filename FROM attachment_paperless_handoffs WHERE attachment_key = ?1",
+                    params![key],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("handoff filename");
+            assert_eq!(recorded_consume_filename, "invoice.pdf");
 
             let refreshed = load_attachment_page_data(
                 &config,
@@ -12495,6 +12803,135 @@ mod tests {
 
             assert!(send_attachments_to_paperless(&config, "alice", &[key]).is_err());
         });
+    }
+
+    #[test]
+    fn bulk_paperless_handoff_continues_after_publish_failure() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <bulk-paperless@example.com>\nFrom: Docs <docs@example.com>\nSubject: Bulk Paperless\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf-and-zip\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Bulk Paperless".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            let keys = page
+                .items
+                .iter()
+                .map(|item| item.attachment.attachment_key.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(keys.len(), 2);
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            fs::create_dir_all(&consume_root).expect("consume root");
+            fs::write(consume_root.join("invoice.pdf"), b"existing").expect("existing invoice");
+
+            let summary = send_attachments_to_paperless(&config, "alice", &keys).expect("send");
+
+            assert_eq!(summary.sent, 1);
+            assert_eq!(summary.failures.len(), 1);
+            assert_eq!(summary.failures[0].filename, "invoice.pdf");
+            assert!(summary.failures[0]
+                .error
+                .contains("already exists after waiting"));
+            assert!(consume_root.join("archive.zip").is_file());
+            assert_eq!(
+                fs::read(consume_root.join("invoice.pdf")).expect("invoice"),
+                b"existing"
+            );
+        });
+    }
+
+    #[test]
+    fn duplicate_paperless_filenames_do_not_overwrite_existing_consume_file() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <duplicate-paperless-1@example.com>\nSubject: Duplicate One\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-2",
+                "Message-ID: <duplicate-paperless-2@example.com>\nSubject: Duplicate Two\nDate: Fri, 19 Apr 2024 14:32:00 +0000\n\nATTACH:duplicate-pdf\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    attachment_name: Some("invoice".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            let keys = page
+                .items
+                .iter()
+                .map(|item| item.attachment.attachment_key.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(keys.len(), 2);
+
+            let summary = send_attachments_to_paperless(&config, "alice", &keys).expect("send");
+
+            assert_eq!(summary.sent, 1);
+            assert_eq!(summary.failures.len(), 1);
+            assert_eq!(summary.failures[0].filename, "invoice.pdf");
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            let consume_files = fs::read_dir(&consume_root)
+                .expect("consume dir")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("consume files");
+            assert_eq!(consume_files.len(), 1);
+            assert_eq!(
+                consume_files[0].file_name().to_string_lossy(),
+                "invoice.pdf"
+            );
+        });
+    }
+
+    #[test]
+    fn paperless_handoff_staging_cleanup_only_removes_old_tmp_files() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let staging_root = tempdir.path().join("staging");
+        fs::create_dir_all(&staging_root).expect("staging root");
+        let stale_tmp = staging_root.join(".mail-archive-old.tmp");
+        let keep_txt = staging_root.join("mail-archive-old.tmp");
+        let keep_other = staging_root.join(".mail-archive-old.txt");
+        fs::write(&stale_tmp, b"stale").expect("stale");
+        fs::write(&keep_txt, b"keep").expect("keep txt");
+        fs::write(&keep_other, b"keep").expect("keep other");
+
+        cleanup_paperless_handoff_staging_older_than(&staging_root, -1).expect("cleanup");
+
+        assert!(!stale_tmp.exists());
+        assert!(keep_txt.exists());
+        assert!(keep_other.exists());
     }
 
     #[test]

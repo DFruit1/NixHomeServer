@@ -25,6 +25,7 @@ let
       "SQLITE_TMPDIR=${cfg.runtimeDir}"
     ]
     ++ lib.optional (cfg.paperlessConsumeRoot != null) "MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT=${cfg.paperlessConsumeRoot}"
+    ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) "MAIL_ARCHIVE_UI_PAPERLESS_HANDOFF_STAGING_ROOT=${cfg.paperlessHandoffStagingRoot}"
     ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
   mailArchiveUiPath = with pkgs; [
@@ -114,6 +115,12 @@ in
       default = if (config.services.paperless.enable or false) then vars.paperlessInboxRoot else null;
       description = "Optional Paperless consume directory where attachment handoffs are copied.";
     };
+
+    paperlessHandoffStagingRoot = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = if (config.services.paperless.enable or false) then vars.paperlessHandoffStagingRoot else null;
+      description = "Optional staging directory used to finish attachment copies before publishing them to the Paperless consume directory.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -149,7 +156,8 @@ in
           cfg.accountStateRoot
           cfg.runtimeDir
           cfg.lockDir
-        ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot;
+        ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
+          ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
       };
       wants = [
         "data-pool-layout.service"
@@ -177,7 +185,8 @@ in
           cfg.accountStateRoot
           cfg.runtimeDir
           cfg.lockDir
-        ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot;
+        ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
+          ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
       };
     };
   };

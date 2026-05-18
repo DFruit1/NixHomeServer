@@ -29,6 +29,10 @@ Validation gate: see [Operations](./documentation/operations.md#validation-gate)
 
 Deploy entry point: `./scripts/deploy-with-validation.sh --help`
 
+Fast custom-app iteration path: `./scripts/rebuild-remote-fast.sh`.
+This is an explicit no-check remote rebuild helper; keep using the guarded
+deploy path for normal changes.
+
 ## New Admin Template Workflow
 
 The current/default deployment keeps operator-facing values in [`vars.nix`](./vars.nix)
