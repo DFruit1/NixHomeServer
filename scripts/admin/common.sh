@@ -89,41 +89,10 @@ default_host() {
   exit 1
 }
 
-host_arg_or_default() {
-  local host=""
-  while (($# > 0)); do
-    case "$1" in
-      --host)
-        host="${2:-}"
-        shift 2
-        ;;
-      *)
-        shift
-      ;;
-    esac
-  done
-  if [[ -z "$host" ]]; then
-    host="$(default_host)"
-  fi
-  printf '%s\n' "$host"
-}
-
 nix_json_for_host() {
   local host="$1"
   local expr="$2"
   nix eval --json --impure --expr "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      cfg = flake.nixosConfigurations.${host}.config;
-    in
-      ${expr}
-  "
-}
-
-nix_raw_for_host() {
-  local host="$1"
-  local expr="$2"
-  nix eval --raw --impure --expr "
     let
       flake = builtins.getFlake (toString ${repo_root});
       cfg = flake.nixosConfigurations.${host}.config;

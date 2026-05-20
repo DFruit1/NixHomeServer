@@ -12,7 +12,7 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 - Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, FileBrowser Quantum, Kiwix, Kavita, Jellyfin
 - Mail archive and search: `mail-archive-ui`, `mbsync`, `notmuch`
 - Storage: Btrfs system SSD and a single mirrored ZFS data pool
-- Validation: lean deploy checks via `scripts/validate-repo.sh`, exhaustive checks via `scripts/validate-repo-remote.sh --host ... --full` or `scripts/validate-repo.sh --full`, and runtime checks via `scripts/check-runtime-readiness.sh`
+- Validation: lean deploy checks via `scripts/validate-repo.sh`, full Nix/lint/app checks via `scripts/validate-repo-remote.sh --host ... --full` or `scripts/validate-repo.sh --full`, and runtime checks via `scripts/check-runtime-readiness.sh`
 - Day-2 workflow: the desktop can stay Nix-free while the server performs evaluation, builds, and activation from staged repo archives
 - Local operator shell: `nix develop .#ops`
 - Readable local prebuild: `nom build .#nixosConfigurations.server.config.system.build.toplevel --no-link`
@@ -47,7 +47,6 @@ Useful first-run helpers:
 - `nix run .#storage-plan -- --host dsaw`
 - `nix run .#render-runbook -- --host dsaw`
 - `nix run .#init-site -- --site my-home`
-- `nix run .#admin -- welcome --host dsaw`
 
 `modules/Core_Modules` is the fixed platform layer. Profiles and app enable
 options are for optional app surfaces around that core, not for swapping out

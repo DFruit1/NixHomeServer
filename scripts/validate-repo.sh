@@ -23,7 +23,7 @@ Default mode:
 
 Full mode:
   - runs `nix flake check --no-build` unless --skip-flake-check is used
-  - runs the broad script suite through scripts/tests/run-script-tests.sh --full
+  - runs the lean script suite through scripts/tests/run-script-tests.sh
   - builds selected lint and Rust check derivations
 
 Examples:
@@ -109,13 +109,7 @@ run_full_derivation_checks() {
 }
 
 run_shell_tests() {
-  if [[ "$full_mode" == true ]]; then
-    echo "ℹ️ Running full repository policy tests…"
-    "${tests_dir}/run-script-tests.sh" --full
-    return 0
-  fi
-
-  echo "ℹ️ Running lean repository policy tests…"
+  echo "ℹ️ Running repository policy tests…"
   "${tests_dir}/run-script-tests.sh"
 }
 

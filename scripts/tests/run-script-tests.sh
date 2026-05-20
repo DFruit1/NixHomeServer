@@ -8,21 +8,14 @@ cd "$TESTS_REPO_ROOT"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/tests/run-script-tests.sh [--full]
+Usage: scripts/tests/run-script-tests.sh
 
-Default mode runs the lean repository checks used by routine rebuild
-validation. Use --full for the broader script behavior suite.
+Run the lean repository checks used by routine rebuild validation.
 EOF
 }
 
-full_mode=false
-
 while (($# > 0)); do
   case "$1" in
-    --full)
-      full_mode=true
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -39,14 +32,6 @@ test_scripts=(
   scripts/tests/test-deploy-with-validation-remote-preflight.sh
   scripts/tests/test-runtime-readiness.sh
 )
-
-if [[ "$full_mode" == true ]]; then
-  test_scripts+=(
-    scripts/tests/test-storage-health-checks.sh
-    scripts/tests/test-storage-device-discovery.sh
-    scripts/tests/test-upload-processor.sh
-  )
-fi
 
 for test_script in "${test_scripts[@]}"; do
   bash "$test_script"

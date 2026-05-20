@@ -74,7 +74,7 @@ nix run .#doctor -- --host ${host}
 ./scripts/validate-repo-remote.sh --host "${local_admin_user}@${hostname}" --full
 ./scripts/deploy-with-validation.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action test --hostname ${hostname}
 ./scripts/deploy-with-validation.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action switch --hostname ${hostname}
-nix run .#admin -- status --host ${host} --target "${local_admin_user}@${hostname}"
+ssh "${local_admin_user}@${hostname}" 'cd /path/to/repo && sudo ./scripts/check-runtime-readiness.sh --profile manual'
 \`\`\`
 
 ## App URLs

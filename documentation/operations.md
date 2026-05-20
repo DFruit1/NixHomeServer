@@ -12,7 +12,7 @@ bootstrap remains the installer-side exception.
 - Remote validation gate: `./scripts/validate-repo-remote.sh --host "<admin>@<hostname>" --full`
 - Local validation gate: `nix flake check --no-build` then `scripts/validate-repo.sh`
 - Flake-inclusive local gate: `scripts/validate-repo.sh --run-flake-check`
-- Exhaustive local gate: `scripts/validate-repo.sh --full`
+- Full local gate: `scripts/validate-repo.sh --full`
 - Guarded deploy: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test`
 - Full guarded deploy: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test --full-check`
 - Guarded switch: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action switch`
@@ -187,7 +187,7 @@ To include flake checks in the same pass:
 scripts/validate-repo.sh --run-flake-check
 ```
 
-For the exhaustive local gate:
+For the full local gate:
 
 ```bash
 scripts/validate-repo.sh --full
@@ -195,7 +195,7 @@ scripts/validate-repo.sh --full
 
 That mode runs:
 - `nix flake check --no-build` unless `--skip-flake-check` is used
-- `scripts/tests/run-script-tests.sh --full`
+- `scripts/tests/run-script-tests.sh`
 - `kanidm-admin-clippy`
 - `kanidm-admin-test`
 - `mail-archive-ui-test`
@@ -212,7 +212,8 @@ That mode runs:
 That path stages the current repo archive on the build host and keeps all Nix
 evaluation, builds, activation, and validation on the server. Routine deploys
 use the lean repository gate before `nixos-rebuild`; run
-`validate-repo-remote.sh --full` separately when you want the exhaustive suite.
+`validate-repo-remote.sh --full` separately when you want the full Nix, lint,
+and app check suite.
 The server also carries the resulting `/nix/store` churn.
 
 Only switch after the guarded test path passes.

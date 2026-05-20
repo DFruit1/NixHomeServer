@@ -497,7 +497,7 @@ fn manage_user_ssh_keys_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     while let Some(selection) = forms::contextual_select(
         "SFTP SSH Keys",
         Some(
-            "Register public keys that users generated on their own PC. Private keys should never be sent to the operator or stored on the server.",
+            "Register public keys that users generated on their own PC. Ask the user for the one-line contents of their .pub file, never their private key. SFTP access also requires user-files membership.",
         ),
         &ssh_key_menu_items(),
         0,
@@ -517,6 +517,8 @@ fn add_user_ssh_key_flow(kanidm: &KanidmCli, account_id: &str) -> Result<(), App
     else {
         return Ok(());
     };
+    render::print_note("Add SFTP SSH Key", &build_ssh_key_upload_note(&user.value));
+    forms::pause("Press Enter or Esc to continue")?;
     let Some(tag) = prompt_submitted(forms::input_required_validated(
         "SSH key tag",
         Some("local-pc"),
@@ -535,7 +537,7 @@ fn add_user_ssh_key_flow(kanidm: &KanidmCli, account_id: &str) -> Result<(), App
     render::print_note(
         "Review SFTP SSH Key",
         &format!(
-            "Account ID: {}\nDisplay Name: {}\nTag: {}\nKey Type: {}\nuser-files: {}\n\nThe user must keep the matching private key on their own PC.",
+            "Account ID: {}\nDisplay Name: {}\nTag: {}\nKey Type: {}\nuser-files: {}\n\nOnly the public key will be stored in Kanidm. The user must keep the matching private key on their own PC.",
             user.value.account_id,
             user.value.display_name.as_deref().unwrap_or("-"),
             tag,
@@ -562,6 +564,19 @@ fn add_user_ssh_key_flow(kanidm: &KanidmCli, account_id: &str) -> Result<(), App
             },
         )
     })
+}
+
+fn build_ssh_key_upload_note(user: &UserRecord) -> String {
+    let account_id = &user.account_id;
+    let user_files_status = if user.groups.iter().any(|group| group == "user-files") {
+        "present"
+    } else {
+        "missing; grant it separately if this user should access SFTP"
+    };
+    format!(
+        "Account ID: {account_id}\nDisplay Name: {}\nuser-files: {user_files_status}\n\nWhat to ask the user for:\n- They generate the keypair on their own PC.\n- They send you only the public key line from their .pub file.\n- The public key usually starts with ssh-ed25519 or ssh-rsa.\n- Do not accept or store a private key.\n\nUseful user-side command:\nssh-keygen -t ed25519 -a 100 -C \"{account_id}@local-pc\"\n\nThen ask them to send the contents of:\n~/.ssh/id_ed25519.pub\n\nNext prompts:\n- Tag: a short device label, such as laptop or desktop.\n- SSH public key: paste the complete one-line .pub contents.",
+        user.display_name.as_deref().unwrap_or("-"),
+    )
 }
 
 fn remove_user_ssh_key_flow(kanidm: &KanidmCli, account_id: &str) -> Result<(), AppError> {
@@ -1550,7 +1565,7 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
         menu_item(
             "Manage SFTP SSH Keys",
             "Register or remove user-provided public keys for local SFTP access.",
-            "Use this after a user generates an SSH keypair on their own PC and gives you only the .pub public key. SFTP access still requires user-files membership.",
+            "Use this after a user generates an SSH keypair on their own PC and gives you only the one-line .pub file contents. SFTP access still requires user-files membership.",
         ),
         menu_item(
             "Help User Reset Password",
@@ -1575,17 +1590,17 @@ fn ssh_key_menu_items() -> Vec<forms::ContextualItem> {
         menu_item(
             "List SSH Keys",
             "Show the user's registered SSH public keys.",
-            "Use this before changing keys or when diagnosing SFTP access from a local file browser.",
+            "Use this before adding or removing a key so you can see existing device tags and avoid reusing a confusing tag.",
         ),
         menu_item(
             "Add SSH Key",
             "Register a user-provided SSH public key.",
-            "The user should generate the keypair locally and share only the .pub public key. This does not grant user-files membership.",
+            "Ask the user to generate the key on their own PC, then paste the full single-line public key here, for example a line beginning with ssh-ed25519. Never paste a private key.",
         ),
         menu_item(
             "Remove SSH Key",
             "Remove one registered SSH public key by tag.",
-            "Use this when a device is retired, lost, replaced, or should no longer access SFTP.",
+            "Use this when a device is retired, lost, replaced, or should no longer access SFTP. List keys first if you are unsure of the tag.",
         ),
         menu_item(
             "Back",
@@ -2503,6 +2518,38 @@ mod tests {
                 "Exit",
             ]
         );
+    }
+
+    #[test]
+    fn ssh_key_menu_explains_public_key_handoff() {
+        let items = ssh_key_menu_items();
+        let add = items
+            .iter()
+            .find(|item| item.label == "Add SSH Key")
+            .expect("add ssh key item");
+
+        assert!(add.detail.contains("single-line public key"));
+        assert!(add.detail.contains("ssh-ed25519"));
+        assert!(add.detail.contains("Never paste a private key"));
+    }
+
+    #[test]
+    fn ssh_key_upload_note_spells_out_user_and_operator_steps() {
+        let note = build_ssh_key_upload_note(&UserRecord {
+            account_id: "alice".to_string(),
+            display_name: Some("Alice".to_string()),
+            primary_email: None,
+            spn: None,
+            uuid: None,
+            valid_from: None,
+            expiry: None,
+            groups: vec!["users".to_string()],
+        });
+
+        assert!(note.contains("ssh-keygen -t ed25519"));
+        assert!(note.contains("~/.ssh/id_ed25519.pub"));
+        assert!(note.contains("complete one-line .pub contents"));
+        assert!(note.contains("user-files: missing"));
     }
 
     #[test]
