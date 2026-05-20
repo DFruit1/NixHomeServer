@@ -225,15 +225,25 @@ in
           fi
 
           echo "Removing stale Jellyfin reference $item_id for missing scoped path $media_path"
-          curl \
-            --silent \
-            --show-error \
-            --fail \
-            --max-time 60 \
-            -X DELETE \
-            -H "X-Emby-Token: $api_key" \
-            "$base_url/Items/$item_id" \
-            >/dev/null
+          delete_status="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              --max-time 60 \
+              -X DELETE \
+              -H "X-Emby-Token: $api_key" \
+              "$base_url/Items/$item_id" || true
+          )"
+          case "$delete_status" in
+            200|204|404)
+              ;;
+            *)
+              echo "Failed to remove stale Jellyfin reference $item_id: HTTP $delete_status" >&2
+              exit 1
+              ;;
+          esac
         done <"$items_file"
       '';
       serviceConfig = {

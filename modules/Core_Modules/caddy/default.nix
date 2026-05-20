@@ -103,6 +103,20 @@ in
         '';
       };
 
+      "${vars.filestashDomain}" = lib.mkIf apps.filestash.enable {
+        extraConfig = ''
+          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
+          ${accessLogConfig}
+          @download_html_svg path *.html *.svg
+          header @download_html_svg Content-Disposition attachment
+          header @download_html_svg X-Content-Type-Options nosniff
+          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyFilestash} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {host}
+          }
+        '';
+      };
+
       "${vars.emailsDomain}" = lib.mkIf apps."mail-archive-ui".enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem

@@ -353,21 +353,6 @@ forbid_match "$remote_failure_output" 'Running remote nixos-rebuild test' \
 forbid_match "$nix_log" '^nix ' \
   "Remote repository-check failures must not invoke local nix."
 
-local_build_output="${tmpdir}/local-build.out"
-run_case \
-  "$local_build_output" \
-  env DEPLOY_WRAPPER_TEST_NIX_MODE=allow \
-  bash "$deploy_script" \
-  --target "dsaw@192.0.2.10" \
-  --local-build \
-  --action test \
-  --hostname server
-
-forbid_match "$ssh_stdin_log" './scripts/remote-ops.sh deploy' \
-  "Local builds must not invoke the remote deploy dispatcher."
-require_fixed "$nix_log" 'nix run nixpkgs#nixos-rebuild -- test' \
-  "Local builds must still run nixos-rebuild test locally."
-
 remote_full_check_output="${tmpdir}/remote-full-check.out"
 run_case \
   "$remote_full_check_output" \
@@ -383,40 +368,5 @@ require_fixed "$ssh_stdin_log" '--full-check' \
   "Deploy wrapper --full-check runs must preserve the flag into the remote deploy dispatcher."
 require_fixed "$ssh_log" 'FULL_CHECK=true' \
   "Deploy wrapper --full-check runs must enable the deep runtime flag in the remote environment."
-
-local_full_check_output="${tmpdir}/local-full-check.out"
-run_case \
-  "$local_full_check_output" \
-  env DEPLOY_WRAPPER_TEST_NIX_MODE=allow \
-  bash "$deploy_script" \
-  --target "dsaw@192.0.2.10" \
-  --local-build \
-  --action test \
-  --hostname server \
-  --full-check
-
-require_fixed "$ssh_log" 'FULL_CHECK=true' \
-  "Local-build --full-check runs must pass the deep runtime flag into the staged readiness invocation."
-require_fixed "$ssh_stdin_log" 'readiness_args+=(--deep)' \
-  "Local-build --full-check runs must prepare the deep runtime readiness arguments."
-
-local_build_mismatch_output="${tmpdir}/local-build-mismatch.out"
-if run_case \
-  "$local_build_mismatch_output" \
-  env DEPLOY_WRAPPER_TEST_NIX_MODE=allow DEPLOY_WRAPPER_TEST_LOCAL_SYSTEM=aarch64-linux DEPLOY_WRAPPER_TEST_TARGET_SYSTEM=x86_64-linux \
-  bash "$deploy_script" \
-  --target "dsaw@192.0.2.10" \
-  --local-build \
-  --action test \
-  --hostname server
-then
-  echo "❌ Local-build system mismatches must fail before nixos-rebuild starts."
-  exit 1
-fi
-
-require_fixed "$local_build_mismatch_output" 'requires the current workstation system to match the target host configuration' \
-  "Local-build mismatches must explain the system mismatch clearly."
-forbid_match "$nix_log" 'nix run nixpkgs#nixos-rebuild -- test' \
-  "Local-build system mismatches must stop before nixos-rebuild starts."
 
 echo "✅ Remote deploy preflight tests passed."

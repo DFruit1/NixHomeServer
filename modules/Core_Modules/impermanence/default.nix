@@ -15,7 +15,6 @@ let
       "/var/lib/kanidm"
       "/var/lib/netbird-main"
       "/var/lib/nixos"
-      "/var/lib/system-health-monitoring"
       "/var/lib/systemd/timers"
       "/var/lib/unbound"
       "/var/log/journal"
@@ -28,6 +27,11 @@ let
       "/var/lib/upload-processor"
     ]
     ++ lib.optionals apps."filebrowser-quantum".enable [ "/var/lib/filebrowser-quantum" ]
+    ++ lib.optionals apps.filestash.enable [
+      "/var/cache/filestash"
+      "/var/lib/filestash"
+      "/var/log/filestash"
+    ]
     ++ lib.optionals apps.immich.enable [
       "/var/cache/immich"
       "/var/lib/immich"

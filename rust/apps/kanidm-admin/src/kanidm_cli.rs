@@ -236,6 +236,39 @@ impl KanidmCli {
         )
     }
 
+    pub fn person_ssh_list_publickeys(&self, account_id: &str) -> Result<String, AppError> {
+        self.run_stdout(
+            self.base_args(["person", "ssh", "list-publickeys", account_id]),
+            &format!("failed to list SSH public keys for Kanidm user '{account_id}'"),
+        )
+    }
+
+    pub fn person_ssh_add_publickey(
+        &self,
+        account_id: &str,
+        tag: &str,
+        public_key: &str,
+    ) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args([
+                "person",
+                "ssh",
+                "add-publickey",
+                account_id,
+                tag,
+                public_key,
+            ]),
+            &format!("failed to add SSH public key '{tag}' to Kanidm user '{account_id}'"),
+        )
+    }
+
+    pub fn person_ssh_delete_publickey(&self, account_id: &str, tag: &str) -> Result<(), AppError> {
+        self.run_unit(
+            self.base_args(["person", "ssh", "delete-publickey", account_id, tag]),
+            &format!("failed to remove SSH public key '{tag}' from Kanidm user '{account_id}'"),
+        )
+    }
+
     pub fn group_add_members(&self, group: &str, account_id: &str) -> Result<(), AppError> {
         self.run_unit(
             self.base_args(["group", "add-members", group, account_id]),
@@ -662,6 +695,7 @@ fn command_mode_for_args(args: &[String]) -> CommandMode {
     match (first, second, third) {
         (Some("session"), Some("list"), _) => CommandMode::NonInteractiveRead,
         (Some("person"), Some("list" | "get"), _) => CommandMode::NonInteractiveRead,
+        (Some("person"), Some("ssh"), Some("list-publickeys")) => CommandMode::NonInteractiveRead,
         (Some("group"), Some("list" | "get" | "list-members"), _) => {
             CommandMode::NonInteractiveRead
         }

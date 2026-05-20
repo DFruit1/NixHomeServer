@@ -73,6 +73,7 @@ let
     ++ lib.optionals apps.paperless.enable [ "\"${vars.paperlessDomain}       A ${targetIp}\"" ]
     ++ lib.optionals apps.audiobookshelf.enable [ "\"${vars.audiobooksDomain}       A ${targetIp}\"" ]
     ++ lib.optionals apps."filebrowser-quantum".enable [ "\"${vars.filebrowserDomain}      A ${targetIp}\"" ]
+    ++ lib.optionals apps.filestash.enable [ "\"${vars.filestashDomain}        A ${targetIp}\"" ]
     ++ lib.optionals apps."mail-archive-ui".enable [ "\"${vars.emailsDomain}           A ${targetIp}\"" ]
     ++ lib.optionals apps.vaultwarden.enable [ "\"${vars.vaultwardenDomain}      A ${targetIp}\"" ]
     ++ lib.optionals apps.kiwix.enable [ "\"${vars.kiwixDomain}            A ${targetIp}\"" ]

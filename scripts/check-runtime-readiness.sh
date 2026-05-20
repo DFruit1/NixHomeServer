@@ -15,8 +15,8 @@ usage() {
 Usage: scripts/check-runtime-readiness.sh [--profile manual|deploy|monitor] [--deep] [--format text|json] [--require-online-zpool]
 
 Read-only runtime validation for the active host. It checks core units,
-entrypoints, Unbound answers, storage state, app-state roots, and backup
-freshness against vars.nix and the evaluated host config.
+entrypoints, Unbound answers, storage state, and app-state roots against vars.nix
+and the evaluated host config.
 
 Examples:
   sudo ./scripts/check-runtime-readiness.sh
@@ -77,7 +77,7 @@ case "$output_format" in
     ;;
 esac
 
-need curl systemctl findmnt blkid jq smartctl journalctl zpool zfs runuser stat date readlink getent id sort
+need curl systemctl findmnt jq smartctl journalctl zpool zfs runuser stat date readlink getent id sort
 need "$host_cmd"
 
 if [[ -z "${RUNTIME_HEALTH_SNAPSHOT_JSON_FILE:-}" ]]; then
@@ -99,7 +99,6 @@ persistence_file="${tmpdir}/persistence.jsonl"
 deep_file="${tmpdir}/deep.jsonl"
 access_local_file="${tmpdir}/access-local.jsonl"
 access_authed_file="${tmpdir}/access-authed.jsonl"
-backup_file="${tmpdir}/backup.json"
 discovery_json_file="${tmpdir}/storage-discovery.json"
 disk_specs_file="${tmpdir}/smart-disk-specs.json"
 
@@ -177,38 +176,6 @@ path_result_json() {
     --arg detail "$5" \
     --argjson present "$6" \
     '{ category: $category, label: $label, path: $path, severity: $severity, detail: $detail, present: $present }'
-}
-
-backup_result_json() {
-  jq -nc \
-    --arg service "$1" \
-    --arg timer "$2" \
-    --arg serviceResult "$3" \
-    --arg timerActive "$4" \
-    --arg timerEnabled "$5" \
-    --arg selectionState "$6" \
-    --arg selectedDevice "$7" \
-    --arg mountSource "$8" \
-    --arg timestamp "$9" \
-    --arg ageSeconds "${10}" \
-    --arg severity "${11}" \
-    --arg detail "${12}" \
-    --argjson targetPresent "${13}" \
-    '{
-      service: $service,
-      timer: $timer,
-      serviceResult: $serviceResult,
-      timerActive: $timerActive,
-      timerEnabled: $timerEnabled,
-      selectionState: $selectionState,
-      selectedDevice: $selectedDevice,
-      mountSource: $mountSource,
-      timestamp: $timestamp,
-      ageSeconds: (if $ageSeconds == "" then null else ($ageSeconds | tonumber) end),
-      severity: $severity,
-      detail: $detail,
-      targetPresent: $targetPresent
-    }'
 }
 
 deep_result_json() {
@@ -668,149 +635,6 @@ check_app_state_entry() {
   mark_failed_if_critical "$severity"
 }
 
-run_backup_checks() {
-  local backup_json timer service selection_file mount_point timestamp_file repository_path max_age_seconds
-  local service_result timer_active timer_enabled timestamp age_seconds selected_device mounted_source severity detail
-  local selection_state="configured"
-  local selected_real="" mounted_real="" target_present=false
-  local selected_uuid="" mounted_uuid="" selected_partuuid="" mounted_partuuid=""
-  local mount_info="" mount_target=""
-
-  backup_json="$(runtime_health_snapshot_query '.backup')"
-  timer="$(jq -r '.timer' <<<"$backup_json")"
-  service="$(jq -r '.service' <<<"$backup_json")"
-  selection_file="$(jq -r '.selectionFile' <<<"$backup_json")"
-  mount_point="$(jq -r '.mountPoint' <<<"$backup_json")"
-  timestamp_file="$(jq -r '.timestampFile' <<<"$backup_json")"
-  repository_path="$(jq -r '.repositoryPath' <<<"$backup_json")"
-  max_age_seconds="$(jq -r '.maxAgeSeconds' <<<"$backup_json")"
-
-  timer_active="$(systemctl is-active "$timer" 2>/dev/null || true)"
-  timer_enabled="$(systemctl is-enabled "$timer" 2>/dev/null || true)"
-  service_result="$(systemctl show -p Result --value "$service" 2>/dev/null || true)"
-  severity="OK"
-  detail="recent backup metadata present"
-
-  if [[ "$timer_active" != "active" || "$timer_enabled" != "enabled" ]]; then
-    severity="CRITICAL"
-    detail="backup timer not active and enabled"
-  fi
-
-  selected_device=""
-  if [[ ! -r "$selection_file" ]]; then
-    selection_state="missing"
-  else
-    selected_device="$(tr -d '\n' <"$selection_file")"
-    if [[ -z "$selected_device" ]]; then
-      selection_state="empty"
-    fi
-  fi
-
-  mount_info="$(findmnt -rn -o TARGET,SOURCE,FSTYPE --target "$mount_point" 2>/dev/null || true)"
-  if [[ -n "$mount_info" ]]; then
-    read -r mount_target mounted_source _mounted_fstype <<<"$mount_info"
-    if [[ "$mount_target" != "$mount_point" ]]; then
-      mounted_source=""
-    fi
-  else
-    mounted_source=""
-  fi
-  if [[ -n "$mounted_source" || ( -n "$selected_device" && -e "$selected_device" ) ]]; then
-    target_present=true
-  fi
-
-  if [[ -n "$selected_device" && -n "$mounted_source" ]]; then
-    selected_real="$(readlink -f "$selected_device" 2>/dev/null || true)"
-    mounted_real="$(readlink -f "$mounted_source" 2>/dev/null || printf '%s' "$mounted_source")"
-    if [[ -n "$selected_real" && "$mounted_real" != "$selected_real" ]]; then
-      selected_uuid="$(blkid -s UUID -o value "$selected_device" 2>/dev/null || true)"
-      mounted_uuid="$(blkid -s UUID -o value "$mounted_source" 2>/dev/null || true)"
-      selected_partuuid="$(blkid -s PARTUUID -o value "$selected_device" 2>/dev/null || true)"
-      mounted_partuuid="$(blkid -s PARTUUID -o value "$mounted_source" 2>/dev/null || true)"
-      if ! {
-        [[ -n "$selected_uuid" && "$selected_uuid" == "$mounted_uuid" ]] ||
-        [[ -n "$selected_partuuid" && "$selected_partuuid" == "$mounted_partuuid" ]]
-      }; then
-        severity="CRITICAL"
-        detail="mounted backup target does not match the selected device"
-      fi
-    fi
-  fi
-
-  timestamp=""
-  age_seconds=""
-  if [[ -r "$timestamp_file" ]]; then
-    timestamp="$(tr -d '\n' <"$timestamp_file")"
-  fi
-
-  if [[ -n "$timestamp" ]]; then
-    timestamp_epoch="$(date --date="$timestamp" +%s 2>/dev/null || true)"
-    now_epoch="$(date +%s)"
-    if [[ -n "$timestamp_epoch" ]]; then
-      age_seconds="$((now_epoch - timestamp_epoch))"
-      if (( age_seconds > max_age_seconds )); then
-        if [[ "$target_present" == true ]]; then
-          severity="CRITICAL"
-          detail="backup metadata is stale while the target is present"
-        elif [[ "$severity" != "CRITICAL" ]]; then
-          severity="WARN"
-          detail="backup metadata is stale, but the removable target is absent"
-        fi
-      fi
-    fi
-  else
-    if [[ "$target_present" == true ]]; then
-      severity="CRITICAL"
-      detail="backup metadata timestamp is missing while the target is present"
-    elif [[ "$severity" != "CRITICAL" ]]; then
-      severity="WARN"
-      detail="backup metadata timestamp is missing; a removable target may not have been attached yet"
-    fi
-  fi
-
-  if [[ -n "$service_result" && "$service_result" != "success" && "$severity" != "CRITICAL" ]]; then
-    severity="WARN"
-    detail="last backup service result was ${service_result}"
-  fi
-
-  if [[ "$output_format" == "text" ]]; then
-    if [[ "$severity" == "OK" ]]; then
-      emit_text "✅ backup timer active: ${timer}"
-      if [[ -n "$timestamp" ]]; then
-        emit_text "✅ recent backup metadata timestamp: ${timestamp}"
-      fi
-    elif [[ "$severity" == "WARN" ]]; then
-      emit_text "⚠️  backup state: ${detail}"
-    else
-      emit_text "❌ backup state: ${detail}"
-    fi
-  fi
-
-  printf '%s\n' "$(backup_result_json \
-    "$service" \
-    "$timer" \
-    "$service_result" \
-    "$timer_active" \
-    "$timer_enabled" \
-    "$selection_state" \
-    "$selected_device" \
-    "$mounted_source" \
-    "$timestamp" \
-    "$age_seconds" \
-    "$severity" \
-    "$detail" \
-    "$target_present")" >"$backup_file"
-  mark_failed_if_critical "$severity"
-
-  if (( deep_checks != 0 )); then
-    if [[ "$target_present" == true && ! -d "$repository_path" ]]; then
-      emit_text "❌ backup repository missing: ${repository_path}"
-      append_json "$deep_file" "$(deep_result_json "backup-repository" "repository" "$repository_path" "CRITICAL" "backup repository path missing while target present")"
-      failed=1
-    fi
-  fi
-}
-
 emit_access_matrix() {
   local matrix_json canary_json canary_name app_names
 
@@ -1026,7 +850,7 @@ cross join index_state;
 
 run_deep_checks() {
   local sqlite_binary sqlite_entry db_name db_path quick_check
-  local pg_json pg_enabled pg_binary pg_data_dir pg_dump_file metadata_file
+  local pg_json pg_enabled pg_binary pg_data_dir
 
   emit_text
   emit_text "== Deep Checks =="
@@ -1055,11 +879,10 @@ run_deep_checks() {
   done < <(runtime_health_snapshot_query '.databases.sqlite[]?')
 
   pg_json="$(runtime_health_snapshot_query '.databases.postgresql')"
-  pg_enabled="$(jq -r '.enabled' <<<"$pg_json")"
+    pg_enabled="$(jq -r '.enabled' <<<"$pg_json")"
   if [[ "$pg_enabled" == "true" ]]; then
     pg_binary="$(jq -r '.pgIsReadyBinary' <<<"$pg_json")"
     pg_data_dir="$(jq -r '.dataDir' <<<"$pg_json")"
-    pg_dump_file="$(runtime_health_snapshot_query '.backup.postgresqlDumpFile' | jq -r '.')"
 
     if [[ -n "$pg_binary" ]] && run_as_user postgres "$pg_binary" -q -d postgres >/dev/null 2>&1; then
       emit_text "✅ postgresql connectivity: ${pg_data_dir}"
@@ -1069,29 +892,9 @@ run_deep_checks() {
       append_json "$deep_file" "$(deep_result_json "postgresql" "connectivity" "$pg_data_dir" "CRITICAL" "pg_isready failed")"
       failed=1
     fi
-
-    if [[ -f "$pg_dump_file" ]]; then
-      emit_text "✅ postgresql dump artifact: ${pg_dump_file}"
-      append_json "$deep_file" "$(deep_result_json "postgresql" "dump" "$pg_dump_file" "OK" "logical dump artifact present")"
-    else
-      emit_text "❌ postgresql dump artifact missing: ${pg_dump_file}"
-      append_json "$deep_file" "$(deep_result_json "postgresql" "dump" "$pg_dump_file" "CRITICAL" "logical dump artifact missing")"
-      failed=1
-    fi
   fi
 
   check_immich_smart_search_runtime
-
-  while IFS= read -r metadata_file; do
-    if [[ -f "$metadata_file" ]]; then
-      emit_text "✅ backup metadata artifact: ${metadata_file}"
-      append_json "$deep_file" "$(deep_result_json "backup-metadata" "$metadata_file" "$metadata_file" "OK" "artifact present")"
-    else
-      emit_text "❌ backup metadata artifact missing: ${metadata_file}"
-      append_json "$deep_file" "$(deep_result_json "backup-metadata" "$metadata_file" "$metadata_file" "CRITICAL" "artifact missing")"
-      failed=1
-    fi
-  done < <(runtime_health_snapshot_query '[.backup.timestampFile, .backup.appStateFile, .backup.criticalPathsFile, .backup.zpoolStatusFile, .backup.zpoolListFile, .backup.zfsListFile][]' | jq -r '.')
 }
 
 emit_text "Host: $(runtime_health_snapshot_query '.host.hostname' | jq -r '.')"
@@ -1195,10 +998,6 @@ emit_text
 emit_text "== Copyparty Upload Permissions =="
 check_copyparty_upload_permissions
 check_mail_archive_filebrowser_permissions
-
-emit_text
-emit_text "== Backups =="
-run_backup_checks
 
 emit_text
 emit_text "== SMART =="
@@ -1310,7 +1109,6 @@ deep_json="$(jq -s '.' "$deep_file")"
 access_matrix_json="$(runtime_health_snapshot_query '.accessChecks.canaries' | jq '.')"
 access_local_json="$(jq -s '.' "$access_local_file")"
 access_authed_json="$(jq -s '.' "$access_authed_file")"
-backup_json="$(cat "$backup_file")"
 
 overall_severity="$(
   jq -nr \
@@ -1322,7 +1120,6 @@ overall_severity="$(
     --argjson appState "$app_state_json" \
     --argjson paths "$paths_json" \
     --argjson persistence "$persistence_json" \
-    --argjson backup "$backup_json" \
     --argjson smart "$smart_json" \
     --argjson zfs "$zfs_json" \
     --argjson deep "$deep_json" \
@@ -1348,7 +1145,7 @@ overall_severity="$(
         + ($deep | map(.severity))
         + ($accessLocal | map(.severity))
         + ($accessAuthed | map(.severity))
-        + [$backup.severity, $zfs.statusSeverity, $zfs.datasetSeverity]
+        + [$zfs.statusSeverity, $zfs.datasetSeverity]
       )[] as $severity ("OK"; escalate(.; $severity))
     '
 )"
@@ -1367,7 +1164,6 @@ if [[ "$output_format" == "json" ]]; then
     --argjson appState "$app_state_json" \
     --argjson requiredPaths "$paths_json" \
     --argjson persistence "$persistence_json" \
-    --argjson backup "$backup_json" \
     --argjson smart "$smart_json" \
     --argjson zfs "$zfs_json" \
     --argjson deep "$deep_json" \
@@ -1387,7 +1183,6 @@ if [[ "$output_format" == "json" ]]; then
       appState: $appState,
       requiredPaths: $requiredPaths,
       persistence: $persistence,
-      backup: $backup,
       smart: $smart.disks,
       zfs: $zfs,
       deepChecks: $deep,

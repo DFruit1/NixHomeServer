@@ -215,6 +215,60 @@ Interactive guidance note:
 - Low-level `membership add` and `membership remove` style operations remain under `Advanced`, but the TUI still defaults them to a guided picker with a review screen before the write.
 - `Advanced -> Local Helpers -> Invite user to Vaultwarden` is the maintained onboarding path for the shared password-vault workflow.
 
+## SFTP SSH Keys
+
+SFTP access uses Kanidm identity plus SSH public keys. It does not use the
+user's Kanidm password.
+
+Have the user generate the keypair on their own PC:
+
+```bash
+ssh-keygen -t ed25519 -a 100 -f ~/.ssh/nixhomeserver_sftp -C "alice@laptop"
+```
+
+They should send only the public key:
+
+```bash
+cat ~/.ssh/nixhomeserver_sftp.pub
+```
+
+Register the public key in Kanidm:
+
+```bash
+kanidm-admin user ssh-key add alice laptop --public-key-file ./alice.pub
+```
+
+Or paste the public key directly:
+
+```bash
+kanidm-admin user ssh-key add alice laptop "ssh-ed25519 AAAA... alice@laptop"
+```
+
+Inspect or remove keys:
+
+```bash
+kanidm-admin user ssh-key list alice
+kanidm-admin user ssh-key remove alice laptop
+```
+
+Grant SFTP access separately:
+
+```bash
+kanidm-admin membership add alice user-files
+```
+
+The user can then connect from a local file browser:
+
+```text
+sftp://alice@server.home.arpa/
+```
+
+Important:
+- never ask users to send private keys
+- `user-files` controls SFTP login eligibility
+- `shared-files-read-write-access` is separate and should only be granted to people who should access and change shared data
+- if the file browser asks for a password, cancel and make sure the user's private key is loaded locally
+
 ## OAuth2 Clients
 
 Read-only inspection:

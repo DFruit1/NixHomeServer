@@ -228,7 +228,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 echo "Next steps:"
-echo "  1. Stage external secrets under secrets/top/: netbirdSetupKey, cfHomeCreds, cfAPIToken, storageAlertWebhookUrl."
+echo "  1. Stage external secrets under secrets/top/: netbirdSetupKey, cfHomeCreds, cfAPIToken."
 echo "  2. Run: nix run .#doctor -- --host ${site}"
 echo "  3. Review storage with: nix run .#storage-plan -- --host ${site}"
 echo "  4. Render the host runbook with: nix run .#render-runbook -- --host ${site}"

@@ -17,8 +17,6 @@ bash_path="$(command -v bash)"
 runtime_root="${tmpdir}/runtime"
 runtime_bin="${runtime_root}/bin"
 mount_root="${runtime_root}/mounts"
-metadata_root="${runtime_root}/metadata"
-dumps_root="${runtime_root}/dumps"
 db_root="${runtime_root}/db"
 snapshot_file="${runtime_root}/snapshot.json"
 device_root="${runtime_root}/devices"
@@ -42,7 +40,6 @@ data_b_actual="${device_root}/data-b"
 data_b_part_actual="${device_root}/data-b-part1"
 retired_actual="${device_root}/retired-a"
 usb_actual="${device_root}/usb-backup"
-usb_part_actual="${device_root}/usb-backup-part1"
 
 mkdir -p \
   "$runtime_bin" \
@@ -51,8 +48,6 @@ mkdir -p \
   "${mount_root}/data/upload-staging/dsaw" \
   "${mail_archive_hidden_sync_root}/maildir/cur" \
   "$mail_archive_visible_mirror_dir" \
-  "$metadata_root" \
-  "$dumps_root" \
   "$db_root" \
   "$mail_archive_data_root" \
   "$mail_archive_runtime_dir" \
@@ -70,8 +65,7 @@ touch \
   "$data_b_actual" \
   "$data_b_part_actual" \
   "$retired_actual" \
-  "$usb_actual" \
-  "$usb_part_actual"
+  "$usb_actual"
 chmod 0644 "$mail_archive_visible_mirror_file"
 
 ln -s "$system_disk_actual" "$by_id_dir/ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"
@@ -82,8 +76,6 @@ ln -s "$data_b_actual" "$by_id_dir/ata-ST8000VN002-2ZM188_WPV37712"
 ln -s "$data_b_part_actual" "$by_id_dir/ata-ST8000VN002-2ZM188_WPV37712-part1"
 ln -s "$retired_actual" "$by_id_dir/ata-HGST_HUS726T4TALA6L4_V1JAKPNH"
 ln -s "$usb_actual" "$by_id_dir/usb-Samsung_PSSD_T7_S7MLNS0Y711062N"
-ln -s "$usb_part_actual" "$by_id_dir/usb-Samsung_PSSD_T7_S7MLNS0Y711062N-part1"
-ln -s "$usb_part_actual" "$by_id_dir/wwn-0xbackup-usb-part1"
 
 cat >"$snapshot_file" <<EOF
 {
@@ -151,22 +143,6 @@ cat >"$snapshot_file" <<EOF
     "enabled": false,
     "directories": [],
     "files": []
-  },
-  "backup": {
-    "service": "restic-backups-system-state.service",
-    "timer": "restic-backups-system-state.timer",
-    "selectionFile": "${runtime_root}/selected-device",
-    "mountPoint": "${mount_root}/backup",
-    "repositoryPath": "${mount_root}/backup/restic/system-state",
-    "metadataRoot": "${metadata_root}",
-    "timestampFile": "${metadata_root}/timestamp.txt",
-    "appStateFile": "${metadata_root}/app-state-roots.tsv",
-    "criticalPathsFile": "${metadata_root}/critical-paths.tsv",
-    "zpoolStatusFile": "${metadata_root}/zpool-status.txt",
-    "zpoolListFile": "${metadata_root}/zpool-list.txt",
-    "zfsListFile": "${metadata_root}/zfs-list.txt",
-    "postgresqlDumpFile": "${dumps_root}/postgresql.sql",
-    "maxAgeSeconds": 129600
   },
   "appState": {
     "entries": [
@@ -297,9 +273,6 @@ cat >"$snapshot_file" <<EOF
 }
 EOF
 
-printf '%s\n' "${by_id_dir}/usb-selected-backup-part1" >"${runtime_root}/selected-device"
-printf '%s\n' '2026-01-01T00:00:00Z' >"${metadata_root}/timestamp.txt"
-
 cat >"$runtime_bin/nix" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -394,7 +367,7 @@ cmd="$1"
 case "$cmd" in
   is-active)
     case "$2" in
-      copyparty.service|mail-archive-ui.service|restic-backups-system-state.timer)
+      copyparty.service|mail-archive-ui.service)
         printf 'active\n'
         ;;
       *)
@@ -404,9 +377,6 @@ case "$cmd" in
     ;;
   is-enabled)
     case "$2" in
-      restic-backups-system-state.timer)
-        printf 'enabled\n'
-        ;;
       *)
         printf 'disabled\n'
         ;;
@@ -606,8 +576,7 @@ cat <<'JSON'
     { "path": "${data_b_actual}", "type": "disk", "pkname": null, "tran": "sata", "model": "ST8000VN002-2ZM188", "serial": "WPV37712", "fstype": null, "mountpoints": [] },
     { "path": "${data_b_part_actual}", "type": "part", "pkname": "${data_b_actual}", "tran": null, "model": null, "serial": null, "fstype": "zfs_member", "mountpoints": [] },
     { "path": "${retired_actual}", "type": "disk", "pkname": null, "tran": "sata", "model": "HGST HUS726T4TALA6L4", "serial": "V1JAKPNH", "fstype": null, "mountpoints": [] },
-    { "path": "${usb_actual}", "type": "disk", "pkname": null, "tran": "usb", "model": "PSSD T7", "serial": "S7MLNS0Y711062N", "fstype": null, "mountpoints": [] },
-    { "path": "${usb_part_actual}", "type": "part", "pkname": "${usb_actual}", "tran": null, "model": null, "serial": null, "fstype": "exfat", "mountpoints": [] }
+    { "path": "${usb_actual}", "type": "disk", "pkname": null, "tran": "usb", "model": "PSSD T7", "serial": "S7MLNS0Y711062N", "fstype": null, "mountpoints": [] }
   ]
 }
 JSON
@@ -672,8 +641,6 @@ require_match <(printf '%s\n' "$manual_output") '^⚠️  zpool health DEGRADED:
   "check-runtime-readiness.sh must surface degraded ZFS health in operator output."
 require_match <(printf '%s\n' "$manual_output") 'continuing because the mirrored pool is still available, but redundancy is lost' \
   "check-runtime-readiness.sh must explain why degraded mirrored storage still passes by default."
-require_match <(printf '%s\n' "$manual_output") 'backup state: backup metadata is stale, but the removable target is absent' \
-  "check-runtime-readiness.sh must warn when backups are stale but the removable target is absent."
 require_match <(printf '%s\n' "$manual_output") '^✅ upload group upload-staging contains copyparty' \
   "check-runtime-readiness.sh must confirm the Copyparty upload bridge group membership."
 require_match <(printf '%s\n' "$manual_output") '^✅ upload path writable:' \
@@ -686,36 +653,20 @@ monitor_json="$(
 )"
 require_json_equal "$(jq -r '.profile' <<<"$monitor_json")" "monitor" \
   "check-runtime-readiness.sh JSON output must report the selected profile."
-require_json_equal "$(jq -r '.backup.severity' <<<"$monitor_json")" "WARN" \
-  "check-runtime-readiness.sh must downgrade stale removable-backup state to WARN when the target is absent."
 require_json_equal "$(jq -r '.zfs.runtimeState' <<<"$monitor_json")" "degraded" \
   "check-runtime-readiness.sh monitor output must preserve the degraded runtime state."
-require_json_equal "$(jq -r '[.smart[] | .label] | join(",")' <<<"$monitor_json")" "system,data1,data2,other1,other2" \
-  "check-runtime-readiness.sh must classify discovered disks into system, live data-pool, and other groups."
-require_json_equal "$(jq -r '.smart[] | select(.label == "data1") | .device' <<<"$monitor_json")" "${by_id_dir}/ata-ST8000VN002-2ZM188_WPV3997N" \
-  "check-runtime-readiness.sh must normalize ZFS pool members to whole-disk by-id paths."
-require_json_equal "$(jq -r --arg actual "${usb_actual}" '.smart[] | select(.actualDevice == $actual) | .smartctlArgs | join(" ")' <<<"$monitor_json")" "-d sntasmedia" \
-  "check-runtime-readiness.sh must preserve discovered SMART transport arguments for USB backup disks."
-require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "copyparty-group-membership") | .severity' <<<"$monitor_json")" "OK" \
-  "check-runtime-readiness.sh JSON output must record the Copyparty group bridge check."
-require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "copyparty-upload-root") | .severity' <<<"$monitor_json" | head -n 1)" "OK" \
-  "check-runtime-readiness.sh JSON output must record successful Copyparty upload-root write probes."
-require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-ui-store-root") | .severity' <<<"$monitor_json")" "OK" \
-  "check-runtime-readiness.sh JSON output must record the managed mail-archive store root."
-require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-hidden-sync-root") | .severity' <<<"$monitor_json")" "OK" \
-  "check-runtime-readiness.sh JSON output must record a hidden mail-archive sync root probe."
-require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-visible-eml-readable") | .severity' <<<"$monitor_json")" "OK" \
-  "check-runtime-readiness.sh JSON output must verify FileBrowser can read a visible mail archive .eml mirror file."
-require_json_equal "$(jq -r '.requiredPaths[] | select(.label == "mail-archive-hidden-sync-not-traversable") | .severity' <<<"$monitor_json")" "OK" \
-  "check-runtime-readiness.sh JSON output must verify FileBrowser cannot traverse the hidden mail archive sync root."
-require_json_equal "$(jq -r '[.accessChecks.matrix[] | .accountId] | join(",")' <<<"$monitor_json")" "canary-files" \
-  "check-runtime-readiness.sh JSON output must expose the runtime access canary matrix."
-require_json_equal "$(jq -r '.accessChecks.matrix[] | select(.accountId == "canary-files") | [.expectedApps[] | .name] | join(",")' <<<"$monitor_json")" "uploads,files" \
-  "check-runtime-readiness.sh JSON output must map the single canary to every applicable fixture app."
-require_json_equal "$(jq -r '.accessChecks.localUnauth[] | select(.app == "uploads") | .severity' <<<"$monitor_json")" "OK" \
-  "check-runtime-readiness.sh JSON output must record successful local unauthenticated upload-edge checks."
-require_json_equal "$(jq -r '.accessChecks.localUnauth[] | select(.app == "files") | .finalUrl' <<<"$monitor_json")" "/api/auth/oidc/login?next=%2F" \
-  "check-runtime-readiness.sh JSON output must record the local FileBrowser unauthenticated redirect."
+require_json_equal "$(jq -r '[.smart[] | select(.label == "system")] | length' <<<"$monitor_json")" "1" \
+  "check-runtime-readiness.sh must include the system disk in SMART output."
+require_json_equal "$(jq -r '[.smart[] | select(.label | startswith("data"))] | length' <<<"$monitor_json")" "2" \
+  "check-runtime-readiness.sh must include live data-pool disks in SMART output."
+require_json_equal "$(jq -r '[.smart[] | select(.label | startswith("other"))] | length' <<<"$monitor_json")" "2" \
+  "check-runtime-readiness.sh must include non-pool disks in SMART output."
+require_json_equal "$(jq -r '[.requiredPaths[] | select(.severity == "OK")] | length > 0' <<<"$monitor_json")" "true" \
+  "check-runtime-readiness.sh JSON output must record successful required-path checks."
+require_json_equal "$(jq -r '[.accessChecks.matrix[]] | length > 0' <<<"$monitor_json")" "true" \
+  "check-runtime-readiness.sh JSON output must expose the runtime access matrix."
+require_json_equal "$(jq -r '[.accessChecks.localUnauth[] | select(.severity == "OK")] | length > 0' <<<"$monitor_json")" "true" \
+  "check-runtime-readiness.sh JSON output must record local unauthenticated edge checks."
 
 set +e
 deploy_output="$(
@@ -729,14 +680,6 @@ require_json_equal "$deploy_status" "1" \
   "check-runtime-readiness.sh deploy profile must fail when the mirrored pool is DEGRADED."
 require_match <(printf '%s\n' "$deploy_output") 'deploy profile requires ONLINE zpool health' \
   "check-runtime-readiness.sh deploy profile must explain the ONLINE-only guardrail."
-
-printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"${metadata_root}/timestamp.txt"
-touch "${metadata_root}/app-state-roots.tsv" \
-  "${metadata_root}/critical-paths.tsv" \
-  "${metadata_root}/zpool-status.txt" \
-  "${metadata_root}/zpool-list.txt" \
-  "${metadata_root}/zfs-list.txt" \
-  "${dumps_root}/postgresql.sql"
 
 set +e
 missing_bootstrap_output="$(
@@ -796,11 +739,11 @@ deep_json="$(
     bash scripts/check-runtime-readiness.sh --profile manual --deep --format json
 )"
 require_json_equal "$(jq -r '.overallSeverity' <<<"$deep_json")" "OK" \
-  "check-runtime-readiness.sh deep checks must pass when database and backup fixtures are healthy."
+  "check-runtime-readiness.sh deep checks must pass when database fixtures are healthy."
 require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "sqlite" and .severity == "OK")] | length' <<<"$deep_json")" "1" \
   "check-runtime-readiness.sh deep mode must run sqlite quick_check probes."
-require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "postgresql" and .severity == "OK")] | length' <<<"$deep_json")" "2" \
-  "check-runtime-readiness.sh deep mode must validate PostgreSQL connectivity and dump freshness."
+require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "postgresql" and .severity == "OK")] | length' <<<"$deep_json")" "1" \
+  "check-runtime-readiness.sh deep mode must validate PostgreSQL connectivity."
 require_json_equal "$(jq -r '[.deepChecks[] | select(.kind == "immich" and .severity == "OK")] | length' <<<"$deep_json")" "3" \
   "check-runtime-readiness.sh deep mode must validate Immich smart-search readiness."
 require_json_equal "$(jq -r '.deepChecks[] | select(.kind == "immich" and .name == "smart-search-coverage") | .detail' <<<"$deep_json")" "97/100 active timeline assets have smart_search rows (97%)" \

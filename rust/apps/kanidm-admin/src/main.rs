@@ -25,8 +25,9 @@ use kanidm_admin::{
             session_status,
         },
         user::{
-            create_user, delete_user, disable_user, enable_user, list_users, reset_token,
-            show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
+            add_ssh_key, create_user, delete_user, disable_user, enable_user, list_ssh_keys,
+            list_users, remove_ssh_key, reset_token, show_user, AddSshKeyOptions,
+            CreateUserOptions, DeleteUserOptions, RemoveSshKeyOptions, ResetTokenOptions,
         },
     },
     output::{render_error, render_output, OutputFormat},
@@ -49,6 +50,7 @@ const USER_CREATE_AFTER_HELP: &str =
 const MEMBERSHIP_SET_AFTER_HELP: &str =
     "Examples:\n  kanidm-admin membership set alice users paperless-users\n  kanidm-admin membership set alice --allow-empty";
 const DELETE_USER_AFTER_HELP: &str = "Example:\n  kanidm-admin user delete alice --confirm alice";
+const USER_SSH_KEY_AFTER_HELP: &str = "Examples:\n  kanidm-admin user ssh-key add alice laptop \"$(cat ~/.ssh/alice_laptop.pub)\"\n  kanidm-admin user ssh-key add alice laptop --public-key-file ./alice_laptop.pub\n  kanidm-admin user ssh-key list alice\n  kanidm-admin user ssh-key remove alice laptop";
 
 #[derive(Debug, Parser)]
 #[command(name = "kanidm-admin")]
@@ -186,6 +188,34 @@ enum UserSubcommand {
         )]
         ttl: u64,
     },
+    #[command(
+        about = "Manage SSH public keys used for SFTP access.",
+        after_help = USER_SSH_KEY_AFTER_HELP
+    )]
+    SshKey(UserSshKeyCommand),
+}
+
+#[derive(Debug, Args)]
+struct UserSshKeyCommand {
+    #[command(subcommand)]
+    command: UserSshKeySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum UserSshKeySubcommand {
+    #[command(about = "List a user's registered SSH public keys.")]
+    List { account_id: String },
+    #[command(about = "Register a user-provided SSH public key.")]
+    Add {
+        account_id: String,
+        tag: String,
+        #[arg(help = "SSH public key text, usually copied from a .pub file.")]
+        public_key: Option<String>,
+        #[arg(long, help = "Read SSH public key text from a .pub file.")]
+        public_key_file: Option<std::path::PathBuf>,
+    },
+    #[command(about = "Remove one registered SSH public key by tag.")]
+    Remove { account_id: String, tag: String },
 }
 
 #[derive(Debug, Args)]
@@ -506,6 +536,34 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                 )
                 .map(Some)
             }
+            UserSubcommand::SshKey(command) => match command.command {
+                UserSshKeySubcommand::List { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    list_ssh_keys(&kanidm, &account_id).map(Some)
+                }
+                UserSshKeySubcommand::Add {
+                    account_id,
+                    tag,
+                    public_key,
+                    public_key_file,
+                } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    add_ssh_key(
+                        &kanidm,
+                        AddSshKeyOptions {
+                            account_id,
+                            tag,
+                            public_key,
+                            public_key_file,
+                        },
+                    )
+                    .map(Some)
+                }
+                UserSshKeySubcommand::Remove { account_id, tag } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    remove_ssh_key(&kanidm, RemoveSshKeyOptions { account_id, tag }).map(Some)
+                }
+            },
         },
         Some(Commands::Group(command)) => match command.command {
             GroupSubcommand::List => list_groups(&kanidm).map(Some),
@@ -752,6 +810,101 @@ mod tests {
                     preserve_validity: true,
                 }
             })) if account_id == "alice" && display_name == "Alice"
+        ));
+    }
+
+    #[test]
+    fn parses_user_ssh_key_list() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "user", "ssh-key", "list", "alice"])
+            .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::User(UserCommand {
+                command: UserSubcommand::SshKey(UserSshKeyCommand {
+                    command: UserSshKeySubcommand::List { account_id }
+                })
+            })) if account_id == "alice"
+        ));
+    }
+
+    #[test]
+    fn parses_user_ssh_key_add_inline() {
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF user@pc";
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "user",
+            "ssh-key",
+            "add",
+            "alice",
+            "laptop",
+            key,
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::User(UserCommand {
+                command: UserSubcommand::SshKey(UserSshKeyCommand {
+                    command: UserSshKeySubcommand::Add {
+                        account_id,
+                        tag,
+                        public_key: Some(public_key),
+                        public_key_file: None,
+                    }
+                })
+            })) if account_id == "alice" && tag == "laptop" && public_key == key
+        ));
+    }
+
+    #[test]
+    fn parses_user_ssh_key_add_file() {
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "user",
+            "ssh-key",
+            "add",
+            "alice",
+            "laptop",
+            "--public-key-file",
+            "alice.pub",
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::User(UserCommand {
+                command: UserSubcommand::SshKey(UserSshKeyCommand {
+                    command: UserSshKeySubcommand::Add {
+                        account_id,
+                        tag,
+                        public_key: None,
+                        public_key_file: Some(public_key_file),
+                    }
+                })
+            })) if account_id == "alice" && tag == "laptop" && public_key_file.ends_with("alice.pub")
+        ));
+    }
+
+    #[test]
+    fn parses_user_ssh_key_remove() {
+        let cli = Cli::try_parse_from([
+            "kanidm-admin",
+            "user",
+            "ssh-key",
+            "remove",
+            "alice",
+            "laptop",
+        ])
+        .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::User(UserCommand {
+                command: UserSubcommand::SshKey(UserSshKeyCommand {
+                    command: UserSshKeySubcommand::Remove { account_id, tag }
+                })
+            })) if account_id == "alice" && tag == "laptop"
         ));
     }
 

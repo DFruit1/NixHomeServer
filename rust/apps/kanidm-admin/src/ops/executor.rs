@@ -40,6 +40,12 @@ pub enum RecoveryTarget {
 }
 
 #[derive(Debug, Clone)]
+struct RecoveryRequirement {
+    target: RecoveryTarget,
+    snapshot: SessionSnapshot,
+}
+
+#[derive(Debug, Clone)]
 pub struct RecoveryVerification {
     pub snapshot: SessionSnapshot,
     pub state: &'static str,
@@ -149,20 +155,23 @@ where
     R: FnMut(RecoveryTarget, Option<&AppError>, Option<&SessionSnapshot>) -> Result<bool, AppError>,
 {
     let mut recovery_cycles = 0usize;
+    let mut skip_next_precheck = false;
 
     loop {
-        if let Some(target) = check_preconditions(cli, preconditions)? {
-            if recovery_cycles >= MAX_RECOVERY_CYCLES {
-                return Ok(OperationOutcome::RecoverableFailure(
-                    repeated_recovery_error(target),
-                ));
+        if !std::mem::take(&mut skip_next_precheck) {
+            if let Some(requirement) = check_preconditions_with_snapshot(cli, preconditions)? {
+                if recovery_cycles >= MAX_RECOVERY_CYCLES {
+                    return Ok(OperationOutcome::RecoverableFailure(
+                        repeated_recovery_error(requirement.target),
+                    ));
+                }
+                if !recover(requirement.target, None, Some(&requirement.snapshot))? {
+                    return Ok(OperationOutcome::Cancelled);
+                }
+                recovery_cycles += 1;
+                skip_next_precheck = true;
+                continue;
             }
-            if !recover(target, None, None)? {
-                return Ok(OperationOutcome::Cancelled);
-            }
-            recovery_cycles += 1;
-            let _ = cli.session_snapshot();
-            continue;
         }
 
         match action() {
@@ -180,7 +189,8 @@ where
                     return Ok(OperationOutcome::Cancelled);
                 }
                 recovery_cycles += 1;
-                let _ = cli.session_snapshot();
+                skip_next_precheck = true;
+                continue;
             }
         }
     }
@@ -190,8 +200,19 @@ pub fn check_preconditions(
     cli: &KanidmCli,
     preconditions: OperationPreconditions,
 ) -> Result<Option<RecoveryTarget>, AppError> {
+    Ok(
+        check_preconditions_with_snapshot(cli, preconditions)?
+            .map(|requirement| requirement.target),
+    )
+}
+
+fn check_preconditions_with_snapshot(
+    cli: &KanidmCli,
+    preconditions: OperationPreconditions,
+) -> Result<Option<RecoveryRequirement>, AppError> {
     let snapshot = cli.session_snapshot()?;
-    Ok(recovery_target_for_snapshot(&snapshot, preconditions))
+    Ok(recovery_target_for_snapshot(&snapshot, preconditions)
+        .map(|target| RecoveryRequirement { target, snapshot }))
 }
 
 pub fn recovery_target_for_snapshot(
@@ -308,11 +329,20 @@ pub fn recovery_command_output(
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsString, sync::Arc};
+    use std::{
+        ffi::OsString,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
 
     use super::*;
     use crate::{
-        backend::ProcessKanidmBackend,
+        backend::{
+            BackendExecError, ExitStatusSummary, KanidmBackend, ProcessKanidmBackend,
+            RawCommandRequest, RawCommandResult,
+        },
         kanidm_cli::{KanidmCli, ParseConfidence, ParsedExpiry},
     };
 
@@ -342,6 +372,38 @@ mod tests {
         )
     }
 
+    #[derive(Debug)]
+    struct SessionListOnlyBackend {
+        session_lists: Arc<AtomicUsize>,
+    }
+
+    impl KanidmBackend for SessionListOnlyBackend {
+        fn exec(&self, request: RawCommandRequest) -> Result<RawCommandResult, BackendExecError> {
+            if request.args.first().map(String::as_str) == Some("session")
+                && request.args.get(1).map(String::as_str) == Some("list")
+            {
+                self.session_lists.fetch_add(1, Ordering::SeqCst);
+                return Ok(RawCommandResult {
+                    status: ExitStatusSummary {
+                        success: true,
+                        code: Some(0),
+                    },
+                    stdout: r#"---
+spn: admindsaw@example.test
+uuid: 00000000-0000-0000-0000-000000000001
+display: Dan
+expiry: 2030-01-01T01:00:00Z
+purpose: read write (expiry: 2000-01-01T00:30:00Z)
+"#
+                    .to_string(),
+                    stderr: String::new(),
+                });
+            }
+
+            panic!("unexpected backend request: {:?}", request.args);
+        }
+    }
+
     #[test]
     fn privileged_preconditions_require_login_when_base_session_missing() {
         assert_eq!(
@@ -365,6 +427,49 @@ mod tests {
             ),
             Some(RecoveryTarget::PrivilegedWrites)
         );
+    }
+
+    #[test]
+    fn precondition_recovery_reuses_snapshot_and_runs_action_without_immediate_reprobe() {
+        let session_lists = Arc::new(AtomicUsize::new(0));
+        let cli = KanidmCli::with_backend(
+            OsString::from("kanidm"),
+            "https://id.example.test".to_string(),
+            "admindsaw".to_string(),
+            Arc::new(SessionListOnlyBackend {
+                session_lists: Arc::clone(&session_lists),
+            }),
+        );
+        let mut action_count = 0usize;
+        let mut recovered_with_snapshot = false;
+
+        let outcome = execute_interactive_operation(
+            &cli,
+            OperationKind::PrivilegedWrite,
+            OperationPreconditions::PrivilegedWriteReady,
+            || {
+                action_count += 1;
+                Ok("applied")
+            },
+            |target, error, snapshot| {
+                assert_eq!(target, RecoveryTarget::PrivilegedWrites);
+                assert!(error.is_none());
+                let snapshot = snapshot.expect("precondition snapshot is reused");
+                assert_eq!(snapshot.base_session_state, BaseSessionState::Present);
+                assert_eq!(
+                    snapshot.privileged_write_state,
+                    PrivilegedWriteState::ReauthRequired
+                );
+                recovered_with_snapshot = true;
+                Ok(true)
+            },
+        )
+        .expect("operation executes");
+
+        assert!(matches!(outcome, OperationOutcome::Success("applied")));
+        assert!(recovered_with_snapshot);
+        assert_eq!(action_count, 1);
+        assert_eq!(session_lists.load(Ordering::SeqCst), 1);
     }
 
     #[test]

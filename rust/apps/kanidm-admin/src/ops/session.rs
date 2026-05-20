@@ -111,19 +111,6 @@ pub fn session_reauth(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     Ok(output)
 }
 
-pub fn session_login_refresh_privileged(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
-    let verification =
-        verify_session_recovery(cli, RecoveryTarget::PrivilegedWrites, || cli.login())?;
-    let mut output = recovery_command_output(
-        cli,
-        "Refresh Login For Privileged Writes",
-        verification.clone(),
-    );
-    output.details["login_command_completed"] = json!(true);
-    output.details["snapshot"] = session_snapshot_details(&verification.snapshot);
-    Ok(output)
-}
-
 pub fn session_logout(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     cli.logout()?;
     Ok(CommandOutput {
@@ -219,13 +206,17 @@ fn parsed_expiry_label(expiry: &ParsedExpiry) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
-        ffi::OsString, fs, os::unix::fs::PermissionsExt, path::Path,
-        process::Command as ProcessCommand, sync::Arc,
+        ffi::OsString,
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::Path,
+        process::Command as ProcessCommand,
+        sync::{Arc, Mutex},
     };
 
     use crate::backend::{
-        BackendCrashKind, BackendExecError, ExitStatusSummary, KanidmBackend, RawCommandRequest,
-        RawCommandResult,
+        BackendCrashKind, BackendExecError, CommandMode, ExitStatusSummary, KanidmBackend,
+        RawCommandRequest, RawCommandResult,
     };
     use crate::context::ResolvedContext;
 
@@ -267,6 +258,62 @@ mod tests {
             Err(BackendExecError::Io {
                 message: "session status probe failed".to_string(),
                 crash_kind: Some(BackendCrashKind::UnexpectedFailure),
+            })
+        }
+    }
+
+    type RecordedRequests = Arc<Mutex<Vec<(Vec<String>, CommandMode)>>>;
+
+    #[derive(Debug)]
+    struct RecordingReauthBackend {
+        requests: RecordedRequests,
+    }
+
+    impl KanidmBackend for RecordingReauthBackend {
+        fn exec(&self, request: RawCommandRequest) -> Result<RawCommandResult, BackendExecError> {
+            self.requests
+                .lock()
+                .expect("requests lock")
+                .push((request.args.clone(), request.mode));
+
+            if request.args.first().map(String::as_str) == Some("reauth") {
+                return Ok(RawCommandResult {
+                    status: ExitStatusSummary {
+                        success: true,
+                        code: Some(0),
+                    },
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+            }
+
+            if request.args.first().map(String::as_str) == Some("session")
+                && request.args.get(1).map(String::as_str) == Some("list")
+            {
+                return Ok(RawCommandResult {
+                    status: ExitStatusSummary {
+                        success: true,
+                        code: Some(0),
+                    },
+                    stdout: r#"---
+spn: admindsaw@example.test
+uuid: 00000000-0000-0000-0000-000000000001
+display: Dan
+expiry: 2030-01-01T00:00:00Z
+purpose: read write (expiry: 2030-01-01T00:00:00Z)
+"#
+                    .to_string(),
+                    stderr: String::new(),
+                });
+            }
+
+            Ok(RawCommandResult {
+                status: ExitStatusSummary {
+                    success: false,
+                    code: Some(1),
+                },
+                stdout: String::new(),
+                stderr: format!("unexpected args: {:?}", request.args),
             })
         }
     }
@@ -398,6 +445,52 @@ exit 1
         assert!(output.human.contains("Login succeeded for 'admindsaw'."));
         assert_eq!(output.details["privileged_write_access"], "ready");
         assert_eq!(output.warnings.len(), 0);
+    }
+
+    #[test]
+    fn session_reauth_runs_plain_reauth_then_status_probe() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let cli = KanidmCli::with_backend(
+            OsString::from("kanidm"),
+            "https://id.example.test".to_string(),
+            "admindsaw".to_string(),
+            Arc::new(RecordingReauthBackend {
+                requests: Arc::clone(&requests),
+            }),
+        );
+
+        let output = session_reauth(&cli).expect("reauth");
+        assert_eq!(output.details["state"], "authenticated");
+
+        let requests = requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0],
+            (
+                vec![
+                    "reauth".to_string(),
+                    "--url".to_string(),
+                    "https://id.example.test".to_string(),
+                    "--name".to_string(),
+                    "admindsaw".to_string(),
+                ],
+                CommandMode::InteractiveAuth,
+            )
+        );
+        assert_eq!(
+            requests[1],
+            (
+                vec![
+                    "session".to_string(),
+                    "list".to_string(),
+                    "--url".to_string(),
+                    "https://id.example.test".to_string(),
+                    "--name".to_string(),
+                    "admindsaw".to_string(),
+                ],
+                CommandMode::NonInteractiveRead,
+            )
+        );
     }
 
     #[test]

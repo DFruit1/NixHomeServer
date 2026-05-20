@@ -66,7 +66,6 @@ Stage these files under \`secrets/top/\`, then run \`./scripts/generate-all-secr
 - \`netbirdSetupKey\`
 - \`cfHomeCreds\`
 - \`cfAPIToken\`
-- \`storageAlertWebhookUrl\`
 
 ## Validation And Deploy
 
@@ -110,9 +109,8 @@ Grant app-specific groups only when the user needs that app. Use \`app-admin\` o
 ## Recovery Pointers
 
 - Runtime readiness: \`sudo ./scripts/check-runtime-readiness.sh --profile manual\`
-- Health report refresh: \`sudo systemctl start system-health-report.service\`
-- Restore verification: \`sudo systemctl start system-state-restore-verify.service\`
 - Data mirror status: \`sudo zpool status $(jq -r '.zfsDataPool.name' <<<"$settings_json")\`
+- SMART short test sweep: \`sudo systemctl start storage-smart-short.service\`
 - Backup target selection: \`manage-backup-target list\`
 - System-state restore: see \`documentation/restore-and-recovery.md\`
 EOF

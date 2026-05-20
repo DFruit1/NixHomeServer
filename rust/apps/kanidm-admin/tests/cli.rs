@@ -60,6 +60,83 @@ exit 1
 }
 
 #[test]
+fn user_ssh_key_add_outputs_sftp_guidance() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "person" && "${args[1]}" == "ssh" && "${args[2]}" == "add-publickey" ]]; then
+  exit 0
+fi
+if [[ "${args[0]}" == "person" && "${args[1]}" == "ssh" && "${args[2]}" == "list-publickeys" ]]; then
+  printf 'laptop: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF user@pc\n'
+  exit 0
+fi
+if [[ "${args[0]}" == "person" && "${args[1]}" == "get" ]]; then
+  printf '{"attrs":{"name":["alice"],"displayname":["Alice"],"directmemberof":["users@example.test"]}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "user",
+            "ssh-key",
+            "add",
+            "alice",
+            "laptop",
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF user@pc",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Added SSH public key 'laptop' to Kanidm user 'alice'",
+        ))
+        .stdout(predicate::str::contains(
+            "kanidm-admin membership add alice user-files",
+        ));
+}
+
+#[test]
+fn user_ssh_key_add_rejects_invalid_public_key_before_backend() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "user",
+            "ssh-key",
+            "add",
+            "alice",
+            "laptop",
+            "not-a-public-key",
+        ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid SSH public key"));
+}
+
+#[test]
 fn session_login_rejects_json_output_before_spawn() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash
@@ -340,6 +417,67 @@ exit 1
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("brand-new-group"));
+}
+
+#[test]
+fn membership_set_applies_diff_without_group_preflight_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    fs::write(dir.path().join("state.txt"), "before\n").expect("seed state");
+    let script = dir.path().join("kanidm-stub.sh");
+    write_script(
+        &script,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+state_file={}/state.txt
+args=("$@")
+if [[ "${{args[0]}}" == "group" && "${{args[1]}}" == "get" ]]; then
+  echo "unexpected group preflight read: $*" >&2
+  exit 44
+fi
+if [[ "${{args[0]}}" == "group" && "${{args[1]}}" == "add-members" ]]; then
+  echo "unexpected add for remove-only diff: $*" >&2
+  exit 45
+fi
+if [[ "${{args[0]}}" == "group" && "${{args[1]}}" == "remove-members" && "${{args[2]}}" == "domain_admins" && "${{args[3]}}" == "dsaw" ]]; then
+  printf 'after\n' > "$state_file"
+  exit 0
+fi
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
+  state="$(<"$state_file")"
+  if [[ "$state" == "before" ]]; then
+    printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["app-admin@example.test","domain_admins@example.test","idm_all_accounts@example.test","idm_all_persons@example.test","users@example.test"]}}}}'
+  else
+    printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["app-admin@example.test","idm_all_accounts@example.test","idm_all_persons@example.test","users@example.test"]}}}}'
+  fi
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+            serde_json::to_string(&dir.path().display().to_string()).expect("json path"),
+        ),
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script).args([
+        "--server-url",
+        "https://id.example.test",
+        "--admin-name",
+        "admindsaw",
+        "membership",
+        "set",
+        "dsaw",
+        "app-admin",
+        "idm_all_accounts",
+        "idm_all_persons",
+        "users",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Removed:"))
+        .stdout(predicate::str::contains("- domain_admins"));
 }
 
 #[test]

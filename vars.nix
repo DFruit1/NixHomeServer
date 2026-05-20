@@ -63,6 +63,10 @@ rec {
       enable = true;
       subdomain = "files";
     };
+    filestash = {
+      enable = true;
+      subdomain = "filestash";
+    };
     uploads = {
       enable = true;
       subdomain = "uploads";
@@ -159,10 +163,12 @@ rec {
       oauth2ProxyMailArchive = 4181;
       oauth2ProxyKiwix = 4182;
       oauth2ProxyMetube = 4183;
+      oauth2ProxyFilestash = 4184;
       paperless = 8000;
       audiobookshelf = 13378;
       copyparty = 3923;
       filebrowserQuantum = 8097;
+      filestash = 8334;
       mailArchiveUi = 9011;
       immich = 2283;
       immichPublicProxy = 3300;
@@ -487,6 +493,9 @@ rec {
   filebrowserDomain = "${apps.files.subdomain}.${domain}";
   filebrowserPort = networking.ports.filebrowserQuantum;
   filebrowserStateDir = "/var/lib/filebrowser-quantum";
+  filestashDomain = "${apps.filestash.subdomain}.${domain}";
+  filestashPort = networking.ports.filestash;
+  filestashStateDir = "/var/lib/filestash";
   emailsDomain = "${apps.mail.subdomain}.${domain}";
   kiwixDomain = "${apps.wiki.subdomain}.${domain}";
   kiwixLibraryRoot = "${dataRoot}/kiwix";

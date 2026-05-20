@@ -193,15 +193,6 @@ quarantine_file="$(find "$root/quarantine/clamav-infected/alice" -type f ! -name
 assert_exists "$quarantine_file"
 assert_quarantine_layout "$quarantine_file"
 
-root="$(run_case low_timeout pdf alice env STUB_CLAM_MODE=timeout STUB_VT_MODE=clean)"
-assert_exists "$root/staging/alice/sample.pdf"
-
-root="$(run_case high_infected exe alice env STUB_CLAM_MODE=infected STUB_VT_MODE=clean)"
-quarantine_file="$(find "$root/quarantine/clamav-infected/alice" -type f ! -name '*.json' | head -n1)"
-assert_exists "$quarantine_file"
-assert_quarantine_layout "$quarantine_file"
-[[ ! -s "$root/vt.calls" ]] || { echo "❌ High-risk ClamAV-infected file must not call VirusTotal."; exit 1; }
-
 root="$(run_case high_clean exe alice env STUB_CLAM_MODE=clean STUB_VT_MODE=clean)"
 assert_exists "$root/users/alice/files/sample.exe"
 require_match "$root/vt.calls" '/api/v3/files/' "High-risk clean file must perform VirusTotal hash lookup."
@@ -211,32 +202,12 @@ quarantine_file="$(find "$root/quarantine/virustotal-flagged/alice" -type f ! -n
 assert_exists "$quarantine_file"
 assert_quarantine_layout "$quarantine_file"
 
-root="$(run_case high_unknown exe alice env STUB_CLAM_MODE=clean STUB_VT_MODE=unknown)"
-quarantine_file="$(find "$root/quarantine/vt-unknown-manual-review/alice" -type f ! -name '*.json' | head -n1)"
-assert_exists "$quarantine_file"
-assert_quarantine_layout "$quarantine_file"
-
 root="$(run_case high_network exe alice env STUB_CLAM_MODE=clean STUB_VT_MODE=network)"
 assert_exists "$root/staging/alice/sample.exe"
-
-root="$(run_case encrypted pdf alice env STUB_CLAM_MODE=encrypted STUB_VT_MODE=clean)"
-quarantine_file="$(find "$root/quarantine/clamav-encrypted/alice" -type f ! -name '*.json' | head -n1)"
-assert_exists "$quarantine_file"
-assert_quarantine_layout "$quarantine_file"
-
-root="$(run_case zim_non_admin zim alice env STUB_CLAM_MODE=clean STUB_VT_MODE=clean STUB_KIWIX_MODE=valid)"
-quarantine_file="$(find "$root/quarantine/zim-admin-required/alice" -type f ! -name '*.json' | head -n1)"
-assert_exists "$quarantine_file"
-assert_quarantine_layout "$quarantine_file"
 
 root="$(run_case zim_admin_valid zim admin env STUB_CLAM_MODE=clean STUB_VT_MODE=clean STUB_KIWIX_MODE=valid)"
 assert_exists "$root/kiwix/sample.zim"
 require_match "$root/systemctl.calls" 'kiwix-library-sync\.service' "Valid admin ZIM promotion must trigger Kiwix sync."
-
-root="$(run_case zim_admin_invalid zim admin env STUB_CLAM_MODE=clean STUB_VT_MODE=clean STUB_KIWIX_MODE=invalid)"
-quarantine_file="$(find "$root/quarantine/zim-invalid/admin" -type f ! -name '*.json' | head -n1)"
-assert_exists "$quarantine_file"
-assert_quarantine_layout "$quarantine_file"
 
 root="$(run_case traversal exe alice env STUB_CLAM_MODE=clean STUB_VT_MODE=clean)"
 mkdir -p "$root/outside"

@@ -5,6 +5,7 @@ let
     "audiobookshelf"
     "copyparty"
     "filebrowser-quantum"
+    "filestash"
     "immich"
     "jellyfin"
     "kavita"
@@ -59,7 +60,6 @@ rec {
     "netbirdSetupKey"
     "cfHomeCreds"
     "cfAPIToken"
-    "storageAlertWebhookUrl"
     "virusTotalApiKey"
   ];
 

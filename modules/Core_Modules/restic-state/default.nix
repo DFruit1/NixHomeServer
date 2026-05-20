@@ -7,7 +7,6 @@ let
   apps = config.nixhomeserver.apps;
   repoRoot = ../../..;
   backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
-  restoreVerifyScript = "${repoRoot}/scripts/verify-system-state-restore.sh";
   backupTargetCommand = pkgs.writeShellApplication {
     name = "manage-backup-target";
     runtimeInputs = with pkgs; [
@@ -29,16 +28,6 @@ let
   ];
   resticBackupPath = [
     backupTargetCommand
-  ];
-  restoreVerifyPath = with pkgs; [
-    bash
-    coreutils
-    findutils
-    gnugrep
-    jq
-    nix
-    restic
-    sqlite
   ];
   selectionStateDir = "/persist/appdata/.nixos-managed/system-state-backup-device-selection";
   selectionFile = "${selectionStateDir}/selected-device";
@@ -246,6 +235,19 @@ let
       notes = "FileBrowser Quantum database, cache, and config state.";
     }
   ]
+  ++ lib.optionals apps.filestash.enable [
+    {
+      app = "filestash";
+      component = "app";
+      stateRoot = vars.filestashStateDir;
+      persistentStateRoot = persistBackedStateRoot vars.filestashStateDir;
+      payloadRoots = [
+        vars.usersRoot
+        vars.sharedRoot
+      ];
+      notes = "Filestash config, generated local secrets, and application state.";
+    }
+  ]
   ++ lib.optionals apps."mail-archive-ui".enable [
     {
       app = "mail-archive-ui";
@@ -313,7 +315,6 @@ in
     "d ${metadataRoot} 0700 root root -"
     "d ${dumpsRoot} 0700 root root -"
     "d ${inventoryRoot} 0700 root root -"
-    "d /var/lib/system-health-monitoring 0750 root root -"
   ];
 
   services.restic.backups.system-state = {
@@ -686,40 +687,4 @@ in
     '';
   };
 
-  systemd.services.system-state-restore-verify = {
-    description = "Verify system-state backup restoreability";
-    wants = [ "local-fs.target" "data-pool-layout.service" ];
-    after = [ "local-fs.target" "data-pool-layout.service" "restic-backups-system-state.service" ];
-    unitConfig.ConditionPathExists = selectionFile;
-    path = restoreVerifyPath;
-    serviceConfig = {
-      Type = "oneshot";
-      Environment = [
-        "RESTORE_VERIFY_REPO_ROOT=${repoRoot}"
-      ];
-    };
-    script = ''
-      set -euo pipefail
-      tmp_json="$(mktemp)"
-      if ${pkgs.bash}/bin/bash ${restoreVerifyScript} --format json > "$tmp_json"; then
-        install -m 0600 "$tmp_json" /var/lib/system-health-monitoring/restore-verify-latest.json
-        rm -f "$tmp_json"
-      else
-        status=$?
-        install -m 0600 "$tmp_json" /var/lib/system-health-monitoring/restore-verify-latest.json
-        rm -f "$tmp_json"
-        exit "$status"
-      fi
-    '';
-  };
-
-  systemd.timers.system-state-restore-verify = {
-    wantedBy = [ "timers.target" ];
-    timerConfig = {
-      OnCalendar = "Sun *-*-* 05:30:00";
-      RandomizedDelaySec = "2h";
-      Persistent = true;
-      Unit = "system-state-restore-verify.service";
-    };
-  };
 }

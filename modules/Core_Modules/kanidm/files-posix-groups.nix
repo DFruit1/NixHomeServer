@@ -12,10 +12,11 @@ let
     coreutils
     kanidm_1_9
   ];
+  adminSshKeyTag = "nixhomeserver-admin";
 in
 {
   systemd.services.kanidm-files-posix-groups = {
-    description = "Converge Kanidm file-access groups to fixed POSIX GIDs";
+    description = "Converge Kanidm file-access POSIX groups and SSH keys";
     wantedBy = [ "multi-user.target" ];
     after = [ "kanidm.service" ];
     wants = [ "kanidm.service" ];
@@ -51,9 +52,34 @@ in
           -D idm_admin >/dev/null
       }
 
+      ensure_admin_posix_account() {
+        kanidm person posix set \
+          ${lib.escapeShellArg vars.kanidmAdminUser} \
+          --shell ${lib.escapeShellArg "${pkgs.bashInteractive}/bin/bash"} \
+          -H ${kanidmCliUrl} \
+          -D idm_admin >/dev/null
+      }
+
+      ensure_admin_ssh_public_key() {
+        kanidm person ssh delete-publickey \
+          ${lib.escapeShellArg vars.kanidmAdminUser} \
+          ${lib.escapeShellArg adminSshKeyTag} \
+          -H ${kanidmCliUrl} \
+          -D idm_admin >/dev/null 2>&1 || true
+
+        kanidm person ssh add-publickey \
+          ${lib.escapeShellArg vars.kanidmAdminUser} \
+          ${lib.escapeShellArg adminSshKeyTag} \
+          ${lib.escapeShellArg vars.serverSSHPubKey} \
+          -H ${kanidmCliUrl} \
+          -D idm_admin >/dev/null
+      }
+
       ${lib.concatMapStringsSep "\n      " (group: ''
         ensure_posix_group ${lib.escapeShellArg group.name} ${lib.escapeShellArg (toString group.gid)}
       '') fileAccessPosixGroups}
+      ensure_admin_posix_account
+      ensure_admin_ssh_public_key
     '';
     serviceConfig.Type = "oneshot";
   };

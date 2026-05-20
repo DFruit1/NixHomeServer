@@ -1,6 +1,6 @@
 # Operations
 
-Use this as the maintained day-2 runbook for validation, guarded deploys, rollback, runtime readiness, system health monitoring, and first-response troubleshooting.
+Use this as the maintained day-2 runbook for validation, guarded deploys, rollback, runtime readiness, SMART monitoring, and first-response troubleshooting.
 
 Normal day-2 operations no longer require local Nix on the desktop. The
 documented path is to stage the repo archive over SSH and let the remote server
@@ -16,13 +16,12 @@ bootstrap remains the installer-side exception.
 - Guarded deploy: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test`
 - Full guarded deploy: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test --full-check`
 - Guarded switch: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action switch`
-- Optional local-build compatibility path: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --local-build --action test`
 - Server-side secrets: `ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'`
 - Runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile manual`
 - Strict runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile deploy`
 - Deep runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile deploy --deep`
 - Access canary bootstrap: `sudo ./scripts/bootstrap-access-canaries.sh`
-- Periodic report refresh: `sudo ./scripts/generate-system-health-report.sh`
+- SMART sweep: `sudo systemctl start storage-smart-short.service`
 - Backup target selection: `manage-backup-target list` then `sudo manage-backup-target select ...`
 
 ## App Hostnames
@@ -162,8 +161,8 @@ That stages the current repo archive on the server and runs the full repository
 gate there. A fresh remote validation stamp is reused by guarded deploys to
 skip repeated repo checks for unchanged archive content.
 
-Optional local validation remains available when you intentionally want the
-desktop to evaluate or build:
+Optional local validation remains available when you intentionally want to check
+the repository before staging it on the server:
 
 Run the flake check first.
 
@@ -216,17 +215,6 @@ use the lean repository gate before `nixos-rebuild`; run
 `validate-repo-remote.sh --full` separately when you want the exhaustive suite.
 The server also carries the resulting `/nix/store` churn.
 
-Use `--local-build` only when you intentionally want the workstation to build
-the same target system directly.
-
-```bash
-./scripts/deploy-with-validation.sh \
-  --target "<admin>@<hostname>" \
-  --local-build \
-  --action test \
-  --hostname <flake-hostname>
-```
-
 Only switch after the guarded test path passes.
 
 ```bash
@@ -252,14 +240,14 @@ you want authenticated app-access verification through the synthetic Kanidm
 canaries. Do not use it for routine timer-based monitoring.
 
 The regular guarded deploy path stays intentionally quick. It covers units,
-storage, backups, local upstream HTTP checks, local unauthenticated auth-edge
+storage, SMART, local upstream HTTP checks, local unauthenticated auth-edge
 checks through Caddy/TLS, and the expected access matrix from config. It does
 not run browser logins, negative auth-path checks, or the full synthetic-canary
 loop.
 
 ## Fast Remote Rebuild
 
-For custom app iteration only:
+For unguarded custom app iteration only:
 
 ```bash
 ./scripts/rebuild-remote-fast.sh
@@ -268,8 +256,8 @@ For custom app iteration only:
 This resolves the SSH target from `vars.localAdminUser` and `vars.hostname`,
 stages the current repo archive, and runs `nixos-rebuild switch` on the remote
 host. It intentionally skips repository validation, flake checks, failed-unit
-checks, runtime readiness, storage checks, and the guarded test-before-switch
-flow.
+checks, runtime readiness, storage checks, rollback guidance, and the guarded
+test-before-switch flow.
 
 Use `--action test` when you want a temporary activation without changing the
 boot default:
@@ -290,7 +278,6 @@ ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'
 sudo ./scripts/check-runtime-readiness.sh --profile manual
 sudo ./scripts/check-runtime-readiness.sh --profile deploy
 sudo ./scripts/check-runtime-readiness.sh --profile deploy --deep
-sudo ./scripts/generate-system-health-report.sh
 ```
 
 Use `--profile manual` for survivability checks and `--profile deploy` for strict deploy gating.
@@ -341,9 +328,6 @@ That helper:
 - warms expected first-login app state
 - writes `/var/lib/runtime-access-canaries/bootstrap-state.json`
 
-The periodic system-health report stays on the shallow runtime path and does not
-run browser logins.
-
 Storage monitoring now discovers disks live at runtime:
 - `system` is the static `vars.mainDisk`
 - `dataN` are the current live `data` pool members discovered from ZFS
@@ -359,30 +343,33 @@ sudo manage-backup-target status
 sudo manage-backup-target unmount
 ```
 
-## System Health Monitoring
+## SMART Monitoring
 
-The retained monitoring workflow is:
-- `scripts/generate-system-health-report.sh`
+The retained storage monitoring workflow is:
 - `scripts/check-runtime-readiness.sh`
-- `scripts/helpers/send-storage-health-alert.sh`
+- `scripts/helpers/storage-health-common.sh`
+- `scripts/discover-storage-devices.sh`
+- `scripts/generate-smartd-config.sh`
+- `scripts/run-storage-smart-sweep.sh`
 
 The scheduled SMART jobs are now discovery sweeps:
 - `storage-smart-short.timer`
 - `storage-smart-long.timer`
 
-Attached retired disks will keep appearing in monitoring and can still raise
-alerts until they are physically detached from the server.
+Attached retired disks will keep appearing in SMART checks until they are
+physically detached from the server.
 
 Use these checks first on the target host:
 
 ```bash
-systemctl status system-health-report.timer
-sudo cat /var/lib/system-health-monitoring/latest.json
-sudo cat /var/lib/system-health-monitoring/latest.txt
+sudo ./scripts/check-runtime-readiness.sh --profile manual
+systemctl status storage-smart-short.timer
+systemctl status storage-smart-long.timer
 ```
 
-If the persisted report looks stale, inspect the timer and service logs:
+To inspect scheduled SMART self-test activity:
 
 ```bash
-journalctl -u system-health-report -n 100 --no-pager
+journalctl -u storage-smart-short -n 100 --no-pager
+journalctl -u storage-smart-long -n 100 --no-pager
 ```

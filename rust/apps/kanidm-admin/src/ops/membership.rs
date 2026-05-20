@@ -14,7 +14,7 @@ use crate::{
     AppError,
 };
 
-use super::{group::load_group, user::load_user};
+use super::user::load_user;
 
 #[derive(Debug, Clone)]
 pub struct SetMembershipOptions {
@@ -70,36 +70,14 @@ pub fn add_membership(
         "groups": desired,
         "mode": MembershipMode::ContainsAll.as_str(),
     });
-    let mut completed_steps = Vec::new();
-    let mut warnings = Vec::new();
-    for group in &desired {
-        let _ = load_group(cli, group)?;
-        match cli.group_add_members(group, account_id) {
-            Ok(()) => completed_steps.push(format!("group_add_members:{group}")),
-            Err(error) => {
-                let ReconciledWrite { value, warning } = reconcile_failed_write(
-                    FailedWriteContext {
-                        resource: "user membership",
-                        name: account_id,
-                        requested_state: requested_state.clone(),
-                        completed_steps: &completed_steps,
-                        failed_step: &format!("group_add_members:{group}"),
-                        error,
-                        next_actions: membership_next_actions(
-                            account_id,
-                            MembershipMode::ContainsAll,
-                        ),
-                    },
-                    || verify_membership(cli, account_id, &desired, MembershipMode::ContainsAll),
-                    |_| true,
-                    membership_observed_state,
-                )?;
-                warnings.push(warning);
-                warnings.extend(value.warnings.iter().cloned());
-                completed_steps.push(format!("group_add_members:{group}"));
-            }
-        }
-    }
+    let (_completed_steps, warnings) = apply_membership_writes(
+        cli,
+        account_id,
+        &membership_writes(MembershipWriteKind::Add, &desired),
+        &requested_state,
+        &desired,
+        MembershipMode::ContainsAll,
+    )?;
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ContainsAll)?;
 
     Ok(CommandOutput {
@@ -138,36 +116,14 @@ pub fn remove_membership(
         "groups": desired,
         "mode": MembershipMode::ExcludesAll.as_str(),
     });
-    let mut completed_steps = Vec::new();
-    let mut warnings = Vec::new();
-    for group in &desired {
-        let _ = load_group(cli, group)?;
-        match cli.group_remove_members(group, account_id) {
-            Ok(()) => completed_steps.push(format!("group_remove_members:{group}")),
-            Err(error) => {
-                let ReconciledWrite { value, warning } = reconcile_failed_write(
-                    FailedWriteContext {
-                        resource: "user membership",
-                        name: account_id,
-                        requested_state: requested_state.clone(),
-                        completed_steps: &completed_steps,
-                        failed_step: &format!("group_remove_members:{group}"),
-                        error,
-                        next_actions: membership_next_actions(
-                            account_id,
-                            MembershipMode::ExcludesAll,
-                        ),
-                    },
-                    || verify_membership(cli, account_id, &desired, MembershipMode::ExcludesAll),
-                    |_| true,
-                    membership_observed_state,
-                )?;
-                warnings.push(warning);
-                warnings.extend(value.warnings.iter().cloned());
-                completed_steps.push(format!("group_remove_members:{group}"));
-            }
-        }
-    }
+    let (_completed_steps, warnings) = apply_membership_writes(
+        cli,
+        account_id,
+        &membership_writes(MembershipWriteKind::Remove, &desired),
+        &requested_state,
+        &desired,
+        MembershipMode::ExcludesAll,
+    )?;
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ExcludesAll)?;
 
     Ok(CommandOutput {
@@ -200,8 +156,6 @@ pub fn set_membership(
         "groups": effective_desired_groups,
         "mode": MembershipMode::Exact.as_str(),
     });
-    let mut completed_steps = Vec::new();
-    let mut warnings = Vec::new();
     if effective_desired_groups.is_empty() && !options.allow_empty {
         return Err(AppError::Config {
             message: format!(
@@ -225,77 +179,20 @@ pub fn set_membership(
         });
     }
 
-    for group in &desired_groups {
-        let _ = load_group(cli, group)?;
-    }
-
     let diff = membership_diff(&current.value.groups, &effective_desired_groups);
-    for group in &diff.added {
-        completed_steps.push(format!("group_add_members:{group}"));
-        if let Err(error) = cli.group_add_members(group, &options.account_id) {
-            completed_steps.pop();
-            let ReconciledWrite { value, warning } = reconcile_failed_write(
-                FailedWriteContext {
-                    resource: "user membership",
-                    name: &options.account_id,
-                    requested_state: requested_state.clone(),
-                    completed_steps: &completed_steps,
-                    failed_step: &format!("group_add_members:{group}"),
-                    error,
-                    next_actions: membership_next_actions(
-                        &options.account_id,
-                        MembershipMode::Exact,
-                    ),
-                },
-                || {
-                    verify_membership(
-                        cli,
-                        &options.account_id,
-                        &effective_desired_groups,
-                        MembershipMode::Exact,
-                    )
-                },
-                |_| true,
-                membership_observed_state,
-            )?;
-            warnings.push(warning);
-            warnings.extend(value.warnings.iter().cloned());
-            completed_steps.push(format!("group_add_members:{group}"));
-        }
-    }
-    for group in &diff.removed {
-        completed_steps.push(format!("group_remove_members:{group}"));
-        if let Err(error) = cli.group_remove_members(group, &options.account_id) {
-            completed_steps.pop();
-            let ReconciledWrite { value, warning } = reconcile_failed_write(
-                FailedWriteContext {
-                    resource: "user membership",
-                    name: &options.account_id,
-                    requested_state: requested_state.clone(),
-                    completed_steps: &completed_steps,
-                    failed_step: &format!("group_remove_members:{group}"),
-                    error,
-                    next_actions: membership_next_actions(
-                        &options.account_id,
-                        MembershipMode::Exact,
-                    ),
-                },
-                || {
-                    verify_membership(
-                        cli,
-                        &options.account_id,
-                        &effective_desired_groups,
-                        MembershipMode::Exact,
-                    )
-                },
-                |_| true,
-                membership_observed_state,
-            )?;
-            warnings.push(warning);
-            warnings.extend(value.warnings.iter().cloned());
-            completed_steps.push(format!("group_remove_members:{group}"));
-        }
-    }
+    let writes = [
+        membership_writes(MembershipWriteKind::Add, &diff.added),
+        membership_writes(MembershipWriteKind::Remove, &diff.removed),
+    ]
+    .concat();
+    let (completed_steps, warnings) = apply_membership_writes(
+        cli,
+        &options.account_id,
+        &writes,
+        &requested_state,
+        &effective_desired_groups,
+        MembershipMode::Exact,
+    )?;
 
     let user = verify_membership(
         cli,
@@ -382,6 +279,84 @@ pub fn prepare_membership_picker_inventory(
 
 fn is_guided_picker_group(name: &str) -> bool {
     is_operator_visible_group(name)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MembershipWriteKind {
+    Add,
+    Remove,
+}
+
+#[derive(Debug, Clone)]
+struct MembershipWrite {
+    kind: MembershipWriteKind,
+    group: String,
+}
+
+impl MembershipWrite {
+    fn step(&self) -> String {
+        match self.kind {
+            MembershipWriteKind::Add => format!("group_add_members:{}", self.group),
+            MembershipWriteKind::Remove => format!("group_remove_members:{}", self.group),
+        }
+    }
+
+    fn apply(&self, cli: &KanidmCli, account_id: &str) -> Result<(), AppError> {
+        match self.kind {
+            MembershipWriteKind::Add => cli.group_add_members(&self.group, account_id),
+            MembershipWriteKind::Remove => cli.group_remove_members(&self.group, account_id),
+        }
+    }
+}
+
+fn membership_writes(kind: MembershipWriteKind, groups: &[String]) -> Vec<MembershipWrite> {
+    groups
+        .iter()
+        .map(|group| MembershipWrite {
+            kind,
+            group: group.clone(),
+        })
+        .collect()
+}
+
+fn apply_membership_writes(
+    cli: &KanidmCli,
+    account_id: &str,
+    writes: &[MembershipWrite],
+    requested_state: &Value,
+    expected_groups: &[String],
+    mode: MembershipMode,
+) -> Result<(Vec<String>, Vec<String>), AppError> {
+    let mut completed_steps = Vec::new();
+    let mut warnings = Vec::new();
+
+    for write in writes {
+        let step = write.step();
+        match write.apply(cli, account_id) {
+            Ok(()) => completed_steps.push(step),
+            Err(error) => {
+                let ReconciledWrite { value, warning } = reconcile_failed_write(
+                    FailedWriteContext {
+                        resource: "user membership",
+                        name: account_id,
+                        requested_state: requested_state.clone(),
+                        completed_steps: &completed_steps,
+                        failed_step: &step,
+                        error,
+                        next_actions: membership_next_actions(account_id, mode),
+                    },
+                    || verify_membership(cli, account_id, expected_groups, mode),
+                    |_| true,
+                    membership_observed_state,
+                )?;
+                warnings.push(warning);
+                warnings.extend(value.warnings.iter().cloned());
+                completed_steps.push(step);
+            }
+        }
+    }
+
+    Ok((completed_steps, warnings))
 }
 
 fn verify_membership(

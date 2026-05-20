@@ -89,6 +89,7 @@ in
     ./modules/Core_Modules/unbound
     ./modules/copyparty
     ./modules/filebrowser-quantum
+    ./modules/filestash
     ./modules/immich
     ./modules/jellyfin
     ./modules/kiwix

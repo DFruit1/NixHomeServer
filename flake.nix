@@ -12,9 +12,10 @@
     impermanence.inputs.nixpkgs.follows = "nixpkgs";
     copyparty.url = "github:9001/copyparty";
     copyparty.inputs.nixpkgs.follows = "nixpkgs";
+    filestashNix.url = "github:dermetfan/filestash.nix";
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, crane, agenix, disko, impermanence, copyparty, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, crane, agenix, disko, impermanence, copyparty, filestashNix, ... }:
     let
       system = "x86_64-linux";
       lib = nixpkgs.lib;
@@ -60,7 +61,7 @@
             impermanence.nixosModules.impermanence
           ];
           specialArgs = {
-            inherit self vars disko copyparty pkgsUnstable;
+            inherit self vars disko copyparty filestashNix pkgsUnstable;
           };
         };
       mkSiteHostAttrs = siteName:
@@ -73,217 +74,6 @@
           (lib.nameValuePair vars.hostname host)
         ];
       nixosConfigurations = builtins.listToAttrs (lib.concatMap mkSiteHostAttrs siteNames);
-      vars = mkSiteVars "dsaw";
-      nixosHost = nixosConfigurations.dsaw;
-      coreConfigSnapshotFile =
-        let
-          cfg = nixosHost.config;
-          snapshot = {
-            vars = {
-              discoveredSiteNames = siteNames;
-              serverLanGateway = vars.serverLanGateway;
-              serverLanIP = vars.serverLanIP;
-              serverLanPrefixLength = vars.serverLanPrefixLength;
-              dataRoot = vars.dataRoot;
-              netIface = vars.netIface;
-              photosDomain = vars.photosDomain;
-              sharePhotosDomain = vars.sharePhotosDomain;
-              uploadsDomain = vars.uploadsDomain;
-              filebrowserDomain = vars.filebrowserDomain;
-              vaultwardenDomain = vars.vaultwardenDomain;
-              uploadSecurity = vars.uploadSecurity;
-              kanidmAdminUser = vars.kanidmAdminUser;
-              localAdminUser = vars.localAdminUser or vars.kanidmAdminUser;
-              runtimeAccessCanaries = vars.runtimeAccessCanaries;
-              personalKavitaLibraries = vars.personalKavitaLibraries;
-              personalJellyfinLibraries = vars.personalJellyfinLibraries;
-              sharedJellyfinLibraries = vars.sharedJellyfinLibraries;
-              jellyfinAdminUsers = vars.jellyfinAdminUsers or [ vars.kanidmAdminUser ];
-              sharedJellyfinMusicLibraries = vars.sharedJellyfinMusicLibraries;
-              sharedBooksSubdirs = vars.sharedBooksSubdirs;
-              userContentSubdirs = vars.userContentSubdirs;
-              sharedContentSubdirs = vars.sharedContentSubdirs;
-              sharedMusicRoot = vars.sharedMusicRoot;
-              staleReferenceCleanup = vars.staleReferenceCleanup or { users = false; shared = false; };
-              paperlessInboxRoot = vars.paperlessInboxRoot;
-              paperlessHandoffStagingRoot = vars.paperlessHandoffStagingRoot;
-              paperlessArchiveRoot = vars.paperlessArchiveRoot;
-              paperlessExportRoot = vars.paperlessExportRoot;
-            };
-            exampleVars = {
-              staleReferenceCleanup = (import ./vars.example.nix { inherit lib; }).staleReferenceCleanup or { users = false; shared = false; };
-            };
-            config = {
-              services = {
-                caddyEnable = cfg.services.caddy.enable;
-                cloudflaredEnable = cfg.services.cloudflared.enable;
-                unboundEnable = cfg.services.unbound.enable;
-                kanidmEnableServer = cfg.services.kanidm.enableServer;
-                netbirdAutostart = cfg.services.netbird.clients.myNetbirdClient.autoStart;
-              };
-              networking = {
-                gatewayAddress = cfg.networking.defaultGateway.address;
-                lanUseDhcp = cfg.networking.interfaces.${vars.netIface}.useDHCP;
-                lanAddresses = cfg.networking.interfaces.${vars.netIface}.ipv4.addresses;
-                lanAllowedTcpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedTCPPorts;
-                lanAllowedUdpPorts = cfg.networking.firewall.interfaces.${vars.netIface}.allowedUDPPorts;
-                nameservers = cfg.networking.nameservers;
-              };
-              sharedContentSubdirs = vars.sharedContentSubdirs;
-              fileSystems = {
-                hasDataMount = cfg.fileSystems ? "/mnt/data";
-                dataFsType = if cfg.fileSystems ? "/mnt/data" then cfg.fileSystems."/mnt/data".fsType else null;
-                persistNeededForBoot = cfg.fileSystems."/persist".neededForBoot;
-                nixNeededForBoot = cfg.fileSystems."/nix".neededForBoot;
-                persistedDirectories = cfg.repo.impermanence.inventory.persistenceDirectories;
-              };
-              restic = {
-                repository = cfg.services.restic.backups.system-state.repository;
-                pathCount = builtins.length cfg.services.restic.backups.system-state.paths;
-                paths = cfg.services.restic.backups.system-state.paths;
-                backupPrepareCommand = cfg.services.restic.backups.system-state.backupPrepareCommand;
-              };
-              monitoring = {
-                hasSystemHealthService = cfg.systemd.services ? "system-health-report";
-                hasSystemHealthTimer = cfg.systemd.timers ? "system-health-report";
-                hasStorageSmartShortService = cfg.systemd.services ? "storage-smart-short";
-                hasStorageSmartLongService = cfg.systemd.services ? "storage-smart-long";
-                hasStorageSmartShortTimer = cfg.systemd.timers ? "storage-smart-short";
-                hasStorageSmartLongTimer = cfg.systemd.timers ? "storage-smart-long";
-                hasSmartdService = cfg.systemd.services ? "smartd";
-                systemHealthReportPath =
-                  map (package: lib.getName package) (cfg.systemd.services."system-health-report".path or [ ]);
-              };
-              storage = {
-                zfsImportScript = cfg.systemd.services.zfs-import-data.script;
-              };
-              apps = {
-                caddyHostNames = builtins.attrNames cfg.services.caddy.virtualHosts;
-                caddyHostCount = builtins.length (builtins.attrNames cfg.services.caddy.virtualHosts);
-                cloudflaredIngressHostNames = builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
-                cloudflaredIngressCount = builtins.length (builtins.attrNames cfg.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress);
-                oauthSystemNames = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
-                provisionGroupNames = builtins.attrNames cfg.services.kanidm.provision.groups;
-                provisionGroups = cfg.services.kanidm.provision.groups;
-                provisionPersonNames = builtins.attrNames cfg.services.kanidm.provision.persons;
-                provisionPersons = cfg.services.kanidm.provision.persons;
-                ageSecretNames = builtins.attrNames cfg.age.secrets;
-                mailArchiveUiEnable = cfg.services.mail-archive-ui.enable;
-                mailArchiveVisibleMirrorReadGroup = cfg.services.mail-archive-ui.visibleMirrorReadGroup;
-                hasMailArchiveOauth2ProxyService = cfg.systemd.services ? "mail-archive-oauth2-proxy";
-                mailArchiveOauth2ProxyExecStartPre =
-                  cfg.systemd.services."mail-archive-oauth2-proxy".serviceConfig.ExecStartPre or [ ];
-                mailArchiveUiMountCondition =
-                  cfg.systemd.services."mail-archive-ui".unitConfig.ConditionPathIsMountPoint or null;
-                mailArchiveUiEnvironment = cfg.services.mail-archive-ui.environment or { };
-                mailArchiveUiServiceEnvironment =
-                  cfg.systemd.services."mail-archive-ui".serviceConfig.Environment or [ ];
-                mailArchiveUiReadWritePaths =
-                  cfg.systemd.services."mail-archive-ui".serviceConfig.ReadWritePaths or [ ];
-                mailArchiveUiSupplementaryGroups =
-                  cfg.systemd.services."mail-archive-ui".serviceConfig.SupplementaryGroups or [ ];
-                mailArchiveUiExtraGroups = cfg.users.users.mail-archive-ui.extraGroups or [ ];
-                mailArchiveUiPaperlessConsumeRoot = cfg.services.mail-archive-ui.paperlessConsumeRoot;
-                mailArchiveUiPaperlessHandoffStagingRoot = cfg.services.mail-archive-ui.paperlessHandoffStagingRoot;
-                mailArchiveUiPath =
-                  map (package: lib.getName package) (cfg.systemd.services."mail-archive-ui".path or [ ]);
-                mailArchiveSyncPath =
-                  map (package: lib.getName package) (cfg.systemd.services."mail-archive-sync".path or [ ]);
-                hasCopypartyService = cfg.systemd.services ? "copyparty";
-                hasCopypartyRuntimeConfigSync = cfg.systemd.services ? "copyparty-runtime-config-sync";
-                copypartyServiceSupplementaryGroups =
-                  cfg.systemd.services.copyparty.serviceConfig.SupplementaryGroups or [ ];
-                copypartyServiceBindPaths =
-                  cfg.systemd.services.copyparty.serviceConfig.BindPaths or [ ];
-                copypartyServiceReadWritePaths =
-                  cfg.systemd.services.copyparty.serviceConfig.ReadWritePaths or [ ];
-                hasFilebrowserQuantumService = cfg.systemd.services ? "filebrowser-quantum";
-                hasFilebrowserQuantumAccessSync = cfg.systemd.services ? "filebrowser-quantum-access-sync-v1";
-                filebrowserQuantumExtraGroups = cfg.users.users.filebrowser-quantum.extraGroups or [ ];
-                filebrowserQuantumReadWritePaths =
-                  cfg.systemd.services."filebrowser-quantum".serviceConfig.ReadWritePaths or [ ];
-                filebrowserQuantumAfter = cfg.systemd.services."filebrowser-quantum".after or [ ];
-                filebrowserQuantumWants = cfg.systemd.services."filebrowser-quantum".wants or [ ];
-                uploadProcessorRuntimeLayoutScript =
-                  cfg.systemd.services."upload-processor-runtime-layout".script or "";
-                systemdTmpfilesRules = cfg.systemd.tmpfiles.rules or [ ];
-                copypartySettings = cfg.services.copyparty.settings;
-                copypartyVolumes = cfg.services.copyparty.volumes;
-                copypartyPreStart = cfg.systemd.services.copyparty.preStart;
-                usersGroupMembers = cfg.users.groups.users.members or [ ];
-                hasImmichServerService = cfg.systemd.services ? "immich-server";
-                hasPaperlessWebService = cfg.systemd.services ? "paperless-web";
-                hasPaperlessPermissionsBootstrap = cfg.systemd.services ? "paperless-permissions-bootstrap";
-                hasPaperlessStaleReferenceCheck = cfg.systemd.services ? "paperless-stale-reference-check";
-                hasPaperlessStaleReferenceCheckTimer = cfg.systemd.timers ? "paperless-stale-reference-check";
-                paperlessStaleReferenceCheckScript = cfg.systemd.services."paperless-stale-reference-check".script or "";
-                paperlessStorageLayoutScript = cfg.systemd.services.paperless-storage-layout-v1.script;
-                paperlessPermissionsBootstrapScript = cfg.systemd.services.paperless-permissions-bootstrap.script;
-                paperlessSocialAccountSyncGroups = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS;
-                paperlessSocialAccountSyncGroupsClaim = cfg.services.paperless.settings.PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM;
-                hasOauth2ProxyService = cfg.systemd.services ? "oauth2-proxy";
-                oauth2ProxyExecStart = cfg.systemd.services.oauth2-proxy.serviceConfig.ExecStart or "";
-                hasAudiobookshelfLibrarySync = cfg.systemd.services ? "audiobookshelf-library-sync";
-                hasAudiobookshelfLibrarySyncTimer = cfg.systemd.timers ? "audiobookshelf-library-sync";
-                hasAudiobookshelfLibraryWatchConfig = cfg.systemd.services ? "audiobookshelf-library-watch-config-v1";
-                audiobookshelfLibraryWatchConfigScript =
-                  cfg.systemd.services."audiobookshelf-library-watch-config-v1".script or "";
-                hasAudiobookshelfStaleReferenceCleanup = cfg.systemd.services ? "audiobookshelf-stale-reference-cleanup";
-                hasAudiobookshelfStaleReferenceCleanupTimer = cfg.systemd.timers ? "audiobookshelf-stale-reference-cleanup";
-                audiobookshelfStaleReferenceCleanupScript =
-                  cfg.systemd.services."audiobookshelf-stale-reference-cleanup".script or "";
-                hasAudiobookshelfLibraryWatch = cfg.systemd.services ? "audiobookshelf-library-watch";
-                hasKavitaLibrarySync = cfg.systemd.services ? "kavita-library-sync";
-                hasKavitaLibrarySyncTimer = cfg.systemd.timers ? "kavita-library-sync";
-                hasKavitaMediaAclSync = cfg.systemd.services ? "kavita-media-acl-sync-v1";
-                hasKavitaLibraryWatch = cfg.systemd.services ? "kavita-library-watch";
-                kavitaLibraryWatchConfigScript =
-                  cfg.systemd.services."kavita-library-watch-config-v1".script or "";
-                hasKavitaStaleReferenceCleanup = cfg.systemd.services ? "kavita-stale-reference-cleanup";
-                hasKavitaStaleReferenceCleanupTimer = cfg.systemd.timers ? "kavita-stale-reference-cleanup";
-                kavitaStaleReferenceCleanupScript =
-                  cfg.systemd.services."kavita-stale-reference-cleanup".script or "";
-                hasKiwixLibraryWatch = cfg.systemd.services ? "kiwix-library-watch";
-                hasJellyfinLibraryMonitor = cfg.systemd.services ? "jellyfin-library-monitor-v1";
-                hasJellyfinLibraryBootstrap = cfg.systemd.services ? "jellyfin-library-bootstrap-v1";
-                jellyfinLibraryBootstrapScript = cfg.systemd.services."jellyfin-library-bootstrap-v1".script or "";
-                fileshareUserRootSyncScript = cfg.systemd.services."fileshare-user-root-sync".script or "";
-                jellyfinStorageLayoutScript = cfg.systemd.services."jellyfin-storage-layout-v1".script or "";
-                hasJellyfinLibrarySync = cfg.systemd.services ? "jellyfin-library-sync";
-                hasJellyfinLibrarySyncTimer = cfg.systemd.timers ? "jellyfin-library-sync";
-                jellyfinLibrarySyncAfter = cfg.systemd.services.jellyfin-library-sync.after;
-                jellyfinLibrarySyncWants = cfg.systemd.services.jellyfin-library-sync.wants;
-                jellyfinLibrarySyncScript = cfg.systemd.services.jellyfin-library-sync.script or "";
-                hasJellyfinLibraryWatch = cfg.systemd.services ? "jellyfin-library-watch";
-                jellyfinLibraryWatchAfter = cfg.systemd.services.jellyfin-library-watch.after;
-                jellyfinLibraryWatchWants = cfg.systemd.services.jellyfin-library-watch.wants;
-                hasYoutubeDownloaderService = cfg.systemd.services ? "youtube-downloader";
-                youtubeDownloaderEnvironment = cfg.systemd.services."youtube-downloader".environment or { };
-                youtubeDownloaderReadWritePaths =
-                  cfg.systemd.services."youtube-downloader".serviceConfig.ReadWritePaths or [ ];
-                youtubeDownloaderPath =
-                  map (package: lib.getName package) (cfg.systemd.services."youtube-downloader".path or [ ]);
-                metubeOauth2ProxyExecStart =
-                  cfg.systemd.services."metube-oauth2-proxy".serviceConfig.ExecStart or "";
-                hasMetubeAudioImport = cfg.systemd.services ? "metube-audio-import";
-                hasMetubeAudioImportWatch = cfg.systemd.services ? "metube-audio-import-watch";
-                jellyfinPayloadRoots = [
-                  vars.sharedVideosRoot
-                  vars.usersRoot
-                ];
-                hasUploadProcessorService = cfg.systemd.services ? "upload-processor";
-                hasUploadProcessorRescanService = cfg.systemd.services ? "upload-processor-rescan";
-                hasUploadProcessorRescanTimer = cfg.systemd.timers ? "upload-processor-rescan";
-                uploadProcessorReadWritePaths = cfg.systemd.services."upload-processor".serviceConfig.ReadWritePaths or [ ];
-                clamavDaemonEnable = cfg.services.clamav.daemon.enable;
-                clamavUpdaterEnable = cfg.services.clamav.updater.enable;
-                clamavDaemonSettings = cfg.services.clamav.daemon.settings;
-                hasVaultwardenService = cfg.systemd.services ? "vaultwarden";
-              };
-            };
-          };
-        in
-        pkgs.writeText "core-config-snapshot.json" (builtins.toJSON snapshot);
       rustLib = import ./rust/lib { inherit lib pkgs crane; };
       rustApps = import ./rust/apps { inherit lib pkgs rustLib; };
       rustPackages = lib.mapAttrs (_: app: app.package) rustApps;
@@ -384,14 +174,13 @@
           {
             nativeBuildInputs = checkNativeBuildInputs;
           } ''
-            export HOME="$TMPDIR"
-            export NIX_CONFIG="experimental-features = nix-command flakes"
-            cp -R ${self} "$TMPDIR/source"
-            chmod -R u+w "$TMPDIR/source"
-            cd "$TMPDIR/source"
-            export CORE_CONFIG_SNAPSHOT_JSON="$(cat ${coreConfigSnapshotFile})"
-            bash scripts/tests/run-script-tests.sh --full
-            touch "$out"
+          export HOME="$TMPDIR"
+          export NIX_CONFIG="experimental-features = nix-command flakes"
+          cp -R ${self} "$TMPDIR/source"
+          chmod -R u+w "$TMPDIR/source"
+          cd "$TMPDIR/source"
+          bash scripts/tests/run-script-tests.sh --full
+          touch "$out"
         '';
       } // rustChecks;
 

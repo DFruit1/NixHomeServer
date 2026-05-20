@@ -8,16 +8,14 @@ usage() {
   cat <<'EOF'
 Usage: scripts/admin/status.sh [--host <site-or-hostname>] [--target <user@host>] [--refresh] [--format text|json]
 
-Summarize /var/lib/system-health-monitoring/latest.json locally or from a
-remote host over SSH.
+Run runtime readiness locally or from a remote host over SSH and summarize the
+current result. --refresh is accepted for compatibility; status is always live.
 EOF
 }
 
 host=""
 target=""
-refresh=false
 output_format="text"
-report_path="/var/lib/system-health-monitoring/latest.json"
 
 while (($# > 0)); do
   case "$1" in
@@ -30,7 +28,6 @@ while (($# > 0)); do
       shift 2
       ;;
     --refresh)
-      refresh=true
       shift
       ;;
     --format)
@@ -65,27 +62,17 @@ if [[ -n "$target" ]]; then
   need ssh
 fi
 
-if [[ "$refresh" == true ]]; then
-  if [[ -n "$target" ]]; then
-    ssh "$target" "sudo systemctl start system-health-report.service"
-  else
-    sudo systemctl start system-health-report.service
-  fi
-fi
-
 if [[ -n "$target" ]]; then
-  if ! report_json="$(ssh "$target" "sudo test -s '$report_path' && sudo cat '$report_path'")"; then
-    echo "blocked: no health report exists yet on ${target}: ${report_path}" >&2
-    echo "hint: run nix run .#admin -- status --host ${host} --target ${target} --refresh" >&2
+  remote_repo_root="$(printf '%q' "$repo_root")"
+  if ! report_json="$(ssh "$target" "cd ${remote_repo_root} && sudo bash scripts/check-runtime-readiness.sh --profile manual --format json")"; then
+    echo "blocked: runtime readiness failed on ${target}" >&2
     exit 1
   fi
 else
-  if [[ ! -s "$report_path" ]]; then
-    echo "blocked: no local health report exists yet: ${report_path}" >&2
-    echo "hint: run nix run .#admin -- status --host ${host} --refresh" >&2
+  if ! report_json="$(sudo bash scripts/check-runtime-readiness.sh --profile manual --format json)"; then
+    echo "blocked: local runtime readiness failed" >&2
     exit 1
   fi
-  report_json="$(cat "$report_path")"
 fi
 
 if [[ "$output_format" == "json" ]]; then
@@ -101,34 +88,25 @@ echo
 
 echo "Runtime"
 jq -r '
-  "- severity: \(.runtime.overallSeverity // "unknown")",
-  "- backup: \(.runtime.backup.severity // "unknown") (\(.runtime.backup.detail // "no detail"))",
-  "- zfs: \(.runtime.zfs.runtimeState // "unknown")"
-' <<<"$report_json"
-echo
-
-echo "Storage"
-jq -r '
-  "- severity: \(.storage.overallSeverity // "unknown")",
-  "- pool: \(.storage.zfs.statusSeverity // "unknown") (\(.storage.zfs.statusSummary // "unknown"))",
-  "- restore verification: \(.storage.restoreVerification.overallSeverity // "unknown")"
+  "- severity: \(.overallSeverity // "unknown")",
+  "- zfs: \(.zfs.runtimeState // "unknown")",
+  "- smart disks: \((.smart // []) | length)"
 ' <<<"$report_json"
 echo
 
 echo "Failed or warning items"
 {
-  jq -r '.runtime.units[]? | select(.severity != "OK") | "- unit \(.unit): \(.severity) (\(.detail))"' <<<"$report_json"
-  jq -r '.runtime.edgeHttp[]? | select(.severity != "OK") | "- edge \(.name): \(.severity) (\(.detail))"' <<<"$report_json"
-  jq -r '.runtime.internalHttp[]? | select(.severity != "OK") | "- internal \(.name): \(.severity) (\(.detail))"' <<<"$report_json"
-  jq -r '.runtime.dns[]? | select(.severity != "OK") | "- dns \(.host): \(.severity) (\(.detail))"' <<<"$report_json"
-  jq -r '.storage.disks[]? | select(.severity != "OK") | "- disk \(.label): \(.severity) (\(.detail))"' <<<"$report_json"
-  jq -r '.storage.mounts[]? | select(.severity != "OK") | "- mount \(.target): \(.severity) (\(.detail))"' <<<"$report_json"
-  jq -r '.storage.alerts[]? | "- alert: " + .' <<<"$report_json"
+  jq -r '.units[]? | select(.severity != "OK") | "- unit \(.unit): \(.severity) (\(.detail))"' <<<"$report_json"
+  jq -r '.edgeHttp[]? | select(.severity != "OK") | "- edge \(.name): \(.severity) (\(.detail))"' <<<"$report_json"
+  jq -r '.internalHttp[]? | select(.severity != "OK") | "- internal \(.name): \(.severity) (\(.detail))"' <<<"$report_json"
+  jq -r '.dns[]? | select(.severity != "OK") | "- dns \(.host): \(.severity) (\(.detail))"' <<<"$report_json"
+  jq -r '.mounts[]? | select(.severity != "OK") | "- mount \(.target): \(.severity) (\(.detail))"' <<<"$report_json"
+  jq -r '.smart[]? | select(.severity != "OK") | "- disk \(.label): \(.severity) (\(.detail))"' <<<"$report_json"
 } | sed '/^$/d' || true
 
 echo
 echo "Next commands"
-echo "  nix run .#admin -- status --host ${host} --refresh"
+echo "  nix run .#admin -- status --host ${host}"
 echo "  sudo ./scripts/check-runtime-readiness.sh --profile manual --deep"
-echo "  sudo systemctl status system-health-report.service"
-echo "  sudo systemctl status system-state-restore-verify.service"
+echo "  sudo systemctl status storage-smart-short.timer"
+echo "  sudo systemctl status storage-smart-long.timer"

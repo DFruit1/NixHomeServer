@@ -17,45 +17,6 @@ ensure_tools() {
   done
 }
 
-nix_eval_host_json_expr_with_overrides() {
-  local overrides="${1:-}"
-  local expr="$2"
-
-  nix_eval_with_optional_cache json "
-    let
-      flake = builtins.getFlake (toString ${TESTS_REPO_ROOT});
-      lib = flake.inputs.nixpkgs.lib;
-      vars = import ${TESTS_REPO_ROOT}/vars.nix { inherit lib; };
-      system = (builtins.getAttr vars.hostname flake.nixosConfigurations).pkgs.stdenv.hostPlatform.system;
-      pkgsUnstable = flake.inputs.nixpkgs-unstable.legacyPackages.\${system};
-      host = lib.nixosSystem {
-        inherit system;
-        modules = [
-          ${TESTS_REPO_ROOT}/hardware-configuration.nix
-          ${TESTS_REPO_ROOT}/configuration.nix
-          flake.inputs.agenix.nixosModules.default
-          flake.inputs.disko.nixosModules.disko
-          flake.inputs.impermanence.nixosModules.impermanence
-          { ${overrides} }
-        ];
-        specialArgs = {
-          self = flake;
-          inherit vars pkgsUnstable;
-          disko = flake.inputs.disko;
-          copyparty = flake.inputs.copyparty;
-        };
-      };
-      cfg = host.config;
-    in
-      ${expr}
-  "
-}
-
-nix_eval_host_snapshot_json() {
-  local expr="$1"
-  nix_eval_host_json_expr_with_overrides "" "$expr"
-}
-
 require_match() {
   local file="$1"
   local pattern="$2"

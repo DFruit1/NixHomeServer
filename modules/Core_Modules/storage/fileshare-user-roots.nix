@@ -149,6 +149,16 @@ let
       "$root/books" \
       ${userVideoWritablePaths} \
       ${userBookWritablePaths}
+    apply_writable_acl filestash \
+      "$root/uploads" \
+      "$root/files" \
+      "$root/documents" \
+      "$root/photos" \
+      "$root/audiobooks" \
+      "$root/videos" \
+      "$root/books" \
+      ${userVideoWritablePaths} \
+      ${userBookWritablePaths}
     apply_writable_acl kavita-media \
       "$root/books" \
       ${userBookWritablePaths}
@@ -201,11 +211,13 @@ in
     wants = [
       "data-pool-layout.service"
       "kanidm.service"
+      "kanidm-files-posix-groups.service"
       "local-fs.target"
     ];
     after = [
       "data-pool-layout.service"
       "kanidm.service"
+      "kanidm-files-posix-groups.service"
       "local-fs.target"
     ];
     before = [

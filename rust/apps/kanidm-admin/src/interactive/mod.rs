@@ -40,13 +40,11 @@ use crate::{
             reset_group_auth_expiry, reset_group_privilege_expiry, set_group_auth_expiry,
             set_group_privilege_expiry, show_group_policy,
         },
-        session::{
-            session_login, session_login_refresh_privileged, session_logout, session_reauth,
-            session_status,
-        },
+        session::{session_login, session_logout, session_reauth, session_status},
         user::{
-            create_user, delete_user, disable_user, enable_user, load_user, reset_token,
-            CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
+            add_ssh_key, create_user, delete_user, disable_user, enable_user, list_ssh_keys,
+            load_user, remove_ssh_key, reset_token, AddSshKeyOptions, CreateUserOptions,
+            DeleteUserOptions, RemoveSshKeyOptions, ResetTokenOptions,
         },
     },
     output::CommandOutput,
@@ -55,9 +53,10 @@ use crate::{
     },
     validation::{
         validate_account_id, validate_display_name, validate_email, validate_identifier_field,
-        validate_redirect_url, validate_seconds_field, AUTH_EXPIRY_MAX_SECONDS,
-        AUTH_EXPIRY_MIN_SECONDS, PRIVILEGE_EXPIRY_MAX_SECONDS, PRIVILEGE_EXPIRY_MIN_SECONDS,
-        RESET_TOKEN_TTL_MAX_SECONDS, RESET_TOKEN_TTL_MIN_SECONDS,
+        validate_redirect_url, validate_seconds_field, validate_ssh_key_tag,
+        validate_ssh_public_key, AUTH_EXPIRY_MAX_SECONDS, AUTH_EXPIRY_MIN_SECONDS,
+        PRIVILEGE_EXPIRY_MAX_SECONDS, PRIVILEGE_EXPIRY_MIN_SECONDS, RESET_TOKEN_TTL_MAX_SECONDS,
+        RESET_TOKEN_TTL_MIN_SECONDS,
     },
     AppError,
 };
@@ -108,9 +107,9 @@ fn session_tools_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
     {
         match selection {
             0 => session_status_flow(kanidm)?,
-            1 => run_command("Login", kanidm, || session_login(kanidm))?,
-            2 => run_command("Reauthenticate", kanidm, || session_reauth(kanidm))?,
-            3 => run_command("Logout", kanidm, || session_logout(kanidm))?,
+            1 => run_session_command("Login", || session_login(kanidm))?,
+            2 => run_session_command("Reauthenticate", || session_reauth(kanidm))?,
+            3 => run_session_command("Logout", || session_logout(kanidm))?,
             _ => break,
         }
     }
@@ -486,6 +485,107 @@ fn help_user_reset_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
             ResetTokenOptions {
                 account_id: account_id.clone(),
                 ttl_seconds,
+            },
+        )
+    })
+}
+
+fn manage_user_ssh_keys_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+    let Some(account_id) = choose_account_id(kanidm, "Select a user for SFTP SSH keys")? else {
+        return Ok(());
+    };
+    while let Some(selection) = forms::contextual_select(
+        "SFTP SSH Keys",
+        Some(
+            "Register public keys that users generated on their own PC. Private keys should never be sent to the operator or stored on the server.",
+        ),
+        &ssh_key_menu_items(),
+        0,
+    )? {
+        match selection {
+            0 => run_command("SFTP SSH Keys", kanidm, || list_ssh_keys(kanidm, &account_id))?,
+            1 => add_user_ssh_key_flow(kanidm, &account_id)?,
+            2 => remove_user_ssh_key_flow(kanidm, &account_id)?,
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+fn add_user_ssh_key_flow(kanidm: &KanidmCli, account_id: &str) -> Result<(), AppError> {
+    let Some(user) = require_complete_user_for_action(kanidm, account_id, "add an SSH key for")?
+    else {
+        return Ok(());
+    };
+    let Some(tag) = prompt_submitted(forms::input_required_validated(
+        "SSH key tag",
+        Some("local-pc"),
+        validate_ssh_key_tag,
+    )?) else {
+        return Ok(());
+    };
+    let Some(public_key) = prompt_submitted(forms::input_required_validated(
+        "SSH public key",
+        None,
+        |value| validate_ssh_public_key(value).map(|(key, _)| key),
+    )?) else {
+        return Ok(());
+    };
+    let key_type = public_key.split_whitespace().next().unwrap_or("-");
+    render::print_note(
+        "Review SFTP SSH Key",
+        &format!(
+            "Account ID: {}\nDisplay Name: {}\nTag: {}\nKey Type: {}\nuser-files: {}\n\nThe user must keep the matching private key on their own PC.",
+            user.value.account_id,
+            user.value.display_name.as_deref().unwrap_or("-"),
+            tag,
+            key_type,
+            if user.value.groups.iter().any(|group| group == "user-files") {
+                "present"
+            } else {
+                "missing"
+            },
+        ),
+    );
+    match forms::confirm("Register this SSH public key now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
+    run_privileged_command("SFTP SSH Key", kanidm, || {
+        add_ssh_key(
+            kanidm,
+            AddSshKeyOptions {
+                account_id: account_id.to_string(),
+                tag: tag.clone(),
+                public_key: Some(public_key.clone()),
+                public_key_file: None,
+            },
+        )
+    })
+}
+
+fn remove_user_ssh_key_flow(kanidm: &KanidmCli, account_id: &str) -> Result<(), AppError> {
+    let Some(tag) = prompt_submitted(forms::input_required_validated(
+        "SSH key tag to remove",
+        None,
+        validate_ssh_key_tag,
+    )?) else {
+        return Ok(());
+    };
+    render::print_note(
+        "Review SFTP SSH Key Removal",
+        &format!("Account ID: {account_id}\nTag: {tag}"),
+    );
+    match forms::confirm("Remove this SSH public key now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
+    run_privileged_command("SFTP SSH Key", kanidm, || {
+        remove_ssh_key(
+            kanidm,
+            RemoveSshKeyOptions {
+                account_id: account_id.to_string(),
+                tag: tag.clone(),
             },
         )
     })
@@ -1273,6 +1373,20 @@ where
     }
 }
 
+fn run_session_command<F>(title: &str, action: F) -> Result<(), AppError>
+where
+    F: FnOnce() -> Result<CommandOutput, AppError>,
+{
+    match action() {
+        Ok(output) => render_output(title, output),
+        Err(error) => {
+            render::print_error(&error);
+            forms::pause("Press Enter or Esc to continue")?;
+            Ok(())
+        }
+    }
+}
+
 fn render_output(title: &str, output: CommandOutput) -> Result<(), AppError> {
     render::print_output(title, &output.render_human());
     forms::pause("Press Enter or Esc to continue")
@@ -1344,17 +1458,13 @@ pub(super) fn recover_target_interactively_with_snapshot(
                 "Reauthentication Required",
                 privileged_reauth_note_message(),
             );
-            recover_reauth(kanidm, privileged_reauth_prompt_message())
+            recover_reauth(kanidm)
         }
     }
 }
 
 fn privileged_reauth_note_message() -> &'static str {
-    "Your base login is active.\nThis action requires reauthentication for added security.\nIf you continue, the tool will guide you through the admin sign-in prompt again before applying the change."
-}
-
-fn privileged_reauth_prompt_message() -> &'static str {
-    "This action requires reauthentication for added security. Would you like to log in again now?"
+    "Your base login is active.\nThis action requires reauthentication for added security.\nThe tool will now hand the terminal to Kanidm for the admin sign-in prompt, then continue the change."
 }
 
 fn recover_login(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
@@ -1364,11 +1474,8 @@ fn recover_login(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
     }
 }
 
-fn recover_reauth(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
-    match forms::confirm(prompt, true)? {
-        Some(true) => run_privileged_session_recovery_command(kanidm),
-        _ => Ok(false),
-    }
+fn recover_reauth(kanidm: &KanidmCli) -> Result<bool, AppError> {
+    run_privileged_session_recovery_command(kanidm)
 }
 
 fn run_privileged_session_recovery_command(kanidm: &KanidmCli) -> Result<bool, AppError> {
@@ -1377,42 +1484,12 @@ fn run_privileged_session_recovery_command(kanidm: &KanidmCli) -> Result<bool, A
             render_output("Reauthenticate", output)?;
             Ok(true)
         }
-        Err(error) if should_offer_full_login_refresh(kanidm) => {
-            render::print_error(&error);
-            render::print_note(
-                "Full Login Refresh Recommended",
-                full_login_refresh_note_message(),
-            );
-            match forms::confirm(full_login_refresh_prompt_message(), true)? {
-                Some(true) => {
-                    run_session_recovery_command("Refresh Login For Privileged Writes", || {
-                        session_login_refresh_privileged(kanidm)
-                    })
-                }
-                _ => Ok(false),
-            }
-        }
         Err(error) => {
             render::print_error(&error);
             forms::pause("Press Enter or Esc to continue")?;
             Ok(false)
         }
     }
-}
-
-fn should_offer_full_login_refresh(kanidm: &KanidmCli) -> bool {
-    kanidm
-        .session_snapshot()
-        .map(|snapshot| snapshot.base_session_present() && !snapshot.privileged_write_ready())
-        .unwrap_or(false)
-}
-
-fn full_login_refresh_note_message() -> &'static str {
-    "Kanidm accepted the reauthentication command, but privileged write access still did not confirm. Refreshing the full delegated login usually clears this state and lets the pending write continue."
-}
-
-fn full_login_refresh_prompt_message() -> &'static str {
-    "Refresh the full delegated login now so privileged writes can continue?"
 }
 
 fn run_session_recovery_command<F>(title: &str, action: F) -> Result<bool, AppError>
@@ -1471,6 +1548,11 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
             "Use disable for temporary lockout or offboarding without deleting the identity. The workflow detects the current state and offers only the valid action.",
         ),
         menu_item(
+            "Manage SFTP SSH Keys",
+            "Register or remove user-provided public keys for local SFTP access.",
+            "Use this after a user generates an SSH keypair on their own PC and gives you only the .pub public key. SFTP access still requires user-files membership.",
+        ),
+        menu_item(
             "Help User Reset Password",
             "Generate a temporary password reset link for a user.",
             "Use this when someone cannot sign in and needs to set a new password. The result should be shared through a secure channel because it grants temporary password reset access.",
@@ -1484,6 +1566,31 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
             "Exit",
             "Leave the interactive Kanidm admin tool.",
             "Use this when you are finished with user administration tasks.",
+        ),
+    ]
+}
+
+fn ssh_key_menu_items() -> Vec<forms::ContextualItem> {
+    vec![
+        menu_item(
+            "List SSH Keys",
+            "Show the user's registered SSH public keys.",
+            "Use this before changing keys or when diagnosing SFTP access from a local file browser.",
+        ),
+        menu_item(
+            "Add SSH Key",
+            "Register a user-provided SSH public key.",
+            "The user should generate the keypair locally and share only the .pub public key. This does not grant user-files membership.",
+        ),
+        menu_item(
+            "Remove SSH Key",
+            "Remove one registered SSH public key by tag.",
+            "Use this when a device is retired, lost, replaced, or should no longer access SFTP.",
+        ),
+        menu_item(
+            "Back",
+            "Return to the main menu.",
+            "Use this when you are done managing SSH keys for this user.",
         ),
     ]
 }
@@ -2390,6 +2497,7 @@ mod tests {
                 "Manage User Access",
                 "Find / View User",
                 "Disable / Enable User",
+                "Manage SFTP SSH Keys",
                 "Help User Reset Password",
                 "Advanced",
                 "Exit",
@@ -2622,11 +2730,7 @@ mod tests {
     fn privileged_reauth_copy_is_plain_language() {
         assert_eq!(
             privileged_reauth_note_message(),
-            "Your base login is active.\nThis action requires reauthentication for added security.\nIf you continue, the tool will guide you through the admin sign-in prompt again before applying the change."
-        );
-        assert_eq!(
-            privileged_reauth_prompt_message(),
-            "This action requires reauthentication for added security. Would you like to log in again now?"
+            "Your base login is active.\nThis action requires reauthentication for added security.\nThe tool will now hand the terminal to Kanidm for the admin sign-in prompt, then continue the change."
         );
     }
 

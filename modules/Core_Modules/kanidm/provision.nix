@@ -4,6 +4,7 @@ let
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   oauth2ProxyClientSecretPath = "/run/oauth2-proxy/client-secret";
+  filestashOauth2ProxyClientSecretPath = "/run/filestash-secrets/oauth2-client-secret-kanidm";
   apps = config.nixhomeserver.apps;
   enabledCanaryGroups =
     [ "users" ]
@@ -148,6 +149,16 @@ in
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
       scopeMaps."shared-files-read-write-access" = [ "openid" "profile" "email" "groups_name" ];
       supplementaryScopeMaps."app-admin" = [ "groups_name" ];
+    };
+
+    systems.oauth2.filestash-web = lib.mkIf apps.filestash.enable {
+      displayName = "Filestash";
+      imageFile = ./assets/files.svg;
+      originUrl = "https://${vars.filestashDomain}/oauth2/callback";
+      originLanding = "https://${vars.filestashDomain}";
+      basicSecretFile = filestashOauth2ProxyClientSecretPath;
+      preferShortUsername = true;
+      scopeMaps."app-admin" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.mail-archive-web = lib.mkIf apps."mail-archive-ui".enable {
