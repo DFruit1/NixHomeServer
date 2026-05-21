@@ -1,10 +1,10 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
+  cfg = config.repo.storage.dataPool;
   zfsBin = "${pkgs.zfs}/bin/zfs";
   canonicalUsersDataset = "${vars.zfsDataPool.name}/users";
   canonicalSharedDataset = "${vars.zfsDataPool.name}/shared";
-  canonicalUploadStagingDataset = "${vars.zfsDataPool.name}/upload-staging";
 
   mkDirCmd =
     { path
@@ -15,7 +15,7 @@ let
     }:
     "${pkgs.coreutils}/bin/install -d -m ${mode} -o ${user} -g ${group} '${path}'";
 
-  zfsContentDirs = [
+  coreContentDirs = [
     {
       path = vars.dataRoot;
       mode = "0755";
@@ -34,21 +34,9 @@ let
       user = "root";
       group = "users";
     }
-    {
-      path = vars.uploadSecurity.stagingRoot;
-      mode = "0710";
-      user = "root";
-      group = "upload-staging";
-    }
-    {
-      path = vars.uploadSecurity.quarantineRoot;
-      mode = "0750";
-      user = "upload-processor";
-      group = "upload-review";
-    }
   ];
 
-  datasetSpecs = [
+  coreDatasetSpecs = [
     {
       dataset = canonicalUsersDataset;
       mountpoint = vars.usersRoot;
@@ -71,17 +59,6 @@ let
         recordsize = "1M";
       };
     }
-    {
-      dataset = canonicalUploadStagingDataset;
-      mountpoint = vars.uploadSecurity.stagingRoot;
-      properties = {
-        compression = "zstd";
-        atime = "off";
-        exec = "off";
-        devices = "off";
-        setuid = "off";
-      };
-    }
   ];
 
   mkDatasetEnsure = spec:
@@ -96,10 +73,55 @@ let
       ${propertyCommands}
     '';
 
-  zfsContentLayoutScript = builtins.concatStringsSep "\n" (map mkDirCmd zfsContentDirs);
-  zfsDatasetLayoutScript = builtins.concatStringsSep "\n" (map mkDatasetEnsure datasetSpecs);
+  zfsContentLayoutScript = builtins.concatStringsSep "\n" (map mkDirCmd cfg.directories);
+  zfsDatasetLayoutScript = builtins.concatStringsSep "\n" (map mkDatasetEnsure cfg.datasets);
+
+  datasetNames = map (spec: spec.dataset) cfg.datasets;
 in
 {
+  options.repo.storage.dataPool = {
+    directories = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          path = lib.mkOption { type = lib.types.str; };
+          mode = lib.mkOption { type = lib.types.str; };
+          user = lib.mkOption { type = lib.types.str; };
+          group = lib.mkOption { type = lib.types.str; };
+        };
+      });
+      default = [ ];
+      description = "Data-pool-backed directories to provision.";
+    };
+
+    datasets = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          dataset = lib.mkOption { type = lib.types.str; };
+          mountpoint = lib.mkOption { type = lib.types.str; };
+          properties = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+          };
+        };
+      });
+      default = [ ];
+      description = "ZFS datasets to create or reconcile for the data pool.";
+    };
+  };
+
+  config = {
+    assertions = [
+      {
+        assertion = builtins.length datasetNames == builtins.length (lib.unique datasetNames);
+        message = "repo.storage.dataPool.datasets contains duplicate dataset names.";
+      }
+    ];
+
+    repo.storage.dataPool = {
+      directories = coreContentDirs;
+      datasets = coreDatasetSpecs;
+    };
+
   systemd.tmpfiles.rules = [
     "d /persist/appdata 0755 root root -"
   ];
@@ -132,5 +154,6 @@ in
       ${zfsDatasetLayoutScript}
       ${zfsContentLayoutScript}
     '';
+  };
   };
 }

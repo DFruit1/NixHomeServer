@@ -2,50 +2,21 @@
 
 let
   cfg = config.repo.impermanence;
-  apps = config.nixhomeserver.apps;
 
-  persistenceDirectories =
-    [
-      "/etc/ssh"
-      "/etc/agenix"
-      "/var/lib/acme"
-      "/var/lib/kanidm"
-      "/var/lib/netbird-main"
-      "/var/lib/nixos"
-      "/var/lib/systemd/timers"
-      "/var/lib/unbound"
-      "/var/log/journal"
-      "/var/log/atop"
-    ]
-    ++ lib.optionals apps.audiobookshelf.enable [ "/var/lib/audiobookshelf" ]
-    ++ lib.optionals apps.copyparty.enable [
-      "/var/lib/clamav"
-      "/var/lib/copyparty"
-      "/var/lib/upload-processor"
-    ]
-    ++ lib.optionals apps.files.enable [
-      "/var/cache/filestash"
-      "/var/lib/filestash"
-      "/var/log/filestash"
-    ]
-    ++ lib.optionals apps.immich.enable [
-      "/var/cache/immich"
-      "/var/lib/immich"
-      "/var/lib/immich-public-proxy"
-      "/var/lib/postgresql/16"
-      "/var/lib/redis-immich"
-    ]
-    ++ lib.optionals apps.jellyfin.enable [ "/var/lib/jellyfin" ]
-    ++ lib.optionals apps.kavita.enable [ "/var/lib/kavita" ]
-    ++ lib.optionals apps.kiwix.enable [ "/var/lib/kiwix" ]
-    ++ lib.optionals apps."youtube-downloader".enable [ "/var/lib/youtube-downloader" ]
-    ++ lib.optionals apps.paperless.enable [
-      "/var/lib/paperless"
-      "/var/lib/redis-paperless"
-    ]
-    ++ lib.optionals apps.vaultwarden.enable [ "/var/lib/vaultwarden" ];
+  corePersistenceDirectories = [
+    "/etc/ssh"
+    "/etc/agenix"
+    "/var/lib/acme"
+    "/var/lib/kanidm"
+    "/var/lib/netbird-main"
+    "/var/lib/nixos"
+    "/var/lib/systemd/timers"
+    "/var/lib/unbound"
+    "/var/log/journal"
+    "/var/log/atop"
+  ];
 
-  persistenceFiles = [ ];
+  corePersistenceFiles = [ ];
 
   rollbackScript = ''
     set -eu
@@ -109,15 +80,39 @@ in
       description = "Retention in days for rotated root subvolumes.";
     };
 
+    directories = lib.mkOption {
+      type = lib.types.listOf (lib.types.oneOf [
+        lib.types.str
+        lib.types.attrs
+      ]);
+      default = [ ];
+      description = "Directories to persist under /persist. App modules append their own state here.";
+    };
+
+    files = lib.mkOption {
+      type = lib.types.listOf (lib.types.oneOf [
+        lib.types.str
+        lib.types.attrs
+      ]);
+      default = [ ];
+      description = "Files to persist under /persist. App modules append their own state here.";
+    };
+
     inventory = {
       persistenceDirectories = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
+        type = lib.types.listOf (lib.types.oneOf [
+          lib.types.str
+          lib.types.attrs
+        ]);
         readOnly = true;
         description = "Canonical list of directories that impermanence persists under /persist.";
       };
 
       persistenceFiles = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
+        type = lib.types.listOf (lib.types.oneOf [
+          lib.types.str
+          lib.types.attrs
+        ]);
         readOnly = true;
         description = "Canonical list of files that impermanence persists under /persist.";
       };
@@ -133,19 +128,20 @@ in
     ];
 
     repo.impermanence.inventory = {
-      inherit
-        persistenceDirectories
-        persistenceFiles
-        ;
+      persistenceDirectories = cfg.directories;
+      persistenceFiles = cfg.files;
     };
+
+    repo.impermanence.directories = corePersistenceDirectories;
+    repo.impermanence.files = corePersistenceFiles;
 
     fileSystems."/persist".neededForBoot = true;
     fileSystems."/nix".neededForBoot = true;
 
     environment.persistence."/persist" = lib.mkIf cfg.enablePersistence {
       hideMounts = true;
-      directories = persistenceDirectories;
-      files = persistenceFiles;
+      directories = cfg.directories;
+      files = cfg.files;
     };
 
     boot.initrd.postResumeCommands = lib.mkIf cfg.enableRootRollback rollbackScript;

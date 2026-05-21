@@ -236,10 +236,6 @@ in
         assertion = builtins.length portValues == builtins.length uniquePortValues;
         message = "nixhomeserver: vars.networking.ports contains duplicate port values.";
       }
-      {
-        assertion = vars.photosDomain != vars.sharePhotosDomain;
-        message = "nixhomeserver: private Immich and public share hostnames must be distinct.";
-      }
     ];
   };
 }

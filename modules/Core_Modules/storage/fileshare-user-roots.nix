@@ -1,17 +1,14 @@
 { config, lib, pkgs, vars, ... }:
 
 let
+  cfg = config.repo.storage.userRoots;
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  userRootGroups = [
-    "user-files"
-    "jellyfin-users"
-  ];
+  memberGroups = lib.unique cfg.memberGroups;
   userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;
   userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
   userVideoSubdirs = lib.escapeShellArgs vars.userVideoSubdirs;
   userBookWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
-  userVideoWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/videos/${name}"'') vars.userVideoSubdirs;
   fileshareUserRootSyncPath = with pkgs; [
     acl
     coreutils
@@ -20,13 +17,54 @@ let
     kanidm_1_9
   ];
 
+  mkPerUserDirCommand =
+    { root
+    , relativePath
+    , mode
+    , user
+    , group
+    ,
+    }:
+    let
+      pathExpr =
+        if relativePath == "" then
+          ''${lib.escapeShellArg root}/"$username"''
+        else
+          ''${lib.escapeShellArg root}/"$username"/${lib.escapeShellArg relativePath}'';
+    in
+    ''
+      install -d -m ${mode} -o ${user} -g ${group} ${pathExpr}
+    '';
+
+  mkRootPathArg = relativePath:
+    if relativePath == "" then
+      ''"$root"''
+    else
+      ''"$root"/${lib.escapeShellArg relativePath}'';
+
+  mkRecursiveGrant =
+    grantFn:
+    { group
+    , relativePaths
+    ,
+    }:
+    ''
+      ${grantFn} ${lib.escapeShellArg group} ${
+        lib.concatMapStringsSep " \\\n      " mkRootPathArg relativePaths
+      }
+    '';
+
+  perUserDirectoryScript = lib.concatStringsSep "\n" (map mkPerUserDirCommand cfg.perUserDirectories);
+  recursiveWritableGrantScript = lib.concatStringsSep "\n" (map (mkRecursiveGrant "apply_writable_acl") cfg.recursiveWritableGrants);
+  recursiveReadonlyGrantScript = lib.concatStringsSep "\n" (map (mkRecursiveGrant "apply_readonly_acl") cfg.recursiveReadonlyGrants);
+  recursiveDirectoryNoAccessGrantScript =
+    lib.concatStringsSep "\n" (map (mkRecursiveGrant "apply_directory_noaccess_acl") cfg.recursiveDirectoryNoAccessGrants);
+
   prepareUserRoot = pkgs.writeShellScript "prepare-fileshare-user-root" ''
     set -euo pipefail
 
     username="$1"
     root="${vars.usersRoot}/$username"
-    emails="$root/emails"
-    staging="${vars.uploadSecurity.stagingRoot}/$username"
 
     install -d -m 2750 -g users "$root"
     chown root:users "$root"
@@ -51,35 +89,25 @@ let
       chmod 2770 "$root/books/$name/_Anon"
     done
 
-    if [[ -e "$emails" ]]; then
-      [[ -d "$emails" ]] || {
-        echo "Refusing to replace existing non-directory path: $emails" >&2
-        exit 1
-      }
-      install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails"
-    else
-      install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails"
-    fi
-    install -d -m 0770 -o mail-archive-ui -g mail-archive-ui "$emails/.internal-sync"
-    install -d -m 0730 -o root -g upload-staging "$staging"
+    ${perUserDirectoryScript}
 
-    ${pkgs.acl}/bin/setfacl \
-      -m u::rwx \
-      -m g::r-x \
-      -m o::--- \
-      -m m::rwx \
-      -m d:u::rwx \
-      -m d:g::r-x \
-      -m d:o::--- \
-      -m d:m::rwx \
-      -m g:kavita-media:--x \
-      -m g:mail-archive-ui:--x \
-      -m g:immich:--x \
-      -m g:paperless:--x \
-      -m g:audiobookshelf-media:rwx \
-      -m d:g:audiobookshelf-media:rwx \
-      -m g:jellyfin-media:--x \
-      "$root"
+    root_acl_args=(
+      -m u::rwx
+      -m g::r-x
+      -m o::---
+      -m m::rwx
+      -m d:u::rwx
+      -m d:g::r-x
+      -m d:o::---
+      -m d:m::rwx
+    )
+    for group_name in ${lib.escapeShellArgs cfg.rootTraverseGroups}; do
+      root_acl_args+=(-m "g:''${group_name}:--x")
+    done
+    for group_name in ${lib.escapeShellArgs cfg.rootWritableGroups}; do
+      root_acl_args+=(-m "g:''${group_name}:rwx" -m "d:g:''${group_name}:rwx")
+    done
+    ${pkgs.acl}/bin/setfacl "''${root_acl_args[@]}" "$root"
 
     apply_recursive_acl() {
       local access_spec="$1"
@@ -135,34 +163,9 @@ let
       "$root/books" \
       ${userBookWritablePaths}
 
-    apply_writable_acl audiobookshelf-media "$root/audiobooks"
-    apply_writable_acl jellyfin-media "$root/videos"
-    apply_writable_acl mail-archive-ui "$root/files"
-    apply_writable_acl youtube-downloader \
-      "$root/audiobooks" \
-      "$root/videos" \
-      ${userVideoWritablePaths}
-    apply_writable_acl filestash \
-      "$root/uploads" \
-      "$root/files" \
-      "$root/documents" \
-      "$root/photos" \
-      "$root/audiobooks" \
-      "$root/videos" \
-      "$root/books" \
-      ${userVideoWritablePaths} \
-      ${userBookWritablePaths}
-    apply_writable_acl kavita-media \
-      "$root/books" \
-      ${userBookWritablePaths}
-
-    # Filestash may browse and download only the visible hard-linked .eml
-    # mirror. The hidden sync payload uses the same file inodes, so deny
-    # traversal on hidden directories rather than clobbering file ACLs.
-    apply_readonly_acl filestash "$root/emails"
-    apply_directory_noaccess_acl filestash "$root/emails/.internal-sync"
-    apply_readonly_acl immich "$root/photos"
-    apply_readonly_acl paperless "$root/documents"
+    ${recursiveWritableGrantScript}
+    ${recursiveReadonlyGrantScript}
+    ${recursiveDirectoryNoAccessGrantScript}
   '';
 
   syncFileshareUserRoots = pkgs.writeShellScript "sync-fileshare-user-roots" ''
@@ -178,7 +181,7 @@ let
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 
-      for group_name in ${lib.escapeShellArgs userRootGroups}; do
+      for group_name in ${lib.escapeShellArgs memberGroups}; do
         if group_json="$(
           ${pkgs.kanidm_1_9}/bin/kanidm group get \
             "$group_name" \
@@ -198,28 +201,97 @@ let
   '';
 in
 {
-  systemd.services.fileshare-user-root-sync = {
-    description = "Create per-user fileshare content and upload roots from Kanidm group membership";
-    wantedBy = [ "multi-user.target" ];
-    wants = [
-      "data-pool-layout.service"
-      "kanidm.service"
-      "kanidm-files-posix-groups.service"
-      "local-fs.target"
-    ];
-    after = [
-      "data-pool-layout.service"
-      "kanidm.service"
-      "kanidm-files-posix-groups.service"
-      "local-fs.target"
-    ];
-    before = [
-      "copyparty.service"
-    ];
-    serviceConfig.Type = "oneshot";
-    path = fileshareUserRootSyncPath;
-    script = ''
-      ${syncFileshareUserRoots}
-    '';
+  options.repo.storage.userRoots = {
+    memberGroups = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Kanidm groups whose members receive fileshare user roots.";
+    };
+
+    perUserDirectories = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          root = lib.mkOption { type = lib.types.str; };
+          relativePath = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+          };
+          mode = lib.mkOption { type = lib.types.str; };
+          user = lib.mkOption { type = lib.types.str; };
+          group = lib.mkOption { type = lib.types.str; };
+        };
+      });
+      default = [ ];
+      description = "Additional per-user directories to create under configured per-user roots.";
+    };
+
+    rootTraverseGroups = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Groups granted traverse-only access to each user root.";
+    };
+
+    rootWritableGroups = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Groups granted writable access to each user root.";
+    };
+
+    recursiveWritableGrants = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          group = lib.mkOption { type = lib.types.str; };
+          relativePaths = lib.mkOption { type = lib.types.listOf lib.types.str; };
+        };
+      });
+      default = [ ];
+      description = "Recursive writable ACL grants relative to each user root.";
+    };
+
+    recursiveReadonlyGrants = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          group = lib.mkOption { type = lib.types.str; };
+          relativePaths = lib.mkOption { type = lib.types.listOf lib.types.str; };
+        };
+      });
+      default = [ ];
+      description = "Recursive read-only ACL grants relative to each user root.";
+    };
+
+    recursiveDirectoryNoAccessGrants = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          group = lib.mkOption { type = lib.types.str; };
+          relativePaths = lib.mkOption { type = lib.types.listOf lib.types.str; };
+        };
+      });
+      default = [ ];
+      description = "Recursive directory no-access ACL grants relative to each user root.";
+    };
+  };
+
+  config = {
+    systemd.services.fileshare-user-root-sync = {
+      description = "Create per-user fileshare content and upload roots from Kanidm group membership";
+      wantedBy = [ "multi-user.target" ];
+      wants = [
+        "data-pool-layout.service"
+        "kanidm.service"
+        "kanidm-files-posix-groups.service"
+        "local-fs.target"
+      ];
+      after = [
+        "data-pool-layout.service"
+        "kanidm.service"
+        "kanidm-files-posix-groups.service"
+        "local-fs.target"
+      ];
+      serviceConfig.Type = "oneshot";
+      path = fileshareUserRootSyncPath;
+      script = ''
+        ${syncFileshareUserRoots}
+      '';
+    };
   };
 }

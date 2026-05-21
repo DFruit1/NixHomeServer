@@ -1,7 +1,7 @@
 { config, lib, vars, pkgs, ... }:
 
 let
-  oauth2Proxy = import ../../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
+  oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   loopback = vars.networking.loopbackIPv4;
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyUploads;
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";

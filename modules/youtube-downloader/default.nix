@@ -17,6 +17,14 @@ let
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
 in
 {
+  imports = [
+    ./filepaths.nix
+    ./identity.nix
+    ./impermanence.nix
+    ./backups.nix
+    ./networking.nix
+  ];
+
   config = lib.mkIf config.nixhomeserver.apps."youtube-downloader".enable (lib.mkMerge [
     {
       users.groups.${serviceGroup} = {

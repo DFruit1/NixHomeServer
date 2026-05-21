@@ -39,8 +39,12 @@ let
 in
 {
   imports = [
-    ./oauth2-proxy.nix
+    ./filepaths.nix
+    ./identity.nix
+    ./backups.nix
+    ./networking.nix
     ./storage.nix
+    ./oauth2-proxy.nix
   ];
 
   options.services.mail-archive-ui = {

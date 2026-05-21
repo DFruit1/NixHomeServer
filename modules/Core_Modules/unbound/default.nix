@@ -1,6 +1,7 @@
 { config, lib, vars, ... }:
 
 let
+  dnsCfg = config.repo.networking.dns;
   loopback = vars.networking.loopbackIPv4;
   loopbackCidr = vars.networking.loopbackIPv4Cidr;
   dnsPort = vars.networking.ports.dns;
@@ -16,7 +17,6 @@ let
   netbirdIp = vars.networking.netbird.ip;
   netbirdIface = vars.networking.interfaces.netbird;
   netbirdCidr = vars.networking.netbird.cidr;
-  apps = config.nixhomeserver.apps;
   listenAddresses = [ loopback netbirdIp ] ++ lib.optional splitDnsMode lanIp;
   lanCidr = "${lanIp}/${toString lanPrefixLength}";
   normaliseDnsName =
@@ -64,38 +64,108 @@ let
       )
       lanHostNames;
   lanReverseZones = lib.unique (map (hostName: reverseZoneForIp lanDnsHosts.${hostName}) lanHostNames);
-  privateHostedRecords =
-    targetIp:
-    [
-      "\"${vars.domain}                 A ${targetIp}\""
-      "\"www.${vars.domain}             A ${targetIp}\""
-    ]
-    ++ lib.optionals apps.paperless.enable [ "\"${vars.paperlessDomain}       A ${targetIp}\"" ]
-    ++ lib.optionals apps.audiobookshelf.enable [ "\"${vars.audiobooksDomain}       A ${targetIp}\"" ]
-    ++ lib.optionals apps.files.enable [ "\"${vars.filesDomain}            A ${targetIp}\"" ]
-    ++ lib.optionals apps."mail-archive-ui".enable [ "\"${vars.emailsDomain}           A ${targetIp}\"" ]
-    ++ lib.optionals apps.vaultwarden.enable [ "\"${vars.vaultwardenDomain}      A ${targetIp}\"" ]
-    ++ lib.optionals apps.kiwix.enable [ "\"${vars.kiwixDomain}            A ${targetIp}\"" ]
-    ++ lib.optionals apps."youtube-downloader".enable [ "\"${vars.downloadsDomain}        A ${targetIp}\"" ]
-    ++ lib.optionals apps.immich.enable [ "\"${vars.photosDomain}           A ${targetIp}\"" ]
-    ++ lib.optionals apps.kavita.enable [ "\"${vars.kavitaDomain}           A ${targetIp}\"" ]
-    ++ lib.optionals apps.jellyfin.enable [ "\"${vars.jellyfinDomain}         A ${targetIp}\"" ];
-
-  lanHostedRecords =
-    (privateHostedRecords lanIp)
-    ++ [
-      "\"${vars.kanidmDomain}           A ${lanIp}\""
-    ]
-    ++ lib.optionals apps.copyparty.enable [ "\"${vars.uploadsDomain}          A ${lanIp}\"" ]
-    ++ lanDnsHostRecords;
-
-  netbirdHostedRecords = privateHostedRecords netbirdIp;
+  resolveTarget = view: target:
+    if target == "private" then
+      if view == "lan" then lanIp else netbirdIp
+    else if target == "lan" then
+      lanIp
+    else if target == "netbird" then
+      netbirdIp
+    else
+      target;
+  mkPrivateRecordsForView = view:
+    lib.concatMap
+      (name:
+        let
+          host = dnsCfg.privateHosts.${name};
+          published =
+            if view == "lan" then
+              host.publishOnLan
+            else
+              host.publishOnNetbird;
+        in
+        lib.optionals published (mkARecord name (resolveTarget view host.target)))
+      (builtins.attrNames dnsCfg.privateHosts);
+  lanHostedRecords = (mkPrivateRecordsForView "lan") ++ lanDnsHostRecords;
+  netbirdHostedRecords = mkPrivateRecordsForView "netbird";
   lanLocalZones =
     [ "${vars.domain} transparent" "${lanDnsDomain} static" ]
     ++ map (zone: "${zone} static") lanReverseZones;
 in
 
 {
+  repo.networking = {
+    ports = {
+      dns-tcp = {
+        port = dnsPort;
+        protocol = "tcp";
+        bind = "private";
+        owner = "core";
+        externallyBound = true;
+      };
+      dns-udp = {
+        port = dnsPort;
+        protocol = "udp";
+        bind = "private";
+        owner = "core";
+        externallyBound = true;
+      };
+      dnscrypt-proxy = {
+        port = dnscryptListenPort;
+        protocol = "tcp";
+        bind = "loopback";
+        owner = "core";
+      };
+    };
+
+    dns.privateHosts = {
+      "${vars.domain}" = {
+        owner = "core";
+        target = "private";
+      };
+      "www.${vars.domain}" = {
+        owner = "core";
+        target = "private";
+      };
+      "${vars.kanidmDomain}" = {
+        owner = "core";
+        target = "lan";
+        publishOnLan = true;
+        publishOnNetbird = false;
+      };
+    };
+
+    firewall.interfacePorts =
+      [
+        {
+          owner = "core-unbound";
+          interface = netbirdIface;
+          protocol = "tcp";
+          port = dnsPort;
+        }
+        {
+          owner = "core-unbound";
+          interface = netbirdIface;
+          protocol = "udp";
+          port = dnsPort;
+        }
+      ]
+      ++ lib.optionals splitDnsMode [
+        {
+          owner = "core-unbound";
+          interface = lanIface;
+          protocol = "tcp";
+          port = dnsPort;
+        }
+        {
+          owner = "core-unbound";
+          interface = lanIface;
+          protocol = "udp";
+          port = dnsPort;
+        }
+      ];
+  };
+
   services.dnscrypt-proxy = {
     enable = true;
     settings = {
@@ -156,9 +226,6 @@ in
               }
             else
               {
-                # Private apps resolve to the NetBird address here. Public tunnel
-                # names like id.<domain> and uploads.<domain> stay on normal public
-                # recursion by design.
                 local-zone = [ "${vars.domain} transparent" ];
                 local-data = netbirdHostedRecords;
               }
@@ -169,8 +236,6 @@ in
             forward-addr = [ "${dnscryptListenAddress}@${toString dnscryptListenPort}" ];
           }
           // lib.optionalAttrs encryptedOnlyUpstreams {
-            # Encrypted-only recursive DNS should fail closed rather than
-            # silently downgrade to a plaintext upstream.
             forward-first = false;
           })
         ];
@@ -195,18 +260,4 @@ in
 
   systemd.services.unbound.after = [ "dnscrypt-proxy.service" ];
   systemd.services.unbound.requires = [ "dnscrypt-proxy.service" ];
-
-  networking.firewall.interfaces =
-    {
-      ${netbirdIface} = {
-        allowedTCPPorts = [ dnsPort ];
-        allowedUDPPorts = [ dnsPort ];
-      };
-    }
-    // lib.optionalAttrs splitDnsMode {
-      ${lanIface} = {
-        allowedTCPPorts = [ dnsPort ];
-        allowedUDPPorts = [ dnsPort ];
-      };
-    };
 }

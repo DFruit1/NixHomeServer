@@ -2,7 +2,7 @@
 
 let
   cfg = config.services.kanidm;
-  chrootRoot = "/srv/filestash-sftp/chroot";
+  chrootRoot = "/srv/files-sftp/chroot";
   authorizedKeysCommand = "/etc/ssh/kanidm_ssh_authorizedkeys";
   sftpGroup = "user-files@${vars.domain}";
   sftpUsers = "${vars.kanidmAdminUser},${vars.kanidmAdminUser}@${vars.domain}";
@@ -19,8 +19,8 @@ let
   sharedMountUnit = "${utils.escapeSystemdPath "${chrootRoot}/Shared"}.mount";
   bindMountOptions = [
     "bind"
-    "x-systemd.requires=filestash-sftp-chroot-layout.service"
-    "x-systemd.after=filestash-sftp-chroot-layout.service"
+    "x-systemd.requires=files-sftp-chroot-layout.service"
+    "x-systemd.after=files-sftp-chroot-layout.service"
     "x-systemd.requires=data-pool-layout.service"
     "x-systemd.after=data-pool-layout.service"
     "x-systemd.before=sshd.service"
@@ -75,13 +75,13 @@ in
   };
 
   systemd.tmpfiles.rules = [
-    "d /srv/filestash-sftp 0755 root root -"
+    "d /srv/files-sftp 0755 root root -"
     "d ${chrootRoot} 0755 root root -"
     "d ${chrootRoot}/Personal 0755 root root -"
     "d ${chrootRoot}/Shared 0755 root root -"
   ];
 
-  systemd.services.filestash-sftp-chroot-layout = {
+  systemd.services.files-sftp-chroot-layout = {
     description = "Create Filestash SFTP chroot mountpoints";
     wantedBy = [ "multi-user.target" ];
     before = [
@@ -90,7 +90,7 @@ in
     ];
     serviceConfig.Type = "oneshot";
     script = ''
-      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root /srv/filestash-sftp
+      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root /srv/files-sftp
       ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${chrootRoot}
       ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${chrootRoot}/Personal
       ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${chrootRoot}/Shared

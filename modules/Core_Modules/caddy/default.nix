@@ -1,9 +1,9 @@
 { lib, vars, config, ... }:
 
 let
+  cfg = config.repo.networking;
   loopback = vars.networking.loopbackIPv4;
   ports = vars.networking.ports;
-  apps = config.nixhomeserver.apps;
   lanIface = vars.networking.interfaces.lan;
   netbirdIface = vars.networking.interfaces.netbird;
   splitDnsMode = vars.networking.dns.mode == "split-horizon";
@@ -15,35 +15,54 @@ let
       format json
     }
   '';
+  tlsConfig = certificate:
+    if certificate == "kanidm" then
+      "tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem"
+    else if certificate == "wildcard" then
+      "tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem"
+    else
+      "";
+  mkVirtualHost = _: host: {
+    extraConfig = ''
+      ${tlsConfig host.certificate}
+      ${lib.optionalString host.accessLog accessLogConfig}
+      ${host.extraConfig}
+    '';
+  };
 in
 {
-  services.caddy = {
-    enable = true;
+  repo.networking = {
+    ports.https = {
+      port = ports.https;
+      protocol = "tcp";
+      bind = "public";
+      owner = "core";
+      externallyBound = true;
+    };
 
-    ## Caddy will register this e-mail with Let’s Encrypt
-    email = vars.kanidmAdminEmail;
-
-    virtualHosts = {
+    caddy.virtualHosts = {
       "${vars.domain}" = {
+        owner = "core";
+        certificate = "wildcard";
+        allowExternal = true;
         extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
           redir https://${vars.kanidmDomain}{uri} 308
         '';
       };
 
       "www.${vars.domain}" = {
+        owner = "core";
+        certificate = "wildcard";
+        allowExternal = true;
         extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
           redir https://${vars.kanidmDomain}{uri} 308
         '';
       };
 
       "${vars.kanidmDomain}" = {
+        owner = "core";
+        certificate = "kanidm";
         extraConfig = ''
-          tls /var/lib/acme/${vars.kanidmDomain}/fullchain.pem /var/lib/acme/${vars.kanidmDomain}/key.pem
-          ${accessLogConfig}
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
           reverse_proxy https://${loopback}:${toString ports.kanidm} {
@@ -56,133 +75,29 @@ in
           }
         '';
       };
-
-      "${vars.paperlessDomain}" = lib.mkIf apps.paperless.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString config.services.paperless.port}
-        '';
-      };
-
-      "${vars.audiobooksDomain}" = lib.mkIf apps.audiobookshelf.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString config.services.audiobookshelf.port}
-        '';
-      };
-
-      "${vars.uploadsDomain}" = lib.mkIf apps.copyparty.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          @edge_http header X-Forwarded-Proto http
-          redir @edge_http https://{host}{uri} 308
-          reverse_proxy http://${config.services.oauth2-proxy.httpAddress} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-            header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
-            header_up Cf-Connecting-Ip {http.request.header.Cf-Connecting-Ip}
-          }
-        '';
-      };
-
-      "${vars.filesDomain}" = lib.mkIf apps.files.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          @download_html_svg path *.html *.svg
-          header @download_html_svg Content-Disposition attachment
-          header @download_html_svg X-Content-Type-Options nosniff
-          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyFilestash} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.emailsDomain}" = lib.mkIf apps."mail-archive-ui".enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyMailArchive} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.vaultwardenDomain}" = lib.mkIf apps.vaultwarden.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.vaultwarden} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.kiwixDomain}" = lib.mkIf apps.kiwix.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyKiwix} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.downloadsDomain}" = lib.mkIf apps."youtube-downloader".enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyDownloads} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.photosDomain}" = lib.mkIf apps.immich.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString config.services.immich.port}
-        '';
-      };
-
-      "${vars.sharePhotosDomain}" = lib.mkIf apps.immich.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.immichPublicProxy} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.kavitaDomain}" = lib.mkIf apps.kavita.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString config.services.kavita.settings.Port}
-        '';
-      };
-
-      "${vars.jellyfinDomain}" = lib.mkIf apps.jellyfin.enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.jellyfin} {
-            header_up X-Forwarded-Proto https
-          }
-        '';
-      };
     };
+
+    firewall.interfacePorts =
+      [
+        {
+          owner = "core-caddy";
+          interface = netbirdIface;
+          protocol = "tcp";
+          port = ports.https;
+        }
+      ]
+      ++ lib.optional splitDnsMode {
+        owner = "core-caddy";
+        interface = lanIface;
+        protocol = "tcp";
+        port = ports.https;
+      };
+  };
+
+  services.caddy = {
+    enable = true;
+    email = vars.kanidmAdminEmail;
+    virtualHosts = lib.mapAttrs mkVirtualHost cfg.caddy.virtualHosts;
   };
 
   systemd.services.caddy = {
@@ -195,15 +110,4 @@ in
       "acme-${vars.kanidmDomain}.service"
     ];
   };
-
-  # NetBird is always allowed to reach the private HTTPS entrypoints. In
-  # split-horizon mode, expose the same listener on the LAN so router-distributed
-  # local DNS answers remain reachable.
-  networking.firewall.interfaces =
-    {
-      ${netbirdIface}.allowedTCPPorts = [ ports.https ];
-    }
-    // lib.optionalAttrs splitDnsMode {
-      ${lanIface}.allowedTCPPorts = [ ports.https ];
-    };
 }

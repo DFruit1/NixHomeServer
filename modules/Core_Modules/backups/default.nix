@@ -1,10 +1,9 @@
 { config, lib, pkgs, vars, ... }:
 
 let
+  cfg = config.repo.backups;
   impermanenceCfg = config.repo.impermanence;
-  mailArchiveUiCfg = config.services.mail-archive-ui;
   resourceCfg = config.nixhomeserver.resources;
-  apps = config.nixhomeserver.apps;
   repoRoot = ../../..;
   backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
   backupTargetCommand = pkgs.writeShellApplication {
@@ -47,12 +46,11 @@ let
       "/persist${stateRoot}"
     else
       "-";
-  appStateEntries = [
+  coreAppStateEntries = [
     {
       app = "kanidm";
       component = "server";
       stateRoot = "/var/lib/kanidm";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/kanidm";
       payloadRoots = [ ];
       notes = "Identity directory state.";
     }
@@ -60,7 +58,6 @@ let
       app = "caddy";
       component = "acme";
       stateRoot = "/var/lib/acme";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/acme";
       payloadRoots = [ ];
       notes = "ACME certificate state.";
     }
@@ -68,7 +65,6 @@ let
       app = "netbird";
       component = "service";
       stateRoot = "/var/lib/netbird-main";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/netbird-main";
       payloadRoots = [ ];
       notes = "Mesh client identity and local state.";
     }
@@ -76,174 +72,8 @@ let
       app = "unbound";
       component = "service";
       stateRoot = "/var/lib/unbound";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/unbound";
       payloadRoots = [ ];
       notes = "Resolver trust-anchor state.";
-    }
-  ]
-  ++ lib.optionals apps.audiobookshelf.enable [
-    {
-      app = "audiobookshelf";
-      component = "app";
-      stateRoot = "/var/lib/audiobookshelf";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/audiobookshelf";
-      payloadRoots = [
-        vars.sharedAudiobooksRoot
-        vars.usersRoot
-      ];
-      notes = "Local users, metadata, and server config.";
-    }
-  ]
-  ++ lib.optionals apps.immich.enable [
-    {
-      app = "immich";
-      component = "app";
-      stateRoot = "/var/lib/immich";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/immich";
-      payloadRoots = [ vars.immichRoot ];
-      notes = "Immich service state directory.";
-    }
-  ]
-  ++ lib.optionals apps.jellyfin.enable [
-    {
-      app = "jellyfin";
-      component = "app";
-      stateRoot = "/var/lib/jellyfin";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/jellyfin";
-      payloadRoots = [
-        vars.sharedMusicRoot
-        vars.sharedVideosRoot
-        vars.usersRoot
-      ];
-      notes = "Local users, libraries, and server config.";
-    }
-  ]
-  ++ lib.optionals apps.kavita.enable [
-    {
-      app = "kavita";
-      component = "app";
-      stateRoot = "/var/lib/kavita";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/kavita";
-      payloadRoots = [
-        vars.sharedBooksRoot
-        vars.usersRoot
-      ];
-      notes = "Library database, local users, and server settings.";
-    }
-  ]
-  ++ lib.optionals apps."youtube-downloader".enable [
-    {
-      app = "youtube-downloader";
-      component = "app";
-      stateRoot = "/var/lib/youtube-downloader";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/youtube-downloader";
-      payloadRoots = [
-        vars.sharedYouTubeRoot
-        vars.sharedAudiobooksRoot
-        vars.usersRoot
-      ];
-      notes = "SQLite queue history, temporary state, and downloader config.";
-    }
-  ]
-  ++ lib.optionals apps.paperless.enable [
-    {
-      app = "paperless";
-      component = "app";
-      stateRoot = "/var/lib/paperless";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/paperless";
-      payloadRoots = [ vars.paperlessRoot ];
-      notes = "Application state and local metadata.";
-    }
-  ]
-  ++ lib.optionals apps.vaultwarden.enable [
-    {
-      app = "vaultwarden";
-      component = "app";
-      stateRoot = "/var/lib/vaultwarden";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/vaultwarden";
-      payloadRoots = [ ];
-      notes = "Encrypted password vault database and attachments.";
-    }
-  ]
-  ++ lib.optionals apps.copyparty.enable [
-    {
-      app = "upload-processor";
-      component = "app";
-      stateRoot = "/var/lib/upload-processor";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/upload-processor";
-      payloadRoots = [
-        vars.uploadSecurity.stagingRoot
-        vars.uploadSecurity.quarantineRoot
-      ];
-      notes = "Upload scan queue state, promotion ledger, staging, and quarantine metadata.";
-    }
-  ]
-  ++ lib.optionals apps.paperless.enable [
-    {
-      app = "paperless";
-      component = "redis";
-      stateRoot = config.services.redis.servers.paperless.settings.dir;
-      persistentStateRoot = persistBackedStateRoot config.services.redis.servers.paperless.settings.dir;
-      payloadRoots = [ vars.paperlessRoot ];
-      notes = "Paperless Redis persistence.";
-    }
-  ]
-  ++ lib.optionals apps.immich.enable [
-    {
-      app = "immich";
-      component = "postgresql";
-      stateRoot = config.services.postgresql.dataDir;
-      persistentStateRoot = persistBackedStateRoot config.services.postgresql.dataDir;
-      payloadRoots = [ vars.immichManagedRoot ];
-      notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
-    }
-  ]
-  ++ lib.optionals apps.immich.enable [
-    {
-      app = "immich";
-      component = "redis";
-      stateRoot = config.services.redis.servers.immich.settings.dir;
-      persistentStateRoot = persistBackedStateRoot config.services.redis.servers.immich.settings.dir;
-      payloadRoots = [ vars.immichManagedRoot ];
-      notes = "Immich Redis persistence.";
-    }
-  ]
-  ++ lib.optionals apps.copyparty.enable [
-    {
-      app = "copyparty";
-      component = "app";
-      stateRoot = "/var/lib/copyparty";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/copyparty";
-      payloadRoots = [
-        vars.uploadSecurity.stagingRoot
-      ];
-      notes = "Local state directory for Copyparty; uploaded payloads enter locked staging before promotion.";
-    }
-  ]
-  ++ lib.optionals apps.files.enable [
-    {
-      app = "filestash";
-      component = "app";
-      stateRoot = vars.filesStateDir;
-      persistentStateRoot = persistBackedStateRoot vars.filesStateDir;
-      payloadRoots = [
-        vars.usersRoot
-        vars.sharedRoot
-      ];
-      notes = "Filestash config, generated local secrets, and application state.";
-    }
-  ]
-  ++ lib.optionals apps."mail-archive-ui".enable [
-    {
-      app = "mail-archive-ui";
-      component = "app";
-      stateRoot = mailArchiveUiCfg.dataDir;
-      persistentStateRoot = persistBackedStateRoot mailArchiveUiCfg.dataDir;
-      payloadRoots = [
-        mailArchiveUiCfg.storeRoot
-        vars.sharedEmailsRoot
-      ];
-      notes = "SQLite state, locks, and the app master key.";
     }
   ];
   appStateSpec = lib.concatMapStringsSep "\n"
@@ -253,42 +83,152 @@ let
         entry.app
         entry.component
         entry.stateRoot
-        entry.persistentStateRoot
+        (persistBackedStateRoot entry.stateRoot)
         (lib.concatStringsSep ";" entry.payloadRoots)
         entry.notes
       ]
     )
-    appStateEntries;
-  criticalPaths = [
+    cfg.appStateEntries;
+  coreCriticalPaths = [
     vars.dataRoot
     vars.usersRoot
     vars.sharedRoot
-  ]
-  ++ lib.optionals apps.paperless.enable [
-    vars.paperlessRoot
-    vars.paperlessInboxRoot
-    vars.paperlessArchiveRoot
-    vars.paperlessExportRoot
-  ]
-  ++ lib.optionals apps.immich.enable [
-    vars.immichRoot
-    vars.immichManagedRoot
-  ]
-  ++ lib.optionals apps."mail-archive-ui".enable [
-    vars.sharedEmailsRoot
-    mailArchiveUiCfg.dataDir
-    mailArchiveUiCfg.accountStateRoot
-    mailArchiveUiCfg.storeRoot
-  ]
-  ++ lib.optionals apps.copyparty.enable [
-    vars.uploadSecurity.stagingRoot
-    vars.uploadSecurity.quarantineRoot
-  ]
-  ++ lib.optionals apps.kiwix.enable [
-    vars.kiwixLibraryRoot
   ];
+  mkPathRowsScript = name: rows:
+    let
+      outputFile = "${metadataRoot}/${name}.tsv";
+      rowCommands = lib.concatMapStringsSep "\n"
+        (row:
+          ''
+            write_path_inventory_row ${lib.escapeShellArg row.label} ${lib.escapeShellArg row.path} >> ${lib.escapeShellArg outputFile}
+          '')
+        rows;
+    in
+    ''
+      printf 'label\tpath\tstatus\ttype\towner\tgroup\tmode\n' > ${lib.escapeShellArg outputFile}
+      ${rowCommands}
+    '';
+  pathRowsScript = lib.concatStringsSep "\n" (lib.mapAttrsToList mkPathRowsScript cfg.pathRows);
+  pathInventorySpecs = map
+    (spec:
+      lib.concatStringsSep "\t" [
+        spec.label
+        spec.root
+        (toString spec.maxDepth)
+        (if spec.pruneHistory then "1" else "0")
+      ])
+    cfg.pathInventories;
+  sqliteDumpScript = lib.concatMapStringsSep "\n"
+    (dump:
+      ''
+        backup_sqlite_db ${lib.escapeShellArg dump.source} ${lib.escapeShellArg "${dumpsRoot}/${dump.outputName}"}
+      '')
+    cfg.sqliteDumps;
+  prepareFragmentsScript = lib.concatStringsSep "\n" (lib.attrValues cfg.prepareFragments);
 in
 {
+  options.repo.backups = {
+    appStateEntries = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          app = lib.mkOption { type = lib.types.str; };
+          component = lib.mkOption {
+            type = lib.types.str;
+            default = "app";
+          };
+          stateRoot = lib.mkOption { type = lib.types.str; };
+          payloadRoots = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+          };
+          notes = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+          };
+        };
+      });
+      default = [ ];
+      description = "State roots included in the system-state backup metadata inventory.";
+    };
+
+    criticalPaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Important content roots inventoried before system-state backups.";
+    };
+
+    pathInventories = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          label = lib.mkOption { type = lib.types.str; };
+          root = lib.mkOption { type = lib.types.str; };
+          maxDepth = lib.mkOption {
+            type = lib.types.int;
+            default = 3;
+          };
+          pruneHistory = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+          };
+        };
+      });
+      default = [ ];
+      description = "Directory trees to snapshot into metadata inventories.";
+    };
+
+    pathRows = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.listOf (lib.types.submodule {
+            options = {
+              label = lib.mkOption { type = lib.types.str; };
+              path = lib.mkOption { type = lib.types.str; };
+              kind = lib.mkOption {
+                type = lib.types.str;
+                default = "directory";
+              };
+              owner = lib.mkOption {
+                type = lib.types.str;
+                default = "unknown";
+              };
+            };
+          }));
+      default = { };
+      description = "Labeled path status TSVs written under backup metadata.";
+    };
+
+    sqliteDumps = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          source = lib.mkOption { type = lib.types.str; };
+          outputName = lib.mkOption { type = lib.types.str; };
+        };
+      });
+      default = [ ];
+      description = "SQLite databases to copy consistently before restic runs.";
+    };
+
+    prepareFragments = lib.mkOption {
+      type = lib.types.attrsOf lib.types.lines;
+      default = { };
+      description = "Named shell fragments run during restic backup preparation.";
+    };
+  };
+
+  config = {
+    repo.backups = {
+      appStateEntries = coreAppStateEntries;
+      criticalPaths = coreCriticalPaths;
+      pathInventories = [
+        {
+          label = "users";
+          root = vars.usersRoot;
+        }
+        {
+          label = "shared";
+          root = vars.sharedRoot;
+        }
+      ];
+    };
+
   boot.supportedFilesystems = [ "exfat" ];
   system.fsPackages = fsPackages;
   environment.systemPackages = systemPackages;
@@ -352,6 +292,9 @@ in
           pkgs.zfs
         ]
       }
+      metadataRoot=${lib.escapeShellArg metadataRoot}
+      dumpsRoot=${lib.escapeShellArg dumpsRoot}
+      inventoryRoot=${lib.escapeShellArg inventoryRoot}
 
       if [[ ! -r "${selectionFile}" ]]; then
         echo "Missing backup target selection: ${selectionFile}" >&2
@@ -422,10 +365,6 @@ in
       timestamp_file="${metadataRoot}/timestamp.txt"
       app_state_file="${metadataRoot}/app-state-roots.tsv"
       critical_paths_file="${metadataRoot}/critical-paths.tsv"
-      mail_archive_roots_file="${metadataRoot}/mail-archive-roots.tsv"
-      youtube_downloader_db="/var/lib/youtube-downloader/state/youtube-downloader.sqlite"
-      youtube_downloader_dump="${dumpsRoot}/youtube-downloader.sqlite"
-      upload_flow_roots_file="${metadataRoot}/upload-flow-roots.tsv"
       zpool_status_file="${metadataRoot}/zpool-status.txt"
       zpool_list_file="${metadataRoot}/zpool-list.txt"
       zfs_list_file="${metadataRoot}/zfs-list.txt"
@@ -433,12 +372,6 @@ in
       findmnt_file="${metadataRoot}/findmnt-data-root.txt"
 
       date --iso-8601=seconds > "$timestamp_file"
-
-      if [[ -r "$youtube_downloader_db" ]]; then
-        sqlite3 "$youtube_downloader_db" ".backup '$youtube_downloader_dump'"
-      else
-        rm -f "$youtube_downloader_dump"
-      fi
 
       printf 'app\tcomponent\tstate_root\tpersistent_state_root\tstate_status\tstate_type\towner\tgroup\tmode\tpayload_roots\tpayload_status\tnotes\n' > "$app_state_file"
       while IFS=$'\t' read -r app component state_root persistent_state_root payload_roots notes; do
@@ -491,7 +424,7 @@ in
 
       : > "$critical_paths_file"
       printf 'path\ttype\towner\tgroup\tmode\n' >> "$critical_paths_file"
-      for path in ${lib.escapeShellArgs criticalPaths}; do
+      for path in ${lib.escapeShellArgs cfg.criticalPaths}; do
         if [[ -e "$path" ]]; then
           stat -c '%n\t%F\t%U\t%G\t%a' "$path" >> "$critical_paths_file"
         else
@@ -518,13 +451,7 @@ in
           "$label" "$path" "$status" "$path_type" "$owner" "$group" "$mode"
       }
 
-      printf 'label\tpath\tstatus\ttype\towner\tgroup\tmode\n' > "$upload_flow_roots_file"
-      write_path_inventory_row upload-staging "${vars.uploadSecurity.stagingRoot}" >> "$upload_flow_roots_file"
-      write_path_inventory_row upload-quarantine "${vars.uploadSecurity.quarantineRoot}" >> "$upload_flow_roots_file"
-      write_path_inventory_row paperless-inbox "${vars.paperlessInboxRoot}" >> "$upload_flow_roots_file"
-      write_path_inventory_row paperless-archive "${vars.paperlessArchiveRoot}" >> "$upload_flow_roots_file"
-      write_path_inventory_row paperless-export "${vars.paperlessExportRoot}" >> "$upload_flow_roots_file"
-      write_path_inventory_row kiwix-library "${vars.kiwixLibraryRoot}" >> "$upload_flow_roots_file"
+      ${pathRowsScript}
 
       if mountpoint -q "${vars.dataRoot}"; then
         zpool status -P "${zfsPoolName}" > "$zpool_status_file"
@@ -535,24 +462,17 @@ in
           "${zfsPoolName}" > "$zfs_props_file"
         findmnt -R -o TARGET,SOURCE,FSTYPE,OPTIONS "${vars.dataRoot}" > "$findmnt_file"
 
-        for spec in ${
-          lib.escapeShellArgs [
-            "immich:${vars.immichRoot}"
-            "paperless:${vars.paperlessRoot}"
-            "users:${vars.usersRoot}"
-            "shared:${vars.sharedRoot}"
-            "kiwix:${vars.kiwixLibraryRoot}"
-            "upload-staging:${vars.uploadSecurity.stagingRoot}"
-            "upload-quarantine:${vars.uploadSecurity.quarantineRoot}"
-          ]
-        }; do
-          IFS=: read -r label root_path <<< "$spec"
+        for spec in ${lib.escapeShellArgs pathInventorySpecs}; do
+          IFS=$'\t' read -r label root_path max_depth prune_history <<< "$spec"
           inventory_file="${inventoryRoot}/''${label}.tsv"
           if [[ -d "$root_path" ]]; then
             (
               printf 'relative_path\ttype\tmode\towner\tgroup\tsize\n'
-              find "$root_path" -mindepth 1 -maxdepth 3 \
-                \( -path '*/.hist' -o -path '*/.hist/*' \) -prune -o \
+              find_args=("$root_path" -mindepth 1 -maxdepth "$max_depth")
+              if [[ "$prune_history" == "1" ]]; then
+                find_args+=(\( -path '*/.hist' -o -path '*/.hist/*' \) -prune -o)
+              fi
+              find "''${find_args[@]}" \
                 -printf '%P\t%y\t%M\t%u\t%g\t%s\n' \
                 | sort
             ) > "$inventory_file"
@@ -560,50 +480,12 @@ in
             printf 'missing\t-\t-\t-\t-\t-\n' > "$inventory_file"
           fi
         done
-
-        printf 'username\temails_root\temails_root_status\thidden_sync_root\thidden_sync_status\tvisible_eml_count\tattachment_blob_count\n' > "$mail_archive_roots_file"
-        if [[ -d "${mailArchiveUiCfg.storeRoot}" ]]; then
-          while IFS= read -r user_root; do
-            username="$(basename -- "$user_root")"
-            emails_root="$user_root/emails"
-            hidden_sync_root="$emails_root/.internal-sync"
-
-            if [[ -d "$emails_root" ]]; then
-              emails_status="present"
-              visible_eml_count="$(find "$emails_root" -path "$hidden_sync_root" -prune -o -type f -name '*.eml' -print 2>/dev/null | wc -l | tr -d ' ')"
-            else
-              emails_status="missing"
-              visible_eml_count="0"
-            fi
-
-            if [[ -d "$hidden_sync_root" ]]; then
-              hidden_status="present"
-              attachment_blob_count="$(find "$hidden_sync_root" -path '*/attachments/blobs/*' -type f 2>/dev/null | wc -l | tr -d ' ')"
-            else
-              hidden_status="missing"
-              attachment_blob_count="0"
-            fi
-
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-              "$username" \
-              "$emails_root" \
-              "$emails_status" \
-              "$hidden_sync_root" \
-              "$hidden_status" \
-              "$visible_eml_count" \
-              "$attachment_blob_count"
-          done < <(find "${mailArchiveUiCfg.storeRoot}" -mindepth 1 -maxdepth 1 -type d | sort) >> "$mail_archive_roots_file"
-        else
-          printf '%s\t%s\tmissing\t%s\tmissing\t0\t0\n' "-" "${mailArchiveUiCfg.storeRoot}" "-" >> "$mail_archive_roots_file"
-        fi
       else
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_status_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_list_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_list_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_props_file"
         printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$findmnt_file"
-        printf 'username\temails_root\temails_root_status\thidden_sync_root\thidden_sync_status\tvisible_eml_count\tattachment_blob_count\n' > "$mail_archive_roots_file"
-        printf '%s\t%s\tdata-root-not-mounted\t%s\tdata-root-not-mounted\t0\t0\n' "-" "${mailArchiveUiCfg.storeRoot}" "-" >> "$mail_archive_roots_file"
       fi
 
       backup_sqlite_db() {
@@ -632,27 +514,8 @@ in
         chmod 0600 "$dump_file"
       ''}
 
-      backup_sqlite_db "${mailArchiveUiCfg.dataDir}/mail-archive-ui.sqlite3" "${dumpsRoot}/mail-archive-ui.sqlite3"
-      backup_sqlite_db "/var/lib/upload-processor/state.sqlite" "${dumpsRoot}/upload-processor-state.sqlite3"
-
-      ${lib.optionalString mailArchiveUiCfg.enable ''
-        mail_report="${metadataRoot}/mail-archive-attachments.json"
-        mail_report_tmp="${mailArchiveUiCfg.runtimeDir}/mail-archive-attachments.backup.json"
-        ${pkgs.util-linux}/bin/runuser -u mail-archive-ui -- ${pkgs.coreutils}/bin/env \
-          PATH="$PATH" \
-          MAIL_ARCHIVE_UI_DATA_DIR="${mailArchiveUiCfg.dataDir}" \
-          MAIL_ARCHIVE_UI_STORE_ROOT="${mailArchiveUiCfg.storeRoot}" \
-          MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT="${mailArchiveUiCfg.accountStateRoot}" \
-          MAIL_ARCHIVE_UI_RUNTIME_DIR="${mailArchiveUiCfg.runtimeDir}" \
-          MAIL_ARCHIVE_UI_LOCK_DIR="${mailArchiveUiCfg.lockDir}" \
-          MAIL_ARCHIVE_UI_DEFAULT_TAGS="new" \
-          TMPDIR="${mailArchiveUiCfg.runtimeDir}" \
-          SQLITE_TMPDIR="${mailArchiveUiCfg.runtimeDir}" \
-          ${mailArchiveUiCfg.package}/bin/mail-archive-ui \
-          verify-attachments --repair --report "$mail_report_tmp"
-        install -m 0600 "$mail_report_tmp" "$mail_report"
-        rm -f "$mail_report_tmp"
-      ''}
+      ${sqliteDumpScript}
+      ${prepareFragmentsScript}
     '';
   };
 
@@ -672,4 +535,5 @@ in
     '';
   };
 
+  };
 }

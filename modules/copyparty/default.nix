@@ -9,6 +9,12 @@ in
 {
   imports = [
     copyparty.nixosModules.default
+    ./filepaths.nix
+    ./identity.nix
+    ./impermanence.nix
+    ./backups.nix
+    ./networking.nix
+    ./oauth2-proxy.nix
     ./upload-processing.nix
   ];
 

@@ -1,4 +1,4 @@
-{ config, pkgs, self, vars, ... }:
+{ pkgs, self, vars, ... }:
 
 let
   systemPackages =
@@ -18,8 +18,5 @@ in
     KANIDM_ADMIN_NAME = vars.kanidmAdminUser;
     KANIDM_ADMIN_KANIDM_BIN = "${pkgs.kanidm_1_9}/bin/kanidm";
     KANIDM_ADMIN_NIX_BIN = "${pkgs.nix}/bin/nix";
-    KANIDM_ADMIN_VAULTWARDEN_URL = "https://${vars.vaultwardenDomain}";
-    KANIDM_ADMIN_VAULTWARDEN_ADMIN_TOKEN_FILE =
-      config.age.secrets.vaultwardenAdminToken.path;
   };
 }

@@ -55,6 +55,11 @@ in
 {
   imports = [
     filestashNix.nixosModules.filestash
+    ./filepaths.nix
+    ./identity.nix
+    ./impermanence.nix
+    ./backups.nix
+    ./networking.nix
   ];
 
   config = lib.mkIf enabled (lib.mkMerge [
