@@ -138,17 +138,10 @@ let
     apply_writable_acl audiobookshelf-media "$root/audiobooks"
     apply_writable_acl jellyfin-media "$root/videos"
     apply_writable_acl mail-archive-ui "$root/files"
-    apply_writable_acl metube \
+    apply_writable_acl youtube-downloader \
       "$root/audiobooks" \
       "$root/videos" \
       ${userVideoWritablePaths}
-    apply_writable_acl filebrowser-quantum \
-      "$root/files" \
-      "$root/audiobooks" \
-      "$root/videos" \
-      "$root/books" \
-      ${userVideoWritablePaths} \
-      ${userBookWritablePaths}
     apply_writable_acl filestash \
       "$root/uploads" \
       "$root/files" \
@@ -163,11 +156,11 @@ let
       "$root/books" \
       ${userBookWritablePaths}
 
-    # FileBrowser may browse and download only the visible hard-linked .eml
+    # Filestash may browse and download only the visible hard-linked .eml
     # mirror. The hidden sync payload uses the same file inodes, so deny
     # traversal on hidden directories rather than clobbering file ACLs.
-    apply_readonly_acl filebrowser-quantum "$root/emails"
-    apply_directory_noaccess_acl filebrowser-quantum "$root/emails/.internal-sync"
+    apply_readonly_acl filestash "$root/emails"
+    apply_directory_noaccess_acl filestash "$root/emails/.internal-sync"
     apply_readonly_acl immich "$root/photos"
     apply_readonly_acl paperless "$root/documents"
   '';

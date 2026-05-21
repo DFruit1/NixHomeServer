@@ -4,15 +4,14 @@ let
   appNames = [
     "audiobookshelf"
     "copyparty"
-    "filebrowser-quantum"
-    "filestash"
+    "files"
     "immich"
     "jellyfin"
     "kavita"
     "kiwix"
     "mail-archive"
     "mail-archive-ui"
-    "metube"
+    "youtube-downloader"
     "paperless"
     "vaultwarden"
   ];
@@ -24,7 +23,7 @@ rec {
     core = [ ];
     files = [
       "copyparty"
-      "filebrowser-quantum"
+      "files"
     ];
     media = [
       "audiobookshelf"
@@ -32,7 +31,7 @@ rec {
       "jellyfin"
       "kavita"
       "kiwix"
-      "metube"
+      "youtube-downloader"
     ];
     documents = [
       "mail-archive"

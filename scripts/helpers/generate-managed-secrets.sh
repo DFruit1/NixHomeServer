@@ -23,14 +23,10 @@ generated_secret_specs=(
   "mailArchiveOauth2ProxyCookieSecret:32"
   "kiwixOauth2ProxyClientSecret:32"
   "kiwixOauth2ProxyCookieSecret:32"
-  "metubeOauth2ProxyClientSecret:32"
-  "metubeOauth2ProxyCookieSecret:32"
-  "runtimeCanaryFilesPassword:32"
+  "youtubeDownloaderOauth2ProxyClientSecret:32"
+  "youtubeDownloaderOauth2ProxyCookieSecret:32"
   "vaultwardenAdminToken:32"
   "copypartyClientSecret:32"
-  "filebrowserQuantumClientSecret:32"
-  "filebrowserQuantumAdminPassword:32"
-  "filebrowserQuantumJwtSecret:64"
   "kavitaClientSecret:32"
   "kavitaTokenKey:64"
   "resticSystemStatePassword:32"
@@ -40,7 +36,7 @@ generate_secret_value() {
   local name="$1"
   local bytes="$2"
 
-  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "metubeOauth2ProxyCookieSecret" ]]; then
+  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "youtubeDownloaderOauth2ProxyCookieSecret" ]]; then
     openssl rand -hex 16
   else
     openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))"

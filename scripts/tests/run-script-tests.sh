@@ -29,8 +29,6 @@ done
 
 test_scripts=(
   scripts/tests/test-secret-definitions.sh
-  scripts/tests/test-deploy-with-validation-remote-preflight.sh
-  scripts/tests/test-runtime-readiness.sh
 )
 
 for test_script in "${test_scripts[@]}"; do

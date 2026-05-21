@@ -2,11 +2,11 @@
 
 set -euo pipefail
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/admin/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/admin/init-site.sh [--site <name>] [settings flags...]
+Usage: bootstrap/init-site.sh [--site <name>] [settings flags...]
 
 Create hosts/<site>/settings.nix and hosts/<site>/hardware.nix interactively.
 

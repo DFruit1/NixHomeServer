@@ -88,22 +88,7 @@ in
         '';
       };
 
-      "${vars.filebrowserDomain}" = lib.mkIf apps."filebrowser-quantum".enable {
-        extraConfig = ''
-          tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
-          ${accessLogConfig}
-          redir /login /api/auth/oidc/login{?query} temporary
-          @download_html_svg path *.html *.svg
-          header @download_html_svg Content-Disposition attachment
-          header @download_html_svg X-Content-Type-Options nosniff
-          reverse_proxy http://${loopback}:${toString ports.filebrowserQuantum} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      "${vars.filestashDomain}" = lib.mkIf apps.filestash.enable {
+      "${vars.filesDomain}" = lib.mkIf apps.files.enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
@@ -150,11 +135,11 @@ in
         '';
       };
 
-      "${vars.metubeDomain}" = lib.mkIf apps.metube.enable {
+      "${vars.downloadsDomain}" = lib.mkIf apps."youtube-downloader".enable {
         extraConfig = ''
           tls /var/lib/acme/${vars.domain}/fullchain.pem /var/lib/acme/${vars.domain}/key.pem
           ${accessLogConfig}
-          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyMetube} {
+          reverse_proxy http://${loopback}:${toString ports.oauth2ProxyDownloads} {
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-Host {host}
           }

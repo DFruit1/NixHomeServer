@@ -106,7 +106,7 @@ in
 
     visibleMirrorReadGroup = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
-      default = "filebrowser-quantum";
+      default = "filestash";
       description = "Optional local group granted read ACLs on the user-visible email mirror files.";
     };
 
@@ -157,7 +157,7 @@ in
           cfg.runtimeDir
           cfg.lockDir
         ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
-          ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
+        ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
       };
       wants = [
         "data-pool-layout.service"
@@ -186,7 +186,7 @@ in
           cfg.runtimeDir
           cfg.lockDir
         ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
-          ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
+        ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
       };
     };
   };

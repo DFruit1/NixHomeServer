@@ -23,7 +23,7 @@ const numberFromEnv = (name: string, fallback: number): number => {
 };
 
 export const loadConfig = (): AppConfig => {
-  const stateDir = process.env.YOUTUBE_DOWNLOADER_STATE_DIR ?? '/var/lib/metube/state';
+  const stateDir = process.env.YOUTUBE_DOWNLOADER_STATE_DIR ?? '/var/lib/youtube-downloader/state';
   return {
     host: process.env.YOUTUBE_DOWNLOADER_HOST ?? '127.0.0.1',
     port: numberFromEnv('YOUTUBE_DOWNLOADER_PORT', 8083),
@@ -36,6 +36,6 @@ export const loadConfig = (): AppConfig => {
     sharedAudioRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT ?? '/mnt/data/shared/audiobooks/youtube',
     usersRoot: process.env.YOUTUBE_DOWNLOADER_USERS_ROOT ?? '/mnt/data/users',
     concurrency: numberFromEnv('YOUTUBE_DOWNLOADER_CONCURRENCY', 1),
-    sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'shared-files-read-write-access',
+    sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'user-files',
   };
 };

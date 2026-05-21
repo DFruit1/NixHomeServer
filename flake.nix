@@ -57,11 +57,10 @@
           modules = [
             (siteModulePath siteName)
             agenix.nixosModules.default
-            disko.nixosModules.disko
             impermanence.nixosModules.impermanence
           ];
           specialArgs = {
-            inherit self vars disko copyparty filestashNix pkgsUnstable;
+            inherit self vars copyparty filestashNix pkgsUnstable;
           };
         };
       mkSiteHostAttrs = siteName:
@@ -147,7 +146,7 @@
             ];
           } ''
           cd ${self}
-          shellcheck -x -e SC1091,SC2016,SC2154,SC2029 scripts/*.sh scripts/helpers/*.sh scripts/admin/*.sh scripts/tests/*.sh
+          shellcheck -x -e SC1091,SC2016,SC2154,SC2029 scripts/*.sh scripts/helpers/*.sh scripts/admin/*.sh scripts/tests/*.sh bootstrap/*.sh
           touch "$out"
         '';
         deadnix = pkgs.runCommand "deadnix"
@@ -197,7 +196,7 @@
           };
           init-site = scriptApp "init-site" "Interactive first-run site initializer" (with pkgs; [ bash coreutils gitMinimal gnused ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/init-site.sh" "$@"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/bootstrap/init-site.sh" "$@"
           '';
           doctor = scriptApp "doctor" "Non-destructive install readiness doctor" (with pkgs; [ bash coreutils findutils gitMinimal gnugrep gnused jq nix openssh ripgrep util-linux ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
@@ -215,9 +214,9 @@
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
             exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/explain.sh" "$@"
           '';
-          fast-rebuild = scriptApp "fast-rebuild" "Fast no-check remote nixos-rebuild helper for custom app iteration" (with pkgs; [ bash coreutils gitMinimal gnutar nix openssh gnused ]) ''
+          deploy = scriptApp "deploy" "Remote deploy helper with fast and debug modes" (with pkgs; [ bash coreutils gitMinimal gnutar jq nix openssh gnused ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/rebuild-remote-fast.sh" "$@"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/deploy.sh" "$@"
           '';
         }
         // rustFlakeApps;

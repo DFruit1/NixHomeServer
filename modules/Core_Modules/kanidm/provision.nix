@@ -6,17 +6,6 @@ let
   oauth2ProxyClientSecretPath = "/run/oauth2-proxy/client-secret";
   filestashOauth2ProxyClientSecretPath = "/run/filestash-secrets/oauth2-client-secret-kanidm";
   apps = config.nixhomeserver.apps;
-  enabledCanaryGroups =
-    [ "users" ]
-    ++ lib.optionals (apps.copyparty.enable || apps."filebrowser-quantum".enable) [ "user-files" ]
-    ++ lib.optionals apps."filebrowser-quantum".enable [ "shared-files-read-write-access" ]
-    ++ lib.optionals apps.paperless.enable [ "paperless-users" ]
-    ++ lib.optionals apps.immich.enable [ "immich-users" ]
-    ++ lib.optionals apps.jellyfin.enable [ "jellyfin-users" ]
-    ++ lib.optionals apps.audiobookshelf.enable [ "audiobookshelf-users" ]
-    ++ lib.optionals apps.kavita.enable [ "kavita-users" ]
-    ++ lib.optionals apps."mail-archive-ui".enable [ "mail-archive-users" ]
-    ++ lib.optionals apps.metube.enable [ "metube-users" ];
   mkManualGroup =
     members:
     {
@@ -31,28 +20,15 @@ in
     adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;
     instanceUrl = kanidmCliUrl;
 
-    persons =
-      {
-        ${vars.kanidmAdminUser} = {
-          displayName = vars.kanidmAdminUser;
-          mailAddresses = [ vars.kanidmAdminEmail ];
-        };
-      }
-      // lib.mapAttrs
-        (
-          _: canary: {
-            displayName = canary.displayName;
-            mailAddresses = [ canary.mailAddress ];
-            groups = builtins.filter (group: builtins.elem group enabledCanaryGroups) canary.groups;
-          }
-        )
-        vars.runtimeAccessCanaries;
+    persons.${vars.kanidmAdminUser} = {
+      displayName = vars.kanidmAdminUser;
+      mailAddresses = [ vars.kanidmAdminEmail ];
+    };
 
     # Keep the builtin group in the provision inventory so post-start
     # reconciliation does not try to delete it as an orphaned entity.
     groups."domain_admins" = mkManualGroup [ ];
-    groups."user-files" = lib.mkIf (apps.copyparty.enable || apps."filebrowser-quantum".enable) (mkManualGroup [ vars.kanidmAdminUser ]);
-    groups."shared-files-read-write-access" = lib.mkIf apps."filebrowser-quantum".enable (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."user-files" = lib.mkIf (apps.copyparty.enable || apps.files.enable) (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."app-admin" = mkManualGroup [ vars.kanidmAdminUser ];
     groups."mail-archive-users" = lib.mkIf apps."mail-archive-ui".enable (mkManualGroup [ ]);
     groups."immich-users" = lib.mkIf apps.immich.enable (mkManualGroup [ vars.kanidmAdminUser ]);
@@ -60,7 +36,7 @@ in
     groups."paperless-users" = lib.mkIf apps.paperless.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."audiobookshelf-users" = lib.mkIf apps.audiobookshelf.enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups."kavita-users" = lib.mkIf apps.kavita.enable (mkManualGroup [ vars.kanidmAdminUser ]);
-    groups."metube-users" = lib.mkIf apps.metube.enable (mkManualGroup [ vars.kanidmAdminUser ]);
+    groups."downloads-users" = lib.mkIf apps."youtube-downloader".enable (mkManualGroup [ vars.kanidmAdminUser ]);
     groups.users = mkManualGroup [ vars.kanidmAdminUser ];
 
     systems.oauth2.immich-web = lib.mkIf apps.immich.enable {
@@ -138,27 +114,14 @@ in
       scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
     };
 
-    systems.oauth2.filebrowser-quantum-web = lib.mkIf apps."filebrowser-quantum".enable {
+    systems.oauth2.filestash-web = lib.mkIf apps.files.enable {
       displayName = "Files";
       imageFile = ./assets/files.svg;
-      originUrl = "https://${vars.filebrowserDomain}/api/auth/oidc/callback";
-      originLanding = "https://${vars.filebrowserDomain}/";
-      basicSecretFile = config.age.secrets.filebrowserQuantumClientSecret.path;
-      allowInsecureClientDisablePkce = true;
-      preferShortUsername = true;
-      scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
-      scopeMaps."shared-files-read-write-access" = [ "openid" "profile" "email" "groups_name" ];
-      supplementaryScopeMaps."app-admin" = [ "groups_name" ];
-    };
-
-    systems.oauth2.filestash-web = lib.mkIf apps.filestash.enable {
-      displayName = "Filestash";
-      imageFile = ./assets/files.svg;
-      originUrl = "https://${vars.filestashDomain}/oauth2/callback";
-      originLanding = "https://${vars.filestashDomain}";
+      originUrl = "https://${vars.filesDomain}/oauth2/callback";
+      originLanding = "https://${vars.filesDomain}";
       basicSecretFile = filestashOauth2ProxyClientSecretPath;
       preferShortUsername = true;
-      scopeMaps."app-admin" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
     };
 
     systems.oauth2.mail-archive-web = lib.mkIf apps."mail-archive-ui".enable {
@@ -181,14 +144,14 @@ in
       scopeMaps.users = [ "openid" "profile" "email" "groups_name" ];
     };
 
-    systems.oauth2.metube-web = lib.mkIf apps.metube.enable {
+    systems.oauth2.youtube-downloader-web = lib.mkIf apps."youtube-downloader".enable {
       displayName = "Downloads";
       imageFile = ./assets/videos.svg;
-      originUrl = "https://${vars.metubeDomain}/oauth2/callback";
-      originLanding = "https://${vars.metubeDomain}";
-      basicSecretFile = config.age.secrets.metubeOauth2ProxyClientSecret.path;
+      originUrl = "https://${vars.downloadsDomain}/oauth2/callback";
+      originLanding = "https://${vars.downloadsDomain}";
+      basicSecretFile = config.age.secrets.youtubeDownloaderOauth2ProxyClientSecret.path;
       preferShortUsername = true;
-      scopeMaps."metube-users" = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."downloads-users" = [ "openid" "profile" "email" "groups_name" ];
     };
   };
 }

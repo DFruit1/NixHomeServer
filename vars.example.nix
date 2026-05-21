@@ -12,7 +12,6 @@ rec {
     adminEmail = "admin@example.test"; # Contact email for ACME and the first Kanidm admin user.
     sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key";
     localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
-    localAdminPersistHome = true;
   };
 
   network = {
@@ -62,10 +61,6 @@ rec {
     files = {
       enable = true;
       subdomain = "files";
-    };
-    filestash = {
-      enable = false;
-      subdomain = "filestash";
     };
     uploads = {
       enable = true;
@@ -162,12 +157,11 @@ rec {
       oauth2ProxyUploads = 4180;
       oauth2ProxyMailArchive = 4181;
       oauth2ProxyKiwix = 4182;
-      oauth2ProxyMetube = 4183;
+      oauth2ProxyDownloads = 4183;
       oauth2ProxyFilestash = 4184;
       paperless = 8000;
       audiobookshelf = 13378;
       copyparty = 3923;
-      filebrowserQuantum = 8097;
       filestash = 8334;
       mailArchiveUi = 9011;
       immich = 2283;
@@ -178,8 +172,7 @@ rec {
       vaultwarden = 8222;
       jellyfin = 8096;
       jellyfinDiscovery = 7359;
-      metube = 8083;
-      metubeContainer = 8081;
+      youtubeDownloader = 8083;
     };
     dnsBootstrapResolvers = [
       {
@@ -204,7 +197,7 @@ rec {
       cpuQuota = "150%";
       ioWeight = 100;
     };
-    metube.cpuQuota = "200%";
+    youtubeDownloader.cpuQuota = "200%";
     mediaIndexers.cpuQuota = "150%";
   };
 
@@ -221,7 +214,6 @@ rec {
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
-  localAdminPersistHome = identity.localAdminPersistHome;
 
   networking = rec {
     loopbackIPv4 = advanced.loopbackIPv4;
@@ -265,7 +257,7 @@ rec {
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
   uploadsOauth2ProxyCookieExpire = "720h0m0s"; # Copyparty OAuth2 Proxy browser session lifetime.
-  filebrowserTokenExpirationHours = 720; # FileBrowser Quantum web UI token lifetime in hours.
+  filesSessionExpirationHours = 720; # Files web UI browser session lifetime in hours.
 
   mainDisk = storage.systemDisk;
   zfsDataPool = storage.dataPool;
@@ -370,7 +362,6 @@ rec {
   };
   fileAccessPosixGids = {
     "user-files" = 2001;
-    "shared-files-read-write-access" = 2002;
   };
   personalKavitaLibraries = [
     {
@@ -464,25 +455,6 @@ rec {
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
-  runtimeAccessCanaries = {
-    "canary-files" = {
-      displayName = "Runtime Access Canary";
-      mailAddress = "runtime-canary-files@${domain}";
-      groups = [
-        "users"
-        "user-files"
-        "shared-files-read-write-access"
-        "paperless-users"
-        "immich-users"
-        "jellyfin-users"
-        "audiobookshelf-users"
-        "kavita-users"
-        "mail-archive-users"
-        "metube-users"
-      ];
-      passwordSecret = "runtimeCanaryFilesPassword";
-    };
-  };
   paperlessDomain = "${apps.documents.subdomain}.${domain}";
   photosDomain = "${apps.photos.privateSubdomain}.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
   sharePhotosDomain = "${apps.photos.publicShareSubdomain}.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.
@@ -490,16 +462,13 @@ rec {
   audiobooksDomain = "${apps.audiobooks.subdomain}.${domain}";
   vaultwardenDomain = "${apps.passwords.subdomain}.${domain}";
   uploadsDomain = "${apps.uploads.subdomain}.${domain}";
-  filebrowserDomain = "${apps.files.subdomain}.${domain}";
-  filebrowserPort = networking.ports.filebrowserQuantum;
-  filebrowserStateDir = "/var/lib/filebrowser-quantum";
-  filestashDomain = "${apps.filestash.subdomain}.${domain}";
-  filestashPort = networking.ports.filestash;
-  filestashStateDir = "/var/lib/filestash";
+  filesDomain = "${apps.files.subdomain}.${domain}";
+  filesPort = networking.ports.filestash;
+  filesStateDir = "/var/lib/filestash";
   emailsDomain = "${apps.mail.subdomain}.${domain}";
   kiwixDomain = "${apps.wiki.subdomain}.${domain}";
   kiwixLibraryRoot = "${dataRoot}/kiwix";
   kavitaDomain = "${apps.books.subdomain}.${domain}";
   jellyfinDomain = "${apps.videos.subdomain}.${domain}";
-  metubeDomain = "${apps.downloads.subdomain}.${domain}";
+  downloadsDomain = "${apps.downloads.subdomain}.${domain}";
 }

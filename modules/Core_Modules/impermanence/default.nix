@@ -3,9 +3,6 @@
 let
   cfg = config.repo.impermanence;
   apps = config.nixhomeserver.apps;
-  localAdminUser = config.nixhomeserver.localAdmin.user;
-  persistLocalAdminHome =
-    if cfg.persistDsawHome != null then cfg.persistDsawHome else cfg.persistLocalAdminHome;
 
   persistenceDirectories =
     [
@@ -26,8 +23,7 @@ let
       "/var/lib/copyparty"
       "/var/lib/upload-processor"
     ]
-    ++ lib.optionals apps."filebrowser-quantum".enable [ "/var/lib/filebrowser-quantum" ]
-    ++ lib.optionals apps.filestash.enable [
+    ++ lib.optionals apps.files.enable [
       "/var/cache/filestash"
       "/var/lib/filestash"
       "/var/log/filestash"
@@ -42,13 +38,12 @@ let
     ++ lib.optionals apps.jellyfin.enable [ "/var/lib/jellyfin" ]
     ++ lib.optionals apps.kavita.enable [ "/var/lib/kavita" ]
     ++ lib.optionals apps.kiwix.enable [ "/var/lib/kiwix" ]
-    ++ lib.optionals apps.metube.enable [ "/var/lib/metube" ]
+    ++ lib.optionals apps."youtube-downloader".enable [ "/var/lib/youtube-downloader" ]
     ++ lib.optionals apps.paperless.enable [
       "/var/lib/paperless"
       "/var/lib/redis-paperless"
     ]
-    ++ lib.optionals apps.vaultwarden.enable [ "/var/lib/vaultwarden" ]
-    ++ lib.optionals persistLocalAdminHome [ "/home/${localAdminUser}" ];
+    ++ lib.optionals apps.vaultwarden.enable [ "/var/lib/vaultwarden" ];
 
   persistenceFiles = [ ];
 
@@ -89,18 +84,6 @@ in
     enablePersistence = lib.mkEnableOption "explicit persisted state bindings";
 
     enableRootRollback = lib.mkEnableOption "rollback to a blank Btrfs root subvolume on boot";
-
-    persistLocalAdminHome = lib.mkOption {
-      type = lib.types.bool;
-      default = config.nixhomeserver.localAdmin.persistHome;
-      description = "Whether to persist the configured local admin home directory.";
-    };
-
-    persistDsawHome = lib.mkOption {
-      type = lib.types.nullOr lib.types.bool;
-      default = null;
-      description = "Deprecated compatibility alias for persistLocalAdminHome.";
-    };
 
     rootSubvolume = lib.mkOption {
       type = lib.types.str;
@@ -146,10 +129,6 @@ in
       {
         assertion = !cfg.enableRootRollback || cfg.enablePersistence;
         message = "repo.impermanence.enableRootRollback requires repo.impermanence.enablePersistence.";
-      }
-      {
-        assertion = cfg.persistDsawHome == null || cfg.persistDsawHome == cfg.persistLocalAdminHome;
-        message = "repo.impermanence.persistDsawHome is deprecated; use repo.impermanence.persistLocalAdminHome instead.";
       }
     ];
 

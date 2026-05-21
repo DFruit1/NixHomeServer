@@ -2871,10 +2871,7 @@ exit 99
                 "users".to_string(),
                 "paperless-users".to_string(),
             ],
-            vec![
-                "users".to_string(),
-                "shared-files-read-write-access".to_string(),
-            ],
+            vec!["users".to_string(), "user-files".to_string()],
             vec!["idm_all_persons".to_string()],
         );
 
@@ -2884,10 +2881,7 @@ exit 99
         );
         assert_eq!(
             review.selected_visible_groups,
-            vec![
-                "shared-files-read-write-access".to_string(),
-                "users".to_string()
-            ]
+            vec!["user-files".to_string(), "users".to_string()]
         );
         assert_eq!(
             review.preserved_hidden_groups,
@@ -2897,14 +2891,11 @@ exit 99
             review.effective_desired_groups,
             vec![
                 "idm_all_persons".to_string(),
-                "shared-files-read-write-access".to_string(),
+                "user-files".to_string(),
                 "users".to_string()
             ]
         );
-        assert_eq!(
-            review.diff.added,
-            vec!["shared-files-read-write-access".to_string()]
-        );
+        assert_eq!(review.diff.added, vec!["user-files".to_string()]);
         assert_eq!(review.diff.removed, vec!["paperless-users".to_string()]);
     }
 
@@ -2939,18 +2930,12 @@ exit 99
         let review = build_membership_change_review(
             "dsaw",
             &["users".to_string(), "paperless-users".to_string()],
-            vec![
-                "paperless-users".to_string(),
-                "shared-files-read-write-access".to_string(),
-            ],
+            vec!["paperless-users".to_string(), "user-files".to_string()],
             MembershipChange::Add,
         );
 
         assert_eq!(review.already_present, vec!["paperless-users".to_string()]);
-        assert_eq!(
-            review.groups_to_add,
-            vec!["shared-files-read-write-access".to_string()]
-        );
+        assert_eq!(review.groups_to_add, vec!["user-files".to_string()]);
         assert!(review.groups_to_remove.is_empty());
     }
 
@@ -2959,17 +2944,11 @@ exit 99
         let review = build_membership_change_review(
             "dsaw",
             &["users".to_string(), "paperless-users".to_string()],
-            vec![
-                "paperless-users".to_string(),
-                "shared-files-read-write-access".to_string(),
-            ],
+            vec!["paperless-users".to_string(), "user-files".to_string()],
             MembershipChange::Remove,
         );
 
-        assert_eq!(
-            review.already_absent,
-            vec!["shared-files-read-write-access".to_string()]
-        );
+        assert_eq!(review.already_absent, vec!["user-files".to_string()]);
         assert_eq!(review.groups_to_remove, vec!["paperless-users".to_string()]);
         assert!(review.groups_to_add.is_empty());
     }

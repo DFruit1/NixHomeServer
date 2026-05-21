@@ -512,7 +512,7 @@ mod tests {
                     description: None,
                 },
                 GroupSummary {
-                    name: "shared-files-read-write-access".to_string(),
+                    name: "user-files".to_string(),
                     description: None,
                 },
                 GroupSummary {
@@ -524,7 +524,7 @@ mod tests {
                     description: None,
                 },
             ],
-            referenced_groups: vec!["shared-files-read-write-access".to_string()],
+            referenced_groups: vec!["user-files".to_string()],
             warnings: Vec::new(),
         };
 
@@ -540,7 +540,7 @@ mod tests {
             vec![
                 "ext_radius_servers".to_string(),
                 "app-admin".to_string(),
-                "shared-files-read-write-access".to_string(),
+                "user-files".to_string(),
                 "users".to_string()
             ]
         );

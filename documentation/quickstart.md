@@ -64,7 +64,7 @@ git clone <your-fork-or-origin-url> /mnt/src
 cd /mnt/src
 ```
 
-This repo no longer maintains destructive disk-wrapper helpers. Treat [`disko-system.nix`](../disko-system.nix) and [`disko.nix`](../disko.nix) as blank-machine bootstrap references only. If the machine is blank, provision the system SSD and data pool with those declarations or with your own equivalent process before continuing with install-time mounting. Do not use `disko` to manage an already-installed server or an in-place storage migration.
+This repo no longer maintains destructive disk-wrapper helpers. Treat [`bootstrap/disko-system.nix`](../bootstrap/disko-system.nix) and [`bootstrap/disko-data.nix`](../bootstrap/disko-data.nix) as blank-machine bootstrap references only. If the machine is blank, provision the system SSD and data pool with those declarations or with your own equivalent process before continuing with install-time mounting. Do not use `disko` to manage an already-installed server or an in-place storage migration.
 
 Once the target filesystem layout is mounted under `/mnt`, copy the repo into the installed system, install the agenix key, and install the OS.
 

@@ -3,7 +3,7 @@ import { currentUserFromHeaders, normaliseUsername, parseGroups } from '../auth.
 import type { AppConfig } from '../config.js';
 
 const config = {
-  sharedWriteGroup: 'shared-files-read-write-access',
+  sharedWriteGroup: 'user-files',
 } as AppConfig;
 
 describe('auth headers', () => {
@@ -13,9 +13,9 @@ describe('auth headers', () => {
   });
 
   it('parses comma and whitespace separated groups', () => {
-    expect(parseGroups({ 'x-forwarded-groups': 'metube-users, shared-files-read-write-access users' })).toEqual([
-      'metube-users',
-      'shared-files-read-write-access',
+    expect(parseGroups({ 'x-forwarded-groups': 'downloads-users, user-files users' })).toEqual([
+      'downloads-users',
+      'user-files',
       'users',
     ]);
   });
@@ -25,7 +25,7 @@ describe('auth headers', () => {
       {
         'x-forwarded-user': 'dsaw',
         'x-forwarded-email': 'dsaw@example.test',
-        'x-forwarded-groups': 'metube-users,shared-files-read-write-access',
+        'x-forwarded-groups': 'downloads-users,user-files',
       },
       config,
     );

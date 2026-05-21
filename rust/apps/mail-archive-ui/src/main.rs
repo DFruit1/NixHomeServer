@@ -12139,7 +12139,7 @@ mod tests {
             let log_path = tempdir.path().join("setfacl.log");
             env::set_var("SETFACL_LOG", &log_path);
             let mut config = test_config(&tempdir);
-            config.visible_mirror_read_group = Some(Arc::<str>::from("filebrowser-quantum"));
+            config.visible_mirror_read_group = Some(Arc::<str>::from("filestash"));
             prepare_test_layout(&config);
             let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);
@@ -12165,9 +12165,9 @@ mod tests {
                 .expect("reindex repairs acl");
 
             let log = fs::read_to_string(&log_path).expect("acl log");
-            assert!(log.contains("g:filebrowser-quantum:r--"));
+            assert!(log.contains("g:filestash:r--"));
             assert!(log.contains(visible_path.to_string_lossy().as_ref()));
-            assert!(log.contains("g:filebrowser-quantum:r-x"));
+            assert!(log.contains("g:filestash:r-x"));
             assert!(!log.contains(".internal-sync"));
             env::remove_var("SETFACL_LOG");
         });
@@ -12178,7 +12178,7 @@ mod tests {
         with_stubbed_path(&mail_export_failing_acl_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
             let mut config = test_config(&tempdir);
-            config.visible_mirror_read_group = Some(Arc::<str>::from("filebrowser-quantum"));
+            config.visible_mirror_read_group = Some(Arc::<str>::from("filestash"));
             prepare_test_layout(&config);
             let account_id = seed_account_with_flags(&config, "alice", "secret", true);
             let account = read_account(&config, "alice", account_id);

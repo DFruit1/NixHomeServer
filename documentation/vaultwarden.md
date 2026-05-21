@@ -7,7 +7,7 @@ Use this as the operator guide for:
 - manual signup activation from pending invites
 - the standard Kanidm credential-item workflow for end users
 
-Guarded deploys, runtime readiness, and DNS checks live in [Operations](./operations.md). Kanidm session and user lookup details live in [Kanidm Guide](./kanidm.md).
+Guarded deploys, service health, and DNS checks live in [Operations](./operations.md). Kanidm session and user lookup details live in [Kanidm Guide](./kanidm.md).
 
 ## Service Model
 
@@ -53,7 +53,7 @@ After a guarded deploy or switch:
 
 ```bash
 systemctl status vaultwarden vaultwarden-secret-materialize
-sudo ./scripts/check-runtime-readiness.sh --profile manual
+sudo systemctl --failed --no-pager
 curl -I https://<passwords-domain>/
 curl -I http://127.0.0.1:8222/
 ```
@@ -172,12 +172,7 @@ If local login fails:
 - verify the private hostname resolves correctly through Unbound
 
 If the private hostname is unreachable:
-- start with [Operations](./operations.md#runtime-validation)
+- start with [Operations](./operations.md#service-validation)
 - verify Caddy, Unbound, and Vaultwarden are all healthy
 - confirm the hostname is expected to stay private-only and should not resolve on public DNS
 - compare a normal browser or `curl` lookup with the forced-resolution `curl --resolve ...` check above
-
-Runtime access canary note:
-- the deep runtime suite does not complete unattended browser logins for Vaultwarden
-- Vaultwarden is validated structurally through service health, private DNS, and HTTP readiness
-- keep treating invite acceptance and first user activation as a manual workflow

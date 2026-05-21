@@ -131,12 +131,12 @@ let
       notes = "Library database, local users, and server settings.";
     }
   ]
-  ++ lib.optionals apps.metube.enable [
+  ++ lib.optionals apps."youtube-downloader".enable [
     {
-      app = "metube";
+      app = "youtube-downloader";
       component = "app";
-      stateRoot = "/var/lib/metube";
-      persistentStateRoot = persistBackedStateRoot "/var/lib/metube";
+      stateRoot = "/var/lib/youtube-downloader";
+      persistentStateRoot = persistBackedStateRoot "/var/lib/youtube-downloader";
       payloadRoots = [
         vars.sharedYouTubeRoot
         vars.sharedAudiobooksRoot
@@ -220,27 +220,12 @@ let
       notes = "Local state directory for Copyparty; uploaded payloads enter locked staging before promotion.";
     }
   ]
-  ++ lib.optionals apps."filebrowser-quantum".enable [
-    {
-      app = "filebrowser-quantum";
-      component = "app";
-      stateRoot = vars.filebrowserStateDir;
-      persistentStateRoot = persistBackedStateRoot vars.filebrowserStateDir;
-      payloadRoots = [
-        vars.usersRoot
-        vars.sharedRoot
-      ]
-      ++ lib.optionals apps.kiwix.enable [ vars.kiwixLibraryRoot ]
-      ++ lib.optionals apps.copyparty.enable [ vars.uploadSecurity.quarantineRoot ];
-      notes = "FileBrowser Quantum database, cache, and config state.";
-    }
-  ]
-  ++ lib.optionals apps.filestash.enable [
+  ++ lib.optionals apps.files.enable [
     {
       app = "filestash";
       component = "app";
-      stateRoot = vars.filestashStateDir;
-      persistentStateRoot = persistBackedStateRoot vars.filestashStateDir;
+      stateRoot = vars.filesStateDir;
+      persistentStateRoot = persistBackedStateRoot vars.filesStateDir;
       payloadRoots = [
         vars.usersRoot
         vars.sharedRoot
@@ -438,7 +423,7 @@ in
       app_state_file="${metadataRoot}/app-state-roots.tsv"
       critical_paths_file="${metadataRoot}/critical-paths.tsv"
       mail_archive_roots_file="${metadataRoot}/mail-archive-roots.tsv"
-      youtube_downloader_db="/var/lib/metube/state/youtube-downloader.sqlite"
+      youtube_downloader_db="/var/lib/youtube-downloader/state/youtube-downloader.sqlite"
       youtube_downloader_dump="${dumpsRoot}/youtube-downloader.sqlite"
       upload_flow_roots_file="${metadataRoot}/upload-flow-roots.tsv"
       zpool_status_file="${metadataRoot}/zpool-status.txt"

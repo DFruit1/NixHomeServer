@@ -1,13 +1,13 @@
 { config, filestashNix, lib, pkgs, vars, ... }:
 
 let
-  enabled = config.nixhomeserver.apps.filestash.enable;
+  enabled = config.nixhomeserver.apps.files.enable;
   apps = config.nixhomeserver.apps;
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   loopback = vars.networking.loopbackIPv4;
-  filestashPort = vars.networking.ports.filestash;
+  filesPort = vars.filesPort;
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyFilestash;
-  stateDir = vars.filestashStateDir;
+  stateDir = vars.filesStateDir;
   managedDir = "${stateDir}/.nixos-managed";
   secretRuntimeDir = "/run/filestash-secrets";
   secretKeyFile = "${managedDir}/secret-key";
@@ -64,13 +64,13 @@ in
         settings = {
           general = {
             name = "Filestash";
-            port = filestashPort;
-            host = vars.filestashDomain;
+            port = filesPort;
+            host = vars.filesDomain;
             force_ssl = true;
             logout = "/oauth2/sign_out?rd=/oauth2/start?rd=%2F";
             upload_button = true;
             refresh_after_upload = true;
-            cookie_timeout = vars.filebrowserTokenExpirationHours * 60;
+            cookie_timeout = vars.filesSessionExpirationHours * 60;
             secret_key_file = secretKeyFile;
           };
           features = {
@@ -253,10 +253,10 @@ in
       clientSecretFile = oauth2ClientSecretFile;
       cookieSecretFile = oauth2CookieSecretFile;
       cookieName = "_oauth2_proxy_filestash";
-      domain = vars.filestashDomain;
+      domain = vars.filesDomain;
       port = oauth2ProxyPort;
-      upstream = "http://${loopback}:${toString filestashPort}";
-      allowedGroups = [ "app-admin" ];
+      upstream = "http://${loopback}:${toString filesPort}";
+      allowedGroups = [ "user-files" ];
       serviceDependencies = [
         "caddy.service"
         "filestash.service"
@@ -264,7 +264,7 @@ in
       ];
       upstreamCheck = {
         displayName = "Filestash";
-        url = "http://${loopback}:${toString filestashPort}/";
+        url = "http://${loopback}:${toString filesPort}/";
       };
       extraProxyArgs = [
         "--session-cookie-minimal=true"

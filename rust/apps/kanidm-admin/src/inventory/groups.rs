@@ -210,13 +210,8 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             category: GroupCategory::Foundation,
         },
         "user-files" => GroupHelp {
-            summary: "Grants personal Copyparty and FileBrowser access.",
-            detail: "Add this when the user needs their own personal files area. It does not grant shared storage access by itself.",
-            category: GroupCategory::Foundation,
-        },
-        "shared-files-read-write-access" => GroupHelp {
-            summary: "Grants explicit access to shared storage.",
-            detail: "Use this only for trusted people who should be able to access and change shared files that may affect other users. It does not imply personal file access.",
+            summary: "Grants Files, uploads, and SFTP access.",
+            detail: "Add this when the user should access personal and shared file areas through Filestash, SFTP, or the upload flow.",
             category: GroupCategory::Foundation,
         },
         "system_admins" => GroupHelp {
@@ -259,8 +254,8 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             detail: "Add this when the user should access the Books app. It enables normal use without granting app-level administrative control.",
             category: GroupCategory::AppUser,
         },
-        "metube-users" => GroupHelp {
-            summary: "Grants access to the MeTube downloads web app.",
+        "downloads-users" => GroupHelp {
+            summary: "Grants access to the YouTube downloads web app.",
             detail: "Add this when the user should access the Downloads app. It is a normal application-access grant rather than a platform-wide role.",
             category: GroupCategory::AppUser,
         },
@@ -275,7 +270,7 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
 
 fn inferred_category(name: &str) -> GroupCategory {
     match name {
-        "users" | "user-files" | "shared-files-read-write-access" => GroupCategory::Foundation,
+        "users" | "user-files" => GroupCategory::Foundation,
         _ if name.ends_with("-admin") => GroupCategory::AppAdmin,
         _ if name.ends_with("-users") || name.ends_with("-login") => GroupCategory::AppUser,
         _ => GroupCategory::Other,

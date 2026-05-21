@@ -174,10 +174,8 @@ kanidm-admin membership set "$NEW_USER" --allow-empty
 ```
 
 File-access group model:
-- `user-files` grants access to personal Copyparty uploads and the personal FileBrowser root.
-- `shared-files-read-write-access` grants explicit shared-files access in FileBrowser and WebDAV.
-- `shared-files-read-write-access` does not imply `user-files`.
-- In the current single FileBrowser Quantum instance, this group is intentionally the only human group that exposes `/shared/*`.
+- `user-files` grants access to Copyparty uploads, Filestash, SFTP, personal files, and shared files.
+- In the current single Filestash instance, this group is intentionally the only human group that exposes `/shared/*`.
 
 Expected result:
 - `membership add` and `membership remove` work against live-discovered groups instead of a hardcoded Rust list
@@ -194,19 +192,10 @@ Normal onboarding sequence:
 2. Add them to `users`.
 3. Add only the live groups they need for file, app, or admin access.
 4. For personal file access, add `user-files` explicitly.
-5. Add `shared-files-read-write-access` only if they should be able to access and change shared data that may affect other users.
 6. Add `app-admin` only when they should be an application operator in the apps they already use.
 7. Bootstrap `system_admins` manually with the regular `kanidm` CLI only when someone truly needs high-authority server administration.
 8. If they should use the shared password manager, invite their Kanidm primary email into Vaultwarden with `kanidm-admin local vaultwarden invite "$NEW_USER"`. This does not grant Kanidm app access.
 9. Have them sign into the target app so first-login provisioning can happen.
-
-Runtime access canary:
-- `canary-files` is the synthetic non-human Kanidm user used by the deep runtime access checks.
-- It belongs to all normal user-facing access groups so `--full-check` can prove user-level app, personal-file, and shared-file access without a multi-canary model.
-- It is deliberately excluded from admin groups such as `app-admin`, `domain_admins`, `system_admins`, and `idm_admins`.
-- It uses a root-only agenix password secret for unattended login checks.
-- It does not carry passkeys or TOTP because the deep runtime suite is intended to stay non-interactive and deterministic.
-- This broad, non-admin canary is only for automation. Human users should still receive only the access they need and should use stronger auth methods where appropriate.
 
 Interactive guidance note:
 - The default `Manage User Access` flow uses an exact-set group picker with a contextual help pane.
@@ -266,7 +255,7 @@ sftp://alice@server.home.arpa/
 Important:
 - never ask users to send private keys
 - `user-files` controls SFTP login eligibility
-- `shared-files-read-write-access` is separate and should only be granted to people who should access and change shared data
+- `user-files` is separate and should only be granted to people who should access and change shared data
 - if the file browser asks for a password, cancel and make sure the user's private key is loaded locally
 
 ## OAuth2 Clients
@@ -323,11 +312,11 @@ Expected result:
 ## App-Specific First Login Notes
 
 - `uploads.<domain>`: Copyparty upload access is enforced by OAuth2 Proxy. `user-files` grants access to the signed-in user's own uploads root at `/`.
-- `files.<domain>`: FileBrowser UI and WebDAV access require `user-files` for personal roots and `shared-files-read-write-access` for explicit shared-files access. `app-admin` and `system_admins` do not expose shared files there.
+- `files.<domain>`: Filestash UI and SFTP access require `user-files`. `app-admin` and `system_admins` do not expose shared files there.
 - `emails.<domain>`: browser access is enforced by `mail-archive-users`. That group grants access to the private mail-archive UI only; it does not grant direct access to the hidden `.internal-sync` payload tree. User-visible mailbox `.eml` files are exposed through the visible mirror under each personal `emails/` root.
 - `passwords.<domain>`: Vaultwarden is local-auth only. Use `kanidm-admin local vaultwarden invite "$ACCOUNT_ID"` as an email-resolution helper, then the user signs in with Vaultwarden local credentials. See [Vaultwarden Guide](./vaultwarden.md).
 - `wiki.<domain>`: baseline `users` membership is sufficient.
-- `ytdownload.<domain>`: browser access is enforced by `metube-users`.
+- `ytdownload.<domain>`: browser access is enforced by `downloads-users`.
 - Immich: `immich-users` grants normal login and `app-admin` adds the admin role when combined with `immich-users`.
 - Paperless: `paperless-users` grants normal login and `app-admin` adds the Paperless admin flags when combined with `paperless-users`.
 - Audiobookshelf: `audiobookshelf-users` grants normal login and `app-admin` adds the admin role when combined with `audiobookshelf-users`.
@@ -367,5 +356,4 @@ After changing users, groups, or runtime client policy:
 - re-run `kanidm-admin session reauth` if you need fresh privileged access
 - test the app login with the intended user
 - confirm the user lands in the expected app role
-- if you changed app-access groups that are covered by the deep runtime suite, refresh the synthetic canaries with `sudo ./scripts/bootstrap-access-canaries.sh` before relying on `check-runtime-readiness.sh --deep`
 - use [Operations](./operations.md) if the issue looks like DNS, routing, or service health instead of identity data

@@ -71,10 +71,10 @@ Stage these files under \`secrets/top/\`, then run \`./scripts/generate-all-secr
 
 \`\`\`bash
 nix run .#doctor -- --host ${host}
-./scripts/validate-repo-remote.sh --host "${local_admin_user}@${hostname}" --full
-./scripts/deploy-with-validation.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action test --hostname ${hostname}
-./scripts/deploy-with-validation.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action switch --hostname ${hostname}
-ssh "${local_admin_user}@${hostname}" 'cd /path/to/repo && sudo ./scripts/check-runtime-readiness.sh --profile manual'
+./scripts/deploy.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action test --hostname ${hostname}
+./scripts/deploy.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action switch --hostname ${hostname}
+./scripts/deploy.sh --target "${local_admin_user}@${hostname}" --build-host "${local_admin_user}@${hostname}" --action test --hostname ${hostname} --debug
+ssh "${local_admin_user}@${hostname}" 'cd /path/to/repo && sudo systemctl --failed --no-pager'
 \`\`\`
 
 ## App URLs
@@ -92,7 +92,7 @@ cat <<EOF
 Core URLs:
 
 - Identity: \`https://$(jq -r '.kanidmDomain' <<<"$settings_json")\`
-- Files: \`https://$(jq -r '.filebrowserDomain' <<<"$settings_json")\`
+- Files: \`https://$(jq -r '.filesDomain' <<<"$settings_json")\`
 - Uploads: \`https://$(jq -r '.uploadsDomain' <<<"$settings_json")\`
 
 ## User Onboarding
@@ -108,7 +108,7 @@ Grant app-specific groups only when the user needs that app. Use \`app-admin\` o
 
 ## Recovery Pointers
 
-- Runtime readiness: \`sudo ./scripts/check-runtime-readiness.sh --profile manual\`
+- Failed units: \`sudo systemctl --failed --no-pager\`
 - Data mirror status: \`sudo zpool status $(jq -r '.zfsDataPool.name' <<<"$settings_json")\`
 - SMART short test sweep: \`sudo systemctl start storage-smart-short.service\`
 - Backup target selection: \`manage-backup-target list\`

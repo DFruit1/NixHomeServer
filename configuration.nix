@@ -68,11 +68,9 @@ in
   time.timeZone = "Australia/Sydney";
 
   ###############################################################################
-  #  Bootstrap layout declarations
+  #  Module declarations
   ###############################################################################
   imports = [
-    ./disko-system.nix
-    ./disko.nix
     ./secrets/agenix.nix
     ./modules/nixhomeserver/settings.nix
     ./modules/audiobookshelf
@@ -88,22 +86,19 @@ in
     ./modules/Core_Modules/storage-monitoring
     ./modules/Core_Modules/unbound
     ./modules/copyparty
-    ./modules/filebrowser-quantum
-    ./modules/filestash
+    ./modules/files
     ./modules/immich
     ./modules/jellyfin
     ./modules/kiwix
     ./modules/kavita
     ./modules/mail-archive
     ./modules/mail-archive-ui
-    ./modules/metube
     ./modules/youtube-downloader
     ./modules/paperless
     ./modules/power-management
     ./modules/vaultwarden
   ];
 
-  disko.enableConfig = true;
   repo.impermanence.enablePersistence = true;
   services.dbus.enable = true;
   services.zfs.autoScrub = {

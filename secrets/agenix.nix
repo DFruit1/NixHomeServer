@@ -19,9 +19,6 @@
     absClientSecret = { file = ./absClientSecret.age; owner = "kanidm"; group = "audiobookshelf"; mode = "0440"; };
     absBootstrapPass = { file = ./absBootstrapPass.age; owner = "root"; mode = "0400"; };
     copypartyClientSecret = { file = ./copypartyClientSecret.age; owner = "copyparty"; mode = "0400"; };
-    filebrowserQuantumClientSecret = { file = ./filebrowserQuantumClientSecret.age; owner = "kanidm"; group = "filebrowser-quantum"; mode = "0440"; };
-    filebrowserQuantumAdminPassword = { file = ./filebrowserQuantumAdminPassword.age; owner = "filebrowser-quantum"; mode = "0400"; };
-    filebrowserQuantumJwtSecret = { file = ./filebrowserQuantumJwtSecret.age; owner = "filebrowser-quantum"; mode = "0400"; };
     kavitaClientSecret = { file = ./kavitaClientSecret.age; owner = "kanidm"; group = "kavita"; mode = "0440"; };
     kavitaTokenKey = { file = ./kavitaTokenKey.age; owner = "kavita"; mode = "0400"; };
     oauth2ProxyClientSecret = { file = ./oauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
@@ -30,9 +27,8 @@
     mailArchiveOauth2ProxyCookieSecret = { file = ./mailArchiveOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     kiwixOauth2ProxyClientSecret = { file = ./kiwixOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     kiwixOauth2ProxyCookieSecret = { file = ./kiwixOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
-    metubeOauth2ProxyClientSecret = { file = ./metubeOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
-    metubeOauth2ProxyCookieSecret = { file = ./metubeOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
-    runtimeCanaryFilesPassword = { file = ./runtimeCanaryFilesPassword.age; owner = "root"; mode = "0400"; };
+    youtubeDownloaderOauth2ProxyClientSecret = { file = ./youtubeDownloaderOauth2ProxyClientSecret.age; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    youtubeDownloaderOauth2ProxyCookieSecret = { file = ./youtubeDownloaderOauth2ProxyCookieSecret.age; owner = "oauth2-proxy"; mode = "0400"; };
     vaultwardenAdminToken = { file = ./vaultwardenAdminToken.age; owner = "vaultwarden"; mode = "0400"; };
     resticSystemStatePassword = { file = ./resticSystemStatePassword.age; owner = "root"; mode = "0400"; };
     serverBootstrapSudoPassword = { file = ./serverBootstrapSudoPassword.age; owner = "root"; mode = "0400"; };

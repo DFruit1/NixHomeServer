@@ -48,16 +48,12 @@
       description = "Cookie secret for the Kiwix OAuth2 Proxy.";
       bytes = 32;
     };
-    metubeOauth2ProxyClientSecret = {
-      description = "OIDC client secret for the MeTube OAuth2 Proxy.";
+    youtubeDownloaderOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the YouTube downloader OAuth2 Proxy.";
       bytes = 32;
     };
-    metubeOauth2ProxyCookieSecret = {
-      description = "Cookie secret for the MeTube OAuth2 Proxy.";
-      bytes = 32;
-    };
-    runtimeCanaryFilesPassword = {
-      description = "Password for the synthetic runtime access canary.";
+    youtubeDownloaderOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the YouTube downloader OAuth2 Proxy.";
       bytes = 32;
     };
     vaultwardenAdminToken = {
@@ -67,18 +63,6 @@
     copypartyClientSecret = {
       description = "OIDC client secret for Copyparty uploads.";
       bytes = 32;
-    };
-    filebrowserQuantumClientSecret = {
-      description = "OIDC client secret for FileBrowser Quantum.";
-      bytes = 32;
-    };
-    filebrowserQuantumAdminPassword = {
-      description = "Local FileBrowser Quantum admin password.";
-      bytes = 32;
-    };
-    filebrowserQuantumJwtSecret = {
-      description = "JWT signing secret for FileBrowser Quantum.";
-      bytes = 64;
     };
     kavitaClientSecret = {
       description = "OIDC client secret for Kavita.";

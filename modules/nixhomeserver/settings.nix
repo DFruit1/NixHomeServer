@@ -7,15 +7,14 @@ let
   varsAppEnables = {
     audiobookshelf = vars.apps.audiobooks.enable or false;
     copyparty = vars.apps.uploads.enable or false;
-    "filebrowser-quantum" = vars.apps.files.enable or false;
-    filestash = vars.apps.filestash.enable or false;
+    files = vars.apps.files.enable or false;
     immich = vars.apps.photos.enable or false;
     jellyfin = vars.apps.videos.enable or false;
     kavita = vars.apps.books.enable or false;
     kiwix = vars.apps.wiki.enable or false;
     "mail-archive" = vars.apps.mail.enable or false;
     "mail-archive-ui" = vars.apps.mail.enable or false;
-    metube = vars.apps.downloads.enable or false;
+    "youtube-downloader" = vars.apps.downloads.enable or false;
     paperless = vars.apps.documents.enable or false;
     vaultwarden = vars.apps.passwords.enable or false;
   };
@@ -65,18 +64,10 @@ in
       };
     };
 
-    localAdmin = {
-      user = lib.mkOption {
-        type = lib.types.str;
-        default = vars.localAdminUser or vars.kanidmAdminUser;
-        description = "Local Unix admin account used for SSH, sudo, and bootstrap operations.";
-      };
-
-      persistHome = lib.mkOption {
-        type = lib.types.bool;
-        default = vars.localAdminPersistHome or true;
-        description = "Whether to persist the local Unix admin home directory.";
-      };
+    localAdmin.user = lib.mkOption {
+      type = lib.types.str;
+      default = vars.localAdminUser or vars.kanidmAdminUser;
+      description = "Local Unix admin account used for SSH, sudo, and bootstrap operations.";
     };
 
     networking = {
@@ -161,10 +152,10 @@ in
           description = "IOWeight for system-state restic backups.";
         };
       };
-      metube.cpuQuota = lib.mkOption {
+      youtubeDownloader.cpuQuota = lib.mkOption {
         type = lib.types.str;
-        default = vars.resourceLimits.metube.cpuQuota or "200%";
-        description = "CPUQuota for MeTube downloads.";
+        default = vars.resourceLimits.youtubeDownloader.cpuQuota or "200%";
+        description = "CPUQuota for YouTube downloader jobs.";
       };
       mediaIndexers.cpuQuota = lib.mkOption {
         type = lib.types.str;

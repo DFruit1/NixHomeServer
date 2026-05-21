@@ -50,7 +50,7 @@ export class JobQueue {
     };
     validateRequest(normalizedRequest);
     if (normalizedRequest.destination === 'shared' && !user.canWriteShared) {
-      throw new Error('shared downloads require shared-files-read-write-access');
+      throw new Error('shared downloads require user-files');
     }
     const id = randomUUID();
     const duplicate = normalizedRequest.duplicateConfirmed ? undefined : await this.db.findCompletedDownload(normalizedRequest);

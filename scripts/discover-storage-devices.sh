@@ -4,7 +4,6 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/helpers/repo-common.sh"
-source "$script_dir/helpers/runtime-health-common.sh"
 init_repo_root "STORAGE_DEVICE_DISCOVERY_REPO_ROOT"
 cd_repo_root
 ensure_default_nix_config
@@ -79,11 +78,17 @@ load_discovery_config_json() {
     return 0
   fi
 
-  runtime_health_load_snapshot
-  jq '{
-    systemDisk: .storage.systemDisk,
-    dataPool: .storage.dataPool
-  }' <<<"$RUNTIME_HEALTH_SNAPSHOT"
+  nix_json '{
+    systemDisk = {
+      diskId = vars.mainDisk;
+      device = "/dev/disk/by-id/${vars.mainDisk}";
+    };
+    dataPool = {
+      name = vars.zfsDataPool.name;
+      mountPoint = vars.zfsDataPool.mountPoint;
+      datasetMounts = map (dataset: "${vars.zfsDataPool.mountPoint}/${dataset}") vars.zfsDataPool.datasets;
+    };
+  }'
 }
 
 load_lsblk_json() {

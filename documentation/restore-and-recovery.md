@@ -23,7 +23,7 @@ sudo zpool replace data \
   /dev/disk/by-id/<replacement-disk>-part1
 sudo zpool status data
 sudo zfs list -r data
-sudo ./scripts/check-runtime-readiness.sh --profile manual
+sudo systemctl --failed --no-pager
 ```
 
 ## Scenario: Restore SSD-Backed App State

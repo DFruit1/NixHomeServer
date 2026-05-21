@@ -1,6 +1,6 @@
 # Operations
 
-Use this as the maintained day-2 runbook for validation, guarded deploys, rollback, runtime readiness, SMART monitoring, and first-response troubleshooting.
+Use this as the maintained day-2 runbook for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
 
 Normal day-2 operations no longer require local Nix on the desktop. The
 documented path is to stage the repo archive over SSH and let the remote server
@@ -9,18 +9,15 @@ bootstrap remains the installer-side exception.
 
 ## Common Commands
 
-- Remote validation gate: `./scripts/validate-repo-remote.sh --host "<admin>@<hostname>" --full`
+- Remote validation gate: `./scripts/deploy.sh --target "<admin>@<hostname>" --debug --action test`
 - Local validation gate: `nix flake check --no-build` then `scripts/validate-repo.sh`
 - Flake-inclusive local gate: `scripts/validate-repo.sh --run-flake-check`
 - Full local gate: `scripts/validate-repo.sh --full`
-- Guarded deploy: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test`
-- Full guarded deploy: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test --full-check`
-- Guarded switch: `./scripts/deploy-with-validation.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action switch`
+- Guarded deploy: `./scripts/deploy.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test`
+- Full guarded deploy: `./scripts/deploy.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test --debug`
+- Guarded switch: `./scripts/deploy.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action switch`
 - Server-side secrets: `ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'`
-- Runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile manual`
-- Strict runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile deploy`
-- Deep runtime readiness: `sudo ./scripts/check-runtime-readiness.sh --profile deploy --deep`
-- Access canary bootstrap: `sudo ./scripts/bootstrap-access-canaries.sh`
+- Service health: `sudo systemctl --failed --no-pager`
 - SMART sweep: `sudo systemctl start storage-smart-short.service`
 - Backup target selection: `manage-backup-target list` then `sudo manage-backup-target select ...`
 
@@ -32,7 +29,7 @@ URLs for a site with `nix run .#render-runbook -- --host <host>`.
 - Private Immich app: `https://<photos-domain>`
 - Public Immich share links: `https://<share-photos-domain>`
 - Public Copyparty uploader: `https://<uploads-domain>/`
-- Authenticated FileBrowser Quantum UI and WebDAV: `https://<files-domain>/`
+- Authenticated Filestash UI and SFTP: `https://<files-domain>/`
 - Private Vaultwarden: `https://<passwords-domain>`
 
 Use the private photos hostname for the owner's normal Immich login on LAN or
@@ -41,7 +38,7 @@ to other people.
 
 Use the uploads hostname for large uploads into the authenticated user's
 personal `uploads` folder. Use the files hostname for browsing, moving, smaller
-uploads, and WebDAV access.
+uploads, and  access.
 
 Long Copyparty browser uploads are most reliable when the client reaches
 the uploads hostname over LAN or NetBird split DNS instead of the
@@ -70,7 +67,7 @@ sudo -u copyparty sh -lc 'probe=/mnt/data/users/<user>/uploads/.write-probe && :
 journalctl -u copyparty -n 100 --no-pager
 ```
 
-FileBrowser Quantum WebDAV roots:
+Filestash  roots:
 
 - Personal source: `https://<files-domain>/dav/Personal/`
 - Shared source: `https://<files-domain>/dav/Shared/`
@@ -154,7 +151,7 @@ The documented day-2 validation path runs on the remote server and does not need
 local Nix:
 
 ```bash
-./scripts/validate-repo-remote.sh --host "<admin>@<hostname>" --full
+./scripts/deploy.sh --target "<admin>@<hostname>" --debug --action test
 ```
 
 That stages the current repo archive on the server and runs the full repository
@@ -203,7 +200,7 @@ That mode runs:
 ## Guarded Deploy
 
 ```bash
-./scripts/deploy-with-validation.sh \
+./scripts/deploy.sh \
   --target "<admin>@<hostname>" \
   --build-host "<admin>@<hostname>" \
   --action test
@@ -212,14 +209,14 @@ That mode runs:
 That path stages the current repo archive on the build host and keeps all Nix
 evaluation, builds, activation, and validation on the server. Routine deploys
 use the lean repository gate before `nixos-rebuild`; run
-`validate-repo-remote.sh --full` separately when you want the full Nix, lint,
+`deploy.sh --debug` separately when you want the full Nix, lint,
 and app check suite.
 The server also carries the resulting `/nix/store` churn.
 
 Only switch after the guarded test path passes.
 
 ```bash
-./scripts/deploy-with-validation.sh \
+./scripts/deploy.sh \
   --target "<admin>@<hostname>" \
   --build-host "<admin>@<hostname>" \
   --action switch
@@ -228,43 +225,38 @@ Only switch after the guarded test path passes.
 For the slower, browser-backed runtime gate:
 
 ```bash
-./scripts/deploy-with-validation.sh \
+./scripts/deploy.sh \
   --target "<admin>@<hostname>" \
   --build-host "<admin>@<hostname>" \
   --action test \
-  --full-check
+  --debug
 ```
 
-`--full-check` keeps the normal guarded deploy ordering, but upgrades the
-runtime step from `--profile deploy` to `--profile deploy --deep`. Use it when
-you want authenticated app-access verification through the synthetic Kanidm
-canaries. Do not use it for routine timer-based monitoring.
+`--debug` keeps the normal deploy ordering but adds the full repository
+validation gate before rebuilding. Use it for suspicious failures or broad
+changes; routine deploys should stay on the fast path.
 
-The regular guarded deploy path stays intentionally quick. It covers units,
-storage, SMART, local upstream HTTP checks, local unauthenticated auth-edge
-checks through Caddy/TLS, and the expected access matrix from config. It does
-not run browser logins, negative auth-path checks, or the full synthetic-canary
-loop.
+The regular deploy path stays intentionally quick. It evaluates the target
+host, rebuilds remotely, and fails if systemd reports failed units afterward.
 
-## Fast Remote Rebuild
+## Fast Remote Deploy
 
-For unguarded custom app iteration only:
+For normal remote deploys:
 
 ```bash
-./scripts/rebuild-remote-fast.sh
+./scripts/deploy.sh
 ```
 
 This resolves the SSH target from `vars.localAdminUser` and `vars.hostname`,
 stages the current repo archive, and runs `nixos-rebuild switch` on the remote
-host. It intentionally skips repository validation, flake checks, failed-unit
-checks, runtime readiness, storage checks, rollback guidance, and the guarded
-test-before-switch flow.
+host. It intentionally skips repository validation and flake checks, but still
+evaluates the host and checks failed units after the rebuild.
 
 Use `--action test` when you want a temporary activation without changing the
 boot default:
 
 ```bash
-./scripts/rebuild-remote-fast.sh --action test
+./scripts/deploy.sh --action test
 ```
 
 For server-side secrets generation after local staging or edits:
@@ -273,16 +265,13 @@ For server-side secrets generation after local staging or edits:
 ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'
 ```
 
-## Runtime Validation
+## Service Validation
 
 ```bash
-sudo ./scripts/check-runtime-readiness.sh --profile manual
-sudo ./scripts/check-runtime-readiness.sh --profile deploy
-sudo ./scripts/check-runtime-readiness.sh --profile deploy --deep
+sudo systemctl --failed --no-pager
+./scripts/deploy.sh --debug --action test
 ```
 
-Use `--profile manual` for survivability checks and `--profile deploy` for strict deploy gating.
-Use `--deep` only for explicit operator checks or `deploy-with-validation.sh --full-check`.
 
 Private-host troubleshooting note:
 - if the passwords hostname does not resolve from a workstation browser, do not assume Vaultwarden is down
@@ -312,22 +301,10 @@ and quarantine inventories, and `dumps/upload-processor-state.sqlite3`. It does
 not copy data-pool payload bytes; the mirrored ZFS pool remains the recovery
 boundary for uploaded file contents.
 
-Admins can review quarantined uploads through the FileBrowser Quantum
+Admins can review quarantined uploads through the Filestash
 `Quarantine` source. Manual VirusTotal file uploads, if needed, are an admin
 action against files already in quarantine; the server does not automatically
 upload file bytes to VirusTotal.
-
-Deep runtime access checks require the canary bootstrap state on the server:
-
-```bash
-sudo ./scripts/bootstrap-access-canaries.sh
-```
-
-That helper:
-- creates short-lived Kanidm reset links for the synthetic canary accounts
-- sets their password from the root-only agenix secrets under `/run/agenix/`
-- warms expected first-login app state
-- writes `/var/lib/runtime-access-canaries/bootstrap-state.json`
 
 Storage monitoring now discovers disks live at runtime:
 - `system` is the static `vars.mainDisk`
@@ -347,7 +324,7 @@ sudo manage-backup-target unmount
 ## SMART Monitoring
 
 The retained storage monitoring workflow is:
-- `scripts/check-runtime-readiness.sh`
+- `systemctl --failed`
 - `scripts/helpers/storage-health-common.sh`
 - `scripts/discover-storage-devices.sh`
 - `scripts/generate-smartd-config.sh`
@@ -363,7 +340,7 @@ physically detached from the server.
 Use these checks first on the target host:
 
 ```bash
-sudo ./scripts/check-runtime-readiness.sh --profile manual
+sudo systemctl --failed --no-pager
 systemctl status storage-smart-short.timer
 systemctl status storage-smart-long.timer
 ```
