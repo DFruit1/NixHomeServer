@@ -2,13 +2,14 @@
 
 set -euo pipefail
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/admin/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/admin/storage-plan.sh [--host <site-or-hostname>]
+Usage: bootstrap/storage-plan.sh [--host <site-or-hostname>]
 
-Print a non-destructive storage inventory and a settings.nix snippet.
+Print a non-destructive disk inventory and settings.nix storage snippet for
+blank-machine bootstrap planning.
 EOF
 }
 

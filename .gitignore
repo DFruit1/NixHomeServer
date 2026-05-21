@@ -1,6 +1,7 @@
 /secrets/*
 !/secrets/*.age
 !/secrets/agenix.nix
+!/secrets/manifest.nix
 !/secrets/pubkeys/
 !/secrets/pubkeys/age.pub
 /secrets/top/
@@ -13,4 +14,3 @@
 /rust/apps/*/target/
 /node/apps/*/node_modules/
 /node/apps/*/dist/
-/secrets/

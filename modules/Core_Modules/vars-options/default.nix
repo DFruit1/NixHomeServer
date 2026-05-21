@@ -1,5 +1,10 @@
 { config, lib, vars, ... }:
 
+# `vars.nix` and `hosts/<site>/settings.nix` are the operator-facing settings.
+# This core module turns those plain values into typed NixOS options that other
+# modules can depend on: profile/app enables, resource defaults, local admin
+# wiring, the legacy resolved settings view, and validation assertions.
+
 let
   defaults = import ./defaults.nix { inherit lib; };
   cfg = config.nixhomeserver;

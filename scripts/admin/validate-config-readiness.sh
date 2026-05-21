@@ -6,9 +6,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/admin/doctor.sh [--host <site-or-hostname>]
+Usage: scripts/admin/validate-config-readiness.sh [--host <site-or-hostname>]
 
-Validate first-install readiness without changing the system.
+Validate evaluated settings, required secrets, and local bootstrap/deploy
+preconditions without changing the system.
 EOF
 }
 
@@ -34,7 +35,7 @@ if [[ -z "$host" ]]; then
   host="$(default_host)"
 fi
 
-echo "NixHomeServer install doctor"
+echo "NixHomeServer config readiness validation"
 echo "host: ${host}"
 echo
 

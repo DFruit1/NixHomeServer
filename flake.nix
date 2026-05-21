@@ -198,21 +198,17 @@
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
             exec bash "$NIXHOMESERVER_REPO_ROOT/bootstrap/init-site.sh" "$@"
           '';
-          doctor = scriptApp "doctor" "Non-destructive install readiness doctor" (with pkgs; [ bash coreutils findutils gitMinimal gnugrep gnused jq nix openssh ripgrep util-linux ]) ''
+          validate-config-readiness = scriptApp "validate-config-readiness" "Validate evaluated settings, required secrets, and bootstrap/deploy preconditions" (with pkgs; [ bash coreutils findutils gitMinimal gnugrep gnused jq nix openssh ripgrep util-linux ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/doctor.sh" "$@"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/validate-config-readiness.sh" "$@"
           '';
-          storage-plan = scriptApp "storage-plan" "Read-only storage inventory and settings snippet helper" (with pkgs; [ bash coreutils findutils jq smartmontools util-linux gnused gnugrep ]) ''
+          show-config-summary = scriptApp "show-config-summary" "Show evaluated hostnames, apps, storage, identity groups, OAuth clients, and external secrets" (with pkgs; [ bash coreutils jq nix gnused ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/storage-plan.sh" "$@"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/show-config-summary.sh" "$@"
           '';
-          render-runbook = scriptApp "render-runbook" "Render a host-specific admin runbook" (with pkgs; [ bash coreutils jq nix gnused ]) ''
+          bootstrap-storage-plan = scriptApp "bootstrap-storage-plan" "Read-only disk inventory and storage settings helper for blank-machine bootstrap" (with pkgs; [ bash coreutils findutils jq smartmontools util-linux gnused gnugrep ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/render-runbook.sh" "$@"
-          '';
-          explain = scriptApp "explain" "Preview evaluated host routes, apps, storage, and secrets" (with pkgs; [ bash coreutils jq nix gnused ]) ''
-            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-            exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/explain.sh" "$@"
+            exec bash "$NIXHOMESERVER_REPO_ROOT/bootstrap/storage-plan.sh" "$@"
           '';
           deploy = scriptApp "deploy" "Remote deploy helper with fast and debug modes" (with pkgs; [ bash coreutils gitMinimal gnutar jq nix openssh gnused ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"

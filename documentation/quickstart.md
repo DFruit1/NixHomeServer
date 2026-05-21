@@ -29,11 +29,11 @@ or create a new site with:
 nix run .#init-site -- --site my-home
 ```
 
-Run the non-destructive install doctor before any deploy or blank-machine work:
+Run the non-destructive config readiness check before any deploy or blank-machine work:
 
 ```bash
-nix run .#doctor -- --host dsaw
-nix run .#explain -- --host dsaw
+nix run .#validate-config-readiness -- --host dsaw
+nix run .#show-config-summary -- --host dsaw
 ```
 
 Generate repo-managed secrets and encrypt the staged inputs with the single documented secrets entrypoint:

@@ -4,7 +4,7 @@ rec {
   # ---------------------------------------------------------------------------
   # Start here: these sections are the normal operator-facing settings.
   # Most admins should be able to configure a new server by editing only this
-  # first block, then running `nix run .#doctor`.
+  # first block, then running `nix run .#validate-config-readiness`.
   # ---------------------------------------------------------------------------
 
   identity = {

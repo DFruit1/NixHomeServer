@@ -15,7 +15,13 @@ ensure_gitignore() {
 
 ensure_secrets_layout() {
   mkdir -p "$secrets_top_dir" "$age_dir"
-  ensure_gitignore "/secrets/"
+  ensure_gitignore "/secrets/*"
+  ensure_gitignore "!/secrets/*.age"
+  ensure_gitignore "!/secrets/agenix.nix"
+  ensure_gitignore "!/secrets/manifest.nix"
+  ensure_gitignore "!/secrets/pubkeys/"
+  ensure_gitignore "!/secrets/pubkeys/age.pub"
+  ensure_gitignore "/secrets/top/"
   ensure_gitignore "/SensitivePrivateSecrets"
 }
 

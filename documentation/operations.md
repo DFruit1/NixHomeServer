@@ -1,6 +1,6 @@
 # Operations
 
-Use this as the maintained day-2 runbook for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
+Use this as the maintained day-2 operations guide for validation, guarded deploys, rollback, service health, SMART monitoring, and first-response troubleshooting.
 
 Normal day-2 operations no longer require local Nix on the desktop. The
 documented path is to stage the repo archive over SSH and let the remote server
@@ -9,13 +9,14 @@ bootstrap remains the installer-side exception.
 
 ## Common Commands
 
-- Remote validation gate: `./scripts/deploy.sh --target "<admin>@<hostname>" --debug --action test`
+- Remote validation gate: `./scripts/deploy.sh --debug --action test`
 - Local validation gate: `nix flake check --no-build` then `scripts/validate-repo.sh`
 - Flake-inclusive local gate: `scripts/validate-repo.sh --run-flake-check`
 - Full local gate: `scripts/validate-repo.sh --full`
-- Guarded deploy: `./scripts/deploy.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test`
-- Full guarded deploy: `./scripts/deploy.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action test --debug`
-- Guarded switch: `./scripts/deploy.sh --target "<admin>@<hostname>" --build-host "<admin>@<hostname>" --action switch`
+- Guarded deploy: `./scripts/deploy.sh --action test`
+- Full guarded deploy: `./scripts/deploy.sh --action test --debug`
+- Guarded switch: `./scripts/deploy.sh --action switch`
+- Local-build deploy: `./scripts/deploy.sh --build-locally --action test`
 - Server-side secrets: `ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'`
 - Service health: `sudo systemctl --failed --no-pager`
 - SMART sweep: `sudo systemctl start storage-smart-short.service`
@@ -23,8 +24,8 @@ bootstrap remains the installer-side exception.
 
 ## App Hostnames
 
-Immich uses separate private and public hostnames on purpose. Render concrete
-URLs for a site with `nix run .#render-runbook -- --host <host>`.
+Immich uses separate private and public hostnames on purpose. Show evaluated
+URLs for a site with `nix run .#show-config-summary -- --host <host>`.
 
 - Private Immich app: `https://<photos-domain>`
 - Public Immich share links: `https://<share-photos-domain>`
@@ -38,7 +39,7 @@ to other people.
 
 Use the uploads hostname for large uploads into the authenticated user's
 personal `uploads` folder. Use the files hostname for browsing, moving, smaller
-uploads, and  access.
+uploads, and SFTP access.
 
 Long Copyparty browser uploads are most reliable when the client reaches
 the uploads hostname over LAN or NetBird split DNS instead of the
@@ -77,7 +78,7 @@ the rest of the stack: `ebooks`, `comics`, and `manga`. The old `other`
 category is no longer part of the managed layout.
 
 Do not guess share hostnames manually; use the evaluated share hostname from
-the runbook or `vars.nix`.
+`nix run .#show-config-summary -- --host <host>` or `vars.nix`.
 
 Immich sharing flow:
 
@@ -151,7 +152,7 @@ The documented day-2 validation path runs on the remote server and does not need
 local Nix:
 
 ```bash
-./scripts/deploy.sh --target "<admin>@<hostname>" --debug --action test
+./scripts/deploy.sh --debug --action test
 ```
 
 That stages the current repo archive on the server and runs the full repository
@@ -200,36 +201,26 @@ That mode runs:
 ## Guarded Deploy
 
 ```bash
-./scripts/deploy.sh \
-  --target "<admin>@<hostname>" \
-  --build-host "<admin>@<hostname>" \
-  --action test
+./scripts/deploy.sh --action test
 ```
 
-That path stages the current repo archive on the build host and keeps all Nix
-evaluation, builds, activation, and validation on the server. Routine deploys
-use the lean repository gate before `nixos-rebuild`; run
-`deploy.sh --debug` separately when you want the full Nix, lint,
-and app check suite.
-The server also carries the resulting `/nix/store` churn.
+That path resolves the target from `vars.localAdminUser` and `vars.hostname`,
+stages the current repo archive on that host, and keeps all Nix evaluation,
+builds, activation, and validation on the server. Routine deploys use the lean
+repository gate before `nixos-rebuild`; run `deploy.sh --debug` separately when
+you want the full Nix, lint, and app check suite. The server also carries the
+resulting `/nix/store` churn.
 
 Only switch after the guarded test path passes.
 
 ```bash
-./scripts/deploy.sh \
-  --target "<admin>@<hostname>" \
-  --build-host "<admin>@<hostname>" \
-  --action switch
+./scripts/deploy.sh --action switch
 ```
 
-For the slower, browser-backed runtime gate:
+For the slower full validation gate:
 
 ```bash
-./scripts/deploy.sh \
-  --target "<admin>@<hostname>" \
-  --build-host "<admin>@<hostname>" \
-  --action test \
-  --debug
+./scripts/deploy.sh --action test --debug
 ```
 
 `--debug` keeps the normal deploy ordering but adds the full repository
@@ -248,15 +239,22 @@ For normal remote deploys:
 ```
 
 This resolves the SSH target from `vars.localAdminUser` and `vars.hostname`,
-stages the current repo archive, and runs `nixos-rebuild switch` on the remote
-host. It intentionally skips repository validation and flake checks, but still
-evaluates the host and checks failed units after the rebuild.
+stages the current repo archive, and runs `nixos-rebuild test` on the remote
+host. It intentionally skips full repository validation and flake checks, but
+still evaluates the host and checks failed units after the rebuild.
 
-Use `--action test` when you want a temporary activation without changing the
-boot default:
+Use `--action switch` only after the test path passes and you want to change the
+active system and boot default:
 
 ```bash
-./scripts/deploy.sh --action test
+./scripts/deploy.sh --action switch
+```
+
+Use `--build-locally` when you intentionally want the workstation to perform the
+Nix build and then activate the evaluated target over SSH:
+
+```bash
+./scripts/deploy.sh --build-locally --action test
 ```
 
 For server-side secrets generation after local staging or edits:

@@ -6,10 +6,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/admin/explain.sh [--host <site-or-hostname>]
+Usage: scripts/admin/show-config-summary.sh [--host <site-or-hostname>]
 
-Preview the configured hostnames, app surface, storage roots, identity groups,
-and required secrets without changing the system.
+Show the evaluated hostnames, app surface, storage roots, identity groups,
+OAuth clients, and required external secrets without changing the system.
 EOF
 }
 
@@ -112,4 +112,4 @@ echo "Required external secrets"
 jq -r '.[] | "  - secrets/top/" + .' <<<"$external_secrets_json"
 echo
 
-echo "Run \`nix run .#doctor -- --host ${host}\` for readiness checks."
+echo "Run \`nix run .#validate-config-readiness -- --host ${host}\` for readiness checks."

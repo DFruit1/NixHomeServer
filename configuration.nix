@@ -72,7 +72,7 @@ in
   ###############################################################################
   imports = [
     ./secrets/agenix.nix
-    ./modules/nixhomeserver/settings.nix
+    ./modules/Core_Modules/vars-options
     ./modules/audiobookshelf
     ./modules/Core_Modules/caddy
     ./modules/Core_Modules/cloudflared

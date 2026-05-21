@@ -229,10 +229,10 @@ fi
 
 echo "Next steps:"
 echo "  1. Stage external secrets under secrets/top/: netbirdSetupKey, cfHomeCreds, cfAPIToken."
-echo "  2. Run: nix run .#doctor -- --host ${site}"
-echo "  3. Review storage with: nix run .#storage-plan -- --host ${site}"
-echo "  4. Render the host runbook with: nix run .#render-runbook -- --host ${site}"
+echo "  2. Run: nix run .#validate-config-readiness -- --host ${site}"
+echo "  3. Review evaluated config with: nix run .#show-config-summary -- --host ${site}"
+echo "  4. Review bootstrap disks with: nix run .#bootstrap-storage-plan -- --host ${site}"
 
 echo
-echo "Doctor preview:"
-nix run .#doctor -- --host "$site" || true
+echo "Config readiness preview:"
+nix run .#validate-config-readiness -- --host "$site" || true

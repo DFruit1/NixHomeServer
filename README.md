@@ -29,8 +29,10 @@ Validation gate: see [Operations](./documentation/operations.md#validation-gate)
 
 Deploy entry point: `./scripts/deploy.sh --help`
 
-Fast deploy path: `./scripts/deploy.sh`. Use `--debug` when you want the full
-validation gate before the rebuild.
+Fast deploy path: `./scripts/deploy.sh`. It resolves the target from
+`vars.localAdminUser` and `vars.hostname`, builds on that host by default, and
+defaults to `--action test`. Use `--debug` for the full validation gate or
+`--build-locally` when the workstation should perform the build.
 
 ## New Admin Template Workflow
 
@@ -41,10 +43,9 @@ host layer lives under [`hosts/`](./hosts): `hosts/dsaw` points back to
 
 Useful first-run helpers:
 
-- `nix run .#doctor -- --host dsaw`
-- `nix run .#explain -- --host dsaw`
-- `nix run .#storage-plan -- --host dsaw`
-- `nix run .#render-runbook -- --host dsaw`
+- `nix run .#validate-config-readiness -- --host dsaw`
+- `nix run .#show-config-summary -- --host dsaw`
+- `nix run .#bootstrap-storage-plan -- --host dsaw`
 - `nix run .#init-site -- --site my-home`
 
 `modules/Core_Modules` is the fixed platform layer. Profiles and app enable
@@ -54,8 +55,8 @@ identity, DNS, edge, storage, or validation foundations.
 For a new one-host install, use [`vars.example.nix`](./vars.example.nix) as the
 copyable starting point and keep day-to-day settings in [`vars.nix`](./vars.nix).
 
-Immich sharing uses separate private-app and public-share hostnames. Render the
-site runbook with `nix run .#render-runbook -- --host <host>` for concrete URLs,
+Immich sharing uses separate private-app and public-share hostnames. Show the
+evaluated host surface with `nix run .#show-config-summary -- --host <host>`,
 and see [Operations](./documentation/operations.md#app-hostnames) for the access
 model.
 
