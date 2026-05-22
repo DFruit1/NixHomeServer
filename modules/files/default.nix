@@ -57,7 +57,6 @@ in
     filestashNix.nixosModules.filestash
     ./filepaths.nix
     ./identity.nix
-    ./impermanence.nix
     ./backups.nix
     ./networking.nix
   ];

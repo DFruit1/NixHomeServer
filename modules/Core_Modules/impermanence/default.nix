@@ -16,6 +16,28 @@ let
     "/var/log/atop"
   ];
 
+  appPersistenceDirectories = [
+    "/var/cache/filestash"
+    "/var/cache/immich"
+    "/var/lib/audiobookshelf"
+    "/var/lib/clamav"
+    "/var/lib/copyparty"
+    "/var/lib/filestash"
+    "/var/lib/immich"
+    "/var/lib/immich-public-proxy"
+    "/var/lib/jellyfin"
+    "/var/lib/kavita"
+    "/var/lib/kiwix"
+    "/var/lib/paperless"
+    "/var/lib/postgresql/16"
+    "/var/lib/redis-immich"
+    "/var/lib/redis-paperless"
+    "/var/lib/upload-processor"
+    "/var/lib/vaultwarden"
+    "/var/lib/youtube-downloader"
+    "/var/log/filestash"
+  ];
+
   corePersistenceFiles = [ ];
 
   rollbackScript = ''
@@ -86,7 +108,7 @@ in
         lib.types.attrs
       ]);
       default = [ ];
-      description = "Directories to persist under /persist. App modules append their own state here.";
+      description = "Directories to persist under /persist. Keep app state here so removing app modules does not remove persistence records.";
     };
 
     files = lib.mkOption {
@@ -95,7 +117,7 @@ in
         lib.types.attrs
       ]);
       default = [ ];
-      description = "Files to persist under /persist. App modules append their own state here.";
+      description = "Files to persist under /persist. Keep app state here so removing app modules does not remove persistence records.";
     };
 
     inventory = {
@@ -132,7 +154,7 @@ in
       persistenceFiles = cfg.files;
     };
 
-    repo.impermanence.directories = corePersistenceDirectories;
+    repo.impermanence.directories = corePersistenceDirectories ++ appPersistenceDirectories;
     repo.impermanence.files = corePersistenceFiles;
 
     fileSystems."/persist".neededForBoot = true;

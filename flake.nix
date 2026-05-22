@@ -53,8 +53,8 @@
           vars = mkSiteVars siteName;
         in
         lib.nixosSystem {
-          inherit system;
           modules = [
+            { nixpkgs.hostPlatform = system; }
             (siteModulePath siteName)
             agenix.nixosModules.default
             impermanence.nixosModules.impermanence
