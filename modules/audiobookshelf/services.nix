@@ -6,6 +6,10 @@ let
   dataDirName = "audiobookshelf";
 in
 {
+  imports = [
+    ./library-watch.nix
+  ];
+
   config = lib.mkIf enabled {
     services.audiobookshelf = {
       enable = true;
@@ -13,14 +17,10 @@ in
       port = audiobookshelfPort;
     };
 
-    users.users.audiobookshelf.extraGroups = lib.mkAfter [ "audiobookshelf-media" ];
-
     systemd.services.audiobookshelf = {
       after = [ "data-pool-layout.service" ];
       wants = [ "data-pool-layout.service" ];
       serviceConfig.WorkingDirectory = lib.mkForce "/var/lib/${config.services.audiobookshelf.dataDir}";
     };
-
-    systemd.tmpfiles.rules = [ ];
   };
 }

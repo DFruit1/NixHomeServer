@@ -8,7 +8,6 @@ let
     UPLOAD_STAGING_ROOT = uploadSecurity.stagingRoot;
     UPLOAD_USERS_ROOT = vars.usersRoot;
     UPLOAD_QUARANTINE_ROOT = uploadSecurity.quarantineRoot;
-    UPLOAD_KIWIX_LIBRARY_ROOT = vars.kiwixLibraryRoot;
     UPLOAD_PROCESSOR_STATE_DB = "/var/lib/upload-processor/state.sqlite";
     UPLOAD_PROCESSOR_QUEUE_DIR = "/run/upload-processor/queue";
     UPLOAD_VIRUSTOTAL_API_KEY_FILE = config.age.secrets.virusTotalApiKey.path;
@@ -19,23 +18,21 @@ let
     UPLOAD_VIRUSTOTAL_SUSPICIOUS_THRESHOLD = toString uploadSecurity.virusTotalSuspiciousThreshold;
     UPLOAD_LOW_RISK_EXTENSIONS = lowRiskExtensions;
     UPLOAD_HIGH_RISK_EXTENSIONS = highRiskExtensions;
-    UPLOAD_ZIM_PROMOTION_USERS = vars.kanidmAdminUser;
-  };
+  } // config.services.uploadProcessor.extraEnvironment;
   processorReadWritePaths = [
     uploadSecurity.stagingRoot
     uploadSecurity.quarantineRoot
     vars.usersRoot
-    vars.kiwixLibraryRoot
     "/var/lib/upload-processor"
     "/run/upload-processor"
-  ];
+  ] ++ config.services.uploadProcessor.extraReadWritePaths;
   processorReadOnlyPaths = [
     config.age.secrets.virusTotalApiKey.path
     "/run/clamav"
-  ];
+  ] ++ config.services.uploadProcessor.extraReadOnlyPaths;
   uploadProcessorPackage = pkgs.writeShellApplication {
     name = "upload-processor";
-    runtimeInputs = with pkgs; [
+    runtimeInputs = (with pkgs; [
       bash
       clamav
       coreutils
@@ -45,11 +42,10 @@ let
       gnugrep
       gnused
       jq
-      kiwix-tools
       sqlite
       systemd
       util-linux
-    ];
+    ]) ++ config.services.uploadProcessor.extraRuntimeInputs;
     text = builtins.readFile ../../scripts/helpers/upload-processor.sh;
   };
   enqueueScript = pkgs.writeShellApplication {
@@ -96,31 +92,33 @@ let
   };
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.copyparty.enable {
-    users.groups.upload-staging = { };
-    users.groups.upload-review = { };
-    users.users.upload-processor = {
-      isSystemUser = true;
-      group = "upload-processor";
-      home = "/var/lib/upload-processor";
-      createHome = false;
-      extraGroups = [
-        "upload-staging"
-        "upload-review"
-        "users"
-        "kiwix"
-      ];
+  options.services.uploadProcessor = {
+    extraEnvironment = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      description = "Extra environment variables for upload processor integrations.";
     };
-    users.groups.upload-processor = { };
 
-    users.users.copyparty.extraGroups = lib.mkAfter [
-      "upload-staging"
-    ];
+    extraReadWritePaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Extra read-write paths for upload processor integrations.";
+    };
 
-    services.kiwixServe.extraUploadUsers = lib.mkAfter [
-      "upload-processor"
-    ];
+    extraReadOnlyPaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Extra read-only paths for upload processor integrations.";
+    };
 
+    extraRuntimeInputs = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ ];
+      description = "Extra runtime packages for upload processor integrations.";
+    };
+  };
+
+  config = lib.mkIf config.nixhomeserver.apps.copyparty.enable {
     environment.systemPackages = [
       enqueueScript
       uploadProcessorPackage
@@ -139,41 +137,6 @@ in
     };
 
     systemd.services.clamav-daemon.serviceConfig.MemoryMax = config.nixhomeserver.resources.clamav.memoryMax;
-
-    systemd.tmpfiles.rules = [
-      "d /run/upload-processor 0770 upload-processor upload-staging -"
-      "d /run/upload-processor/queue 0770 upload-processor upload-staging -"
-      "d /var/lib/upload-processor 0750 upload-processor upload-processor -"
-      "d ${uploadSecurity.stagingRoot} 0710 root upload-staging -"
-      "d ${uploadSecurity.quarantineRoot} 0770 upload-processor upload-review -"
-    ];
-
-    systemd.services.upload-processor-runtime-layout = {
-      description = "Create upload processor runtime directories";
-      wantedBy = [ "multi-user.target" ];
-      before = [
-        "copyparty.service"
-        "upload-processor.service"
-        "upload-processor-rescan.service"
-      ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      path = with pkgs; [
-        coreutils
-        findutils
-      ];
-      script = ''
-        set -euo pipefail
-        install -d -m 0770 -o upload-processor -g upload-staging /run/upload-processor
-        install -d -m 0770 -o upload-processor -g upload-staging /run/upload-processor/queue
-        install -d -m 0770 -o upload-processor -g upload-review ${lib.escapeShellArg uploadSecurity.quarantineRoot}
-        chgrp -R upload-review ${lib.escapeShellArg uploadSecurity.quarantineRoot}
-        find ${lib.escapeShellArg uploadSecurity.quarantineRoot} -type d -exec chmod 0770 '{}' +
-        find ${lib.escapeShellArg uploadSecurity.quarantineRoot} -type f -exec chmod 0640 '{}' +
-      '';
-    };
 
     systemd.services.upload-processor = {
       description = "Scan and promote staged Copyparty uploads";

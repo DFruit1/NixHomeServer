@@ -2,6 +2,21 @@
 
 {
   config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
+    assertions = [
+      {
+        assertion = config.age.secrets ? paperlessClientSecret;
+        message = "Missing paperlessClientSecret secret; run scripts/generate-all-secrets.sh";
+      }
+    ];
+
+    users.groups.paperless = { };
+
+    users.users.paperless = {
+      isSystemUser = true;
+      group = "paperless";
+      home = "/var/lib/paperless";
+    };
+
     repo.identity = {
       groups."paperless-users" = {
         owner = "paperless";

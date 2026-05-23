@@ -2,13 +2,13 @@
 
 {
   imports = [
-    ./filepaths.nix
-    ./identity.nix
-    ./backups.nix
     ./networking.nix
-    ./package.nix
-    ./storage.nix
-    ./service.nix
+    ./identity.nix
+    ./filepaths.nix
+    ./services.nix
     ./bootstrap.nix
+    ./backups.nix
+    ./integrations/copyparty.nix
+    ./integrations/mail-archive-ui.nix
   ];
 }

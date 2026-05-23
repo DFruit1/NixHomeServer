@@ -1,7 +1,50 @@
 { config, lib, vars, ... }:
 
+let
+  proxyUser = "immich-public-proxy";
+  proxyGroup = "immich-public-proxy";
+  proxyUid = 3001;
+  proxyGid = 3001;
+  proxySubIdStart = 400000;
+  proxySubIdCount = 65536;
+in
+
 {
   config = lib.mkIf config.nixhomeserver.apps.immich.enable {
+    assertions = [
+      {
+        assertion = config.age.secrets ? immichClientSecret;
+        message = "Missing immichClientSecret secret; run scripts/generate-all-secrets.sh";
+      }
+    ];
+
+    users.manageLingering = true;
+
+    users.groups.${proxyGroup} = {
+      gid = proxyGid;
+    };
+
+    users.users.${proxyUser} = {
+      isSystemUser = true;
+      uid = proxyUid;
+      group = proxyGroup;
+      home = "/var/lib/immich-public-proxy";
+      createHome = true;
+      linger = true;
+      subUidRanges = [
+        {
+          startUid = proxySubIdStart;
+          count = proxySubIdCount;
+        }
+      ];
+      subGidRanges = [
+        {
+          startGid = proxySubIdStart;
+          count = proxySubIdCount;
+        }
+      ];
+    };
+
     repo.identity = {
       groups."immich-users" = {
         owner = "immich";

@@ -28,6 +28,7 @@ while (($# > 0)); do
 done
 
 test_scripts=(
+  scripts/tests/test-app-module-structure.sh
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-secret-definitions.sh
 )

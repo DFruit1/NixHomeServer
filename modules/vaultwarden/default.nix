@@ -3,9 +3,10 @@
 {
   imports = [
     ./filepaths.nix
-    ./backups.nix
+    ./identity.nix
     ./networking.nix
-    ./service.nix
-    ./kanidm-admin.nix
+    ./services.nix
+    ./bootstrap.nix
+    ./backups.nix
   ];
 }

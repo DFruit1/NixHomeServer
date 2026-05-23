@@ -1,11 +1,48 @@
-{ vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
+let
+  cfg = config.services.kiwixServe;
+  uploadUsers = lib.unique ([ cfg.uploadUser ] ++ cfg.extraUploadUsers);
+  dirWriterAclArgs = lib.concatStringsSep " " (
+    lib.concatMap
+      (user: [
+        ''-m u:${user}:rwx''
+        ''-m d:u:${user}:rwx''
+      ])
+      uploadUsers
+  );
+  prepareLibraryRootScript = pkgs.writeShellScript "kiwix-prepare-library-root" ''
+    set -euo pipefail
+
+    library_root=${lib.escapeShellArg cfg.libraryRoot}
+
+    if [[ ! -d "$library_root" ]]; then
+      ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
+    fi
+    ${pkgs.acl}/bin/setfacl \
+      ${dirWriterAclArgs} \
+      -m g:kiwix:rx \
+      -m d:g:kiwix:rx \
+      "$library_root"
+  '';
+in
 {
-  config = {
-    repo.apps.kiwix.filepaths = {
-      state = "/var/lib/kiwix";
-      data = vars.kiwixLibraryRoot;
-      mediaRoots.library = vars.kiwixLibraryRoot;
-    };
-  };
+  config = lib.mkMerge [
+    {
+      repo.apps.kiwix.filepaths = {
+        state = "/var/lib/kiwix";
+        data = vars.kiwixLibraryRoot;
+        mediaRoots.library = vars.kiwixLibraryRoot;
+      };
+    }
+    (lib.mkIf cfg.enable {
+      systemd.tmpfiles.rules = [
+        "d ${cfg.stateDir} 0750 kiwix kiwix -"
+      ];
+
+      system.activationScripts.kiwixLibraryRoot = lib.stringAfter [ "users" "groups" ] ''
+        ${prepareLibraryRootScript}
+      '';
+    })
+  ];
 }

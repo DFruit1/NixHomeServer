@@ -109,11 +109,10 @@ host_matches_expected_lan_ip() {
 
 create_deploy_repo_archive() {
   local archive_path="$1"
-  local manifest
+  local manifest tar_status
 
   if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     manifest="$(mktemp /tmp/deploy-repo-manifest.XXXXXX)"
-    trap 'rm -f "$manifest"' RETURN
 
     while IFS= read -r -d '' path; do
       if [[ -f "$repo_root/$path" || -L "$repo_root/$path" ]]; then
@@ -123,8 +122,13 @@ create_deploy_repo_archive() {
       git -C "$repo_root" ls-files -z --cached --modified --others --exclude-standard
     ) >"$manifest"
 
-    tar -C "$repo_root" --null -T "$manifest" -cf "$archive_path"
-    return 0
+    if tar -C "$repo_root" --null -T "$manifest" -cf "$archive_path"; then
+      tar_status=0
+    else
+      tar_status=$?
+    fi
+    rm -f "$manifest"
+    return "$tar_status"
   fi
 
   tar -C "$repo_root" \
@@ -151,13 +155,22 @@ stage_archive_on_remote() {
 }
 
 hash_deploy_repo_archive() {
-  local archive_path
+  local archive_path archive_status
 
   archive_path="$(mktemp /tmp/deploy-validation-archive.XXXXXX.tar)"
-  trap 'rm -f "$archive_path"' RETURN
 
-  create_deploy_repo_archive "$archive_path"
-  sha256_file "$archive_path"
+  if create_deploy_repo_archive "$archive_path"; then
+    if sha256_file "$archive_path"; then
+      archive_status=0
+    else
+      archive_status=$?
+    fi
+  else
+    archive_status=$?
+  fi
+
+  rm -f "$archive_path"
+  return "$archive_status"
 }
 
 nix_eval_with_optional_cache() {

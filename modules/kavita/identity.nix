@@ -2,6 +2,21 @@
 
 {
   config = lib.mkIf config.nixhomeserver.apps.kavita.enable {
+    assertions = [
+      {
+        assertion = config.age.secrets ? kavitaClientSecret;
+        message = "Missing kavitaClientSecret secret; run scripts/generate-all-secrets.sh";
+      }
+      {
+        assertion = config.age.secrets ? kavitaTokenKey;
+        message = "Missing kavitaTokenKey secret; run scripts/generate-all-secrets.sh";
+      }
+    ];
+
+    users.groups.kavita-media = { };
+
+    users.users.kavita.extraGroups = lib.mkAfter [ "kavita-media" ];
+
     repo.identity = {
       groups."kavita-users" = {
         owner = "kavita";

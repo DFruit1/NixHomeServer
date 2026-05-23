@@ -2,6 +2,21 @@
 
 {
   config = lib.mkIf config.nixhomeserver.apps.audiobookshelf.enable {
+    assertions = [
+      {
+        assertion = config.age.secrets ? absClientSecret;
+        message = "Missing absClientSecret secret; run scripts/generate-all-secrets.sh";
+      }
+      {
+        assertion = config.age.secrets ? absBootstrapPass;
+        message = "Missing absBootstrapPass secret; run scripts/generate-all-secrets.sh";
+      }
+    ];
+
+    users.groups.audiobookshelf-media = { };
+
+    users.users.audiobookshelf.extraGroups = lib.mkAfter [ "audiobookshelf-media" ];
+
     repo.identity = {
       groups."audiobookshelf-users" = {
         owner = "audiobookshelf";

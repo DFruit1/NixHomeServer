@@ -6,6 +6,11 @@ let
   resources = config.nixhomeserver.resources;
 in
 {
+  imports = [
+    ./admin-reconcile.nix
+    ./public-proxy.nix
+  ];
+
   config = lib.mkIf enabled {
     services.immich = {
       enable = true;
@@ -50,7 +55,5 @@ in
       MemoryMax = resources.immichMachineLearning.memoryMax;
       CPUQuota = resources.immichMachineLearning.cpuQuota;
     };
-
-    systemd.tmpfiles.rules = [ ];
   };
 }

@@ -187,10 +187,17 @@ check_failed_units() {
   if [[ -n "$failed_units" ]]; then
     if [[ "$debug" == "true" ]]; then
       if [[ "$build_locally" != "true" && "$target_host" == "$build_host" ]]; then
-        sudo systemctl status --no-pager $failed_units || true
+        while IFS= read -r failed_unit; do
+          [[ -n "$failed_unit" ]] || continue
+          sudo systemctl status --no-pager "$failed_unit" || true
+        done <<< "$failed_units"
         sudo journalctl -p warning..alert -n 200 --no-pager || true
       else
-        ssh "$target_host" "sudo systemctl status --no-pager $failed_units || true; sudo journalctl -p warning..alert -n 200 --no-pager || true"
+        while IFS= read -r failed_unit; do
+          [[ -n "$failed_unit" ]] || continue
+          ssh "$target_host" sudo systemctl status --no-pager "$failed_unit" || true
+        done <<< "$failed_units"
+        ssh "$target_host" "sudo journalctl -p warning..alert -n 200 --no-pager || true"
       fi
     fi
     echo "blocked: failed systemd units detected" >&2

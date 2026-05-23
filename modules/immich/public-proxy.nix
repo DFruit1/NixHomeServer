@@ -2,11 +2,7 @@
 
 let
   proxyUser = "immich-public-proxy";
-  proxyGroup = "immich-public-proxy";
   proxyUid = 3001;
-  proxyGid = 3001;
-  proxySubIdStart = 400000;
-  proxySubIdCount = 65536;
   proxyImage = "docker.io/alangrainger/immich-public-proxy@sha256:48c4ea4884b04c77a4a4ec93e190dea6cb7dc1b38acb005a35dd56f68212d85a";
   loopback = vars.networking.loopbackIPv4;
   proxyListenPort = vars.networking.ports.immichPublicProxy;
@@ -18,32 +14,6 @@ in
 {
   config = lib.mkIf config.nixhomeserver.apps.immich.enable {
     virtualisation.podman.enable = true;
-    users.manageLingering = true;
-
-    users.groups.${proxyGroup} = {
-      gid = proxyGid;
-    };
-
-    users.users.${proxyUser} = {
-      isSystemUser = true;
-      uid = proxyUid;
-      group = proxyGroup;
-      home = "/var/lib/immich-public-proxy";
-      createHome = true;
-      linger = true;
-      subUidRanges = [
-        {
-          startUid = proxySubIdStart;
-          count = proxySubIdCount;
-        }
-      ];
-      subGidRanges = [
-        {
-          startGid = proxySubIdStart;
-          count = proxySubIdCount;
-        }
-      ];
-    };
 
     environment.etc."containers/systemd/users/${toString proxyUid}/immich-public-proxy.container".text = ''
       [Container]

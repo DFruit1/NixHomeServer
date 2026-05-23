@@ -52,16 +52,12 @@ let
   ] ++ map mkCaseInsensitiveExtensionPattern blockedOfficeExtensions;
 in
 {
+  imports = [
+    ./package.nix
+  ];
+
   config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
     services.paperless.environmentFile = "/run/paperless-oidc.env";
-
-    users.users.paperless = {
-      isSystemUser = true;
-      group = "paperless";
-      home = dataDir;
-    };
-
-    users.groups.paperless = { };
 
     services.paperless = {
       enable = true;
@@ -133,7 +129,5 @@ in
         WorkingDirectory = dataDir;
       };
     };
-
-    systemd.tmpfiles.rules = [ ];
   };
 }

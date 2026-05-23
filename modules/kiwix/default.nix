@@ -2,11 +2,11 @@
 
 {
   imports = [
-    ./filepaths.nix
-    ./identity.nix
-    ./backups.nix
     ./networking.nix
-    ./service.nix
-    ./oauth2-proxy.nix
+    ./identity.nix
+    ./filepaths.nix
+    ./services.nix
+    ./bootstrap.nix
+    ./backups.nix
   ];
 }

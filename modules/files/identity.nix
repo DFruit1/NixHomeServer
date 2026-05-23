@@ -2,12 +2,11 @@
 
 {
   config = lib.mkIf config.nixhomeserver.apps.files.enable {
-    repo.identity = {
-      groups."user-files" = lib.mkIf (!config.nixhomeserver.apps.copyparty.enable) {
-        owner = "files";
-        members = [ vars.kanidmAdminUser ];
-      };
+    users.users.filestash.extraGroups = [
+      "users"
+    ];
 
+    repo.identity = {
       oauth2Clients.filestash-web = {
         owner = "files";
         displayName = "Files";

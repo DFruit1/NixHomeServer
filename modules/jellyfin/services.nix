@@ -1,4 +1,4 @@
-{ config, lib, vars, ... }:
+{ config, lib, ... }:
 
 let
   enabled = config.nixhomeserver.apps.jellyfin.enable;
@@ -6,6 +6,11 @@ let
   logDir = "${dataDir}/log";
 in
 {
+  imports = [
+    ./library-watch.nix
+    ./library-sync.nix
+  ];
+
   config = lib.mkIf enabled {
     services.jellyfin = {
       enable = true;
@@ -13,12 +18,6 @@ in
       cacheDir = "/var/cache/jellyfin";
       logDir = logDir;
     };
-
-    users.users.jellyfin.extraGroups = lib.mkAfter [ "jellyfin-media" ];
-
-    systemd.tmpfiles.rules = [
-      "d ${logDir} 0750 jellyfin jellyfin -"
-    ];
 
     systemd.services.jellyfin = {
       after = [ "data-pool-layout.service" ];

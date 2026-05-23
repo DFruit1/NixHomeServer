@@ -9,7 +9,7 @@ fi
 staging_root="${UPLOAD_STAGING_ROOT:?UPLOAD_STAGING_ROOT is required}"
 users_root="${UPLOAD_USERS_ROOT:?UPLOAD_USERS_ROOT is required}"
 quarantine_root="${UPLOAD_QUARANTINE_ROOT:?UPLOAD_QUARANTINE_ROOT is required}"
-kiwix_root="${UPLOAD_KIWIX_LIBRARY_ROOT:?UPLOAD_KIWIX_LIBRARY_ROOT is required}"
+kiwix_root="${UPLOAD_KIWIX_LIBRARY_ROOT:-}"
 state_db="${UPLOAD_PROCESSOR_STATE_DB:-/var/lib/upload-processor/state.sqlite}"
 queue_dir="${UPLOAD_PROCESSOR_QUEUE_DIR:-/run/upload-processor/queue}"
 lock_file="${UPLOAD_PROCESSOR_LOCK_FILE:-$(dirname "$state_db")/processor.lock}"
@@ -237,7 +237,7 @@ promote_file() {
 
 user_can_promote_zim() {
   local uploader="$1"
-  [[ "$admin_users" == *" $uploader "* ]]
+  [[ -n "$kiwix_root" && "$admin_users" == *" $uploader "* ]]
 }
 
 promote_zim() {
@@ -394,6 +394,11 @@ process_file() {
         return 0
         ;;
     esac
+    if [[ -z "$kiwix_root" ]]; then
+      quarantine="$(quarantine_file "$file" "$username" "$virtual" "$sha" "$ext" "$clamav_output" "$vt_json" "zim-promotion-disabled")"
+      record_state "$file" "$username" "$size" "$mtime" "$sha" "$ext" "quarantined" "zim promotion disabled" "" "$quarantine"
+      return 0
+    fi
     if ! user_can_promote_zim "$username"; then
       quarantine="$(quarantine_file "$file" "$username" "$virtual" "$sha" "$ext" "$clamav_output" "$vt_json" "zim-admin-required")"
       record_state "$file" "$username" "$size" "$mtime" "$sha" "$ext" "quarantined" "zim admin required" "" "$quarantine"
