@@ -128,10 +128,11 @@ in
 
   systemd.services.data-pool-layout = {
     description = "Provision data-pool-backed content layout";
-    wantedBy = [ "multi-user.target" ];
+    wantedBy = [ "local-fs.target" ];
     requires = [ "zfs-import-data.service" ];
     after = [ "zfs-import-data.service" ];
     before = [ "local-fs.target" ];
+    unitConfig.DefaultDependencies = false;
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

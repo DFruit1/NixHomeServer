@@ -70,6 +70,11 @@ in
         script = ''
           set -euo pipefail
 
+          install -d -m 0755 -o root -g root "$(dirname -- '${cfg.dataDir}')"
+          install -d -m 0750 -o mail-archive-ui -g mail-archive-ui '${cfg.dataDir}'
+          install -d -m 0750 -o mail-archive-ui -g mail-archive-ui '${cfg.accountStateRoot}'
+          install -d -m 0750 -o mail-archive-ui -g mail-archive-ui '${cfg.runtimeDir}'
+          install -d -m 0750 -o mail-archive-ui -g mail-archive-ui '${cfg.lockDir}'
           install -d -m 0770 -o mail-archive-ui -g mail-archive-ui '${vars.sharedEmailsRoot}'
           setfacl -m 'g:mail-archive-ui:--x' '${vars.sharedRoot}'
         '';

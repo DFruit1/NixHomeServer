@@ -27,7 +27,6 @@ in
       ];
       serviceConfig = {
         Type = "oneshot";
-        RemainAfterExit = true;
       };
       path = [
         pkgs.coreutils
@@ -95,7 +94,12 @@ in
     };
 
     systemd.services.kanidm = {
-      wants = [ "filestash-secret-materialize.service" ];
+      requires = [ "filestash-secret-materialize.service" ];
+      after = [ "filestash-secret-materialize.service" ];
+    };
+
+    systemd.services.filestash-oauth2-proxy = {
+      requires = [ "filestash-secret-materialize.service" ];
       after = [ "filestash-secret-materialize.service" ];
     };
   };

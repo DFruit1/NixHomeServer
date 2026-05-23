@@ -86,6 +86,9 @@ in
       };
 
       systemd.services.filestash = {
+        requires = [
+          "filestash-secret-materialize.service"
+        ];
         wants = [
           "data-pool-layout.service"
           "fileshare-user-root-sync.service"
