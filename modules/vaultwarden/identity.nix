@@ -1,4 +1,4 @@
-{ config, lib, vars, ... }:
+{ config, vars, ... }:
 
 let
   host = "passwords.${vars.domain}";

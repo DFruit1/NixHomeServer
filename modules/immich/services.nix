@@ -1,7 +1,6 @@
-{ lib, vars, config, ... }:
+{ vars, config, ... }:
 
 let
-  enabled = true;
   immichPort = vars.networking.ports.immich;
   resources = vars.resourceLimits;
   photosHost = "photos.${vars.domain}";

@@ -1,4 +1,4 @@
-{ lib, vars, ... }:
+{ vars, ... }:
 
 let
   userVideoWritablePaths = map (name: "videos/${name}") vars.userVideoSubdirs;

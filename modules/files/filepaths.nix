@@ -1,4 +1,4 @@
-{ lib, vars, ... }:
+{ vars, ... }:
 
 let
   userBookWritablePaths = map (name: "books/${name}") vars.userBooksSubdirs;

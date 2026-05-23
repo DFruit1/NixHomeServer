@@ -1,7 +1,6 @@
 { config, lib, vars, ... }:
 
 let
-  enabled = true;
   audiobookshelfPort = vars.networking.ports.audiobookshelf;
   dataDirName = "audiobookshelf";
 in

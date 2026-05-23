@@ -1,10 +1,8 @@
 { lib, pkgs, vars, ... }:
 
 let
-  enabled = true;
   loopback = vars.networking.loopbackIPv4;
   jellyfinPort = vars.networking.ports.jellyfin;
-  libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   dataDir = "/var/lib/jellyfin";
   dataDbPath = "${dataDir}/data/jellyfin.db";
   logDir = "${dataDir}/log";
@@ -12,18 +10,6 @@ let
   apiKeyName = "nixos-jellyfin-library-sync-v1";
   cleanupUsers = vars.staleReferenceCleanup.users or false;
   cleanupShared = vars.staleReferenceCleanup.shared or false;
-  watchedRoots =
-    (map (library: "${vars.sharedVideosRoot}/${library.dir}") vars.sharedJellyfinLibraries)
-    ++ [ vars.usersRoot ];
-  mediaIncludeRegex = ".*\\.(mkv|mp4|m4v|avi|mov|webm|m4a|mp3|opus|ogg|oga|flac|wav|aac)$";
-  watcherScript = libraryWatchers.mkSettledWatcherScript {
-    name = "jellyfin-library-watch";
-    inherit watchedRoots;
-    triggerUnit = "jellyfin-library-sync.service";
-    includeRegex = mediaIncludeRegex;
-    settleSeconds = 20;
-    pollSeconds = 5;
-  };
   jellyfinLibrarySyncPath = with pkgs; [
     coreutils
     curl
@@ -278,30 +264,6 @@ in
         Type = "oneshot";
         User = "jellyfin";
         Group = "jellyfin";
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
-    };
-
-    systemd.services.jellyfin-library-watch = {
-      description = "Watch Jellyfin media roots for settled file changes";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "jellyfin.service"
-        "jellyfin-library-bootstrap-v1.service"
-        "jellyfin-library-monitor-v1.service"
-        "jellyfin-storage-layout-v1.service"
-        "data-pool-layout.service"
-      ];
-      wants = [
-        "jellyfin.service"
-        "jellyfin-library-bootstrap-v1.service"
-        "jellyfin-library-monitor-v1.service"
-        "jellyfin-storage-layout-v1.service"
-        "data-pool-layout.service"
-      ];
-      serviceConfig = {
-        ExecStart = watcherScript;
         Restart = "on-failure";
         RestartSec = "5s";
       };

@@ -5,12 +5,13 @@ let
   user = "mail-archive-ui";
   group = "mail-archive-ui";
   defaultTags = [ "new" ];
+  mailArchiveSyncTimer = "*-*-* 06,18:15:00";
   mailArchiveUiPort = vars.networking.ports.mailArchiveUi;
   mailArchiveStoreRoot = vars.usersRoot;
   dataDirDefault = "/persist/appdata/mail-archive-ui";
   runtimeDirDefault = "/run/mail-archive-ui";
   lockDirDefault = "${dataDirDefault}/locks";
-  environmentEntries =
+  commonEnvironmentEntries =
     [
       "MAIL_ARCHIVE_UI_ADDRESS=${cfg.address}"
       "MAIL_ARCHIVE_UI_PORT=${toString cfg.port}"
@@ -22,7 +23,13 @@ let
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
       "TMPDIR=${cfg.runtimeDir}"
       "SQLITE_TMPDIR=${cfg.runtimeDir}"
-    ]
+    ];
+  baseEnvironmentEntries =
+    commonEnvironmentEntries
+    ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
+    ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
+  mailArchiveUiEnvironmentEntries =
+    commonEnvironmentEntries
     ++ lib.optional (cfg.paperlessConsumeRoot != null) "MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT=${cfg.paperlessConsumeRoot}"
     ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) "MAIL_ARCHIVE_UI_PAPERLESS_HANDOFF_STAGING_ROOT=${cfg.paperlessHandoffStagingRoot}"
     ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
@@ -124,6 +131,8 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [
       cfg.package
+      pkgs.isync
+      pkgs.notmuch
     ];
 
     systemd.services.mail-archive-ui = {
@@ -156,7 +165,7 @@ in
         Group = group;
         WorkingDirectory = cfg.dataDir;
         ExecStart = "${cfg.package}/bin/mail-archive-ui";
-        Environment = environmentEntries;
+        Environment = mailArchiveUiEnvironmentEntries;
         Restart = "on-failure";
         UMask = "0077";
         DynamicUser = false;
@@ -182,6 +191,57 @@ in
           cfg.lockDir
         ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
         ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
+      };
+    };
+
+    systemd.services.mail-archive-sync = {
+      description = "Synchronize mail archive UI accounts and refresh notmuch indexes";
+      wants = [
+        "mail-archive-ui.service"
+        "local-fs.target"
+        "network-online.target"
+        "unbound.service"
+      ];
+      after = [
+        "mail-archive-ui.service"
+        "local-fs.target"
+        "network-online.target"
+        "unbound.service"
+      ];
+      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      serviceConfig = {
+        Type = "oneshot";
+        User = user;
+        Group = group;
+        WorkingDirectory = cfg.dataDir;
+        ExecStart = "${cfg.package}/bin/mail-archive-ui sync-due";
+        Environment = baseEnvironmentEntries;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.storeRoot
+          cfg.accountStateRoot
+          cfg.runtimeDir
+          cfg.lockDir
+        ];
+      };
+      path = mailArchiveUiPath;
+    };
+
+    systemd.timers.mail-archive-sync = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = mailArchiveSyncTimer;
+        Persistent = true;
       };
     };
   };

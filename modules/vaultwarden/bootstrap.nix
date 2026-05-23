@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, pkgs, ... }:
 
 let
   runtimeDir = "/run/vaultwarden";

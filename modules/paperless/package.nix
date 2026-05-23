@@ -1,4 +1,4 @@
-{ lib, pkgs, vars, ... }:
+{ lib, pkgs, ... }:
 
 let
   patchedPaperlessFetchFromGitHubNativeBuildInputs = with pkgs; [

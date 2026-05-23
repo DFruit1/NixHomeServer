@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, pkgs, vars, ... }:
 
 let
   proxyUser = "immich-public-proxy";

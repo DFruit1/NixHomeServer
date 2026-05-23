@@ -1,7 +1,6 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  enabled = true;
   loopback = vars.networking.loopbackIPv4;
   jellyfinPort = vars.networking.ports.jellyfin;
   kanidmPort = vars.networking.ports.kanidm;

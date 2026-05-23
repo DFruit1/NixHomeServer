@@ -1,4 +1,4 @@
-{ config, lib, vars, ... }:
+{ config, vars, ... }:
 
 let
   kanidmPort = vars.networking.ports.kanidm;

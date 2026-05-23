@@ -1,7 +1,6 @@
 { lib, config, vars, copyparty, ... }:
 
 let
-  enabled = true;
   copypartyPort = vars.networking.ports.copyparty;
   loopback = vars.networking.loopbackIPv4;
 in

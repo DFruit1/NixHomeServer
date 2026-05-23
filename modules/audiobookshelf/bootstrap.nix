@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   dataDir = "/var/lib/${config.services.audiobookshelf.dataDir}";

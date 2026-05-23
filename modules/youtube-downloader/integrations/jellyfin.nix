@@ -1,4 +1,4 @@
-{ lib, vars, ... }:
+{ ... }:
 
 {
   systemd.services.youtube-downloader = {

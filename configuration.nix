@@ -12,7 +12,6 @@
     ./modules/jellyfin
     ./modules/kiwix
     ./modules/kavita
-    ./modules/mail-archive
     ./modules/mail-archive-ui
     ./modules/youtube-downloader
     ./modules/paperless

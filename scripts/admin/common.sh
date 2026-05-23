@@ -3,20 +3,10 @@
 set -euo pipefail
 
 admin_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="${NIXHOMESERVER_REPO_ROOT:-}"
-
-if [[ -z "$repo_root" ]]; then
-  if git_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"; then
-    repo_root="$git_root"
-  else
-    repo_root="$(cd "$admin_script_dir/../.." && pwd)"
-  fi
-fi
-
-cd "$repo_root"
-
-export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes
-accept-flake-config = true}"
+source "$admin_script_dir/../helpers/repo-common.sh"
+init_repo_root NIXHOMESERVER_REPO_ROOT
+cd_repo_root
+ensure_default_nix_config
 
 status_ready=0
 status_warning=0

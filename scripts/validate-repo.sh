@@ -24,7 +24,7 @@ Default mode:
 Full mode:
   - runs `nix flake check --no-build` unless --skip-flake-check is used
   - runs the lean script suite through scripts/tests/run-script-tests.sh
-  - builds selected lint and Rust check derivations
+  - builds flake check derivations except repo-policy, which is run directly
 
 Examples:
   scripts/validate-repo.sh
@@ -95,17 +95,12 @@ run_full_derivation_checks() {
 
   system="$(current_system)"
 
-  for check_name in \
-    shellcheck \
-    deadnix \
-    statix \
-    kanidm-admin-clippy \
-    kanidm-admin-test \
-    mail-archive-ui-test
-  do
+  while IFS= read -r check_name; do
+    [[ -n "$check_name" ]] || continue
+    [[ "$check_name" != "repo-policy" ]] || continue
     echo "ℹ️ Running ${check_name} derivation…"
     nix build ".#checks.${system}.${check_name}" --no-link --print-build-logs
-  done
+  done < <(nix eval --json ".#checks.${system}" --apply 'checks: builtins.attrNames checks' | jq -r '.[]' | sort)
 }
 
 run_shell_tests() {

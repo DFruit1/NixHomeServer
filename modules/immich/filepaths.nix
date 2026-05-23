@@ -1,4 +1,4 @@
-{ lib, pkgs, vars, ... }:
+{ pkgs, vars, ... }:
 
 let
   mkDirCmd =

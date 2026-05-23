@@ -2,7 +2,6 @@
 
 let
   cfg = config.services.kiwixServe;
-  libraryWatchers = import ../Core_Modules/library-watchers.nix { inherit pkgs; };
   kiwixStateDirDefault = "/var/lib/kiwix";
   kiwixPort = vars.networking.ports.kiwix;
   libraryFile = "${cfg.stateDir}/library.xml";
@@ -31,13 +30,6 @@ let
 
         ${pkgs.coreutils}/bin/install -D -m 0640 -o kiwix -g kiwix "$tmp_library" "$library_file"
   '';
-  watcherScript = libraryWatchers.mkSettledWatcherScript {
-    name = "kiwix-library-watch";
-    watchedRoots = [ cfg.libraryRoot ];
-    triggerUnit = "kiwix-library-sync.service";
-    settleSeconds = 20;
-    pollSeconds = 5;
-  };
 in
 {
   imports = [
@@ -162,25 +154,6 @@ in
           cfg.libraryRoot
           cfg.stateDir
         ];
-      };
-    };
-
-    systemd.services.kiwix-library-watch = {
-      description = "Watch ZIM uploads and debounce Kiwix catalog sync";
-      wantedBy = [ "multi-user.target" ];
-      wants = [
-        "kiwix-library-sync.service"
-        "local-fs.target"
-      ];
-      after = [
-        "kiwix-library-sync.service"
-        "local-fs.target"
-      ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${watcherScript}";
-        Restart = "always";
-        RestartSec = "5s";
       };
     };
   };

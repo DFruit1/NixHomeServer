@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, pkgs, ... }:
 
 let
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";

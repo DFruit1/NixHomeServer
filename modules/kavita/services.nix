@@ -1,7 +1,6 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  enabled = true;
   kavitaPort = vars.networking.ports.kavita;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
