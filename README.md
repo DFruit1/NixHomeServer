@@ -37,26 +37,26 @@ defaults to `--action test`. Use `--debug` for the full validation gate or
 ## New Admin Template Workflow
 
 The current/default deployment keeps operator-facing values in [`vars.nix`](./vars.nix)
-so a new admin can still configure the main install in one place. The reusable
-host layer lives under [`hosts/`](./hosts): `hosts/dsaw` points back to
-`vars.nix`, while `hosts/example` is a template host with placeholder values.
+so a new admin can configure the main install in one place. The root
+[`configuration.nix`](./configuration.nix) is the import contract: it pulls in
+hardware, the fixed core platform layer, and the selected application modules.
+The flake exposes one NixOS configuration named by `vars.hostname`.
 
 Useful first-run helpers:
 
-- `nix run .#validate-config-readiness -- --host dsaw`
-- `nix run .#show-config-summary -- --host dsaw`
-- `nix run .#bootstrap-storage-plan -- --host dsaw`
-- `nix run .#init-site -- --site my-home`
+- `nix run .#validate-config-readiness`
+- `nix run .#show-config-summary`
+- `nix run .#bootstrap-storage-plan`
 
-`modules/Core_Modules` is the fixed platform layer. Profiles and app enable
-options are for optional app surfaces around that core, not for swapping out
-identity, DNS, edge, storage, or validation foundations.
+`modules/Core_Modules` is the fixed platform layer and has a `default.nix` that
+imports the full core. Optional app surfaces are selected by adding or removing
+explicit imports in `configuration.nix`.
 
 For a new one-host install, use [`vars.example.nix`](./vars.example.nix) as the
 copyable starting point and keep day-to-day settings in [`vars.nix`](./vars.nix).
 
 Immich sharing uses separate private-app and public-share hostnames. Show the
-evaluated host surface with `nix run .#show-config-summary -- --host <host>`,
+evaluated host surface with `nix run .#show-config-summary`,
 and see [Operations](./documentation/operations.md#app-hostnames) for the access
 model.
 

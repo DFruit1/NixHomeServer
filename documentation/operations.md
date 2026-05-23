@@ -78,7 +78,7 @@ the rest of the stack: `ebooks`, `comics`, and `manga`. The old `other`
 category is no longer part of the managed layout.
 
 Do not guess share hostnames manually; use the evaluated share hostname from
-`nix run .#show-config-summary -- --host <host>` or `vars.nix`.
+`nix run .#show-config-summary` or `vars.nix`.
 
 Immich sharing flow:
 

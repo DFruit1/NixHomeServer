@@ -25,6 +25,11 @@ rec {
     netbirdCidr = "100.64.0.0/10";
   };
 
+  system = {
+    timeZone = "Australia/Sydney"; # IANA time zone for timers, logs, and local maintenance windows.
+    hostId = "84e8c12a"; # Stable 8-character hexadecimal host ID required by ZFS.
+  };
+
   dnsSettings = {
     mode = "split-horizon"; # Either "split-horizon" or "netbird-only".
     privacyMode = "encrypted-only"; # Keep recursive upstream DNS on encrypted transports only.
@@ -151,6 +156,8 @@ rec {
 
   hostname = network.hostname;
   domain = network.domain;
+  timeZone = system.timeZone;
+  hostId = system.hostId;
   kanidmAdminUser = identity.adminUser;
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;

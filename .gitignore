@@ -1,6 +1,5 @@
 /secrets/*
 !/secrets/*.age
-!/secrets/agenix.nix
 !/secrets/manifest.nix
 !/secrets/pubkeys/
 !/secrets/pubkeys/age.pub

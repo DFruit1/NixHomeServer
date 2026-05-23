@@ -22,18 +22,11 @@ cp vars.example.nix vars.nix
 $EDITOR vars.nix
 ```
 
-For a reusable template copy, inspect [`hosts/example/settings.nix`](../hosts/example/settings.nix)
-or create a new site with:
-
-```bash
-nix run .#init-site -- --site my-home
-```
-
 Run the non-destructive config readiness check before any deploy or blank-machine work:
 
 ```bash
-nix run .#validate-config-readiness -- --host dsaw
-nix run .#show-config-summary -- --host dsaw
+nix run .#validate-config-readiness
+nix run .#show-config-summary
 ```
 
 Generate repo-managed secrets and encrypt the staged inputs with the single documented secrets entrypoint:

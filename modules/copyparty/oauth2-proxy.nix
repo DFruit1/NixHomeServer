@@ -1,7 +1,6 @@
-{ config, lib, vars, pkgs, ... }:
+{ config, oauth2Proxy, vars, ... }:
 
 let
-  oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   loopback = vars.networking.loopbackIPv4;
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyUploads;
   host = "uploads.${vars.domain}";

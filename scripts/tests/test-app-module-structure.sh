@@ -21,7 +21,7 @@ is_app_module_dir() {
   local dir_name="$1"
 
   case "$dir_name" in
-    Core_Modules|lib|power-management)
+    Core_Modules|power-management)
       return 1
       ;;
     *)

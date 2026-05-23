@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/admin/validate-config-readiness.sh [--host <site-or-hostname>]
+Usage: scripts/admin/validate-config-readiness.sh [--host <flake-hostname>]
 
 Validate evaluated settings, required secrets, and local bootstrap/deploy
 preconditions without changing the system.
@@ -63,6 +63,7 @@ lan_ip="$(jq -r '.serverLanIP' <<<"$settings_json")"
 dns_mode="$(jq -r '.dnsMode' <<<"$settings_json")"
 main_disk="$(jq -r '.mainDisk' <<<"$settings_json")"
 cloudflare_tunnel="$(jq -r '.cloudflareTunnelName' <<<"$settings_json")"
+host_id="$(jq -r '.hostId' <<<"$settings_json")"
 
 case "$domain" in
   example.test|example.*|*CHANGE_ME*)
@@ -108,6 +109,12 @@ if [[ "$lan_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   ready "vars.nix -> network.lanIp is shaped correctly: ${lan_ip}"
 else
   block "vars.nix -> network.lanIp is invalid: ${lan_ip}"
+fi
+
+if [[ "$host_id" =~ ^[0-9a-f]{8}$ && "$host_id" != "00000000" ]]; then
+  ready "vars.nix -> system.hostId is set"
+else
+  block "vars.nix -> system.hostId must be a non-placeholder 8-character lowercase hexadecimal value"
 fi
 
 if [[ "$main_disk" == *CHANGE_ME* ]]; then
@@ -160,9 +167,9 @@ fi
 
 app_hosts="$(jq -r '.[] | select(. != "'"$domain"'" and . != "www.'"$domain"'" and . != "id.'"$domain"'")' <<<"$caddy_hosts_json" | paste -sd ',' -)"
 if [[ -n "$app_hosts" ]]; then
-  ready "configuration.nix imports publish app hosts: ${app_hosts}"
+  ready "enabled app modules publish app hosts: ${app_hosts}"
 else
-  warn "configuration.nix imports publish no app Caddy hosts"
+  warn "enabled app modules publish no app Caddy hosts"
 fi
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

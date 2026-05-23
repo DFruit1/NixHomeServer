@@ -1,8 +1,6 @@
-{ filestashNix, lib, pkgs, vars, ... }:
+{ filestashNix, lib, oauth2Proxy, vars, ... }:
 
 let
-  enabled = true;
-  oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   loopback = vars.networking.loopbackIPv4;
   filesPort = vars.filesPort;
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyFilestash;

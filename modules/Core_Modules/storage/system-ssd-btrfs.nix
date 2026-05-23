@@ -37,4 +37,6 @@ in
     options = lib.mkDefault (btrfsOptions "/persist");
     neededForBoot = true;
   };
+
+  services.btrfs.autoScrub.enable = true;
 }

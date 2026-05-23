@@ -154,6 +154,7 @@ in
       persistenceFiles = cfg.files;
     };
 
+    repo.impermanence.enablePersistence = lib.mkDefault true;
     repo.impermanence.directories = corePersistenceDirectories ++ appPersistenceDirectories;
     repo.impermanence.files = corePersistenceFiles;
 

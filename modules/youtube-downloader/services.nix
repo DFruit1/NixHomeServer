@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, oauth2Proxy, pkgs, vars, ... }:
 
 let
   serviceUser = "youtube-downloader";
@@ -12,7 +12,6 @@ let
   sharedAudioRoot = "${vars.sharedAudiobooksRoot}/youtube";
   youtubeDownloader = pkgs.callPackage ../../node/apps/youtube-downloader { };
   resources = vars.resourceLimits;
-  oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   host = "ytdownload.${vars.domain}";
 in
 {

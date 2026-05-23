@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/admin/show-config-summary.sh [--host <site-or-hostname>]
+Usage: scripts/admin/show-config-summary.sh [--host <flake-hostname>]
 
 Show the evaluated hostnames, app surface, storage roots, identity groups,
 OAuth clients, and required external secrets without changing the system.
@@ -110,4 +110,4 @@ echo "Required external secrets"
 jq -r '.[] | "  - secrets/top/" + .' <<<"$external_secrets_json"
 echo
 
-echo "Run \`nix run .#validate-config-readiness -- --host ${host}\` for readiness checks."
+echo "Run \`nix run .#validate-config-readiness\` for readiness checks."

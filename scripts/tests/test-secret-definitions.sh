@@ -23,7 +23,7 @@ references_file="${tmpdir}/references.txt"
 defined_age_files="${tmpdir}/defined-age-files.txt"
 tracked_age_files="${tmpdir}/tracked-age-files.txt"
 
-rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' secrets/agenix.nix -r '$1' \
+rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' modules/Core_Modules/age/default.nix -r '$1' \
   | sort -u >"$definitions_file"
 
 {
@@ -33,12 +33,12 @@ rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' secrets/agenix.nix -r '$1' 
 
 missing_refs="$(comm -23 "$references_file" "$definitions_file" || true)"
 if [[ -n "$missing_refs" ]]; then
-  echo "❌ Some referenced agenix secrets are not defined in secrets/agenix.nix:"
+  echo "❌ Some referenced agenix secrets are not defined in modules/Core_Modules/age/default.nix:"
   printf '   %s\n' "$missing_refs"
   exit 1
 fi
 
-rg --no-filename -o -N 'file\s*=\s*\./([A-Za-z0-9_.-]+\.age)' secrets/agenix.nix -r 'secrets/$1' \
+rg --no-filename -o -N 'file\s*=\s*(?:\.\./)*secrets/([A-Za-z0-9_.-]+\.age)' modules/Core_Modules/age/default.nix -r 'secrets/$1' \
   | sort -u >"$defined_age_files"
 
 while IFS= read -r age_file; do

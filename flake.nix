@@ -21,6 +21,7 @@
       lib = nixpkgs.lib;
       pkgs = nixpkgs.legacyPackages.${system};
       pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
+      vars = import ./vars.nix { inherit lib; };
       checkNativeBuildInputs = with pkgs; [
         bash
         coreutils
@@ -36,52 +37,26 @@
         sqlite
         util-linux
       ];
-      hostEntries = builtins.readDir ./hosts;
-      siteNames =
-        lib.sort (a: b: a < b)
-          (lib.filter
-            (siteName:
-              hostEntries.${siteName} == "directory"
-              && builtins.pathExists (./hosts + "/${siteName}/default.nix")
-              && builtins.pathExists (./hosts + "/${siteName}/settings.nix"))
-            (builtins.attrNames hostEntries));
-      siteSettingsPath = siteName: ./hosts + "/${siteName}/settings.nix";
-      siteModulePath = siteName: ./hosts + "/${siteName}/default.nix";
-      mkSiteVars = siteName: import (siteSettingsPath siteName) { inherit lib; };
-      mkNixosHost = siteName:
-        let
-          vars = mkSiteVars siteName;
-        in
-        lib.nixosSystem {
-          modules = [
-            { nixpkgs.hostPlatform = system; }
-            (siteModulePath siteName)
-            agenix.nixosModules.default
-            impermanence.nixosModules.impermanence
-          ];
-          specialArgs = {
-            inherit self vars copyparty filestashNix pkgsUnstable;
+      nixosHost = lib.nixosSystem {
+        modules = [
+          { nixpkgs.hostPlatform = system; }
+          ./configuration.nix
+          agenix.nixosModules.default
+          impermanence.nixosModules.impermanence
+        ];
+        specialArgs = {
+          inherit self vars copyparty filestashNix pkgsUnstable;
+          oauth2Proxy = import ./modules/Core_Modules/oauth2-proxy {
+            inherit lib pkgs vars;
           };
         };
-      mkSiteHostAttrs = siteName:
-        let
-          vars = mkSiteVars siteName;
-          host = mkNixosHost siteName;
-        in
-        [
-          (lib.nameValuePair siteName host)
-          (lib.nameValuePair vars.hostname host)
-        ];
-      mkSiteSettingsAttrs = siteName:
-        let
-          vars = mkSiteVars siteName;
-        in
-        [
-          (lib.nameValuePair siteName vars)
-          (lib.nameValuePair vars.hostname vars)
-        ];
-      nixosConfigurations = builtins.listToAttrs (lib.concatMap mkSiteHostAttrs siteNames);
-      nixhomeserverSettings = builtins.listToAttrs (lib.concatMap mkSiteSettingsAttrs siteNames);
+      };
+      nixosConfigurations = {
+        ${vars.hostname} = nixosHost;
+      };
+      nixhomeserverSettings = {
+        ${vars.hostname} = vars;
+      };
       rustLib = import ./rust/lib { inherit lib pkgs crane; };
       rustApps = import ./rust/apps { inherit lib pkgs rustLib; };
       rustPackages = lib.mapAttrs (_: app: app.package) rustApps;
@@ -206,10 +181,6 @@
             program = "${disko.packages.${system}.disko}/bin/disko";
             meta = { description = "Disko CLI helper for blank-machine bootstrap only"; };
           };
-          init-site = scriptApp "init-site" "Interactive first-run site initializer" (with pkgs; [ bash coreutils gitMinimal gnused ]) ''
-            export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-            exec bash "$NIXHOMESERVER_REPO_ROOT/bootstrap/init-site.sh" "$@"
-          '';
           validate-config-readiness = scriptApp "validate-config-readiness" "Validate evaluated settings, required secrets, and bootstrap/deploy preconditions" (with pkgs; [ bash coreutils findutils gitMinimal gnugrep gnused jq nix openssh ripgrep util-linux ]) ''
             export NIXHOMESERVER_REPO_ROOT="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
             exec bash "$NIXHOMESERVER_REPO_ROOT/scripts/admin/validate-config-readiness.sh" "$@"

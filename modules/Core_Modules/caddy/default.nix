@@ -16,6 +16,10 @@ let
   '';
 in
 {
+  imports = [
+    ./acme.nix
+  ];
+
   services.caddy = {
     enable = true;
     email = vars.kanidmAdminEmail;

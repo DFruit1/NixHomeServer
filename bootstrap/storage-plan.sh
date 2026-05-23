@@ -6,9 +6,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/admin/common.sh
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap/storage-plan.sh [--host <site-or-hostname>]
+Usage: bootstrap/storage-plan.sh [--host <flake-hostname>]
 
-Print a non-destructive disk inventory and settings.nix storage snippet for
+Print a non-destructive disk inventory and vars.nix storage snippet for
 blank-machine bootstrap planning.
 EOF
 }
@@ -67,7 +67,7 @@ jq -r '.zfsDataPoolDiskIds[] | "    - " + .' <<<"$settings_json"
 
 echo
 cat <<'EOF'
-Settings snippet template:
+vars.nix storage snippet template:
 
   mainDisk = "<system-disk-by-id-basename>";
   zfsDataPool = {

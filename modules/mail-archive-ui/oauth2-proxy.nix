@@ -1,7 +1,6 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, oauth2Proxy, vars, ... }:
 
 let
-  oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   cfg = config.services.mail-archive-ui;
   loopback = vars.networking.loopbackIPv4;
   mailArchiveOauth2ProxyPort = vars.networking.ports.oauth2ProxyMailArchive;
