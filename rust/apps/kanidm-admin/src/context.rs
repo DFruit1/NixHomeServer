@@ -134,7 +134,7 @@ fn nix_repo_defaults(nix_bin: &OsString, repo_root: &Path) -> Result<RepoDefault
         details: serde_json::json!({ "error": error.to_string(), "repo_root": repo_str }),
     })?;
     let expr = format!(
-        "let repo = {repo_literal}; flake = builtins.getFlake repo; vars = import (builtins.toPath (repo + \"/vars.nix\")) {{ lib = flake.inputs.nixpkgs.lib; }}; in {{ serverUrl = vars.kanidmBaseUrl; adminName = vars.kanidmAdminUser; vaultwardenUrl = \"https://${{vars.vaultwardenDomain}}\"; }}"
+        "let repo = {repo_literal}; flake = builtins.getFlake repo; vars = import (builtins.toPath (repo + \"/vars.nix\")) {{ lib = flake.inputs.nixpkgs.lib; }}; in {{ serverUrl = vars.kanidmBaseUrl; adminName = vars.kanidmAdminUser; vaultwardenUrl = \"https://passwords.${{vars.domain}}\"; }}"
     );
 
     let output = run_nix_eval(nix_bin, &expr)?;

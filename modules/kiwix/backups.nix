@@ -1,24 +1,21 @@
-{ config, lib, ... }:
+{ vars, ... }:
 
-let
-  fp = config.repo.apps.kiwix.filepaths;
-in
 {
-  config = lib.mkIf config.nixhomeserver.apps.kiwix.enable {
+  config = {
     repo.backups = {
       criticalPaths = [
-        fp.mediaRoots.library
+        vars.kiwixLibraryRoot
       ];
       pathInventories = [
         {
           label = "kiwix";
-          root = fp.mediaRoots.library;
+          root = vars.kiwixLibraryRoot;
         }
       ];
       pathRows.upload-flow-roots = [
         {
           label = "kiwix-library";
-          path = fp.mediaRoots.library;
+          path = vars.kiwixLibraryRoot;
           owner = "kiwix";
         }
       ];

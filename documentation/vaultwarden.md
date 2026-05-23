@@ -12,7 +12,7 @@ Guarded deploys, service health, and DNS checks live in [Operations](./operation
 ## Service Model
 
 Vaultwarden is intentionally private-only in this stack:
-- private hostname: the evaluated `vaultwardenDomain` from `vars.nix` or `nix run .#show-config-summary -- --host <host>`
+- private hostname: `passwords.<domain>` from the imported Vaultwarden module, or `nix run .#show-config-summary -- --host <host>`
 - reachable on LAN and NetBird
 - not published through Cloudflare Tunnel
 - all users sign in with Vaultwarden local login

@@ -7,21 +7,23 @@ let
   loopback = vars.networking.loopbackIPv4;
   proxyListenPort = vars.networking.ports.immichPublicProxy;
   proxyContainerPort = vars.networking.ports.immichPublicProxyContainer;
+  photosHost = "photos.${vars.domain}";
+  shareHost = "sharephotos.${vars.domain}";
   proxyDnsServer =
     if vars.networking.dns.mode == "split-horizon" then vars.networking.lan.ip else vars.networking.netbird.ip;
   proxyImmichHostIP = vars.networking.netbird.ip;
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.immich.enable {
+  config = {
     virtualisation.podman.enable = true;
 
     environment.etc."containers/systemd/users/${toString proxyUid}/immich-public-proxy.container".text = ''
       [Container]
       Image=${proxyImage}
       ContainerName=immich-public-proxy
-      AddHost=${vars.photosDomain}:${proxyImmichHostIP}
-      Environment=IMMICH_URL=https://${vars.photosDomain}
-      Environment=PUBLIC_BASE_URL=https://${vars.sharePhotosDomain}
+      AddHost=${photosHost}:${proxyImmichHostIP}
+      Environment=IMMICH_URL=https://${photosHost}
+      Environment=PUBLIC_BASE_URL=https://${shareHost}
       PublishPort=${loopback}:${toString proxyListenPort}:${toString proxyContainerPort}
       DNS=${proxyDnsServer}
       Pull=missing

@@ -118,7 +118,7 @@ in
     };
   };
 
-  config = lib.mkIf config.nixhomeserver.apps.copyparty.enable {
+  config = {
     environment.systemPackages = [
       enqueueScript
       uploadProcessorPackage
@@ -136,7 +136,7 @@ in
       updater.enable = true;
     };
 
-    systemd.services.clamav-daemon.serviceConfig.MemoryMax = config.nixhomeserver.resources.clamav.memoryMax;
+    systemd.services.clamav-daemon.serviceConfig.MemoryMax = vars.resourceLimits.clamav.memoryMax;
 
     systemd.services.upload-processor = {
       description = "Scan and promote staged Copyparty uploads";

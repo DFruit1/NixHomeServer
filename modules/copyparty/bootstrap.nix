@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";
@@ -11,7 +11,7 @@ let
   ];
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.copyparty.enable {
+  config = {
     systemd.services.oauth2-proxy-secret-materialize = {
       description = "Materialize raw oauth2-proxy secrets";
       wantedBy = [ "multi-user.target" ];

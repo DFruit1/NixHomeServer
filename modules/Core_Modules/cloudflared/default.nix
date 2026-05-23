@@ -3,12 +3,6 @@
 let
   loopback = vars.networking.loopbackIPv4;
   httpsPort = vars.networking.ports.https;
-  ingressConfig = builtins.mapAttrs
-    (_: ingress: {
-      service = ingress.service;
-      originRequest.originServerName = ingress.originServerName;
-    })
-    config.repo.networking.cloudflare.ingress;
 in
 {
   users.users.cloudflared = {
@@ -19,18 +13,15 @@ in
 
   users.groups.cloudflared = { };
 
-  repo.networking.cloudflare.ingress."${vars.kanidmDomain}" = {
-    owner = "core";
-    service = "https://${loopback}:${toString httpsPort}";
-    originServerName = vars.kanidmDomain;
-  };
-
   services.cloudflared = {
     enable = true;
 
     tunnels.${vars.cloudflareTunnelName} = {
       credentialsFile = config.age.secrets.cfHomeCreds.path;
-      ingress = ingressConfig;
+      ingress."${vars.kanidmDomain}" = {
+        service = "https://${loopback}:${toString httpsPort}";
+        originRequest.originServerName = vars.kanidmDomain;
+      };
       default = "http_status:404";
     };
   };

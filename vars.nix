@@ -57,63 +57,6 @@ rec {
     };
   };
 
-  apps = {
-    files = {
-      enable = true;
-      subdomain = "files";
-    };
-    uploads = {
-      enable = true;
-      subdomain = "uploads";
-    };
-    photos = {
-      enable = true;
-      privateSubdomain = "photos";
-      publicShareSubdomain = "sharephotos";
-    };
-    documents = {
-      enable = true;
-      subdomain = "paperless";
-      ocrLanguage = "eng";
-      allowDangerousMacroOfficeParsing = false;
-    };
-    audiobooks = {
-      enable = true;
-      subdomain = "audiobooks";
-      autoScanCronExpression = "*/15 * * * *";
-    };
-    books = {
-      enable = true;
-      subdomain = "books";
-      autoScanCronExpression = "*/15 * * * *";
-    };
-    videos = {
-      enable = true;
-      subdomain = "videos";
-      libraryScanInterval = "15m";
-    };
-    wiki = {
-      enable = true;
-      subdomain = "wiki";
-    };
-    downloads = {
-      enable = true;
-      subdomain = "ytdownload";
-    };
-    passwords = {
-      enable = true;
-      subdomain = "passwords";
-    };
-    mail = {
-      enable = true;
-      subdomain = "emails";
-    };
-  };
-
-  enabledApps =
-    lib.attrNames
-      (lib.filterAttrs (_: app: app.enable or false) apps);
-
   power = {
     enable = true;
     cpuGovernor = "powersave";
@@ -208,8 +151,6 @@ rec {
 
   hostname = network.hostname;
   domain = network.domain;
-  paperlessEnableDangerousMacroOfficeParsing = apps.documents.allowDangerousMacroOfficeParsing;
-  paperlessOcrLanguage = apps.documents.ocrLanguage;
   kanidmAdminUser = identity.adminUser;
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
@@ -455,20 +396,8 @@ rec {
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
-  paperlessDomain = "${apps.documents.subdomain}.${domain}";
-  photosDomain = "${apps.photos.privateSubdomain}.${domain}"; # Private main Immich app hostname for owner login on LAN/NetBird.
-  sharePhotosDomain = "${apps.photos.publicShareSubdomain}.${domain}"; # Public Immich share-link proxy hostname exposed through Cloudflare Tunnel.
   immichPublicProxyPort = networking.ports.immichPublicProxy;
-  audiobooksDomain = "${apps.audiobooks.subdomain}.${domain}";
-  vaultwardenDomain = "${apps.passwords.subdomain}.${domain}";
-  uploadsDomain = "${apps.uploads.subdomain}.${domain}";
-  filesDomain = "${apps.files.subdomain}.${domain}";
   filesPort = networking.ports.filestash;
   filesStateDir = "/var/lib/filestash";
-  emailsDomain = "${apps.mail.subdomain}.${domain}";
-  kiwixDomain = "${apps.wiki.subdomain}.${domain}";
   kiwixLibraryRoot = "${dataRoot}/kiwix";
-  kavitaDomain = "${apps.books.subdomain}.${domain}";
-  jellyfinDomain = "${apps.videos.subdomain}.${domain}";
-  downloadsDomain = "${apps.downloads.subdomain}.${domain}";
 }

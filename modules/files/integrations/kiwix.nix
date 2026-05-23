@@ -1,16 +1,9 @@
-{ config, lib, vars, ... }:
+{ lib, vars, ... }:
 
 {
-  config = lib.mkIf
-    (
-      config.nixhomeserver.apps.files.enable
-      && config.nixhomeserver.apps.kiwix.enable
-    )
-    {
-      users.users.filestash.extraGroups = lib.mkAfter [ "kiwix" ];
+  users.users.filestash.extraGroups = lib.mkAfter [ "kiwix" ];
 
-      systemd.services.filestash.serviceConfig.ReadWritePaths = lib.mkAfter [
-        vars.kiwixLibraryRoot
-      ];
-    };
+  systemd.services.filestash.serviceConfig.ReadWritePaths = lib.mkAfter [
+    vars.kiwixLibraryRoot
+  ];
 }

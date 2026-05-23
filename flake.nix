@@ -72,7 +72,16 @@
           (lib.nameValuePair siteName host)
           (lib.nameValuePair vars.hostname host)
         ];
+      mkSiteSettingsAttrs = siteName:
+        let
+          vars = mkSiteVars siteName;
+        in
+        [
+          (lib.nameValuePair siteName vars)
+          (lib.nameValuePair vars.hostname vars)
+        ];
       nixosConfigurations = builtins.listToAttrs (lib.concatMap mkSiteHostAttrs siteNames);
+      nixhomeserverSettings = builtins.listToAttrs (lib.concatMap mkSiteSettingsAttrs siteNames);
       rustLib = import ./rust/lib { inherit lib pkgs crane; };
       rustApps = import ./rust/apps { inherit lib pkgs rustLib; };
       rustPackages = lib.mapAttrs (_: app: app.package) rustApps;
@@ -129,6 +138,9 @@
     {
       ################ NixOS configuration ############################
       inherit nixosConfigurations;
+
+      ################ Evaluated settings #############################
+      lib.nixhomeserverSettings = nixhomeserverSettings;
 
       ################ Packages #######################################
       packages.${system} = rustPackages // nodePackages;

@@ -5,6 +5,7 @@ let
   cfg = config.services.mail-archive-ui;
   loopback = vars.networking.loopbackIPv4;
   mailArchiveOauth2ProxyPort = vars.networking.ports.oauth2ProxyMailArchive;
+  host = "emails.${vars.domain}";
 in
 {
   config = lib.mkIf cfg.enable (oauth2Proxy.mkSidecarService {
@@ -14,7 +15,7 @@ in
     clientSecretFile = config.age.secrets.mailArchiveOauth2ProxyClientSecret.path;
     cookieSecretFile = config.age.secrets.mailArchiveOauth2ProxyCookieSecret.path;
     cookieName = "_oauth2_proxy_mail_archive";
-    domain = vars.emailsDomain;
+    domain = host;
     port = mailArchiveOauth2ProxyPort;
     upstream = "http://${loopback}:${toString cfg.port}";
     allowedGroups = [ "mail-archive-users" ];

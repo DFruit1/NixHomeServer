@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "ytdownload.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps."youtube-downloader".enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? youtubeDownloaderOauth2ProxyClientSecret;
@@ -26,18 +30,14 @@
       createHome = true;
     };
 
-    repo.identity = {
-      groups."downloads-users" = {
-        owner = "youtube-downloader";
-        members = [ vars.kanidmAdminUser ];
-      };
+    services.kanidm.provision = {
+      groups."downloads-users".members = [ vars.kanidmAdminUser ];
 
-      oauth2Clients.youtube-downloader-web = {
-        owner = "youtube-downloader";
+      systems.oauth2.youtube-downloader-web = {
         displayName = "Downloads";
         imageFile = ../Core_Modules/kanidm/assets/videos.svg;
-        originUrl = "https://${vars.downloadsDomain}/oauth2/callback";
-        originLanding = "https://${vars.downloadsDomain}";
+        originUrl = "https://${host}/oauth2/callback";
+        originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.youtubeDownloaderOauth2ProxyClientSecret.path;
         preferShortUsername = true;
         scopeMaps."downloads-users" = [ "openid" "profile" "email" "groups_name" ];

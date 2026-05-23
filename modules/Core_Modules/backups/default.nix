@@ -3,7 +3,7 @@
 let
   cfg = config.repo.backups;
   impermanenceCfg = config.repo.impermanence;
-  resourceCfg = config.nixhomeserver.resources;
+  resourceCfg = vars.resourceLimits;
   repoRoot = ../../..;
   backupTargetScript = "${repoRoot}/scripts/manage-backup-target.sh";
   backupTargetCommand = pkgs.writeShellApplication {
@@ -178,19 +178,19 @@ in
 
     pathRows = lib.mkOption {
       type = lib.types.attrsOf (lib.types.listOf (lib.types.submodule {
-            options = {
-              label = lib.mkOption { type = lib.types.str; };
-              path = lib.mkOption { type = lib.types.str; };
-              kind = lib.mkOption {
-                type = lib.types.str;
-                default = "directory";
-              };
-              owner = lib.mkOption {
-                type = lib.types.str;
-                default = "unknown";
-              };
-            };
-          }));
+        options = {
+          label = lib.mkOption { type = lib.types.str; };
+          path = lib.mkOption { type = lib.types.str; };
+          kind = lib.mkOption {
+            type = lib.types.str;
+            default = "directory";
+          };
+          owner = lib.mkOption {
+            type = lib.types.str;
+            default = "unknown";
+          };
+        };
+      }));
       default = { };
       description = "Labeled path status TSVs written under backup metadata.";
     };
@@ -229,96 +229,84 @@ in
       ];
     };
 
-  boot.supportedFilesystems = [ "exfat" ];
-  system.fsPackages = fsPackages;
-  environment.systemPackages = systemPackages;
+    boot.supportedFilesystems = [ "exfat" ];
+    system.fsPackages = fsPackages;
+    environment.systemPackages = systemPackages;
 
-  systemd.tmpfiles.rules = [
-    "d ${mountPoint} 0700 root root -"
-    "d ${selectionStateDir} 0755 root root -"
-    "d ${stagingRoot} 0700 root root -"
-    "d ${metadataRoot} 0700 root root -"
-    "d ${dumpsRoot} 0700 root root -"
-    "d ${inventoryRoot} 0700 root root -"
-  ];
-
-  services.restic.backups.system-state = {
-    initialize = true;
-    repository = repository;
-    passwordFile = config.age.secrets.resticSystemStatePassword.path;
-    paths =
-      if impermanenceCfg.enablePersistence then
-        [ "/persist" ]
-      else
-        [
-          "/var/lib"
-          "/persist/appdata"
-          "/etc/ssh"
-          "/etc/agenix"
-          "/etc/machine-id"
-        ];
-    dynamicFilesFrom = ''
-      if [[ -d /etc/nixos ]]; then
-        printf '%s\n' /etc/nixos
-      fi
-    '';
-    exclude = [
-      "/var/lib/systemd/coredump"
+    systemd.tmpfiles.rules = [
+      "d ${mountPoint} 0700 root root -"
+      "d ${selectionStateDir} 0755 root root -"
+      "d ${stagingRoot} 0700 root root -"
+      "d ${metadataRoot} 0700 root root -"
+      "d ${dumpsRoot} 0700 root root -"
+      "d ${inventoryRoot} 0700 root root -"
     ];
-    extraBackupArgs = [ "--tag" "system-state" ];
-    pruneOpts = [
-      "--keep-daily 7"
-      "--keep-weekly 5"
-      "--keep-monthly 12"
-    ];
-    timerConfig = {
-      OnCalendar = "03:15";
-      RandomizedDelaySec = "45m";
-      Persistent = true;
-    };
-    backupPrepareCommand = ''
-      set -euo pipefail
 
-      export PATH=${
-        lib.makeBinPath [
-          pkgs.coreutils
-          pkgs.findutils
-          pkgs.file
-          pkgs.gnugrep
-          pkgs.gnused
-          pkgs.ripmime
-          pkgs.sqlite
-          pkgs.util-linux
-          pkgs.zfs
-        ]
-      }
-      metadataRoot=${lib.escapeShellArg metadataRoot}
-      dumpsRoot=${lib.escapeShellArg dumpsRoot}
-      inventoryRoot=${lib.escapeShellArg inventoryRoot}
-
-      if [[ ! -r "${selectionFile}" ]]; then
-        echo "Missing backup target selection: ${selectionFile}" >&2
-        exit 1
-      fi
-
-      selected_device="$(tr -d '\n' < "${selectionFile}")"
-      if [[ -z "$selected_device" ]]; then
-        echo "Backup target selection file is empty: ${selectionFile}" >&2
-        exit 1
-      fi
-
-      mount_info="$(findmnt -rn -o TARGET,SOURCE,FSTYPE --target "${mountPoint}" || true)"
-      mounted_source=""
-      mounted_fstype=""
-      if [[ -n "$mount_info" ]]; then
-        read -r mounted_target mounted_source mounted_fstype <<<"$mount_info"
-        if [[ "$mounted_target" != "${mountPoint}" ]]; then
-          mounted_source=""
-          mounted_fstype=""
+    services.restic.backups.system-state = {
+      initialize = true;
+      repository = repository;
+      passwordFile = config.age.secrets.resticSystemStatePassword.path;
+      paths =
+        if impermanenceCfg.enablePersistence then
+          [ "/persist" ]
+        else
+          [
+            "/var/lib"
+            "/persist/appdata"
+            "/etc/ssh"
+            "/etc/agenix"
+            "/etc/machine-id"
+          ];
+      dynamicFilesFrom = ''
+        if [[ -d /etc/nixos ]]; then
+          printf '%s\n' /etc/nixos
         fi
-      fi
-      if [[ -z "$mounted_source" ]]; then
-        ${lib.getExe backupTargetCommand} mount
+      '';
+      exclude = [
+        "/var/lib/systemd/coredump"
+      ];
+      extraBackupArgs = [ "--tag" "system-state" ];
+      pruneOpts = [
+        "--keep-daily 7"
+        "--keep-weekly 5"
+        "--keep-monthly 12"
+      ];
+      timerConfig = {
+        OnCalendar = "03:15";
+        RandomizedDelaySec = "45m";
+        Persistent = true;
+      };
+      backupPrepareCommand = ''
+        set -euo pipefail
+
+        export PATH=${
+          lib.makeBinPath [
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.file
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.ripmime
+            pkgs.sqlite
+            pkgs.util-linux
+            pkgs.zfs
+          ]
+        }
+        metadataRoot=${lib.escapeShellArg metadataRoot}
+        dumpsRoot=${lib.escapeShellArg dumpsRoot}
+        inventoryRoot=${lib.escapeShellArg inventoryRoot}
+
+        if [[ ! -r "${selectionFile}" ]]; then
+          echo "Missing backup target selection: ${selectionFile}" >&2
+          exit 1
+        fi
+
+        selected_device="$(tr -d '\n' < "${selectionFile}")"
+        if [[ -z "$selected_device" ]]; then
+          echo "Backup target selection file is empty: ${selectionFile}" >&2
+          exit 1
+        fi
+
         mount_info="$(findmnt -rn -o TARGET,SOURCE,FSTYPE --target "${mountPoint}" || true)"
         mounted_source=""
         mounted_fstype=""
@@ -329,211 +317,223 @@ in
             mounted_fstype=""
           fi
         fi
-      fi
-      if [[ -z "$mounted_source" ]]; then
-        echo "Backup target mount missing: ${mountPoint}" >&2
-        exit 1
-      fi
-
-      selected_real="$(readlink -f "$selected_device" 2>/dev/null || true)"
-      mounted_real="$(readlink -f "$mounted_source" 2>/dev/null || printf '%s' "$mounted_source")"
-      if [[ -z "$selected_real" || "$mounted_real" != "$selected_real" ]]; then
-        selected_uuid="$(blkid -s UUID -o value "$selected_device" 2>/dev/null || true)"
-        mounted_uuid="$(blkid -s UUID -o value "$mounted_source" 2>/dev/null || true)"
-        selected_partuuid="$(blkid -s PARTUUID -o value "$selected_device" 2>/dev/null || true)"
-        mounted_partuuid="$(blkid -s PARTUUID -o value "$mounted_source" 2>/dev/null || true)"
-        if ! {
-          [[ -n "$selected_uuid" && "$selected_uuid" == "$mounted_uuid" ]] ||
-          [[ -n "$selected_partuuid" && "$selected_partuuid" == "$mounted_partuuid" ]]
-        }; then
-          echo "Backup target mismatch: selected=$selected_device mounted=$mounted_source" >&2
-          exit 1
-        fi
-      fi
-
-      case "$mounted_fstype" in
-        exfat|ext4|btrfs)
-          ;;
-        *)
-          echo "Unsupported backup target filesystem: ''${mounted_fstype:-missing}" >&2
-          exit 1
-          ;;
-      esac
-
-      install -d -m 0700 "${backupRoot}" "${repository}" "${metadataRoot}" "${dumpsRoot}" "${inventoryRoot}"
-
-      timestamp_file="${metadataRoot}/timestamp.txt"
-      app_state_file="${metadataRoot}/app-state-roots.tsv"
-      critical_paths_file="${metadataRoot}/critical-paths.tsv"
-      zpool_status_file="${metadataRoot}/zpool-status.txt"
-      zpool_list_file="${metadataRoot}/zpool-list.txt"
-      zfs_list_file="${metadataRoot}/zfs-list.txt"
-      zfs_props_file="${metadataRoot}/zfs-properties.txt"
-      findmnt_file="${metadataRoot}/findmnt-data-root.txt"
-
-      date --iso-8601=seconds > "$timestamp_file"
-
-      printf 'app\tcomponent\tstate_root\tpersistent_state_root\tstate_status\tstate_type\towner\tgroup\tmode\tpayload_roots\tpayload_status\tnotes\n' > "$app_state_file"
-      while IFS=$'\t' read -r app component state_root persistent_state_root payload_roots notes; do
-        if [[ -e "$state_root" ]]; then
-          state_status="present"
-          IFS=$'\t' read -r state_type owner group mode < <(stat -c '%F\t%U\t%G\t%a' "$state_root")
-        else
-          state_status="missing"
-          state_type="-"
-          owner="-"
-          group="-"
-          mode="-"
-        fi
-
-        payload_status="n/a"
-        if [[ -n "$payload_roots" ]]; then
-          IFS=';' read -r -a payload_root_array <<< "$payload_roots"
-          present_count=0
-          for payload_root in "''${payload_root_array[@]}"; do
-            if [[ -e "$payload_root" ]]; then
-              ((present_count += 1))
+        if [[ -z "$mounted_source" ]]; then
+          ${lib.getExe backupTargetCommand} mount
+          mount_info="$(findmnt -rn -o TARGET,SOURCE,FSTYPE --target "${mountPoint}" || true)"
+          mounted_source=""
+          mounted_fstype=""
+          if [[ -n "$mount_info" ]]; then
+            read -r mounted_target mounted_source mounted_fstype <<<"$mount_info"
+            if [[ "$mounted_target" != "${mountPoint}" ]]; then
+              mounted_source=""
+              mounted_fstype=""
             fi
-          done
+          fi
+        fi
+        if [[ -z "$mounted_source" ]]; then
+          echo "Backup target mount missing: ${mountPoint}" >&2
+          exit 1
+        fi
 
-          if (( present_count == ''${#payload_root_array[@]} )); then
-            payload_status="present"
-          elif (( present_count > 0 )); then
-            payload_status="partial"
-          else
-            payload_status="missing"
+        selected_real="$(readlink -f "$selected_device" 2>/dev/null || true)"
+        mounted_real="$(readlink -f "$mounted_source" 2>/dev/null || printf '%s' "$mounted_source")"
+        if [[ -z "$selected_real" || "$mounted_real" != "$selected_real" ]]; then
+          selected_uuid="$(blkid -s UUID -o value "$selected_device" 2>/dev/null || true)"
+          mounted_uuid="$(blkid -s UUID -o value "$mounted_source" 2>/dev/null || true)"
+          selected_partuuid="$(blkid -s PARTUUID -o value "$selected_device" 2>/dev/null || true)"
+          mounted_partuuid="$(blkid -s PARTUUID -o value "$mounted_source" 2>/dev/null || true)"
+          if ! {
+            [[ -n "$selected_uuid" && "$selected_uuid" == "$mounted_uuid" ]] ||
+            [[ -n "$selected_partuuid" && "$selected_partuuid" == "$mounted_partuuid" ]]
+          }; then
+            echo "Backup target mismatch: selected=$selected_device mounted=$mounted_source" >&2
+            exit 1
           fi
         fi
 
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-          "$app" \
-          "$component" \
-          "$state_root" \
-          "$persistent_state_root" \
-          "$state_status" \
-          "$state_type" \
-          "$owner" \
-          "$group" \
-          "$mode" \
-          "$payload_roots" \
-          "$payload_status" \
-          "$notes" >> "$app_state_file"
-      done <<'EOF'
-      ${appStateSpec}
-      EOF
+        case "$mounted_fstype" in
+          exfat|ext4|btrfs)
+            ;;
+          *)
+            echo "Unsupported backup target filesystem: ''${mounted_fstype:-missing}" >&2
+            exit 1
+            ;;
+        esac
 
-      : > "$critical_paths_file"
-      printf 'path\ttype\towner\tgroup\tmode\n' >> "$critical_paths_file"
-      for path in ${lib.escapeShellArgs cfg.criticalPaths}; do
-        if [[ -e "$path" ]]; then
-          stat -c '%n\t%F\t%U\t%G\t%a' "$path" >> "$critical_paths_file"
-        else
-          printf '%s\tmissing\t-\t-\t-\n' "$path" >> "$critical_paths_file"
-        fi
-      done
+        install -d -m 0700 "${backupRoot}" "${repository}" "${metadataRoot}" "${dumpsRoot}" "${inventoryRoot}"
 
-      write_path_inventory_row() {
-        local label="$1"
-        local path="$2"
-        local status path_type owner group mode
+        timestamp_file="${metadataRoot}/timestamp.txt"
+        app_state_file="${metadataRoot}/app-state-roots.tsv"
+        critical_paths_file="${metadataRoot}/critical-paths.tsv"
+        zpool_status_file="${metadataRoot}/zpool-status.txt"
+        zpool_list_file="${metadataRoot}/zpool-list.txt"
+        zfs_list_file="${metadataRoot}/zfs-list.txt"
+        zfs_props_file="${metadataRoot}/zfs-properties.txt"
+        findmnt_file="${metadataRoot}/findmnt-data-root.txt"
 
-        if [[ -e "$path" ]]; then
-          status="present"
-          IFS=$'\t' read -r path_type owner group mode < <(stat -c '%F\t%U\t%G\t%a' "$path")
-        else
-          status="missing"
-          path_type="-"
-          owner="-"
-          group="-"
-          mode="-"
-        fi
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-          "$label" "$path" "$status" "$path_type" "$owner" "$group" "$mode"
-      }
+        date --iso-8601=seconds > "$timestamp_file"
 
-      ${pathRowsScript}
-
-      if mountpoint -q "${vars.dataRoot}"; then
-        zpool status -P "${zfsPoolName}" > "$zpool_status_file"
-        zpool list -v "${zfsPoolName}" > "$zpool_list_file"
-        zfs list -r -o name,type,used,avail,refer,mountpoint,compressratio "${zfsPoolName}" > "$zfs_list_file"
-        zfs get -r -o name,property,value,source \
-          mountpoint,compression,recordsize,quota,reservation,acltype,xattr \
-          "${zfsPoolName}" > "$zfs_props_file"
-        findmnt -R -o TARGET,SOURCE,FSTYPE,OPTIONS "${vars.dataRoot}" > "$findmnt_file"
-
-        for spec in ${lib.escapeShellArgs pathInventorySpecs}; do
-          IFS=$'\t' read -r label root_path max_depth prune_history <<< "$spec"
-          inventory_file="${inventoryRoot}/''${label}.tsv"
-          if [[ -d "$root_path" ]]; then
-            (
-              printf 'relative_path\ttype\tmode\towner\tgroup\tsize\n'
-              find_args=("$root_path" -mindepth 1 -maxdepth "$max_depth")
-              if [[ "$prune_history" == "1" ]]; then
-                find_args+=(\( -path '*/.hist' -o -path '*/.hist/*' \) -prune -o)
-              fi
-              find "''${find_args[@]}" \
-                -printf '%P\t%y\t%M\t%u\t%g\t%s\n' \
-                | sort
-            ) > "$inventory_file"
+        printf 'app\tcomponent\tstate_root\tpersistent_state_root\tstate_status\tstate_type\towner\tgroup\tmode\tpayload_roots\tpayload_status\tnotes\n' > "$app_state_file"
+        while IFS=$'\t' read -r app component state_root persistent_state_root payload_roots notes; do
+          if [[ -e "$state_root" ]]; then
+            state_status="present"
+            IFS=$'\t' read -r state_type owner group mode < <(stat -c '%F\t%U\t%G\t%a' "$state_root")
           else
-            printf 'missing\t-\t-\t-\t-\t-\n' > "$inventory_file"
+            state_status="missing"
+            state_type="-"
+            owner="-"
+            group="-"
+            mode="-"
+          fi
+
+          payload_status="n/a"
+          if [[ -n "$payload_roots" ]]; then
+            IFS=';' read -r -a payload_root_array <<< "$payload_roots"
+            present_count=0
+            for payload_root in "''${payload_root_array[@]}"; do
+              if [[ -e "$payload_root" ]]; then
+                ((present_count += 1))
+              fi
+            done
+
+            if (( present_count == ''${#payload_root_array[@]} )); then
+              payload_status="present"
+            elif (( present_count > 0 )); then
+              payload_status="partial"
+            else
+              payload_status="missing"
+            fi
+          fi
+
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$app" \
+            "$component" \
+            "$state_root" \
+            "$persistent_state_root" \
+            "$state_status" \
+            "$state_type" \
+            "$owner" \
+            "$group" \
+            "$mode" \
+            "$payload_roots" \
+            "$payload_status" \
+            "$notes" >> "$app_state_file"
+        done <<'EOF'
+        ${appStateSpec}
+        EOF
+
+        : > "$critical_paths_file"
+        printf 'path\ttype\towner\tgroup\tmode\n' >> "$critical_paths_file"
+        for path in ${lib.escapeShellArgs cfg.criticalPaths}; do
+          if [[ -e "$path" ]]; then
+            stat -c '%n\t%F\t%U\t%G\t%a' "$path" >> "$critical_paths_file"
+          else
+            printf '%s\tmissing\t-\t-\t-\n' "$path" >> "$critical_paths_file"
           fi
         done
-      else
-        printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_status_file"
-        printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_list_file"
-        printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_list_file"
-        printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_props_file"
-        printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$findmnt_file"
-      fi
 
-      backup_sqlite_db() {
-        local source_db="$1"
-        local output_file="$2"
-        local tmp_file="''${output_file}.tmp"
+        write_path_inventory_row() {
+          local label="$1"
+          local path="$2"
+          local status path_type owner group mode
 
-        if [[ -f "$source_db" ]]; then
-          rm -f "$tmp_file"
-          sqlite3 "$source_db" ".backup '$tmp_file'"
-          mv "$tmp_file" "$output_file"
-          chmod 0600 "$output_file"
+          if [[ -e "$path" ]]; then
+            status="present"
+            IFS=$'\t' read -r path_type owner group mode < <(stat -c '%F\t%U\t%G\t%a' "$path")
+          else
+            status="missing"
+            path_type="-"
+            owner="-"
+            group="-"
+            mode="-"
+          fi
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$label" "$path" "$status" "$path_type" "$owner" "$group" "$mode"
+        }
+
+        ${pathRowsScript}
+
+        if mountpoint -q "${vars.dataRoot}"; then
+          zpool status -P "${zfsPoolName}" > "$zpool_status_file"
+          zpool list -v "${zfsPoolName}" > "$zpool_list_file"
+          zfs list -r -o name,type,used,avail,refer,mountpoint,compressratio "${zfsPoolName}" > "$zfs_list_file"
+          zfs get -r -o name,property,value,source \
+            mountpoint,compression,recordsize,quota,reservation,acltype,xattr \
+            "${zfsPoolName}" > "$zfs_props_file"
+          findmnt -R -o TARGET,SOURCE,FSTYPE,OPTIONS "${vars.dataRoot}" > "$findmnt_file"
+
+          for spec in ${lib.escapeShellArgs pathInventorySpecs}; do
+            IFS=$'\t' read -r label root_path max_depth prune_history <<< "$spec"
+            inventory_file="${inventoryRoot}/''${label}.tsv"
+            if [[ -d "$root_path" ]]; then
+              (
+                printf 'relative_path\ttype\tmode\towner\tgroup\tsize\n'
+                find_args=("$root_path" -mindepth 1 -maxdepth "$max_depth")
+                if [[ "$prune_history" == "1" ]]; then
+                  find_args+=(\( -path '*/.hist' -o -path '*/.hist/*' \) -prune -o)
+                fi
+                find "''${find_args[@]}" \
+                  -printf '%P\t%y\t%M\t%u\t%g\t%s\n' \
+                  | sort
+              ) > "$inventory_file"
+            else
+              printf 'missing\t-\t-\t-\t-\t-\n' > "$inventory_file"
+            fi
+          done
         else
-          rm -f "$tmp_file" "$output_file"
+          printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_status_file"
+          printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zpool_list_file"
+          printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_list_file"
+          printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$zfs_props_file"
+          printf 'data root not mounted: %s\n' "${vars.dataRoot}" > "$findmnt_file"
         fi
-      }
 
-      ${lib.optionalString config.services.postgresql.enable ''
-        dump_tmp="${dumpsRoot}/postgresql.sql.tmp"
-        dump_file="${dumpsRoot}/postgresql.sql"
-        rm -f "$dump_tmp"
-        ${pkgs.util-linux}/bin/runuser -u postgres -- ${
-          lib.getExe' config.services.postgresql.finalPackage "pg_dumpall"
-        } > "$dump_tmp"
-        mv "$dump_tmp" "$dump_file"
-        chmod 0600 "$dump_file"
-      ''}
+        backup_sqlite_db() {
+          local source_db="$1"
+          local output_file="$2"
+          local tmp_file="''${output_file}.tmp"
 
-      ${sqliteDumpScript}
-      ${prepareFragmentsScript}
-    '';
-  };
+          if [[ -f "$source_db" ]]; then
+            rm -f "$tmp_file"
+            sqlite3 "$source_db" ".backup '$tmp_file'"
+            mv "$tmp_file" "$output_file"
+            chmod 0600 "$output_file"
+          else
+            rm -f "$tmp_file" "$output_file"
+          fi
+        }
 
-  systemd.services.restic-backups-system-state = {
-    wants = [ "local-fs.target" "data-pool-layout.service" ];
-    after = [ "local-fs.target" "data-pool-layout.service" ];
-    path = resticBackupPath;
-    serviceConfig = {
-      CPUQuota = resourceCfg.restic.cpuQuota;
-      IOWeight = resourceCfg.restic.ioWeight;
+        ${lib.optionalString config.services.postgresql.enable ''
+          dump_tmp="${dumpsRoot}/postgresql.sql.tmp"
+          dump_file="${dumpsRoot}/postgresql.sql"
+          rm -f "$dump_tmp"
+          ${pkgs.util-linux}/bin/runuser -u postgres -- ${
+            lib.getExe' config.services.postgresql.finalPackage "pg_dumpall"
+          } > "$dump_tmp"
+          mv "$dump_tmp" "$dump_file"
+          chmod 0600 "$dump_file"
+        ''}
+
+        ${sqliteDumpScript}
+        ${prepareFragmentsScript}
+      '';
     };
-    preStart = ''
-      ${lib.getExe backupTargetCommand} mount
-    '';
-    postStop = ''
-      ${lib.getExe backupTargetCommand} unmount
-    '';
-  };
+
+    systemd.services.restic-backups-system-state = {
+      wants = [ "local-fs.target" "data-pool-layout.service" ];
+      after = [ "local-fs.target" "data-pool-layout.service" ];
+      path = resticBackupPath;
+      serviceConfig = {
+        CPUQuota = resourceCfg.restic.cpuQuota;
+        IOWeight = resourceCfg.restic.ioWeight;
+      };
+      preStart = ''
+        ${lib.getExe backupTargetCommand} mount
+      '';
+      postStop = ''
+        ${lib.getExe backupTargetCommand} unmount
+      '';
+    };
 
   };
 }

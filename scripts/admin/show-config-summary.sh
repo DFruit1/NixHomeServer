@@ -37,11 +37,10 @@ fi
 
 preview_json="$(nix_json_for_host "$host" "
   let
-    settings = removeAttrs cfg.nixhomeserver.settings [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ];
+    settings = removeAttrs flake.lib.nixhomeserverSettings.${host} [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ];
   in
   {
     inherit settings;
-    apps = cfg.nixhomeserver.apps;
     caddyHosts = builtins.attrNames cfg.services.caddy.virtualHosts;
     cloudflaredHosts = builtins.attrNames cfg.services.cloudflared.tunnels.\${settings.cloudflareTunnelName}.ingress;
     oauthClients = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
@@ -50,7 +49,6 @@ preview_json="$(nix_json_for_host "$host" "
   }
 ")"
 settings_json="$(jq -c '.settings' <<<"$preview_json")"
-apps_json="$(jq -c '.apps' <<<"$preview_json")"
 caddy_hosts_json="$(jq -c '.caddyHosts' <<<"$preview_json")"
 cloudflared_hosts_json="$(jq -c '.cloudflaredHosts' <<<"$preview_json")"
 oauth_clients_json="$(jq -c '.oauthClients' <<<"$preview_json")"
@@ -74,11 +72,11 @@ echo "  DNS mode: $(jq -r '.dnsMode' <<<"$settings_json")"
 echo
 
 echo "Enabled apps"
-if jq -e '.enabledApps and (.enabledApps | length > 0)' <<<"$settings_json" >/dev/null; then
-  jq -r '.enabledApps[] | "  - " + .' <<<"$settings_json"
-else
-  jq -r 'to_entries[] | select(.value.enable == true) | "  - " + .key' <<<"$apps_json"
-fi
+jq -r --arg domain "$(jq -r '.domain' <<<"$settings_json")" '
+  .[]
+  | select(. != $domain and . != ("www." + $domain) and . != ("id." + $domain))
+  | "  - " + .
+' <<<"$caddy_hosts_json"
 echo
 
 echo "Caddy hostnames"

@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "passwords.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps.vaultwarden.enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? vaultwardenAdminToken;
@@ -10,7 +14,7 @@
     ];
 
     environment.variables = {
-      KANIDM_ADMIN_VAULTWARDEN_URL = "https://${vars.vaultwardenDomain}";
+      KANIDM_ADMIN_VAULTWARDEN_URL = "https://${host}";
       KANIDM_ADMIN_VAULTWARDEN_ADMIN_TOKEN_FILE = config.age.secrets.vaultwardenAdminToken.path;
     };
   };

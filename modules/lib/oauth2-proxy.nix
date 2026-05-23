@@ -96,10 +96,35 @@ let
       echo "Timed out waiting for ${displayName} upstream at $upstream_url" >&2
       exit 1
     '';
-in
-rec {
-  inherit commonExtraConfig;
 
+  mkProxyArgs =
+    { clientId
+    , clientSecretFile
+    , cookieSecretFile
+    , cookieName
+    , domain
+    , port
+    , upstream
+    , allowedGroups ? [ ]
+    , scope ? defaultScope
+    , redirectPath ? "/oauth2/callback"
+    , issuerUrl ? vars.kanidmIssuer clientId
+    , extraArgs ? [ ]
+    ,
+    }:
+    commonProxyArgs
+      {
+        inherit clientId domain port upstream scope redirectPath issuerUrl;
+      }
+    ++ [
+      "--client-secret-file=${clientSecretFile}"
+      "--cookie-secret-file=${cookieSecretFile}"
+      "--cookie-name=${cookieName}"
+    ]
+    ++ map (group: "--allowed-group=${group}") allowedGroups
+    ++ extraArgs;
+in
+{
   mkNixosService =
     { clientId
     , domain
@@ -131,33 +156,6 @@ rec {
         }
         // extraConfig;
     };
-
-  mkProxyArgs =
-    { clientId
-    , clientSecretFile
-    , cookieSecretFile
-    , cookieName
-    , domain
-    , port
-    , upstream
-    , allowedGroups ? [ ]
-    , scope ? defaultScope
-    , redirectPath ? "/oauth2/callback"
-    , issuerUrl ? vars.kanidmIssuer clientId
-    , extraArgs ? [ ]
-    ,
-    }:
-    commonProxyArgs
-      {
-        inherit clientId domain port upstream scope redirectPath issuerUrl;
-      }
-    ++ [
-      "--client-secret-file=${clientSecretFile}"
-      "--cookie-secret-file=${cookieSecretFile}"
-      "--cookie-name=${cookieName}"
-    ]
-    ++ map (group: "--allowed-group=${group}") allowedGroups
-    ++ extraArgs;
 
   mkSidecarService =
     { serviceName

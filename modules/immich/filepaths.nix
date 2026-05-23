@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ lib, pkgs, vars, ... }:
 
 let
   mkDirCmd =
@@ -59,51 +59,39 @@ let
   );
 in
 {
-  config = lib.mkMerge [
-    {
-      repo.apps.immich.filepaths = {
-        state = "/var/lib/immich";
-        cache = "/var/cache/immich";
-        data = vars.immichRoot;
-        mediaRoots.managed = vars.immichManagedRoot;
-        mediaRoots.external = vars.immichExternalRoot;
-        userRoots.photos = "${vars.usersRoot}/<user>/photos";
-      };
-    }
-    (lib.mkIf config.nixhomeserver.apps.immich.enable {
-      repo.storage.userRoots = {
-        rootTraverseGroups = [
-          "immich"
-        ];
-        recursiveReadonlyGrants = [
-          {
-            group = "immich";
-            relativePaths = [ "photos" ];
-          }
-        ];
-      };
+  config = {
+    repo.storage.userRoots = {
+      rootTraverseGroups = [
+        "immich"
+      ];
+      recursiveReadonlyGrants = [
+        {
+          group = "immich";
+          relativePaths = [ "photos" ];
+        }
+      ];
+    };
 
-      systemd.services.immich-storage-layout-v1 = {
-        description = "Provision Immich storage layout";
-        wantedBy = [ "multi-user.target" ];
-        wants = [ "data-pool-layout.service" "local-fs.target" ];
-        after = [ "data-pool-layout.service" "local-fs.target" ];
-        before = [ "immich-server.service" ];
-        unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-        };
-        script = ''
-          set -euo pipefail
-          ${immichStorageLayoutScript}
-        '';
+    systemd.services.immich-storage-layout-v1 = {
+      description = "Provision Immich storage layout";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "data-pool-layout.service" "local-fs.target" ];
+      after = [ "data-pool-layout.service" "local-fs.target" ];
+      before = [ "immich-server.service" ];
+      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
       };
+      script = ''
+        set -euo pipefail
+        ${immichStorageLayoutScript}
+      '';
+    };
 
-      systemd.services.immich-server = {
-        wants = [ "immich-storage-layout-v1.service" ];
-        after = [ "immich-storage-layout-v1.service" ];
-      };
-    })
-  ];
+    systemd.services.immich-server = {
+      wants = [ "immich-storage-layout-v1.service" ];
+      after = [ "immich-storage-layout-v1.service" ];
+    };
+  };
 }

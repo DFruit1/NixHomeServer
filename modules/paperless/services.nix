@@ -3,7 +3,8 @@
 let
   paperlessPort = vars.networking.ports.paperless;
   dataDir = "/var/lib/paperless";
-  blockedOfficeExtensions = lib.optionals (!vars.paperlessEnableDangerousMacroOfficeParsing) [
+  paperlessHost = "paperless.${vars.domain}";
+  blockedOfficeExtensions = [
     "doc"
     "dot"
     "docm"
@@ -56,7 +57,7 @@ in
     ./package.nix
   ];
 
-  config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
+  config = {
     services.paperless.environmentFile = "/run/paperless-oidc.env";
 
     services.paperless = {
@@ -80,10 +81,10 @@ in
         PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS = "true";
         PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM = "groups";
         PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
-        PAPERLESS_URL = "https://${vars.paperlessDomain}";
-        PAPERLESS_ALLOWED_HOSTS = vars.paperlessDomain;
+        PAPERLESS_URL = "https://${paperlessHost}";
+        PAPERLESS_ALLOWED_HOSTS = paperlessHost;
         PAPERLESS_EXPORT_DIR = vars.paperlessExportRoot;
-        PAPERLESS_OCR_LANGUAGE = vars.paperlessOcrLanguage;
+        PAPERLESS_OCR_LANGUAGE = "eng";
         PAPERLESS_OCR_CLEAN = "clean";
         PAPERLESS_OCR_OUTPUT_TYPE = "pdfa";
         PAPERLESS_CONSUMER_INOTIFY_DELAY = "2";

@@ -11,38 +11,43 @@ let
       ])
       uploadUsers
   );
-  prepareLibraryRootScript = pkgs.writeShellScript "kiwix-prepare-library-root" ''
-    set -euo pipefail
-
-    library_root=${lib.escapeShellArg cfg.libraryRoot}
-
-    if [[ ! -d "$library_root" ]]; then
-      ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
-    fi
-    ${pkgs.acl}/bin/setfacl \
-      ${dirWriterAclArgs} \
-      -m g:kiwix:rx \
-      -m d:g:kiwix:rx \
-      "$library_root"
-  '';
 in
 {
-  config = lib.mkMerge [
-    {
-      repo.apps.kiwix.filepaths = {
-        state = "/var/lib/kiwix";
-        data = vars.kiwixLibraryRoot;
-        mediaRoots.library = vars.kiwixLibraryRoot;
-      };
-    }
-    (lib.mkIf cfg.enable {
-      systemd.tmpfiles.rules = [
-        "d ${cfg.stateDir} 0750 kiwix kiwix -"
-      ];
+  config = lib.mkIf cfg.enable {
+    systemd.tmpfiles.rules = [
+      "d ${cfg.stateDir} 0750 kiwix kiwix -"
+    ];
 
-      system.activationScripts.kiwixLibraryRoot = lib.stringAfter [ "users" "groups" ] ''
-        ${prepareLibraryRootScript}
+    systemd.services.kiwix-library-root-layout-v1 = {
+      description = "Provision Kiwix library root";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "data-pool-layout.service" "local-fs.target" ];
+      after = [ "data-pool-layout.service" "local-fs.target" ];
+      before = [ "kiwix-library-sync.service" ];
+      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        set -euo pipefail
+
+        library_root=${lib.escapeShellArg cfg.libraryRoot}
+
+        if [[ ! -d "$library_root" ]]; then
+          ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"
+        fi
+        ${pkgs.acl}/bin/setfacl \
+          ${dirWriterAclArgs} \
+          -m g:kiwix:rx \
+          -m d:g:kiwix:rx \
+          "$library_root"
       '';
-    })
-  ];
+    };
+
+    systemd.services.kiwix-library-sync = {
+      wants = [ "kiwix-library-root-layout-v1.service" ];
+      after = [ "kiwix-library-root-layout-v1.service" ];
+    };
+  };
 }

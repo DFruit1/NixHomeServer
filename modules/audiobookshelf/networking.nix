@@ -1,30 +1,18 @@
-{ config, lib, vars, ... }:
+{ config, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
-  port = vars.networking.ports.audiobookshelf;
+  host = "audiobooks.${vars.domain}";
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.audiobookshelf.enable {
-    repo.networking = {
-      ports.audiobookshelf = {
-        inherit port;
-        protocol = "tcp";
-        bind = "loopback";
-        owner = "audiobookshelf";
-      };
+  services.caddy.virtualHosts.${host} = {
+    useACMEHost = vars.domain;
+    extraConfig = ''
+      reverse_proxy http://${loopback}:${toString config.services.audiobookshelf.port}
+    '';
+  };
 
-      caddy.virtualHosts."${vars.audiobooksDomain}" = {
-        owner = "audiobookshelf";
-        extraConfig = ''
-          reverse_proxy http://${loopback}:${toString config.services.audiobookshelf.port}
-        '';
-      };
-
-      dns.privateHosts."${vars.audiobooksDomain}" = {
-        owner = "audiobookshelf";
-        target = "private";
-      };
-    };
+  services.unbound.privateHosts.${host} = {
+    target = "private";
   };
 }

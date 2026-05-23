@@ -12,7 +12,7 @@ let
   ];
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.audiobookshelf.enable {
+  config = {
     systemd.timers.audiobookshelf-stale-reference-cleanup = {
       description = "Regularly remove stale Audiobookshelf library references";
       wantedBy = [ "timers.target" ];

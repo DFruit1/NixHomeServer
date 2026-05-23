@@ -47,7 +47,7 @@ in
   options.services.kiwixServe = {
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = config.nixhomeserver.apps.kiwix.enable;
+      default = true;
       description = "Whether to run the internal Kiwix server.";
     };
 
@@ -78,8 +78,8 @@ in
     uploadUser = lib.mkOption {
       type = lib.types.str;
       default =
-        if builtins.hasAttr config.nixhomeserver.localAdmin.user config.users.users then
-          config.nixhomeserver.localAdmin.user
+        if builtins.hasAttr vars.localAdminUser config.users.users then
+          vars.localAdminUser
         else
           throw "services.kiwixServe.uploadUser must name a local Unix account.";
       description = ''

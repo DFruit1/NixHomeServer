@@ -33,14 +33,6 @@ let
   ];
 in
 {
-  assertions = [
-    {
-      assertion = !config.nixhomeserver.apps."mail-archive".enable
-        || config.nixhomeserver.apps."mail-archive-ui".enable;
-      message = "mail-archive requires mail-archive-ui.";
-    }
-  ];
-
   environment.systemPackages = lib.mkIf cfg.enable systemPackages;
 
   systemd.services.mail-archive-sync = lib.mkIf cfg.enable {

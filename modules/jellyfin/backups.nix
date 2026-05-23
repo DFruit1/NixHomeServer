@@ -1,19 +1,16 @@
-{ config, lib, ... }:
+{ vars, ... }:
 
-let
-  fp = config.repo.apps.jellyfin.filepaths;
-in
 {
-  config = lib.mkIf config.nixhomeserver.apps.jellyfin.enable {
+  config = {
     repo.backups.appStateEntries = [
       {
         app = "jellyfin";
         component = "app";
-        stateRoot = fp.state;
+        stateRoot = "/var/lib/jellyfin";
         payloadRoots = [
-          fp.sharedRoots.music
-          fp.sharedRoots.videos
-          fp.userRoots.personal
+          vars.sharedMusicRoot
+          vars.sharedVideosRoot
+          vars.usersRoot
         ];
         notes = "Local users, libraries, and server config.";
       }

@@ -1,29 +1,18 @@
-{ config, lib, vars, ... }:
+{ config, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
+  host = "paperless.${vars.domain}";
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
-    repo.networking = {
-      ports.paperless = {
-        port = vars.networking.ports.paperless;
-        protocol = "tcp";
-        bind = "loopback";
-        owner = "paperless";
-      };
+  services.caddy.virtualHosts.${host} = {
+    useACMEHost = vars.domain;
+    extraConfig = ''
+      reverse_proxy http://${loopback}:${toString config.services.paperless.port}
+    '';
+  };
 
-      caddy.virtualHosts."${vars.paperlessDomain}" = {
-        owner = "paperless";
-        extraConfig = ''
-          reverse_proxy http://${loopback}:${toString config.services.paperless.port}
-        '';
-      };
-
-      dns.privateHosts."${vars.paperlessDomain}" = {
-        owner = "paperless";
-        target = "private";
-      };
-    };
+  services.unbound.privateHosts.${host} = {
+    target = "private";
   };
 }

@@ -7,10 +7,11 @@ let
   proxyGid = 3001;
   proxySubIdStart = 400000;
   proxySubIdCount = 65536;
+  host = "photos.${vars.domain}";
 in
 
 {
-  config = lib.mkIf config.nixhomeserver.apps.immich.enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? immichClientSecret;
@@ -45,22 +46,18 @@ in
       ];
     };
 
-    repo.identity = {
-      groups."immich-users" = {
-        owner = "immich";
-        members = [ vars.kanidmAdminUser ];
-      };
+    services.kanidm.provision = {
+      groups."immich-users".members = [ vars.kanidmAdminUser ];
 
-      oauth2Clients.immich-web = {
-        owner = "immich";
+      systems.oauth2.immich-web = {
         displayName = "Photos";
         imageFile = ../Core_Modules/kanidm/assets/photos.svg;
         originUrl = [
-          "https://${vars.photosDomain}/auth/login"
-          "https://${vars.photosDomain}/user-settings"
-          "https://${vars.photosDomain}/api/oauth/mobile-redirect"
+          "https://${host}/auth/login"
+          "https://${host}/user-settings"
+          "https://${host}/api/oauth/mobile-redirect"
         ];
-        originLanding = "https://${vars.photosDomain}";
+        originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.immichClientSecret.path;
         preferShortUsername = true;
         scopeMaps."immich-users" = [ "openid" "profile" "email" "immich_role" ];

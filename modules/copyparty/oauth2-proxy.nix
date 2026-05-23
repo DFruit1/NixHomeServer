@@ -4,6 +4,7 @@ let
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   loopback = vars.networking.loopbackIPv4;
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyUploads;
+  host = "uploads.${vars.domain}";
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";
   oauth2ProxyKeyFilePath = "${oauth2ProxyRuntimeDir}/oauth2-proxy.env";
 in
@@ -11,7 +12,7 @@ in
   services.oauth2-proxy = oauth2Proxy.mkNixosService
     {
       clientId = "oauth2-proxy";
-      domain = vars.uploadsDomain;
+      domain = host;
       port = oauth2ProxyPort;
       upstream = "http://${loopback}:${toString config.services.copyparty.settings.p}";
       allowedGroups = [ "user-files" ];

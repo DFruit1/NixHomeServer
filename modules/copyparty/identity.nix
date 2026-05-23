@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "uploads.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps.copyparty.enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? oauth2ProxyClientSecret;
@@ -39,18 +43,14 @@
 
     users.users.oauth2-proxy.extraGroups = [ "caddy" ];
 
-    repo.identity = {
-      groups."user-files" = {
-        owner = "copyparty";
-        members = [ vars.kanidmAdminUser ];
-      };
+    services.kanidm.provision = {
+      groups."user-files".members = [ vars.kanidmAdminUser ];
 
-      oauth2Clients.oauth2-proxy = {
-        owner = "copyparty";
+      systems.oauth2.oauth2-proxy = {
         displayName = "Uploads";
         imageFile = ../Core_Modules/kanidm/assets/files.svg;
-        originUrl = "https://${vars.uploadsDomain}/oauth2/callback";
-        originLanding = "https://${vars.uploadsDomain}";
+        originUrl = "https://${host}/oauth2/callback";
+        originLanding = "https://${host}";
         basicSecretFile = "/run/oauth2-proxy/client-secret";
         preferShortUsername = true;
         scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];

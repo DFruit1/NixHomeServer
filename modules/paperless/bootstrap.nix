@@ -58,7 +58,7 @@ let
   ];
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
+  config = {
     systemd.services =
       {
         paperless-oidc-env = {

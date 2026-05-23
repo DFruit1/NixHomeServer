@@ -1,11 +1,12 @@
-{ config, filestashNix, lib, pkgs, vars, ... }:
+{ filestashNix, lib, pkgs, vars, ... }:
 
 let
-  enabled = config.nixhomeserver.apps.files.enable;
+  enabled = true;
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
   loopback = vars.networking.loopbackIPv4;
   filesPort = vars.filesPort;
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyFilestash;
+  host = "files.${vars.domain}";
   stateDir = vars.filesStateDir;
   managedDir = "${stateDir}/.nixos-managed";
   secretRuntimeDir = "/run/filestash-secrets";
@@ -41,7 +42,7 @@ in
     filestashNix.nixosModules.filestash
   ];
 
-  config = lib.mkIf enabled (lib.mkMerge [
+  config = lib.mkMerge [
     {
       services.filestash = {
         enable = true;
@@ -49,7 +50,7 @@ in
           general = {
             name = "Filestash";
             port = filesPort;
-            host = vars.filesDomain;
+            host = host;
             force_ssl = true;
             logout = "/oauth2/sign_out?rd=/oauth2/start?rd=%2F";
             upload_button = true;
@@ -144,7 +145,7 @@ in
       clientSecretFile = oauth2ClientSecretFile;
       cookieSecretFile = oauth2CookieSecretFile;
       cookieName = "_oauth2_proxy_filestash";
-      domain = vars.filesDomain;
+      domain = host;
       port = oauth2ProxyPort;
       upstream = "http://${loopback}:${toString filesPort}";
       allowedGroups = [ "user-files" ];
@@ -163,5 +164,5 @@ in
         "--upstream-timeout=30m0s"
       ];
     })
-  ]);
+  ];
 }

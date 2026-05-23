@@ -11,11 +11,12 @@ let
   tempDir = "${cacheRoot}/tmp";
   sharedAudioRoot = "${vars.sharedAudiobooksRoot}/youtube";
   youtubeDownloader = pkgs.callPackage ../../node/apps/youtube-downloader { };
-  resources = config.nixhomeserver.resources;
+  resources = vars.resourceLimits;
   oauth2Proxy = import ../lib/oauth2-proxy.nix { inherit lib pkgs vars; };
+  host = "ytdownload.${vars.domain}";
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps."youtube-downloader".enable (lib.mkMerge [
+  config = lib.mkMerge [
     {
       systemd.services.youtube-downloader = {
         description = "Authenticated YouTube media downloader";
@@ -79,7 +80,7 @@ in
       clientSecretFile = config.age.secrets.youtubeDownloaderOauth2ProxyClientSecret.path;
       cookieSecretFile = config.age.secrets.youtubeDownloaderOauth2ProxyCookieSecret.path;
       cookieName = "_oauth2_proxy_youtube_downloader";
-      domain = vars.downloadsDomain;
+      domain = host;
       port = vars.networking.ports.oauth2ProxyDownloads;
       upstream = "http://${listenAddress}:${toString listenPort}";
       allowedGroups = [ "downloads-users" ];
@@ -92,5 +93,5 @@ in
         url = "http://${listenAddress}:${toString listenPort}/healthz";
       };
     })
-  ]);
+  ];
 }

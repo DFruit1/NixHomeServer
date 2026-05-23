@@ -16,7 +16,7 @@ in
     ./root-bootstrap.nix
   ];
 
-  config = lib.mkIf config.nixhomeserver.apps.audiobookshelf.enable {
+  config = {
     systemd.services.audiobookshelf-library-watch-config-v1 = {
       description = "Enable Audiobookshelf native library watchers";
       wantedBy = [ "multi-user.target" ];
@@ -54,7 +54,7 @@ in
         while IFS=$'\x1f' read -r library_id settings_json; do
           [[ -n "$library_id" ]] || continue
           updated_settings="$(printf '%s' "$settings_json" | jq -c \
-            --arg autoScanCronExpression ${lib.escapeShellArg vars.apps.audiobooks.autoScanCronExpression} \
+            --arg autoScanCronExpression ${lib.escapeShellArg "*/15 * * * *"} \
             '.disableWatcher = false | .autoScanCronExpression = $autoScanCronExpression')"
           if [[ "$settings_json" == "$updated_settings" ]]; then
             continue

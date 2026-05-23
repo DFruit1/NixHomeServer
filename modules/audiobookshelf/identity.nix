@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "audiobooks.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps.audiobookshelf.enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? absClientSecret;
@@ -17,21 +21,17 @@
 
     users.users.audiobookshelf.extraGroups = lib.mkAfter [ "audiobookshelf-media" ];
 
-    repo.identity = {
-      groups."audiobookshelf-users" = {
-        owner = "audiobookshelf";
-        members = [ vars.kanidmAdminUser ];
-      };
+    services.kanidm.provision = {
+      groups."audiobookshelf-users".members = [ vars.kanidmAdminUser ];
 
-      oauth2Clients.abs-web = {
-        owner = "audiobookshelf";
+      systems.oauth2.abs-web = {
         displayName = "Audiobooks";
         imageFile = ../Core_Modules/kanidm/assets/audiobooks.svg;
         originUrl = [
-          "https://${vars.audiobooksDomain}/audiobookshelf/auth/openid/callback"
-          "https://${vars.audiobooksDomain}/audiobookshelf/auth/openid/mobile-redirect"
+          "https://${host}/audiobookshelf/auth/openid/callback"
+          "https://${host}/audiobookshelf/auth/openid/mobile-redirect"
         ];
-        originLanding = "https://${vars.audiobooksDomain}/audiobookshelf/";
+        originLanding = "https://${host}/audiobookshelf/";
         basicSecretFile = config.age.secrets.absClientSecret.path;
         preferShortUsername = true;
         scopeMaps."audiobookshelf-users" = [ "openid" "profile" "email" "abs_role" ];

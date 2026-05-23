@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "paperless.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? paperlessClientSecret;
@@ -17,18 +21,14 @@
       home = "/var/lib/paperless";
     };
 
-    repo.identity = {
-      groups."paperless-users" = {
-        owner = "paperless";
-        members = [ vars.kanidmAdminUser ];
-      };
+    services.kanidm.provision = {
+      groups."paperless-users".members = [ vars.kanidmAdminUser ];
 
-      oauth2Clients.paperless-web = {
-        owner = "paperless";
+      systems.oauth2.paperless-web = {
         displayName = "Documents";
         imageFile = ../Core_Modules/kanidm/assets/documents.svg;
-        originUrl = "https://${vars.paperlessDomain}/accounts/oidc/kanidm/login/callback/";
-        originLanding = "https://${vars.paperlessDomain}";
+        originUrl = "https://${host}/accounts/oidc/kanidm/login/callback/";
+        originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.paperlessClientSecret.path;
         preferShortUsername = true;
         scopeMaps."paperless-users" = [ "openid" "profile" "email" "groups_name" ];

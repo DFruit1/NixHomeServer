@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   runtimeDir = "/run/vaultwarden";
@@ -10,7 +10,7 @@ let
   ];
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.vaultwarden.enable {
+  config = {
     systemd.services.vaultwarden-secret-materialize = {
       description = "Materialize Vaultwarden secret environment";
       wantedBy = [ "multi-user.target" ];

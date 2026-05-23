@@ -1,53 +1,50 @@
-{ config, lib, ... }:
+{ config, vars, ... }:
 
-let
-  fp = config.repo.apps.paperless.filepaths;
-in
 {
-  config = lib.mkIf config.nixhomeserver.apps.paperless.enable {
+  config = {
     repo.backups = {
       appStateEntries = [
         {
           app = "paperless";
           component = "app";
-          stateRoot = fp.state;
-          payloadRoots = [ fp.data ];
+          stateRoot = "/var/lib/paperless";
+          payloadRoots = [ vars.paperlessRoot ];
           notes = "Application state and local metadata.";
         }
         {
           app = "paperless";
           component = "redis";
           stateRoot = config.services.redis.servers.paperless.settings.dir;
-          payloadRoots = [ fp.data ];
+          payloadRoots = [ vars.paperlessRoot ];
           notes = "Paperless Redis persistence.";
         }
       ];
       criticalPaths = [
-        fp.data
-        fp.mediaRoots.inbox
-        fp.mediaRoots.archive
-        fp.mediaRoots.export
+        vars.paperlessRoot
+        vars.paperlessInboxRoot
+        vars.paperlessArchiveRoot
+        vars.paperlessExportRoot
       ];
       pathInventories = [
         {
           label = "paperless";
-          root = fp.data;
+          root = vars.paperlessRoot;
         }
       ];
       pathRows.upload-flow-roots = [
         {
           label = "paperless-inbox";
-          path = fp.mediaRoots.inbox;
+          path = vars.paperlessInboxRoot;
           owner = "paperless";
         }
         {
           label = "paperless-archive";
-          path = fp.mediaRoots.archive;
+          path = vars.paperlessArchiveRoot;
           owner = "paperless";
         }
         {
           label = "paperless-export";
-          path = fp.mediaRoots.export;
+          path = vars.paperlessExportRoot;
           owner = "paperless";
         }
       ];

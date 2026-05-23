@@ -1,14 +1,9 @@
-{ config, lib, vars, ... }:
+{ lib, vars, ... }:
 
 {
-  config = lib.mkIf config.nixhomeserver.apps.jellyfin.enable {
-    users.groups.jellyfin-media = { };
+  users.groups.jellyfin-media = { };
 
-    users.users.jellyfin.extraGroups = lib.mkAfter [ "jellyfin-media" ];
+  users.users.jellyfin.extraGroups = lib.mkAfter [ "jellyfin-media" ];
 
-    repo.identity.groups."jellyfin-users" = {
-      owner = "jellyfin";
-      members = [ vars.kanidmAdminUser ];
-    };
-  };
+  services.kanidm.provision.groups."jellyfin-users".members = [ vars.kanidmAdminUser ];
 }

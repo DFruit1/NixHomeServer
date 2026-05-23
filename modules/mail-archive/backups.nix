@@ -1,5 +1,5 @@
-{ config, lib, ... }:
+{ lib, vars, ... }:
 
 {
-  config = lib.mkIf config.nixhomeserver.apps."mail-archive".enable { };
+  config = { };
 }

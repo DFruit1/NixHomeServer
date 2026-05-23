@@ -1,15 +1,12 @@
-{ config, lib, ... }:
+{ vars, ... }:
 
-let
-  fp = config.repo.apps.vaultwarden.filepaths;
-in
 {
-  config = lib.mkIf config.nixhomeserver.apps.vaultwarden.enable {
+  config = {
     repo.backups.appStateEntries = [
       {
         app = "vaultwarden";
         component = "app";
-        stateRoot = fp.state;
+        stateRoot = "/var/lib/vaultwarden";
         payloadRoots = [ ];
         notes = "Encrypted password vault database and attachments.";
       }

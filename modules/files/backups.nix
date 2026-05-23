@@ -1,18 +1,15 @@
-{ config, lib, ... }:
+{ vars, ... }:
 
-let
-  fp = config.repo.apps.files.filepaths;
-in
 {
-  config = lib.mkIf config.nixhomeserver.apps.files.enable {
+  config = {
     repo.backups.appStateEntries = [
       {
         app = "filestash";
         component = "app";
-        stateRoot = fp.state;
+        stateRoot = vars.filesStateDir;
         payloadRoots = [
-          fp.userRoots.personal
-          fp.sharedRoots.shared
+          vars.usersRoot
+          vars.sharedRoot
         ];
         notes = "Filestash config, generated local secrets, and application state.";
       }

@@ -1,18 +1,15 @@
-{ config, lib, ... }:
+{ vars, ... }:
 
-let
-  fp = config.repo.apps.kavita.filepaths;
-in
 {
-  config = lib.mkIf config.nixhomeserver.apps.kavita.enable {
+  config = {
     repo.backups.appStateEntries = [
       {
         app = "kavita";
         component = "app";
-        stateRoot = fp.state;
+        stateRoot = "/var/lib/kavita";
         payloadRoots = [
-          fp.sharedRoots.books
-          fp.userRoots.personal
+          vars.sharedBooksRoot
+          vars.usersRoot
         ];
         notes = "Library database, local users, and server settings.";
       }

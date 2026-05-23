@@ -3,7 +3,7 @@
 let
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
-  kavitaScanCronExpression = vars.apps.books.autoScanCronExpression or "*/15 * * * *";
+  kavitaScanCronExpression = "*/15 * * * *";
   kavitaLibraryWatchConfigPath = with pkgs; [
     coreutils
     perl
@@ -15,7 +15,7 @@ let
   ];
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.kavita.enable {
+  config = {
     systemd.services.kavita-oidc-bootstrap = {
       description = "Synchronize Kavita OIDC settings";
       wantedBy = [ "multi-user.target" ];

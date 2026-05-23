@@ -1,12 +1,5 @@
-{ config, lib, ... }:
+{ lib, vars, ... }:
 
 {
-  config = lib.mkIf
-    (
-      config.nixhomeserver.apps.files.enable
-      && config.nixhomeserver.apps.jellyfin.enable
-    )
-    {
-      users.users.filestash.extraGroups = lib.mkAfter [ "jellyfin-media" ];
-    };
+  users.users.filestash.extraGroups = lib.mkAfter [ "jellyfin-media" ];
 }

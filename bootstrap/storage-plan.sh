@@ -40,7 +40,7 @@ if ((status_blocked > 0)); then
   finish_report
 fi
 
-settings_json="$(nix_json_for_host "$host" "removeAttrs cfg.nixhomeserver.settings [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
+settings_json="$(nix_json_for_host "$host" "removeAttrs flake.lib.nixhomeserverSettings.${host} [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
 
 echo "Storage inventory"
 echo

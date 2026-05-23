@@ -1,12 +1,13 @@
-{ config, lib, pkgsUnstable, vars, ... }:
+{ lib, pkgsUnstable, vars, ... }:
 
 let
   vaultwardenPort = vars.networking.ports.vaultwarden;
   runtimeDir = "/run/vaultwarden";
   environmentFile = "${runtimeDir}/vaultwarden.env";
+  host = "passwords.${vars.domain}";
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.vaultwarden.enable {
+  config = {
     services.vaultwarden = {
       enable = true;
       package = pkgsUnstable.vaultwarden;
@@ -14,7 +15,7 @@ in
       dbBackend = "sqlite";
       environmentFile = [ environmentFile ];
       config = {
-        DOMAIN = "https://${vars.vaultwardenDomain}";
+        DOMAIN = "https://${host}";
         ROCKET_ADDRESS = vars.networking.loopbackIPv4;
         ROCKET_PORT = vaultwardenPort;
         ENABLE_WEBSOCKET = true;

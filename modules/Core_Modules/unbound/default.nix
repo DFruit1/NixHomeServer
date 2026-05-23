@@ -1,7 +1,7 @@
 { config, lib, vars, ... }:
 
 let
-  dnsCfg = config.repo.networking.dns;
+  privateHosts = config.services.unbound.privateHosts;
   loopback = vars.networking.loopbackIPv4;
   loopbackCidr = vars.networking.loopbackIPv4Cidr;
   dnsPort = vars.networking.ports.dns;
@@ -77,7 +77,7 @@ let
     lib.concatMap
       (name:
         let
-          host = dnsCfg.privateHosts.${name};
+          host = privateHosts.${name};
           published =
             if view == "lan" then
               host.publishOnLan
@@ -85,179 +85,153 @@ let
               host.publishOnNetbird;
         in
         lib.optionals published (mkARecord name (resolveTarget view host.target)))
-      (builtins.attrNames dnsCfg.privateHosts);
+      (builtins.attrNames privateHosts);
   lanHostedRecords = (mkPrivateRecordsForView "lan") ++ lanDnsHostRecords;
   netbirdHostedRecords = mkPrivateRecordsForView "netbird";
   lanLocalZones =
     [ "${vars.domain} transparent" "${lanDnsDomain} static" ]
     ++ map (zone: "${zone} static") lanReverseZones;
 in
-
 {
-  repo.networking = {
-    ports = {
-      dns-tcp = {
-        port = dnsPort;
-        protocol = "tcp";
-        bind = "private";
-        owner = "core";
-        externallyBound = true;
+  options.services.unbound.privateHosts = lib.mkOption {
+    type = lib.types.attrsOf (lib.types.submodule {
+      options = {
+        target = lib.mkOption {
+          type = lib.types.str;
+          default = "private";
+        };
+        publishOnLan = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+        };
+        publishOnNetbird = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+        };
       };
-      dns-udp = {
-        port = dnsPort;
-        protocol = "udp";
-        bind = "private";
-        owner = "core";
-        externallyBound = true;
-      };
-      dnscrypt-proxy = {
-        port = dnscryptListenPort;
-        protocol = "tcp";
-        bind = "loopback";
-        owner = "core";
-      };
-    };
+    });
+    default = { };
+    description = "Split-horizon private host records rendered into Unbound views.";
+  };
 
-    dns.privateHosts = {
+  config = {
+    services.unbound.privateHosts = {
       "${vars.domain}" = {
-        owner = "core";
         target = "private";
       };
       "www.${vars.domain}" = {
-        owner = "core";
         target = "private";
       };
       "${vars.kanidmDomain}" = {
-        owner = "core";
         target = "lan";
         publishOnLan = true;
         publishOnNetbird = false;
       };
     };
 
-    firewall.interfacePorts =
-      [
-        {
-          owner = "core-unbound";
-          interface = netbirdIface;
-          protocol = "tcp";
-          port = dnsPort;
-        }
-        {
-          owner = "core-unbound";
-          interface = netbirdIface;
-          protocol = "udp";
-          port = dnsPort;
-        }
-      ]
-      ++ lib.optionals splitDnsMode [
-        {
-          owner = "core-unbound";
-          interface = lanIface;
-          protocol = "tcp";
-          port = dnsPort;
-        }
-        {
-          owner = "core-unbound";
-          interface = lanIface;
-          protocol = "udp";
-          port = dnsPort;
-        }
-      ];
-  };
-
-  services.dnscrypt-proxy = {
-    enable = true;
-    settings = {
-      listen_addresses = [ "${dnscryptListenAddress}:${toString dnscryptListenPort}" ];
-      bootstrap_resolvers = map (resolver: "${resolver.address}:${toString resolver.port}") vars.networking.dns.bootstrapResolvers;
-      ignore_system_dns = true;
-      require_nolog = true;
-      require_nofilter = true;
-      require_dnssec = true;
-      doh_servers = true;
-      ipv4_servers = true;
-      ipv6_servers = true;
-      netprobe_timeout = 60;
-      sources = {
-        "public-resolvers" = {
-          urls = [
-            "https://download.dnscrypt.info/resolvers-list/v3/public-resolvers.md"
-            "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md"
-          ];
-          cache_file = "public-resolvers.md";
-          minisign_key = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
-        };
-      };
-      timeout = 5000;
-      keepalive = 30;
+    networking.firewall.interfaces.${netbirdIface} = {
+      allowedTCPPorts = [ dnsPort ];
+      allowedUDPPorts = [ dnsPort ];
     };
-  };
 
-  services.unbound = {
-    enable = true;
-    settings =
-      {
-        server =
-          {
-            interface = listenAddresses;
-            access-control = [
-              "${lanCidr} allow"
-              "${netbirdCidr} allow"
-              "${loopbackCidr} allow"
+    networking.firewall.interfaces.${lanIface} = lib.mkIf splitDnsMode {
+      allowedTCPPorts = [ dnsPort ];
+      allowedUDPPorts = [ dnsPort ];
+    };
+
+    services.dnscrypt-proxy = {
+      enable = true;
+      settings = {
+        listen_addresses = [ "${dnscryptListenAddress}:${toString dnscryptListenPort}" ];
+        bootstrap_resolvers = map (resolver: "${resolver.address}:${toString resolver.port}") vars.networking.dns.bootstrapResolvers;
+        ignore_system_dns = true;
+        require_nolog = true;
+        require_nofilter = true;
+        require_dnssec = true;
+        doh_servers = true;
+        ipv4_servers = true;
+        ipv6_servers = true;
+        netprobe_timeout = 60;
+        sources = {
+          "public-resolvers" = {
+            urls = [
+              "https://download.dnscrypt.info/resolvers-list/v3/public-resolvers.md"
+              "https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md"
             ];
-            verbosity = 1;
-            qname-minimisation = true;
-            harden-glue = true;
-            harden-dnssec-stripped = true;
-            prefetch = true;
-            rrset-roundrobin = true;
-            auto-trust-anchor-file = "/var/lib/unbound/root.key";
-            do-not-query-localhost = false;
-          }
-          // (
-            if splitDnsMode then
-              {
-                access-control-view = [
-                  "${lanCidr} lan"
-                  "${loopbackCidr} lan"
-                  "${netbirdCidr} netbird"
-                ];
-              }
-            else
-              {
-                local-zone = [ "${vars.domain} transparent" ];
-                local-data = netbirdHostedRecords;
-              }
-          );
-        forward-zone = [
-          ({
-            name = ".";
-            forward-addr = [ "${dnscryptListenAddress}@${toString dnscryptListenPort}" ];
-          }
-          // lib.optionalAttrs encryptedOnlyUpstreams {
-            forward-first = false;
-          })
-        ];
-      }
-      // lib.optionalAttrs splitDnsMode {
-        view = [
-          {
-            name = "lan";
-            local-zone = lanLocalZones;
-            local-data = lanHostedRecords;
-            view-first = true;
-          }
-          {
-            name = "netbird";
-            local-zone = [ "${vars.domain} transparent" ];
-            local-data = netbirdHostedRecords;
-            view-first = true;
-          }
-        ];
+            cache_file = "public-resolvers.md";
+            minisign_key = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+          };
+        };
+        timeout = 5000;
+        keepalive = 30;
       };
-  };
+    };
 
-  systemd.services.unbound.after = [ "dnscrypt-proxy.service" ];
-  systemd.services.unbound.requires = [ "dnscrypt-proxy.service" ];
+    services.unbound = {
+      enable = true;
+      settings =
+        {
+          server =
+            {
+              interface = listenAddresses;
+              access-control = [
+                "${lanCidr} allow"
+                "${netbirdCidr} allow"
+                "${loopbackCidr} allow"
+              ];
+              verbosity = 1;
+              qname-minimisation = true;
+              harden-glue = true;
+              harden-dnssec-stripped = true;
+              prefetch = true;
+              rrset-roundrobin = true;
+              auto-trust-anchor-file = "/var/lib/unbound/root.key";
+              do-not-query-localhost = false;
+            }
+            // (
+              if splitDnsMode then
+                {
+                  access-control-view = [
+                    "${lanCidr} lan"
+                    "${loopbackCidr} lan"
+                    "${netbirdCidr} netbird"
+                  ];
+                }
+              else
+                {
+                  local-zone = [ "${vars.domain} transparent" ];
+                  local-data = netbirdHostedRecords;
+                }
+            );
+          forward-zone = [
+            ({
+              name = ".";
+              forward-addr = [ "${dnscryptListenAddress}@${toString dnscryptListenPort}" ];
+            }
+            // lib.optionalAttrs encryptedOnlyUpstreams {
+              forward-first = false;
+            })
+          ];
+        }
+        // lib.optionalAttrs splitDnsMode {
+          view = [
+            {
+              name = "lan";
+              local-zone = lanLocalZones;
+              local-data = lanHostedRecords;
+              view-first = true;
+            }
+            {
+              name = "netbird";
+              local-zone = [ "${vars.domain} transparent" ];
+              local-data = netbirdHostedRecords;
+              view-first = true;
+            }
+          ];
+        };
+    };
+
+    systemd.services.unbound.after = [ "dnscrypt-proxy.service" ];
+    systemd.services.unbound.requires = [ "dnscrypt-proxy.service" ];
+  };
 }

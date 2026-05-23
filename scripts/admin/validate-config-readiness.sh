@@ -51,8 +51,8 @@ else
   finish_report
 fi
 
-settings_json="$(nix_json_for_host "$host" "removeAttrs cfg.nixhomeserver.settings [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
-apps_json="$(nix_json_for_host "$host" "cfg.nixhomeserver.apps")"
+settings_json="$(nix_json_for_host "$host" "removeAttrs flake.lib.nixhomeserverSettings.${host} [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
+caddy_hosts_json="$(nix_json_for_host "$host" "builtins.attrNames cfg.services.caddy.virtualHosts")"
 external_secrets_json="$(nix eval --json --impure --expr "builtins.attrNames ((import ${repo_root}/secrets/manifest.nix).externalSecrets)")"
 
 domain="$(jq -r '.domain' <<<"$settings_json")"
@@ -158,14 +158,11 @@ else
   ready "vars.nix -> edge.cloudflareTunnelName is ${cloudflare_tunnel}"
 fi
 
-enabled_apps="$(jq -r '.enabledApps[]?' <<<"$settings_json" | paste -sd ',' -)"
-if [[ -z "$enabled_apps" ]]; then
-  enabled_apps="$(jq -r 'to_entries[] | select(.value.enable == true) | .key' <<<"$apps_json" | paste -sd ',' -)"
-fi
-if [[ -n "$enabled_apps" ]]; then
-  ready "vars.nix -> apps enabled set: ${enabled_apps}"
+app_hosts="$(jq -r '.[] | select(. != "'"$domain"'" and . != "www.'"$domain"'" and . != "id.'"$domain"'")' <<<"$caddy_hosts_json" | paste -sd ',' -)"
+if [[ -n "$app_hosts" ]]; then
+  ready "configuration.nix imports publish app hosts: ${app_hosts}"
 else
-  warn "vars.nix -> apps has no optional apps enabled"
+  warn "configuration.nix imports publish no app Caddy hosts"
 fi
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

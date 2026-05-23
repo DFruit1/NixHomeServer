@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "wiki.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps.kiwix.enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? kiwixOauth2ProxyClientSecret;
@@ -27,12 +31,11 @@
       createHome = false;
     };
 
-    repo.identity.oauth2Clients.kiwix-web = {
-      owner = "kiwix";
+    services.kanidm.provision.systems.oauth2.kiwix-web = {
       displayName = "Kiwix";
       imageFile = ../Core_Modules/kanidm/assets/books.svg;
-      originUrl = "https://${vars.kiwixDomain}/oauth2/callback";
-      originLanding = "https://${vars.kiwixDomain}";
+      originUrl = "https://${host}/oauth2/callback";
+      originLanding = "https://${host}";
       basicSecretFile = config.age.secrets.kiwixOauth2ProxyClientSecret.path;
       preferShortUsername = true;
       scopeMaps.users = [ "openid" "profile" "email" "groups_name" ];

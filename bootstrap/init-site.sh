@@ -212,11 +212,6 @@ cat >"$default_file" <<'EOF'
     ./hardware.nix
     ../../configuration.nix
   ];
-
-  nixhomeserver.profiles = [
-    "core"
-    "files"
-  ];
 }
 EOF
 

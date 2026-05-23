@@ -1,22 +1,21 @@
-{ config, lib, vars, ... }:
+{ vars, ... }:
+
+let
+  host = "files.${vars.domain}";
+in
 
 {
-  config = lib.mkIf config.nixhomeserver.apps.files.enable {
-    users.users.filestash.extraGroups = [
-      "users"
-    ];
+  users.users.filestash.extraGroups = [
+    "users"
+  ];
 
-    repo.identity = {
-      oauth2Clients.filestash-web = {
-        owner = "files";
-        displayName = "Files";
-        imageFile = ../Core_Modules/kanidm/assets/files.svg;
-        originUrl = "https://${vars.filesDomain}/oauth2/callback";
-        originLanding = "https://${vars.filesDomain}";
-        basicSecretFile = "/run/filestash-secrets/oauth2-client-secret-kanidm";
-        preferShortUsername = true;
-        scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
-      };
-    };
+  services.kanidm.provision.systems.oauth2.filestash-web = {
+    displayName = "Files";
+    imageFile = ../Core_Modules/kanidm/assets/files.svg;
+    originUrl = "https://${host}/oauth2/callback";
+    originLanding = "https://${host}";
+    basicSecretFile = "/run/filestash-secrets/oauth2-client-secret-kanidm";
+    preferShortUsername = true;
+    scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
   };
 }

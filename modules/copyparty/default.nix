@@ -8,6 +8,5 @@
     ./services.nix
     ./bootstrap.nix
     ./backups.nix
-    ./integrations/kiwix.nix
   ];
 }

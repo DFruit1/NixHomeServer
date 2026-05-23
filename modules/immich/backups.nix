@@ -1,42 +1,39 @@
-{ config, lib, ... }:
+{ config, vars, ... }:
 
-let
-  fp = config.repo.apps.immich.filepaths;
-in
 {
-  config = lib.mkIf config.nixhomeserver.apps.immich.enable {
+  config = {
     repo.backups = {
       appStateEntries = [
         {
           app = "immich";
           component = "app";
-          stateRoot = fp.state;
-          payloadRoots = [ fp.data ];
+          stateRoot = "/var/lib/immich";
+          payloadRoots = [ vars.immichRoot ];
           notes = "Immich service state directory.";
         }
         {
           app = "immich";
           component = "postgresql";
           stateRoot = config.services.postgresql.dataDir;
-          payloadRoots = [ fp.mediaRoots.managed ];
+          payloadRoots = [ vars.immichManagedRoot ];
           notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
         }
         {
           app = "immich";
           component = "redis";
           stateRoot = config.services.redis.servers.immich.settings.dir;
-          payloadRoots = [ fp.mediaRoots.managed ];
+          payloadRoots = [ vars.immichManagedRoot ];
           notes = "Immich Redis persistence.";
         }
       ];
       criticalPaths = [
-        fp.data
-        fp.mediaRoots.managed
+        vars.immichRoot
+        vars.immichManagedRoot
       ];
       pathInventories = [
         {
           label = "immich";
-          root = fp.data;
+          root = vars.immichRoot;
         }
       ];
     };

@@ -1,7 +1,7 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  enabled = config.nixhomeserver.apps.kavita.enable;
+  enabled = true;
   kavitaPort = vars.networking.ports.kavita;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
@@ -25,7 +25,7 @@ let
   ];
 in
 {
-  config = lib.mkIf enabled {
+  config = {
     services.kavita = {
       enable = true;
       package = kavitaPackage;

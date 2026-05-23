@@ -5,9 +5,9 @@ expected to configure it through `vars.nix` or `hosts/<site>/settings.nix`, not
 swap the modules for alternate implementations.
 
 This layer owns identity, edge routing, DNS, storage, persistence, secrets,
-remote access, backup state, and runtime validation primitives. The
-`vars-options` module is the typed option bridge around `vars.nix`: it keeps
-operator-facing values in vars, while exposing `nixhomeserver.*` app/profile,
-resource, local-admin, and validation options for modules to consume. Optional
-apps outside this directory should stay modular and profile-controlled, but
-they can depend on this core being present.
+remote access, backup state, and runtime validation primitives. `vars.nix` and
+`hosts/<site>/settings.nix` are the direct configuration contract for this
+layer. Modules should read `vars` directly for app enables, resource limits,
+identity, storage, and networking values. Optional apps outside this directory
+should stay modular and are enabled by importing their module from `configuration.nix`; they can depend
+on this core being present.

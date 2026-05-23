@@ -4,7 +4,6 @@ let
   cfg = config.services.mail-archive-ui;
   user = "mail-archive-ui";
   group = "mail-archive-ui";
-  hardening = import ../lib/systemd-hardening.nix { inherit lib; };
   defaultTags = [ "new" ];
   mailArchiveUiPort = vars.networking.ports.mailArchiveUi;
   mailArchiveStoreRoot = vars.usersRoot;
@@ -45,7 +44,7 @@ in
   options.services.mail-archive-ui = {
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = config.nixhomeserver.apps."mail-archive-ui".enable;
+      default = true;
       description = "Whether to run the private mail archive UI service.";
     };
 
@@ -151,7 +150,7 @@ in
       ];
       path = mailArchiveUiPath;
 
-      serviceConfig = hardening.merge hardening.networkProxy {
+      serviceConfig = {
         Type = "simple";
         User = user;
         Group = group;
@@ -161,6 +160,20 @@ in
         Restart = "on-failure";
         UMask = "0077";
         DynamicUser = false;
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
         ReadWritePaths = [
           cfg.dataDir
           cfg.storeRoot

@@ -1,40 +1,21 @@
-{ config, lib, vars, ... }:
+{ vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
+  host = "wiki.${vars.domain}";
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.kiwix.enable {
-    repo.networking = {
-      ports = {
-        kiwix = {
-          port = vars.networking.ports.kiwix;
-          protocol = "tcp";
-          bind = "loopback";
-          owner = "kiwix";
-        };
-        oauth2-proxy-kiwix = {
-          port = vars.networking.ports.oauth2ProxyKiwix;
-          protocol = "tcp";
-          bind = "loopback";
-          owner = "kiwix";
-        };
-      };
+  services.caddy.virtualHosts.${host} = {
+    useACMEHost = vars.domain;
+    extraConfig = ''
+      reverse_proxy http://${loopback}:${toString vars.networking.ports.oauth2ProxyKiwix} {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+      }
+    '';
+  };
 
-      caddy.virtualHosts."${vars.kiwixDomain}" = {
-        owner = "kiwix";
-        extraConfig = ''
-          reverse_proxy http://${loopback}:${toString vars.networking.ports.oauth2ProxyKiwix} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      dns.privateHosts."${vars.kiwixDomain}" = {
-        owner = "kiwix";
-        target = "private";
-      };
-    };
+  services.unbound.privateHosts.${host} = {
+    target = "private";
   };
 }

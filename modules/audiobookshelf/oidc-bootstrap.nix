@@ -11,7 +11,7 @@ let
   ];
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.audiobookshelf.enable {
+  config = {
     systemd.services.audiobookshelf-oidc-bootstrap-v1 = {
       description = "Synchronize Audiobookshelf OIDC settings";
       wantedBy = [ "multi-user.target" ];

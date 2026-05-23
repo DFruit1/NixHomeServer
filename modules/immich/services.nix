@@ -1,9 +1,11 @@
 { lib, vars, config, ... }:
 
 let
-  enabled = config.nixhomeserver.apps.immich.enable;
+  enabled = true;
   immichPort = vars.networking.ports.immich;
-  resources = config.nixhomeserver.resources;
+  resources = vars.resourceLimits;
+  photosHost = "photos.${vars.domain}";
+  shareHost = "sharephotos.${vars.domain}";
 in
 {
   imports = [
@@ -11,7 +13,7 @@ in
     ./public-proxy.nix
   ];
 
-  config = lib.mkIf enabled {
+  config = {
     services.immich = {
       enable = true;
       host = vars.networking.loopbackIPv4;
@@ -19,14 +21,14 @@ in
       mediaLocation = vars.immichManagedRoot;
       user = "immich";
       group = "immich";
-      settings.server.externalDomain = "https://${vars.sharePhotosDomain}";
+      settings.server.externalDomain = "https://${shareHost}";
       settings.oauth = {
         enabled = true;
         clientId = "immich-web";
         clientSecret._secret = config.age.secrets.immichClientSecret.path;
         issuerUrl = vars.kanidmIssuer "immich-web";
         mobileOverrideEnabled = true;
-        mobileRedirectUri = "https://${vars.photosDomain}/api/oauth/mobile-redirect";
+        mobileRedirectUri = "https://${photosHost}/api/oauth/mobile-redirect";
         signingAlgorithm = "ES256";
         scope = "openid profile email immich_role";
         roleClaim = "immich_role";

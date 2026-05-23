@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "emails.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps."mail-archive-ui".enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? mailArchiveOauth2ProxyClientSecret;
@@ -22,18 +26,14 @@
       createHome = false;
     };
 
-    repo.identity = {
-      groups."mail-archive-users" = {
-        owner = "mail-archive-ui";
-        members = [ ];
-      };
+    services.kanidm.provision = {
+      groups."mail-archive-users".members = [ ];
 
-      oauth2Clients.mail-archive-web = {
-        owner = "mail-archive-ui";
+      systems.oauth2.mail-archive-web = {
         displayName = "Mail Archive";
         imageFile = ../Core_Modules/kanidm/assets/mail.svg;
-        originUrl = "https://${vars.emailsDomain}/oauth2/callback";
-        originLanding = "https://${vars.emailsDomain}";
+        originUrl = "https://${host}/oauth2/callback";
+        originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.mailArchiveOauth2ProxyClientSecret.path;
         preferShortUsername = true;
         scopeMaps."mail-archive-users" = [ "openid" "profile" "email" "groups_name" ];

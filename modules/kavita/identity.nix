@@ -1,7 +1,11 @@
 { config, lib, vars, ... }:
 
+let
+  host = "books.${vars.domain}";
+in
+
 {
-  config = lib.mkIf config.nixhomeserver.apps.kavita.enable {
+  config = {
     assertions = [
       {
         assertion = config.age.secrets ? kavitaClientSecret;
@@ -17,21 +21,17 @@
 
     users.users.kavita.extraGroups = lib.mkAfter [ "kavita-media" ];
 
-    repo.identity = {
-      groups."kavita-users" = {
-        owner = "kavita";
-        members = [ vars.kanidmAdminUser ];
-      };
+    services.kanidm.provision = {
+      groups."kavita-users".members = [ vars.kanidmAdminUser ];
 
-      oauth2Clients.kavita-web = {
-        owner = "kavita";
+      systems.oauth2.kavita-web = {
         displayName = "Books";
         imageFile = ../Core_Modules/kanidm/assets/books.svg;
         originUrl = [
-          "https://${vars.kavitaDomain}/signin-oidc"
-          "https://${vars.kavitaDomain}/signout-callback-oidc"
+          "https://${host}/signin-oidc"
+          "https://${host}/signout-callback-oidc"
         ];
-        originLanding = "https://${vars.kavitaDomain}/";
+        originLanding = "https://${host}/";
         basicSecretFile = config.age.secrets.kavitaClientSecret.path;
         preferShortUsername = true;
         scopeMaps."kavita-users" = [ "openid" "profile" "email" "kavita_roles" ];

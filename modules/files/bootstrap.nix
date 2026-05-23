@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ lib, pkgs, vars, ... }:
 
 let
   stateDir = vars.filesStateDir;
@@ -16,7 +16,7 @@ let
   pythonWithBcrypt = pkgs.python3.withPackages (ps: [ ps.bcrypt ]);
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.files.enable {
+  config = {
     systemd.services.filestash-secret-materialize = {
       description = "Materialize Filestash runtime secrets";
       wantedBy = [ "multi-user.target" ];

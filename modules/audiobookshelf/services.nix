@@ -1,7 +1,7 @@
 { config, lib, vars, ... }:
 
 let
-  enabled = config.nixhomeserver.apps.audiobookshelf.enable;
+  enabled = true;
   audiobookshelfPort = vars.networking.ports.audiobookshelf;
   dataDirName = "audiobookshelf";
 in
@@ -10,7 +10,7 @@ in
     ./library-watch.nix
   ];
 
-  config = lib.mkIf enabled {
+  config = {
     services.audiobookshelf = {
       enable = true;
       dataDir = dataDirName;

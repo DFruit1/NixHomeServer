@@ -1,7 +1,7 @@
 { lib, config, vars, copyparty, ... }:
 
 let
-  enabled = config.nixhomeserver.apps.copyparty.enable;
+  enabled = true;
   copypartyPort = vars.networking.ports.copyparty;
   loopback = vars.networking.loopbackIPv4;
 in
@@ -13,7 +13,7 @@ in
     ./upload-processing.nix
   ];
 
-  config = lib.mkIf enabled {
+  config = {
     nixpkgs.overlays = [ copyparty.overlays.default ];
 
     services.copyparty = {

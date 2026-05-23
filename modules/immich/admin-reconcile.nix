@@ -114,7 +114,7 @@ let
   };
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.immich.enable {
+  config = {
     systemd.services.immich-admin-reconcile = {
       description = "Reconcile Immich admin users from Kanidm group membership";
       wantedBy = [ "multi-user.target" ];

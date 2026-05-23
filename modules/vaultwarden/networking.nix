@@ -1,32 +1,21 @@
-{ config, lib, vars, ... }:
+{ vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
+  host = "passwords.${vars.domain}";
 in
 {
-  config = lib.mkIf config.nixhomeserver.apps.vaultwarden.enable {
-    repo.networking = {
-      ports.vaultwarden = {
-        port = vars.networking.ports.vaultwarden;
-        protocol = "tcp";
-        bind = "loopback";
-        owner = "vaultwarden";
-      };
+  services.caddy.virtualHosts.${host} = {
+    useACMEHost = vars.domain;
+    extraConfig = ''
+      reverse_proxy http://${loopback}:${toString vars.networking.ports.vaultwarden} {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Host {host}
+      }
+    '';
+  };
 
-      caddy.virtualHosts."${vars.vaultwardenDomain}" = {
-        owner = "vaultwarden";
-        extraConfig = ''
-          reverse_proxy http://${loopback}:${toString vars.networking.ports.vaultwarden} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host {host}
-          }
-        '';
-      };
-
-      dns.privateHosts."${vars.vaultwardenDomain}" = {
-        owner = "vaultwarden";
-        target = "private";
-      };
-    };
+  services.unbound.privateHosts.${host} = {
+    target = "private";
   };
 }
