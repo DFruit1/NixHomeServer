@@ -1,13 +1,18 @@
-{ config, lib, pkgs, utils, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   cfg = config.services.kanidm;
-  chrootRoot = "/srv/files-sftp/chroot";
+  chrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
   authorizedKeysCommand = "/etc/ssh/kanidm_ssh_authorizedkeys";
-  sftpGroup = "user-files@${vars.domain}";
-  sftpUsers = "${vars.kanidmAdminUser},${vars.kanidmAdminUser}@${vars.domain}";
+  sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  sftpGroup = "${sftpAccessGroup}@${vars.domain}";
+  sftpUsers = vars.filesSftpUsers or [ ];
+  sftpUserPrincipals =
+    lib.concatStringsSep ","
+      (sftpUsers ++ map (user: "${user}@${vars.domain}") sftpUsers);
   sftpMatchConfig = ''
-    ChrootDirectory ${chrootRoot}
+    ChrootDirectory ${chrootBase}/%u
     ForceCommand internal-sftp -d /
     AllowTcpForwarding no
     X11Forwarding no
@@ -15,16 +20,6 @@ let
     PasswordAuthentication no
     KbdInteractiveAuthentication no
   '';
-  personalMountUnit = "${utils.escapeSystemdPath "${chrootRoot}/Personal"}.mount";
-  sharedMountUnit = "${utils.escapeSystemdPath "${chrootRoot}/Shared"}.mount";
-  bindMountOptions = [
-    "bind"
-    "x-systemd.requires=files-sftp-chroot-layout.service"
-    "x-systemd.after=files-sftp-chroot-layout.service"
-    "x-systemd.requires=data-pool-layout.service"
-    "x-systemd.after=data-pool-layout.service"
-    "x-systemd.before=sshd.service"
-  ];
 in
 {
   services.kanidm = {
@@ -36,9 +31,15 @@ in
       home_alias = "name";
       # The pinned NixOS module exposes the old top-level option, while the
       # Kanidm 1.9 unix daemon expects this under [kanidm] for version 2.
-      pam_allowed_login_groups = [ "user-files" ];
+      pam_allowed_login_groups = [
+        webAccessGroup
+        sftpAccessGroup
+      ];
       kanidm = {
-        pam_allowed_login_groups = [ "user-files" ];
+        pam_allowed_login_groups = [
+          webAccessGroup
+          sftpAccessGroup
+        ];
       };
     };
   };
@@ -50,8 +51,10 @@ in
       AuthorizedKeysCommandUser = "nobody";
     };
     extraConfig = lib.mkAfter ''
-      Match User ${sftpUsers}
+      ${lib.optionalString (sftpUserPrincipals != "") ''
+      Match User ${sftpUserPrincipals}
       ${sftpMatchConfig}
+      ''}
 
       Match Group ${sftpGroup}
       ${sftpMatchConfig}
@@ -76,49 +79,30 @@ in
 
   systemd.tmpfiles.rules = [
     "d /srv/files-sftp 0755 root root -"
-    "d ${chrootRoot} 0755 root root -"
-    "d ${chrootRoot}/Personal 0755 root root -"
-    "d ${chrootRoot}/Shared 0755 root root -"
+    "d ${chrootBase} 0755 root root -"
   ];
 
   systemd.services.files-sftp-chroot-layout = {
-    description = "Create Filestash SFTP chroot mountpoints";
+    description = "Create Files SFTP chroot base";
     wantedBy = [ "multi-user.target" ];
-    before = [
-      personalMountUnit
-      sharedMountUnit
-    ];
+    before = [ "sshd.service" ];
     serviceConfig.Type = "oneshot";
     script = ''
       ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root /srv/files-sftp
-      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${chrootRoot}
-      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${chrootRoot}/Personal
-      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${chrootRoot}/Shared
+      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${chrootBase}
     '';
-  };
-
-  fileSystems."${chrootRoot}/Personal" = {
-    device = vars.usersRoot;
-    fsType = "none";
-    options = bindMountOptions;
-  };
-
-  fileSystems."${chrootRoot}/Shared" = {
-    device = vars.sharedRoot;
-    fsType = "none";
-    options = bindMountOptions;
   };
 
   systemd.services.sshd = {
     wants = [
-      personalMountUnit
-      sharedMountUnit
+      "files-sftp-chroot-layout.service"
+      "fileshare-user-root-sync.service"
       "kanidm-unixd.service"
       "kanidm-ssh-authorizedkeys-wrapper.service"
     ];
     after = [
-      personalMountUnit
-      sharedMountUnit
+      "files-sftp-chroot-layout.service"
+      "fileshare-user-root-sync.service"
       "kanidm-unixd.service"
       "kanidm-ssh-authorizedkeys-wrapper.service"
     ];

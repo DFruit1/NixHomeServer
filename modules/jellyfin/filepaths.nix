@@ -1,12 +1,92 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
-  sharedJellyfinDirs = map (library: "${vars.sharedVideosRoot}/${library.dir}") vars.sharedJellyfinLibraries;
+  cfg = config.repo.jellyfin;
+  defaultVideoLibraries = [
+    {
+      dir = "movies";
+      collectionType = "movies";
+      label = "Movies";
+    }
+    {
+      dir = "shows";
+      collectionType = "tvshows";
+      label = "Shows";
+    }
+    {
+      dir = "home";
+      collectionType = "homevideos";
+      label = "Home Videos";
+    }
+    {
+      dir = "music-videos";
+      collectionType = "musicvideos";
+      label = "Music Videos";
+    }
+    {
+      dir = "youtube";
+      collectionType = "homevideos";
+      label = "YouTube";
+    }
+  ];
+  libraryType = lib.types.submodule {
+    options = {
+      dir = lib.mkOption { type = lib.types.str; };
+      collectionType = lib.mkOption { type = lib.types.str; };
+      label = lib.mkOption { type = lib.types.str; };
+    };
+  };
+  userVideoSubdirs = map (library: library.dir) cfg.libraries.personal;
+  sharedJellyfinDirs = map (library: "${cfg.paths.sharedVideosRoot}/${library.dir}") cfg.libraries.shared;
   logDir = "/var/lib/jellyfin/log";
 in
 {
+  options.repo.jellyfin = {
+    libraries = {
+      video = lib.mkOption {
+        type = lib.types.listOf libraryType;
+        default = defaultVideoLibraries;
+        description = "Default Jellyfin video library definitions.";
+      };
+
+      personal = lib.mkOption {
+        type = lib.types.listOf libraryType;
+        default = defaultVideoLibraries;
+        description = "Jellyfin library definitions provisioned below each user's videos directory.";
+      };
+
+      shared = lib.mkOption {
+        type = lib.types.listOf libraryType;
+        default = defaultVideoLibraries;
+        description = "Jellyfin library definitions provisioned below the shared videos directory.";
+      };
+
+      sharedMusic = lib.mkOption {
+        type = lib.types.listOf libraryType;
+        default = [ ];
+        description = "Jellyfin music library definitions provisioned below the shared music directory.";
+      };
+    };
+
+    paths = {
+      sharedVideosRoot = lib.mkOption {
+        type = lib.types.str;
+        default = "${vars.sharedRoot}/videos";
+        description = "Shared Jellyfin videos root.";
+      };
+
+      sharedMusicRoot = lib.mkOption {
+        type = lib.types.str;
+        default = "${vars.sharedRoot}/music";
+        description = "Shared Jellyfin music root.";
+      };
+    };
+  };
+
   config = {
     repo.storage.userRoots = {
+      contentSubdirs = [ "videos" ];
+      videoSubdirs = userVideoSubdirs;
       memberGroups = [
         "jellyfin-users"
       ];
@@ -20,6 +100,8 @@ in
         }
       ];
     };
+
+    repo.storage.sharedRoots.contentSubdirs = [ "videos" ];
 
     systemd.tmpfiles.rules = [
       "d ${logDir} 0750 jellyfin jellyfin -"
@@ -44,7 +126,7 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 2775 -o root -g users ${vars.sharedVideosRoot}
+        install -d -m 2775 -o root -g users ${cfg.paths.sharedVideosRoot}
         for path in ${lib.escapeShellArgs sharedJellyfinDirs}; do
           install -d -m 2775 -o root -g users "$path"
         done

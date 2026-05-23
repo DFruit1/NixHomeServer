@@ -1,9 +1,9 @@
-{ lib, vars, ... }:
+{ config, lib, ... }:
 
 {
   users.users.filestash.extraGroups = lib.mkAfter [ "kiwix" ];
 
   systemd.services.filestash.serviceConfig.ReadWritePaths = lib.mkAfter [
-    vars.kiwixLibraryRoot
+    config.services.kiwixServe.libraryRoot
   ];
 }

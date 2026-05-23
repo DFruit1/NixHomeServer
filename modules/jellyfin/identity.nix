@@ -5,5 +5,5 @@
 
   users.users.jellyfin.extraGroups = lib.mkAfter [ "jellyfin-media" ];
 
-  services.kanidm.provision.groups."jellyfin-users".members = [ vars.kanidmAdminUser ];
+  services.kanidm.provision.groups."jellyfin-users".members = vars.kanidmAppUsers;
 }

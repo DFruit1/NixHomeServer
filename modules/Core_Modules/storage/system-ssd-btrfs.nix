@@ -17,7 +17,7 @@ in
   fileSystems."/" = {
     device = lib.mkDefault "${systemDisk}-part2";
     fsType = lib.mkDefault "btrfs";
-    options = lib.mkDefault (btrfsOptions rootSubvolume);
+    options = btrfsOptions rootSubvolume;
   };
 
   fileSystems."/boot" = {
@@ -28,13 +28,13 @@ in
   fileSystems."/nix" = {
     device = lib.mkDefault "${systemDisk}-part2";
     fsType = lib.mkDefault "btrfs";
-    options = lib.mkDefault (btrfsOptions "/nix");
+    options = btrfsOptions "/nix";
   };
 
   fileSystems."/persist" = {
     device = lib.mkDefault "${systemDisk}-part2";
     fsType = lib.mkDefault "btrfs";
-    options = lib.mkDefault (btrfsOptions "/persist");
+    options = btrfsOptions "/persist";
     neededForBoot = true;
   };
 

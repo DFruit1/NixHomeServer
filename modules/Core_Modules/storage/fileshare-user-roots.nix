@@ -4,17 +4,27 @@ let
   cfg = config.repo.storage.userRoots;
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  memberGroups = lib.unique cfg.memberGroups;
-  userContentSubdirs = lib.escapeShellArgs vars.userContentSubdirs;
-  userBooksSubdirs = lib.escapeShellArgs vars.userBooksSubdirs;
-  userVideoSubdirs = lib.escapeShellArgs vars.userVideoSubdirs;
-  userBookWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') vars.userBooksSubdirs;
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
+  sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
+  sharedMountName = vars.fileAccess.sharedMountName or "_Shared";
+  sftpChrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
+  memberGroups = lib.unique (cfg.memberGroups ++ [
+    webAccessGroup
+    sftpAccessGroup
+  ]);
+  userContentSubdirs = lib.escapeShellArgs cfg.contentSubdirs;
+  userBooksSubdirs = lib.escapeShellArgs cfg.bookSubdirs;
+  userVideoSubdirs = lib.escapeShellArgs cfg.videoSubdirs;
+  userBookWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') cfg.bookSubdirs;
   fileshareUserRootSyncPath = with pkgs; [
     acl
     coreutils
     findutils
     jq
     kanidm_1_9
+    systemd
+    util-linux
   ];
 
   mkPerUserDirCommand =
@@ -176,32 +186,112 @@ let
     KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
     export KANIDM_PASSWORD
 
-    members_json="$(
-      ${pkgs.kanidm_1_9}/bin/kanidm login \
+    group_members() {
+      local group_name="$1"
+
+      if group_json="$(
+        ${pkgs.kanidm_1_9}/bin/kanidm group get \
+          "$group_name" \
+          -H ${kanidmCliUrl} \
+          -D idm_admin \
+          -o json
+      )"; then
+        printf '%s\n' "$group_json" | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]'
+      fi
+    }
+
+    service_instance() {
+      local template="$1"
+      local username="$2"
+
+      ${pkgs.systemd}/bin/systemd-escape --template="$template" "$username"
+    }
+
+    ${pkgs.kanidm_1_9}/bin/kanidm login \
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 
+    members_json="$(
       for group_name in ${lib.escapeShellArgs memberGroups}; do
-        if group_json="$(
-          ${pkgs.kanidm_1_9}/bin/kanidm group get \
-            "$group_name" \
-            -H ${kanidmCliUrl} \
-            -D idm_admin \
-            -o json
-        )"; then
-          printf '%s\n' "$group_json" | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]'
-        fi
+        group_members "$group_name"
       done | ${pkgs.coreutils}/bin/sort -u
     )"
+
+    shared_members_json="$(
+      group_members ${lib.escapeShellArg sharedAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+    )"
+
+    sftp_members_json="$(
+      group_members ${lib.escapeShellArg sftpAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+    )"
+
+    declare -A shared_members=()
+    while IFS= read -r username; do
+      [[ -n "$username" ]] || continue
+      shared_members["$username"]=1
+    done <<<"$shared_members_json"
+
+    declare -A sftp_members=()
+    while IFS= read -r username; do
+      [[ -n "$username" ]] || continue
+      sftp_members["$username"]=1
+    done <<<"$sftp_members_json"
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
       ${prepareUserRoot} "$username"
+
+      if [[ -n "''${shared_members[$username]:-}" ]]; then
+        install -d -m 0755 -o root -g root ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg sharedMountName}
+        ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-shared-bindfs@.service "$username")"
+      fi
+
+      if [[ -n "''${sftp_members[$username]:-}" ]]; then
+        install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpChrootBase}/"$username"
+        ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-sftp-user-root@.service "$username")"
+      fi
     done <<<"$members_json"
+
+    while IFS= read -r -d "" shared_mount; do
+      username="$(basename "$(dirname "$shared_mount")")"
+      if [[ -z "''${shared_members[$username]:-}" ]]; then
+        ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-bindfs@.service "$username")" || true
+        if ! ${pkgs.util-linux}/bin/mountpoint -q "$shared_mount"; then
+          rmdir --ignore-fail-on-non-empty "$shared_mount" || true
+        fi
+      fi
+    done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name ${lib.escapeShellArg sharedMountName} -print0)
+
+    if [[ -d ${lib.escapeShellArg sftpChrootBase} ]]; then
+      while IFS= read -r -d "" chroot_path; do
+        username="$(basename "$chroot_path")"
+        if [[ -z "''${sftp_members[$username]:-}" ]]; then
+          ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-sftp-user-root@.service "$username")" || true
+        fi
+      done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg sftpChrootBase} -mindepth 1 -maxdepth 1 -type d -print0)
+    fi
   '';
 in
 {
   options.repo.storage.userRoots = {
+    contentSubdirs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = vars.userContentSubdirs or [ ];
+      description = "Top-level content directories to create in each fileshare user root.";
+    };
+
+    bookSubdirs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Book library subdirectories to create under each user's books directory.";
+    };
+
+    videoSubdirs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Video library subdirectories to create under each user's videos directory.";
+    };
+
     memberGroups = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -272,6 +362,16 @@ in
   };
 
   config = {
+    programs.fuse.userAllowOther = true;
+
+    environment.systemPackages = [
+      pkgs.bindfs
+    ];
+
+    systemd.tmpfiles.rules = [
+      "d ${sftpChrootBase} 0755 root root -"
+    ];
+
     systemd.services.fileshare-user-root-sync = {
       description = "Create per-user fileshare content and upload roots from Kanidm group membership";
       wantedBy = [ "multi-user.target" ];
@@ -292,6 +392,44 @@ in
       script = ''
         ${syncFileshareUserRoots}
       '';
+    };
+
+    systemd.services."files-shared-bindfs@" = {
+      description = "Mount delete-protected shared files view for %i";
+      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%i/${sharedMountName}";
+      requires = [
+        "data-pool-layout.service"
+        "fileshare-user-root-sync.service"
+      ];
+      after = [
+        "data-pool-layout.service"
+        "fileshare-user-root-sync.service"
+      ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${sharedMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
+        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${sharedMountName}";
+        Restart = "on-failure";
+      };
+    };
+
+    systemd.services."files-sftp-user-root@" = {
+      description = "Bind per-user files root into the SFTP chroot for %i";
+      requires = [ "data-pool-layout.service" ];
+      wants = [ "files-shared-bindfs@%i.service" ];
+      after = [
+        "data-pool-layout.service"
+        "fileshare-user-root-sync.service"
+        "files-shared-bindfs@%i.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${sftpChrootBase}/%i";
+        ExecStart = "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%i ${sftpChrootBase}/%i";
+        ExecStop = "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%i";
+      };
     };
   };
 }

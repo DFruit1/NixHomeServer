@@ -8,7 +8,7 @@ let
   immichRuntime = {
     dbUrl = "postgresql:///${immichDbName}?host=/run/postgresql";
     configFile = "/run/immich/config.json";
-    mediaLocation = vars.immichManagedRoot;
+    mediaLocation = config.repo.immich.paths.managed;
     redisSocket = "/run/redis-immich/redis.sock";
   };
   immichAdminReconcileInputs = with pkgs; [

@@ -1,4 +1,4 @@
-{ vars, ... }:
+{ config, vars, ... }:
 
 {
   config = {
@@ -6,7 +6,7 @@
       {
         app = "filestash";
         component = "app";
-        stateRoot = vars.filesStateDir;
+        stateRoot = config.repo.files.paths.stateDir;
         payloadRoots = [
           vars.usersRoot
           vars.sharedRoot

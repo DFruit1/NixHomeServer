@@ -2,6 +2,11 @@
 
 let
   cfg = vars.powerManagement;
+  nightlySuspend = cfg.nightlySuspend or {
+    enable = false;
+    calendar = cfg.suspendCalendar or "*-*-* 04:30:00";
+    wakeTime = cfg.wakeTime or "06:00";
+  };
   usbCfg = cfg.usbAutoSuspend;
   kernelPackages = config.boot.kernelPackages;
 
@@ -29,7 +34,7 @@ let
       "";
 
   blockerUnits = lib.escapeShellArgs cfg.blockerUnits;
-  wakeTime = lib.escapeShellArg cfg.wakeTime;
+  wakeTime = lib.escapeShellArg nightlySuspend.wakeTime;
   nightlySuspendPath = with pkgs; [
     coreutils
     gawk
@@ -50,7 +55,7 @@ let
       kernelPackages.turbostat
     ];
 in
-lib.mkIf cfg.enable {
+lib.mkIf cfg.enable ({
   networking.interfaces.${cfg.wakeOnLan.interface}.wakeOnLan = lib.mkIf cfg.wakeOnLan.enable {
     enable = true;
     policy = cfg.wakeOnLan.policy;
@@ -65,7 +70,7 @@ lib.mkIf cfg.enable {
   services.fstrim.enable = true;
   services.fstrim.interval = cfg.fstrimCalendar;
   services.udev.extraRules = lib.mkIf usbCfg.enable usbAutoSuspendRules;
-
+} // lib.optionalAttrs nightlySuspend.enable {
   systemd.sleep.extraConfig = ''
     AllowSuspend=yes
     AllowHibernation=no
@@ -126,8 +131,8 @@ lib.mkIf cfg.enable {
     description = "Suspend the server each night outside the declared maintenance window";
     wantedBy = [ "timers.target" ];
     timerConfig = {
-      OnCalendar = cfg.suspendCalendar;
+      OnCalendar = nightlySuspend.calendar;
       Persistent = false;
     };
   };
-}
+})

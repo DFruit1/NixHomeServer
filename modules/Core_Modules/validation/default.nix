@@ -61,6 +61,32 @@ let
   validHostId =
     builtins.stringLength vars.hostId == 8
     && lib.all (char: builtins.elem char hexChars) hostIdChars;
+  kanidmAdminMailAddresses =
+    if vars.kanidmAdminMailAddresses != [ ] then
+      vars.kanidmAdminMailAddresses
+    else
+      [ vars.kanidmAdminEmail ];
+  kanidmAppUserMailAddresses = lib.attrValues vars.kanidmAppUserEmails;
+  kanidmAdminAppUserMailConflicts =
+    lib.intersectLists kanidmAdminMailAddresses kanidmAppUserMailAddresses;
+  fileSystemHasOption = mountPoint: option:
+    builtins.elem option (config.fileSystems.${mountPoint}.options or [ ]);
+  fileAccessGids = lib.attrValues vars.fileAccessPosixGids;
+  uniqueFileAccessGids = lib.unique fileAccessGids;
+  sharedMountName = vars.fileAccess.sharedMountName or "";
+  filestashEnabled = config.services.filestash.enable or false;
+  filestashPackageHasProxyAuth =
+    !filestashEnabled
+    || (config.services.filestash.package.proxyAuthPlugin or false);
+  filestashBackendParams =
+    builtins.fromJSON (config.services.filestash.settings.middleware.attribute_mapping.params or "{}");
+  filestashBackendPaths =
+    (map (backend: backend.path or "") (lib.attrValues filestashBackendParams))
+    ++ (map (connection: connection.path or "") (config.services.filestash.settings.connections or [ ]));
+  directFilestashSharedPaths =
+    lib.filter
+      (path: path == vars.sharedRoot || lib.hasPrefix "${vars.sharedRoot}/" path)
+      filestashBackendPaths;
 in
 {
   assertions = [
@@ -93,6 +119,14 @@ in
       message = "nixhomeserver: system.hostId must be exactly 8 lowercase hexadecimal characters.";
     }
     {
+      assertion = vars.kanidmAdminUser != vars.localAdminUser;
+      message = "nixhomeserver: identity.adminUser must be a dedicated Kanidm operator account, not the local Unix admin '${vars.localAdminUser}'.";
+    }
+    {
+      assertion = kanidmAdminAppUserMailConflicts == [ ];
+      message = "nixhomeserver: identity.adminMailAddresses must not reuse an address assigned in identity.appUserEmails: ${lib.concatStringsSep ", " kanidmAdminAppUserMailConflicts}";
+    }
+    {
       assertion = builtins.elem vars.dnsMode [ "split-horizon" "netbird-only" ];
       message = "nixhomeserver: dnsMode must be either split-horizon or netbird-only.";
     }
@@ -119,6 +153,40 @@ in
     {
       assertion = insecureOauth2Urls == [ ];
       message = "nixhomeserver: OAuth2 URLs must use https unless allowInsecureUrls is set: ${lib.concatStringsSep "; " insecureOauth2Urls}";
+    }
+    {
+      assertion =
+        fileSystemHasOption "/" "subvol=/"
+        || fileSystemHasOption "/" "subvol=${config.repo.impermanence.rootSubvolume}";
+      message = "nixhomeserver: root Btrfs mount must retain its subvol option in the initrd.";
+    }
+    {
+      assertion = fileSystemHasOption "/nix" "subvol=/nix";
+      message = "nixhomeserver: /nix Btrfs mount must retain subvol=/nix in the initrd.";
+    }
+    {
+      assertion = fileSystemHasOption "/persist" "subvol=/persist";
+      message = "nixhomeserver: /persist Btrfs mount must retain subvol=/persist in the initrd.";
+    }
+    {
+      assertion = builtins.length fileAccessGids == builtins.length uniqueFileAccessGids;
+      message = "nixhomeserver: vars.fileAccessPosixGids contains duplicate GID values.";
+    }
+    {
+      assertion = sharedMountName != "" && !(lib.hasInfix "/" sharedMountName);
+      message = "nixhomeserver: vars.fileAccess.sharedMountName must be a non-empty path name, not a path.";
+    }
+    {
+      assertion = lib.hasPrefix "_" sharedMountName;
+      message = "nixhomeserver: vars.fileAccess.sharedMountName should start with '_' so the shared view sorts first and reads as special.";
+    }
+    {
+      assertion = filestashPackageHasProxyAuth;
+      message = "nixhomeserver: Filestash must be built with the proxy authentication plugin.";
+    }
+    {
+      assertion = directFilestashSharedPaths == [ ];
+      message = "nixhomeserver: Filestash must not expose vars.sharedRoot directly; use the per-user protected shared mount instead.";
     }
   ];
 }

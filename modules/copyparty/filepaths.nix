@@ -1,5 +1,8 @@
 { lib, pkgs, vars, ... }:
 
+let
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+in
 {
   config = {
     repo.storage.dataPool = {
@@ -34,7 +37,7 @@
 
     repo.storage.userRoots = {
       memberGroups = [
-        "user-files"
+        webAccessGroup
       ];
       perUserDirectories = [
         {

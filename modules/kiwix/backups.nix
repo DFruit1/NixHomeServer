@@ -1,21 +1,25 @@
-{ vars, ... }:
+{ config, ... }:
+
+let
+  libraryRoot = config.services.kiwixServe.libraryRoot;
+in
 
 {
   config = {
     repo.backups = {
       criticalPaths = [
-        vars.kiwixLibraryRoot
+        libraryRoot
       ];
       pathInventories = [
         {
           label = "kiwix";
-          root = vars.kiwixLibraryRoot;
+          root = libraryRoot;
         }
       ];
       pathRows.upload-flow-roots = [
         {
           label = "kiwix-library";
-          path = vars.kiwixLibraryRoot;
+          path = libraryRoot;
           owner = "kiwix";
         }
       ];

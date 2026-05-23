@@ -22,7 +22,7 @@ in
     };
 
     services.kanidm.provision = {
-      groups."paperless-users".members = [ vars.kanidmAdminUser ];
+      groups."paperless-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.paperless-web = {
         displayName = "Documents";

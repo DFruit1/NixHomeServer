@@ -1,5 +1,8 @@
-{ config, vars, ... }:
+{ config, ... }:
 
+let
+  paths = config.repo.paperless.paths;
+in
 {
   config = {
     repo.backups = {
@@ -8,43 +11,43 @@
           app = "paperless";
           component = "app";
           stateRoot = "/var/lib/paperless";
-          payloadRoots = [ vars.paperlessRoot ];
+          payloadRoots = [ paths.root ];
           notes = "Application state and local metadata.";
         }
         {
           app = "paperless";
           component = "redis";
           stateRoot = config.services.redis.servers.paperless.settings.dir;
-          payloadRoots = [ vars.paperlessRoot ];
+          payloadRoots = [ paths.root ];
           notes = "Paperless Redis persistence.";
         }
       ];
       criticalPaths = [
-        vars.paperlessRoot
-        vars.paperlessInboxRoot
-        vars.paperlessArchiveRoot
-        vars.paperlessExportRoot
+        paths.root
+        paths.inbox
+        paths.archive
+        paths.export
       ];
       pathInventories = [
         {
           label = "paperless";
-          root = vars.paperlessRoot;
+          root = paths.root;
         }
       ];
       pathRows.upload-flow-roots = [
         {
           label = "paperless-inbox";
-          path = vars.paperlessInboxRoot;
+          path = paths.inbox;
           owner = "paperless";
         }
         {
           label = "paperless-archive";
-          path = vars.paperlessArchiveRoot;
+          path = paths.archive;
           owner = "paperless";
         }
         {
           label = "paperless-export";
-          path = vars.paperlessExportRoot;
+          path = paths.export;
           owner = "paperless";
         }
       ];

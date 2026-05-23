@@ -63,7 +63,7 @@ in
 
     libraryRoot = lib.mkOption {
       type = lib.types.str;
-      default = vars.kiwixLibraryRoot;
+      default = config.repo.kiwix.paths.libraryRoot;
       description = "Directory containing uploaded ZIM files.";
     };
 
@@ -94,6 +94,12 @@ in
       default = kiwixStateDirDefault;
       description = "Writable directory containing the generated Kiwix library catalog.";
     };
+  };
+
+  options.repo.kiwix.paths.libraryRoot = lib.mkOption {
+    type = lib.types.str;
+    default = "${vars.dataRoot}/kiwix";
+    description = "Kiwix uploaded ZIM library root.";
   };
 
   config = lib.mkIf cfg.enable {

@@ -24,13 +24,13 @@ let
   sharedLibraries = map
     (library: library // {
       name = "Shared ${library.label}";
-      path = "${vars.sharedVideosRoot}/${library.dir}";
+      path = "${config.repo.jellyfin.paths.sharedVideosRoot}/${library.dir}";
       owner = null;
     })
-    vars.sharedJellyfinLibraries;
+    config.repo.jellyfin.libraries.shared;
   sharedLibrariesJson = builtins.toJSON sharedLibraries;
-  personalLibrariesJson = builtins.toJSON vars.personalJellyfinLibraries;
-  jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or [ vars.kanidmAdminUser ]);
+  personalLibrariesJson = builtins.toJSON config.repo.jellyfin.libraries.personal;
+  jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or vars.kanidmAppAdminUsers);
   jellyfinLibraryBootstrapPath = with pkgs; [
     coreutils
     curl

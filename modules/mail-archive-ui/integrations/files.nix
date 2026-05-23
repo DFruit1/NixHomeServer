@@ -1,4 +1,4 @@
-{ lib, vars, ... }:
+{ config, lib, ... }:
 
 {
   services.mail-archive-ui.visibleMirrorReadGroup = lib.mkDefault "filestash";
@@ -7,6 +7,6 @@
     setfacl \
       -m 'g:filestash:r-x' \
       -m 'd:g:filestash:r-x' \
-      '${vars.sharedEmailsRoot}'
+      '${config.repo.mailArchiveUi.paths.sharedEmailsRoot}'
   '';
 }

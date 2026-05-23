@@ -9,7 +9,9 @@ let
   stateDir = "${stateRoot}/state";
   cacheRoot = "/var/cache/youtube-downloader";
   tempDir = "${cacheRoot}/tmp";
-  sharedAudioRoot = "${vars.sharedAudiobooksRoot}/youtube";
+  sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/youtube";
+  sharedAudiobooksRoot = config.repo.audiobookshelf.paths.sharedAudiobooksRoot;
+  sharedAudioRoot = "${sharedAudiobooksRoot}/youtube";
   youtubeDownloader = pkgs.callPackage ../../node/apps/youtube-downloader { };
   resources = vars.resourceLimits;
   host = "ytdownload.${vars.domain}";
@@ -40,11 +42,11 @@ in
           YOUTUBE_DOWNLOADER_STATE_DIR = stateDir;
           YOUTUBE_DOWNLOADER_DATABASE = "${stateDir}/youtube-downloader.sqlite";
           YOUTUBE_DOWNLOADER_TEMP_DIR = tempDir;
-          YOUTUBE_DOWNLOADER_SHARED_VIDEO_ROOT = vars.sharedYouTubeRoot;
+          YOUTUBE_DOWNLOADER_SHARED_VIDEO_ROOT = sharedVideoRoot;
           YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT = sharedAudioRoot;
           YOUTUBE_DOWNLOADER_USERS_ROOT = vars.usersRoot;
           YOUTUBE_DOWNLOADER_CONCURRENCY = "1";
-          YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP = "user-files";
+          YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP = vars.fileAccess.sharedAccessGroup or "files-shared-users";
         };
         serviceConfig = {
           Type = "simple";
@@ -63,8 +65,8 @@ in
           ReadWritePaths = [
             stateRoot
             cacheRoot
-            vars.sharedYouTubeRoot
-            vars.sharedAudiobooksRoot
+            sharedVideoRoot
+            sharedAudiobooksRoot
             vars.usersRoot
           ];
           CPUQuota = resources.youtubeDownloader.cpuQuota;

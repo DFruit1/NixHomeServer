@@ -4,6 +4,7 @@ let
   paperlessPort = vars.networking.ports.paperless;
   dataDir = "/var/lib/paperless";
   paperlessHost = "paperless.${vars.domain}";
+  paths = config.repo.paperless.paths;
   blockedOfficeExtensions = [
     "doc"
     "dot"
@@ -64,13 +65,13 @@ in
       enable = true;
       configureTika = true;
       dataDir = dataDir;
-      mediaDir = vars.paperlessArchiveRoot;
-      consumptionDir = vars.paperlessInboxRoot;
+      mediaDir = paths.archive;
+      consumptionDir = paths.inbox;
       address = vars.networking.loopbackIPv4;
       port = paperlessPort;
       exporter = {
         enable = true;
-        directory = vars.paperlessExportRoot;
+        directory = paths.export;
         onCalendar = "02:00";
       };
 
@@ -83,7 +84,7 @@ in
         PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
         PAPERLESS_URL = "https://${paperlessHost}";
         PAPERLESS_ALLOWED_HOSTS = paperlessHost;
-        PAPERLESS_EXPORT_DIR = vars.paperlessExportRoot;
+        PAPERLESS_EXPORT_DIR = paths.export;
         PAPERLESS_OCR_LANGUAGE = "eng";
         PAPERLESS_OCR_CLEAN = "clean";
         PAPERLESS_OCR_OUTPUT_TYPE = "pdfa";

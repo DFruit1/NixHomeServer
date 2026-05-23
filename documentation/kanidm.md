@@ -174,8 +174,9 @@ kanidm-admin membership set "$NEW_USER" --allow-empty
 ```
 
 File-access group model:
-- `user-files` grants access to Copyparty uploads, Filestash, SFTP, personal files, and shared files.
-- In the current single Filestash instance, this group is intentionally the only human group that exposes `/shared/*`.
+- `user-files` grants browser file access through Copyparty and Filestash and provisions a personal file root.
+- `files-sftp-users` grants restricted SFTP login into the user's personal file root.
+- `files-shared-users` adds `_Shared` inside that personal root. `_Shared` is a delete-protected shared view; users can read, write, edit, and rename there, but deletes must be performed by an admin directly against the real shared path.
 
 Expected result:
 - `membership add` and `membership remove` work against live-discovered groups instead of a hardcoded Rust list
@@ -191,11 +192,13 @@ Normal onboarding sequence:
 1. Create the person.
 2. Add them to `users`.
 3. Add only the live groups they need for file, app, or admin access.
-4. For personal file access, add `user-files` explicitly.
-6. Add `app-admin` only when they should be an application operator in the apps they already use.
-7. Bootstrap `system_admins` manually with the regular `kanidm` CLI only when someone truly needs high-authority server administration.
-8. If they should use the shared password manager, invite their Kanidm primary email into Vaultwarden with `kanidm-admin local vaultwarden invite "$NEW_USER"`. This does not grant Kanidm app access.
-9. Have them sign into the target app so first-login provisioning can happen.
+4. For browser file access and a personal root, add `user-files` explicitly.
+5. For SFTP login, add `files-sftp-users` explicitly.
+6. For the shared `_Shared` folder inside their personal root, add `files-shared-users` explicitly.
+7. Add `app-admin` only when they should be an application operator in the apps they already use.
+8. Bootstrap `system_admins` manually with the regular `kanidm` CLI only when someone truly needs high-authority server administration.
+9. If they should use the shared password manager, invite their Kanidm primary email into Vaultwarden with `kanidm-admin local vaultwarden invite "$NEW_USER"`. This does not grant Kanidm app access.
+10. Have them sign into the target app so first-login provisioning can happen.
 
 Interactive guidance note:
 - The default `Manage User Access` flow uses an exact-set group picker with a contextual help pane.
@@ -243,7 +246,8 @@ kanidm-admin user ssh-key remove alice laptop
 Grant SFTP access separately:
 
 ```bash
-kanidm-admin membership add alice user-files
+kanidm-admin membership add alice files-sftp-users
+kanidm-admin membership add alice files-shared-users
 ```
 
 The user can then connect from a local file browser:
@@ -254,8 +258,9 @@ sftp://alice@server.home.arpa/
 
 Important:
 - never ask users to send private keys
-- `user-files` controls SFTP login eligibility
-- `user-files` is separate and should only be granted to people who should access and change shared data
+- `files-sftp-users` controls SFTP login eligibility
+- `files-shared-users` controls whether `_Shared` appears inside the user's personal root
+- `user-files` controls browser file access through Filestash and Copyparty
 - if the file browser asks for a password, cancel and make sure the user's private key is loaded locally
 
 ## OAuth2 Clients
@@ -312,7 +317,7 @@ Expected result:
 ## App-Specific First Login Notes
 
 - `uploads.<domain>`: Copyparty upload access is enforced by OAuth2 Proxy. `user-files` grants access to the signed-in user's own uploads root at `/`.
-- `files.<domain>`: Filestash UI and SFTP access require `user-files`. `app-admin` and `system_admins` do not expose shared files there.
+- `files.<domain>`: Filestash browser access requires `user-files` and opens the signed-in user's personal root. SFTP login requires `files-sftp-users`. `files-shared-users` adds `_Shared` to either view; `app-admin` and `system_admins` do not expose shared files there.
 - `emails.<domain>`: browser access is enforced by `mail-archive-users`. That group grants access to the private mail-archive UI only; it does not grant direct access to the hidden `.internal-sync` payload tree. User-visible mailbox `.eml` files are exposed through the visible mirror under each personal `emails/` root.
 - `passwords.<domain>`: Vaultwarden is local-auth only. Use `kanidm-admin local vaultwarden invite "$ACCOUNT_ID"` as an email-resolution helper, then the user signs in with Vaultwarden local credentials. See [Vaultwarden Guide](./vaultwarden.md).
 - `wiki.<domain>`: baseline `users` membership is sufficient.

@@ -31,7 +31,7 @@ in
     };
 
     services.kanidm.provision = {
-      groups."downloads-users".members = [ vars.kanidmAdminUser ];
+      groups."downloads-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.youtube-downloader-web = {
         displayName = "Downloads";

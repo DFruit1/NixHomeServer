@@ -3,7 +3,7 @@ import { currentUserFromHeaders, normaliseUsername, parseGroups } from '../auth.
 import type { AppConfig } from '../config.js';
 
 const config = {
-  sharedWriteGroup: 'user-files',
+  sharedWriteGroup: 'files-shared-users',
 } as AppConfig;
 
 describe('auth headers', () => {
@@ -13,19 +13,19 @@ describe('auth headers', () => {
   });
 
   it('parses comma and whitespace separated groups', () => {
-    expect(parseGroups({ 'x-forwarded-groups': 'downloads-users, user-files users' })).toEqual([
+    expect(parseGroups({ 'x-forwarded-groups': 'downloads-users, files-shared-users users' })).toEqual([
       'downloads-users',
-      'user-files',
+      'files-shared-users',
       'users',
     ]);
   });
 
-  it('marks shared writers from the existing Kanidm group', () => {
+  it('marks shared writers from the shared files Kanidm group', () => {
     const user = currentUserFromHeaders(
       {
         'x-forwarded-user': 'dsaw',
         'x-forwarded-email': 'dsaw@example.test',
-        'x-forwarded-groups': 'downloads-users,user-files',
+        'x-forwarded-groups': 'downloads-users,files-shared-users',
       },
       config,
     );

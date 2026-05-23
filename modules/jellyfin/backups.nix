@@ -1,4 +1,4 @@
-{ vars, ... }:
+{ config, vars, ... }:
 
 {
   config = {
@@ -8,8 +8,8 @@
         component = "app";
         stateRoot = "/var/lib/jellyfin";
         payloadRoots = [
-          vars.sharedMusicRoot
-          vars.sharedVideosRoot
+          config.repo.jellyfin.paths.sharedMusicRoot
+          config.repo.jellyfin.paths.sharedVideosRoot
           vars.usersRoot
         ];
         notes = "Local users, libraries, and server config.";

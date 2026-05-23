@@ -47,7 +47,7 @@ in
     };
 
     services.kanidm.provision = {
-      groups."immich-users".members = [ vars.kanidmAdminUser ];
+      groups."immich-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.immich-web = {
         displayName = "Photos";

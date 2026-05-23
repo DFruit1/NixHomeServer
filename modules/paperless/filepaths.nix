@@ -1,6 +1,41 @@
-{ pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
+let
+  paths = config.repo.paperless.paths;
+in
 {
+  options.repo.paperless.paths = {
+    root = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.dataRoot}/paperless";
+      description = "Paperless data-pool root.";
+    };
+
+    inbox = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.paperless.paths.root}/inbox";
+      description = "Paperless consume inbox root.";
+    };
+
+    handoffStaging = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.paperless.paths.root}/handoff-staging";
+      description = "Paperless handoff staging root.";
+    };
+
+    archive = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.paperless.paths.root}/archive";
+      description = "Paperless archive root.";
+    };
+
+    export = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.paperless.paths.root}/export";
+      description = "Paperless export root.";
+    };
+  };
+
   config = {
     repo.storage.userRoots = {
       rootTraverseGroups = [
@@ -36,12 +71,12 @@
       script = ''
         set -euo pipefail
 
-        inbox_dir='${vars.paperlessInboxRoot}'
-        handoff_staging_dir='${vars.paperlessHandoffStagingRoot}'
-        archive_dir='${vars.paperlessArchiveRoot}'
-        export_dir='${vars.paperlessExportRoot}'
+        inbox_dir='${paths.inbox}'
+        handoff_staging_dir='${paths.handoffStaging}'
+        archive_dir='${paths.archive}'
+        export_dir='${paths.export}'
 
-        install -d -m 0755 -o root -g root '${vars.paperlessRoot}'
+        install -d -m 0755 -o root -g root '${paths.root}'
         install -d -m 2770 -o root -g paperless "$inbox_dir"
         install -d -m 2770 -o root -g paperless "$handoff_staging_dir"
         install -d -m 0750 -o paperless -g paperless "$archive_dir"

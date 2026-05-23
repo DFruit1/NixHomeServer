@@ -110,6 +110,14 @@ in
     };
   };
 
+  options.repo.storage.sharedRoots = {
+    contentSubdirs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = vars.sharedContentSubdirs or [ ];
+      description = "Top-level shared content directories contributed by enabled modules.";
+    };
+  };
+
   config = {
     assertions = [
       {

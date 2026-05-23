@@ -44,7 +44,7 @@ const config = (): AppConfig => ({
   sharedAudioRoot: path.join(tempDir, 'shared', 'audio'),
   usersRoot: path.join(tempDir, 'users'),
   concurrency: 0,
-  sharedWriteGroup: 'user-files',
+  sharedWriteGroup: 'files-shared-users',
 });
 
 beforeEach(async () => {

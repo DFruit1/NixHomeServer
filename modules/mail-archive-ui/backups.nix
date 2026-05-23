@@ -2,6 +2,7 @@
 
 let
   cfg = config.services.mail-archive-ui;
+  sharedEmailsRoot = config.repo.mailArchiveUi.paths.sharedEmailsRoot;
 in
 {
   config = lib.mkIf cfg.enable {
@@ -13,13 +14,13 @@ in
           stateRoot = cfg.dataDir;
           payloadRoots = [
             cfg.storeRoot
-            vars.sharedEmailsRoot
+            sharedEmailsRoot
           ];
           notes = "SQLite state, locks, and the app master key.";
         }
       ];
       criticalPaths = [
-        vars.sharedEmailsRoot
+        sharedEmailsRoot
         cfg.dataDir
         cfg.accountStateRoot
         cfg.storeRoot

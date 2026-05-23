@@ -1,4 +1,4 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 {
   services.kiwixServe.extraUploadUsers = lib.mkAfter [
@@ -7,11 +7,11 @@
 
   services.uploadProcessor = {
     extraEnvironment = {
-      UPLOAD_KIWIX_LIBRARY_ROOT = vars.kiwixLibraryRoot;
+      UPLOAD_KIWIX_LIBRARY_ROOT = config.services.kiwixServe.libraryRoot;
       UPLOAD_ZIM_PROMOTION_USERS = vars.kanidmAdminUser;
     };
     extraReadWritePaths = [
-      vars.kiwixLibraryRoot
+      config.services.kiwixServe.libraryRoot
     ];
     extraRuntimeInputs = [
       pkgs.kiwix-tools

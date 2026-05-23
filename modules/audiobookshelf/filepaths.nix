@@ -1,8 +1,18 @@
-{ pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
+let
+  sharedAudiobooksRoot = config.repo.audiobookshelf.paths.sharedAudiobooksRoot;
+in
 {
+  options.repo.audiobookshelf.paths.sharedAudiobooksRoot = lib.mkOption {
+    type = lib.types.str;
+    default = "${vars.sharedRoot}/audiobooks";
+    description = "Shared Audiobookshelf media root.";
+  };
+
   config = {
     repo.storage.userRoots = {
+      contentSubdirs = [ "audiobooks" ];
       rootWritableGroups = [
         "audiobookshelf-media"
       ];
@@ -13,6 +23,8 @@
         }
       ];
     };
+
+    repo.storage.sharedRoots.contentSubdirs = [ "audiobooks" ];
 
     systemd.services.audiobookshelf-storage-layout-v1 = {
       description = "Provision Audiobookshelf storage layout";
@@ -33,8 +45,8 @@
       script = ''
         set -euo pipefail
 
-        install -d -m 2775 -o root -g users ${vars.sharedAudiobooksRoot}
-        install -d -m 2775 -o root -g users ${vars.sharedAudiobooksRoot}/youtube
+        install -d -m 2775 -o root -g users ${sharedAudiobooksRoot}
+        install -d -m 2775 -o root -g users ${sharedAudiobooksRoot}/youtube
 
         apply_recursive_acl() {
           local access_spec="$1"
@@ -49,7 +61,7 @@
           done
         }
 
-        apply_recursive_acl "g:audiobookshelf-media:rwX" "d:g:audiobookshelf-media:rwx" ${vars.sharedAudiobooksRoot}
+        apply_recursive_acl "g:audiobookshelf-media:rwX" "d:g:audiobookshelf-media:rwx" ${sharedAudiobooksRoot}
       '';
     };
 

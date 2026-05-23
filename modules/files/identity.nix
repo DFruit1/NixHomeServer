@@ -2,6 +2,7 @@
 
 let
   host = "files.${vars.domain}";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
 in
 
 {
@@ -16,6 +17,6 @@ in
     originLanding = "https://${host}";
     basicSecretFile = "/run/filestash-secrets/oauth2-client-secret-kanidm";
     preferShortUsername = true;
-    scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
+    scopeMaps.${webAccessGroup} = [ "openid" "profile" "email" "groups_name" ];
   };
 }

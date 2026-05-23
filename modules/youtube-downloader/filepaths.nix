@@ -1,7 +1,7 @@
-{ vars, ... }:
+{ config, ... }:
 
 let
-  userVideoWritablePaths = map (name: "videos/${name}") vars.userVideoSubdirs;
+  userVideoWritablePaths = map (name: "videos/${name}") config.repo.storage.userRoots.videoSubdirs;
 in
 {
   config = {

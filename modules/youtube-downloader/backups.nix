@@ -1,4 +1,9 @@
-{ vars, ... }:
+{ config, vars, ... }:
+
+let
+  sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/youtube";
+  sharedAudioRoot = "${config.repo.audiobookshelf.paths.sharedAudiobooksRoot}/youtube";
+in
 
 {
   config = {
@@ -9,8 +14,8 @@
           component = "app";
           stateRoot = "/var/lib/youtube-downloader";
           payloadRoots = [
-            vars.sharedYouTubeRoot
-            "${vars.sharedAudiobooksRoot}/youtube"
+            sharedVideoRoot
+            sharedAudioRoot
             vars.usersRoot
           ];
           notes = "SQLite queue history, temporary state, and downloader config.";

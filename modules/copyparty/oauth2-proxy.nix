@@ -6,6 +6,7 @@ let
   host = "uploads.${vars.domain}";
   oauth2ProxyRuntimeDir = "/run/oauth2-proxy";
   oauth2ProxyKeyFilePath = "${oauth2ProxyRuntimeDir}/oauth2-proxy.env";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
 in
 {
   services.oauth2-proxy = oauth2Proxy.mkNixosService
@@ -14,7 +15,7 @@ in
       domain = host;
       port = oauth2ProxyPort;
       upstream = "http://${loopback}:${toString config.services.copyparty.settings.p}";
-      allowedGroups = [ "user-files" ];
+      allowedGroups = [ webAccessGroup ];
       extraConfig = {
         "session-cookie-minimal" = true;
         "skip-auth-preflight" = true;

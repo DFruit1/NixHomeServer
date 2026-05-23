@@ -22,7 +22,7 @@ in
     users.users.kavita.extraGroups = lib.mkAfter [ "kavita-media" ];
 
     services.kanidm.provision = {
-      groups."kavita-users".members = [ vars.kanidmAdminUser ];
+      groups."kavita-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.kavita-web = {
         displayName = "Books";

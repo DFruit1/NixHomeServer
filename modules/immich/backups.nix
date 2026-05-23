@@ -1,5 +1,8 @@
-{ config, vars, ... }:
+{ config, ... }:
 
+let
+  paths = config.repo.immich.paths;
+in
 {
   config = {
     repo.backups = {
@@ -8,32 +11,32 @@
           app = "immich";
           component = "app";
           stateRoot = "/var/lib/immich";
-          payloadRoots = [ vars.immichRoot ];
+          payloadRoots = [ paths.root ];
           notes = "Immich service state directory.";
         }
         {
           app = "immich";
           component = "postgresql";
           stateRoot = config.services.postgresql.dataDir;
-          payloadRoots = [ vars.immichManagedRoot ];
+          payloadRoots = [ paths.managed ];
           notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
         }
         {
           app = "immich";
           component = "redis";
           stateRoot = config.services.redis.servers.immich.settings.dir;
-          payloadRoots = [ vars.immichManagedRoot ];
+          payloadRoots = [ paths.managed ];
           notes = "Immich Redis persistence.";
         }
       ];
       criticalPaths = [
-        vars.immichRoot
-        vars.immichManagedRoot
+        paths.root
+        paths.managed
       ];
       pathInventories = [
         {
           label = "immich";
-          root = vars.immichRoot;
+          root = paths.root;
         }
       ];
     };

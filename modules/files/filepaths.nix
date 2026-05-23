@@ -1,15 +1,23 @@
-{ vars, ... }:
+{ config, lib, vars, ... }:
 
 let
-  userBookWritablePaths = map (name: "books/${name}") vars.userBooksSubdirs;
-  userVideoWritablePaths = map (name: "videos/${name}") vars.userVideoSubdirs;
-  managedDir = "${vars.filesStateDir}/.nixos-managed";
+  userBookWritablePaths = map (name: "books/${name}") config.repo.storage.userRoots.bookSubdirs;
+  userVideoWritablePaths = map (name: "videos/${name}") config.repo.storage.userRoots.videoSubdirs;
+  managedDir = "${config.repo.files.paths.stateDir}/.nixos-managed";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
 in
 {
+  options.repo.files.paths.stateDir = lib.mkOption {
+    type = lib.types.str;
+    default = "/var/lib/filestash";
+    description = "Filestash state directory.";
+  };
+
   config = {
     repo.storage.userRoots = {
+      contentSubdirs = [ "files" ];
       memberGroups = [
-        "user-files"
+        webAccessGroup
       ];
       recursiveWritableGrants = [
         {
@@ -38,6 +46,8 @@ in
         }
       ];
     };
+
+    repo.storage.sharedRoots.contentSubdirs = [ "files" ];
 
     systemd.tmpfiles.rules = [
       "d ${managedDir} 0750 root filestash -"

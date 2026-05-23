@@ -8,8 +8,14 @@ rec {
   # ---------------------------------------------------------------------------
 
   identity = {
-    adminUser = "admindsaw"; # Delegated Kanidm operator account.
-    adminEmail = "dsaw@tuta.io"; # Contact email for ACME and the first Kanidm admin user.
+    adminUser = "admindsaw"; # Dedicated Kanidm operator account; keep separate from the local Unix admin.
+    appUsers = [ "dsaw" ]; # Non-admin Kanidm users granted default access to hosted apps.
+    appAdminUsers = [ ]; # Extra Kanidm users granted app-level admin roles.
+    appUserEmails = {
+      dsaw = "dsaw@tuta.io";
+    }; # Optional email map for extra app users.
+    adminMailAddresses = [ "admindsaw@sydneybasiniot.org" ]; # Kanidm mail addresses for the dedicated admin account.
+    adminEmail = "dsaw@tuta.io"; # Contact email for ACME and fallback Kanidm admin mail on new installs.
     sshPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
     localAdminUser = "dsaw"; # Local Unix SSH/sudo account retained for this existing server.
   };
@@ -62,11 +68,24 @@ rec {
     };
   };
 
+  fileAccess = {
+    webAccessGroup = "user-files"; # Browser file access and personal files root provisioning.
+    sftpAccessGroup = "files-sftp-users"; # Restricted SFTP login access.
+    sharedAccessGroup = "files-shared-users"; # Adds the protected _Shared view inside personal roots.
+    sharedMountName = "_Shared";
+    sftpChrootBase = "/srv/files-sftp/chroots";
+  };
+
   power = {
     enable = true;
     cpuGovernor = "powersave";
-    suspendCalendar = "*-*-* 04:30:00"; # Suspend after normal overnight maintenance timers have started.
-    wakeTime = "06:00";
+    nightlySuspend = {
+      # Keep disabled unless RTC wake has been verified on the target hardware.
+      # While suspended, Cloudflare Tunnel, DNS, and all hosted services are offline.
+      enable = false;
+      calendar = "*-*-* 04:30:00"; # Suspend after normal overnight maintenance timers have started.
+      wakeTime = "06:00";
+    };
     skipIfSshSessions = true;
     skipIfOtherUserSessions = true;
     blockerUnits = [
@@ -159,6 +178,10 @@ rec {
   timeZone = system.timeZone;
   hostId = system.hostId;
   kanidmAdminUser = identity.adminUser;
+  kanidmAppUsers = lib.unique ([ identity.adminUser ] ++ (identity.appUsers or [ ]));
+  kanidmAppAdminUsers = lib.unique ([ identity.adminUser ] ++ (identity.appAdminUsers or [ ]));
+  kanidmAppUserEmails = identity.appUserEmails or { };
+  kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
   kanidmAdminEmail = identity.adminEmail;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
@@ -216,14 +239,6 @@ rec {
   zfsDataPoolDiskIds = lib.flatten zfsDataPool.mirrorPairs; # Bootstrap-era pool member IDs retained for blank-machine provisioning metadata.
 
   dataRoot = zfsDataPool.mountPoint;
-  paperlessRoot = "${dataRoot}/paperless";
-  paperlessInboxRoot = "${paperlessRoot}/inbox";
-  paperlessHandoffStagingRoot = "${paperlessRoot}/handoff-staging";
-  paperlessArchiveRoot = "${paperlessRoot}/archive";
-  paperlessExportRoot = "${paperlessRoot}/export";
-  immichRoot = "${dataRoot}/immich";
-  immichManagedRoot = "${immichRoot}/managed";
-  immichExternalRoot = "${immichRoot}/external";
   usersRoot = "${dataRoot}/users";
   sharedRoot = "${dataRoot}/shared";
   staleReferenceCleanup = {
@@ -310,101 +325,16 @@ rec {
   };
   fileAccessPosixGids = {
     "user-files" = 2001;
+    "files-sftp-users" = 2002;
+    "files-shared-users" = 2003;
   };
-  personalKavitaLibraries = [
-    {
-      dir = "ebooks";
-      type = 2;
-      fileGroupTypes = [ 2 3 1 ];
-      label = "Ebooks";
-    }
-    {
-      dir = "comics";
-      type = 1;
-      fileGroupTypes = [ 1 4 3 ];
-      label = "Comics";
-    }
-    {
-      dir = "manga";
-      type = 0;
-      fileGroupTypes = [ 1 4 ];
-      label = "Manga";
-    }
-  ];
-  jellyfinVideoLibraries = [
-    {
-      dir = "movies";
-      collectionType = "movies";
-      label = "Movies";
-    }
-    {
-      dir = "shows";
-      collectionType = "tvshows";
-      label = "Shows";
-    }
-    {
-      dir = "home";
-      collectionType = "homevideos";
-      label = "Home Videos";
-    }
-    {
-      dir = "music-videos";
-      collectionType = "musicvideos";
-      label = "Music Videos";
-    }
-    {
-      dir = "youtube";
-      collectionType = "homevideos";
-      label = "YouTube";
-    }
-  ];
-  jellyfinAdminUsers = [ kanidmAdminUser ];
-  personalJellyfinLibraries = jellyfinVideoLibraries;
-  sharedJellyfinLibraries = jellyfinVideoLibraries;
-  sharedKavitaLibraries = personalKavitaLibraries;
-  userBooksSubdirs = map (library: library.dir) personalKavitaLibraries;
-  userVideoSubdirs = map (library: library.dir) personalJellyfinLibraries;
-  sharedBooksSubdirs = map (library: library.dir) sharedKavitaLibraries;
-  sharedVideoSubdirs = map (library: library.dir) sharedJellyfinLibraries;
-  sharedJellyfinMusicLibraries = [ ];
-  sharedMusicSubdirs = map (library: library.dir) sharedJellyfinMusicLibraries;
-  sharedAudiobooksRoot = "${sharedRoot}/audiobooks";
-  sharedBooksRoot = "${sharedRoot}/books";
-  sharedEbooksRoot = "${sharedBooksRoot}/ebooks";
-  sharedComicsRoot = "${sharedBooksRoot}/comics";
-  sharedMangaRoot = "${sharedBooksRoot}/manga";
-  sharedEmailsRoot = "${sharedRoot}/emails";
-  sharedMusicRoot = "${sharedRoot}/music";
-  sharedYouTubeMusicRoot = "${sharedMusicRoot}/youtube";
-  sharedVideosRoot = "${sharedRoot}/videos";
-  sharedMoviesRoot = "${sharedVideosRoot}/movies";
-  sharedShowsRoot = "${sharedVideosRoot}/shows";
-  sharedHomeVideosRoot = "${sharedVideosRoot}/home";
-  sharedMusicVideosRoot = "${sharedVideosRoot}/music-videos";
-  sharedYouTubeRoot = "${sharedVideosRoot}/youtube";
-  sharedOtherVideosRoot = "${sharedVideosRoot}/other";
-  userContentSubdirs = [
-    "audiobooks"
-    "books"
-    "emails"
-    "files"
-    "videos"
-  ];
-  sharedContentSubdirs = [
-    "audiobooks"
-    "books"
-    "emails"
-    "kiwix"
-    "videos"
-    "files"
-  ];
+  filesSftpUsers = [ ]; # Kanidm users that should be restricted to the files SFTP chroot.
+  jellyfinAdminUsers = kanidmAppAdminUsers;
+  userContentSubdirs = [ ];
+  sharedContentSubdirs = [ ];
 
   kanidmDomain = "id.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";
-  immichPublicProxyPort = networking.ports.immichPublicProxy;
-  filesPort = networking.ports.filestash;
-  filesStateDir = "/var/lib/filestash";
-  kiwixLibraryRoot = "${dataRoot}/kiwix";
 }

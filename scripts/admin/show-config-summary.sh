@@ -45,6 +45,8 @@ preview_json="$(nix_json_for_host "$host" "
     cloudflaredHosts = builtins.attrNames cfg.services.cloudflared.tunnels.\${settings.cloudflareTunnelName}.ingress;
     oauthClients = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
     groups = builtins.attrNames cfg.services.kanidm.provision.groups;
+    userContentSubdirs = cfg.repo.storage.userRoots.contentSubdirs;
+    sharedContentSubdirs = cfg.repo.storage.sharedRoots.contentSubdirs;
     externalSecrets = builtins.attrNames ((import ${repo_root}/secrets/manifest.nix).externalSecrets);
   }
 ")"
@@ -53,6 +55,8 @@ caddy_hosts_json="$(jq -c '.caddyHosts' <<<"$preview_json")"
 cloudflared_hosts_json="$(jq -c '.cloudflaredHosts' <<<"$preview_json")"
 oauth_clients_json="$(jq -c '.oauthClients' <<<"$preview_json")"
 groups_json="$(jq -c '.groups' <<<"$preview_json")"
+user_content_subdirs_json="$(jq -c '.userContentSubdirs' <<<"$preview_json")"
+shared_content_subdirs_json="$(jq -c '.sharedContentSubdirs' <<<"$preview_json")"
 external_secrets_json="$(jq -c '.externalSecrets' <<<"$preview_json")"
 
 echo "NixHomeServer configuration preview"
@@ -61,6 +65,7 @@ echo
 
 echo "Identity"
 echo "  admin user:  $(jq -r '.identity.adminUser // .kanidmAdminUser' <<<"$settings_json")"
+echo "  local admin: $(jq -r '.identity.localAdminUser // .localAdminUser' <<<"$settings_json")"
 echo "  admin email: $(jq -r '.identity.adminEmail // .kanidmAdminEmail' <<<"$settings_json")"
 echo
 
@@ -101,9 +106,9 @@ echo "  data root:   $(jq -r '.dataRoot' <<<"$settings_json")"
 echo "  data disks:"
 jq -r '.zfsDataPoolDiskIds[] | "    - " + .' <<<"$settings_json"
 echo "  user roots:"
-jq -r '.userContentSubdirs[] | "    - " + .' <<<"$settings_json"
+jq -r '.[] | "    - " + .' <<<"$user_content_subdirs_json"
 echo "  shared roots:"
-jq -r '.sharedContentSubdirs[] | "    - " + .' <<<"$settings_json"
+jq -r '.[] | "    - " + .' <<<"$shared_content_subdirs_json"
 echo
 
 echo "Required external secrets"

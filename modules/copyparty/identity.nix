@@ -2,6 +2,7 @@
 
 let
   host = "uploads.${vars.domain}";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
 in
 
 {
@@ -44,8 +45,6 @@ in
     users.users.oauth2-proxy.extraGroups = [ "caddy" ];
 
     services.kanidm.provision = {
-      groups."user-files".members = [ vars.kanidmAdminUser ];
-
       systems.oauth2.oauth2-proxy = {
         displayName = "Uploads";
         imageFile = ../Core_Modules/kanidm/assets/files.svg;
@@ -53,7 +52,7 @@ in
         originLanding = "https://${host}";
         basicSecretFile = "/run/oauth2-proxy/client-secret";
         preferShortUsername = true;
-        scopeMaps."user-files" = [ "openid" "profile" "email" "groups_name" ];
+        scopeMaps.${webAccessGroup} = [ "openid" "profile" "email" "groups_name" ];
       };
     };
   };

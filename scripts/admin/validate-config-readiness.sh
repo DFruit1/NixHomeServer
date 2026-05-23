@@ -57,6 +57,7 @@ external_secrets_json="$(nix eval --json --impure --expr "builtins.attrNames ((i
 
 domain="$(jq -r '.domain' <<<"$settings_json")"
 admin_user="$(jq -r '.kanidmAdminUser' <<<"$settings_json")"
+local_admin_user="$(jq -r '.localAdminUser' <<<"$settings_json")"
 ssh_key="$(jq -r '.serverSSHPubKey' <<<"$settings_json")"
 lan_iface="$(jq -r '.netIface' <<<"$settings_json")"
 lan_ip="$(jq -r '.serverLanIP' <<<"$settings_json")"
@@ -78,6 +79,12 @@ if [[ "$admin_user" == *CHANGE_ME* || -z "$admin_user" ]]; then
   block "vars.nix -> identity.adminUser is not set"
 else
   ready "vars.nix -> identity.adminUser is ${admin_user}"
+fi
+
+if [[ "$admin_user" == "$local_admin_user" ]]; then
+  block "vars.nix -> identity.adminUser must be separate from identity.localAdminUser (${local_admin_user})"
+else
+  ready "vars.nix -> identity.adminUser is separate from local admin ${local_admin_user}"
 fi
 
 if [[ "$ssh_key" =~ ^ssh-(ed25519|rsa|ecdsa)[[:space:]] ]]; then

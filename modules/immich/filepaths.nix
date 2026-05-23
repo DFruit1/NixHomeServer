@@ -1,6 +1,7 @@
-{ pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
+  cfg = config.repo.immich;
   mkDirCmd =
     { path
     , mode
@@ -27,26 +28,26 @@ let
 
   immichStorageDirs = [
     {
-      path = vars.immichRoot;
+      path = cfg.paths.root;
       mode = "0755";
       user = "root";
       group = "root";
     }
     {
-      path = vars.immichManagedRoot;
+      path = cfg.paths.managed;
       mode = "0750";
       user = "immich";
       group = "immich";
     }
     {
-      path = vars.immichExternalRoot;
+      path = cfg.paths.external;
       mode = "2770";
       user = "root";
       group = "immich";
     }
   ] ++ map
     (name: {
-      path = "${vars.immichManagedRoot}/${name}";
+      path = "${cfg.paths.managed}/${name}";
       mode = "0750";
       user = "immich";
       group = "immich";
@@ -55,10 +56,30 @@ let
 
   immichStorageLayoutScript = builtins.concatStringsSep "\n" (
     (map mkDirCmd immichStorageDirs)
-    ++ map (name: mkImmichSentinelCmd "${vars.immichManagedRoot}/${name}/.immich") managedSubdirs
+    ++ map (name: mkImmichSentinelCmd "${cfg.paths.managed}/${name}/.immich") managedSubdirs
   );
 in
 {
+  options.repo.immich.paths = {
+    root = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.dataRoot}/immich";
+      description = "Immich data-pool root.";
+    };
+
+    managed = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.immich.paths.root}/managed";
+      description = "Immich managed media root.";
+    };
+
+    external = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.repo.immich.paths.root}/external";
+      description = "Immich external library root.";
+    };
+  };
+
   config = {
     repo.storage.userRoots = {
       rootTraverseGroups = [

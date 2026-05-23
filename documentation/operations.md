@@ -68,10 +68,29 @@ sudo -u copyparty sh -lc 'probe=/mnt/data/users/<user>/uploads/.write-probe && :
 journalctl -u copyparty -n 100 --no-pager
 ```
 
-Filestash  roots:
+Filestash and SFTP file roots:
 
-- Personal source: `https://<files-domain>/dav/Personal/`
-- Shared source: `https://<files-domain>/dav/Shared/`
+- Filestash opens a single normal-user source, `Files`, rooted at `/mnt/data/users/<username>`.
+- SFTP opens the same personal root at `sftp://<username>@server.home.arpa/`.
+- Users in `files-shared-users` also see `_Shared` at the top of that root.
+- `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
+
+Useful file-access checks:
+
+```bash
+kanidm-admin group members user-files
+kanidm-admin group members files-sftp-users
+kanidm-admin group members files-shared-users
+
+systemctl status 'files-shared-bindfs@<user>.service'
+mountpoint /mnt/data/users/<user>/_Shared
+
+sudo -u filestash sh -lc 'probe=/mnt/data/users/<user>/_Shared/.write-probe && : >"$probe" && test -f "$probe"'
+sudo -u filestash rm /mnt/data/users/<user>/_Shared/.write-probe
+sudo rm /mnt/data/shared/.write-probe
+```
+
+The `rm` through `_Shared` is expected to fail with permission denied. The final admin delete against the real shared path should remove the probe from every `_Shared` view.
 
 Kavita-managed book roots are now aligned to the same simpler taxonomy used by
 the rest of the stack: `ebooks`, `comics`, and `manga`. The old `other`
@@ -299,10 +318,10 @@ and quarantine inventories, and `dumps/upload-processor-state.sqlite3`. It does
 not copy data-pool payload bytes; the mirrored ZFS pool remains the recovery
 boundary for uploaded file contents.
 
-Admins can review quarantined uploads through the Filestash
-`Quarantine` source. Manual VirusTotal file uploads, if needed, are an admin
-action against files already in quarantine; the server does not automatically
-upload file bytes to VirusTotal.
+Admins review quarantined uploads directly on the server under
+`/mnt/data/quarantine/uploads`. Manual VirusTotal file uploads, if needed, are
+an admin action against files already in quarantine; the server does not
+automatically upload file bytes to VirusTotal.
 
 Storage monitoring now discovers disks live at runtime:
 - `system` is the static `vars.mainDisk`

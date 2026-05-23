@@ -1,13 +1,67 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
-  userBookWritablePaths = map (name: "books/${name}") vars.userBooksSubdirs;
-  sharedKavitaDirs = map (library: "${vars.sharedBooksRoot}/${library.dir}") vars.sharedKavitaLibraries;
-  sharedKavitaAnonDirs = map (library: "${vars.sharedBooksRoot}/${library.dir}/_Anon") vars.sharedKavitaLibraries;
+  cfg = config.repo.kavita;
+  defaultLibraries = [
+    {
+      dir = "ebooks";
+      type = 2;
+      fileGroupTypes = [ 2 3 1 ];
+      label = "Ebooks";
+    }
+    {
+      dir = "comics";
+      type = 1;
+      fileGroupTypes = [ 1 4 3 ];
+      label = "Comics";
+    }
+    {
+      dir = "manga";
+      type = 0;
+      fileGroupTypes = [ 1 4 ];
+      label = "Manga";
+    }
+  ];
+  libraryType = lib.types.submodule {
+    options = {
+      dir = lib.mkOption { type = lib.types.str; };
+      type = lib.mkOption { type = lib.types.int; };
+      fileGroupTypes = lib.mkOption { type = lib.types.listOf lib.types.int; };
+      label = lib.mkOption { type = lib.types.str; };
+    };
+  };
+  userBookSubdirs = map (library: library.dir) cfg.libraries.personal;
+  userBookWritablePaths = map (name: "books/${name}") userBookSubdirs;
+  sharedKavitaDirs = map (library: "${cfg.paths.sharedBooksRoot}/${library.dir}") cfg.libraries.shared;
+  sharedKavitaAnonDirs = map (library: "${cfg.paths.sharedBooksRoot}/${library.dir}/_Anon") cfg.libraries.shared;
 in
 {
+  options.repo.kavita = {
+    libraries = {
+      personal = lib.mkOption {
+        type = lib.types.listOf libraryType;
+        default = defaultLibraries;
+        description = "Kavita library definitions provisioned below each user's books directory.";
+      };
+
+      shared = lib.mkOption {
+        type = lib.types.listOf libraryType;
+        default = defaultLibraries;
+        description = "Kavita library definitions provisioned below the shared books directory.";
+      };
+    };
+
+    paths.sharedBooksRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.sharedRoot}/books";
+      description = "Shared Kavita books root.";
+    };
+  };
+
   config = {
     repo.storage.userRoots = {
+      contentSubdirs = [ "books" ];
+      bookSubdirs = userBookSubdirs;
       rootTraverseGroups = [
         "kavita-media"
       ];
@@ -18,6 +72,8 @@ in
         }
       ];
     };
+
+    repo.storage.sharedRoots.contentSubdirs = [ "books" ];
 
     systemd.services.kavita-storage-layout-v1 = {
       description = "Provision Kavita storage layout";
@@ -38,7 +94,7 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 2775 -o root -g users ${vars.sharedBooksRoot}
+        install -d -m 2775 -o root -g users ${cfg.paths.sharedBooksRoot}
         for path in ${lib.escapeShellArgs sharedKavitaDirs}; do
           install -d -m 2775 -o root -g users "$path"
         done

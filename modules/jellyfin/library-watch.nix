@@ -1,8 +1,8 @@
-{ pkgs, vars, ... }:
+{ config, pkgs, vars, ... }:
 
 let
   watchedRoots =
-    (map (library: "${vars.sharedVideosRoot}/${library.dir}") vars.sharedJellyfinLibraries)
+    (map (library: "${config.repo.jellyfin.paths.sharedVideosRoot}/${library.dir}") config.repo.jellyfin.libraries.shared)
     ++ [ vars.usersRoot ];
   mediaIncludeRegex = ".*\\.(mkv|mp4|m4v|avi|mov|webm|m4a|mp3|opus|ogg|oga|flac|wav|aac)$";
   mkSettledWatcherScript =

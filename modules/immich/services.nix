@@ -17,7 +17,7 @@ in
       enable = true;
       host = vars.networking.loopbackIPv4;
       port = immichPort;
-      mediaLocation = vars.immichManagedRoot;
+      mediaLocation = config.repo.immich.paths.managed;
       user = "immich";
       group = "immich";
       settings.server.externalDomain = "https://${shareHost}";

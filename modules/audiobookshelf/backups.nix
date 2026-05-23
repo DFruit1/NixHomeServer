@@ -1,4 +1,4 @@
-{ vars, ... }:
+{ config, vars, ... }:
 
 {
   repo.backups.appStateEntries = [
@@ -7,7 +7,7 @@
       component = "app";
       stateRoot = "/var/lib/audiobookshelf";
       payloadRoots = [
-        vars.sharedAudiobooksRoot
+        config.repo.audiobookshelf.paths.sharedAudiobooksRoot
         vars.usersRoot
       ];
       notes = "Local users, metadata, and server config.";

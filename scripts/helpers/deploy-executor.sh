@@ -76,7 +76,7 @@ check_failed_units() {
         while IFS= read -r failed_unit; do
           [[ -n "$failed_unit" ]] || continue
           failed_unit_quoted="$(printf '%q' "$failed_unit")"
-          ssh "$TARGET_HOST" "sudo systemctl status --no-pager $failed_unit_quoted || true"
+          ssh -n "$TARGET_HOST" "sudo systemctl status --no-pager $failed_unit_quoted || true"
         done <<< "$failed_units"
         ssh "$TARGET_HOST" "sudo journalctl -p warning..alert -n 200 --no-pager || true"
       fi
@@ -88,14 +88,67 @@ check_failed_units() {
 
 make_rebuild_command() {
   local -n out_cmd="$1"
+  local rebuild_action="$ACTION"
 
-  out_cmd=(nix run nixpkgs#nixos-rebuild -- "$ACTION" --flake ".#${HOSTNAME_ARG}" --sudo)
+  if [[ "$ACTION" == "switch" ]]; then
+    rebuild_action="boot"
+  fi
+
+  out_cmd=(nix run nixpkgs#nixos-rebuild -- "$rebuild_action" --flake ".#${HOSTNAME_ARG}" --sudo)
 
   if [[ "$BUILD_LOCALLY" == "true" ]]; then
     out_cmd+=(--target-host "$TARGET_HOST")
   elif [[ "$TARGET_HOST" != "$BUILD_HOST" ]]; then
     out_cmd+=(--target-host "$TARGET_HOST")
   fi
+}
+
+target_command() {
+  local command="$1"
+
+  if target_is_local; then
+    bash -c "$command"
+  else
+    ssh "$TARGET_HOST" "$command"
+  fi
+}
+
+run_detached_switch() {
+  local unit state result status start_command
+
+  unit="nixos-detached-switch-$(date +%s)"
+  start_command="sudo systemd-run --unit=$(printf '%q' "$unit") --description='Detached NixOS switch activation' --service-type=exec /nix/var/nix/profiles/system/bin/switch-to-configuration switch"
+
+  echo "starting detached switch activation as ${unit}"
+  target_command "$start_command"
+
+  for ((attempt = 1; attempt <= 300; attempt++)); do
+    state="$(target_command "systemctl show -P ActiveState $(printf '%q' "$unit") 2>/dev/null || true")"
+    case "$state" in
+      active|activating|reloading)
+        sleep 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  if [[ "$state" == "active" || "$state" == "activating" || "$state" == "reloading" ]]; then
+    echo "blocked: detached switch activation timed out" >&2
+    exit 1
+  fi
+
+  result="$(target_command "systemctl show -P Result $(printf '%q' "$unit") 2>/dev/null || true")"
+  status="$(target_command "systemctl show -P ExecMainStatus $(printf '%q' "$unit") 2>/dev/null || true")"
+
+  if [[ "$result" != "success" || "$status" != "0" ]]; then
+    target_command "sudo systemctl status --no-pager $(printf '%q' "$unit") || true"
+    echo "blocked: detached switch activation failed" >&2
+    exit 1
+  fi
+
+  target_command "sudo systemctl reset-failed $(printf '%q' "$unit") >/dev/null 2>&1 || true"
 }
 
 check_free_space
@@ -111,8 +164,16 @@ fi
 cmd=()
 make_rebuild_command cmd
 
-echo "running nixos-rebuild ${ACTION}"
+if [[ "$ACTION" == "switch" ]]; then
+  echo "running nixos-rebuild boot before detached switch"
+else
+  echo "running nixos-rebuild ${ACTION}"
+fi
 "${cmd[@]}"
+
+if [[ "$ACTION" == "switch" ]]; then
+  run_detached_switch
+fi
 
 echo "checking failed units"
 check_failed_units

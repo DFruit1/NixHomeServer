@@ -22,7 +22,7 @@ in
     users.users.audiobookshelf.extraGroups = lib.mkAfter [ "audiobookshelf-media" ];
 
     services.kanidm.provision = {
-      groups."audiobookshelf-users".members = [ vars.kanidmAdminUser ];
+      groups."audiobookshelf-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.abs-web = {
         displayName = "Audiobooks";

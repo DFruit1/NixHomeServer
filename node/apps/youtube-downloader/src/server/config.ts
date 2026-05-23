@@ -36,6 +36,6 @@ export const loadConfig = (): AppConfig => {
     sharedAudioRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT ?? '/mnt/data/shared/audiobooks/youtube',
     usersRoot: process.env.YOUTUBE_DOWNLOADER_USERS_ROOT ?? '/mnt/data/users',
     concurrency: numberFromEnv('YOUTUBE_DOWNLOADER_CONCURRENCY', 1),
-    sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'user-files',
+    sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'files-shared-users',
   };
 };

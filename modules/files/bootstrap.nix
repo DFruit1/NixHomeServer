@@ -1,7 +1,7 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, ... }:
 
 let
-  stateDir = vars.filesStateDir;
+  stateDir = config.repo.files.paths.stateDir;
   managedDir = "${stateDir}/.nixos-managed";
   secretRuntimeDir = "/run/filestash-secrets";
   secretKeyFile = "${managedDir}/secret-key";

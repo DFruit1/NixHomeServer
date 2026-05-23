@@ -2,8 +2,15 @@
 
 let
   cfg = config.services.mail-archive-ui;
+  sharedEmailsRoot = config.repo.mailArchiveUi.paths.sharedEmailsRoot;
 in
 {
+  options.repo.mailArchiveUi.paths.sharedEmailsRoot = lib.mkOption {
+    type = lib.types.str;
+    default = "${vars.sharedRoot}/emails";
+    description = "Shared mail archive root.";
+  };
+
   config = lib.mkIf cfg.enable {
     systemd.tmpfiles.rules = [
       "d ${cfg.dataDir} 0750 mail-archive-ui mail-archive-ui -"
@@ -13,6 +20,7 @@ in
     ];
 
     repo.storage.userRoots = {
+      contentSubdirs = [ "emails" ];
       perUserDirectories = [
         {
           root = vars.usersRoot;
@@ -40,6 +48,8 @@ in
       ];
     };
 
+    repo.storage.sharedRoots.contentSubdirs = [ "emails" ];
+
     systemd.services.mail-archive-ui-storage-layout-v1 = {
       description = "Provision Mail Archive UI storage layout";
       wantedBy = [ "multi-user.target" ];
@@ -58,7 +68,7 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 0770 -o mail-archive-ui -g mail-archive-ui '${vars.sharedEmailsRoot}'
+        install -d -m 0770 -o mail-archive-ui -g mail-archive-ui '${sharedEmailsRoot}'
         setfacl -m 'g:mail-archive-ui:--x' '${vars.sharedRoot}'
       '';
     };
