@@ -129,8 +129,9 @@ in
   systemd.services.data-pool-layout = {
     description = "Provision data-pool-backed content layout";
     wantedBy = [ "multi-user.target" ];
-    wants = [ "local-fs.target" ];
-    after = [ "local-fs.target" ];
+    requires = [ "mnt-data.mount" ];
+    after = [ "mnt-data.mount" ];
+    before = [ "local-fs.target" ];
     unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
     serviceConfig = {
       Type = "oneshot";
