@@ -9,5 +9,5 @@ in
 {
   inherit rustLib rustApps nodePackages;
 
-  packages = rustPackages // nodePackages;
+  appPackages = rustPackages // nodePackages;
 }

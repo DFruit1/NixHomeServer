@@ -1,9 +1,9 @@
-{ pkgs, self, vars, ... }:
+{ appPackages, pkgs, vars, ... }:
 
 let
   systemPackages =
     [
-      self.packages.${pkgs.stdenv.hostPlatform.system}.kanidm-admin
+      appPackages.kanidm-admin
     ];
 in
 {

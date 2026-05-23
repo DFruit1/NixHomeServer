@@ -65,7 +65,7 @@ Attachment download model:
 Common commands from the repo root:
 
 ```bash
-nix develop .#mail-archive-ui
+nix develop .#ops
 cargo fmt
 cargo clippy --all-targets -- -D warnings
 cargo nextest run

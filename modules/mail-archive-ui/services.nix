@@ -1,4 +1,4 @@
-{ config, lib, pkgs, self, vars, ... }:
+{ appPackages, config, lib, pkgs, vars, ... }:
 
 let
   cfg = config.services.mail-archive-ui;
@@ -57,7 +57,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.mail-archive-ui;
+      default = appPackages.mail-archive-ui;
       description = "Package to run for the mail archive UI service.";
     };
 

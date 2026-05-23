@@ -1,13 +1,9 @@
-{ lib, pkgs, rustLib, rustApps }:
+{ pkgs, rustLib }:
 
 {
-  rust = rustLib.mkRustShell {
-    name = "rust";
-  };
-
   ops = pkgs.mkShell {
     name = "ops-dev-shell";
-    packages = with pkgs; [
+    packages = (with pkgs; [
       deadnix
       gitMinimal
       jq
@@ -19,7 +15,6 @@
       ripgrep
       shellcheck
       statix
-    ];
+    ]) ++ rustLib.toolchain;
   };
 }
-  // lib.mapAttrs (_: app: app.devShell) rustApps

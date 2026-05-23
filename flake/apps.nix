@@ -1,4 +1,4 @@
-{ lib, pkgs, rustApps }:
+{ pkgs }:
 
 let
   scriptApp = name: { description, runtimeInputs, script }:
@@ -79,13 +79,5 @@ let
     };
   };
 
-  rustFlakeApps = lib.mapAttrs
-    (_: app: {
-      type = "app";
-      program = "${app.package}/bin/${app.binaryName}";
-      meta = app.meta;
-    })
-    rustApps;
 in
-lib.mapAttrs scriptApp scriptApps
-  // rustFlakeApps
+pkgs.lib.mapAttrs scriptApp scriptApps

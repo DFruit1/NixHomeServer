@@ -1,10 +1,10 @@
 { inputs
-, self
 , lib
 , pkgs
 , pkgsUnstable
 , vars
 , system
+, appPackages
 }:
 
 let
@@ -18,7 +18,7 @@ let
       impermanence.nixosModules.impermanence
     ];
     specialArgs = {
-      inherit self vars copyparty filestashNix pkgsUnstable;
+      inherit vars copyparty filestashNix pkgsUnstable appPackages;
       oauth2Proxy = import ../modules/Core_Modules/oauth2-proxy {
         inherit lib pkgs vars;
       };
