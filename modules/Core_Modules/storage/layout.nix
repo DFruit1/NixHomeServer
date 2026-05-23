@@ -129,10 +129,9 @@ in
   systemd.services.data-pool-layout = {
     description = "Provision data-pool-backed content layout";
     wantedBy = [ "multi-user.target" ];
-    requires = [ "mnt-data.mount" ];
-    after = [ "mnt-data.mount" ];
+    requires = [ "zfs-import-data.service" ];
+    after = [ "zfs-import-data.service" ];
     before = [ "local-fs.target" ];
-    unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -151,6 +150,11 @@ in
           ${zfsBin} mount "$dataset" >/dev/null 2>&1 || true
         fi
       }
+
+      ${zfsBin} set canmount=on '${vars.zfsDataPool.name}'
+      ${zfsBin} set mountpoint='${vars.dataRoot}' '${vars.zfsDataPool.name}'
+      ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
+      ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
 
       ${zfsDatasetLayoutScript}
       ${zfsContentLayoutScript}
