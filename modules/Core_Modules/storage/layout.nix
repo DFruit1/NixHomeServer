@@ -2,6 +2,7 @@
 
 let
   cfg = config.repo.storage.dataPool;
+  zpoolBin = "${config.boot.zfs.package}/sbin/zpool";
   zfsBin = "${pkgs.zfs}/bin/zfs";
   canonicalUsersDataset = "${vars.zfsDataPool.name}/users";
   canonicalSharedDataset = "${vars.zfsDataPool.name}/shared";
@@ -129,19 +130,34 @@ in
   systemd.services.data-pool-layout = {
     description = "Provision data-pool-backed content layout";
     wantedBy = [ "local-fs.target" ];
-    requires = [ "zfs-import-data.service" ];
-    after = [ "zfs-import-data.service" ];
+    wants = [ "systemd-udev-settle.service" ];
+    after = [ "systemd-modules-load.service" "systemd-udev-settle.service" ];
     before = [ "local-fs.target" ];
     unitConfig.DefaultDependencies = false;
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
     };
-    script = ''
-      set -euo pipefail
-      ensure_dataset() {
-        local dataset="$1"
-        local mountpoint="$2"
+      script = ''
+        set -euo pipefail
+        ZFS_FORCE=""
+
+        for option in $(cat /proc/cmdline); do
+          case "$option" in
+            zfs_force|zfs_force=1|zfs_force=y)
+              ZFS_FORCE="-f"
+              ;;
+          esac
+        done
+
+        if ! ${zpoolBin} list '${vars.zfsDataPool.name}' >/dev/null 2>&1; then
+          # shellcheck disable=SC2086
+          ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE '${vars.zfsDataPool.name}'
+        fi
+
+        ensure_dataset() {
+          local dataset="$1"
+          local mountpoint="$2"
 
         if ! ${zfsBin} list -H -o name "$dataset" >/dev/null 2>&1; then
           ${zfsBin} create -o mountpoint="$mountpoint" "$dataset"
