@@ -21,6 +21,7 @@ let
     acl
     coreutils
     findutils
+    getent
     jq
     kanidm_1_9
     systemd
@@ -220,6 +221,30 @@ let
       ${pkgs.systemd}/bin/systemd-escape --template="$template" "$username"
     }
 
+    ensure_posix_account() {
+      local username="$1"
+
+      ${pkgs.kanidm_1_9}/bin/kanidm person posix set \
+        "$username" \
+        --shell ${lib.escapeShellArg "${pkgs.bashInteractive}/bin/bash"} \
+        -H ${kanidmCliUrl} \
+        -D idm_admin >/dev/null
+    }
+
+    wait_for_unix_user() {
+      local username="$1"
+
+      for _ in $(seq 1 20); do
+        if ${pkgs.getent}/bin/getent passwd "$username" >/dev/null; then
+          return 0
+        fi
+        sleep 1
+      done
+
+      echo "Kanidm user '$username' was POSIX-enabled but is not visible through NSS yet" >&2
+      return 1
+    }
+
     apply_shared_root_acl() {
       if [[ ! -d ${lib.escapeShellArg vars.sharedRoot} ]]; then
         return
@@ -278,16 +303,18 @@ let
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
+      ensure_posix_account "$username"
+      wait_for_unix_user "$username"
       ${prepareUserRoot} "$username"
 
       if [[ -n "''${shared_members[$username]:-}" ]]; then
         install -d -m 0755 -o root -g root ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg sharedMountName}
-        ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-shared-bindfs@.service "$username")"
+        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
       fi
 
       if [[ -n "''${sftp_members[$username]:-}" ]]; then
         install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpChrootBase}/"$username"
-        ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-sftp-user-root@.service "$username")"
+        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-sftp-user-root@.service "$username")"
       fi
     done <<<"$members_json"
 
@@ -438,11 +465,9 @@ in
       unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%i/${sharedMountName}";
       requires = [
         "data-pool-layout.service"
-        "fileshare-user-root-sync.service"
       ];
       after = [
         "data-pool-layout.service"
-        "fileshare-user-root-sync.service"
       ];
       serviceConfig = {
         Type = "simple";
@@ -459,7 +484,6 @@ in
       wants = [ "files-shared-bindfs@%i.service" ];
       after = [
         "data-pool-layout.service"
-        "fileshare-user-root-sync.service"
         "files-shared-bindfs@%i.service"
       ];
       serviceConfig = {

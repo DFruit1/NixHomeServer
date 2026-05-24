@@ -12,9 +12,9 @@ rec {
     appUsers = [ "dsaw" ]; # Non-admin Kanidm users granted default access to hosted apps.
     appAdminUsers = [ ]; # Extra Kanidm users granted app-level admin roles.
     appUserEmails = {
-      dsaw = "dsaw@tuta.io";
+      dsaw = "david.saw315@gmail.com";
     }; # Optional email map for extra app users.
-    adminMailAddresses = [ "admindsaw@sydneybasiniot.org" ]; # Kanidm mail addresses for the dedicated admin account.
+    adminMailAddresses = [ "dsaw@tuta.io" ]; # Kanidm mail addresses for the dedicated admin account.
     adminEmail = "dsaw@tuta.io"; # Contact email for ACME and fallback Kanidm admin mail on new installs.
     sshPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF From PC desktop into Home Server";
     localAdminUser = "dsaw"; # Local Unix SSH/sudo account retained for this existing server.

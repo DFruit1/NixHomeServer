@@ -21,6 +21,7 @@ let
       secretNames;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
+  kanidmDb = "/var/lib/kanidm/kanidm.db";
   kavitaScanCronExpression = "*/15 * * * *";
   kavitaLibraryWatchConfigPath = with pkgs; [
     coreutils
@@ -79,6 +80,8 @@ in
         }
 
         db="${dataDir}/config/kavita.db"
+        kanidm_db="${kanidmDb}"
+        changed=0
         for _ in $(seq 1 30); do
           [[ -f "$db" ]] && break
           sleep 1
@@ -127,13 +130,39 @@ in
             | .ProviderName = "Kanidm"
           ')"
 
-        if [[ "$current" == "$updated" ]]; then
-          exit 0
+        escape_sql() {
+          printf '%s' "$1" | ${pkgs.perl}/bin/perl -pe 's/\x27/\x27\x27/g'
+        }
+
+        if [[ "$current" != "$updated" ]]; then
+          escaped="$(escape_sql "$updated")"
+          run_sqlite_write "update ServerSetting set Value = '$escaped' where Key = 40;"
+          changed=1
         fi
 
-        escaped="$(printf '%s' "$updated" | ${pkgs.perl}/bin/perl -pe 's/\x27/\x27\x27/g')"
-        run_sqlite_write "update ServerSetting set Value = '$escaped' where Key = 40;"
-        /run/current-system/sw/bin/systemctl restart kavita.service
+        if [[ -f "$kanidm_db" ]]; then
+          for username in ${lib.escapeShellArgs vars.kanidmAppUsers}; do
+            escaped_username="$(escape_sql "$username")"
+            kanidm_uuid="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$kanidm_db" \
+              "select uuid from idx_name2uuid where name = '$escaped_username';" \
+              2>/dev/null || true)"
+            [[ -n "$kanidm_uuid" ]] || continue
+
+            current_oidc_id="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+              "select coalesce(OidcId, char(0)) from AspNetUsers where UserName = '$escaped_username';" \
+              2>/dev/null || true)"
+            [[ "$current_oidc_id" != "$kanidm_uuid" ]] || continue
+
+            escaped_uuid="$(escape_sql "$kanidm_uuid")"
+            run_sqlite_write "update AspNetUsers set OidcId = '$escaped_uuid', IdentityProvider = 1 where UserName = '$escaped_username';"
+            changed=1
+            echo "Kavita OIDC bootstrap relinked $username to the current Kanidm subject"
+          done
+        fi
+
+        if (( changed != 0 )); then
+          /run/current-system/sw/bin/systemctl restart kavita.service
+        fi
       '';
       serviceConfig = {
         Type = "oneshot";

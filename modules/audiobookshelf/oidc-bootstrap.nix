@@ -1,9 +1,10 @@
-{ config, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   dataDir = "/var/lib/${config.services.audiobookshelf.dataDir}";
   configDir = "${dataDir}/config";
   managedDir = "${dataDir}/.nixos-managed";
+  kanidmDb = "/var/lib/kanidm/kanidm.db";
   audiobookshelfOidcBootstrapPath = with pkgs; [
     curl
     jq
@@ -30,9 +31,11 @@ in
         set -euo pipefail
 
         db="${configDir}/absdatabase.sqlite"
+        kanidm_db="${kanidmDb}"
         managed_dir="${managedDir}"
         current=""
         table_ready=""
+        changed=0
 
         install -d -m 0755 "$managed_dir"
 
@@ -101,16 +104,44 @@ in
             | .authOpenIDSubfolderForRedirectURLs = $subfolder
           ')"
 
-        if [[ "$current" == "$updated" ]]; then
+        escape_sql() {
+          printf '%s' "$1" | ${pkgs.perl}/bin/perl -pe 's/\x27/\x27\x27/g'
+        }
+
+        if [[ "$current" != "$updated" ]]; then
+          escaped="$(escape_sql "$updated")"
+          ${pkgs.sqlite}/bin/sqlite3 "$db" \
+            "update settings set value = '$escaped' where key = 'server-settings';"
+          changed=1
+          echo "Audiobookshelf OIDC bootstrap v1 updated managed auth settings"
+        fi
+
+        if [[ -f "$kanidm_db" ]]; then
+          for username in ${lib.escapeShellArgs vars.kanidmAppUsers}; do
+            escaped_username="$(escape_sql "$username")"
+            kanidm_uuid="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$kanidm_db" \
+              "select uuid from idx_name2uuid where name = '$escaped_username';" \
+              2>/dev/null || true)"
+            [[ -n "$kanidm_uuid" ]] || continue
+
+            current_sub="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+              "select json_extract(case when json_valid(extraData) then extraData else '{}' end, '$.authOpenIDSub') from users where username = '$escaped_username';" \
+              2>/dev/null || true)"
+            [[ "$current_sub" != "$kanidm_uuid" ]] || continue
+
+            escaped_uuid="$(escape_sql "$kanidm_uuid")"
+            ${pkgs.sqlite}/bin/sqlite3 "$db" \
+              "update users set extraData = json_set(case when json_valid(extraData) then extraData else '{}' end, '$.authOpenIDSub', '$escaped_uuid') where username = '$escaped_username';"
+            changed=1
+            echo "Audiobookshelf OIDC bootstrap v1 relinked $username to the current Kanidm subject"
+          done
+        fi
+
+        if (( changed == 0 )); then
           echo "Audiobookshelf OIDC bootstrap v1 already converged"
           exit 0
         fi
 
-        escaped="$(printf '%s' "$updated" | ${pkgs.perl}/bin/perl -pe 's/\x27/\x27\x27/g')"
-        ${pkgs.sqlite}/bin/sqlite3 "$db" \
-          "update settings set value = '$escaped' where key = 'server-settings';"
-
-        echo "Audiobookshelf OIDC bootstrap v1 updated managed auth settings"
         /run/current-system/sw/bin/systemctl restart audiobookshelf.service
       '';
     };

@@ -4,8 +4,8 @@ use super::{
     advanced_menu, create_user_flow, disable_enable_user_flow, find_view_user_flow, forms,
     help_user_reset_password_flow,
     home::{load_home, HomeCache, HomeSummary},
-    manage_user_access_flow, manage_user_ssh_keys_flow, recover_target_interactively_with_snapshot,
-    render_bullets, simple_menu_items,
+    manage_user_access_flow, recover_target_interactively_with_snapshot, render_bullets,
+    simple_menu_items,
 };
 use crate::ops::executor::RecoveryTarget;
 use crate::session_state::should_prompt_for_startup_login;
@@ -15,7 +15,6 @@ pub(super) enum SimpleMenuAction {
     ManageUserAccess,
     FindViewUser,
     DisableEnableUser,
-    ManageUserSshKeys,
     HelpUserResetPassword,
     Advanced,
     Exit,
@@ -41,7 +40,6 @@ pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError
             SimpleMenuAction::ManageUserAccess => manage_user_access_flow(kanidm)?,
             SimpleMenuAction::FindViewUser => find_view_user_flow(kanidm)?,
             SimpleMenuAction::DisableEnableUser => disable_enable_user_flow(kanidm)?,
-            SimpleMenuAction::ManageUserSshKeys => manage_user_ssh_keys_flow(kanidm)?,
             SimpleMenuAction::HelpUserResetPassword => help_user_reset_password_flow(kanidm)?,
             SimpleMenuAction::Advanced => advanced_menu(context, kanidm)?,
             SimpleMenuAction::Exit => break,
@@ -72,9 +70,8 @@ fn select_main_menu(
         1 => SimpleMenuAction::ManageUserAccess,
         2 => SimpleMenuAction::FindViewUser,
         3 => SimpleMenuAction::DisableEnableUser,
-        4 => SimpleMenuAction::ManageUserSshKeys,
-        5 => SimpleMenuAction::HelpUserResetPassword,
-        6 => SimpleMenuAction::Advanced,
+        4 => SimpleMenuAction::HelpUserResetPassword,
+        5 => SimpleMenuAction::Advanced,
         _ => SimpleMenuAction::Exit,
     })
 }

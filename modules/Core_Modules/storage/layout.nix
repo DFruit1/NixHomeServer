@@ -66,7 +66,7 @@ let
     let
       propertyCommands = lib.concatStringsSep "\n"
         (lib.mapAttrsToList
-          (property: value: "${zfsBin} set ${property}='${value}' '${spec.dataset}'")
+          (property: value: "set_zfs_property '${spec.dataset}' '${property}' '${value}'")
           spec.properties);
     in
     ''
@@ -170,14 +170,26 @@ in
         if ! ${zfsBin} list -H -o name "$dataset" >/dev/null 2>&1; then
           ${zfsBin} create -o mountpoint="$mountpoint" "$dataset"
         else
-          ${zfsBin} set canmount=on "$dataset"
-          ${zfsBin} set mountpoint="$mountpoint" "$dataset"
+          set_zfs_property "$dataset" canmount on
+          set_zfs_property "$dataset" mountpoint "$mountpoint"
           ${zfsBin} mount "$dataset" >/dev/null 2>&1 || true
         fi
       }
 
-      ${zfsBin} set canmount=on '${vars.zfsDataPool.name}'
-      ${zfsBin} set mountpoint='${vars.dataRoot}' '${vars.zfsDataPool.name}'
+      set_zfs_property() {
+        local dataset="$1"
+        local property="$2"
+        local value="$3"
+        local current
+
+        current="$(${zfsBin} get -H -o value "$property" "$dataset")"
+        if [[ "$current" != "$value" ]]; then
+          ${zfsBin} set "$property=$value" "$dataset"
+        fi
+      }
+
+      set_zfs_property '${vars.zfsDataPool.name}' canmount on
+      set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
       ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
       ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
 

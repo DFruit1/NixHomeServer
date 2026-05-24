@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   stateDir = config.repo.files.paths.stateDir;
@@ -9,6 +9,10 @@ let
   adminPasswordHashFile = "${managedDir}/admin-password.bcrypt";
   oauth2ClientSecretStateFile = "${managedDir}/oauth2-client-secret";
   oauth2CookieSecretStateFile = "${managedDir}/oauth2-cookie-secret";
+  sftpClientKeyFile = "${managedDir}/sftp-client-key";
+  sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
+  sftpUsers =
+    lib.unique ([ vars.localAdminUser ] ++ (vars.kanidmAppUsers or [ ]));
   oauth2ClientSecretFile = "${secretRuntimeDir}/oauth2-client-secret";
   oauth2ClientSecretKanidmFile = "${secretRuntimeDir}/oauth2-client-secret-kanidm";
   oauth2CookieSecretFile = "${secretRuntimeDir}/oauth2-cookie-secret";
@@ -29,6 +33,7 @@ in
       };
       path = [
         pkgs.coreutils
+        pkgs.openssh
         pkgs.openssl
         pythonWithBcrypt
       ];
@@ -37,6 +42,7 @@ in
 
         install -d -m 0750 -o root -g filestash ${lib.escapeShellArg managedDir}
         install -d -m 0755 -o root -g root ${lib.escapeShellArg secretRuntimeDir}
+        install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpAuthorizedKeysDir}
 
         generate_secret() {
           local path="$1"
@@ -52,6 +58,10 @@ in
         generate_secret ${lib.escapeShellArg adminPasswordFile} "openssl rand -base64 24"
         generate_secret ${lib.escapeShellArg oauth2ClientSecretStateFile} "openssl rand -hex 32 | tr -d '\n'"
         generate_secret ${lib.escapeShellArg oauth2CookieSecretStateFile} "openssl rand -hex 16 | tr -d '\n'"
+        if [ ! -s ${lib.escapeShellArg sftpClientKeyFile} ]; then
+          umask 0077
+          ssh-keygen -q -t ed25519 -N "" -C "filestash-sftp" -f ${lib.escapeShellArg sftpClientKeyFile}
+        fi
 
         oauth2_client_secret_normalized="$(tr -d '\r\n' < ${lib.escapeShellArg oauth2ClientSecretStateFile})"
         printf '%s' "$oauth2_client_secret_normalized" > ${lib.escapeShellArg oauth2ClientSecretStateFile}
@@ -76,8 +86,14 @@ in
 
         chown root:root ${lib.escapeShellArg adminPasswordFile}
         chmod 0400 ${lib.escapeShellArg adminPasswordFile}
-        chown root:filestash ${lib.escapeShellArg secretKeyFile} ${lib.escapeShellArg adminPasswordHashFile}
-        chmod 0440 ${lib.escapeShellArg secretKeyFile} ${lib.escapeShellArg adminPasswordHashFile}
+        chown root:filestash ${lib.escapeShellArg secretKeyFile} ${lib.escapeShellArg adminPasswordHashFile} ${lib.escapeShellArg sftpClientKeyFile}
+        chmod 0440 ${lib.escapeShellArg secretKeyFile} ${lib.escapeShellArg adminPasswordHashFile} ${lib.escapeShellArg sftpClientKeyFile}
+        chown root:root ${lib.escapeShellArg sftpClientKeyFile}.pub
+        chmod 0444 ${lib.escapeShellArg sftpClientKeyFile}.pub
+        rm -f ${lib.escapeShellArg sftpAuthorizedKeysDir}/*
+        for user in ${lib.escapeShellArgs sftpUsers}; do
+          install -m 0644 -o root -g root ${lib.escapeShellArg sftpClientKeyFile}.pub "${sftpAuthorizedKeysDir}/$user"
+        done
         chown root:root ${lib.escapeShellArg oauth2ClientSecretStateFile} ${lib.escapeShellArg oauth2CookieSecretStateFile}
         chmod 0400 ${lib.escapeShellArg oauth2ClientSecretStateFile} ${lib.escapeShellArg oauth2CookieSecretStateFile}
 

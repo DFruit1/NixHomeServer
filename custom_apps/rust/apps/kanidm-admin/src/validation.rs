@@ -1,9 +1,7 @@
 use crate::AppError;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 const DISPLAY_NAME_MAX_LEN: usize = 128;
 const EMAIL_MAX_LEN: usize = 254;
-const SSH_KEY_TAG_MAX_LEN: usize = 64;
 
 pub const RESET_TOKEN_TTL_MIN_SECONDS: u64 = 60;
 pub const RESET_TOKEN_TTL_MAX_SECONDS: u64 = 604_800;
@@ -131,94 +129,6 @@ pub fn validate_search_query(value: &str) -> Result<String, AppError> {
     }
 }
 
-pub fn validate_ssh_key_tag(value: &str) -> Result<String, AppError> {
-    let normalized = value.trim();
-    let valid = !normalized.is_empty()
-        && normalized == value
-        && normalized.chars().count() <= SSH_KEY_TAG_MAX_LEN
-        && normalized
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@' | ':'));
-    if valid {
-        Ok(normalized.to_string())
-    } else {
-        Err(AppError::Config {
-            message: format!(
-                "invalid SSH key tag '{value}': use 1-{SSH_KEY_TAG_MAX_LEN} ASCII letters, digits, '.', '_', '-', '@', or ':'"
-            ),
-        })
-    }
-}
-
-pub fn validate_ssh_public_key(value: &str) -> Result<(String, Vec<String>), AppError> {
-    let normalized = value.trim_end_matches(['\r', '\n']);
-    if normalized.trim() != normalized {
-        return Err(AppError::Config {
-            message:
-                "invalid SSH public key: value must not contain leading or trailing whitespace"
-                    .to_string(),
-        });
-    }
-    if normalized.contains('\n') || normalized.contains('\r') {
-        return Err(AppError::Config {
-            message: "invalid SSH public key: expected exactly one public key line".to_string(),
-        });
-    }
-    if normalized.contains("PRIVATE KEY") {
-        return Err(AppError::Config {
-            message: "invalid SSH public key: this looks like a private key; users must only share the .pub public key".to_string(),
-        });
-    }
-    if normalized.is_empty() || normalized.chars().any(|ch| ch.is_control()) {
-        return Err(AppError::Config {
-            message: "invalid SSH public key: value must be a non-empty public key line"
-                .to_string(),
-        });
-    }
-
-    let fields = normalized.split_whitespace().collect::<Vec<_>>();
-    if fields.len() < 2 {
-        return Err(AppError::Config {
-            message: "invalid SSH public key: expected '<key-type> <base64-key> [comment]'"
-                .to_string(),
-        });
-    }
-
-    let key_type = fields[0];
-    let mut warnings = Vec::new();
-    match key_type {
-        "ssh-ed25519"
-        | "sk-ssh-ed25519@openssh.com"
-        | "ecdsa-sha2-nistp256"
-        | "ecdsa-sha2-nistp384"
-        | "ecdsa-sha2-nistp521"
-        | "sk-ecdsa-sha2-nistp256@openssh.com"
-        | "rsa-sha2-256"
-        | "rsa-sha2-512" => {}
-        "ssh-rsa" => warnings.push(
-            "ssh-rsa public keys are accepted for compatibility, but Ed25519 is preferred for new SFTP keys."
-                .to_string(),
-        ),
-        other => {
-            return Err(AppError::Config {
-                message: format!("invalid SSH public key: unsupported key type '{other}'"),
-            })
-        }
-    }
-
-    if !looks_like_base64(fields[1]) {
-        return Err(AppError::Config {
-            message: "invalid SSH public key: key payload is not valid base64 text".to_string(),
-        });
-    }
-
-    Ok((normalized.to_string(), warnings))
-}
-
-fn looks_like_base64(value: &str) -> bool {
-    value.len() >= 16 && STANDARD.decode(value).is_ok()
-}
-
 fn is_printable_non_control(ch: char) -> bool {
     !ch.is_control()
 }
@@ -313,57 +223,5 @@ mod tests {
         assert_eq!(validate_search_query(" storage ").unwrap(), "storage");
         assert!(validate_search_query("").is_err());
         assert!(validate_search_query("   ").is_err());
-    }
-
-    #[test]
-    fn validates_ssh_key_tags() {
-        for value in [
-            "laptop",
-            "alice-laptop",
-            "phone_2026",
-            "alice@desktop",
-            "pc:main",
-        ] {
-            assert_eq!(validate_ssh_key_tag(value).unwrap(), value);
-        }
-        for value in ["", " laptop", "my laptop", "bad/key", "bad$key"] {
-            assert!(validate_ssh_key_tag(value).is_err(), "{value}");
-        }
-    }
-
-    #[test]
-    fn validates_ssh_public_keys() {
-        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF user@pc";
-        let (normalized, warnings) = validate_ssh_public_key(key).expect("valid key");
-        assert_eq!(normalized, key);
-        assert!(warnings.is_empty());
-    }
-
-    #[test]
-    fn validates_ssh_public_key_with_trailing_newline_from_file() {
-        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF user@pc\n";
-        let (normalized, _) = validate_ssh_public_key(key).expect("valid key");
-        assert_eq!(normalized, key.trim_end());
-    }
-
-    #[test]
-    fn rejects_private_or_malformed_ssh_keys() {
-        for value in [
-            "-----BEGIN OPENSSH PRIVATE KEY-----",
-            "ssh-ed25519 not base64",
-            "ssh-ed25519 notbase64butvalidchars",
-            "ssh-dss AAAAB3NzaC1kc3MAAACBA",
-            "ssh-ed25519 AAAAC3Nza\nssh-ed25519 AAAAC3Nza",
-            " ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECt+GBZcPahwDCtWiMgn24qGdqMOJhP/pHo/pKsHAF",
-        ] {
-            assert!(validate_ssh_public_key(value).is_err(), "{value}");
-        }
-    }
-
-    #[test]
-    fn accepts_ssh_rsa_with_warning() {
-        let (_, warnings) =
-            validate_ssh_public_key("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7").expect("rsa key");
-        assert_eq!(warnings.len(), 1);
     }
 }

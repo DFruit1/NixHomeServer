@@ -3,6 +3,7 @@
 let
   loopback = vars.networking.loopbackIPv4;
   kopiaPort = vars.networking.ports.kopia;
+  kopiaAuthProxyPort = kopiaPort + 1;
   oauth2Port = vars.networking.ports.oauth2ProxyKopia;
   host = vars.kopiaDomain;
   stateDir = "/persist/appdata/kopia";
@@ -17,6 +18,19 @@ let
     coreutils
     kopia
   ];
+  kopiaAuthProxyCaddyfile = pkgs.writeText "kopia-auth-proxy.Caddyfile" ''
+    {
+      admin off
+      auto_https off
+    }
+
+    http://:${toString kopiaAuthProxyPort} {
+      bind ${loopback}
+      reverse_proxy ${loopback}:${toString kopiaPort} {
+        header_up Authorization "Basic {$KOPIA_BASIC_AUTH}"
+      }
+    }
+  '';
 in
 {
   config = lib.mkMerge [
@@ -67,6 +81,36 @@ in
           ];
         };
       };
+
+      systemd.services.kopia-auth-proxy = {
+        description = "Local Kopia Basic Auth injection proxy";
+        wantedBy = [ "multi-user.target" ];
+        requires = [ "kopia.service" ];
+        after = [ "kopia.service" ];
+        serviceConfig = {
+          Type = "simple";
+          LoadCredential = [
+            "${credentials.serverPassword}:${config.age.secrets.kopiaServerPassword.path}"
+          ];
+          ExecStart = pkgs.writeShellScript "kopia-auth-proxy-start" ''
+            set -euo pipefail
+
+            password="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
+            export KOPIA_BASIC_AUTH="$(printf 'kopia-admin:%s' "$password" | ${pkgs.coreutils}/bin/base64 --wrap=0)"
+
+            exec ${pkgs.caddy}/bin/caddy run --config ${kopiaAuthProxyCaddyfile}
+          '';
+          Restart = "on-failure";
+          RestartSec = 5;
+          NoNewPrivileges = true;
+          PrivateTmp = true;
+          RestrictAddressFamilies = [
+            "AF_INET"
+            "AF_INET6"
+            "AF_UNIX"
+          ];
+        };
+      };
     }
 
     (oauth2Proxy.mkSidecarService {
@@ -78,18 +122,18 @@ in
       cookieName = "_oauth2_proxy_kopia";
       domain = host;
       port = oauth2Port;
-      upstream = "http://${loopback}:${toString kopiaPort}";
+      upstream = "http://${loopback}:${toString kopiaAuthProxyPort}";
       allowedGroups = [ vars.backupAccess.adminGroup ];
       serviceDependencies = [
         "caddy.service"
         "kopia.service"
+        "kopia-auth-proxy.service"
       ];
       upstreamCheck = {
         displayName = "Kopia";
-        url = "http://${loopback}:${toString kopiaPort}/";
+        url = "http://${loopback}:${toString kopiaAuthProxyPort}/";
         okStatusCodes = [
           "200"
-          "401"
         ];
       };
     })

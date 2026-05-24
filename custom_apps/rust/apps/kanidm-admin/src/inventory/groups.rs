@@ -210,8 +210,18 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             category: GroupCategory::Foundation,
         },
         "user-files" => GroupHelp {
-            summary: "Grants Files, uploads, and SFTP access.",
-            detail: "Add this when the user should access personal and shared file areas through Filestash, SFTP, or the upload flow.",
+            summary: "Grants browser Files access and provisions a personal file root.",
+            detail: "Add this when the user should access personal file areas through Filestash or the upload flow. Direct SFTP login is controlled separately by files-sftp-users.",
+            category: GroupCategory::Foundation,
+        },
+        "files-sftp-users" => GroupHelp {
+            summary: "Grants password-based access to the restricted files SFTP endpoint.",
+            detail: "Add this only when the user should connect directly to the dedicated SFTP port. The endpoint uses Kanidm password/PAM auth, forces internal-sftp, and does not grant normal shell SSH.",
+            category: GroupCategory::Foundation,
+        },
+        "files-shared-users" => GroupHelp {
+            summary: "Adds the protected shared files view inside the user's file root.",
+            detail: "Add this when the user should see _Shared in Filestash or direct SFTP. They can read, write, edit, and rename there, but deletes are denied through the protected view.",
             category: GroupCategory::Foundation,
         },
         "system_admins" => GroupHelp {

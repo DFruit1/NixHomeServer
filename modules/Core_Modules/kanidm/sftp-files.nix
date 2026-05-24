@@ -1,12 +1,14 @@
-{ config, lib, pkgs, vars, ... }:
+{ lib, pkgs, vars, ... }:
 
 let
-  cfg = config.services.kanidm;
   chrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
-  authorizedKeysCommand = "/etc/ssh/kanidm_ssh_authorizedkeys";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
+  sftpUnixGroups = lib.unique [
+    sftpAccessGroup
+    "${sftpAccessGroup}@${vars.domain}"
+  ];
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
-  sftpGroup = "${sftpAccessGroup}@${vars.domain}";
+  sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
   filesSftpPort = vars.networking.ports.filesSftp;
   lanIface = vars.networking.interfaces.lan;
   filesSftpSshdConfig = pkgs.writeText "files-sftp-sshd_config" ''
@@ -17,15 +19,13 @@ let
     HostKey /etc/ssh/ssh_host_ed25519_key
     HostKey /etc/ssh/ssh_host_rsa_key
     UsePAM yes
+    PAMServiceName files-sftp-sshd
     PasswordAuthentication yes
-    KbdInteractiveAuthentication yes
-    PubkeyAuthentication no
+    KbdInteractiveAuthentication no
     PermitRootLogin no
-    AllowGroups ${sftpGroup}
-    AuthorizedKeysCommand none
-    GSSAPIAuthentication no
-    KerberosAuthentication no
-    X11Forwarding no
+    AllowGroups ${lib.concatStringsSep " " sftpUnixGroups}
+    PubkeyAuthentication yes
+    AuthorizedKeysFile ${sftpAuthorizedKeysDir}/%u
     AllowTcpForwarding no
     PermitTunnel no
     PermitTTY no
@@ -65,30 +65,17 @@ in
       UsePAM = true;
       PasswordAuthentication = false;
       KbdInteractiveAuthentication = false;
-      AuthorizedKeysCommand = "${authorizedKeysCommand} %u";
-      AuthorizedKeysCommandUser = "nobody";
+      AllowUsers = [ vars.localAdminUser ];
     };
   };
 
   security.pam.services.sshd.unixAuth = lib.mkForce true;
+  security.pam.services.files-sftp-sshd = {
+    startSession = true;
+    unixAuth = false;
+  };
 
   networking.firewall.interfaces.${lanIface}.allowedTCPPorts = [ filesSftpPort ];
-
-  systemd.services.kanidm-ssh-authorizedkeys-wrapper = {
-    description = "Install root-owned Kanidm SSH authorized keys command wrapper";
-    wantedBy = [ "multi-user.target" ];
-    before = [ "sshd.service" ];
-    serviceConfig.Type = "oneshot";
-    script = ''
-      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root /etc/ssh
-      ${pkgs.coreutils}/bin/cat >${lib.escapeShellArg authorizedKeysCommand} <<'EOF'
-      #!${pkgs.runtimeShell}
-      exec ${cfg.package}/bin/kanidm_ssh_authorizedkeys "$@"
-      EOF
-      ${pkgs.coreutils}/bin/chown root:root ${lib.escapeShellArg authorizedKeysCommand}
-      ${pkgs.coreutils}/bin/chmod 0755 ${lib.escapeShellArg authorizedKeysCommand}
-    '';
-  };
 
   systemd.tmpfiles.rules = [
     "d /srv/files-sftp 0755 root root -"
@@ -112,6 +99,7 @@ in
     wants = [
       "files-sftp-chroot-layout.service"
       "fileshare-user-root-sync.service"
+      "filestash-secret-materialize.service"
       "kanidm-unixd.service"
       "network-online.target"
       "sshd-keygen.service"
@@ -119,6 +107,7 @@ in
     after = [
       "files-sftp-chroot-layout.service"
       "fileshare-user-root-sync.service"
+      "filestash-secret-materialize.service"
       "kanidm-unixd.service"
       "network-online.target"
       "sshd-keygen.service"
@@ -138,13 +127,11 @@ in
       "files-sftp-chroot-layout.service"
       "fileshare-user-root-sync.service"
       "kanidm-unixd.service"
-      "kanidm-ssh-authorizedkeys-wrapper.service"
     ];
     after = [
       "files-sftp-chroot-layout.service"
       "fileshare-user-root-sync.service"
       "kanidm-unixd.service"
-      "kanidm-ssh-authorizedkeys-wrapper.service"
     ];
   };
 }

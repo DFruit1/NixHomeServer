@@ -20,6 +20,14 @@ let
       inherit members;
       overwriteMembers = false;
     };
+  delegatedOperatorGroups = [
+    "idm_account_policy_admins"
+    "idm_group_admins"
+    "idm_oauth2_admins"
+    "idm_people_admins"
+    "idm_people_on_boarding"
+    "idm_people_pii_read"
+  ];
 in
 {
   services.kanidm.provision = {
@@ -41,6 +49,7 @@ in
       # Keep the builtin group in the provision inventory so post-start
       # reconciliation does not try to delete it as an orphaned entity.
       "domain_admins" = mkManualGroup [ ];
+    } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
       "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
       ${vars.backupAccess.adminGroup} = mkManualGroup vars.kanidmBackupAdminUsers;
       ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;

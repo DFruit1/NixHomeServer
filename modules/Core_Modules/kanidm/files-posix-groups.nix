@@ -17,7 +17,6 @@ let
     coreutils
     kanidm_1_9
   ];
-  adminSshKeyTag = "nixhomeserver-admin";
 in
 {
   systemd.services.kanidm-files-posix-groups = {
@@ -67,28 +66,12 @@ in
           -D idm_admin >/dev/null
       }
 
-      ensure_admin_ssh_public_key() {
-        kanidm person ssh delete-publickey \
-          ${lib.escapeShellArg vars.kanidmAdminUser} \
-          ${lib.escapeShellArg adminSshKeyTag} \
-          -H ${kanidmCliUrl} \
-          -D idm_admin >/dev/null 2>&1 || true
-
-        kanidm person ssh add-publickey \
-          ${lib.escapeShellArg vars.kanidmAdminUser} \
-          ${lib.escapeShellArg adminSshKeyTag} \
-          ${lib.escapeShellArg vars.serverSSHPubKey} \
-          -H ${kanidmCliUrl} \
-          -D idm_admin >/dev/null
-      }
-
       ${lib.concatMapStringsSep "\n      " (group: ''
         ensure_posix_group ${lib.escapeShellArg group.name} ${lib.escapeShellArg (toString group.gid)}
       '') fileAccessPosixGroups}
       ${lib.concatMapStringsSep "\n      " (username: ''
         ensure_posix_account ${lib.escapeShellArg username}
       '') fileAccessPosixUsers}
-      ensure_admin_ssh_public_key
     '';
     serviceConfig.Type = "oneshot";
   };

@@ -207,61 +207,31 @@ Interactive guidance note:
 - Low-level `membership add` and `membership remove` style operations remain under `Advanced`, but the TUI still defaults them to a guided picker with a review screen before the write.
 - `Advanced -> Local Helpers -> Invite user to Vaultwarden` is the maintained onboarding path for the shared password-vault workflow.
 
-## SFTP SSH Keys
+## Files SFTP Access
 
-SFTP access uses Kanidm identity plus SSH public keys. It does not use the
-user's Kanidm password.
+Direct files SFTP access uses Kanidm identity through PAM/NSS and the user's
+Kanidm password. It does not use per-user SSH public keys.
 
-Have the user generate the keypair on their own PC:
-
-```bash
-ssh-keygen -t ed25519 -a 100 -f ~/.ssh/nixhomeserver_sftp -C "alice@laptop"
-```
-
-They should send only the public key:
-
-```bash
-cat ~/.ssh/nixhomeserver_sftp.pub
-```
-
-Register the public key in Kanidm:
-
-```bash
-kanidm-admin user ssh-key add alice laptop --public-key-file ./alice.pub
-```
-
-Or paste the public key directly:
-
-```bash
-kanidm-admin user ssh-key add alice laptop "ssh-ed25519 AAAA... alice@laptop"
-```
-
-Inspect or remove keys:
-
-```bash
-kanidm-admin user ssh-key list alice
-kanidm-admin user ssh-key remove alice laptop
-```
-
-Grant SFTP access separately:
+Grant direct SFTP access:
 
 ```bash
 kanidm-admin membership add alice files-sftp-users
 kanidm-admin membership add alice files-shared-users
 ```
 
-The user can then connect from a local file browser:
+The user can then connect from a local file browser and sign in with their
+Kanidm password:
 
 ```text
 sftp://alice@server.home.arpa/
 ```
 
 Important:
-- never ask users to send private keys
 - `files-sftp-users` controls SFTP login eligibility on the dedicated files SFTP port
 - `files-shared-users` controls whether `_Shared` appears inside the user's personal root
 - `user-files` controls browser file access through Filestash
-- users authenticate to the SFTP endpoint with their Kanidm password through PAM
+- the dedicated SFTP endpoint forces `internal-sftp` and does not grant normal SSH shell access
+- normal SSH is reserved for the local Unix admin account
 
 ## OAuth2 Clients
 

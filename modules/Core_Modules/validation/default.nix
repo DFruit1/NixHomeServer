@@ -89,6 +89,9 @@ let
     lib.filter
       (path: path == vars.sharedRoot || lib.hasPrefix "${vars.sharedRoot}/" path)
       filestashBackendPaths;
+  sshdSettings = config.services.openssh.settings;
+  normalSshAllowUsers = sshdSettings.AllowUsers or [ ];
+  normalSshAuthorizedKeysCommand = sshdSettings.AuthorizedKeysCommand or null;
 in
 {
   assertions = [
@@ -197,6 +200,14 @@ in
     {
       assertion = directFilestashSharedPaths == [ ];
       message = "nixhomeserver: Filestash must not expose vars.sharedRoot directly; use the per-user protected shared mount instead.";
+    }
+    {
+      assertion = normalSshAllowUsers == [ vars.localAdminUser ];
+      message = "nixhomeserver: normal SSH must be limited to the local admin user; Kanidm file users use the dedicated SFTP endpoint only.";
+    }
+    {
+      assertion = normalSshAuthorizedKeysCommand == null;
+      message = "nixhomeserver: normal SSH must not use Kanidm AuthorizedKeysCommand; per-user Kanidm SSH keys are not part of the file-access flow.";
     }
   ];
 }

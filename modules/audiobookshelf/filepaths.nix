@@ -47,6 +47,7 @@ in
 
         install -d -m 2775 -o root -g users ${sharedAudiobooksRoot}
         install -d -m 2775 -o root -g users ${sharedAudiobooksRoot}/youtube
+        setfacl -m g:audiobookshelf-media:r-X ${vars.sharedRoot}
 
         apply_recursive_acl() {
           local access_spec="$1"

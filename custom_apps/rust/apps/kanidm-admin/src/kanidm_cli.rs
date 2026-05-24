@@ -236,39 +236,6 @@ impl KanidmCli {
         )
     }
 
-    pub fn person_ssh_list_publickeys(&self, account_id: &str) -> Result<String, AppError> {
-        self.run_stdout(
-            self.base_args(["person", "ssh", "list-publickeys", account_id]),
-            &format!("failed to list SSH public keys for Kanidm user '{account_id}'"),
-        )
-    }
-
-    pub fn person_ssh_add_publickey(
-        &self,
-        account_id: &str,
-        tag: &str,
-        public_key: &str,
-    ) -> Result<(), AppError> {
-        self.run_unit(
-            self.base_args([
-                "person",
-                "ssh",
-                "add-publickey",
-                account_id,
-                tag,
-                public_key,
-            ]),
-            &format!("failed to add SSH public key '{tag}' to Kanidm user '{account_id}'"),
-        )
-    }
-
-    pub fn person_ssh_delete_publickey(&self, account_id: &str, tag: &str) -> Result<(), AppError> {
-        self.run_unit(
-            self.base_args(["person", "ssh", "delete-publickey", account_id, tag]),
-            &format!("failed to remove SSH public key '{tag}' from Kanidm user '{account_id}'"),
-        )
-    }
-
     pub fn group_add_members(&self, group: &str, account_id: &str) -> Result<(), AppError> {
         self.run_unit(
             self.base_args(["group", "add-members", group, account_id]),
@@ -428,13 +395,30 @@ impl KanidmCli {
                 return Err(self.classify_named_failure(resource, name, context, failure))
             }
         };
-        serde_json::from_str(&output.stdout).map_err(|error| AppError::Json {
-            message: format!("{context}: invalid JSON from kanidm backend"),
-            details: json!({
-                "error": error.to_string(),
-                "stdout": output.stdout,
-            }),
-        })
+        match serde_json::from_str(&output.stdout) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let normalized_stdout = output.stdout.trim().to_lowercase();
+                if is_not_found(&normalized_stdout) {
+                    return Err(AppError::NotFound {
+                        message: format!("{resource} '{name}' was not found"),
+                        resource: resource.to_string(),
+                        name: name.to_string(),
+                        details: json!({
+                            "diagnostic": output.stdout.trim(),
+                            "stdout": output.stdout,
+                        }),
+                    });
+                }
+                Err(AppError::Json {
+                    message: format!("{context}: invalid JSON from kanidm backend"),
+                    details: json!({
+                        "error": error.to_string(),
+                        "stdout": output.stdout,
+                    }),
+                })
+            }
+        }
     }
 
     fn run_json<T: DeserializeOwned>(
@@ -695,7 +679,6 @@ fn command_mode_for_args(args: &[String]) -> CommandMode {
     match (first, second, third) {
         (Some("session"), Some("list"), _) => CommandMode::NonInteractiveRead,
         (Some("person"), Some("list" | "get"), _) => CommandMode::NonInteractiveRead,
-        (Some("person"), Some("ssh"), Some("list-publickeys")) => CommandMode::NonInteractiveRead,
         (Some("group"), Some("list" | "get" | "list-members"), _) => {
             CommandMode::NonInteractiveRead
         }
@@ -782,6 +765,30 @@ mod tests {
             r#"#!/usr/bin/env bash
 printf 'No matching entries were found\n' >&2
 exit 1
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+        });
+
+        let error = cli.person_get::<Value>("dsaw").expect_err("not found");
+        assert!(matches!(error, AppError::NotFound { .. }));
+    }
+
+    #[test]
+    fn named_json_normalizes_successful_plaintext_not_found_diagnostics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+printf 'No matching entries\n'
+exit 0
 "#,
         );
         let cli = KanidmCli::new(&ResolvedContext {
