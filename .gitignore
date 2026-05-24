@@ -3,13 +3,13 @@
 !/secrets/manifest.nix
 !/secrets/pubkeys/
 !/secrets/pubkeys/age.pub
-/secrets/top/
+/secrets/unencrypted/
 /SensitivePrivateSecrets
 /.jj
 /ss
 /result
 /rebuild.log
 /.cache/
-/rust/apps/*/target/
-/node/apps/*/node_modules/
-/node/apps/*/dist/
+/custom_apps/rust/apps/*/target/
+/custom_apps/node/apps/*/node_modules/
+/custom_apps/node/apps/*/dist/

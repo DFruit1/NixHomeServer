@@ -5,37 +5,8 @@
 This repository defines a reproducible NixOS home-server focused on:
 
 * Identity & SSO (Kanidm, OAuth2 Proxy)
-* Self-hosted apps (Immich, Paperless, Audiobookshelf, Copyparty)
+* Self-hosted apps (Immich, Paperless, Audiobookshelf, Filestash)
 * Edge routing (Caddy, Cloudflared, Netbird, Unbound)
-
----
-
-## Core Principles
-
-* Keep service boundaries explicit (`modules/<service>/`)
-* Use vars.nix for shared, operator-facing values that a new server owner is likely to change
-* Avoid deprecated NixOS options
-* The config should not only be efficient and reliable but also human readable for technical users and usable for non-technical users.
-* Do not introduce implicit trust between services
-* Core_modules are assumed to always be part of the config and therefore can be heavy dependent on each other. Modules outside of core modules may change and therefore should stay modular.
-
----
-
-## Environment
-
-* The only assumption about the local desktop workstation containing this repo should be that it is a linux desktop with nix, bash and the standard coreutils installed. All other assumptions should be avoided or verified.
-* For commonly needed tools, prefer installing them as permanent nix system packages. Prioritise coverage rather than simplicity. If a tool is only needed as a one-off or is rarely needed, use a nix-shell to make it available for the process that needs it. 
-
----
-
-## Testing
-
-* Testing should be focussed on catching potential or actual runtime errors in the config during buildtime.
-* Avoid duplication of testing efforts
-* Where possible, declare shell scripts in nix rather than as ad-hoc shell scripts
-* Tests should generalise to anyone's config and should not try to assert values specific to my individual config
-* Tests for one-off migrations, checking legacy cleanup should be actively pruned away to keep the testing focussed and minimal as possible.
-* Aggressively and regularly prune away unneeded tests to avoid bloat long term
 
 ---
 
@@ -58,11 +29,7 @@ prompt is unavoidable, refer to that secret rather than relying on memory.
 
 ---
 
-## Management of Storage Space
-
-* When storage space is almost full on the main internal SSD, run nix garbage collection to maintain free space
-* If storage space is still near to being full after nix garbage collection, look through the file system and suggest to the user in chat what to clean up (e.g. log or tmp files) along with commands they can run themselves.
-* Do not attempt to clean up files yourself to free up storage space, always get the user to do it. Never delete files off the data storage disks or volumes.
-* Treat `disko` as a blank-machine bootstrap tool only.
-* Never use `disko` or disk formatting commands to manage an existing server or an in-place storage migration.
-* For existing servers, guide the user through non-destructive ZFS or filesystem maintenance steps instead of reprovisioning disks.
+## Module Structure
+* Modules are individual applications and their configuration. The repo should be designed in such a way that removal of a module does not break any functionality whatsoever 
+* Core_Modules are always assumed to exist in the config and aren't normally modified or removed. Therefore, other modules and config can always assume these modules will exist.
+* Impermanence should always be centrally defined within core modules to prevent accidental data deletion on module removal. Module data should be persisted unless explicitly removed within the central impermanence module. 

@@ -10,6 +10,7 @@
     ./data-disks
     ./impermanence
     ./kanidm
+    ./kopia
     ./netbird
     ./storage
     ./storage-monitoring

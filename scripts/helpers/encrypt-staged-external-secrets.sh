@@ -16,8 +16,8 @@ ensure_json_alias cfHomeCreds
 encrypt_staged_secret() {
   local name="$1"
   local validator="$2"
-  local clear_file="${secrets_top_dir}/${name}"
-  local age_file="${age_dir}/${name}.age"
+  local clear_file="${secrets_unencrypted_dir}/${name}"
+  local age_file="${secrets_dir}/${name}.age"
   local source_file="$clear_file"
   local temp_file=""
 
@@ -51,8 +51,7 @@ encrypt_staged_secret() {
 encrypt_staged_secret netbirdSetupKey validate_netbird
 encrypt_staged_secret cfHomeCreds validate_cf
 encrypt_staged_secret cfAPIToken validate_cf_api_token
-encrypt_staged_secret virusTotalApiKey validate_nonempty_secret
-
+encrypt_staged_secret storageAlertWebhookUrl validate_webhook_url
 echo
 echo "✅ Validated and encrypted staged external secrets."
-echo "🔏 Clear-text copies are in ${secrets_top_dir} - delete or move them to a secure vault when you're done."
+echo "🔏 Clear-text copies are in ${secrets_unencrypted_dir} - delete or move them to a secure vault when you're done."

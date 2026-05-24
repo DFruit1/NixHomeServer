@@ -174,8 +174,8 @@ kanidm-admin membership set "$NEW_USER" --allow-empty
 ```
 
 File-access group model:
-- `user-files` grants browser file access through Copyparty and Filestash and provisions a personal file root.
-- `files-sftp-users` grants restricted SFTP login into the user's personal file root.
+- `user-files` grants browser file access through Filestash and provisions a personal file root.
+- `files-sftp-users` grants restricted SFTP login into the user's personal file root. File users are POSIX-enabled in Kanidm so OpenSSH can write files as the real Unix user.
 - `files-shared-users` adds `_Shared` inside that personal root. `_Shared` is a delete-protected shared view; users can read, write, edit, and rename there, but deletes must be performed by an admin directly against the real shared path.
 
 Expected result:
@@ -258,10 +258,10 @@ sftp://alice@server.home.arpa/
 
 Important:
 - never ask users to send private keys
-- `files-sftp-users` controls SFTP login eligibility
+- `files-sftp-users` controls SFTP login eligibility on the dedicated files SFTP port
 - `files-shared-users` controls whether `_Shared` appears inside the user's personal root
-- `user-files` controls browser file access through Filestash and Copyparty
-- if the file browser asks for a password, cancel and make sure the user's private key is loaded locally
+- `user-files` controls browser file access through Filestash
+- users authenticate to the SFTP endpoint with their Kanidm password through PAM
 
 ## OAuth2 Clients
 
@@ -316,8 +316,7 @@ Expected result:
 
 ## App-Specific First Login Notes
 
-- `uploads.<domain>`: Copyparty upload access is enforced by OAuth2 Proxy. `user-files` grants access to the signed-in user's own uploads root at `/`.
-- `files.<domain>`: Filestash browser access requires `user-files` and opens the signed-in user's personal root. SFTP login requires `files-sftp-users`. `files-shared-users` adds `_Shared` to either view; `app-admin` and `system_admins` do not expose shared files there.
+- `files.<domain>`: Filestash browser access requires `user-files`. After OAuth2 login, Filestash asks for the user's Kanidm password and connects to SFTP as that Unix user. Direct SFTP login requires `files-sftp-users`. `files-shared-users` adds `_Shared` to either view; `app-admin` and `system_admins` do not expose shared files there.
 - `emails.<domain>`: browser access is enforced by `mail-archive-users`. That group grants access to the private mail-archive UI only; it does not grant direct access to the hidden `.internal-sync` payload tree. User-visible mailbox `.eml` files are exposed through the visible mirror under each personal `emails/` root.
 - `passwords.<domain>`: Vaultwarden is local-auth only. Use `kanidm-admin local vaultwarden invite "$ACCOUNT_ID"` as an email-resolution helper, then the user signs in with Vaultwarden local credentials. See [Vaultwarden Guide](./vaultwarden.md).
 - `wiki.<domain>`: baseline `users` membership is sufficient.

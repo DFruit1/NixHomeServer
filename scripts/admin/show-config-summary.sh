@@ -112,7 +112,7 @@ jq -r '.[] | "    - " + .' <<<"$shared_content_subdirs_json"
 echo
 
 echo "Required external secrets"
-jq -r '.[] | "  - secrets/top/" + .' <<<"$external_secrets_json"
+jq -r '.[] | "  - secrets/unencrypted/" + .' <<<"$external_secrets_json"
 echo
 
 echo "Run \`nix run .#validate-config-readiness\` for readiness checks."

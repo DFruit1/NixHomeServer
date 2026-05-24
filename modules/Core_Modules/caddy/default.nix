@@ -17,6 +17,7 @@ let
 in
 {
   imports = [
+    ./bootstrap.nix
     ./acme.nix
   ];
 

@@ -4,12 +4,7 @@ let
   host = "files.${vars.domain}";
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
 in
-
 {
-  users.users.filestash.extraGroups = [
-    "users"
-  ];
-
   services.kanidm.provision.systems.oauth2.filestash-web = {
     displayName = "Files";
     imageFile = ../Core_Modules/kanidm/assets/files.svg;

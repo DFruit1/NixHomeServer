@@ -12,7 +12,6 @@ let
   oauth2ClientSecretFile = "${secretRuntimeDir}/oauth2-client-secret";
   oauth2ClientSecretKanidmFile = "${secretRuntimeDir}/oauth2-client-secret-kanidm";
   oauth2CookieSecretFile = "${secretRuntimeDir}/oauth2-cookie-secret";
-  filestashEnvironmentFile = "${secretRuntimeDir}/filestash.env";
   pythonWithBcrypt = pkgs.python3.withPackages (ps: [ ps.bcrypt ]);
 in
 {
@@ -86,10 +85,6 @@ in
         install -m 0440 -o root -g kanidm ${lib.escapeShellArg oauth2ClientSecretStateFile} ${lib.escapeShellArg oauth2ClientSecretKanidmFile}
         install -m 0440 -o root -g oauth2-proxy ${lib.escapeShellArg oauth2CookieSecretStateFile} ${lib.escapeShellArg oauth2CookieSecretFile}
 
-        local_backend_secret="$(tr -d '\r\n' < ${lib.escapeShellArg adminPasswordFile})"
-        printf 'LOCAL_BACKEND_SECRET=%s\n' "$local_backend_secret" > ${lib.escapeShellArg filestashEnvironmentFile}
-        chown root:filestash ${lib.escapeShellArg filestashEnvironmentFile}
-        chmod 0440 ${lib.escapeShellArg filestashEnvironmentFile}
       '';
     };
 

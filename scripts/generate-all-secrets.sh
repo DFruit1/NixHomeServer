@@ -10,7 +10,7 @@ usage() {
 Usage: scripts/generate-all-secrets.sh
 
 Generate repo-managed secrets and validate/encrypt staged external secrets from
-secrets/top/. This is the only documented secrets entrypoint for operators.
+secrets/unencrypted/. This is the only documented secrets entrypoint for operators.
 
 Example:
   ./scripts/generate-all-secrets.sh

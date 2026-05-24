@@ -8,7 +8,7 @@
 }:
 
 let
-  inherit (inputs) agenix copyparty filestashNix impermanence;
+  inherit (inputs) agenix filestashNix impermanence;
 
   nixosHost = lib.nixosSystem {
     modules = [
@@ -18,7 +18,7 @@ let
       impermanence.nixosModules.impermanence
     ];
     specialArgs = {
-      inherit vars copyparty filestashNix pkgsUnstable appPackages;
+      inherit vars filestashNix pkgsUnstable appPackages;
       oauth2Proxy = import ../modules/Core_Modules/oauth2-proxy {
         inherit lib pkgs vars;
       };

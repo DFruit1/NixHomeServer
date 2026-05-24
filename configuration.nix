@@ -3,10 +3,10 @@
 {
   imports = [
     ./hardware-configuration.nix
+    ./system-resources.nix
     ./modules/Core_Modules
 
     ./modules/audiobookshelf
-    ./modules/copyparty
     ./modules/files
     ./modules/immich
     ./modules/jellyfin
@@ -15,20 +15,16 @@
     ./modules/mail-archive-ui
     ./modules/youtube-downloader
     ./modules/paperless
-    ./modules/power-management
     ./modules/vaultwarden
 
-    ./modules/copyparty/integrations/kiwix.nix
-    ./modules/files/integrations/audiobookshelf.nix
-    ./modules/files/integrations/copyparty.nix
-    ./modules/files/integrations/jellyfin.nix
-    ./modules/files/integrations/kavita.nix
-    ./modules/files/integrations/kiwix.nix
-    ./modules/mail-archive-ui/integrations/files.nix
-    ./modules/mail-archive-ui/integrations/paperless.nix
-    ./modules/paperless/integrations/copyparty.nix
-    ./modules/paperless/integrations/mail-archive-ui.nix
-    ./modules/youtube-downloader/integrations/audiobookshelf.nix
-    ./modules/youtube-downloader/integrations/jellyfin.nix
+    ./modules/Integrations/expose_mail_archive_emails_in_files.nix
+    ./modules/Integrations/grant_files_access_to_audiobookshelf_media.nix
+    ./modules/Integrations/grant_files_access_to_jellyfin_media.nix
+    ./modules/Integrations/grant_files_access_to_kavita_media.nix
+    ./modules/Integrations/grant_files_access_to_kiwix_library.nix
+    ./modules/Integrations/remove_direct_mail_archive_access_from_paperless_inbox.nix
+    ./modules/Integrations/send_mail_archive_documents_to_paperless.nix
+    ./modules/Integrations/wait_for_audiobookshelf_storage_before_youtube_downloader.nix
+    ./modules/Integrations/wait_for_jellyfin_storage_before_youtube_downloader.nix
   ];
 }

@@ -1,6 +1,24 @@
 { lib, config, pkgs, vars, ... }:
 
 let
+  repoRoot = ../..;
+  ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
+  mkSecretAssertions = secretNames:
+    map
+      (name:
+        let
+          secretPath = repoRoot + "/secrets/${name}.age";
+          content = if builtins.pathExists secretPath then builtins.readFile secretPath else "";
+        in
+        {
+          assertion =
+            builtins.hasAttr name config.age.secrets
+            && builtins.pathExists secretPath
+            && content != ""
+            && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+        })
+      secretNames;
   dataDir = "/var/lib/paperless";
   paperlessOidcEnvPath = with pkgs; [
     jq
@@ -59,6 +77,10 @@ let
 in
 {
   config = {
+    assertions = mkSecretAssertions [
+      "paperlessClientSecret"
+    ];
+
     systemd.services =
       {
         paperless-oidc-env = {

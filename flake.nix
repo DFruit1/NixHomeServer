@@ -9,8 +9,6 @@
     agenix.url = "github:ryantm/agenix";
     impermanence.url = "github:nix-community/impermanence";
     impermanence.inputs.nixpkgs.follows = "nixpkgs";
-    copyparty.url = "github:9001/copyparty";
-    copyparty.inputs.nixpkgs.follows = "nixpkgs";
     filestashNix.url = "github:dermetfan/filestash.nix";
   };
 

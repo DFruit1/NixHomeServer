@@ -8,6 +8,11 @@ let
       inherit name gid;
     })
     vars.fileAccessPosixGids;
+  fileAccessPosixUsers = lib.unique (
+    [ vars.kanidmAdminUser ]
+    ++ (vars.filesSftpUsers or [ ])
+    ++ (vars.kanidmAppUsers or [ ])
+  );
   kanidmFilesPosixGroupsPath = with pkgs; [
     coreutils
     kanidm_1_9
@@ -52,9 +57,11 @@ in
           -D idm_admin >/dev/null
       }
 
-      ensure_admin_posix_account() {
+      ensure_posix_account() {
+        local username="$1"
+
         kanidm person posix set \
-          ${lib.escapeShellArg vars.kanidmAdminUser} \
+          "$username" \
           --shell ${lib.escapeShellArg "${pkgs.bashInteractive}/bin/bash"} \
           -H ${kanidmCliUrl} \
           -D idm_admin >/dev/null
@@ -78,7 +85,9 @@ in
       ${lib.concatMapStringsSep "\n      " (group: ''
         ensure_posix_group ${lib.escapeShellArg group.name} ${lib.escapeShellArg (toString group.gid)}
       '') fileAccessPosixGroups}
-      ensure_admin_posix_account
+      ${lib.concatMapStringsSep "\n      " (username: ''
+        ensure_posix_account ${lib.escapeShellArg username}
+      '') fileAccessPosixUsers}
       ensure_admin_ssh_public_key
     '';
     serviceConfig.Type = "oneshot";

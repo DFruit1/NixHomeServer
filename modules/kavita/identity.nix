@@ -6,17 +6,6 @@ in
 
 {
   config = {
-    assertions = [
-      {
-        assertion = config.age.secrets ? kavitaClientSecret;
-        message = "Missing kavitaClientSecret secret; run scripts/generate-all-secrets.sh";
-      }
-      {
-        assertion = config.age.secrets ? kavitaTokenKey;
-        message = "Missing kavitaTokenKey secret; run scripts/generate-all-secrets.sh";
-      }
-    ];
-
     users.groups.kavita-media = { };
 
     users.users.kavita.extraGroups = lib.mkAfter [ "kavita-media" ];

@@ -71,42 +71,6 @@ sha256_file() {
   return 1
 }
 
-host_part() {
-  local host_spec="$1"
-  if [[ "$host_spec" == *@* ]]; then
-    printf '%s\n' "${host_spec##*@}"
-  else
-    printf '%s\n' "$host_spec"
-  fi
-}
-
-host_matches_expected_lan_ip() {
-  local host_spec="$1"
-  local expected_lan_ip="$2"
-  local host_value resolved
-
-  host_value="$(host_part "$host_spec")"
-  if [[ "$host_value" == "$expected_lan_ip" ]]; then
-    return 0
-  fi
-
-  if [[ "$host_value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    return 1
-  fi
-
-  if ! command -v getent >/dev/null 2>&1; then
-    return 1
-  fi
-
-  while read -r resolved _; do
-    if [[ "$resolved" == "$expected_lan_ip" ]]; then
-      return 0
-    fi
-  done < <(getent ahostsv4 "$host_value" 2>/dev/null || true)
-
-  return 1
-}
-
 create_deploy_repo_archive() {
   local archive_path="$1"
   local manifest tar_status
@@ -136,10 +100,10 @@ create_deploy_repo_archive() {
     --exclude='./result' \
     --exclude='./result-*' \
     --exclude='./.cache' \
-    --exclude='./secrets/top' \
+    --exclude='./secrets/unencrypted' \
     --exclude='./SensitivePrivateSecrets' \
-    --exclude='./rust/apps/mail-archive-ui/target' \
-    --exclude='./rust/apps/kanidm-admin/target' \
+    --exclude='./custom_apps/rust/apps/mail-archive-ui/target' \
+    --exclude='./custom_apps/rust/apps/kanidm-admin/target' \
     -cf "$archive_path" .
 }
 
@@ -208,19 +172,6 @@ nix_eval_with_optional_cache() {
   fi
 }
 
-nix_var() {
-  local expr="$1"
-  nix_eval_with_optional_cache raw "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
-      cfg = (builtins.getAttr vars.hostname flake.nixosConfigurations).config;
-    in
-      ${expr}
-  "
-}
-
 nix_json() {
   local expr="$1"
   nix_eval_with_optional_cache json "
@@ -241,34 +192,6 @@ nix_flake_var() {
       flake = builtins.getFlake (toString ${repo_root});
       lib = flake.inputs.nixpkgs.lib;
       vars = import ${repo_root}/vars.nix { inherit lib; };
-    in
-      ${expr}
-  "
-}
-
-nix_host_raw() {
-  local hostname="$1"
-  local expr="$2"
-  nix_eval_with_optional_cache raw "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
-      cfg = flake.nixosConfigurations.${hostname}.config;
-    in
-      ${expr}
-  "
-}
-
-nix_host_json() {
-  local hostname="$1"
-  local expr="$2"
-  nix_eval_with_optional_cache json "
-    let
-      flake = builtins.getFlake (toString ${repo_root});
-      lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
-      cfg = flake.nixosConfigurations.${hostname}.config;
     in
       ${expr}
   "

@@ -159,10 +159,10 @@ fi
 while IFS= read -r secret; do
   if [[ -s "secrets/${secret}.age" ]]; then
     ready "encrypted external secret exists: secrets/${secret}.age"
-  elif [[ -s "secrets/top/${secret}" ]]; then
-    warn "external secret is staged but not encrypted yet: secrets/top/${secret}"
+  elif [[ -s "secrets/unencrypted/${secret}" ]]; then
+    warn "external secret is staged but not encrypted yet: secrets/unencrypted/${secret}"
   else
-    block "missing external secret input: stage secrets/top/${secret} or generate secrets/${secret}.age"
+    block "missing external secret input: stage secrets/unencrypted/${secret} or generate secrets/${secret}.age"
   fi
 done < <(jq -r '.[]' <<<"$external_secrets_json")
 

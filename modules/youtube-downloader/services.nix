@@ -12,8 +12,7 @@ let
   sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/youtube";
   sharedAudiobooksRoot = config.repo.audiobookshelf.paths.sharedAudiobooksRoot;
   sharedAudioRoot = "${sharedAudiobooksRoot}/youtube";
-  youtubeDownloader = pkgs.callPackage ../../node/apps/youtube-downloader { };
-  resources = vars.resourceLimits;
+  youtubeDownloader = pkgs.callPackage ../../custom_apps/node/apps/youtube-downloader { };
   host = "ytdownload.${vars.domain}";
 in
 {
@@ -69,7 +68,6 @@ in
             sharedAudiobooksRoot
             vars.usersRoot
           ];
-          CPUQuota = resources.youtubeDownloader.cpuQuota;
         };
       };
     }

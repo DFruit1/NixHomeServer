@@ -76,36 +76,63 @@ let
     username="$1"
     root="${vars.usersRoot}/$username"
 
-    install -d -m 2750 -g users "$root"
-    chown root:users "$root"
-    chmod 2750 "$root"
+    install -d -m 0750 -o root -g root "$root"
+    chown root:root "$root"
+    chmod 0750 "$root"
     for name in ${userContentSubdirs}; do
       [[ "$name" == "emails" ]] && continue
-      install -d -m 2770 -g users "$root/$name"
-      chown root:users "$root/$name"
-      chmod 2770 "$root/$name"
+      install -d -m 0700 -o "$username" -g root "$root/$name"
+      chown "$username":root "$root/$name"
+      chmod 0700 "$root/$name"
     done
     for name in ${userVideoSubdirs}; do
-      install -d -m 2770 -g users "$root/videos/$name"
-      chown root:users "$root/videos/$name"
-      chmod 2770 "$root/videos/$name"
+      install -d -m 0700 -o "$username" -g root "$root/videos/$name"
+      chown "$username":root "$root/videos/$name"
+      chmod 0700 "$root/videos/$name"
     done
     for name in ${userBooksSubdirs}; do
-      install -d -m 2770 -g users "$root/books/$name"
-      chown root:users "$root/books/$name"
-      chmod 2770 "$root/books/$name"
-      install -d -m 2770 -g users "$root/books/$name/_Anon"
-      chown root:users "$root/books/$name/_Anon"
-      chmod 2770 "$root/books/$name/_Anon"
+      install -d -m 0700 -o "$username" -g root "$root/books/$name"
+      chown "$username":root "$root/books/$name"
+      chmod 0700 "$root/books/$name"
+      install -d -m 0700 -o "$username" -g root "$root/books/$name/_Anon"
+      chown "$username":root "$root/books/$name/_Anon"
+      chmod 0700 "$root/books/$name/_Anon"
     done
 
     ${perUserDirectoryScript}
+
+    user_owned_paths=(
+      "$root/uploads"
+      "$root/files"
+      "$root/documents"
+      "$root/photos"
+      "$root/audiobooks"
+      "$root/videos"
+      "$root/books"
+      ${userBookWritablePaths}
+    )
+    for path in "''${user_owned_paths[@]}"; do
+      [[ -d "$path" ]] || continue
+      chown -R "$username":root "$path"
+      chmod u+rwX,go-rwx "$path"
+    done
+    if [[ -d "$root/emails" ]]; then
+      ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:r-X" "$root/emails"
+      ${pkgs.findutils}/bin/find "$root/emails" -type d -exec ${pkgs.acl}/bin/setfacl -m "d:u:''${username}:r-x" '{}' +
+      if [[ -d "$root/emails/.internal-sync" ]]; then
+        ${pkgs.findutils}/bin/find "$root/emails/.internal-sync" -type d -exec ${pkgs.acl}/bin/setfacl \
+          -m "u:''${username}:---" \
+          -m "d:u:''${username}:---" \
+          '{}' +
+      fi
+    fi
 
     root_acl_args=(
       -m u::rwx
       -m g::r-x
       -m o::---
       -m m::rwx
+      -m "u:''${username}:r-x"
       -m d:u::rwx
       -m d:g::r-x
       -m d:o::---
@@ -130,10 +157,6 @@ let
         ${pkgs.acl}/bin/setfacl -R -m "$access_spec" "$path"
         ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl -m "$default_spec" '{}' +
       done
-    }
-
-    apply_owner_group_writable_acl() {
-      apply_recursive_acl "g::rwX" "d:g::rwx" "$@"
     }
 
     apply_writable_acl() {
@@ -162,16 +185,6 @@ let
           '{}' +
       done
     }
-
-    apply_owner_group_writable_acl \
-      "$root/uploads" \
-      "$root/files" \
-      "$root/documents" \
-      "$root/photos" \
-      "$root/audiobooks" \
-      "$root/videos" \
-      "$root/books" \
-      ${userBookWritablePaths}
 
     ${recursiveWritableGrantScript}
     ${recursiveReadonlyGrantScript}
@@ -207,6 +220,30 @@ let
       ${pkgs.systemd}/bin/systemd-escape --template="$template" "$username"
     }
 
+    apply_shared_root_acl() {
+      if [[ ! -d ${lib.escapeShellArg vars.sharedRoot} ]]; then
+        return
+      fi
+
+      ${pkgs.acl}/bin/setfacl \
+        -m u::rwx \
+        -m g::r-x \
+        -m o::--- \
+        -m m::rwx \
+        -m g:${lib.escapeShellArg sharedAccessGroup}:rwx \
+        -m d:u::rwx \
+        -m d:g::r-x \
+        -m d:o::--- \
+        -m d:m::rwx \
+        -m d:g:${lib.escapeShellArg sharedAccessGroup}:rwx \
+        ${lib.escapeShellArg vars.sharedRoot}
+      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.acl}/bin/setfacl \
+        -m g:${lib.escapeShellArg sharedAccessGroup}:rwx \
+        -m d:g:${lib.escapeShellArg sharedAccessGroup}:rwx \
+        '{}' +
+      ${pkgs.acl}/bin/setfacl -R -m g:${lib.escapeShellArg sharedAccessGroup}:rwX ${lib.escapeShellArg vars.sharedRoot}
+    }
+
     ${pkgs.kanidm_1_9}/bin/kanidm login \
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
@@ -236,6 +273,8 @@ let
       [[ -n "$username" ]] || continue
       sftp_members["$username"]=1
     done <<<"$sftp_members_json"
+
+    apply_shared_root_acl
 
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
@@ -408,7 +447,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${sharedMountName}";
-        ExecStart = "${pkgs.bindfs}/bin/bindfs --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs --allow-other --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${sharedMountName}";
         Restart = "on-failure";
       };

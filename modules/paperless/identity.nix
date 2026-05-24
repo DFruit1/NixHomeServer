@@ -6,13 +6,6 @@ in
 
 {
   config = {
-    assertions = [
-      {
-        assertion = config.age.secrets ? paperlessClientSecret;
-        message = "Missing paperlessClientSecret secret; run scripts/generate-all-secrets.sh";
-      }
-    ];
-
     users.groups.paperless = { };
 
     users.users.paperless = {

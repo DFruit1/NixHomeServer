@@ -1,0 +1,97 @@
+{ config, lib, oauth2Proxy, pkgs, vars, ... }:
+
+let
+  loopback = vars.networking.loopbackIPv4;
+  kopiaPort = vars.networking.ports.kopia;
+  oauth2Port = vars.networking.ports.oauth2ProxyKopia;
+  host = vars.kopiaDomain;
+  stateDir = "/persist/appdata/kopia";
+  configFile = "${stateDir}/repository.config";
+  cacheDir = "${stateDir}/cache";
+  logDir = "${stateDir}/logs";
+  uiPreferencesFile = "${stateDir}/ui-preferences.json";
+  credentials = {
+    serverPassword = "kopia-server-password";
+  };
+  commonPath = with pkgs; [
+    coreutils
+    kopia
+  ];
+in
+{
+  config = lib.mkMerge [
+    {
+      systemd.tmpfiles.rules = [
+        "d ${stateDir} 0700 root root -"
+        "d ${cacheDir} 0700 root root -"
+        "d ${logDir} 0700 root root -"
+      ];
+
+      systemd.services.kopia = {
+        description = "Kopia backup-management web UI";
+        wantedBy = [ "multi-user.target" ];
+        wants = [ "network-online.target" ];
+        after = [ "network-online.target" ];
+        path = commonPath;
+        serviceConfig = {
+          Type = "simple";
+          LoadCredential = [
+            "${credentials.serverPassword}:${config.age.secrets.kopiaServerPassword.path}"
+          ];
+          ExecStart = pkgs.writeShellScript "kopia-server-start" ''
+            set -euo pipefail
+
+            export KOPIA_CHECK_FOR_UPDATES=false
+            export KOPIA_SERVER_USERNAME=kopia-admin
+            export KOPIA_SERVER_PASSWORD="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
+            export KOPIA_CONFIG_PATH=${lib.escapeShellArg configFile}
+            export KOPIA_CACHE_DIRECTORY=${lib.escapeShellArg cacheDir}
+
+            install -d -m 0700 ${lib.escapeShellArg stateDir} ${lib.escapeShellArg cacheDir} ${lib.escapeShellArg logDir}
+
+            exec ${pkgs.kopia}/bin/kopia server start \
+              --insecure \
+              --ui \
+              --address=http://${loopback}:${toString kopiaPort} \
+              --log-dir=${lib.escapeShellArg logDir} \
+              --ui-preferences-file=${lib.escapeShellArg uiPreferencesFile}
+          '';
+          Restart = "on-failure";
+          RestartSec = 5;
+          NoNewPrivileges = true;
+          PrivateTmp = true;
+          RestrictAddressFamilies = [
+            "AF_INET"
+            "AF_INET6"
+            "AF_UNIX"
+          ];
+        };
+      };
+    }
+
+    (oauth2Proxy.mkSidecarService {
+      serviceName = "kopia-oauth2-proxy";
+      description = "Dedicated OAuth2 Proxy for Kopia";
+      clientId = "kopia-web";
+      clientSecretFile = config.age.secrets.kopiaOauth2ProxyClientSecret.path;
+      cookieSecretFile = config.age.secrets.kopiaOauth2ProxyCookieSecret.path;
+      cookieName = "_oauth2_proxy_kopia";
+      domain = host;
+      port = oauth2Port;
+      upstream = "http://${loopback}:${toString kopiaPort}";
+      allowedGroups = [ vars.backupAccess.adminGroup ];
+      serviceDependencies = [
+        "caddy.service"
+        "kopia.service"
+      ];
+      upstreamCheck = {
+        displayName = "Kopia";
+        url = "http://${loopback}:${toString kopiaPort}/";
+        okStatusCodes = [
+          "200"
+          "401"
+        ];
+      };
+    })
+  ];
+}

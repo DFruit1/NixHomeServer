@@ -6,16 +6,7 @@ in
 
 {
   config = {
-    assertions = [
-      {
-        assertion = config.age.secrets ? kiwixOauth2ProxyClientSecret;
-        message = "Missing kiwixOauth2ProxyClientSecret secret; run scripts/generate-all-secrets.sh";
-      }
-      {
-        assertion = config.age.secrets ? kiwixOauth2ProxyCookieSecret;
-        message = "Missing kiwixOauth2ProxyCookieSecret secret; run scripts/generate-all-secrets.sh";
-      }
-    ] ++ map
+    assertions = map
       (user: {
         assertion = builtins.hasAttr user config.users.users;
         message = "services.kiwixServe.extraUploadUsers entry '${user}' must name a local Unix account.";

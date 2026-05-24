@@ -2,7 +2,6 @@
 
 let
   immichPort = vars.networking.ports.immich;
-  resources = vars.resourceLimits;
   photosHost = "photos.${vars.domain}";
   shareHost = "sharephotos.${vars.domain}";
 in
@@ -50,11 +49,6 @@ in
     systemd.services.immich-server = {
       after = [ "data-pool-layout.service" ];
       wants = [ "data-pool-layout.service" ];
-    };
-
-    systemd.services.immich-machine-learning.serviceConfig = {
-      MemoryMax = resources.immichMachineLearning.memoryMax;
-      CPUQuota = resources.immichMachineLearning.cpuQuota;
     };
   };
 }

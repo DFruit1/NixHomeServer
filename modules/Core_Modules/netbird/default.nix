@@ -5,6 +5,10 @@ let
   wgPort = vars.networking.ports.netbirdWireGuard;
 in
 {
+  imports = [
+    ./bootstrap.nix
+  ];
+
   users.groups."netbird-main" = { };
 
   users.users."netbird-main" = {

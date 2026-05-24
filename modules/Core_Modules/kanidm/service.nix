@@ -1,21 +1,10 @@
-{ config, pkgs, vars, ... }:
+{ pkgs, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
   kanidmPort = vars.networking.ports.kanidm;
 in
 {
-  assertions = [
-    {
-      assertion = config.age.secrets ? kanidmAdminPass;
-      message = "Missing kanidmAdminPass secret; run scripts/generate-all-secrets.sh";
-    }
-    {
-      assertion = config.age.secrets ? kanidmSysAdminPass;
-      message = "Missing kanidmSysAdminPass secret; run scripts/generate-all-secrets.sh";
-    }
-  ];
-
   services.kanidm = {
     enableServer = true;
     enableClient = true;

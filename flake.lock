@@ -21,27 +21,6 @@
         "type": "github"
       }
     },
-    "copyparty": {
-      "inputs": {
-        "flake-utils": "flake-utils",
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1774411715,
-        "narHash": "sha256-mceIHtVMXpLAfr1W0VK9ceTBX5yKu4gGWpVbThWTsAA=",
-        "owner": "9001",
-        "repo": "copyparty",
-        "rev": "26e663d111e39ca96c63702ad27a05b6736607cf",
-        "type": "github"
-      },
-      "original": {
-        "owner": "9001",
-        "repo": "copyparty",
-        "type": "github"
-      }
-    },
     "crane": {
       "locked": {
         "lastModified": 1776396856,
@@ -113,21 +92,6 @@
       "original": {
         "owner": "dermetfan",
         "repo": "filestash.nix",
-        "type": "github"
-      }
-    },
-    "flake-utils": {
-      "locked": {
-        "lastModified": 1678901627,
-        "narHash": "sha256-U02riOqrKKzwjsxc/400XnElV+UtPUQWpANPlyazjH0=",
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "rev": "93a2b84fc4b70d9e089d029deacc3583435c2ed6",
-        "type": "github"
-      },
-      "original": {
-        "owner": "numtide",
-        "repo": "flake-utils",
         "type": "github"
       }
     },
@@ -282,7 +246,6 @@
     "root": {
       "inputs": {
         "agenix": "agenix",
-        "copyparty": "copyparty",
         "crane": "crane",
         "filestashNix": "filestashNix",
         "impermanence": "impermanence",

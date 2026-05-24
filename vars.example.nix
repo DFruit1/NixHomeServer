@@ -74,37 +74,9 @@ rec {
     sftpChrootBase = "/srv/files-sftp/chroots";
   };
 
-  power = {
-    enable = true;
-    cpuGovernor = "powersave";
-    nightlySuspend = {
-      # Keep disabled unless RTC wake has been verified on the target hardware.
-      # While suspended, Cloudflare Tunnel, DNS, and all hosted services are offline.
-      enable = false;
-      calendar = "*-*-* 04:30:00"; # Suspend after normal overnight maintenance timers have started.
-      wakeTime = "06:00";
-    };
-    skipIfSshSessions = true;
-    skipIfOtherUserSessions = true;
-    blockerUnits = [
-      "zfs-scrub.service"
-      "btrfs-scrub--.service"
-      "restic-backups-system-state.service"
-      "storage-smart-long.service"
-      "storage-smart-short.service"
-    ];
-    wakeOnLan = {
-      enable = true;
-      interface = network.lanInterface;
-      policy = [ "magic" ];
-    };
-    powertopAutoTune = false; # Broad auto-tuning can be too aggressive for a storage server.
-    scsiLinkPolicy = null; # Keep the kernel default for SATA/SCSI link power management.
-    usbAutoSuspend = {
-      enable = false;
-      denyList = [ ];
-    };
-    fstrimCalendar = "Sun *-*-* 19:00:00";
+  backupAccess = {
+    adminGroup = "backup-admins"; # Grants access to the Kopia backup-management UI.
+    adminUsers = [ ]; # Extra existing Kanidm users allowed to manage backups.
   };
 
   advanced = rec {
@@ -119,15 +91,16 @@ rec {
       dnscryptProxy = 5053;
       netbirdWireGuard = 51820;
       kanidm = 8443;
-      oauth2ProxyUploads = 4180;
       oauth2ProxyMailArchive = 4181;
       oauth2ProxyKiwix = 4182;
       oauth2ProxyDownloads = 4183;
       oauth2ProxyFilestash = 4184;
+      oauth2ProxyKopia = 4185;
+      kopia = 51515;
       paperless = 8000;
       audiobookshelf = 13378;
-      copyparty = 3923;
       filestash = 8334;
+      filesSftp = 2222;
       mailArchiveUi = 9011;
       immich = 2283;
       immichPublicProxy = 3300;
@@ -152,20 +125,6 @@ rec {
     binaryCaches = [ ]; # Optional extra binary caches: [{ url = "https://example.cachix.org"; publicKey = "example.cachix.org-1:..."; }]
   };
 
-  resourceLimits = {
-    immichMachineLearning = {
-      memoryMax = "6G";
-      cpuQuota = "250%";
-    };
-    clamav.memoryMax = "3G";
-    restic = {
-      cpuQuota = "150%";
-      ioWeight = 100;
-    };
-    youtubeDownloader.cpuQuota = "200%";
-    mediaIndexers.cpuQuota = "150%";
-  };
-
   # ---------------------------------------------------------------------------
   # Compatibility and derived values. Modules consume these names today.
   # New admins usually should not edit below this line directly.
@@ -178,6 +137,7 @@ rec {
   kanidmAdminUser = identity.adminUser;
   kanidmAppUsers = lib.unique ([ identity.adminUser ] ++ (identity.appUsers or [ ]));
   kanidmAppAdminUsers = lib.unique ([ identity.adminUser ] ++ (identity.appAdminUsers or [ ]));
+  kanidmBackupAdminUsers = lib.unique ([ identity.adminUser ] ++ (backupAccess.adminUsers or [ ]));
   kanidmAppUserEmails = identity.appUserEmails or { };
   kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
   kanidmAdminEmail = identity.adminEmail;
@@ -222,11 +182,9 @@ rec {
   lanDnsDomain = networking.dns.lanDomain;
   lanDnsHosts = networking.dns.lanHosts;
   netIface = networking.interfaces.lan;
-  powerManagement = power;
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
-  uploadsOauth2ProxyCookieExpire = "720h0m0s"; # Copyparty OAuth2 Proxy browser session lifetime.
-  filesSessionExpirationHours = 720; # Files web UI browser session lifetime in hours.
+  filesSessionExpirationHours = 8; # Files web UI browser session lifetime in hours.
 
   mainDisk = storage.systemDisk;
   zfsDataPool = storage.dataPool;
@@ -246,92 +204,19 @@ rec {
   uploadSecurity = {
     stagingRoot = "${dataRoot}/upload-staging";
     quarantineRoot = "${dataRoot}/quarantine/uploads";
-    adminReviewGroup = "app-admin";
-    zimPromotionGroup = "app-admin";
-    scanSettleSeconds = 30;
-    rescanInterval = "5m";
-    clamavTimeoutSeconds = 300;
-    virusTotalTimeoutSeconds = 20;
-    virusTotalMaliciousThreshold = 1;
-    virusTotalSuspiciousThreshold = 1;
-    lowRiskExtensions = [
-      "pdf"
-      "docx"
-      "xlsx"
-      "pptx"
-      "jpg"
-      "jpeg"
-      "png"
-      "gif"
-      "webp"
-      "mp3"
-      "flac"
-      "m4a"
-      "opus"
-      "wav"
-      "mp4"
-      "mkv"
-      "webm"
-    ];
-    highRiskExtensions = [
-      "exe"
-      "dll"
-      "scr"
-      "com"
-      "msi"
-      "bat"
-      "cmd"
-      "ps1"
-      "psm1"
-      "vbs"
-      "js"
-      "jse"
-      "hta"
-      "jar"
-      "apk"
-      "deb"
-      "rpm"
-      "appimage"
-      "iso"
-      "img"
-      "dmg"
-      "zip"
-      "7z"
-      "rar"
-      "tar"
-      "gz"
-      "bz2"
-      "xz"
-      "doc"
-      "docm"
-      "dotm"
-      "xls"
-      "xlsm"
-      "xltm"
-      "xlsb"
-      "xlam"
-      "ppt"
-      "pptm"
-      "potm"
-      "pps"
-      "ppsm"
-      "html"
-      "svg"
-      "rtf"
-      "zim"
-    ];
   };
   fileAccessPosixGids = {
     "user-files" = 2001;
     "files-sftp-users" = 2002;
     "files-shared-users" = 2003;
   };
-  filesSftpUsers = [ ]; # Kanidm users that should be restricted to the files SFTP chroot.
+  filesSftpUsers = kanidmAppUsers; # Kanidm users with POSIX accounts and restricted files SFTP chroots.
   jellyfinAdminUsers = kanidmAppAdminUsers;
   userContentSubdirs = [ ];
   sharedContentSubdirs = [ ];
 
   kanidmDomain = "id.${domain}";
+  kopiaDomain = "backups.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";

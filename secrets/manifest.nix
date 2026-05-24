@@ -56,12 +56,20 @@
       description = "Cookie secret for the YouTube downloader OAuth2 Proxy.";
       bytes = 32;
     };
-    vaultwardenAdminToken = {
-      description = "Vaultwarden admin token.";
+    kopiaServerPassword = {
+      description = "Generated native basic-auth password for the Kopia web UI.";
       bytes = 32;
     };
-    copypartyClientSecret = {
-      description = "OIDC client secret for Copyparty uploads.";
+    kopiaOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Kopia OAuth2 Proxy.";
+      bytes = 32;
+    };
+    kopiaOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Kopia OAuth2 Proxy.";
+      bytes = 32;
+    };
+    vaultwardenAdminToken = {
+      description = "Vaultwarden admin token.";
       bytes = 32;
     };
     kavitaClientSecret = {
@@ -72,37 +80,28 @@
       description = "Token key for Kavita.";
       bytes = 64;
     };
-    resticSystemStatePassword = {
-      description = "Restic repository password for SSD-backed system state.";
-      bytes = 32;
-    };
   };
 
   externalSecrets = {
     netbirdSetupKey = {
       description = "NetBird setup key used to enroll the server.";
       format = "plain text setup key";
-      settingPath = "secrets/top/netbirdSetupKey";
+      settingPath = "secrets/unencrypted/netbirdSetupKey";
     };
     cfHomeCreds = {
       description = "Cloudflare Tunnel credentials JSON for the configured tunnel.";
       format = "cloudflared tunnel credentials JSON";
-      settingPath = "secrets/top/cfHomeCreds";
+      settingPath = "secrets/unencrypted/cfHomeCreds";
     };
     cfAPIToken = {
       description = "Cloudflare API token used by ACME DNS-01 certificate issuance.";
       format = "plain token value";
-      settingPath = "secrets/top/cfAPIToken";
+      settingPath = "secrets/unencrypted/cfAPIToken";
     };
     storageAlertWebhookUrl = {
       description = "Webhook URL for storage health alerts.";
       format = "https URL";
-      settingPath = "secrets/top/storageAlertWebhookUrl";
-    };
-    virusTotalApiKey = {
-      description = "VirusTotal API key used for hash-only upload scanning lookups.";
-      format = "plain API key";
-      settingPath = "secrets/top/virusTotalApiKey";
+      settingPath = "secrets/unencrypted/storageAlertWebhookUrl";
     };
   };
 }

@@ -1,10 +1,10 @@
 { lib, pkgs, crane }:
 
 let
-  rustLib = import ../rust/lib { inherit lib pkgs crane; };
-  rustApps = import ../rust/apps { inherit lib pkgs rustLib; };
+  rustLib = import ../custom_apps/rust/lib { inherit lib pkgs crane; };
+  rustApps = import ../custom_apps/rust/apps { inherit lib pkgs rustLib; };
   rustPackages = lib.mapAttrs (_: app: app.package) rustApps;
-  nodePackages = import ../node/apps { inherit lib pkgs; };
+  nodePackages = import ../custom_apps/node/apps { inherit lib pkgs; };
 in
 {
   inherit rustLib rustApps nodePackages;

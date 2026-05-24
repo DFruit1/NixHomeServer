@@ -20,7 +20,7 @@ bootstrap remains the installer-side exception.
 - Server-side secrets: `ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'`
 - Service health: `sudo systemctl --failed --no-pager`
 - SMART sweep: `sudo systemctl start storage-smart-short.service`
-- Backup target selection: `manage-backup-target list` then `sudo manage-backup-target select ...`
+- External USB backup media: attach the drive and use its mount under `/mnt/external-usb/`
 
 ## App Hostnames
 
@@ -29,49 +29,33 @@ URLs for a site with `nix run .#show-config-summary -- --host <host>`.
 
 - Private Immich app: `https://<photos-domain>`
 - Public Immich share links: `https://<share-photos-domain>`
-- Public Copyparty uploader: `https://<uploads-domain>/`
 - Authenticated Filestash UI and SFTP: `https://<files-domain>/`
 - Private Vaultwarden: `https://<passwords-domain>`
+- Backup management UI: `https://<backups-domain>/`
 
 Use the private photos hostname for the owner's normal Immich login on LAN or
 NetBird. Use the public share hostname only for public album or photo links sent
 to other people.
 
-Use the uploads hostname for large uploads into the authenticated user's
-personal `uploads` folder. Use the files hostname for browsing, moving, smaller
-uploads, and SFTP access.
-
-Long Copyparty browser uploads are most reliable when the client reaches
-the uploads hostname over LAN or NetBird split DNS instead of the
-Cloudflare tunnel. For very large directory trees, archive the tree first or
-upload in smaller batches; hundreds of thousands of tiny files create hundreds
-of thousands of upload handshakes, so a flaky network period is much more
-visible. The server defaults the browser uploader to one chunk connection and
-8 MiB chunks, with 16 MiB as the UI maximum, so slow paths stay below proxy
-request timeouts. If a transfer has already started with larger client-side
-settings, lower the Copyparty upload chunk size in the browser settings before
-resuming.
+Use the files hostname for browser access. For large transfers, use the
+dedicated OpenSSH SFTP endpoint on the configured `filesSftp` port over LAN.
 
 Use the passwords hostname only on LAN or NetBird paths. The canonical operator
 workflow for invites, break-glass local admin handling, and the standard
 credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 
-Copyparty upload troubleshooting note:
-- if the fix depends on declarative user or group state, a service restart alone is not enough
-- use a guarded deploy or switch so the local `copyparty` account and unit runtime groups are converged
-- after deploy, verify the upload bridge directly:
-
-```bash
-id copyparty
-getent group users
-sudo -u copyparty sh -lc 'probe=/mnt/data/users/<user>/uploads/.write-probe && : >"$probe" && rm -f "$probe"'
-journalctl -u copyparty -n 100 --no-pager
-```
+Use the backups hostname for Kopia backup management. Browser access is gated by
+Kanidm through OAuth2 Proxy and requires membership in `backup-admins`.
+After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
+from the generated `kopiaServerPassword` secret. The initial deploy does not
+seed Kopia repositories or snapshot jobs; create repositories, policies, and
+snapshots through the UI.
 
 Filestash and SFTP file roots:
 
-- Filestash opens a single normal-user source, `Files`, rooted at `/mnt/data/users/<username>`.
-- SFTP opens the same personal root at `sftp://<username>@server.home.arpa/`.
+- Filestash authenticates through OAuth2 Proxy, then asks for the user's Kanidm password and connects to the local SFTP endpoint as that Unix user.
+- Filestash opens a single normal-user source, `Files`, rooted at the user's SFTP chroot.
+- SFTP opens the same personal root at `sftp://<username>@server.home.arpa:<filesSftp-port>/`.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
 - `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
 
@@ -158,12 +142,10 @@ sudo -u mail-archive-ui env \
   mail-archive-ui verify-attachments --repair --report /tmp/mail-archive-attachments.json
 ```
 
-The system-state backup preparation runs this verifier with repair enabled and
-stores `mail-archive-attachments.json` in the backup metadata. The same backup
-preparation also stores `mail-archive-roots.tsv` and a
-`dumps/mail-archive-ui.sqlite3` SQLite backup, which includes attachment catalog
-state and Paperless handoff records. Mail payload bytes remain on the mirrored
-`/mnt/data/users` pool rather than in the Restic `system-state` snapshot.
+Kopia policies should include this verifier output if mail archive attachment
+metadata is part of the backup set. Mail payload bytes remain on the mirrored
+`/mnt/data/users` pool unless an operator intentionally adds those paths to a
+Kopia policy.
 
 ## Validation Gate
 
@@ -300,43 +282,34 @@ curl -kI --resolve <passwords-domain>:443:<server-lan-ip> https://<passwords-dom
 
 - if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
 
-## Upload Quarantine Review
+## Retired Upload Quarantine
 
-Copyparty uploads land in locked staging first. The upload processor scans staged
-files with ClamAV, performs VirusTotal hash lookups only for high-risk
-extensions, then promotes clean files or moves risky files to quarantine.
+The Copyparty upload host, upload processor, ClamAV scanner, and VirusTotal
+lookup path are retired. Historical staging and quarantine directories are kept
+until an operator intentionally archives or deletes them.
 
 Backup policy for the upload flow:
 
-- promoted user uploads live under `/mnt/data/users/<user>/files`
 - pending uploads live under `/mnt/data/upload-staging`
 - quarantined uploads live under `/mnt/data/quarantine/uploads`
-- upload processor state lives under `/var/lib/upload-processor`
 
-The `system-state` Restic backup records upload-flow metadata, shallow staging
-and quarantine inventories, and `dumps/upload-processor-state.sqlite3`. It does
-not copy data-pool payload bytes; the mirrored ZFS pool remains the recovery
-boundary for uploaded file contents.
-
-Admins review quarantined uploads directly on the server under
-`/mnt/data/quarantine/uploads`. Manual VirusTotal file uploads, if needed, are
-an admin action against files already in quarantine; the server does not
-automatically upload file bytes to VirusTotal.
+Kopia inventories those retained paths for visibility. New uploads should go
+through Filestash or SFTP directly into the user's files root.
 
 Storage monitoring now discovers disks live at runtime:
 - `system` is the static `vars.mainDisk`
 - `dataN` are the current live `data` pool members discovered from ZFS
 - `otherN` are every other attached non-system disk, including retired disks that are still physically attached
 
-## Backup Target Selection
+## Backup Media
 
-```bash
-manage-backup-target list
-sudo manage-backup-target select <device-or-label>
-sudo manage-backup-target mount
-sudo manage-backup-target status
-sudo manage-backup-target unmount
-```
+External USB filesystems are mounted automatically under
+`/mnt/external-usb/<label-or-uuid>`. Kopia does not require one to be attached:
+the UI starts without a local repository so an operator can connect Backblaze,
+another remote repository, or a repository on any mounted USB drive.
+
+The previous automatic Restic `system-state` behavior is retired and no Restic
+timer or backup service is enabled by this module.
 
 ## SMART Monitoring
 

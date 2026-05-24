@@ -1,8 +1,6 @@
 { config, lib, vars, ... }:
 
 let
-  userBookWritablePaths = map (name: "books/${name}") config.repo.storage.userRoots.bookSubdirs;
-  userVideoWritablePaths = map (name: "videos/${name}") config.repo.storage.userRoots.videoSubdirs;
   managedDir = "${config.repo.files.paths.stateDir}/.nixos-managed";
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
 in
@@ -18,32 +16,6 @@ in
       contentSubdirs = [ "files" ];
       memberGroups = [
         webAccessGroup
-      ];
-      recursiveWritableGrants = [
-        {
-          group = "filestash";
-          relativePaths = [
-            "uploads"
-            "files"
-            "documents"
-            "photos"
-            "audiobooks"
-            "videos"
-            "books"
-          ] ++ userVideoWritablePaths ++ userBookWritablePaths;
-        }
-      ];
-      recursiveReadonlyGrants = [
-        {
-          group = "filestash";
-          relativePaths = [ "emails" ];
-        }
-      ];
-      recursiveDirectoryNoAccessGrants = [
-        {
-          group = "filestash";
-          relativePaths = [ "emails/.internal-sync" ];
-        }
       ];
     };
 

@@ -25,18 +25,19 @@ generated_secret_specs=(
   "kiwixOauth2ProxyCookieSecret:32"
   "youtubeDownloaderOauth2ProxyClientSecret:32"
   "youtubeDownloaderOauth2ProxyCookieSecret:32"
+  "kopiaServerPassword:32"
+  "kopiaOauth2ProxyClientSecret:32"
+  "kopiaOauth2ProxyCookieSecret:32"
   "vaultwardenAdminToken:32"
-  "copypartyClientSecret:32"
   "kavitaClientSecret:32"
   "kavitaTokenKey:64"
-  "resticSystemStatePassword:32"
 )
 
 generate_secret_value() {
   local name="$1"
   local bytes="$2"
 
-  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "youtubeDownloaderOauth2ProxyCookieSecret" ]]; then
+  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "youtubeDownloaderOauth2ProxyCookieSecret" || "$name" == "kopiaOauth2ProxyCookieSecret" ]]; then
     openssl rand -hex 16
   else
     openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))"
@@ -46,8 +47,8 @@ generate_secret_value() {
 encrypt_generated_secret() {
   local name="$1"
   local bytes="$2"
-  local clear_file="${secrets_top_dir}/${name}"
-  local age_file="${age_dir}/${name}.age"
+  local clear_file="${secrets_unencrypted_dir}/${name}"
+  local age_file="${secrets_dir}/${name}.age"
   local secret_value
 
   if [[ -s "$age_file" ]]; then
@@ -75,4 +76,4 @@ done
 
 echo
 echo "✅ Generated and encrypted repo-managed secrets."
-echo "🔏 Clear-text copies are in ${secrets_top_dir} - delete or move them to a secure vault when you're done."
+echo "🔏 Clear-text copies are in ${secrets_unencrypted_dir} - delete or move them to a secure vault when you're done."

@@ -12,104 +12,163 @@ let
   adminPasswordHashFile = "${managedDir}/admin-password.bcrypt";
   oauth2ClientSecretFile = "${secretRuntimeDir}/oauth2-client-secret";
   oauth2CookieSecretFile = "${secretRuntimeDir}/oauth2-cookie-secret";
-  filestashEnvironmentFile = "${secretRuntimeDir}/filestash.env";
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
   proxyUserHeader = "X-Auth-Request-Preferred-Username";
   proxyEmailHeader = "X-Auth-Request-Email";
   proxyGroupsHeader = "X-Auth-Request-Groups";
+  filesSftpPort = vars.networking.ports.filesSftp;
   filestashPackages = filestashNix.packages.${pkgs.stdenv.hostPlatform.system};
+  proxyPasswordPlugin = pkgs.writeText "plg_authenticate_proxy_password.go" ''
+    package plg_authenticate_proxy_password
+
+    import (
+    	"encoding/json"
+    	"html"
+    	"net/http"
+    	"net/url"
+    	"strings"
+    	"time"
+
+    	. "github.com/mickael-kerjean/filestash/server/common"
+    )
+
+    func init() {
+    	Hooks.Register.AuthenticationMiddleware("proxy_password", ProxyPassword{})
+    }
+
+    type ProxyPassword struct{}
+
+    type identityPayload struct {
+    	User     string `json:"user"`
+    	Email    string `json:"email"`
+    	Groups   string `json:"groups"`
+    	IssuedAt int64  `json:"issued_at"`
+    }
+
+    func (this ProxyPassword) Setup() Form {
+    	return Form{
+    		Elmnts: []FormElement{
+    			{Name: "type", Type: "hidden", Value: "proxy_password"},
+    			{Name: "user_header", Type: "text", Value: "X-Auth-Request-Preferred-Username"},
+    			{Name: "email_header", Type: "text", Value: "X-Auth-Request-Email"},
+    			{Name: "groups_header", Type: "text", Value: "X-Auth-Request-Groups"},
+    		},
+    	}
+    }
+
+    func headerFirst(req *http.Request, names ...string) string {
+    	for _, name := range names {
+    		if value := strings.TrimSpace(req.Header.Get(name)); value != "" {
+    			return value
+    		}
+    	}
+    	return ""
+    }
+
+    func (this ProxyPassword) EntryPoint(idpParams map[string]string, req *http.Request, res http.ResponseWriter) error {
+    	userHeader := idpParams["user_header"]
+    	if userHeader == "" {
+    		userHeader = "X-Auth-Request-Preferred-Username"
+    	}
+    	emailHeader := idpParams["email_header"]
+    	if emailHeader == "" {
+    		emailHeader = "X-Auth-Request-Email"
+    	}
+    	groupsHeader := idpParams["groups_header"]
+    	if groupsHeader == "" {
+    		groupsHeader = "X-Auth-Request-Groups"
+    	}
+
+    	user := headerFirst(req, userHeader, "X-Auth-Request-User", "X-Forwarded-Preferred-Username", "X-Forwarded-User")
+    	if user == "" {
+    		res.WriteHeader(http.StatusUnauthorized)
+    		res.Write([]byte(Page("Missing trusted proxy user header")))
+    		return nil
+    	}
+
+    	email := headerFirst(req, emailHeader, "X-Forwarded-Email")
+    	groups := headerFirst(req, groupsHeader, "X-Forwarded-Groups")
+    	payload := identityPayload{
+    		User:     user,
+    		Email:    email,
+    		Groups:   groups,
+    		IssuedAt: time.Now().Unix(),
+    	}
+    	raw, err := json.Marshal(payload)
+    	if err != nil {
+    		return err
+    	}
+    	token, err := EncryptString(SECRET_KEY_DERIVATE_FOR_USER, string(raw))
+    	if err != nil {
+    		return err
+    	}
+
+    	action := WithBase("/api/session/auth/?label=" + url.QueryEscape(req.URL.Query().Get("label")) + "&state=" + url.QueryEscape(req.URL.Query().Get("state")))
+
+    	res.Header().Set("Content-Type", "text/html; charset=utf-8")
+    	res.WriteHeader(http.StatusOK)
+    	res.Write([]byte(Page(
+    		"<form action=\"" + action + "\" method=\"post\">" +
+    			"<input type=\"hidden\" name=\"identity_token\" value=\"" + html.EscapeString(token) + "\" />" +
+    			"<label>Signed in as " + html.EscapeString(user) + "</label>" +
+    			"<input autofocus required type=\"password\" name=\"password\" autocomplete=\"current-password\" placeholder=\"Password\" />" +
+    			"<button type=\"submit\">Connect</button>" +
+    		"</form>",
+    	)))
+    	return nil
+    }
+
+    func (this ProxyPassword) Callback(formData map[string]string, idpParams map[string]string, res http.ResponseWriter) (map[string]string, error) {
+    	token := strings.TrimSpace(formData["identity_token"])
+    	password := formData["password"]
+    	if token == "" || password == "" {
+    		return nil, ErrAuthenticationFailed
+    	}
+    	decrypted, err := DecryptString(SECRET_KEY_DERIVATE_FOR_USER, token)
+    	if err != nil {
+    		return nil, ErrAuthenticationFailed
+    	}
+    	var payload identityPayload
+    	if err := json.Unmarshal([]byte(decrypted), &payload); err != nil {
+    		return nil, ErrAuthenticationFailed
+    	}
+    	if strings.TrimSpace(payload.User) == "" || payload.IssuedAt == 0 || time.Since(time.Unix(payload.IssuedAt, 0)) > 10*time.Minute {
+    		return nil, ErrAuthenticationFailed
+    	}
+    	return map[string]string{
+    		"user":     payload.User,
+    		"email":    payload.Email,
+    		"groups":   payload.Groups,
+    		"password": password,
+    	}, nil
+    }
+  '';
   filestashBackendWithProxyAuth = filestashPackages.backend.overrideAttrs (old: {
     postPatch = ''
-      mkdir -p server/plugin/plg_authenticate_proxy
-      cat > server/plugin/plg_authenticate_proxy/index.go <<'EOF'
-      package plg_authenticate_proxy
-
-      import (
-      	"html"
-      	"net/http"
-      	"strings"
-
-      	. "github.com/mickael-kerjean/filestash/server/common"
-      )
-
-      func init() {
-      	Hooks.Register.AuthenticationMiddleware("proxy", Proxy{})
-      }
-
-      type Proxy struct{}
-
-      func (this Proxy) Setup() Form {
-      	return Form{
-      		Elmnts: []FormElement{
-      			{Name: "type", Type: "hidden", Value: "proxy"},
-      			{Name: "user_header", Type: "text", Value: "X-Auth-Request-Preferred-Username"},
-      			{Name: "email_header", Type: "text", Value: "X-Auth-Request-Email"},
-      			{Name: "groups_header", Type: "text", Value: "X-Auth-Request-Groups"},
-      		},
-      	}
-      }
-
-      func headerFirst(req *http.Request, names ...string) string {
-      	for _, name := range names {
-      		if value := strings.TrimSpace(req.Header.Get(name)); value != "" {
-      			return value
-      		}
-      	}
-      	return ""
-      }
-
-      func (this Proxy) EntryPoint(idpParams map[string]string, req *http.Request, res http.ResponseWriter) error {
-      	userHeader := idpParams["user_header"]
-      	if userHeader == "" {
-      		userHeader = "X-Auth-Request-Preferred-Username"
-      	}
-      	emailHeader := idpParams["email_header"]
-      	if emailHeader == "" {
-      		emailHeader = "X-Auth-Request-Email"
-      	}
-      	groupsHeader := idpParams["groups_header"]
-      	if groupsHeader == "" {
-      		groupsHeader = "X-Auth-Request-Groups"
-      	}
-
-      	user := headerFirst(req, userHeader, "X-Auth-Request-User", "X-Forwarded-Preferred-Username", "X-Forwarded-User")
-      	if user == "" {
-      		res.WriteHeader(http.StatusUnauthorized)
-      		res.Write([]byte(Page("Missing trusted proxy user header")))
-      		return nil
-      	}
-
-      	email := headerFirst(req, emailHeader, "X-Forwarded-Email")
-      	groups := headerFirst(req, groupsHeader, "X-Forwarded-Groups")
-      	action := WithBase("/api/session/auth/?label=" + html.EscapeString(req.URL.Query().Get("label")) + "&state=" + html.EscapeString(req.URL.Query().Get("state")))
-
-      	res.Header().Set("Content-Type", "text/html; charset=utf-8")
-      	res.WriteHeader(http.StatusOK)
-      	res.Write([]byte(Page(
-      		"<form action=\"" + action + "\" method=\"post\">" +
-      			"<input type=\"hidden\" name=\"user\" value=\"" + html.EscapeString(user) + "\" />" +
-      			"<input type=\"hidden\" name=\"email\" value=\"" + html.EscapeString(email) + "\" />" +
-      			"<input type=\"hidden\" name=\"groups\" value=\"" + html.EscapeString(groups) + "\" />" +
-      		"</form><script>document.querySelector('form').submit();</script>",
-      	)))
-      	return nil
-      }
-
-      func (this Proxy) Callback(formData map[string]string, idpParams map[string]string, res http.ResponseWriter) (map[string]string, error) {
-      	if strings.TrimSpace(formData["user"]) == "" {
-      		return nil, ErrAuthenticationFailed
-      	}
-      	return map[string]string{
-      		"user":   formData["user"],
-      		"email":  formData["email"],
-      		"groups": formData["groups"],
-      	}, nil
-      }
-      EOF
+      chmod -R u+w server/plugin server/ctrl
+      mkdir -p server/plugin/plg_authenticate_proxy_password
+      install -m 0644 ${proxyPasswordPlugin} server/plugin/plg_authenticate_proxy_password/index.go
 
       substituteInPlace server/plugin/index.go \
-        --replace-fail '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"' '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"
-      	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_proxy"'
+              --replace-fail '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"' '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"
+            	_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_proxy_password"'
+
+            substituteInPlace server/ctrl/session.go \
+              --replace-fail 'Log.Debug("session::authMiddleware '"'"'backend connection failed %+v - %s'"'"'", session, err.Error())' 'redactedSession := make(map[string]string, len(session))
+      		for k, v := range session {
+      			if strings.Contains(strings.ToLower(k), "password") {
+      				redactedSession[k] = "[redacted]"
+      			} else {
+      				redactedSession[k] = v
+      			}
+      		}
+      		Log.Debug("session::authMiddleware '"'"'backend connection failed %+v - %s'"'"'", redactedSession, err.Error())' \
+              --replace-fail 'cookie.SameSite = http.SameSiteStrictMode
+      	if Config.Get("features.protection.iframe").String() != "" {' 'cookie.SameSite = http.SameSiteStrictMode
+      	if Config.Get("general.force_ssl").Bool() {
+      		cookie.Secure = true
+      	}
+      	if Config.Get("features.protection.iframe").String() != "" {'
     ''
     + (old.postPatch or "");
   });
@@ -128,6 +187,7 @@ let
       pathTmp = "/proc/self/cwd/cache";
       passthru = {
         proxyAuthPlugin = true;
+        proxyPasswordAuthPlugin = true;
       };
     } ''
     mkdir --parents $out/bin
@@ -148,19 +208,23 @@ let
     ln --symbolic "$pathCert"    state/certs
     ln --symbolic "$pathTmp"     cache
   '';
-  mkLocalBackend = path: {
-    type = "local";
-    inherit path;
-    password = "{{ .ENV_LOCAL_BACKEND_SECRET }}";
+  sftpBackendMappings = {
+    Files = {
+      type = "sftp";
+      hostname = loopback;
+      port = toString filesSftpPort;
+      username = "{{ .user }}";
+      password = "{{ .password }}";
+      path = "/";
+    };
   };
-  localBackendMappings = {
-    Files = mkLocalBackend "${vars.usersRoot}/{{ .user }}";
-  };
-  localBackendConnections = [
+  sftpBackendConnections = [
     {
-      type = "local";
+      type = "sftp";
       label = "Files";
-      path = vars.usersRoot;
+      hostname = loopback;
+      port = toString filesSftpPort;
+      path = "/";
     }
   ];
 in
@@ -200,7 +264,7 @@ in
           auth.admin_file = adminPasswordHashFile;
           middleware = {
             identity_provider = {
-              type = "proxy";
+              type = "proxy_password";
               params = builtins.toJSON {
                 user_header = proxyUserHeader;
                 email_header = proxyEmailHeader;
@@ -208,26 +272,29 @@ in
               };
             };
             attribute_mapping = {
-              related_backend = lib.mkDefault (lib.concatStringsSep "," (map (connection: connection.label) localBackendConnections));
-              params = lib.mkDefault (builtins.toJSON localBackendMappings);
+              related_backend = lib.mkDefault (lib.concatStringsSep "," (map (connection: connection.label) sftpBackendConnections));
+              params = lib.mkDefault (builtins.toJSON sftpBackendMappings);
             };
           };
-          connections = lib.mkDefault localBackendConnections;
+          connections = lib.mkDefault sftpBackendConnections;
         };
       };
 
       systemd.services.filestash = {
         requires = [
+          "files-sftp-sshd.service"
           "filestash-secret-materialize.service"
         ];
         wants = [
           "data-pool-layout.service"
+          "files-sftp-sshd.service"
           "fileshare-user-root-sync.service"
           "filestash-secret-materialize.service"
           "network-online.target"
         ];
         after = [
           "data-pool-layout.service"
+          "files-sftp-sshd.service"
           "fileshare-user-root-sync.service"
           "filestash-secret-materialize.service"
           "network-online.target"
@@ -239,7 +306,6 @@ in
           Environment = [
             "CONFIG_ENCRYPT=false"
           ];
-          EnvironmentFile = filestashEnvironmentFile;
           NoNewPrivileges = true;
           PrivateTmp = true;
           PrivateDevices = true;
@@ -259,7 +325,6 @@ in
             stateDir
             "/var/cache/filestash"
             "/var/log/filestash"
-            vars.usersRoot
           ];
           UMask = "0007";
         };

@@ -2,6 +2,7 @@
 
 {
   imports = [
+    ./bootstrap.nix
     ./service.nix
     ./provision.nix
     ./files-posix-groups.nix

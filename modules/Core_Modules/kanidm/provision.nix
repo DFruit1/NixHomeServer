@@ -3,7 +3,7 @@
 let
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  appPersonNames = lib.unique (vars.kanidmAppUsers ++ vars.kanidmAppAdminUsers);
+  appPersonNames = lib.unique (vars.kanidmAppUsers ++ vars.kanidmAppAdminUsers ++ vars.kanidmBackupAdminUsers);
   adminMailAddresses =
     if vars.kanidmAdminMailAddresses != [ ] then
       vars.kanidmAdminMailAddresses
@@ -42,6 +42,7 @@ in
       # reconciliation does not try to delete it as an orphaned entity.
       "domain_admins" = mkManualGroup [ ];
       "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
+      ${vars.backupAccess.adminGroup} = mkManualGroup vars.kanidmBackupAdminUsers;
       ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;
       ${vars.fileAccess.sftpAccessGroup} = mkManualGroup (vars.filesSftpUsers or [ ]);
       ${vars.fileAccess.sharedAccessGroup} = mkManualGroup [ ];

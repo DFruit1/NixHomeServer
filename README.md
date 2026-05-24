@@ -9,7 +9,7 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 - Public exposure: Cloudflare Tunnel
 - Private remote access: NetBird
 - Private DNS: Unbound
-- Apps: Immich, Paperless-ngx, Audiobookshelf, Copyparty, Filestash, Kiwix, Kavita, Jellyfin
+- Apps: Immich, Paperless-ngx, Audiobookshelf, Filestash, Kiwix, Kavita, Jellyfin
 - Mail archive and search: `mail-archive-ui`, `mbsync`, `notmuch`
 - Storage: Btrfs system SSD and a single mirrored ZFS data pool
 - Validation: lean deploy checks via `scripts/deploy.sh`, full Nix/lint/app checks via `scripts/deploy.sh --debug` or `scripts/validate-repo.sh --full`, and failed-unit checks via `systemctl --failed`
@@ -60,11 +60,11 @@ evaluated host surface with `nix run .#show-config-summary`,
 and see [Operations](./documentation/operations.md#app-hostnames) for the access
 model.
 
-Mail archive control plane: see [Mail Archive UI](./rust/apps/mail-archive-ui/README.md) for the private UI, sync flow, and storage model.
+Mail archive control plane: see [Mail Archive UI](./custom_apps/rust/apps/mail-archive-ui/README.md) for the private UI, sync flow, and storage model.
 
-Files split cleanly by role: the uploads hostname is the Copyparty bulk-uploader
-surface and lands each signed-in user directly in their own uploads root, while
-the files hostname is the authenticated Filestash UI and SFTP entrypoint.
+Files are served through the authenticated Filestash UI and a dedicated
+OpenSSH SFTP endpoint. Filestash uses the signed-in user's Kanidm password to
+connect to SFTP, so file writes land as the real Unix user.
 Kavita-managed book roots use `ebooks`, `comics`, and `manga`.
 
 Vaultwarden stays private and is intended for LAN and NetBird use only. See

@@ -1,6 +1,24 @@
 { config, lib, pkgs, vars, ... }:
 
 let
+  repoRoot = ../..;
+  ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
+  mkSecretAssertions = secretNames:
+    map
+      (name:
+        let
+          secretPath = repoRoot + "/secrets/${name}.age";
+          content = if builtins.pathExists secretPath then builtins.readFile secretPath else "";
+        in
+        {
+          assertion =
+            builtins.hasAttr name config.age.secrets
+            && builtins.pathExists secretPath
+            && content != ""
+            && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+        })
+      secretNames;
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
   kavitaScanCronExpression = "*/15 * * * *";
@@ -16,6 +34,11 @@ let
 in
 {
   config = {
+    assertions = mkSecretAssertions [
+      "kavitaClientSecret"
+      "kavitaTokenKey"
+    ];
+
     systemd.services.kavita-oidc-bootstrap = {
       description = "Synchronize Kavita OIDC settings";
       wantedBy = [ "multi-user.target" ];

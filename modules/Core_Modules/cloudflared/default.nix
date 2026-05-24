@@ -5,6 +5,10 @@ let
   httpsPort = vars.networking.ports.https;
 in
 {
+  imports = [
+    ./bootstrap.nix
+  ];
+
   users.users.cloudflared = {
     isSystemUser = true;
     group = "cloudflared";

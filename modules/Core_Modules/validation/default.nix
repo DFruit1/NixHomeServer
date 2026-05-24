@@ -75,9 +75,11 @@ let
   uniqueFileAccessGids = lib.unique fileAccessGids;
   sharedMountName = vars.fileAccess.sharedMountName or "";
   filestashEnabled = config.services.filestash.enable or false;
-  filestashPackageHasProxyAuth =
+  filestashPackageHasProxyPasswordAuth =
     !filestashEnabled
-    || (config.services.filestash.package.proxyAuthPlugin or false);
+    || (config.services.filestash.package.proxyPasswordAuthPlugin or false);
+  filestashIdentityProvider =
+    config.services.filestash.settings.middleware.identity_provider.type or "";
   filestashBackendParams =
     builtins.fromJSON (config.services.filestash.settings.middleware.attribute_mapping.params or "{}");
   filestashBackendPaths =
@@ -181,8 +183,16 @@ in
       message = "nixhomeserver: vars.fileAccess.sharedMountName should start with '_' so the shared view sorts first and reads as special.";
     }
     {
-      assertion = filestashPackageHasProxyAuth;
-      message = "nixhomeserver: Filestash must be built with the proxy authentication plugin.";
+      assertion = filestashPackageHasProxyPasswordAuth;
+      message = "nixhomeserver: Filestash must be built with the proxy-password authentication plugin.";
+    }
+    {
+      assertion = !filestashEnabled || filestashIdentityProvider == "proxy_password";
+      message = "nixhomeserver: Filestash must use the proxy_password identity provider.";
+    }
+    {
+      assertion = !filestashEnabled || vars.filesSessionExpirationHours <= 12;
+      message = "nixhomeserver: filesSessionExpirationHours must stay short because the encrypted Filestash cookie contains the SFTP password.";
     }
     {
       assertion = directFilestashSharedPaths == [ ];

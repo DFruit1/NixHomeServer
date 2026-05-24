@@ -1,6 +1,24 @@
 { config, lib, pkgs, vars, ... }:
 
 let
+  repoRoot = ../..;
+  ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
+  mkSecretAssertions = secretNames:
+    map
+      (name:
+        let
+          secretPath = repoRoot + "/secrets/${name}.age";
+          content = if builtins.pathExists secretPath then builtins.readFile secretPath else "";
+        in
+        {
+          assertion =
+            builtins.hasAttr name config.age.secrets
+            && builtins.pathExists secretPath
+            && content != ""
+            && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+        })
+      secretNames;
   loopback = vars.networking.loopbackIPv4;
   jellyfinPort = vars.networking.ports.jellyfin;
   kanidmPort = vars.networking.ports.kanidm;
@@ -43,6 +61,10 @@ let
 in
 {
   config = {
+    assertions = mkSecretAssertions [
+      "kanidmAdminPass"
+    ];
+
     systemd.services.jellyfin-network-config-v1 = {
       description = "Align Jellyfin reverse-proxy trust settings with local Caddy";
       wantedBy = [ "multi-user.target" ];

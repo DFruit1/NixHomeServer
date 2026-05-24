@@ -6,17 +6,6 @@ in
 
 {
   config = {
-    assertions = [
-      {
-        assertion = config.age.secrets ? mailArchiveOauth2ProxyClientSecret;
-        message = "Missing mailArchiveOauth2ProxyClientSecret secret; run scripts/generate-all-secrets.sh";
-      }
-      {
-        assertion = config.age.secrets ? mailArchiveOauth2ProxyCookieSecret;
-        message = "Missing mailArchiveOauth2ProxyCookieSecret secret; run scripts/generate-all-secrets.sh";
-      }
-    ];
-
     users.groups.mail-archive-ui = { };
 
     users.users.mail-archive-ui = {

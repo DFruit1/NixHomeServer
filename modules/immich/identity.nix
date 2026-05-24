@@ -12,13 +12,6 @@ in
 
 {
   config = {
-    assertions = [
-      {
-        assertion = config.age.secrets ? immichClientSecret;
-        message = "Missing immichClientSecret secret; run scripts/generate-all-secrets.sh";
-      }
-    ];
-
     users.manageLingering = true;
 
     users.groups.${proxyGroup} = {

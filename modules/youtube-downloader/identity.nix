@@ -6,17 +6,6 @@ in
 
 {
   config = {
-    assertions = [
-      {
-        assertion = config.age.secrets ? youtubeDownloaderOauth2ProxyClientSecret;
-        message = "Missing youtubeDownloaderOauth2ProxyClientSecret secret; run scripts/generate-all-secrets.sh";
-      }
-      {
-        assertion = config.age.secrets ? youtubeDownloaderOauth2ProxyCookieSecret;
-        message = "Missing youtubeDownloaderOauth2ProxyCookieSecret secret; run scripts/generate-all-secrets.sh";
-      }
-    ];
-
     users.groups.youtube-downloader = {
       gid = 3002;
     };

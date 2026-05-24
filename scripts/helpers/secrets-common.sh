@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-secrets_top_dir="${SECRETS_TOP_DIR:-secrets/top}"
-age_dir="${SECRETS_AGE_DIR:-secrets}"
-pubkey_file="${SECRETS_PUBKEY_FILE:-secrets/pubkeys/age.pub}"
+secrets_dir="${repo_root}/secrets"
+secrets_unencrypted_dir="${secrets_dir}/unencrypted"
+pubkey_file="${secrets_dir}/pubkeys/age.pub"
 
 ensure_gitignore() {
   local pattern="$1"
@@ -14,13 +14,13 @@ ensure_gitignore() {
 }
 
 ensure_secrets_layout() {
-  mkdir -p "$secrets_top_dir" "$age_dir"
+  mkdir -p "$secrets_unencrypted_dir" "$secrets_dir"
   ensure_gitignore "/secrets/*"
   ensure_gitignore "!/secrets/*.age"
   ensure_gitignore "!/secrets/manifest.nix"
   ensure_gitignore "!/secrets/pubkeys/"
   ensure_gitignore "!/secrets/pubkeys/age.pub"
-  ensure_gitignore "/secrets/top/"
+  ensure_gitignore "/secrets/unencrypted/"
   ensure_gitignore "/SensitivePrivateSecrets"
 }
 
@@ -61,9 +61,9 @@ ensure_manual_alias() {
   local canonical="$1"
   local alias="$2"
 
-  if [[ ! -e "${secrets_top_dir}/${canonical}" && -e "${secrets_top_dir}/${alias}" ]]; then
-    cp "${secrets_top_dir}/${alias}" "${secrets_top_dir}/${canonical}"
-    chmod 0440 "${secrets_top_dir}/${canonical}"
+  if [[ ! -e "${secrets_unencrypted_dir}/${canonical}" && -e "${secrets_unencrypted_dir}/${alias}" ]]; then
+    cp "${secrets_unencrypted_dir}/${alias}" "${secrets_unencrypted_dir}/${canonical}"
+    chmod 0440 "${secrets_unencrypted_dir}/${canonical}"
     echo "📄 Using ${alias} as ${canonical}"
   fi
 }
@@ -71,13 +71,13 @@ ensure_manual_alias() {
 ensure_json_alias() {
   local canonical="$1"
 
-  if [[ ! -e "${secrets_top_dir}/${canonical}" ]]; then
+  if [[ ! -e "${secrets_unencrypted_dir}/${canonical}" ]]; then
     local json_candidate
 
-    json_candidate="$(find "${secrets_top_dir}" -maxdepth 1 -type f -name '*.json' | head -n 1 || true)"
+    json_candidate="$(find "${secrets_unencrypted_dir}" -maxdepth 1 -type f -name '*.json' | head -n 1 || true)"
     if [[ -n "$json_candidate" ]]; then
-      cp "$json_candidate" "${secrets_top_dir}/${canonical}"
-      chmod 0440 "${secrets_top_dir}/${canonical}"
+      cp "$json_candidate" "${secrets_unencrypted_dir}/${canonical}"
+      chmod 0440 "${secrets_unencrypted_dir}/${canonical}"
       echo "📄 Using $(basename "$json_candidate") as ${canonical}"
     fi
   fi

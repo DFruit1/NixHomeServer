@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="theme-color" content="white" />
+		<meta name="viewport" content="width=device-width" />
+
+		<title>Login</title>
+
+		<link rel="icon"
+    href="/pkg/img/favicon.png?v=GF32WMes" />
+<link rel="apple-touch-icon"
+    href="/pkg/img/logo-256.png?v=GF32WMes" />
+<link rel="apple-touch-icon" sizes="180x180"
+    href="/pkg/img/logo-180.png?v=GF32WMes" />
+<link rel="apple-touch-icon" sizes="192x192"
+    href="/pkg/img/logo-192.png?v=GF32WMes" />
+<link rel="apple-touch-icon" sizes="512x512"
+    href="/pkg/img/logo-square.svg?v=GF32WMes" />
+
+		<link rel="stylesheet"
+			href="/pkg/external/bootstrap.min.css?v=GF32WMes"
+			integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" />
+		<script
+			src="/pkg/external/bootstrap.bundle.min.js?v=GF32WMes"
+			integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"></script>
+		<script
+			src="/pkg/style.js?v=GF32WMes"
+			defer></script>
+		<link rel="stylesheet"
+			href="/pkg/style.css?v=GF32WMes" />
+		<link rel="stylesheet"
+			href="/pkg/override.css?v=GF32WMes" />
+
+		
+
+	</head>
+	<body class="flex-column d-flex h-100">
+		
+<main id="main" class="form-signin m-auto align-items-center d-flex flex-column">
+	
+	<img src="/ui/images/domain"
+		alt="Sydney Basin Services" class="kanidm_logo" />
+	
+	<h3>Sydney Basin Services</h3>
+	
+	<div class="alert alert-info" role="alert">
+		Authenticate to access Files
+	</div>
+	
+	<div>
+		
+
+
+
+<label for="username" class="form-label">Username</label>
+<form id="login" action="/ui/login/begin" method="post">
+	<div class="input-group mb-3">
+		<input
+			autofocus=true
+			class="autofocus form-control"
+			id="username"
+			name="username"
+			type="text"
+			autocomplete="username"
+			value=""
+			required=true
+		/>
+	</div>
+
+	<!-- BEGIN: allows a password manager to autocomplete these fields in the BG. -->
+	<input
+		class="d-none"
+		id="password"
+		name="password"
+		type="password"
+		autocomplete="current-password"
+		value=""
+	/>
+	<input
+		class="d-none"
+		id="totp"
+		name="totp"
+		type="text"
+		inputmode="numeric"
+		autocomplete="one-time-code"
+		value=""
+	/>
+	<!-- END -->
+
+	<div class="mb-3 form-check form-switch">
+		<input
+			type="checkbox"
+			name="remember_me"
+			class="form-check-input"
+			role="switch"
+			id="remember_me_check"
+			value="1"
+			
+		/>
+		<label class="form-check-label" for="remember_me_check">Remember My Username</label>
+	</div>
+	<div class="input-group mb-3 justify-content-md-center">
+		<button
+			type="submit"
+			class="btn btn-primary"
+		>Begin</button>
+	</div>
+</form>
+
+	</div>
+</main>
+
+		<footer class="footer mt-auto py-3 bg-body-tertiary text-end">
+			<div class="container">
+				<span class="text-muted">Powered by <a
+						href="https://kanidm.com">Kanidm</a></span>
+			</div>
+		</footer>
+	</body>
+</html>

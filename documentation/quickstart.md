@@ -36,7 +36,7 @@ Generate repo-managed secrets and encrypt the staged inputs with the single docu
 ```
 
 Expected result:
-- encrypted secrets under `secrets/` update without leaving cleartext material outside `secrets/top/`
+- encrypted secrets under `secrets/` update without leaving cleartext material outside `secrets/unencrypted/`
 - no error reports a missing staged input or invalid JSON for `cfHomeCreds`
 - `secrets/pubkeys/age.pub` matches the private key you plan to install on the target host
 

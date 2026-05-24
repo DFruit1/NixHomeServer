@@ -6,17 +6,6 @@ in
 
 {
   config = {
-    assertions = [
-      {
-        assertion = config.age.secrets ? absClientSecret;
-        message = "Missing absClientSecret secret; run scripts/generate-all-secrets.sh";
-      }
-      {
-        assertion = config.age.secrets ? absBootstrapPass;
-        message = "Missing absBootstrapPass secret; run scripts/generate-all-secrets.sh";
-      }
-    ];
-
     users.groups.audiobookshelf-media = { };
 
     users.users.audiobookshelf.extraGroups = lib.mkAfter [ "audiobookshelf-media" ];
