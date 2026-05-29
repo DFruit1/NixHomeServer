@@ -31,6 +31,12 @@ pub struct ResetTokenOptions {
 }
 
 #[derive(Debug, Clone)]
+pub struct PosixPasswordOptions {
+    pub account_id: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct DeleteUserOptions {
     pub account_id: String,
     pub confirm: String,
@@ -342,6 +348,56 @@ pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<Comman
             "reset_token": summary.value,
         }),
         warnings: summary.warnings,
+    })
+}
+
+pub fn set_posix_password(
+    cli: &KanidmCli,
+    options: PosixPasswordOptions,
+) -> Result<CommandOutput, AppError> {
+    let options = PosixPasswordOptions {
+        account_id: validate_account_id(&options.account_id)?,
+        password: options.password,
+    };
+    if options.password.is_empty() {
+        return Err(AppError::Config {
+            message: "POSIX password must not be empty".to_string(),
+        });
+    }
+    let person = load_user(cli, &options.account_id)?;
+
+    cli.person_posix_set_password(&options.account_id, &options.password)?;
+    let mut warnings = person.warnings;
+    let unixd_cache_invalidated = match cli.unix_cache_invalidate() {
+        Ok(()) => true,
+        Err(error) => {
+            warnings.push(format!(
+                "Kanidm accepted the POSIX password update, but UnixD cache invalidation failed: {}",
+                error.human_message()
+            ));
+            false
+        }
+    };
+
+    Ok(CommandOutput {
+        message: format!(
+            "set or reset Kanidm POSIX password for '{}'",
+            options.account_id
+        ),
+        human: format!(
+            "Kanidm accepted the POSIX/UNIX password update for '{}'.\nUnixD cache invalidated: {}.\n\nDirect SFTP on port 2222 uses this Kanidm POSIX/UNIX password through pam_kanidm, not the user's web/OIDC password, passkey, or Linux shadow password.\n\nKanidm does not expose the stored password value, so the confirmation is that the write command succeeded and the UnixD cache was refreshed.\n\n{}",
+            options.account_id,
+            if unixd_cache_invalidated { "yes" } else { "no" },
+            human_user_summary(&person.value)
+        ),
+        details: json!({
+            "account_id": options.account_id,
+            "user": person.value,
+            "action": "person_posix_set_password",
+            "kanidm_update_accepted": true,
+            "unixd_cache_invalidated": unixd_cache_invalidated,
+        }),
+        warnings,
     })
 }
 
@@ -698,5 +754,148 @@ exit 1
             .warnings
             .iter()
             .any(|warning| warning.contains("update_mail")));
+    }
+
+    #[test]
+    fn set_posix_password_runs_interactive_kanidm_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let recorded = dir.path().join("recorded-args.txt");
+        let cache_recorded = dir.path().join("cache-recorded-args.txt");
+        let script = dir.path().join("kanidm");
+        let cache_script = dir.path().join("kanidm-unix");
+        write_script(
+            &script,
+            &format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+recorded={}
+args=("$@")
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
+  printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"mail":["dsaw@example.test"],"memberof":["files-sftp-users"]}}}}'
+  exit 0
+fi
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "posix" && "${{args[2]}}" == "set-password" ]]; then
+  IFS= read -r password_one
+  IFS= read -r password_two
+  printf '%s\n%s\n%s\n' "$*" "$password_one" "$password_two" > "$recorded"
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+                serde_json::to_string(&recorded.display().to_string()).expect("json path"),
+            ),
+        );
+        write_script(
+            &cache_script,
+            &format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > {}
+"#,
+                serde_json::to_string(&cache_recorded.display().to_string()).expect("json path"),
+            ),
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+        });
+
+        let output = set_posix_password(
+            &cli,
+            PosixPasswordOptions {
+                account_id: "dsaw".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+        )
+        .expect("set posix password");
+
+        let recorded_args = fs::read_to_string(recorded).expect("recorded args");
+        assert!(recorded_args.contains("person posix set-password dsaw"));
+        assert!(recorded_args.contains("--name admindsaw"));
+        assert!(
+            recorded_args.contains("correct horse battery staple\ncorrect horse battery staple")
+        );
+        let cache_recorded_args = fs::read_to_string(cache_recorded).expect("cache recorded args");
+        assert_eq!(cache_recorded_args.trim(), "cache-invalidate");
+        assert!(output
+            .human
+            .contains("Kanidm accepted the POSIX/UNIX password update"));
+        assert!(output.human.contains("UnixD cache invalidated: yes"));
+        assert!(output.human.contains("Direct SFTP"));
+        assert_eq!(output.details["kanidm_update_accepted"], true);
+        assert_eq!(output.details["unixd_cache_invalidated"], true);
+        assert!(output.warnings.is_empty());
+    }
+
+    #[test]
+    fn set_posix_password_warns_when_unixd_cache_invalidation_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let recorded = dir.path().join("recorded-args.txt");
+        let script = dir.path().join("kanidm");
+        let cache_script = dir.path().join("kanidm-unix");
+        write_script(
+            &script,
+            &format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+recorded={}
+args=("$@")
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
+  printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"mail":["dsaw@example.test"],"memberof":["files-sftp-users"]}}}}'
+  exit 0
+fi
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "posix" && "${{args[2]}}" == "set-password" ]]; then
+  IFS= read -r password_one
+  IFS= read -r password_two
+  printf '%s\n%s\n%s\n' "$*" "$password_one" "$password_two" > "$recorded"
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+                serde_json::to_string(&recorded.display().to_string()).expect("json path"),
+            ),
+        );
+        write_script(
+            &cache_script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf 'cache unavailable\n' >&2
+exit 1
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+        });
+
+        let output = set_posix_password(
+            &cli,
+            PosixPasswordOptions {
+                account_id: "dsaw".to_string(),
+                password: "correct horse battery staple".to_string(),
+            },
+        )
+        .expect("set posix password");
+
+        assert!(fs::read_to_string(recorded)
+            .expect("recorded args")
+            .contains("correct horse battery staple\ncorrect horse battery staple"));
+        assert!(output.human.contains("UnixD cache invalidated: no"));
+        assert_eq!(output.details["kanidm_update_accepted"], true);
+        assert_eq!(output.details["unixd_cache_invalidated"], false);
+        assert!(output
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("cache unavailable")));
     }
 }

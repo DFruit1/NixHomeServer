@@ -3,10 +3,12 @@
 let
   chrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
+  localSftpAccessGroup = "files-local-sftp-users";
+  localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
   sftpUnixGroups = lib.unique [
     sftpAccessGroup
     "${sftpAccessGroup}@${vars.domain}"
-  ];
+  ] ++ lib.optionals localAdminNeedsSftpBridge [ localSftpAccessGroup ];
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
   sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
   filesSftpPort = vars.networking.ports.filesSftp;
@@ -61,6 +63,7 @@ in
   };
 
   services.openssh = {
+    allowSFTP = false;
     settings = {
       UsePAM = true;
       PasswordAuthentication = false;
@@ -73,6 +76,11 @@ in
   security.pam.services.files-sftp-sshd = {
     startSession = true;
     unixAuth = false;
+    rules.auth.kanidm.settings.use_first_pass = lib.mkForce false;
+  };
+
+  users.groups.${localSftpAccessGroup} = lib.mkIf localAdminNeedsSftpBridge {
+    members = [ vars.localAdminUser ];
   };
 
   networking.firewall.interfaces.${lanIface}.allowedTCPPorts = [ filesSftpPort ];

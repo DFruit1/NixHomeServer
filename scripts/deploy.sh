@@ -132,9 +132,6 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
 fi
 
 need ssh tar
-if [[ "$build_locally" != "true" ]]; then
-  need scp
-fi
 
 cleanup_local_archive() {
   if [[ -n "$repo_archive" && -f "$repo_archive" ]]; then

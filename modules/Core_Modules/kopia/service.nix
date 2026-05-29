@@ -8,6 +8,7 @@ let
   host = vars.kopiaDomain;
   stateDir = "/persist/appdata/kopia";
   configFile = "${stateDir}/repository.config";
+  detachedConfigFile = "${stateDir}/repository.detached.config";
   cacheDir = "${stateDir}/cache";
   logDir = "${stateDir}/logs";
   uiPreferencesFile = "${stateDir}/ui-preferences.json";
@@ -44,8 +45,14 @@ in
       systemd.services.kopia = {
         description = "Kopia backup-management web UI";
         wantedBy = [ "multi-user.target" ];
-        wants = [ "network-online.target" ];
-        after = [ "network-online.target" ];
+        wants = [
+          "external-usb-automount-existing.service"
+          "network-online.target"
+        ];
+        after = [
+          "external-usb-automount-existing.service"
+          "network-online.target"
+        ];
         path = commonPath;
         serviceConfig = {
           Type = "simple";
@@ -58,7 +65,17 @@ in
             export KOPIA_CHECK_FOR_UPDATES=false
             export KOPIA_SERVER_USERNAME=kopia-admin
             export KOPIA_SERVER_PASSWORD="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
-            export KOPIA_CONFIG_PATH=${lib.escapeShellArg configFile}
+            active_config=${lib.escapeShellArg configFile}
+            if [[ -f "$active_config" ]]; then
+              storage_type="$(${pkgs.jq}/bin/jq -r '.storage.type // empty' "$active_config" 2>/dev/null || true)"
+              storage_path="$(${pkgs.jq}/bin/jq -r '.storage.config.path // .storage.path // empty' "$active_config" 2>/dev/null || true)"
+              if [[ "$storage_type" == "filesystem" && -n "$storage_path" && ! -e "$storage_path" ]]; then
+                echo "Kopia filesystem repository path is unavailable: $storage_path; starting without a connected repository" >&2
+                active_config=${lib.escapeShellArg detachedConfigFile}
+              fi
+            fi
+
+            export KOPIA_CONFIG_PATH="$active_config"
             export KOPIA_CACHE_DIRECTORY=${lib.escapeShellArg cacheDir}
 
             install -d -m 0700 ${lib.escapeShellArg stateDir} ${lib.escapeShellArg cacheDir} ${lib.escapeShellArg logDir}

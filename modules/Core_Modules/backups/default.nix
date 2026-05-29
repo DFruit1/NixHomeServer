@@ -64,7 +64,7 @@ let
       install -d -m 0755 ${lib.escapeShellArg externalUsbMountRoot} "$mount_point"
 
       mount_unit="$(systemd-escape --path --suffix=mount "$mount_point")"
-      if findmnt -rn --target "$mount_point" >/dev/null || systemctl is-active --quiet "$mount_unit"; then
+      if findmnt -rn --mountpoint "$mount_point" >/dev/null || systemctl is-active --quiet "$mount_unit"; then
         exit 0
       fi
       if systemctl list-units --all --full --plain --no-legend "$mount_unit" | grep -q .; then

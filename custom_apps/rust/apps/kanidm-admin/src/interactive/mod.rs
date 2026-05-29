@@ -43,7 +43,8 @@ use crate::{
         session::{session_login, session_logout, session_reauth, session_status},
         user::{
             create_user, delete_user, disable_user, enable_user, load_user, reset_token,
-            CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
+            set_posix_password, CreateUserOptions, DeleteUserOptions, PosixPasswordOptions,
+            ResetTokenOptions,
         },
     },
     output::CommandOutput,
@@ -483,6 +484,42 @@ fn help_user_reset_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
             ResetTokenOptions {
                 account_id: account_id.clone(),
                 ttl_seconds,
+            },
+        )
+    })
+}
+
+fn set_posix_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+    let Some(account_id) = choose_account_id(
+        kanidm,
+        "Select a user who needs a POSIX/SFTP password set or reset",
+    )?
+    else {
+        return Ok(());
+    };
+    let Some(user) =
+        require_complete_user_for_action(kanidm, &account_id, "set a POSIX/SFTP password for")?
+    else {
+        return Ok(());
+    };
+    render::print_note(
+        "Review POSIX Password",
+        &build_posix_password_review(&user.value),
+    );
+    match forms::confirm("Set the POSIX/SFTP password now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
+    let Some(password) = prompt_submitted(forms::password_confirmed("New POSIX/SFTP password")?)
+    else {
+        return Ok(());
+    };
+    run_privileged_command("Set POSIX Password", kanidm, || {
+        set_posix_password(
+            kanidm,
+            PosixPasswordOptions {
+                account_id: account_id.clone(),
+                password: password.clone(),
             },
         )
     })
@@ -1450,6 +1487,11 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
             "Use this when someone cannot sign in and needs to set a new password. The result should be shared through a secure channel because it grants temporary password reset access.",
         ),
         menu_item(
+            "Set / Reset POSIX Password",
+            "Set the separate POSIX/UNIX password used for direct SFTP.",
+            "Use this after granting `files-sftp-users`, or when the user's direct SFTP password needs to be rotated. This does not change their web/OIDC password or passkeys.",
+        ),
+        menu_item(
             "Advanced",
             "Open session management, lower-level Kanidm, and local helper tools.",
             "Use this for session tools, raw membership tools, group inspection, OAuth2 clients, policy, diagnostics, or permanent deletion.",
@@ -1972,6 +2014,13 @@ fn build_reset_password_review(user: &UserRecord, ttl_seconds: u64) -> String {
     )
 }
 
+fn build_posix_password_review(user: &UserRecord) -> String {
+    format!(
+        "{}\n\nThis will set or reset the separate Kanidm POSIX/UNIX password for direct SFTP.\n\nWarning:\n- This does not change the user's web/OIDC password or passkeys.\n- Share any temporary password only through a secure channel.",
+        human_operator_user_summary(user),
+    )
+}
+
 fn build_vaultwarden_invite_review(
     user: &UserRecord,
     primary_email: &str,
@@ -2365,6 +2414,7 @@ mod tests {
                 "Find / View User",
                 "Disable / Enable User",
                 "Help User Reset Password",
+                "Set / Reset POSIX Password",
                 "Advanced",
                 "Exit",
             ]
@@ -2803,6 +2853,24 @@ exit 99
         assert!(rendered.contains("Reset Link TTL: 3600 seconds"));
         assert!(rendered.contains("secure channel"));
         assert!(rendered.contains("Account ID: dsaw"));
+    }
+
+    #[test]
+    fn posix_password_review_distinguishes_sftp_password() {
+        let rendered = build_posix_password_review(&UserRecord {
+            account_id: "dsaw".to_string(),
+            display_name: Some("Dan".to_string()),
+            primary_email: Some("dsaw@example.test".to_string()),
+            spn: None,
+            uuid: None,
+            valid_from: None,
+            expiry: None,
+            groups: vec!["files-sftp-users".to_string()],
+        });
+
+        assert!(rendered.contains("POSIX/UNIX password"));
+        assert!(rendered.contains("direct SFTP"));
+        assert!(rendered.contains("web/OIDC password"));
     }
 
     #[test]

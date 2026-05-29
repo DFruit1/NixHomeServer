@@ -16,13 +16,12 @@ use crate::{
 pub fn ensure_interactive_session_allowed(format: OutputFormat) -> Result<(), AppError> {
     if format != OutputFormat::Human {
         return Err(AppError::Config {
-            message: "interactive session commands only support --output human".to_string(),
+            message: "interactive commands only support --output human".to_string(),
         });
     }
     if !stdin().is_terminal() || !stdout().is_terminal() {
         return Err(AppError::Config {
-            message: "interactive session commands require a terminal on stdin and stdout"
-                .to_string(),
+            message: "interactive commands require a terminal on stdin and stdout".to_string(),
         });
     }
     Ok(())

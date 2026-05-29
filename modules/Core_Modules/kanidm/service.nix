@@ -23,12 +23,10 @@ in
 
   systemd.services.kanidm = {
     after = [
-      "oauth2-proxy-secret-materialize.service"
       "caddy.service"
       "acme-${vars.kanidmDomain}.service"
     ];
     wants = [
-      "oauth2-proxy-secret-materialize.service"
       "caddy.service"
       "acme-${vars.kanidmDomain}.service"
     ];

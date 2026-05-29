@@ -1,5 +1,6 @@
 use std::{
     ffi::OsString,
+    io::Write,
     process::{Command, Stdio},
     thread::sleep,
     time::{Duration, Instant},
@@ -24,6 +25,7 @@ pub struct RawCommandRequest {
     pub args: Vec<String>,
     pub mode: CommandMode,
     pub timeout: Duration,
+    pub stdin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -180,11 +182,31 @@ fn run_captured_command(
 ) -> Result<RawCommandResult, BackendExecError> {
     let mut child = Command::new(program)
         .args(&request.args)
-        .stdin(Stdio::null())
+        .stdin(if request.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| map_spawn_error(program, error))?;
+
+    if let Some(stdin_payload) = &request.stdin {
+        let mut stdin = child.stdin.take().ok_or_else(|| BackendExecError::Io {
+            message: format!("failed to open stdin for {}", program.to_string_lossy()),
+            crash_kind: Some(BackendCrashKind::UnexpectedFailure),
+        })?;
+        stdin
+            .write_all(stdin_payload.as_bytes())
+            .map_err(|error| BackendExecError::Io {
+                message: format!(
+                    "failed to write stdin for {}: {error}",
+                    program.to_string_lossy()
+                ),
+                crash_kind: Some(BackendCrashKind::UnexpectedFailure),
+            })?;
+    }
 
     let start = Instant::now();
     loop {
@@ -319,6 +341,7 @@ sleep 1
                 args: Vec::new(),
                 mode: CommandMode::NonInteractiveRead,
                 timeout: Duration::from_millis(10),
+                stdin: None,
             })
             .expect_err("timeout");
 

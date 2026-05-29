@@ -5,6 +5,11 @@ let
   configDir = "${dataDir}/config";
   managedDir = "${dataDir}/.nixos-managed";
   kanidmDb = "/var/lib/kanidm/kanidm.db";
+  adminMailAddresses =
+    if vars.kanidmAdminMailAddresses != [ ] then
+      vars.kanidmAdminMailAddresses
+    else
+      [ vars.kanidmAdminEmail ];
   audiobookshelfOidcBootstrapPath = with pkgs; [
     curl
     jq
@@ -136,6 +141,38 @@ in
             echo "Audiobookshelf OIDC bootstrap v1 relinked $username to the current Kanidm subject"
           done
         fi
+
+        for username in ${lib.escapeShellArgs vars.kanidmAppUsers}; do
+          escaped_username="$(escape_sql "$username")"
+          mail=""
+          case "$username" in
+            ${lib.concatMapStringsSep "\n            " (user:
+              let
+                email =
+                  if user == vars.kanidmAdminUser then
+                    builtins.head adminMailAddresses
+                  else
+                    if builtins.hasAttr user vars.kanidmAppUserEmails then
+                      vars.kanidmAppUserEmails.${user}
+                    else
+                      "";
+              in
+              "${lib.escapeShellArg user}) mail=${lib.escapeShellArg email} ;;"
+            ) vars.kanidmAppUsers}
+          esac
+
+          [[ -n "$mail" ]] || continue
+          current_mail="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
+            "select coalesce(email, char(0)) from users where username = '$escaped_username';" \
+            2>/dev/null || true)"
+          [[ "$current_mail" != "$mail" ]] || continue
+
+          escaped_mail="$(escape_sql "$mail")"
+          ${pkgs.sqlite}/bin/sqlite3 "$db" \
+            "update users set email = '$escaped_mail' where username = '$escaped_username';"
+          changed=1
+          echo "Audiobookshelf OIDC bootstrap v1 reconciled $username email"
+        done
 
         if (( changed == 0 )); then
           echo "Audiobookshelf OIDC bootstrap v1 already converged"

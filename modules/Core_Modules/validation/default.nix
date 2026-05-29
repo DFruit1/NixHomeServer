@@ -90,8 +90,12 @@ let
       (path: path == vars.sharedRoot || lib.hasPrefix "${vars.sharedRoot}/" path)
       filestashBackendPaths;
   sshdSettings = config.services.openssh.settings;
+  normalSshAllowSftp = config.services.openssh.allowSFTP;
   normalSshAllowUsers = sshdSettings.AllowUsers or [ ];
   normalSshAuthorizedKeysCommand = sshdSettings.AuthorizedKeysCommand or null;
+  filesSftpPam = config.security.pam.services.files-sftp-sshd;
+  filesSftpKanidmAuthUsesFirstPass =
+    filesSftpPam.rules.auth.kanidm.settings.use_first_pass or false;
 in
 {
   assertions = [
@@ -195,7 +199,7 @@ in
     }
     {
       assertion = !filestashEnabled || vars.filesSessionExpirationHours <= 12;
-      message = "nixhomeserver: filesSessionExpirationHours must stay short because the encrypted Filestash cookie contains the SFTP password.";
+      message = "nixhomeserver: filesSessionExpirationHours must stay short because the encrypted Filestash cookie contains the managed SFTP credential.";
     }
     {
       assertion = directFilestashSharedPaths == [ ];
@@ -204,6 +208,18 @@ in
     {
       assertion = normalSshAllowUsers == [ vars.localAdminUser ];
       message = "nixhomeserver: normal SSH must be limited to the local admin user; Kanidm file users use the dedicated SFTP endpoint only.";
+    }
+    {
+      assertion = normalSshAllowSftp == false;
+      message = "nixhomeserver: normal SSH must not expose SFTP; file transfers use the dedicated chrooted files SFTP endpoint on vars.networking.ports.filesSftp.";
+    }
+    {
+      assertion = filesSftpPam.unixAuth == false;
+      message = "nixhomeserver: files-sftp-sshd must not accept local Unix passwords; it should authenticate direct SFTP users through Kanidm PAM.";
+    }
+    {
+      assertion = filesSftpKanidmAuthUsesFirstPass == false;
+      message = "nixhomeserver: files-sftp-sshd Kanidm PAM auth must prompt directly instead of using use_first_pass, because Unix auth is disabled for this service.";
     }
     {
       assertion = normalSshAuthorizedKeysCommand == null;

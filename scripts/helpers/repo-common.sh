@@ -114,7 +114,10 @@ stage_archive_on_remote() {
   local remote_archive
 
   remote_archive="$(ssh "$remote_host" "mktemp /tmp/${archive_label}.XXXXXX.tar")"
-  scp "$archive_path" "$remote_host:$remote_archive"
+  if ! ssh "$remote_host" "cat > $(printf '%q' "$remote_archive")" <"$archive_path"; then
+    ssh "$remote_host" "rm -f $(printf '%q' "$remote_archive")" || true
+    return 1
+  fi
   printf '%s\n' "$remote_archive"
 }
 

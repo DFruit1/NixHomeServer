@@ -18,171 +18,209 @@ let
   proxyEmailHeader = "X-Auth-Request-Email";
   proxyGroupsHeader = "X-Auth-Request-Groups";
   filesSftpPort = vars.networking.ports.filesSftp;
+  adminMailAddresses =
+    if vars.kanidmAdminMailAddresses != [ ] then
+      vars.kanidmAdminMailAddresses
+    else
+      [ vars.kanidmAdminEmail ];
+  sftpLoginUserEmailEntries =
+    lib.flatten (map
+      (user:
+        let
+          mailAddresses =
+            if user == vars.kanidmAdminUser then
+              adminMailAddresses
+            else if builtins.hasAttr user vars.kanidmAppUserEmails then
+              [ vars.kanidmAppUserEmails.${user} ]
+            else
+              [ ];
+        in
+        map
+          (mail: {
+            inherit user mail;
+          })
+          mailAddresses)
+      vars.kanidmAppUsers);
+  sftpLoginUserEmailMapGo = lib.concatMapStringsSep "\n"
+    (entry:
+      "    ${builtins.toJSON (lib.toLower entry.mail)}: ${builtins.toJSON entry.user},"
+    )
+    sftpLoginUserEmailEntries;
   filestashPackages = filestashNix.packages.${pkgs.stdenv.hostPlatform.system};
   proxyPasswordPlugin = pkgs.writeText "plg_authenticate_proxy_password.go" ''
-    package plg_authenticate_proxy_password
+        package plg_authenticate_proxy_password
 
-    import (
-    "encoding/json"
-    "html"
-    "net/http"
-    "net/url"
-    "os"
-    "strings"
-    "time"
+        import (
+        "encoding/json"
+        "html"
+        "net/http"
+        "net/url"
+        "os"
+        "strings"
+        "time"
 
-    . "github.com/mickael-kerjean/filestash/server/common"
-    )
+        . "github.com/mickael-kerjean/filestash/server/common"
+        )
 
-    func init() {
-    Hooks.Register.AuthenticationMiddleware("proxy_password", ProxyPassword{})
-    }
-
-    type ProxyPassword struct{}
-
-    type identityPayload struct {
-    User     string `json:"user"`
-    Email    string `json:"email"`
-    Groups   string `json:"groups"`
-    IssuedAt int64  `json:"issued_at"`
-    }
-
-    func sftpLoginUser(user string) string {
-    user = strings.TrimSpace(user)
-    if name, _, ok := strings.Cut(user, "@"); ok {
-        return name
-    }
-    return user
-    }
-
-    func (this ProxyPassword) Setup() Form {
-    return Form{
-        Elmnts: []FormElement{
-            {Name: "type", Type: "hidden", Value: "proxy_password"},
-            {Name: "user_header", Type: "text", Value: "X-Auth-Request-Preferred-Username"},
-            {Name: "email_header", Type: "text", Value: "X-Auth-Request-Email"},
-            {Name: "groups_header", Type: "text", Value: "X-Auth-Request-Groups"},
-        },
-    }
-    }
-
-    func headerFirst(req *http.Request, names ...string) string {
-    for _, name := range names {
-        if value := strings.TrimSpace(req.Header.Get(name)); value != "" {
-            return value
+        func init() {
+        Hooks.Register.AuthenticationMiddleware("proxy_password", ProxyPassword{})
         }
-    }
-    return ""
-    }
 
-    func (this ProxyPassword) EntryPoint(idpParams map[string]string, req *http.Request, res http.ResponseWriter) error {
-    userHeader := idpParams["user_header"]
-    if userHeader == "" {
-        userHeader = "X-Auth-Request-Preferred-Username"
-    }
-    emailHeader := idpParams["email_header"]
-    if emailHeader == "" {
-        emailHeader = "X-Auth-Request-Email"
-    }
-    groupsHeader := idpParams["groups_header"]
-    if groupsHeader == "" {
-        groupsHeader = "X-Auth-Request-Groups"
-    }
+        type ProxyPassword struct{}
 
-    user := headerFirst(req, userHeader, "X-Auth-Request-User", "X-Forwarded-Preferred-Username", "X-Forwarded-User")
-    if user == "" {
-        res.WriteHeader(http.StatusUnauthorized)
-        res.Write([]byte(Page("Missing trusted proxy user header")))
+        type identityPayload struct {
+        User     string `json:"user"`
+        Email    string `json:"email"`
+        Groups   string `json:"groups"`
+        IssuedAt int64  `json:"issued_at"`
+        }
+
+        var sftpLoginUsersByEmail = map[string]string{
+    ${sftpLoginUserEmailMapGo}
+        }
+
+        func sftpLoginUser(user string, email string) string {
+        user = strings.TrimSpace(user)
+        if username := sftpLoginUsersByEmail[strings.ToLower(user)]; username != "" {
+            return username
+        }
+        if username := sftpLoginUsersByEmail[strings.ToLower(strings.TrimSpace(email))]; username != "" {
+            return username
+        }
+        if name, _, ok := strings.Cut(user, "@"); ok {
+            return name
+        }
+        return user
+        }
+
+        func (this ProxyPassword) Setup() Form {
+        return Form{
+            Elmnts: []FormElement{
+                {Name: "type", Type: "hidden", Value: "proxy_password"},
+                {Name: "user_header", Type: "text", Value: "X-Auth-Request-Preferred-Username"},
+                {Name: "email_header", Type: "text", Value: "X-Auth-Request-Email"},
+                {Name: "groups_header", Type: "text", Value: "X-Auth-Request-Groups"},
+            },
+        }
+        }
+
+        func headerFirst(req *http.Request, names ...string) string {
+        for _, name := range names {
+            if value := strings.TrimSpace(req.Header.Get(name)); value != "" {
+                return value
+            }
+        }
+        return ""
+        }
+
+        func (this ProxyPassword) EntryPoint(idpParams map[string]string, req *http.Request, res http.ResponseWriter) error {
+        userHeader := idpParams["user_header"]
+        if userHeader == "" {
+            userHeader = "X-Auth-Request-Preferred-Username"
+        }
+        emailHeader := idpParams["email_header"]
+        if emailHeader == "" {
+            emailHeader = "X-Auth-Request-Email"
+        }
+        groupsHeader := idpParams["groups_header"]
+        if groupsHeader == "" {
+            groupsHeader = "X-Auth-Request-Groups"
+        }
+
+        user := headerFirst(req, userHeader, "X-Auth-Request-User", "X-Forwarded-Preferred-Username", "X-Forwarded-User")
+        if user == "" {
+            res.WriteHeader(http.StatusUnauthorized)
+            res.Write([]byte(Page("Missing trusted proxy user header")))
+            return nil
+        }
+
+        email := headerFirst(req, emailHeader, "X-Forwarded-Email")
+        groups := headerFirst(req, groupsHeader, "X-Forwarded-Groups")
+        payload := identityPayload{
+            User:     user,
+            Email:    email,
+            Groups:   groups,
+            IssuedAt: time.Now().Unix(),
+        }
+        raw, err := json.Marshal(payload)
+        if err != nil {
+            return err
+        }
+        token, err := EncryptString(SECRET_KEY_DERIVATE_FOR_USER, string(raw))
+        if err != nil {
+            return err
+        }
+
+        action := WithBase("/api/session/auth/?label=" + url.QueryEscape(req.URL.Query().Get("label")) + "&state=" + url.QueryEscape(req.URL.Query().Get("state")))
+
+        res.Header().Set("Content-Type", "text/html; charset=utf-8")
+        res.WriteHeader(http.StatusOK)
+        res.Write([]byte(Page(
+            "<form id=\"filestash-proxy-password\" action=\"" + action + "\" method=\"post\">" +
+                "<input type=\"hidden\" name=\"identity_token\" value=\"" + html.EscapeString(token) + "\" />" +
+                "<label>Signed in as " + html.EscapeString(user) + "</label>" +
+                "<button type=\"submit\">Connect</button>" +
+            "</form>" +
+            "<script>document.getElementById('filestash-proxy-password').submit()</script>",
+        )))
         return nil
-    }
+        }
 
-    email := headerFirst(req, emailHeader, "X-Forwarded-Email")
-    groups := headerFirst(req, groupsHeader, "X-Forwarded-Groups")
-    payload := identityPayload{
-        User:     user,
-        Email:    email,
-        Groups:   groups,
-        IssuedAt: time.Now().Unix(),
-    }
-    raw, err := json.Marshal(payload)
-    if err != nil {
-        return err
-    }
-    token, err := EncryptString(SECRET_KEY_DERIVATE_FOR_USER, string(raw))
-    if err != nil {
-        return err
-    }
-
-    action := WithBase("/api/session/auth/?label=" + url.QueryEscape(req.URL.Query().Get("label")) + "&state=" + url.QueryEscape(req.URL.Query().Get("state")))
-
-    res.Header().Set("Content-Type", "text/html; charset=utf-8")
-    res.WriteHeader(http.StatusOK)
-    res.Write([]byte(Page(
-        "<form id=\"filestash-proxy-password\" action=\"" + action + "\" method=\"post\">" +
-            "<input type=\"hidden\" name=\"identity_token\" value=\"" + html.EscapeString(token) + "\" />" +
-            "<label>Signed in as " + html.EscapeString(user) + "</label>" +
-            "<button type=\"submit\">Connect</button>" +
-        "</form>" +
-        "<script>document.getElementById('filestash-proxy-password').submit()</script>",
-    )))
-    return nil
-    }
-
-    func (this ProxyPassword) Callback(formData map[string]string, idpParams map[string]string, res http.ResponseWriter) (map[string]string, error) {
-    token := strings.TrimSpace(formData["identity_token"])
-    if token == "" {
-        return nil, ErrAuthenticationFailed
-    }
-    decrypted, err := DecryptString(SECRET_KEY_DERIVATE_FOR_USER, token)
-    if err != nil {
-        return nil, ErrAuthenticationFailed
-    }
-    var payload identityPayload
-    if err := json.Unmarshal([]byte(decrypted), &payload); err != nil {
-        return nil, ErrAuthenticationFailed
-    }
-    if strings.TrimSpace(payload.User) == "" || payload.IssuedAt == 0 || time.Since(time.Unix(payload.IssuedAt, 0)) > 10*time.Minute {
-        return nil, ErrAuthenticationFailed
-    }
-    privateKey, err := os.ReadFile("${sftpClientKeyFile}")
-    if err != nil {
-        return nil, ErrAuthenticationFailed
-    }
-    return map[string]string{
-        "user":             payload.User,
-        "sftp_user":        sftpLoginUser(payload.User),
-        "email":            payload.Email,
-        "groups":           payload.Groups,
-        "sftp_private_key": string(privateKey),
-    }, nil
-    }
+        func (this ProxyPassword) Callback(formData map[string]string, idpParams map[string]string, res http.ResponseWriter) (map[string]string, error) {
+        token := strings.TrimSpace(formData["identity_token"])
+        if token == "" {
+            return nil, ErrAuthenticationFailed
+        }
+        decrypted, err := DecryptString(SECRET_KEY_DERIVATE_FOR_USER, token)
+        if err != nil {
+            return nil, ErrAuthenticationFailed
+        }
+        var payload identityPayload
+        if err := json.Unmarshal([]byte(decrypted), &payload); err != nil {
+            return nil, ErrAuthenticationFailed
+        }
+        if strings.TrimSpace(payload.User) == "" || payload.IssuedAt == 0 || time.Since(time.Unix(payload.IssuedAt, 0)) > 10*time.Minute {
+            return nil, ErrAuthenticationFailed
+        }
+        privateKey, err := os.ReadFile("${sftpClientKeyFile}")
+        if err != nil {
+            return nil, ErrAuthenticationFailed
+        }
+        return map[string]string{
+            "user":             payload.User,
+            "sftp_user":        sftpLoginUser(payload.User, payload.Email),
+            "email":            payload.Email,
+            "groups":           payload.Groups,
+            "sftp_private_key": string(privateKey),
+        }, nil
+        }
   '';
   filestashBackendWithProxyAuth = filestashPackages.backend.overrideAttrs (old: {
     postPatch = ''
-      chmod -R u+w server/plugin server/ctrl
-      mkdir -p server/plugin/plg_authenticate_proxy_password
-      install -m 0644 ${proxyPasswordPlugin} server/plugin/plg_authenticate_proxy_password/index.go
+        chmod -R u+w server/plugin server/ctrl
+        mkdir -p server/plugin/plg_authenticate_proxy_password
+        install -m 0644 ${proxyPasswordPlugin} server/plugin/plg_authenticate_proxy_password/index.go
 
-      substituteInPlace server/plugin/index.go \
-              --replace-fail '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"' '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"
-    _ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_proxy_password"'
+        substituteInPlace server/plugin/index.go \
+                --replace-fail '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"' '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"
+      _ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_proxy_password"'
 
-            substituteInPlace server/ctrl/session.go \
-              --replace-fail 'Log.Debug("session::authMiddleware '"'"'backend connection failed %+v - %s'"'"'", session, err.Error())' 'redactedSession := make(map[string]string, len(session))
-        for k, v := range session {
-            if strings.Contains(strings.ToLower(k), "password") {
-              redactedSession[k] = "[redacted]"
-            } else {
-              redactedSession[k] = v
+              substituteInPlace server/ctrl/session.go \
+                --replace-fail 'Log.Debug("session::authMiddleware '"'"'backend connection failed %+v - %s'"'"'", session, err.Error())' 'redactedSession := make(map[string]string, len(session))
+          for k, v := range session {
+              if strings.Contains(strings.ToLower(k), "password") {
+                redactedSession[k] = "[redacted]"
+              } else {
+                redactedSession[k] = v
+              }
             }
-          }
-          Log.Debug("session::authMiddleware '"'"'backend connection failed %+v - %s'"'"'", redactedSession, err.Error())'
+            Log.Debug("session::authMiddleware '"'"'backend connection failed %+v - %s'"'"'", redactedSession, err.Error())'
 
-      substituteInPlace server/ctrl/session.go \
-              --replace-fail $'cookie.SameSite = http.SameSiteStrictMode\n\tif Config.Get("features.protection.iframe").String() != "" {' $'cookie.SameSite = http.SameSiteStrictMode\n\tif Config.Get("general.force_ssl").Bool() {\n\t\tcookie.Secure = true\n\t}\n\tif Config.Get("features.protection.iframe").String() != "" {'
+        substituteInPlace server/ctrl/session.go \
+                --replace-fail $'cookie.SameSite = http.SameSiteStrictMode\n\tif Config.Get("features.protection.iframe").String() != "" {' $'cookie.SameSite = http.SameSiteStrictMode\n\tif Config.Get("general.force_ssl").Bool() {\n\t\tcookie.Secure = true\n\t}\n\tif Config.Get("features.protection.iframe").String() != "" {'
 
-      substituteInPlace server/middleware/session.go \
-              --replace-fail $'if ctx.Backend, err = _extractBackend(req, ctx); err != nil {\n\t\t\tif len(ctx.Session) == 0 {\n\t\t\t\tSendErrorResult(res, ErrNotAuthorized)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tSendErrorResult(res, err)\n\t\t\treturn\n\t\t}' $'if ctx.Backend, err = _extractBackend(req, ctx); err != nil {\n\t\t\tif req.Method == http.MethodGet && req.URL.Path == WithBase("/api/session") {\n\t\t\t\tRecoverFromBadCookie(res)\n\t\t\t\tctx.Session = map[string]string{}\n\t\t\t\tctx.Backend = nil\n\t\t\t} else if len(ctx.Session) == 0 {\n\t\t\t\tSendErrorResult(res, ErrNotAuthorized)\n\t\t\t\treturn\n\t\t\t} else {\n\t\t\t\tSendErrorResult(res, err)\n\t\t\t\treturn\n\t\t\t}\n\t\t}'
+        substituteInPlace server/middleware/session.go \
+                --replace-fail $'if ctx.Backend, err = _extractBackend(req, ctx); err != nil {\n\t\t\tif len(ctx.Session) == 0 {\n\t\t\t\tSendErrorResult(res, ErrNotAuthorized)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tSendErrorResult(res, err)\n\t\t\treturn\n\t\t}' $'if ctx.Backend, err = _extractBackend(req, ctx); err != nil {\n\t\t\tif req.Method == http.MethodGet && req.URL.Path == WithBase("/api/session") {\n\t\t\t\tRecoverFromBadCookie(res)\n\t\t\t\tctx.Session = map[string]string{}\n\t\t\t\tctx.Backend = nil\n\t\t\t} else if len(ctx.Session) == 0 {\n\t\t\t\tSendErrorResult(res, ErrNotAuthorized)\n\t\t\t\treturn\n\t\t\t} else {\n\t\t\t\tSendErrorResult(res, err)\n\t\t\t\treturn\n\t\t\t}\n\t\t}'
     ''
     + (old.postPatch or "");
   });
@@ -367,6 +405,7 @@ in
         url = "http://${loopback}:${toString filesPort}/";
       };
       extraProxyArgs = [
+        "--user-id-claim=preferred_username"
         "--session-cookie-minimal=true"
         "--skip-auth-preflight=true"
         "--upstream-timeout=30m0s"

@@ -53,9 +53,11 @@ snapshots through the UI.
 
 Filestash and SFTP file roots:
 
-- Filestash authenticates through OAuth2 Proxy, then asks for the user's Kanidm password and connects to the local SFTP endpoint as that Unix user.
+- Filestash authenticates through OAuth2 Proxy and connects to the local SFTP endpoint as that Unix user with the managed Filestash SFTP key.
 - Filestash opens a single normal-user source, `Files`, rooted at the user's SFTP chroot.
-- SFTP opens the same personal root at `sftp://<username>@server.home.arpa:<filesSftp-port>/`.
+- Direct SFTP opens the same personal root at `sftp://<username>@server.home.arpa:<filesSftp-port>/`, currently port `2222`, and authenticates with the user's Kanidm POSIX/UNIX password.
+- The Kanidm POSIX/UNIX password is set live in Kanidm with `kanidm-admin user posix-password set <username>` and is separate from the normal web/OIDC password or passkey.
+- Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
 - `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
 

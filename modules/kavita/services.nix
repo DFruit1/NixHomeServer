@@ -40,11 +40,11 @@ in
           Secret = "@OIDC_SECRET@";
           ProvisionAccounts = true;
           RequireVerifiedEmail = true;
-          SyncUserSettings = true;
+          SyncUserSettings = false;
           RolesPrefix = "";
           RolesClaim = "kavita_roles";
           CustomScopes = [ "kavita_roles" ];
-          DefaultRoles = [ ];
+          DefaultRoles = [ "Login" ];
           DefaultLibraries = [ ];
           DefaultAgeRestriction = 0;
           DefaultIncludeUnknowns = false;

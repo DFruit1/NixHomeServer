@@ -1,12 +1,12 @@
 use console::{Key, Term};
-use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect, Password, Select};
 
 use crate::{
     inventory::groups::{resolve_group_help, GroupSummary},
     AppError,
 };
 
-const MEMBERSHIP_GUIDANCE: &str = "Start most normal people with `users`. Add app-specific `*-users` groups only for the apps they should access. Add `user-files` when they should access browser Files or uploads. Add `files-sftp-users` only for direct password-based SFTP access. Add `app-admin` only for trusted app operators. Bootstrap `system_admins` manually with the regular kanidm CLI instead of through this tool.";
+const MEMBERSHIP_GUIDANCE: &str = "Start most normal people with `users`. Add app-specific `*-users` groups only for the apps they should access. Add `user-files` when they should access browser Files or uploads. Add `files-sftp-users` only for direct SFTP access, then use `kanidm-admin user posix-password set <user>` to set the separate Kanidm POSIX/UNIX password. Add `app-admin` only for trusted app operators. Bootstrap `system_admins` manually with the regular kanidm CLI instead of through this tool.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextualItem {
@@ -842,6 +842,18 @@ where
         PromptResult::Submitted(value) => Ok(PromptResult::Submitted(Some(value))),
         PromptResult::Cancelled => Ok(PromptResult::Cancelled),
     }
+}
+
+pub fn password_confirmed(prompt: &str) -> Result<PromptResult<String>, AppError> {
+    Password::with_theme(&theme())
+        .with_prompt(prompt)
+        .with_confirmation("Confirm POSIX/SFTP password", "passwords did not match")
+        .allow_empty_password(false)
+        .interact()
+        .map(PromptResult::Submitted)
+        .map_err(|error| AppError::Config {
+            message: format!("interactive password input failed: {error}"),
+        })
 }
 
 pub fn confirm(prompt: &str, default: bool) -> Result<Option<bool>, AppError> {

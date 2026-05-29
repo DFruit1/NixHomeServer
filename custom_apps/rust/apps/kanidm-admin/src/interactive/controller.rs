@@ -5,7 +5,7 @@ use super::{
     help_user_reset_password_flow,
     home::{load_home, HomeCache, HomeSummary},
     manage_user_access_flow, recover_target_interactively_with_snapshot, render_bullets,
-    simple_menu_items,
+    set_posix_password_flow, simple_menu_items,
 };
 use crate::ops::executor::RecoveryTarget;
 use crate::session_state::should_prompt_for_startup_login;
@@ -16,6 +16,7 @@ pub(super) enum SimpleMenuAction {
     FindViewUser,
     DisableEnableUser,
     HelpUserResetPassword,
+    SetPosixPassword,
     Advanced,
     Exit,
 }
@@ -41,6 +42,7 @@ pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError
             SimpleMenuAction::FindViewUser => find_view_user_flow(kanidm)?,
             SimpleMenuAction::DisableEnableUser => disable_enable_user_flow(kanidm)?,
             SimpleMenuAction::HelpUserResetPassword => help_user_reset_password_flow(kanidm)?,
+            SimpleMenuAction::SetPosixPassword => set_posix_password_flow(kanidm)?,
             SimpleMenuAction::Advanced => advanced_menu(context, kanidm)?,
             SimpleMenuAction::Exit => break,
         }
@@ -71,7 +73,8 @@ fn select_main_menu(
         2 => SimpleMenuAction::FindViewUser,
         3 => SimpleMenuAction::DisableEnableUser,
         4 => SimpleMenuAction::HelpUserResetPassword,
-        5 => SimpleMenuAction::Advanced,
+        5 => SimpleMenuAction::SetPosixPassword,
+        6 => SimpleMenuAction::Advanced,
         _ => SimpleMenuAction::Exit,
     })
 }

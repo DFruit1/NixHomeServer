@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use dialoguer::Password;
 use kanidm_admin::{
     context::{resolve_context, ContextOverrides},
     interactive,
@@ -26,7 +27,8 @@ use kanidm_admin::{
         },
         user::{
             create_user, delete_user, disable_user, enable_user, list_users, reset_token,
-            show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
+            set_posix_password, show_user, CreateUserOptions, DeleteUserOptions,
+            PosixPasswordOptions, ResetTokenOptions,
         },
     },
     output::{render_error, render_output, OutputFormat},
@@ -49,6 +51,8 @@ const USER_CREATE_AFTER_HELP: &str =
 const MEMBERSHIP_SET_AFTER_HELP: &str =
     "Examples:\n  kanidm-admin membership set alice users paperless-users\n  kanidm-admin membership set alice --allow-empty";
 const DELETE_USER_AFTER_HELP: &str = "Example:\n  kanidm-admin user delete alice --confirm alice";
+const POSIX_PASSWORD_AFTER_HELP: &str =
+    "Example:\n  kanidm-admin user posix-password set alice\n\nThis prompts for the new POSIX/UNIX password before any required privileged reauthentication. The value is separate from the user's web/OIDC password and passkeys.";
 
 #[derive(Debug, Parser)]
 #[command(name = "kanidm-admin")]
@@ -186,6 +190,23 @@ enum UserSubcommand {
         )]
         ttl: u64,
     },
+    #[command(about = "Set or reset the separate POSIX/UNIX password used by SFTP.")]
+    PosixPassword(UserPosixPasswordCommand),
+}
+
+#[derive(Debug, Args)]
+struct UserPosixPasswordCommand {
+    #[command(subcommand)]
+    command: UserPosixPasswordSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum UserPosixPasswordSubcommand {
+    #[command(
+        about = "Open an interactive prompt to set or reset a user's POSIX/UNIX password.",
+        after_help = POSIX_PASSWORD_AFTER_HELP
+    )]
+    Set { account_id: String },
 }
 
 #[derive(Debug, Args)]
@@ -402,6 +423,17 @@ fn main() {
     }
 }
 
+fn prompt_confirmed_password(prompt: &str) -> Result<String, kanidm_admin::AppError> {
+    Password::new()
+        .with_prompt(prompt)
+        .with_confirmation("Confirm POSIX/SFTP password", "passwords did not match")
+        .allow_empty_password(false)
+        .interact()
+        .map_err(|error| kanidm_admin::AppError::Config {
+            message: format!("interactive password input failed: {error}"),
+        })
+}
+
 fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_admin::AppError> {
     let output = cli.output;
     let context = resolve_context(ContextOverrides {
@@ -506,6 +538,21 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                 )
                 .map(Some)
             }
+            UserSubcommand::PosixPassword(command) => match command.command {
+                UserPosixPasswordSubcommand::Set { account_id } => {
+                    ensure_interactive_session_allowed(output)?;
+                    let account_id = validate_account_id(&account_id)?;
+                    let password = prompt_confirmed_password("New POSIX/SFTP password")?;
+                    set_posix_password(
+                        &kanidm,
+                        PosixPasswordOptions {
+                            account_id,
+                            password,
+                        },
+                    )
+                    .map(Some)
+                }
+            },
         },
         Some(Commands::Group(command)) => match command.command {
             GroupSubcommand::List => list_groups(&kanidm).map(Some),
@@ -752,6 +799,21 @@ mod tests {
                     preserve_validity: true,
                 }
             })) if account_id == "alice" && display_name == "Alice"
+        ));
+    }
+
+    #[test]
+    fn parses_user_posix_password_set() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "user", "posix-password", "set", "alice"])
+            .expect("parse");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::User(UserCommand {
+                command: UserSubcommand::PosixPassword(UserPosixPasswordCommand {
+                    command: UserPosixPasswordSubcommand::Set { account_id }
+                })
+            })) if account_id == "alice"
         ));
     }
 
