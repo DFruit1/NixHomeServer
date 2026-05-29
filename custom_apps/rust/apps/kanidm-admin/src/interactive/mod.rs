@@ -106,9 +106,9 @@ fn session_tools_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
     {
         match selection {
             0 => session_status_flow(kanidm)?,
-            1 => run_session_command("Login", || session_login(kanidm))?,
-            2 => run_session_command("Reauthenticate", || session_reauth(kanidm))?,
-            3 => run_session_command("Logout", || session_logout(kanidm))?,
+            1 => run_session_command("Login", kanidm, || session_login(kanidm))?,
+            2 => run_session_command("Reauthenticate", kanidm, || session_reauth(kanidm))?,
+            3 => run_session_command("Logout", kanidm, || session_logout(kanidm))?,
             _ => break,
         }
     }
@@ -520,6 +520,7 @@ fn set_posix_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
             PosixPasswordOptions {
                 account_id: account_id.clone(),
                 password: password.clone(),
+                run_auth_test: true,
             },
         )
     })
@@ -1272,7 +1273,8 @@ fn run_command<F>(title: &str, kanidm: &KanidmCli, action: F) -> Result<(), AppE
 where
     F: FnMut() -> Result<CommandOutput, AppError>,
 {
-    if let Some(output) = perform_command(kanidm, action)? {
+    if let Some(mut output) = perform_command(kanidm, action)? {
+        attach_backend_steps(kanidm, &mut output);
         render_output(title, output)?;
     }
     Ok(())
@@ -1283,7 +1285,10 @@ where
     F: FnMut() -> Result<CommandOutput, AppError>,
 {
     match perform_privileged_command(kanidm, action)? {
-        PrivilegedCommandResult::Output(output) => render_output(title, output)?,
+        PrivilegedCommandResult::Output(mut output) => {
+            attach_backend_steps(kanidm, &mut output);
+            render_output(title, output)?;
+        }
         PrivilegedCommandResult::Error(error) => {
             render::print_error(&error);
             forms::pause("Press Enter or Esc to continue")?;
@@ -1307,12 +1312,15 @@ where
     }
 }
 
-fn run_session_command<F>(title: &str, action: F) -> Result<(), AppError>
+fn run_session_command<F>(title: &str, kanidm: &KanidmCli, action: F) -> Result<(), AppError>
 where
     F: FnOnce() -> Result<CommandOutput, AppError>,
 {
     match action() {
-        Ok(output) => render_output(title, output),
+        Ok(mut output) => {
+            attach_backend_steps(kanidm, &mut output);
+            render_output(title, output)
+        }
         Err(error) => {
             render::print_error(&error);
             forms::pause("Press Enter or Esc to continue")?;
@@ -1324,6 +1332,18 @@ where
 fn render_output(title: &str, output: CommandOutput) -> Result<(), AppError> {
     render::print_output(title, &output.render_human());
     forms::pause("Press Enter or Esc to continue")
+}
+
+fn attach_backend_steps(kanidm: &KanidmCli, output: &mut CommandOutput) {
+    let steps = kanidm.take_backend_steps();
+    if steps.is_empty() {
+        return;
+    }
+    if let Some(details) = output.details.as_object_mut() {
+        details
+            .entry("backend_steps")
+            .or_insert_with(|| serde_json::Value::Array(steps));
+    }
 }
 
 fn session_status_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
@@ -1403,7 +1423,7 @@ fn privileged_reauth_note_message() -> &'static str {
 
 fn recover_login(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
     match forms::confirm(prompt, true)? {
-        Some(true) => run_session_recovery_command("Login", || session_login(kanidm)),
+        Some(true) => run_session_recovery_command("Login", kanidm, || session_login(kanidm)),
         _ => Ok(false),
     }
 }
@@ -1414,7 +1434,8 @@ fn recover_reauth(kanidm: &KanidmCli) -> Result<bool, AppError> {
 
 fn run_privileged_session_recovery_command(kanidm: &KanidmCli) -> Result<bool, AppError> {
     match session_reauth(kanidm) {
-        Ok(output) => {
+        Ok(mut output) => {
+            attach_backend_steps(kanidm, &mut output);
             render_output("Reauthenticate", output)?;
             Ok(true)
         }
@@ -1426,12 +1447,17 @@ fn run_privileged_session_recovery_command(kanidm: &KanidmCli) -> Result<bool, A
     }
 }
 
-fn run_session_recovery_command<F>(title: &str, action: F) -> Result<bool, AppError>
+fn run_session_recovery_command<F>(
+    title: &str,
+    kanidm: &KanidmCli,
+    action: F,
+) -> Result<bool, AppError>
 where
     F: FnOnce() -> Result<CommandOutput, AppError>,
 {
     match action() {
-        Ok(output) => {
+        Ok(mut output) => {
+            attach_backend_steps(kanidm, &mut output);
             render_output(title, output)?;
             Ok(true)
         }

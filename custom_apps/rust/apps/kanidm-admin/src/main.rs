@@ -26,9 +26,9 @@ use kanidm_admin::{
             session_status,
         },
         user::{
-            create_user, delete_user, disable_user, enable_user, list_users, reset_token,
-            set_posix_password, show_user, CreateUserOptions, DeleteUserOptions,
-            PosixPasswordOptions, ResetTokenOptions,
+            create_user, delete_user, diagnose_posix_password, disable_user, enable_user,
+            list_users, reset_token, set_posix_password, show_user, test_posix_password,
+            CreateUserOptions, DeleteUserOptions, PosixPasswordOptions, ResetTokenOptions,
         },
     },
     output::{render_error, render_output, OutputFormat},
@@ -207,6 +207,13 @@ enum UserPosixPasswordSubcommand {
         after_help = POSIX_PASSWORD_AFTER_HELP
     )]
     Set { account_id: String },
+    #[command(
+        about = "Interactively test a user's POSIX/UNIX password through Kanidm UnixD.",
+        after_help = "Example:\n  kanidm-admin user posix-password test alice\n\nThis prompts for the current POSIX/UNIX password and validates the same UnixD channel used by pam_kanidm."
+    )]
+    Test { account_id: String },
+    #[command(about = "Inspect the non-secret SFTP/POSIX login prerequisites for a user.")]
+    Diagnose { account_id: String },
 }
 
 #[derive(Debug, Args)]
@@ -447,7 +454,7 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
     })?;
     let kanidm = KanidmCli::new(&context);
 
-    match cli.command {
+    let mut result = match cli.command {
         None => {
             if output != OutputFormat::Human {
                 return Err(kanidm_admin::AppError::Config {
@@ -548,9 +555,19 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                         PosixPasswordOptions {
                             account_id,
                             password,
+                            run_auth_test: true,
                         },
                     )
                     .map(Some)
+                }
+                UserPosixPasswordSubcommand::Test { account_id } => {
+                    ensure_interactive_session_allowed(output)?;
+                    let account_id = validate_account_id(&account_id)?;
+                    test_posix_password(&kanidm, &account_id).map(Some)
+                }
+                UserPosixPasswordSubcommand::Diagnose { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    diagnose_posix_password(&kanidm, &account_id).map(Some)
                 }
             },
         },
@@ -709,6 +726,22 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                 }
             },
         },
+    };
+    if let Ok(Some(output)) = &mut result {
+        attach_backend_steps(&kanidm, output);
+    }
+    result
+}
+
+fn attach_backend_steps(kanidm: &KanidmCli, output: &mut kanidm_admin::output::CommandOutput) {
+    let steps = kanidm.take_backend_steps();
+    if steps.is_empty() {
+        return;
+    }
+    if let Some(details) = output.details.as_object_mut() {
+        details
+            .entry("backend_steps")
+            .or_insert_with(|| serde_json::Value::Array(steps));
     }
 }
 

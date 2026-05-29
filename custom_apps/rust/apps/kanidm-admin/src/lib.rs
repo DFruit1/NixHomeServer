@@ -132,13 +132,16 @@ impl AppError {
             Self::Backend { message, failure } => {
                 let stderr = failure.stderr.trim();
                 let stdout = failure.stdout.trim();
-                if !stderr.is_empty() {
-                    format!("{message}\n\nBackend stderr:\n{stderr}")
-                } else if !stdout.is_empty() {
-                    format!("{message}\n\nBackend stdout:\n{stdout}")
-                } else {
-                    message.clone()
+                let mut body = message.clone();
+                if !stdout.is_empty() {
+                    body.push_str("\n\nBackend stdout:\n");
+                    body.push_str(stdout);
                 }
+                if !stderr.is_empty() {
+                    body.push_str("\n\nBackend stderr:\n");
+                    body.push_str(stderr);
+                }
+                body
             }
             Self::AlreadyExists {
                 message, details, ..

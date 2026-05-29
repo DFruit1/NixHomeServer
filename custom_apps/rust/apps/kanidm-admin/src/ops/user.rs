@@ -1,3 +1,5 @@
+use std::process::Command as ProcessCommand;
+
 use serde_json::{json, Value};
 
 use crate::{
@@ -34,6 +36,7 @@ pub struct ResetTokenOptions {
 pub struct PosixPasswordOptions {
     pub account_id: String,
     pub password: String,
+    pub run_auth_test: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +361,7 @@ pub fn set_posix_password(
     let options = PosixPasswordOptions {
         account_id: validate_account_id(&options.account_id)?,
         password: options.password,
+        run_auth_test: options.run_auth_test,
     };
     if options.password.is_empty() {
         return Err(AppError::Config {
@@ -366,10 +370,16 @@ pub fn set_posix_password(
     }
     let person = load_user(cli, &options.account_id)?;
 
-    cli.person_posix_set_password(&options.account_id, &options.password)?;
+    let mut backend_steps = Vec::new();
+    let password_update = cli.person_posix_set_password(&options.account_id, &options.password)?;
+    backend_steps.push(password_update.payload("kanidm person posix set-password"));
+
     let mut warnings = person.warnings;
     let unixd_cache_invalidated = match cli.unix_cache_invalidate() {
-        Ok(()) => true,
+        Ok(output) => {
+            backend_steps.push(output.payload("kanidm-unix cache-invalidate"));
+            true
+        }
         Err(error) => {
             warnings.push(format!(
                 "Kanidm accepted the POSIX password update, but UnixD cache invalidation failed: {}",
@@ -378,6 +388,42 @@ pub fn set_posix_password(
             false
         }
     };
+    let unixd_online = match cli.unix_status() {
+        Ok(output) => {
+            backend_steps.push(output.payload("kanidm-unix status"));
+            true
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "Kanidm accepted the POSIX password update, but UnixD status check failed: {}",
+                error.human_message()
+            ));
+            false
+        }
+    };
+    let unixd_auth_test_succeeded = if options.run_auth_test {
+        match cli.unix_auth_test(&options.account_id) {
+            Ok(output) => {
+                backend_steps.push(output.payload("kanidm-unix auth-test"));
+                Some(true)
+            }
+            Err(error) => {
+                warnings.push(format!(
+                    "Kanidm accepted the POSIX password update, but UnixD auth-test failed for '{}': {}",
+                    options.account_id,
+                    error.human_message()
+                ));
+                Some(false)
+            }
+        }
+    } else {
+        None
+    };
+    let auth_test_line = match unixd_auth_test_succeeded {
+        Some(true) => "UnixD auth-test: passed.",
+        Some(false) => "UnixD auth-test: failed. Check the warning below.",
+        None => "UnixD auth-test: not run.",
+    };
 
     Ok(CommandOutput {
         message: format!(
@@ -385,9 +431,11 @@ pub fn set_posix_password(
             options.account_id
         ),
         human: format!(
-            "Kanidm accepted the POSIX/UNIX password update for '{}'.\nUnixD cache invalidated: {}.\n\nDirect SFTP on port 2222 uses this Kanidm POSIX/UNIX password through pam_kanidm, not the user's web/OIDC password, passkey, or Linux shadow password.\n\nKanidm does not expose the stored password value, so the confirmation is that the write command succeeded and the UnixD cache was refreshed.\n\n{}",
+            "Kanidm accepted the POSIX/UNIX password update for '{}'.\nUnixD cache invalidated: {}.\nUnixD status: {}.\n{}\n\nDirect SFTP on port 2222 uses this Kanidm POSIX/UNIX password through pam_kanidm, not the user's web/OIDC password, passkey, or Linux shadow password.\n\nKanidm does not expose the stored password value, so the confirmation is that the write command succeeded. UnixD status/auth-test confirms whether the SFTP authentication path can use the new credential.\n\n{}",
             options.account_id,
             if unixd_cache_invalidated { "yes" } else { "no" },
+            if unixd_online { "online" } else { "unconfirmed" },
+            auth_test_line,
             human_user_summary(&person.value)
         ),
         details: json!({
@@ -396,9 +444,194 @@ pub fn set_posix_password(
             "action": "person_posix_set_password",
             "kanidm_update_accepted": true,
             "unixd_cache_invalidated": unixd_cache_invalidated,
+            "unixd_online": unixd_online,
+            "unixd_auth_test_succeeded": unixd_auth_test_succeeded,
+            "backend_steps": backend_steps,
         }),
         warnings,
     })
+}
+
+pub fn test_posix_password(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
+    let account_id = validate_account_id(account_id)?;
+    let person = load_user(cli, &account_id)?;
+    let mut backend_steps = Vec::new();
+    let status = cli.unix_status()?;
+    backend_steps.push(status.payload("kanidm-unix status"));
+    let auth_test = cli.unix_auth_test(&account_id)?;
+    backend_steps.push(auth_test.payload("kanidm-unix auth-test"));
+
+    Ok(CommandOutput {
+        message: format!("tested Kanidm POSIX password for '{account_id}' through UnixD"),
+        human: format!(
+            "UnixD accepted the POSIX/UNIX password for '{}'.\n\n{}",
+            account_id,
+            human_user_summary(&person.value)
+        ),
+        details: json!({
+            "account_id": account_id,
+            "user": person.value,
+            "unixd_online": true,
+            "unixd_auth_test_succeeded": true,
+            "backend_steps": backend_steps,
+        }),
+        warnings: person.warnings,
+    })
+}
+
+pub fn diagnose_posix_password(
+    cli: &KanidmCli,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    let account_id = validate_account_id(account_id)?;
+    let person = load_user(cli, &account_id)?;
+    let mut backend_steps = Vec::new();
+    let mut checks = Vec::new();
+    let mut warnings = person.warnings.clone();
+
+    checks.push(json!({
+        "name": "kanidm_user",
+        "ok": true,
+        "detail": format!("Kanidm user '{}' loaded.", person.value.account_id),
+    }));
+
+    let sftp_group_present = person
+        .value
+        .groups
+        .iter()
+        .any(|group| group == "files-sftp-users" || group.starts_with("files-sftp-users@"));
+    checks.push(json!({
+        "name": "files_sftp_membership",
+        "ok": sftp_group_present,
+        "detail": if sftp_group_present {
+            "User is a direct or domain-qualified member of files-sftp-users.".to_string()
+        } else {
+            "User is not currently shown as a member of files-sftp-users.".to_string()
+        },
+    }));
+
+    let unixd_online = match cli.unix_status() {
+        Ok(output) => {
+            backend_steps.push(output.payload("kanidm-unix status"));
+            true
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "Kanidm UnixD status check failed: {}",
+                error.human_message()
+            ));
+            false
+        }
+    };
+    checks.push(json!({
+        "name": "kanidm_unixd_status",
+        "ok": unixd_online,
+        "detail": if unixd_online { "Kanidm UnixD reports online." } else { "Kanidm UnixD status could not be confirmed." },
+    }));
+
+    let getent = run_local_probe("getent", &["passwd", &account_id]);
+    checks.push(json!({
+        "name": "getent_passwd",
+        "ok": getent.success,
+        "detail": if getent.success { getent.stdout.trim() } else { getent.stderr.trim() },
+        "probe": getent.payload(),
+    }));
+
+    let id = run_local_probe("id", &[&account_id]);
+    let local_bridge_present = id.stdout.contains("files-local-sftp-users");
+    checks.push(json!({
+        "name": "unix_groups",
+        "ok": id.success,
+        "detail": if id.success { id.stdout.trim() } else { id.stderr.trim() },
+        "local_bridge_group_present": local_bridge_present,
+        "probe": id.payload(),
+    }));
+    if account_id == "dsaw" && !local_bridge_present {
+        warnings.push("Local Unix user 'dsaw' can shadow the Kanidm account during SFTP AllowGroups checks; ensure files-local-sftp-users is present on the server.".to_string());
+    }
+
+    let sftp_service = run_local_probe("systemctl", &["is-active", "files-sftp-sshd.service"]);
+    checks.push(json!({
+        "name": "files_sftp_sshd_service",
+        "ok": sftp_service.success && sftp_service.stdout.trim() == "active",
+        "detail": if sftp_service.stdout.trim().is_empty() { sftp_service.stderr.trim() } else { sftp_service.stdout.trim() },
+        "probe": sftp_service.payload(),
+    }));
+
+    let mut human_lines = vec![
+        format!("POSIX/SFTP diagnosis for '{account_id}':"),
+        format!("- Kanidm user: ok ({})", person.value.account_id),
+        format!(
+            "- files-sftp-users membership: {}",
+            if sftp_group_present { "yes" } else { "no" }
+        ),
+        format!(
+            "- Kanidm UnixD status: {}",
+            if unixd_online { "online" } else { "unconfirmed" }
+        ),
+        format!(
+            "- getent passwd: {}",
+            if getent.success { "found" } else { "not found" }
+        ),
+        format!("- id groups: {}", if id.success { "found" } else { "not found" }),
+        format!(
+            "- local bridge group: {}",
+            if local_bridge_present { "present" } else { "not present" }
+        ),
+        format!(
+            "- files-sftp-sshd service: {}",
+            if sftp_service.success && sftp_service.stdout.trim() == "active" {
+                "active"
+            } else {
+                "not confirmed active"
+            }
+        ),
+        "\nIf these checks pass but SFTP still rejects the password, run `kanidm-admin user posix-password test <user>` and re-enter the POSIX/SFTP password. A failed auth-test means UnixD is denying the credential before the SFTP chroot is reached.".to_string(),
+    ];
+    human_lines.push(format!("\n{}", human_user_summary(&person.value)));
+
+    Ok(CommandOutput {
+        message: format!("diagnosed Kanidm POSIX/SFTP login path for '{account_id}'"),
+        human: human_lines.join("\n"),
+        details: json!({
+            "account_id": account_id,
+            "user": person.value,
+            "checks": checks,
+            "backend_steps": backend_steps,
+        }),
+        warnings,
+    })
+}
+
+struct ProbeResult {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+impl ProbeResult {
+    fn payload(&self) -> Value {
+        json!({
+            "success": self.success,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+        })
+    }
+}
+
+fn run_local_probe(program: &str, args: &[&str]) -> ProbeResult {
+    match ProcessCommand::new(program).args(args).output() {
+        Ok(output) => ProbeResult {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        },
+        Err(error) => ProbeResult {
+            success: false,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        },
+    }
 }
 
 pub fn load_user(cli: &KanidmCli, account_id: &str) -> Result<Parsed<UserRecord>, AppError> {
@@ -791,7 +1024,12 @@ exit 1
             &format!(
                 r#"#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" > {}
+if [[ "$1" == "cache-invalidate" ]]; then
+  printf '%s\n' "$*" > {}
+fi
+if [[ "$1" == "status" ]]; then
+  printf 'system: online\nKanidm: online\n'
+fi
 "#,
                 serde_json::to_string(&cache_recorded.display().to_string()).expect("json path"),
             ),
@@ -810,6 +1048,7 @@ printf '%s\n' "$*" > {}
             PosixPasswordOptions {
                 account_id: "dsaw".to_string(),
                 password: "correct horse battery staple".to_string(),
+                run_auth_test: false,
             },
         )
         .expect("set posix password");
@@ -883,6 +1122,7 @@ exit 1
             PosixPasswordOptions {
                 account_id: "dsaw".to_string(),
                 password: "correct horse battery staple".to_string(),
+                run_auth_test: false,
             },
         )
         .expect("set posix password");
