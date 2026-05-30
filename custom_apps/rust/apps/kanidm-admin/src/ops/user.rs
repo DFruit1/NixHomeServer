@@ -7,7 +7,9 @@ use crate::{
         users::{parse_user_list, parse_user_record, UserRecord},
         Parsed,
     },
-    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck, VerificationPolicy},
+    kanidm_cli::{
+        verify_with_retry, ExitStatusSummary, KanidmCli, VerificationCheck, VerificationPolicy,
+    },
     models::parse_reset_token_summary,
     ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
     output::CommandOutput,
@@ -529,7 +531,12 @@ pub fn diagnose_posix_password(
         "detail": if unixd_online { "Kanidm UnixD reports online." } else { "Kanidm UnixD status could not be confirmed." },
     }));
 
-    let getent = run_local_probe("getent", &["passwd", &account_id]);
+    let getent = run_local_probe(
+        cli,
+        "local getent passwd",
+        "getent",
+        &["passwd", &account_id],
+    );
     checks.push(json!({
         "name": "getent_passwd",
         "ok": getent.success,
@@ -537,7 +544,7 @@ pub fn diagnose_posix_password(
         "probe": getent.payload(),
     }));
 
-    let id = run_local_probe("id", &[&account_id]);
+    let id = run_local_probe(cli, "local id", "id", &[&account_id]);
     let local_bridge_present = id.stdout.contains("files-local-sftp-users");
     checks.push(json!({
         "name": "unix_groups",
@@ -550,7 +557,12 @@ pub fn diagnose_posix_password(
         warnings.push("Local Unix user 'dsaw' can shadow the Kanidm account during SFTP AllowGroups checks; ensure files-local-sftp-users is present on the server.".to_string());
     }
 
-    let sftp_service = run_local_probe("systemctl", &["is-active", "files-sftp-sshd.service"]);
+    let sftp_service = run_local_probe(
+        cli,
+        "local systemctl is-active",
+        "systemctl",
+        &["is-active", "files-sftp-sshd.service"],
+    );
     checks.push(json!({
         "name": "files_sftp_sshd_service",
         "ok": sftp_service.success && sftp_service.stdout.trim() == "active",
@@ -605,6 +617,7 @@ pub fn diagnose_posix_password(
 
 struct ProbeResult {
     success: bool,
+    code: Option<i32>,
     stdout: String,
     stderr: String,
 }
@@ -613,25 +626,44 @@ impl ProbeResult {
     fn payload(&self) -> Value {
         json!({
             "success": self.success,
+            "code": self.code,
             "stdout": self.stdout,
             "stderr": self.stderr,
         })
     }
 }
 
-fn run_local_probe(program: &str, args: &[&str]) -> ProbeResult {
-    match ProcessCommand::new(program).args(args).output() {
-        Ok(output) => ProbeResult {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        },
+fn run_local_probe(cli: &KanidmCli, step: &str, program: &str, args: &[&str]) -> ProbeResult {
+    let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let result = match ProcessCommand::new(program).args(&args).output() {
+        Ok(output) => {
+            let result = ProbeResult {
+                success: output.status.success(),
+                code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            };
+            result
+        }
         Err(error) => ProbeResult {
             success: false,
+            code: None,
             stdout: String::new(),
             stderr: error.to_string(),
         },
-    }
+    };
+    cli.record_local_command_result(
+        step,
+        program,
+        &args,
+        ExitStatusSummary {
+            success: result.success,
+            code: result.code,
+        },
+        &result.stdout,
+        &result.stderr,
+    );
+    result
 }
 
 pub fn load_user(cli: &KanidmCli, account_id: &str) -> Result<Parsed<UserRecord>, AppError> {

@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod backend_log;
 pub mod context;
 pub mod interactive;
 pub mod inventory;

@@ -453,6 +453,7 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         vaultwarden_admin_token_file: None,
     })?;
     let kanidm = KanidmCli::new(&context);
+    kanidm.begin_backend_operation();
 
     let mut result = match cli.command {
         None => {
@@ -727,8 +728,12 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             },
         },
     };
-    if let Ok(Some(output)) = &mut result {
-        attach_backend_steps(&kanidm, output);
+    match &mut result {
+        Ok(Some(output)) => attach_backend_steps(&kanidm, output),
+        Ok(None) => {
+            let _ = kanidm.take_backend_steps();
+        }
+        Err(error) => attach_backend_steps_to_error(&kanidm, error),
     }
     result
 }
@@ -742,6 +747,31 @@ fn attach_backend_steps(kanidm: &KanidmCli, output: &mut kanidm_admin::output::C
         details
             .entry("backend_steps")
             .or_insert_with(|| serde_json::Value::Array(steps));
+    }
+}
+
+fn attach_backend_steps_to_error(kanidm: &KanidmCli, error: &mut kanidm_admin::AppError) {
+    let steps = kanidm.take_backend_steps();
+    if steps.is_empty() {
+        return;
+    }
+    let steps = serde_json::Value::Array(steps);
+    match error {
+        kanidm_admin::AppError::NotFound { details, .. }
+        | kanidm_admin::AppError::AlreadyExists { details, .. }
+        | kanidm_admin::AppError::Verification { details, .. }
+        | kanidm_admin::AppError::PartialSuccess { details, .. }
+        | kanidm_admin::AppError::SessionRequired { details, .. }
+        | kanidm_admin::AppError::ReauthRequired { details, .. }
+        | kanidm_admin::AppError::Json { details, .. }
+        | kanidm_admin::AppError::BackendTimeout { details, .. }
+        | kanidm_admin::AppError::InventoryIncomplete { details, .. }
+        | kanidm_admin::AppError::Unsupported { details, .. } => {
+            if let Some(object) = details.as_object_mut() {
+                object.entry("backend_steps").or_insert_with(|| steps);
+            }
+        }
+        _ => {}
     }
 }
 

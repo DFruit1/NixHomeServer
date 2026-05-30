@@ -47,7 +47,7 @@ use crate::{
             ResetTokenOptions,
         },
     },
-    output::CommandOutput,
+    output::{render_backend_steps_full, render_backend_steps_summary, CommandOutput},
     session_state::{
         concise_session_message, login_prompt_message, should_prompt_for_startup_login,
     },
@@ -388,7 +388,7 @@ fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         PrivilegedCommandResult::Output(output) => output,
         PrivilegedCommandResult::Cancelled => return Ok(()),
         PrivilegedCommandResult::Error(error) => {
-            render::print_error(&error);
+            render_error_with_backend_summary(kanidm, &error);
             if matches!(error, AppError::PartialSuccess { .. })
                 && partial_success_has_observed_user(&error, &account_id)
             {
@@ -1191,6 +1191,7 @@ fn perform_command<F>(kanidm: &KanidmCli, action: F) -> Result<Option<CommandOut
 where
     F: FnMut() -> Result<CommandOutput, AppError>,
 {
+    kanidm.begin_backend_operation();
     match execute_interactive_operation(
         kanidm,
         OperationKind::Read,
@@ -1201,7 +1202,7 @@ where
         OperationOutcome::Success(output) => Ok(Some(output)),
         OperationOutcome::Cancelled => Ok(None),
         OperationOutcome::RecoverableFailure(error) | OperationOutcome::Fatal(error) => {
-            render::print_error(&error);
+            render_error_with_backend_summary(kanidm, &error);
             forms::pause("Press Enter or Esc to continue")?;
             Ok(None)
         }
@@ -1212,6 +1213,7 @@ fn perform_interactive_read<T, F>(kanidm: &KanidmCli, mut action: F) -> Result<O
 where
     F: FnMut() -> Result<T, AppError>,
 {
+    kanidm.begin_backend_operation();
     match execute_interactive_operation(
         kanidm,
         OperationKind::Read,
@@ -1222,7 +1224,7 @@ where
         OperationOutcome::Success(value) => Ok(Some(value)),
         OperationOutcome::Cancelled => Ok(None),
         OperationOutcome::RecoverableFailure(error) | OperationOutcome::Fatal(error) => {
-            render::print_error(&error);
+            render_error_with_backend_summary(kanidm, &error);
             forms::pause("Press Enter or Esc to continue")?;
             Ok(None)
         }
@@ -1252,6 +1254,7 @@ fn perform_privileged_command<F>(
 where
     F: FnMut() -> Result<CommandOutput, AppError>,
 {
+    kanidm.begin_backend_operation();
     match execute_interactive_operation(
         kanidm,
         OperationKind::PrivilegedWrite,
@@ -1290,7 +1293,7 @@ where
             render_output(title, output)?;
         }
         PrivilegedCommandResult::Error(error) => {
-            render::print_error(&error);
+            render_error_with_backend_summary(kanidm, &error);
             forms::pause("Press Enter or Esc to continue")?;
         }
         PrivilegedCommandResult::Cancelled => {}
@@ -1316,13 +1319,14 @@ fn run_session_command<F>(title: &str, kanidm: &KanidmCli, action: F) -> Result<
 where
     F: FnOnce() -> Result<CommandOutput, AppError>,
 {
+    kanidm.begin_backend_operation();
     match action() {
         Ok(mut output) => {
             attach_backend_steps(kanidm, &mut output);
             render_output(title, output)
         }
         Err(error) => {
-            render::print_error(&error);
+            render_error_with_backend_summary(kanidm, &error);
             forms::pause("Press Enter or Esc to continue")?;
             Ok(())
         }
@@ -1344,6 +1348,32 @@ fn attach_backend_steps(kanidm: &KanidmCli, output: &mut CommandOutput) {
             .entry("backend_steps")
             .or_insert_with(|| serde_json::Value::Array(steps));
     }
+}
+
+fn render_error_with_backend_summary(kanidm: &KanidmCli, error: &AppError) {
+    let steps = kanidm.take_backend_steps();
+    if steps.is_empty() {
+        render::print_error(error);
+        return;
+    }
+    let mut body = error.human_message();
+    if let Some(summary) = render_backend_steps_summary(Some(&serde_json::Value::Array(steps))) {
+        body.push_str("\n\nBackend Commands:\n");
+        body.push_str(&summary);
+    }
+    render::print_block("Error", &body);
+}
+
+fn show_backend_logs_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+    let logs = kanidm.recent_backend_logs();
+    let body = if logs.is_empty() {
+        "No backend commands have been recorded in this TUI session yet.".to_string()
+    } else {
+        render_backend_steps_full(Some(&serde_json::Value::Array(logs)))
+            .unwrap_or_else(|| "No renderable backend log entries were found.".to_string())
+    };
+    render::print_output("Backend Logs", &body);
+    forms::pause("Press Enter or Esc to continue")
 }
 
 fn session_status_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
@@ -1423,7 +1453,10 @@ fn privileged_reauth_note_message() -> &'static str {
 
 fn recover_login(kanidm: &KanidmCli, prompt: &str) -> Result<bool, AppError> {
     match forms::confirm(prompt, true)? {
-        Some(true) => run_session_recovery_command("Login", kanidm, || session_login(kanidm)),
+        Some(true) => {
+            kanidm.begin_backend_operation();
+            run_session_recovery_command("Login", kanidm, || session_login(kanidm))
+        }
         _ => Ok(false),
     }
 }
@@ -1433,6 +1466,7 @@ fn recover_reauth(kanidm: &KanidmCli) -> Result<bool, AppError> {
 }
 
 fn run_privileged_session_recovery_command(kanidm: &KanidmCli) -> Result<bool, AppError> {
+    kanidm.begin_backend_operation();
     match session_reauth(kanidm) {
         Ok(mut output) => {
             attach_backend_steps(kanidm, &mut output);
@@ -1440,7 +1474,7 @@ fn run_privileged_session_recovery_command(kanidm: &KanidmCli) -> Result<bool, A
             Ok(true)
         }
         Err(error) => {
-            render::print_error(&error);
+            render_error_with_backend_summary(kanidm, &error);
             forms::pause("Press Enter or Esc to continue")?;
             Ok(false)
         }
@@ -1462,7 +1496,7 @@ where
             Ok(true)
         }
         Err(error) => {
-            render::print_error(&error);
+            render_error_with_backend_summary(kanidm, &error);
             forms::pause("Press Enter or Esc to continue")?;
             Ok(false)
         }
@@ -1516,6 +1550,11 @@ fn simple_menu_items() -> Vec<forms::ContextualItem> {
             "Set / Reset POSIX Password",
             "Set the separate POSIX/UNIX password used for direct SFTP.",
             "Use this after granting `files-sftp-users`, or when the user's direct SFTP password needs to be rotated. This does not change their web/OIDC password or passkeys.",
+        ),
+        menu_item(
+            "Show Backend Logs",
+            "Inspect recent raw Kanidm and Kanidm UnixD command output.",
+            "Use this when a result needs debugging. The log includes recent backend commands, exit status, stdout, stderr, and execution errors from this TUI session.",
         ),
         menu_item(
             "Advanced",
@@ -2441,6 +2480,7 @@ mod tests {
                 "Disable / Enable User",
                 "Help User Reset Password",
                 "Set / Reset POSIX Password",
+                "Show Backend Logs",
                 "Advanced",
                 "Exit",
             ]

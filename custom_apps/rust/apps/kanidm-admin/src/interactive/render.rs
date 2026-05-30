@@ -12,7 +12,7 @@ pub fn print_error(error: &AppError) {
     print_block("Error", &error.human_message());
 }
 
-fn print_block(title: &str, body: &str) {
+pub fn print_block(title: &str, body: &str) {
     println!("\n== {title} ==\n");
     println!("{body}");
     println!();
