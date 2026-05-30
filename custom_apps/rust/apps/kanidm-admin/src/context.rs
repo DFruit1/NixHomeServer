@@ -18,9 +18,13 @@ pub const ENV_KANIDM_BIN: &str = "KANIDM_ADMIN_KANIDM_BIN";
 pub const ENV_NIX_BIN: &str = "KANIDM_ADMIN_NIX_BIN";
 pub const ENV_VAULTWARDEN_URL: &str = "KANIDM_ADMIN_VAULTWARDEN_URL";
 pub const ENV_VAULTWARDEN_ADMIN_TOKEN_FILE: &str = "KANIDM_ADMIN_VAULTWARDEN_ADMIN_TOKEN_FILE";
+pub const ENV_BACKEND_TIMEOUT_SECONDS: &str = "KANIDM_ADMIN_BACKEND_TIMEOUT_SECONDS";
 
 const NIX_EVAL_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_BACKEND_TIMEOUT_SECONDS: u64 = 20;
+const MIN_BACKEND_TIMEOUT_SECONDS: u64 = 1;
+const MAX_BACKEND_TIMEOUT_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextOverrides {
@@ -31,6 +35,7 @@ pub struct ContextOverrides {
     pub nix_bin: Option<OsString>,
     pub vaultwarden_url: Option<String>,
     pub vaultwarden_admin_token_file: Option<PathBuf>,
+    pub backend_timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +46,20 @@ pub struct ResolvedContext {
     pub kanidm_bin: OsString,
     pub vaultwarden_url: Option<String>,
     pub vaultwarden_admin_token_file: Option<PathBuf>,
+    pub runtime_policy: RuntimePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePolicy {
+    pub backend_timeout: Duration,
+}
+
+impl Default for RuntimePolicy {
+    fn default() -> Self {
+        Self {
+            backend_timeout: Duration::from_secs(DEFAULT_BACKEND_TIMEOUT_SECONDS),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -77,6 +96,11 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
     let vaultwarden_admin_token_file = overrides
         .vaultwarden_admin_token_file
         .or_else(|| env::var_os(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE).map(PathBuf::from));
+    let runtime_policy = RuntimePolicy {
+        backend_timeout: Duration::from_secs(resolve_backend_timeout_seconds(
+            overrides.backend_timeout_seconds,
+        )?),
+    };
 
     if let (Some(server_url), Some(admin_name)) = (&server_url, &admin_name) {
         return Ok(ResolvedContext {
@@ -86,6 +110,7 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
             kanidm_bin,
             vaultwarden_url,
             vaultwarden_admin_token_file,
+            runtime_policy,
         });
     }
 
@@ -108,7 +133,37 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
         kanidm_bin,
         vaultwarden_url: vaultwarden_url.or(defaults.vaultwarden_url),
         vaultwarden_admin_token_file,
+        runtime_policy,
     })
+}
+
+fn resolve_backend_timeout_seconds(override_value: Option<u64>) -> Result<u64, AppError> {
+    let value = match override_value {
+        Some(value) => value,
+        None => match env::var(ENV_BACKEND_TIMEOUT_SECONDS) {
+            Ok(raw) => raw.parse::<u64>().map_err(|error| AppError::Config {
+                message: format!(
+                    "invalid {ENV_BACKEND_TIMEOUT_SECONDS} value '{raw}': expected whole seconds ({error})"
+                ),
+            })?,
+            Err(env::VarError::NotPresent) => DEFAULT_BACKEND_TIMEOUT_SECONDS,
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(AppError::Config {
+                    message: format!("{ENV_BACKEND_TIMEOUT_SECONDS} must be valid UTF-8"),
+                });
+            }
+        },
+    };
+
+    if !(MIN_BACKEND_TIMEOUT_SECONDS..=MAX_BACKEND_TIMEOUT_SECONDS).contains(&value) {
+        return Err(AppError::Config {
+            message: format!(
+                "invalid backend timeout '{value}': expected {MIN_BACKEND_TIMEOUT_SECONDS}-{MAX_BACKEND_TIMEOUT_SECONDS} seconds"
+            ),
+        });
+    }
+
+    Ok(value)
 }
 
 fn find_repo_root_optional() -> Option<PathBuf> {
@@ -273,6 +328,7 @@ mod tests {
             nix_bin: None,
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            backend_timeout_seconds: None,
         })
         .expect("resolve context");
 
@@ -310,6 +366,7 @@ printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwar
             nix_bin: Some(nix.into_os_string()),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            backend_timeout_seconds: None,
         })
         .expect("resolve defaults");
 
@@ -340,6 +397,7 @@ printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwar
             nix_bin: None,
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            backend_timeout_seconds: None,
         })
         .expect("resolve");
 

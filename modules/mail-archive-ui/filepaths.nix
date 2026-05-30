@@ -7,7 +7,7 @@ in
 {
   options.repo.mailArchiveUi.paths.sharedEmailsRoot = lib.mkOption {
     type = lib.types.str;
-    default = "${vars.sharedRoot}/emails";
+    default = "${vars.sharedRoot}/_Emails";
     description = "Shared mail archive root.";
   };
 
@@ -20,18 +20,18 @@ in
     ];
 
     repo.storage.userRoots = {
-      contentSubdirs = [ "emails" ];
+      contentSubdirs = [ "_Emails" ];
       perUserDirectories = [
         {
           root = vars.usersRoot;
-          relativePath = "emails";
+          relativePath = "_Emails";
           mode = "0770";
           user = "mail-archive-ui";
           group = "mail-archive-ui";
         }
         {
           root = vars.usersRoot;
-          relativePath = "emails/.internal-sync";
+          relativePath = "_Emails/.internal-sync";
           mode = "0770";
           user = "mail-archive-ui";
           group = "mail-archive-ui";
@@ -43,12 +43,12 @@ in
       recursiveWritableGrants = [
         {
           group = "mail-archive-ui";
-          relativePaths = [ "files" ];
+          relativePaths = [ "_Files" ];
         }
       ];
     };
 
-    repo.storage.sharedRoots.contentSubdirs = [ "emails" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_Emails" ];
 
     systemd.services.mail-archive-ui-storage-layout-v1 = {
       description = "Provision Mail Archive UI storage layout";

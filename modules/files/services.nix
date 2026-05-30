@@ -14,6 +14,13 @@ let
   oauth2ClientSecretFile = "${secretRuntimeDir}/oauth2-client-secret";
   oauth2CookieSecretFile = "${secretRuntimeDir}/oauth2-cookie-secret";
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  webAccessGroups = [
+    webAccessGroup
+    usbAccessGroup
+    backupStorageAccessGroup
+  ];
   proxyUserHeader = "X-Auth-Request-Preferred-Username";
   proxyEmailHeader = "X-Auth-Request-Email";
   proxyGroupsHeader = "X-Auth-Request-Groups";
@@ -156,11 +163,28 @@ let
         res.Header().Set("Content-Type", "text/html; charset=utf-8")
         res.WriteHeader(http.StatusOK)
         res.Write([]byte(Page(
-            "<form id=\"filestash-proxy-password\" action=\"" + action + "\" method=\"post\">" +
+            "<style>" +
+                ".filestash-proxy-login{min-height:100vh;display:grid;place-items:center;padding:24px;background:#f7f8fa;color:#17202a;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box}" +
+                ".filestash-proxy-panel{width:min(100%,360px);display:grid;gap:16px;justify-items:center;text-align:center}" +
+                ".filestash-proxy-logo{width:48px;height:48px;border-radius:8px;background:#1f6feb;color:#fff;display:grid;place-items:center;font-size:23px;font-weight:700;line-height:1}" +
+                ".filestash-proxy-title{margin:0;font-size:20px;font-weight:650;line-height:1.25;letter-spacing:0}" +
+                ".filestash-proxy-copy{margin:0;color:#5f6b7a;font-size:14px;line-height:1.5}" +
+                ".filestash-proxy-spinner{width:28px;height:28px;border:3px solid #d8dee6;border-top-color:#1f6feb;border-radius:999px;animation:filestash-proxy-spin .8s linear infinite}" +
+                ".filestash-proxy-button{min-height:40px;border:0;border-radius:6px;background:#1f6feb;color:#fff;padding:0 16px;font:inherit;font-weight:600;cursor:pointer}" +
+                ".filestash-proxy-button:focus-visible{outline:3px solid rgba(31,111,235,.28);outline-offset:2px}" +
+                "@keyframes filestash-proxy-spin{to{transform:rotate(360deg)}}" +
+                "@media (prefers-color-scheme:dark){.filestash-proxy-login{background:#101418;color:#eef2f6}.filestash-proxy-copy{color:#a7b0bd}.filestash-proxy-spinner{border-color:#2b3540;border-top-color:#67a3ff}}" +
+            "</style>" +
+            "<main class=\"filestash-proxy-login\" aria-live=\"polite\">" +
+                "<form id=\"filestash-proxy-password\" class=\"filestash-proxy-panel\" action=\"" + action + "\" method=\"post\">" +
+                    "<div class=\"filestash-proxy-logo\" aria-hidden=\"true\">F</div>" +
+                    "<h1 class=\"filestash-proxy-title\">Opening Files</h1>" +
+                    "<p class=\"filestash-proxy-copy\">Your sign-in is complete. Connecting your file workspace now.</p>" +
+                    "<div class=\"filestash-proxy-spinner\" aria-hidden=\"true\"></div>" +
                 "<input type=\"hidden\" name=\"identity_token\" value=\"" + html.EscapeString(token) + "\" />" +
-                "<label>Signed in as " + html.EscapeString(user) + "</label>" +
-                "<button type=\"submit\">Connect</button>" +
-            "</form>" +
+                    "<noscript><button class=\"filestash-proxy-button\" type=\"submit\">Continue to Files</button></noscript>" +
+                "</form>" +
+            "</main>" +
             "<script>document.getElementById('filestash-proxy-password').submit()</script>",
         )))
         return nil
@@ -394,7 +418,7 @@ in
       domain = host;
       port = oauth2ProxyPort;
       upstream = "http://${loopback}:${toString filesPort}";
-      allowedGroups = [ webAccessGroup ];
+      allowedGroups = webAccessGroups;
       serviceDependencies = [
         "caddy.service"
         "filestash.service"

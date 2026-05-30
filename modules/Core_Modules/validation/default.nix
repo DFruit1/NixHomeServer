@@ -46,6 +46,9 @@ let
     (toList client.originUrl)
     ++ lib.optional ((client.originLanding or null) != null) client.originLanding
     ++ (client.redirects or [ ]);
+  isAllowedOauth2Url = url:
+    lib.hasPrefix "https://" url
+    || url == "app.immich:///oauth-callback";
   insecureOauth2Urls = lib.concatMap
     (name:
       let
@@ -54,7 +57,7 @@ let
       lib.optionals (!(client.allowInsecureUrls or false))
         (map
           (url: "${name}: ${url}")
-          (lib.filter (url: !(lib.hasPrefix "https://" url)) (oauth2UrlValues client))))
+          (lib.filter (url: !(isAllowedOauth2Url url)) (oauth2UrlValues client))))
     oauth2ClientNames;
   hostIdChars = lib.stringToCharacters vars.hostId;
   hexChars = lib.stringToCharacters "0123456789abcdef";
@@ -161,7 +164,7 @@ in
     }
     {
       assertion = insecureOauth2Urls == [ ];
-      message = "nixhomeserver: OAuth2 URLs must use https unless allowInsecureUrls is set: ${lib.concatStringsSep "; " insecureOauth2Urls}";
+      message = "nixhomeserver: OAuth2 URLs must use https or an explicitly allowed native app redirect unless allowInsecureUrls is set: ${lib.concatStringsSep "; " insecureOauth2Urls}";
     }
     {
       assertion =

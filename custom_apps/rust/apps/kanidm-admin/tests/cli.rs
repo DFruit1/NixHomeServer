@@ -619,6 +619,134 @@ exit 1
 }
 
 #[test]
+fn user_disable_downgrades_backend_failure_when_state_converged() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "person" && "${args[1]}" == "validity" && "${args[2]}" == "expire-at" ]]; then
+  printf 'user already disabled\n' >&2
+  exit 1
+fi
+if [[ "${args[0]}" == "person" && "${args[1]}" == "get" && "${args[2]}" == "dsaw" ]]; then
+  printf '{"attrs":{"name":["dsaw"],"displayname":["Dan"],"account_expire":["2000-01-01T00:00:00Z"]}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "user",
+            "disable",
+            "dsaw",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Disabled Kanidm user 'dsaw'"))
+        .stdout(predicate::str::contains("Warnings:"))
+        .stdout(predicate::str::contains("person_disable"));
+}
+
+#[test]
+fn user_enable_returns_partial_success_when_second_step_fails_without_convergence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("expiry-cleared");
+    let script = dir.path().join("kanidm-stub.sh");
+    write_script(
+        &script,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+state_file={}
+args=("$@")
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "validity" && "${{args[2]}}" == "expire-at" && "${{args[4]}}" == "clear" ]]; then
+  : > "$state_file"
+  exit 0
+fi
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "validity" && "${{args[2]}}" == "begin-from" && "${{args[4]}}" == "clear" ]]; then
+  printf 'begin-from clear failed\n' >&2
+  exit 1
+fi
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" && -f "$state_file" ]]; then
+  printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"account_valid_from":["2030-01-01T00:00:00Z"]}}}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+            serde_json::to_string(&state.display().to_string()).expect("json path"),
+        ),
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script).args([
+        "--server-url",
+        "https://id.example.test",
+        "--admin-name",
+        "admindsaw",
+        "user",
+        "enable",
+        "dsaw",
+    ]);
+
+    cmd.assert()
+        .code(8)
+        .stderr(predicate::str::contains("was modified"))
+        .stderr(predicate::str::contains("clear_expiry"))
+        .stderr(predicate::str::contains("clear_valid_from"));
+}
+
+#[test]
+fn policy_auth_expiry_downgrades_backend_failure_when_state_converged() {
+    let dir = stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "group" && "${args[1]}" == "account-policy" && "${args[2]}" == "auth-expiry" ]]; then
+  printf 'policy already set\n' >&2
+  exit 1
+fi
+if [[ "${args[0]}" == "group" && "${args[1]}" == "get" && "${args[2]}" == "idm_all_persons" ]]; then
+  printf '{"attrs":{"name":["idm_all_persons"],"auth_expiry":["7200"]}}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+    );
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "policy",
+            "group",
+            "auth-expiry",
+            "set",
+            "idm_all_persons",
+            "7200",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Warnings:"))
+        .stdout(predicate::str::contains("set_auth_expiry"))
+        .stdout(predicate::str::contains("Auth Expiry Seconds: 7200"));
+}
+
+#[test]
 fn doctor_succeeds_with_partial_output_when_inventory_probe_fails() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash

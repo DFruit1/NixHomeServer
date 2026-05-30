@@ -7,16 +7,31 @@ let
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
+  usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
   sharedMountName = vars.fileAccess.sharedMountName or "_Shared";
+  usbMountName = vars.fileAccess.usbMountName or "_USB";
+  backupStorageMountName = vars.backupAccess.storageMountName or "_Backups";
   sftpChrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
+  externalUsbMountRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
+  backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
   memberGroups = lib.unique (cfg.memberGroups ++ [
     webAccessGroup
     sftpAccessGroup
+    usbAccessGroup
+    backupStorageAccessGroup
   ]);
   userContentSubdirs = lib.escapeShellArgs cfg.contentSubdirs;
   userBooksSubdirs = lib.escapeShellArgs cfg.bookSubdirs;
   userVideoSubdirs = lib.escapeShellArgs cfg.videoSubdirs;
-  userBookWritablePaths = lib.concatMapStringsSep " \\\n      " (name: ''"$root/books/${name}"'') cfg.bookSubdirs;
+  userProtectedWritablePaths = [
+    "_Files"
+    "_Audiobooks"
+    "_Videos"
+    "_Books"
+  ];
+  userProtectedWritablePathArgs =
+    lib.concatMapStringsSep " \\\n      " (name: ''"$root/${name}"'') userProtectedWritablePaths;
   fileshareUserRootSyncPath = with pkgs; [
     acl
     coreutils
@@ -80,48 +95,74 @@ let
     install -d -m 0750 -o root -g root "$root"
     chown root:root "$root"
     chmod 0750 "$root"
+
+    rename_directory_if_present() {
+      local old_path="$1"
+      local new_path="$2"
+
+      if [[ -d "$old_path" && ! -e "$new_path" ]]; then
+        mv -- "$old_path" "$new_path"
+      fi
+    }
+
+    rename_directory_if_present "$root/files" "$root/_Files"
+    rename_directory_if_present "$root/audiobooks" "$root/_Audiobooks"
+    rename_directory_if_present "$root/videos" "$root/_Videos"
+    rename_directory_if_present "$root/books" "$root/_Books"
+    rename_directory_if_present "$root/emails" "$root/_Emails"
+
+    rename_directory_if_present "$root/_Videos/movies" "$root/_Videos/_Movies"
+    rename_directory_if_present "$root/_Videos/shows" "$root/_Videos/_Shows"
+    rename_directory_if_present "$root/_Videos/home" "$root/_Videos/_Home"
+    rename_directory_if_present "$root/_Videos/music-videos" "$root/_Videos/_Music-videos"
+    rename_directory_if_present "$root/_Videos/youtube" "$root/_Videos/_YouTube"
+    rename_directory_if_present "$root/_Books/ebooks" "$root/_Books/_Ebooks"
+    rename_directory_if_present "$root/_Books/comics" "$root/_Books/_Comics"
+    rename_directory_if_present "$root/_Books/manga" "$root/_Books/_Manga"
+
+    rmdir --ignore-fail-on-non-empty "$root/photos" "$root/documents" "$root/uploads" 2>/dev/null || true
+
+    provision_user_writable_dir() {
+      local path="$1"
+
+      install -d -m 1770 -o root -g root "$path"
+      ${pkgs.acl}/bin/setfacl \
+        -m "u:''${username}:rwx" \
+        -m "d:u:''${username}:rwx" \
+        "$path"
+    }
+
     for name in ${userContentSubdirs}; do
-      [[ "$name" == "emails" ]] && continue
-      install -d -m 0700 -o "$username" -g root "$root/$name"
-      chown "$username":root "$root/$name"
-      chmod 0700 "$root/$name"
+      [[ "$name" == "_Emails" ]] && continue
+      provision_user_writable_dir "$root/$name"
     done
     for name in ${userVideoSubdirs}; do
-      install -d -m 0700 -o "$username" -g root "$root/videos/$name"
-      chown "$username":root "$root/videos/$name"
-      chmod 0700 "$root/videos/$name"
+      provision_user_writable_dir "$root/_Videos/$name"
     done
     for name in ${userBooksSubdirs}; do
-      install -d -m 0700 -o "$username" -g root "$root/books/$name"
-      chown "$username":root "$root/books/$name"
-      chmod 0700 "$root/books/$name"
-      install -d -m 0700 -o "$username" -g root "$root/books/$name/_Anon"
-      chown "$username":root "$root/books/$name/_Anon"
-      chmod 0700 "$root/books/$name/_Anon"
+      provision_user_writable_dir "$root/_Books/$name"
+      provision_user_writable_dir "$root/_Books/$name/_Anon"
     done
 
     ${perUserDirectoryScript}
 
     user_owned_paths=(
-      "$root/uploads"
-      "$root/files"
-      "$root/documents"
-      "$root/photos"
-      "$root/audiobooks"
-      "$root/videos"
-      "$root/books"
-      ${userBookWritablePaths}
+      ${userProtectedWritablePathArgs}
     )
     for path in "''${user_owned_paths[@]}"; do
       [[ -d "$path" ]] || continue
-      chown -R "$username":root "$path"
-      chmod u+rwX,go-rwx "$path"
+      chown root:root "$path"
+      chmod 1770 "$path"
+      ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:rwX" "$path"
+      ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl \
+        -m "d:u:''${username}:rwx" \
+        '{}' +
     done
-    if [[ -d "$root/emails" ]]; then
-      ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:r-X" "$root/emails"
-      ${pkgs.findutils}/bin/find "$root/emails" -type d -exec ${pkgs.acl}/bin/setfacl -m "d:u:''${username}:r-x" '{}' +
-      if [[ -d "$root/emails/.internal-sync" ]]; then
-        ${pkgs.findutils}/bin/find "$root/emails/.internal-sync" -type d -exec ${pkgs.acl}/bin/setfacl \
+    if [[ -d "$root/_Emails" ]]; then
+      ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:r-X" "$root/_Emails"
+      ${pkgs.findutils}/bin/find "$root/_Emails" -type d -exec ${pkgs.acl}/bin/setfacl -m "d:u:''${username}:r-x" '{}' +
+      if [[ -d "$root/_Emails/.internal-sync" ]]; then
+        ${pkgs.findutils}/bin/find "$root/_Emails/.internal-sync" -type d -exec ${pkgs.acl}/bin/setfacl \
           -m "u:''${username}:---" \
           -m "d:u:''${username}:---" \
           '{}' +
@@ -221,6 +262,16 @@ let
       ${pkgs.systemd}/bin/systemd-escape --template="$template" "$username"
     }
 
+    ensure_mount_dir() {
+      local path="$1"
+
+      if ${pkgs.util-linux}/bin/mountpoint -q "$path"; then
+        return 0
+      fi
+
+      install -d -m 0755 -o root -g root "$path"
+    }
+
     ensure_posix_account() {
       local username="$1"
 
@@ -287,6 +338,14 @@ let
       group_members ${lib.escapeShellArg sftpAccessGroup} | ${pkgs.coreutils}/bin/sort -u
     )"
 
+    usb_members_json="$(
+      group_members ${lib.escapeShellArg usbAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+    )"
+
+    backup_storage_members_json="$(
+      group_members ${lib.escapeShellArg backupStorageAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+    )"
+
     declare -A shared_members=()
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
@@ -299,6 +358,18 @@ let
       sftp_members["$username"]=1
     done <<<"$sftp_members_json"
 
+    declare -A usb_members=()
+    while IFS= read -r username; do
+      [[ -n "$username" ]] || continue
+      usb_members["$username"]=1
+    done <<<"$usb_members_json"
+
+    declare -A backup_storage_members=()
+    while IFS= read -r username; do
+      [[ -n "$username" ]] || continue
+      backup_storage_members["$username"]=1
+    done <<<"$backup_storage_members_json"
+
     apply_shared_root_acl
 
     while IFS= read -r username; do
@@ -308,8 +379,18 @@ let
       ${prepareUserRoot} "$username"
 
       if [[ -n "''${shared_members[$username]:-}" ]]; then
-        install -d -m 0755 -o root -g root ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg sharedMountName}
+        ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg sharedMountName}
         ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
+      fi
+
+      if [[ -n "''${usb_members[$username]:-}" ]]; then
+        ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg usbMountName}
+        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-usb-bindfs@.service "$username")"
+      fi
+
+      if [[ -n "''${backup_storage_members[$username]:-}" ]]; then
+        ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg backupStorageMountName}
+        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-backups-bindfs@.service "$username")"
       fi
 
       if [[ -n "''${sftp_members[$username]:-}" ]]; then
@@ -327,6 +408,26 @@ let
         fi
       fi
     done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name ${lib.escapeShellArg sharedMountName} -print0)
+
+    while IFS= read -r -d "" usb_mount; do
+      username="$(basename "$(dirname "$usb_mount")")"
+      if [[ -z "''${usb_members[$username]:-}" ]]; then
+        ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-usb-bindfs@.service "$username")" || true
+        if ! ${pkgs.util-linux}/bin/mountpoint -q "$usb_mount"; then
+          rmdir --ignore-fail-on-non-empty "$usb_mount" || true
+        fi
+      fi
+    done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name ${lib.escapeShellArg usbMountName} -print0)
+
+    while IFS= read -r -d "" backups_mount; do
+      username="$(basename "$(dirname "$backups_mount")")"
+      if [[ -z "''${backup_storage_members[$username]:-}" ]]; then
+        ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-backups-bindfs@.service "$username")" || true
+        if ! ${pkgs.util-linux}/bin/mountpoint -q "$backups_mount"; then
+          rmdir --ignore-fail-on-non-empty "$backups_mount" || true
+        fi
+      fi
+    done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name ${lib.escapeShellArg backupStorageMountName} -print0)
 
     if [[ -d ${lib.escapeShellArg sftpChrootBase} ]]; then
       while IFS= read -r -d "" chroot_path; do
@@ -478,13 +579,48 @@ in
       };
     };
 
+    systemd.services."files-usb-bindfs@" = {
+      description = "Mount external USB files view for %i";
+      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%i/${usbMountName}";
+      serviceConfig = {
+        Type = "simple";
+        ExecStartPre = [
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${usbMountName}"
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${externalUsbMountRoot}"
+        ];
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --delete-deny ${externalUsbMountRoot} ${vars.usersRoot}/%i/${usbMountName}";
+        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${usbMountName}";
+        Restart = "on-failure";
+      };
+    };
+
+    systemd.services."files-backups-bindfs@" = {
+      description = "Mount encrypted backup repository view for %i";
+      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%i/${backupStorageMountName}";
+      requires = [ "data-pool-layout.service" ];
+      after = [ "data-pool-layout.service" ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${backupStorageMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -r -o allow_other --delete-deny ${backupRoot} ${vars.usersRoot}/%i/${backupStorageMountName}";
+        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${backupStorageMountName}";
+        Restart = "on-failure";
+      };
+    };
+
     systemd.services."files-sftp-user-root@" = {
       description = "Bind per-user files root into the SFTP chroot for %i";
       requires = [ "data-pool-layout.service" ];
-      wants = [ "files-shared-bindfs@%i.service" ];
+      wants = [
+        "files-shared-bindfs@%i.service"
+        "files-usb-bindfs@%i.service"
+        "files-backups-bindfs@%i.service"
+      ];
       after = [
         "data-pool-layout.service"
         "files-shared-bindfs@%i.service"
+        "files-usb-bindfs@%i.service"
+        "files-backups-bindfs@%i.service"
       ];
       serviceConfig = {
         Type = "oneshot";

@@ -48,7 +48,7 @@ in
         originUrl = [
           "https://${host}/auth/login"
           "https://${host}/user-settings"
-          "https://${host}/api/oauth/mobile-redirect"
+          "app.immich:///oauth-callback"
         ];
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.immichClientSecret.path;

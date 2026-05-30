@@ -294,7 +294,7 @@ Expected result:
 ## App-Specific First Login Notes
 
 - `files.<domain>`: Filestash browser access requires `user-files` and connects to the chrooted SFTP endpoint with the managed Filestash SFTP key. Direct SFTP login requires `files-sftp-users` and the user's separate Kanidm POSIX/UNIX password. `files-shared-users` adds `_Shared` to either view; `app-admin` and `system_admins` do not expose shared files there.
-- `emails.<domain>`: browser access is enforced by `mail-archive-users`. That group grants access to the private mail-archive UI only; it does not grant direct access to the hidden `.internal-sync` payload tree. User-visible mailbox `.eml` files are exposed through the visible mirror under each personal `emails/` root.
+- `emails.<domain>`: browser access is enforced by `mail-archive-users`. That group grants access to the private mail-archive UI only; it does not grant direct access to the hidden `.internal-sync` payload tree. User-visible mailbox `.eml` files are exposed through the visible mirror under each personal `_Emails/` root.
 - `passwords.<domain>`: Vaultwarden is local-auth only. Use `kanidm-admin local vaultwarden invite "$ACCOUNT_ID"` as an email-resolution helper, then the user signs in with Vaultwarden local credentials. See [Vaultwarden Guide](./vaultwarden.md).
 - `wiki.<domain>`: baseline `users` membership is sufficient.
 - `ytdownload.<domain>`: browser access is enforced by `downloads-users`.
@@ -303,7 +303,7 @@ Expected result:
 - Audiobookshelf: `audiobookshelf-users` grants normal login and `app-admin` adds the admin role when combined with `audiobookshelf-users`.
 - Kavita: `kavita-users` grants normal login and `app-admin` adds the admin role when combined with `kavita-users`.
 - Jellyfin sign-in remains local-auth. `jellyfin-users` is the source of truth for managed Jellyfin local-account and per-library policy; `app-admin` plus `jellyfin-users` grants Jellyfin app-admin/library-wide access only for accounts listed in `jellyfinAdminUsers`. Missing local Jellyfin accounts are created disabled until an operator sets and enables credentials. OAuth2 Proxy is not used to inject Jellyfin passwords.
-- Jellyfin manages five video folders for shared and per-user libraries: movies, shows, home videos, music videos, and YouTube video. The old `Other Videos` library and Jellyfin YouTube Music library are retired; pure audio with thumbnails belongs in Audiobookshelf.
+- Jellyfin manages five video folders for shared and per-user libraries: `_Movies`, `_Shows`, `_Home`, `_Music-videos`, and `_YouTube`. The old `Other Videos` library and Jellyfin YouTube Music library are retired; pure audio with thumbnails belongs in Audiobookshelf.
 
 ## Troubleshooting Flow
 

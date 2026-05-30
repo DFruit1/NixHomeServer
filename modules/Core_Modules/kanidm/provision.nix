@@ -3,7 +3,12 @@
 let
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  appPersonNames = lib.unique (vars.kanidmAppUsers ++ vars.kanidmAppAdminUsers ++ vars.kanidmBackupAdminUsers);
+  appPersonNames = lib.unique (
+    vars.kanidmAppUsers
+    ++ vars.kanidmAppAdminUsers
+    ++ vars.kanidmBackupAdminUsers
+    ++ vars.kanidmBackupStorageUsers
+  );
   adminMailAddresses =
     if vars.kanidmAdminMailAddresses != [ ] then
       vars.kanidmAdminMailAddresses
@@ -78,9 +83,11 @@ in
       } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
         "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
         ${vars.backupAccess.adminGroup} = mkManualGroup vars.kanidmBackupAdminUsers;
+        ${vars.backupAccess.storageGroup} = mkManualGroup vars.kanidmBackupStorageUsers;
         ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;
         ${vars.fileAccess.sftpAccessGroup} = mkManualGroup (vars.filesSftpUsers or [ ]);
         ${vars.fileAccess.sharedAccessGroup} = mkManualGroup [ ];
+        ${vars.fileAccess.usbAccessGroup} = mkManualGroup [ ];
         users = mkManualGroup vars.kanidmAppUsers;
       };
     };

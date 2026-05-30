@@ -37,18 +37,6 @@ in
   };
 
   config = {
-    repo.storage.userRoots = {
-      rootTraverseGroups = [
-        "paperless"
-      ];
-      recursiveReadonlyGrants = [
-        {
-          group = "paperless";
-          relativePaths = [ "documents" ];
-        }
-      ];
-    };
-
     systemd.services.paperless-storage-layout-v1 = {
       description = "Provision Paperless storage layout";
       wantedBy = [ "multi-user.target" ];

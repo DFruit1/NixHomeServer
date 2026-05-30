@@ -3,12 +3,22 @@
 let
   chrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
+  usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
   localSftpAccessGroup = "files-local-sftp-users";
   localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
-  sftpUnixGroups = lib.unique [
+  sftpKanidmGroups = [
     sftpAccessGroup
-    "${sftpAccessGroup}@${vars.domain}"
-  ] ++ lib.optionals localAdminNeedsSftpBridge [ localSftpAccessGroup ];
+    usbAccessGroup
+    backupStorageAccessGroup
+  ];
+  sftpUnixGroups =
+    lib.unique
+      (
+        sftpKanidmGroups
+        ++ map (group: "${group}@${vars.domain}") sftpKanidmGroups
+      )
+    ++ lib.optionals localAdminNeedsSftpBridge [ localSftpAccessGroup ];
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
   sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
   filesSftpPort = vars.networking.ports.filesSftp;
@@ -23,7 +33,7 @@ let
     UsePAM yes
     PAMServiceName files-sftp-sshd
     PasswordAuthentication yes
-    KbdInteractiveAuthentication no
+    KbdInteractiveAuthentication yes
     PermitRootLogin no
     AllowGroups ${lib.concatStringsSep " " sftpUnixGroups}
     PubkeyAuthentication yes
@@ -52,11 +62,15 @@ in
       pam_allowed_login_groups = [
         webAccessGroup
         sftpAccessGroup
+        usbAccessGroup
+        backupStorageAccessGroup
       ];
       kanidm = {
         pam_allowed_login_groups = [
           webAccessGroup
           sftpAccessGroup
+          usbAccessGroup
+          backupStorageAccessGroup
         ];
       };
     };

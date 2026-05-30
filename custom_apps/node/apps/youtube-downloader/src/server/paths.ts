@@ -36,8 +36,8 @@ export const mediaRootFor = (config: AppConfig, user: CurrentUser, request: Crea
     return request.mediaType === 'audio' ? config.sharedAudioRoot : config.sharedVideoRoot;
   }
   return request.mediaType === 'audio'
-    ? path.join(config.usersRoot, user.username, 'audiobooks', 'youtube')
-    : path.join(config.usersRoot, user.username, 'videos', 'youtube');
+    ? path.join(config.usersRoot, user.username, '_Audiobooks', '_YouTube')
+    : path.join(config.usersRoot, user.username, '_Videos', '_YouTube');
 };
 
 export const assertInside = (candidate: string, root: string): string => {

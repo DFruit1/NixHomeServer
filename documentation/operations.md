@@ -20,7 +20,8 @@ bootstrap remains the installer-side exception.
 - Server-side secrets: `ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'`
 - Service health: `sudo systemctl --failed --no-pager`
 - SMART sweep: `sudo systemctl start storage-smart-short.service`
-- External USB backup media: attach the drive and use its mount under `/mnt/external-usb/`
+- Local encrypted backup repository: `/mnt/data/backups/kopia`
+- Manual external USB media root for operators: `/mnt/external-usb/`
 
 ## App Hostnames
 
@@ -47,9 +48,9 @@ credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 Use the backups hostname for Kopia backup management. Browser access is gated by
 Kanidm through OAuth2 Proxy and requires membership in `backup-admins`.
 After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
-from the generated `kopiaServerPassword` secret. The initial deploy does not
-seed Kopia repositories or snapshot jobs; create repositories, policies, and
-snapshots through the UI.
+from the generated `kopiaServerPassword` secret. The managed repository is a
+local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`, and
+`kopia-persist-snapshot.timer` snapshots `/persist` into it daily.
 
 Filestash and SFTP file roots:
 
@@ -59,6 +60,8 @@ Filestash and SFTP file roots:
 - The Kanidm POSIX/UNIX password is set live in Kanidm with `kanidm-admin user posix-password set <username>` and is separate from the normal web/OIDC password or passkey.
 - Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
+- Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB filesystems are mounted manually by an operator under that root.
+- Users in `admin-backups` also see read-only `_Backups`, backed by `/mnt/data/backups`.
 - `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
 
 Useful file-access checks:
@@ -67,9 +70,15 @@ Useful file-access checks:
 kanidm-admin group members user-files
 kanidm-admin group members files-sftp-users
 kanidm-admin group members files-shared-users
+kanidm-admin group members usb-access
+kanidm-admin group members admin-backups
 
 systemctl status 'files-shared-bindfs@<user>.service'
+systemctl status 'files-usb-bindfs@<user>.service'
+systemctl status 'files-backups-bindfs@<user>.service'
 mountpoint /mnt/data/users/<user>/_Shared
+mountpoint /mnt/data/users/<user>/_USB
+mountpoint /mnt/data/users/<user>/_Backups
 
 sudo -u filestash sh -lc 'probe=/mnt/data/users/<user>/_Shared/.write-probe && : >"$probe" && test -f "$probe"'
 sudo -u filestash rm /mnt/data/users/<user>/_Shared/.write-probe
@@ -78,8 +87,8 @@ sudo rm /mnt/data/shared/.write-probe
 
 The `rm` through `_Shared` is expected to fail with permission denied. The final admin delete against the real shared path should remove the probe from every `_Shared` view.
 
-Kavita-managed book roots are now aligned to the same simpler taxonomy used by
-the rest of the stack: `ebooks`, `comics`, and `manga`. The old `other`
+Kavita-managed book roots are aligned to the same simpler taxonomy used by
+the rest of the stack: `_Ebooks`, `_Comics`, and `_Manga`. The old `other`
 category is no longer part of the managed layout.
 
 Do not guess share hostnames manually; use the evaluated share hostname from
@@ -96,7 +105,7 @@ Immich sharing flow:
 The mail archive UI stays private. `mail-archive-users` grants browser access to
 the UI only. The archived sync payload stays in each user's hidden
 `.internal-sync` tree, while the user-visible mailbox mirror is exposed as
-hard-linked `.eml` files under that user's `emails/` root.
+hard-linked `.eml` files under that user's `_Emails/` root.
 
 Normal checks and manual actions:
 
@@ -305,10 +314,13 @@ Storage monitoring now discovers disks live at runtime:
 
 ## Backup Media
 
-External USB filesystems are mounted automatically under
-`/mnt/external-usb/<label-or-uuid>`. Kopia does not require one to be attached:
-the UI starts without a local repository so an operator can connect Backblaze,
-another remote repository, or a repository on any mounted USB drive.
+Kopia uses a managed encrypted filesystem repository at
+`/mnt/data/backups/kopia`. The `kopia-persist-snapshot.timer` creates daily
+snapshots of `/persist`.
+
+External USB storage is no longer a managed backup target. If an operator wants
+to copy backups to a removable SSD, mount it manually under `/mnt/external-usb`
+and copy or sync the encrypted repository files from `/mnt/data/backups`.
 
 The previous automatic Restic `system-state` behavior is retired and no Restic
 timer or backup service is enabled by this module.

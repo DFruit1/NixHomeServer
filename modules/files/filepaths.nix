@@ -13,13 +13,13 @@ in
 
   config = {
     repo.storage.userRoots = {
-      contentSubdirs = [ "files" ];
+      contentSubdirs = [ "_Files" ];
       memberGroups = [
         webAccessGroup
       ];
     };
 
-    repo.storage.sharedRoots.contentSubdirs = [ "files" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_Files" ];
 
     systemd.tmpfiles.rules = [
       "d ${managedDir} 0750 root filestash -"

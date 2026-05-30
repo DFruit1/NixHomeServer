@@ -6,25 +6,25 @@ in
 {
   options.repo.audiobookshelf.paths.sharedAudiobooksRoot = lib.mkOption {
     type = lib.types.str;
-    default = "${vars.sharedRoot}/audiobooks";
+    default = "${vars.sharedRoot}/_Audiobooks";
     description = "Shared Audiobookshelf media root.";
   };
 
   config = {
     repo.storage.userRoots = {
-      contentSubdirs = [ "audiobooks" ];
+      contentSubdirs = [ "_Audiobooks" ];
       rootWritableGroups = [
         "audiobookshelf-media"
       ];
       recursiveWritableGrants = [
         {
           group = "audiobookshelf-media";
-          relativePaths = [ "audiobooks" ];
+          relativePaths = [ "_Audiobooks" ];
         }
       ];
     };
 
-    repo.storage.sharedRoots.contentSubdirs = [ "audiobooks" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_Audiobooks" ];
 
     systemd.services.audiobookshelf-storage-layout-v1 = {
       description = "Provision Audiobookshelf storage layout";
@@ -45,8 +45,8 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 2775 -o root -g users ${sharedAudiobooksRoot}
-        install -d -m 2775 -o root -g users ${sharedAudiobooksRoot}/youtube
+        install -d -m 1770 -o root -g root ${sharedAudiobooksRoot}
+        install -d -m 1770 -o root -g root ${sharedAudiobooksRoot}/_YouTube
         setfacl -m g:audiobookshelf-media:r-X ${vars.sharedRoot}
 
         apply_recursive_acl() {

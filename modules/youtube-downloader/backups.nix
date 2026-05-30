@@ -1,8 +1,8 @@
 { config, vars, ... }:
 
 let
-  sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/youtube";
-  sharedAudioRoot = "${config.repo.audiobookshelf.paths.sharedAudiobooksRoot}/youtube";
+  sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/_YouTube";
+  sharedAudioRoot = "${config.repo.audiobookshelf.paths.sharedAudiobooksRoot}/_YouTube";
 in
 
 {

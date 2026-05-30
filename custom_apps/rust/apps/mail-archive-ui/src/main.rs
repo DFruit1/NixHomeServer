@@ -3934,7 +3934,7 @@ fn ensure_account_paths(
         return Err("mail archive store root is not a directory".to_string());
     }
 
-    let emails_root = store_root.join(&account.username).join("emails");
+    let emails_root = store_root.join(&account.username).join("_Emails");
     let visible_emails_root = emails_root.clone();
     let hidden_sync_root = emails_root
         .join(".internal-sync")
@@ -10394,7 +10394,7 @@ mod tests {
                 .path()
                 .join("store")
                 .join("alice")
-                .join("emails")
+                .join("_Emails")
                 .join(".internal-sync")
                 .join("personal-gmail--42")
                 .join("maildir")

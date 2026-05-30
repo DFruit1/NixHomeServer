@@ -13,9 +13,9 @@ Access model:
 Storage model:
 - global app state and the app-local encryption key live under `/persist/appdata/mail-archive-ui`
 - per-account derived sync and indexing state lives under `/persist/appdata/mail-archive-ui/accounts/<user>/<account-id>/`
-- downloaded mail payload lives under `/mnt/data/users/<user>/emails/.internal-sync/<account-hidden-root>/maildir/`
-- extracted attachment blobs are materialized content-addressably under `/mnt/data/users/<user>/emails/.internal-sync/<account-hidden-root>/attachments/blobs/sha256/`
-- the user-visible mailbox mirror lives under `/mnt/data/users/<user>/emails/<account-slug>-<mailbox-slug>/YYYY/MM/*.eml`
+- downloaded mail payload lives under `/mnt/data/users/<user>/_Emails/.internal-sync/<account-hidden-root>/maildir/`
+- extracted attachment blobs are materialized content-addressably under `/mnt/data/users/<user>/_Emails/.internal-sync/<account-hidden-root>/attachments/blobs/sha256/`
+- the user-visible mailbox mirror lives under `/mnt/data/users/<user>/_Emails/<account-slug>-<mailbox-slug>/YYYY/MM/*.eml`
 - mailbox credentials are not stored in agenix
 - temporary sync material and generated browser ZIPs live only under `/run/mail-archive-ui`
 

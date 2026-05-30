@@ -9,9 +9,9 @@ let
   stateDir = "${stateRoot}/state";
   cacheRoot = "/var/cache/youtube-downloader";
   tempDir = "${cacheRoot}/tmp";
-  sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/youtube";
+  sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/_YouTube";
   sharedAudiobooksRoot = config.repo.audiobookshelf.paths.sharedAudiobooksRoot;
-  sharedAudioRoot = "${sharedAudiobooksRoot}/youtube";
+  sharedAudioRoot = "${sharedAudiobooksRoot}/_YouTube";
   youtubeDownloader = pkgs.callPackage ../../custom_apps/node/apps/youtube-downloader { };
   host = "ytdownload.${vars.domain}";
 in

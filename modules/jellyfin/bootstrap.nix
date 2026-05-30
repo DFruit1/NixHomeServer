@@ -357,6 +357,69 @@ in
             >/dev/null <<<"$virtual_folders"
         }
 
+        legacy_library_path() {
+          local path="$1"
+          local base leaf
+
+          case "$path" in
+            */_Videos/_Movies) leaf="movies" ;;
+            */_Videos/_Shows) leaf="shows" ;;
+            */_Videos/_Home) leaf="home" ;;
+            */_Videos/_Music-videos) leaf="music-videos" ;;
+            */_Videos/_YouTube) leaf="youtube" ;;
+            *) return 1 ;;
+          esac
+
+          base="''${path%/_Videos/*}"
+          printf '%s/videos/%s\n' "$base" "$leaf"
+        }
+
+        library_matches_legacy_path() {
+          local name="$1"
+          local collection_type="$2"
+          local path="$3"
+          local legacy_path
+
+          legacy_path="$(legacy_library_path "$path" || true)"
+          [[ -n "$legacy_path" ]] || return 1
+
+          jq -e \
+            --arg name "$name" \
+            --arg collectionType "$collection_type" \
+            --arg legacyPath "$legacy_path" \
+            'any(.[]; .Name == $name and .CollectionType == $collectionType and ((.Locations // []) == [$legacyPath]))' \
+            >/dev/null <<<"$virtual_folders"
+        }
+
+        replace_legacy_library() {
+          local name="$1"
+          local collection_type="$2"
+          local path="$3"
+          local legacy_path
+
+          legacy_path="$(legacy_library_path "$path")"
+          echo "Migrating Jellyfin library '$name' from legacy path '$legacy_path' to '$path'"
+          curl_jellyfin \
+            -X DELETE \
+            -G \
+            --data-urlencode "name=$name" \
+            --data-urlencode "refreshLibrary=false" \
+            "$base_url/Library/VirtualFolders" \
+            >/dev/null
+          refresh_virtual_folders
+          curl_jellyfin \
+            -X POST \
+            -G \
+            --data-urlencode "name=$name" \
+            --data-urlencode "collectionType=$collection_type" \
+            --data-urlencode "paths=$path" \
+            --data-urlencode "refreshLibrary=false" \
+            "$base_url/Library/VirtualFolders" \
+            >/dev/null
+          changed=1
+          refresh_virtual_folders
+        }
+
         library_exists() {
           local name="$1"
 
@@ -417,7 +480,7 @@ in
             --argjson users "$jellyfin_members_json" \
             '$shared + [ $users[] as $user | $personal[] | . + {
               name: ($user + " " + .label),
-              path: ($usersRoot + "/" + $user + "/videos/" + .dir),
+              path: ($usersRoot + "/" + $user + "/_Videos/" + .dir),
               owner: $user
             } ]'
         )"
@@ -429,6 +492,11 @@ in
           if library_exists "$name"; then
             if library_matches "$name" "$collection_type" "$path"; then
               echo "Jellyfin library already converged: $name"
+              continue
+            fi
+
+            if library_matches_legacy_path "$name" "$collection_type" "$path"; then
+              replace_legacy_library "$name" "$collection_type" "$path"
               continue
             fi
 

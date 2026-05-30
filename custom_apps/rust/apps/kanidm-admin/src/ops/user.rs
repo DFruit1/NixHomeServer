@@ -203,18 +203,30 @@ pub fn create_user(cli: &KanidmCli, options: CreateUserOptions) -> Result<Comman
 }
 
 pub fn disable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
-    cli.person_disable(account_id)?;
-    let person = verify_user_state(
-        cli,
-        account_id,
-        json!({ "account_id": account_id, "expiry": "set" }),
-        &format!(
-            "disabled Kanidm user '{}' but post-change verification did not converge",
-            account_id
-        ),
-        true,
-        |person| person.expiry.is_some(),
-    )?;
+    let requested_state = json!({ "account_id": account_id, "expiry": "set" });
+    let mut warnings = Vec::new();
+    let person = match cli.person_disable(account_id) {
+        Ok(()) => verify_disabled_user(cli, account_id)?,
+        Err(error) => {
+            let ReconciledWrite { value, warning } = reconcile_failed_write(
+                FailedWriteContext {
+                    resource: "user",
+                    name: account_id,
+                    requested_state,
+                    completed_steps: &[],
+                    failed_step: "person_disable",
+                    error,
+                    next_actions: user_state_next_actions(account_id),
+                },
+                || verify_disabled_user(cli, account_id),
+                |_| true,
+                user_observed_state,
+            )?;
+            warnings.push(warning);
+            warnings.extend(value.warnings.iter().cloned());
+            value
+        }
+    };
 
     Ok(CommandOutput {
         message: format!("disabled Kanidm user '{}'", person.value.account_id),
@@ -224,27 +236,37 @@ pub fn disable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, 
             human_user_summary(&person.value)
         ),
         details: json!({ "user": person.value, "action": "disable" }),
-        warnings: person.warnings,
+        warnings: merge_warnings(warnings, person.warnings),
     })
 }
 
 pub fn enable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
-    cli.person_enable(account_id)?;
-    let person = verify_user_state(
+    let requested_state = json!({
+        "account_id": account_id,
+        "valid_from": Value::Null,
+        "expiry": Value::Null,
+    });
+    let mut completed_steps = Vec::new();
+    let mut warnings = Vec::new();
+    run_enable_step(
         cli,
         account_id,
-        json!({
-            "account_id": account_id,
-            "valid_from": Value::Null,
-            "expiry": Value::Null,
-        }),
-        &format!(
-            "enabled Kanidm user '{}' but post-change verification did not converge",
-            account_id
-        ),
-        true,
-        |person| person.valid_from.is_none() && person.expiry.is_none(),
+        &requested_state,
+        &mut completed_steps,
+        &mut warnings,
+        "clear_expiry",
+        |cli, account_id| cli.clear_expiry(account_id),
     )?;
+    run_enable_step(
+        cli,
+        account_id,
+        &requested_state,
+        &mut completed_steps,
+        &mut warnings,
+        "clear_valid_from",
+        |cli, account_id| cli.clear_valid_from(account_id),
+    )?;
+    let person = verify_enabled_user(cli, account_id)?;
 
     Ok(CommandOutput {
         message: format!("enabled Kanidm user '{}'", person.value.account_id),
@@ -253,8 +275,12 @@ pub fn enable_user(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, A
             person.value.account_id,
             human_user_summary(&person.value)
         ),
-        details: json!({ "user": person.value, "action": "enable" }),
-        warnings: person.warnings,
+        details: json!({
+            "user": person.value,
+            "action": "enable",
+            "completed_steps": completed_steps,
+        }),
+        warnings: merge_warnings(warnings, person.warnings),
     })
 }
 
@@ -268,34 +294,30 @@ pub fn delete_user(cli: &KanidmCli, options: DeleteUserOptions) -> Result<Comman
         });
     }
 
-    cli.person_delete(&options.account_id)?;
-    verify_with_retry(
-        VerificationPolicy::ReadAfterWrite,
-        &format!(
-            "deleted Kanidm user '{}' but post-delete verification did not converge",
-            options.account_id
-        ),
-        json!({ "account_id": options.account_id, "deleted": true }),
-        true,
-        || match load_user(cli, &options.account_id) {
-            Err(AppError::NotFound { .. }) => Ok(VerificationCheck::Matched {
-                observed: json!({
-                    "deleted": true,
-                    "account_id": options.account_id,
-                }),
-                value: (),
-            }),
-            Err(error) => Err(error),
-            Ok(person) => Ok(VerificationCheck::Mismatch {
-                observed: json!({
-                    "deleted": false,
-                    "account_id": person.value.account_id,
-                    "user": person.value,
-                    "warnings": person.warnings,
-                }),
-            }),
-        },
-    )?;
+    let requested_state = json!({ "account_id": options.account_id, "deleted": true });
+    let mut warnings = Vec::new();
+    match cli.person_delete(&options.account_id) {
+        Ok(()) => {
+            verify_user_deleted(cli, &options.account_id)?;
+        }
+        Err(error) => {
+            let ReconciledWrite { warning, .. } = reconcile_failed_write(
+                FailedWriteContext {
+                    resource: "user",
+                    name: &options.account_id,
+                    requested_state,
+                    completed_steps: &[],
+                    failed_step: "person_delete",
+                    error,
+                    next_actions: delete_user_next_actions(&options.account_id),
+                },
+                || verify_user_deleted(cli, &options.account_id),
+                |_| true,
+                |observed| observed.clone(),
+            )?;
+            warnings.push(warning);
+        }
+    };
 
     Ok(CommandOutput {
         message: format!("deleted Kanidm user '{}'", options.account_id),
@@ -304,7 +326,7 @@ pub fn delete_user(cli: &KanidmCli, options: DeleteUserOptions) -> Result<Comman
             "account_id": options.account_id,
             "deleted": true,
         }),
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -710,6 +732,110 @@ where
     }
 }
 
+fn run_enable_step<F>(
+    cli: &KanidmCli,
+    account_id: &str,
+    requested_state: &Value,
+    completed_steps: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    step_name: &str,
+    action: F,
+) -> Result<(), AppError>
+where
+    F: FnOnce(&KanidmCli, &str) -> Result<(), AppError>,
+{
+    match action(cli, account_id) {
+        Ok(()) => {
+            completed_steps.push(step_name.to_string());
+            Ok(())
+        }
+        Err(error) => {
+            let ReconciledWrite { value, warning } = reconcile_failed_write(
+                FailedWriteContext {
+                    resource: "user",
+                    name: account_id,
+                    requested_state: requested_state.clone(),
+                    completed_steps,
+                    failed_step: step_name,
+                    error,
+                    next_actions: user_state_next_actions(account_id),
+                },
+                || verify_enabled_user(cli, account_id),
+                |_| true,
+                user_observed_state,
+            )?;
+            warnings.push(warning);
+            warnings.extend(value.warnings.iter().cloned());
+            completed_steps.push(step_name.to_string());
+            Ok(())
+        }
+    }
+}
+
+fn verify_disabled_user(cli: &KanidmCli, account_id: &str) -> Result<Parsed<UserRecord>, AppError> {
+    verify_user_state(
+        cli,
+        account_id,
+        json!({ "account_id": account_id, "expiry": "set" }),
+        &format!(
+            "disabled Kanidm user '{}' but post-change verification did not converge",
+            account_id
+        ),
+        true,
+        |person| person.expiry.is_some(),
+    )
+}
+
+fn verify_enabled_user(cli: &KanidmCli, account_id: &str) -> Result<Parsed<UserRecord>, AppError> {
+    verify_user_state(
+        cli,
+        account_id,
+        json!({
+            "account_id": account_id,
+            "valid_from": Value::Null,
+            "expiry": Value::Null,
+        }),
+        &format!(
+            "enabled Kanidm user '{}' but post-change verification did not converge",
+            account_id
+        ),
+        true,
+        |person| person.valid_from.is_none() && person.expiry.is_none(),
+    )
+}
+
+fn verify_user_deleted(cli: &KanidmCli, account_id: &str) -> Result<Value, AppError> {
+    verify_with_retry(
+        VerificationPolicy::ReadAfterWrite,
+        &format!(
+            "deleted Kanidm user '{account_id}' but post-delete verification did not converge"
+        ),
+        json!({ "account_id": account_id, "deleted": true }),
+        true,
+        || match load_user(cli, account_id) {
+            Err(AppError::NotFound { .. }) => Ok(VerificationCheck::Matched {
+                observed: json!({
+                    "deleted": true,
+                    "account_id": account_id,
+                }),
+                value: json!({
+                    "deleted": true,
+                    "account_id": account_id,
+                }),
+            }),
+            Err(error) => Err(error),
+            Ok(person) => Ok(VerificationCheck::Mismatch {
+                observed: json!({
+                    "deleted": false,
+                    "account_id": person.value.account_id,
+                    "user": person.value,
+                    "warnings": person.warnings,
+                }),
+            }),
+        },
+    )
+}
+
 fn verify_user_state<F>(
     cli: &KanidmCli,
     account_id: &str,
@@ -802,6 +928,21 @@ fn create_user_next_actions(step_name: &str, account_id: &str) -> Vec<String> {
     }
 }
 
+fn user_state_next_actions(account_id: &str) -> Vec<String> {
+    vec![
+        format!("Inspect the current user with `kanidm-admin user show {account_id}`."),
+        "If the live state is still wrong, rerun the command after confirming the target account."
+            .to_string(),
+    ]
+}
+
+fn delete_user_next_actions(account_id: &str) -> Vec<String> {
+    vec![
+        format!("Confirm whether the user still exists with `kanidm-admin user show {account_id}`."),
+        "If the account still exists and deletion is still intended, rerun the delete command with the same --confirm value.".to_string(),
+    ]
+}
+
 fn merge_warnings(mut left: Vec<String>, mut right: Vec<String>) -> Vec<String> {
     left.append(&mut right);
     left.sort();
@@ -874,6 +1015,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let error = create_user(
@@ -935,6 +1077,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let error = create_user(
@@ -1002,6 +1145,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let output = create_user(
@@ -1073,6 +1217,7 @@ fi
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let output = set_posix_password(
@@ -1147,6 +1292,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let output = set_posix_password(

@@ -6,6 +6,18 @@ let
   zfsBin = "${pkgs.zfs}/bin/zfs";
   canonicalUsersDataset = "${vars.zfsDataPool.name}/users";
   canonicalSharedDataset = "${vars.zfsDataPool.name}/shared";
+  canonicalBackupsDataset = "${vars.zfsDataPool.name}/backups";
+  backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
+  sharedContentDirs = map
+    (name: {
+      path = "${vars.sharedRoot}/${name}";
+      mode = "1770";
+      user = "root";
+      group = "root";
+    })
+    config.repo.storage.sharedRoots.contentSubdirs;
 
   mkDirCmd =
     { path
@@ -31,9 +43,15 @@ let
     }
     {
       path = vars.sharedRoot;
-      mode = "2775";
+      mode = "1770";
       user = "root";
-      group = "users";
+      group = "root";
+    }
+    {
+      path = backupRoot;
+      mode = "0750";
+      user = "root";
+      group = toString backupStorageAccessGid;
     }
   ];
 
@@ -52,6 +70,17 @@ let
     {
       dataset = canonicalSharedDataset;
       mountpoint = vars.sharedRoot;
+      properties = {
+        compression = "zstd";
+        atime = "off";
+        acltype = "posixacl";
+        xattr = "sa";
+        recordsize = "1M";
+      };
+    }
+    {
+      dataset = canonicalBackupsDataset;
+      mountpoint = backupRoot;
       properties = {
         compression = "zstd";
         atime = "off";
@@ -127,75 +156,100 @@ in
     ];
 
     repo.storage.dataPool = {
-      directories = coreContentDirs;
+      directories = coreContentDirs ++ sharedContentDirs;
       datasets = coreDatasetSpecs;
     };
 
-  systemd.tmpfiles.rules = [
-    "d /persist/appdata 0755 root root -"
-  ];
+    systemd.tmpfiles.rules = [
+      "d /persist/appdata 0755 root root -"
+    ];
 
-  systemd.services.data-pool-layout = {
-    description = "Provision data-pool-backed content layout";
-    wantedBy = [ "local-fs.target" ];
-    wants = [ "systemd-udev-settle.service" ];
-    after = [ "systemd-modules-load.service" "systemd-udev-settle.service" ];
-    before = [ "local-fs.target" ];
-    unitConfig.DefaultDependencies = false;
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
+    systemd.services.data-pool-layout = {
+      description = "Provision data-pool-backed content layout";
+      wantedBy = [ "local-fs.target" ];
+      wants = [ "systemd-udev-settle.service" ];
+      after = [ "systemd-modules-load.service" "systemd-udev-settle.service" ];
+      before = [ "local-fs.target" ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
       script = ''
-        set -euo pipefail
-        ZFS_FORCE=""
+          set -euo pipefail
+          ZFS_FORCE=""
 
-        for option in $(cat /proc/cmdline); do
-          case "$option" in
-            zfs_force|zfs_force=1|zfs_force=y)
-              ZFS_FORCE="-f"
-              ;;
-          esac
-        done
+          for option in $(cat /proc/cmdline); do
+            case "$option" in
+              zfs_force|zfs_force=1|zfs_force=y)
+                ZFS_FORCE="-f"
+                ;;
+            esac
+          done
 
-        if ! ${zpoolBin} list '${vars.zfsDataPool.name}' >/dev/null 2>&1; then
-          # shellcheck disable=SC2086
-          ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE '${vars.zfsDataPool.name}'
-        fi
+          if ! ${zpoolBin} list '${vars.zfsDataPool.name}' >/dev/null 2>&1; then
+            # shellcheck disable=SC2086
+            ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE '${vars.zfsDataPool.name}'
+          fi
 
-        ensure_dataset() {
+          ensure_dataset() {
+            local dataset="$1"
+            local mountpoint="$2"
+
+          if ! ${zfsBin} list -H -o name "$dataset" >/dev/null 2>&1; then
+            ${zfsBin} create -o mountpoint="$mountpoint" "$dataset"
+          else
+            set_zfs_property "$dataset" canmount on
+            set_zfs_property "$dataset" mountpoint "$mountpoint"
+            ${zfsBin} mount "$dataset" >/dev/null 2>&1 || true
+          fi
+        }
+
+        set_zfs_property() {
           local dataset="$1"
-          local mountpoint="$2"
+          local property="$2"
+          local value="$3"
+          local current
 
-        if ! ${zfsBin} list -H -o name "$dataset" >/dev/null 2>&1; then
-          ${zfsBin} create -o mountpoint="$mountpoint" "$dataset"
-        else
-          set_zfs_property "$dataset" canmount on
-          set_zfs_property "$dataset" mountpoint "$mountpoint"
-          ${zfsBin} mount "$dataset" >/dev/null 2>&1 || true
-        fi
-      }
+          current="$(${zfsBin} get -H -o value "$property" "$dataset")"
+          if [[ "$current" != "$value" ]]; then
+            ${zfsBin} set "$property=$value" "$dataset"
+          fi
+        }
 
-      set_zfs_property() {
-        local dataset="$1"
-        local property="$2"
-        local value="$3"
-        local current
+        set_zfs_property '${vars.zfsDataPool.name}' canmount on
+        set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
+        ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
+        ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
 
-        current="$(${zfsBin} get -H -o value "$property" "$dataset")"
-        if [[ "$current" != "$value" ]]; then
-          ${zfsBin} set "$property=$value" "$dataset"
-        fi
-      }
+        ${zfsDatasetLayoutScript}
+        rename_directory_if_present() {
+          local old_path="$1"
+          local new_path="$2"
 
-      set_zfs_property '${vars.zfsDataPool.name}' canmount on
-      set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
-      ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
-      ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
+          if [[ -d "$old_path" && ! -e "$new_path" ]]; then
+            mv -- "$old_path" "$new_path"
+          fi
+        }
 
-      ${zfsDatasetLayoutScript}
-      ${zfsContentLayoutScript}
-    '';
-  };
+        rename_directory_if_present '${vars.sharedRoot}/files' '${vars.sharedRoot}/_Files'
+        rename_directory_if_present '${vars.sharedRoot}/audiobooks' '${vars.sharedRoot}/_Audiobooks'
+        rename_directory_if_present '${vars.sharedRoot}/videos' '${vars.sharedRoot}/_Videos'
+        rename_directory_if_present '${vars.sharedRoot}/books' '${vars.sharedRoot}/_Books'
+        rename_directory_if_present '${vars.sharedRoot}/emails' '${vars.sharedRoot}/_Emails'
+        rename_directory_if_present '${vars.sharedRoot}/kiwix' '${vars.sharedRoot}/_Kiwix'
+        rename_directory_if_present '${vars.sharedRoot}/music' '${vars.sharedRoot}/_Music'
+        rename_directory_if_present '${vars.sharedRoot}/_Videos/movies' '${vars.sharedRoot}/_Videos/_Movies'
+        rename_directory_if_present '${vars.sharedRoot}/_Videos/shows' '${vars.sharedRoot}/_Videos/_Shows'
+        rename_directory_if_present '${vars.sharedRoot}/_Videos/home' '${vars.sharedRoot}/_Videos/_Home'
+        rename_directory_if_present '${vars.sharedRoot}/_Videos/music-videos' '${vars.sharedRoot}/_Videos/_Music-videos'
+        rename_directory_if_present '${vars.sharedRoot}/_Videos/youtube' '${vars.sharedRoot}/_Videos/_YouTube'
+        rename_directory_if_present '${vars.sharedRoot}/_Audiobooks/youtube' '${vars.sharedRoot}/_Audiobooks/_YouTube'
+        rename_directory_if_present '${vars.sharedRoot}/_Books/ebooks' '${vars.sharedRoot}/_Books/_Ebooks'
+        rename_directory_if_present '${vars.sharedRoot}/_Books/comics' '${vars.sharedRoot}/_Books/_Comics'
+        rename_directory_if_present '${vars.sharedRoot}/_Books/manga' '${vars.sharedRoot}/_Books/_Manga'
+        ${zfsContentLayoutScript}
+      '';
+    };
   };
 }

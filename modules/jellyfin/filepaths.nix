@@ -4,27 +4,27 @@ let
   cfg = config.repo.jellyfin;
   defaultVideoLibraries = [
     {
-      dir = "movies";
+      dir = "_Movies";
       collectionType = "movies";
       label = "Movies";
     }
     {
-      dir = "shows";
+      dir = "_Shows";
       collectionType = "tvshows";
       label = "Shows";
     }
     {
-      dir = "home";
+      dir = "_Home";
       collectionType = "homevideos";
       label = "Home Videos";
     }
     {
-      dir = "music-videos";
+      dir = "_Music-videos";
       collectionType = "musicvideos";
       label = "Music Videos";
     }
     {
-      dir = "youtube";
+      dir = "_YouTube";
       collectionType = "homevideos";
       label = "YouTube";
     }
@@ -71,13 +71,13 @@ in
     paths = {
       sharedVideosRoot = lib.mkOption {
         type = lib.types.str;
-        default = "${vars.sharedRoot}/videos";
+        default = "${vars.sharedRoot}/_Videos";
         description = "Shared Jellyfin videos root.";
       };
 
       sharedMusicRoot = lib.mkOption {
         type = lib.types.str;
-        default = "${vars.sharedRoot}/music";
+        default = "${vars.sharedRoot}/_Music";
         description = "Shared Jellyfin music root.";
       };
     };
@@ -85,7 +85,7 @@ in
 
   config = {
     repo.storage.userRoots = {
-      contentSubdirs = [ "videos" ];
+      contentSubdirs = [ "_Videos" ];
       videoSubdirs = userVideoSubdirs;
       memberGroups = [
         "jellyfin-users"
@@ -96,12 +96,12 @@ in
       recursiveWritableGrants = [
         {
           group = "jellyfin-media";
-          relativePaths = [ "videos" ];
+          relativePaths = [ "_Videos" ];
         }
       ];
     };
 
-    repo.storage.sharedRoots.contentSubdirs = [ "videos" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_Videos" ];
 
     systemd.tmpfiles.rules = [
       "d ${logDir} 0750 jellyfin jellyfin -"
@@ -126,10 +126,20 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 2775 -o root -g users ${cfg.paths.sharedVideosRoot}
+        install -d -m 1770 -o root -g root ${cfg.paths.sharedVideosRoot}
         for path in ${lib.escapeShellArgs sharedJellyfinDirs}; do
-          install -d -m 2775 -o root -g users "$path"
+          install -d -m 1770 -o root -g root "$path"
         done
+
+        grant_traverse_acl() {
+          local group="$1"
+          shift
+
+          for path in "$@"; do
+            [[ -d "$path" ]] || continue
+            setfacl -m "g:$group:r-X" "$path"
+          done
+        }
 
         apply_recursive_acl() {
           local access_spec="$1"
@@ -144,6 +154,7 @@ in
           done
         }
 
+        grant_traverse_acl jellyfin-media ${lib.escapeShellArgs [ vars.sharedRoot cfg.paths.sharedVideosRoot ]}
         apply_recursive_acl "g:jellyfin-media:rwX" "d:g:jellyfin-media:rwx" ${lib.escapeShellArgs sharedJellyfinDirs}
       '';
     };

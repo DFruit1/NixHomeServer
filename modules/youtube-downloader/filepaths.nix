@@ -1,7 +1,7 @@
 { config, ... }:
 
 let
-  userVideoWritablePaths = map (name: "videos/${name}") config.repo.storage.userRoots.videoSubdirs;
+  userVideoWritablePaths = map (name: "_Videos/${name}") config.repo.storage.userRoots.videoSubdirs;
 in
 {
   config = {
@@ -9,8 +9,8 @@ in
       {
         group = "youtube-downloader";
         relativePaths = [
-          "audiobooks"
-          "videos"
+          "_Audiobooks"
+          "_Videos"
         ] ++ userVideoWritablePaths;
       }
     ];

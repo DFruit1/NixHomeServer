@@ -2459,6 +2459,7 @@ mod tests {
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: Some("https://passwords.example.test".to_string()),
             vaultwarden_admin_token_file: Some("/run/agenix/vaultwardenAdminToken".into()),
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
         std::mem::forget(dir);
         cli

@@ -38,7 +38,7 @@ in
           if [[ -d ${lib.escapeShellArg cfg.storeRoot} ]]; then
             while IFS= read -r user_root; do
               username="$(basename -- "$user_root")"
-              emails_root="$user_root/emails"
+              emails_root="$user_root/_Emails"
               hidden_sync_root="$emails_root/.internal-sync"
 
               if [[ -d "$emails_root" ]]; then

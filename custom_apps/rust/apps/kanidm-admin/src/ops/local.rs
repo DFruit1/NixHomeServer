@@ -831,6 +831,7 @@ mod tests {
             kanidm_bin: "kanidm".into(),
             vaultwarden_url: Some("https://passwords.example.test".to_string()),
             vaultwarden_admin_token_file: Some(token_path.to_path_buf()),
+            runtime_policy: crate::context::RuntimePolicy::default(),
         }
     }
 

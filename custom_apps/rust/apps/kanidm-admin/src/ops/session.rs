@@ -334,6 +334,7 @@ printf 'active token for admindsaw\n'
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let output = session_status(&cli).expect("session status");
@@ -360,6 +361,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let output = session_status(&cli).expect("session status");
@@ -392,6 +394,7 @@ EOF
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let output = session_status(&cli).expect("session status");
@@ -436,6 +439,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let output = session_login(&cli).expect("session login");

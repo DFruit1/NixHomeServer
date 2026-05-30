@@ -14,7 +14,7 @@ let
 in
 {
   config = lib.mkIf cfg.enable {
-    repo.storage.sharedRoots.contentSubdirs = [ "kiwix" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_Kiwix" ];
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0750 kiwix kiwix -"

@@ -2,6 +2,7 @@ use std::{
     ffi::{OsStr, OsString},
     path::Path,
     sync::Arc,
+    thread::sleep,
     time::Duration,
 };
 
@@ -10,7 +11,10 @@ use serde_json::{json, Value};
 use time::OffsetDateTime;
 
 use crate::{
-    backend::{CommandMode, KanidmBackend, ProcessKanidmBackend, RawCommandRequest},
+    backend::{
+        BackendExecError, CommandMode, KanidmBackend, ProcessKanidmBackend, RawCommandRequest,
+        RawCommandResult,
+    },
     backend_log::{BackendLog, BackendLogRecord},
     context::ResolvedContext,
     session_state::{
@@ -21,8 +25,6 @@ use crate::{
     AppError,
 };
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
-
 pub use crate::session_state::{
     BaseSessionState, ParseConfidence, ParsedExpiry, ParsedSession, ParsedSessionPurpose,
     PrivilegedWriteState, SessionFailureKind, SessionObservation, SessionSnapshot, SessionState,
@@ -32,6 +34,8 @@ pub use crate::{
     verification::{verify_with_retry, VerificationCheck, VerificationPolicy},
 };
 
+const READ_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_millis(750)];
+
 #[derive(Clone)]
 pub struct KanidmCli {
     program: OsString,
@@ -39,6 +43,7 @@ pub struct KanidmCli {
     admin_name: String,
     backend: Arc<dyn KanidmBackend>,
     backend_log: BackendLog,
+    backend_timeout: Duration,
 }
 
 impl std::fmt::Debug for KanidmCli {
@@ -59,6 +64,7 @@ impl KanidmCli {
             admin_name: context.admin_name.clone(),
             backend: Arc::new(ProcessKanidmBackend::new(context.kanidm_bin.clone())),
             backend_log: BackendLog::default(),
+            backend_timeout: context.runtime_policy.backend_timeout,
         }
     }
 
@@ -76,6 +82,7 @@ impl KanidmCli {
             admin_name,
             backend,
             backend_log: BackendLog::default(),
+            backend_timeout: crate::context::RuntimePolicy::default().backend_timeout,
         }
     }
 
@@ -321,7 +328,7 @@ impl KanidmCli {
         let output = match backend.exec(RawCommandRequest {
             args: args.clone(),
             mode: CommandMode::NonInteractiveWrite,
-            timeout: COMMAND_TIMEOUT,
+            timeout: self.backend_timeout,
             stdin: None,
         }) {
             Ok(output) => output,
@@ -362,7 +369,7 @@ impl KanidmCli {
         let result = match backend.exec(RawCommandRequest {
             args: args.clone(),
             mode: CommandMode::InteractiveAuth,
-            timeout: COMMAND_TIMEOUT,
+            timeout: self.backend_timeout,
             stdin: None,
         }) {
             Ok(result) => result,
@@ -614,7 +621,7 @@ impl KanidmCli {
         let result = match self.backend.exec(RawCommandRequest {
             args: args.clone(),
             mode: CommandMode::InteractiveAuth,
-            timeout: COMMAND_TIMEOUT,
+            timeout: self.backend_timeout,
             stdin: None,
         }) {
             Ok(result) => result,
@@ -665,7 +672,7 @@ impl KanidmCli {
         let output = match self.backend.exec(RawCommandRequest {
             args: args.clone(),
             mode: CommandMode::NonInteractiveWrite,
-            timeout: COMMAND_TIMEOUT,
+            timeout: self.backend_timeout,
             stdin: Some(stdin),
         }) {
             Ok(output) => output,
@@ -706,12 +713,7 @@ impl KanidmCli {
         _context: &str,
     ) -> Result<Result<BackendSuccess, BackendFailure>, AppError> {
         let mode = command_mode_for_args(&args);
-        let output = match self.backend.exec(RawCommandRequest {
-            args: args.clone(),
-            mode,
-            timeout: COMMAND_TIMEOUT,
-            stdin: None,
-        }) {
+        let output = match self.exec_backend_with_read_retry(args.clone(), mode) {
             Ok(output) => output,
             Err(error) => {
                 self.record_backend_exec_error("kanidm", mode, &self.program, &args, &error);
@@ -726,6 +728,34 @@ impl KanidmCli {
         } else {
             self.record_backend_result("kanidm", mode, &self.program, &args, &output);
             Ok(Err(BackendFailure::from_raw(&self.program, args, output)))
+        }
+    }
+
+    fn exec_backend_with_read_retry(
+        &self,
+        args: Vec<String>,
+        mode: CommandMode,
+    ) -> Result<RawCommandResult, BackendExecError> {
+        let mut attempt = 0usize;
+        loop {
+            match self.backend.exec(RawCommandRequest {
+                args: args.clone(),
+                mode,
+                timeout: self.backend_timeout,
+                stdin: None,
+            }) {
+                Ok(output) => return Ok(output),
+                Err(error)
+                    if mode == CommandMode::NonInteractiveRead
+                        && is_retryable_exec_error(&error)
+                        && attempt < READ_RETRY_DELAYS.len() =>
+                {
+                    self.record_backend_exec_error("kanidm", mode, &self.program, &args, &error);
+                    sleep(READ_RETRY_DELAYS[attempt]);
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -983,6 +1013,10 @@ fn command_mode_for_args(args: &[String]) -> CommandMode {
     }
 }
 
+fn is_retryable_exec_error(error: &BackendExecError) -> bool {
+    matches!(error, BackendExecError::Timeout { .. })
+}
+
 fn snapshot_from_failure(
     kind: SessionFailureKind,
     diagnostic: SessionDiagnostic,
@@ -1031,7 +1065,13 @@ fn session_or_reauth_details(failure: &BackendFailure, diagnostic: SessionDiagno
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::Path,
+        process::Command as ProcessCommand,
+        sync::{Arc, Mutex},
+    };
 
     use super::*;
 
@@ -1070,6 +1110,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let error = cli.person_get::<Value>("dsaw").expect_err("not found");
@@ -1094,6 +1135,7 @@ exit 0
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let error = cli.person_get::<Value>("dsaw").expect_err("not found");
@@ -1118,6 +1160,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         let error = cli
@@ -1144,6 +1187,7 @@ exit 42
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
         cli.begin_backend_operation();
@@ -1164,5 +1208,53 @@ exit 42
         let recent = cli.recent_backend_logs();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0]["status"]["code"].as_i64(), Some(42));
+    }
+
+    #[derive(Debug)]
+    struct TimeoutThenSuccessBackend {
+        attempts: Arc<Mutex<usize>>,
+    }
+
+    impl KanidmBackend for TimeoutThenSuccessBackend {
+        fn exec(&self, request: RawCommandRequest) -> Result<RawCommandResult, BackendExecError> {
+            let mut attempts = self.attempts.lock().expect("attempts lock");
+            *attempts += 1;
+            if *attempts == 1 {
+                return Err(BackendExecError::Timeout {
+                    message: "timed out".to_string(),
+                    details: json!({ "args": request.args }),
+                });
+            }
+            Ok(RawCommandResult {
+                status: ExitStatusSummary {
+                    success: true,
+                    code: Some(0),
+                },
+                stdout: "[]".to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn read_commands_retry_transient_exec_timeouts() {
+        let attempts = Arc::new(Mutex::new(0usize));
+        let cli = KanidmCli::with_backend(
+            "kanidm".into(),
+            "https://id.example.test".to_string(),
+            "admindsaw".to_string(),
+            Arc::new(TimeoutThenSuccessBackend {
+                attempts: attempts.clone(),
+            }),
+        );
+
+        let groups = cli.group_list::<Value>().expect("group list retries");
+
+        assert_eq!(groups, json!([]));
+        assert_eq!(*attempts.lock().expect("attempts lock"), 2);
+        let logs = cli.recent_backend_logs();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0]["error"]["kind"], "timeout");
+        assert_eq!(logs[1]["status"]["success"], true);
     }
 }

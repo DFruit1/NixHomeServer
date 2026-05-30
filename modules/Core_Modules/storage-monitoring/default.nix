@@ -7,6 +7,7 @@ let
     bash
     coreutils
     jq
+    nix
     smartmontools
     util-linux
     zfs

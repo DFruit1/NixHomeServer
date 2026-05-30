@@ -4,19 +4,19 @@ let
   cfg = config.repo.kavita;
   defaultLibraries = [
     {
-      dir = "ebooks";
+      dir = "_Ebooks";
       type = 2;
       fileGroupTypes = [ 2 3 1 ];
       label = "Ebooks";
     }
     {
-      dir = "comics";
+      dir = "_Comics";
       type = 1;
       fileGroupTypes = [ 1 4 3 ];
       label = "Comics";
     }
     {
-      dir = "manga";
+      dir = "_Manga";
       type = 0;
       fileGroupTypes = [ 1 4 ];
       label = "Manga";
@@ -31,7 +31,7 @@ let
     };
   };
   userBookSubdirs = map (library: library.dir) cfg.libraries.personal;
-  userBookWritablePaths = map (name: "books/${name}") userBookSubdirs;
+  userBookWritablePaths = map (name: "_Books/${name}") userBookSubdirs;
   sharedKavitaDirs = map (library: "${cfg.paths.sharedBooksRoot}/${library.dir}") cfg.libraries.shared;
   sharedKavitaAnonDirs = map (library: "${cfg.paths.sharedBooksRoot}/${library.dir}/_Anon") cfg.libraries.shared;
 in
@@ -53,14 +53,14 @@ in
 
     paths.sharedBooksRoot = lib.mkOption {
       type = lib.types.str;
-      default = "${vars.sharedRoot}/books";
+      default = "${vars.sharedRoot}/_Books";
       description = "Shared Kavita books root.";
     };
   };
 
   config = {
     repo.storage.userRoots = {
-      contentSubdirs = [ "books" ];
+      contentSubdirs = [ "_Books" ];
       bookSubdirs = userBookSubdirs;
       rootTraverseGroups = [
         "kavita-media"
@@ -68,12 +68,12 @@ in
       recursiveWritableGrants = [
         {
           group = "kavita-media";
-          relativePaths = [ "books" ] ++ userBookWritablePaths;
+          relativePaths = [ "_Books" ] ++ userBookWritablePaths;
         }
       ];
     };
 
-    repo.storage.sharedRoots.contentSubdirs = [ "books" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_Books" ];
 
     systemd.services.kavita-storage-layout-v1 = {
       description = "Provision Kavita storage layout";
@@ -94,12 +94,12 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 2775 -o root -g users ${cfg.paths.sharedBooksRoot}
+        install -d -m 1770 -o root -g root ${cfg.paths.sharedBooksRoot}
         for path in ${lib.escapeShellArgs sharedKavitaDirs}; do
-          install -d -m 2775 -o root -g users "$path"
+          install -d -m 1770 -o root -g root "$path"
         done
         for path in ${lib.escapeShellArgs sharedKavitaAnonDirs}; do
-          install -d -m 2775 -o root -g users "$path"
+          install -d -m 1770 -o root -g root "$path"
         done
 
         apply_recursive_acl() {
@@ -115,6 +115,7 @@ in
           done
         }
 
+        setfacl -m g:kavita-media:r-X ${vars.sharedRoot} ${cfg.paths.sharedBooksRoot}
         apply_recursive_acl "g:kavita-media:rwX" "d:g:kavita-media:rwx" ${lib.escapeShellArgs sharedKavitaDirs}
       '';
     };

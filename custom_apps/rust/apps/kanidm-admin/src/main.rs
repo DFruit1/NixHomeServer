@@ -11,6 +11,10 @@ use kanidm_admin::{
             list_clients, show_client,
         },
         context::{doctor, show_context},
+        executor::{
+            execute_interactive_operation, OperationKind, OperationOutcome, OperationPreconditions,
+            RecoveryTarget,
+        },
         group::{group_members, list_groups, search_groups, show_group},
         local::{invite_vaultwarden_user, stage_jellyfin_password},
         membership::{
@@ -31,7 +35,8 @@ use kanidm_admin::{
             CreateUserOptions, DeleteUserOptions, PosixPasswordOptions, ResetTokenOptions,
         },
     },
-    output::{render_error, render_output, OutputFormat},
+    output::{render_error, render_output, CommandOutput, OutputFormat},
+    session_state::SessionSnapshot,
     validation::{
         validate_account_id, validate_display_name, validate_email, validate_identifier_field,
         validate_redirect_url, validate_search_query, validate_seconds_field,
@@ -52,7 +57,7 @@ const MEMBERSHIP_SET_AFTER_HELP: &str =
     "Examples:\n  kanidm-admin membership set alice users paperless-users\n  kanidm-admin membership set alice --allow-empty";
 const DELETE_USER_AFTER_HELP: &str = "Example:\n  kanidm-admin user delete alice --confirm alice";
 const POSIX_PASSWORD_AFTER_HELP: &str =
-    "Example:\n  kanidm-admin user posix-password set alice\n\nThis prompts for the new POSIX/UNIX password before any required privileged reauthentication. The value is separate from the user's web/OIDC password and passkeys.";
+    "Example:\n  kanidm-admin user posix-password set alice\n\nThis refreshes privileged write access before prompting for the new POSIX/UNIX password. The value is separate from the user's web/OIDC password and passkeys.";
 
 #[derive(Debug, Parser)]
 #[command(name = "kanidm-admin")]
@@ -82,6 +87,13 @@ struct Cli {
         help = "Select human-readable or JSON output."
     )]
     output: OutputFormat,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Override captured backend command timeout in seconds."
+    )]
+    backend_timeout_seconds: Option<u64>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -441,6 +453,91 @@ fn prompt_confirmed_password(prompt: &str) -> Result<String, kanidm_admin::AppEr
         })
 }
 
+fn set_posix_password_interactive(
+    kanidm: &KanidmCli,
+    output: OutputFormat,
+    account_id: String,
+) -> Result<CommandOutput, kanidm_admin::AppError> {
+    ensure_interactive_session_allowed(output)?;
+
+    let mut password: Option<String> = None;
+    match execute_interactive_operation(
+        kanidm,
+        OperationKind::PrivilegedWrite,
+        OperationPreconditions::PrivilegedWriteReady,
+        || {
+            let password = match password.as_ref() {
+                Some(password) => password.clone(),
+                None => {
+                    let entered = prompt_confirmed_password("New POSIX/SFTP password")?;
+                    password = Some(entered.clone());
+                    entered
+                }
+            };
+            set_posix_password(
+                kanidm,
+                PosixPasswordOptions {
+                    account_id: account_id.clone(),
+                    password,
+                    run_auth_test: true,
+                },
+            )
+        },
+        |target, error, snapshot| {
+            recover_cli_session_interactively(kanidm, output, target, error, snapshot)
+        },
+    )? {
+        OperationOutcome::Success(output) => Ok(output),
+        OperationOutcome::Cancelled => Err(kanidm_admin::AppError::Config {
+            message: "POSIX password update cancelled before authentication completed".to_string(),
+        }),
+        OperationOutcome::RecoverableFailure(error) | OperationOutcome::Fatal(error) => Err(error),
+    }
+}
+
+fn recover_cli_session_interactively(
+    kanidm: &KanidmCli,
+    output: OutputFormat,
+    target: RecoveryTarget,
+    error: Option<&kanidm_admin::AppError>,
+    snapshot: Option<&SessionSnapshot>,
+) -> Result<bool, kanidm_admin::AppError> {
+    if let Some(error) = error {
+        eprintln!("{}", render_error(output, error));
+    }
+
+    match target {
+        RecoveryTarget::BaseSession => {
+            if let Some(snapshot) = snapshot {
+                eprintln!(
+                    "The delegated Kanidm session for '{}' is not ready for this action.\n\n{}",
+                    kanidm.admin_name(),
+                    snapshot.diagnostic_raw.trim()
+                );
+            }
+            eprintln!("Starting Kanidm login before continuing the POSIX password update.");
+            let recovery = session_login(kanidm)?;
+            eprintln!("{}", render_output(output, &recovery));
+        }
+        RecoveryTarget::PrivilegedWrites => {
+            if let Some(snapshot) = snapshot {
+                eprintln!(
+                    "Privileged write access for '{}' is not ready.\n\n{}",
+                    kanidm.admin_name(),
+                    snapshot.diagnostic_raw.trim()
+                );
+            }
+            eprintln!(
+                "Starting Kanidm reauthentication before continuing the POSIX password update."
+            );
+            let recovery = session_reauth(kanidm)?;
+            eprintln!("{}", render_output(output, &recovery));
+        }
+    }
+
+    Ok(true)
+}
+
 fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_admin::AppError> {
     let output = cli.output;
     let context = resolve_context(ContextOverrides {
@@ -451,6 +548,7 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         nix_bin: None,
         vaultwarden_url: None,
         vaultwarden_admin_token_file: None,
+        backend_timeout_seconds: cli.backend_timeout_seconds,
     })?;
     let kanidm = KanidmCli::new(&context);
     kanidm.begin_backend_operation();
@@ -548,18 +646,8 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             }
             UserSubcommand::PosixPassword(command) => match command.command {
                 UserPosixPasswordSubcommand::Set { account_id } => {
-                    ensure_interactive_session_allowed(output)?;
                     let account_id = validate_account_id(&account_id)?;
-                    let password = prompt_confirmed_password("New POSIX/SFTP password")?;
-                    set_posix_password(
-                        &kanidm,
-                        PosixPasswordOptions {
-                            account_id,
-                            password,
-                            run_auth_test: true,
-                        },
-                    )
-                    .map(Some)
+                    set_posix_password_interactive(&kanidm, output, account_id).map(Some)
                 }
                 UserPosixPasswordSubcommand::Test { account_id } => {
                     ensure_interactive_session_allowed(output)?;

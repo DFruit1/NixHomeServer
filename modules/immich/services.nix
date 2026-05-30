@@ -2,7 +2,6 @@
 
 let
   immichPort = vars.networking.ports.immich;
-  photosHost = "photos.${vars.domain}";
   shareHost = "sharephotos.${vars.domain}";
 in
 {
@@ -25,8 +24,7 @@ in
         clientId = "immich-web";
         clientSecret._secret = config.age.secrets.immichClientSecret.path;
         issuerUrl = vars.kanidmIssuer "immich-web";
-        mobileOverrideEnabled = true;
-        mobileRedirectUri = "https://${photosHost}/api/oauth/mobile-redirect";
+        mobileOverrideEnabled = false;
         signingAlgorithm = "ES256";
         scope = "openid profile email immich_role";
         roleClaim = "immich_role";

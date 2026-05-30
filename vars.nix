@@ -64,6 +64,7 @@ rec {
       datasets = [
         "users"
         "shared"
+        "backups"
       ];
     };
   };
@@ -72,13 +73,18 @@ rec {
     webAccessGroup = "user-files"; # Browser file access and personal files root provisioning.
     sftpAccessGroup = "files-sftp-users"; # Restricted SFTP login access.
     sharedAccessGroup = "files-shared-users"; # Adds the protected _Shared view inside personal roots.
+    usbAccessGroup = "usb-access"; # Adds the _USB view inside personal roots when external USB media is manually mounted.
     sharedMountName = "_Shared";
+    usbMountName = "_USB";
     sftpChrootBase = "/srv/files-sftp/chroots";
   };
 
   backupAccess = {
     adminGroup = "backup-admins"; # Grants access to the Kopia backup-management UI.
     adminUsers = [ "dsaw" ]; # Extra existing Kanidm users allowed to manage backups.
+    storageGroup = "admin-backups"; # Grants read access to encrypted backup repository files.
+    storageUsers = [ "dsaw" ]; # Extra existing Kanidm users allowed to browse backup repository files.
+    storageMountName = "_Backups";
   };
 
   advanced = rec {
@@ -140,6 +146,7 @@ rec {
   kanidmAppUsers = lib.unique ([ identity.adminUser ] ++ (identity.appUsers or [ ]));
   kanidmAppAdminUsers = lib.unique ([ identity.adminUser ] ++ (identity.appAdminUsers or [ ]));
   kanidmBackupAdminUsers = lib.unique ([ identity.adminUser ] ++ (backupAccess.adminUsers or [ ]));
+  kanidmBackupStorageUsers = lib.unique ([ identity.adminUser ] ++ (backupAccess.storageUsers or (backupAccess.adminUsers or [ ])));
   kanidmAppUserEmails = identity.appUserEmails or { };
   kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
   kanidmAdminEmail = identity.adminEmail;
@@ -199,6 +206,8 @@ rec {
   dataRoot = zfsDataPool.mountPoint;
   usersRoot = "${dataRoot}/users";
   sharedRoot = "${dataRoot}/shared";
+  backupRoot = "${dataRoot}/backups";
+  externalUsbMountRoot = "/mnt/external-usb";
   staleReferenceCleanup = {
     users = true;
     shared = true;
@@ -211,6 +220,8 @@ rec {
     "user-files" = 2001;
     "files-sftp-users" = 2002;
     "files-shared-users" = 2003;
+    "usb-access" = 2004;
+    "admin-backups" = 2005;
   };
   filesSftpUsers = kanidmAppUsers; # Kanidm users with POSIX accounts and restricted files SFTP chroots.
   jellyfinAdminUsers = kanidmAppAdminUsers;

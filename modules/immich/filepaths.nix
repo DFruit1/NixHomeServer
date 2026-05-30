@@ -81,18 +81,6 @@ in
   };
 
   config = {
-    repo.storage.userRoots = {
-      rootTraverseGroups = [
-        "immich"
-      ];
-      recursiveReadonlyGrants = [
-        {
-          group = "immich";
-          relativePaths = [ "photos" ];
-        }
-      ];
-    };
-
     systemd.services.immich-storage-layout-v1 = {
       description = "Provision Immich storage layout";
       wantedBy = [ "multi-user.target" ];
