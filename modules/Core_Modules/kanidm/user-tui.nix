@@ -9,6 +9,10 @@ in
 {
   environment.systemPackages = systemPackages;
 
+  # TODO(kanidm-admin): replace the current reliance on the broad local admin
+  # sudo policy with either a root-owned helper or exact sudoers entries for
+  # the fixed RootAction set used by kanidm-admin (systemd starts, chpasswd,
+  # and secret-file reads).
   environment.variables = {
     KANIDM_ADMIN_REPO_ROOT = "/etc/nixos";
     KANIDM_ADMIN_SERVER_URL = vars.kanidmBaseUrl;

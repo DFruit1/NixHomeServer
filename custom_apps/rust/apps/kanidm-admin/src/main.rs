@@ -17,9 +17,10 @@ use kanidm_admin::{
         },
         group::{group_members, list_groups, search_groups, show_group},
         local::{invite_vaultwarden_user, stage_jellyfin_password},
+        local_runtime::ConvergencePolicy,
         membership::{
-            add_membership, remove_membership, set_membership, show_membership,
-            SetMembershipOptions,
+            add_membership_with_config, remove_membership_with_config, set_membership_with_config,
+            show_membership, SetMembershipOptions,
         },
         policy::{
             reset_group_auth_expiry, reset_group_privilege_expiry, set_group_auth_expiry,
@@ -29,10 +30,15 @@ use kanidm_admin::{
             ensure_interactive_session_allowed, session_login, session_logout, session_reauth,
             session_status,
         },
+        sftp::{
+            diagnose_sftp_login_with_policy, reconcile_sftp_login_with_policy,
+            test_sftp_login_with_policy,
+        },
         user::{
-            create_user, delete_user, diagnose_posix_password, disable_user, enable_user,
-            list_users, reset_token, set_posix_password, show_user, test_posix_password,
-            CreateUserOptions, DeleteUserOptions, PosixPasswordOptions, ResetTokenOptions,
+            create_user, delete_user, diagnose_posix_password_with_config, disable_user,
+            enable_user, list_users, reset_token, set_posix_password_with_config, show_user,
+            test_posix_password_with_config, CreateUserOptions, DeleteUserOptions,
+            PosixPasswordOptions, ResetTokenOptions,
         },
     },
     output::{render_error, render_output, CommandOutput, OutputFormat},
@@ -44,6 +50,7 @@ use kanidm_admin::{
         PRIVILEGE_EXPIRY_MIN_SECONDS, RESET_TOKEN_TTL_MAX_SECONDS, RESET_TOKEN_TTL_MIN_SECONDS,
     },
 };
+use std::time::Duration;
 
 const ROOT_AFTER_HELP: &str =
     "Examples:\n  kanidm-admin\n  kanidm-admin context show\n  kanidm-admin doctor";
@@ -88,6 +95,9 @@ struct Cli {
     )]
     output: OutputFormat,
 
+    #[arg(long, global = true, help = "Alias for --output json.")]
+    json: bool,
+
     #[arg(
         long,
         global = true,
@@ -97,6 +107,16 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+impl Cli {
+    fn output_format(&self) -> OutputFormat {
+        if self.json {
+            OutputFormat::Json
+        } else {
+            self.output
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -397,6 +417,7 @@ struct LocalCommand {
 #[derive(Debug, Subcommand)]
 enum LocalSubcommand {
     JellyfinPassword(LocalJellyfinPasswordCommand),
+    Sftp(LocalSftpCommand),
     Vaultwarden(LocalVaultwardenCommand),
 }
 
@@ -416,6 +437,51 @@ enum LocalJellyfinPasswordSubcommand {
 }
 
 #[derive(Debug, Args)]
+struct LocalSftpCommand {
+    #[command(subcommand)]
+    command: LocalSftpSubcommand,
+}
+
+#[derive(Debug, Clone, Args)]
+struct RuntimeCliOptions {
+    #[arg(long, help = "Override local runtime convergence timeout in seconds.")]
+    timeout: Option<u64>,
+    #[arg(
+        long,
+        help = "Override local runtime convergence retry interval in milliseconds."
+    )]
+    interval: Option<u64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum LocalSftpSubcommand {
+    #[command(about = "Inspect the non-secret SFTP login prerequisites for a user.")]
+    Diagnose {
+        account_id: String,
+        #[command(flatten)]
+        runtime: RuntimeCliOptions,
+    },
+    #[command(about = "Run local SFTP sync services and verify the login path.")]
+    Reconcile {
+        account_id: String,
+        #[command(flatten)]
+        runtime: RuntimeCliOptions,
+    },
+    #[command(about = "Test the local SFTP runtime path without changing Kanidm state.")]
+    Test {
+        account_id: String,
+        #[command(flatten)]
+        runtime: RuntimeCliOptions,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Also run interactive kanidm-unix auth-test for the current POSIX/SFTP password."
+        )]
+        auth_test: bool,
+    },
+}
+
+#[derive(Debug, Args)]
 struct LocalVaultwardenCommand {
     #[command(subcommand)]
     command: LocalVaultwardenSubcommand,
@@ -428,7 +494,7 @@ enum LocalVaultwardenSubcommand {
 
 fn main() {
     let cli = Cli::parse();
-    let output = cli.output;
+    let output = cli.output_format();
 
     match run(cli) {
         Ok(Some(command_output)) => {
@@ -455,6 +521,7 @@ fn prompt_confirmed_password(prompt: &str) -> Result<String, kanidm_admin::AppEr
 
 fn set_posix_password_interactive(
     kanidm: &KanidmCli,
+    sftp_runtime: &kanidm_admin::context::SftpRuntimeConfig,
     output: OutputFormat,
     account_id: String,
 ) -> Result<CommandOutput, kanidm_admin::AppError> {
@@ -474,8 +541,9 @@ fn set_posix_password_interactive(
                     entered
                 }
             };
-            set_posix_password(
+            set_posix_password_with_config(
                 kanidm,
+                sftp_runtime,
                 PosixPasswordOptions {
                     account_id: account_id.clone(),
                     password,
@@ -539,7 +607,7 @@ fn recover_cli_session_interactively(
 }
 
 fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_admin::AppError> {
-    let output = cli.output;
+    let output = cli.output_format();
     let context = resolve_context(ContextOverrides {
         repo_root: cli.repo_root,
         server_url: cli.server_url,
@@ -647,16 +715,24 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             UserSubcommand::PosixPassword(command) => match command.command {
                 UserPosixPasswordSubcommand::Set { account_id } => {
                     let account_id = validate_account_id(&account_id)?;
-                    set_posix_password_interactive(&kanidm, output, account_id).map(Some)
+                    set_posix_password_interactive(
+                        &kanidm,
+                        &context.sftp_runtime,
+                        output,
+                        account_id,
+                    )
+                    .map(Some)
                 }
                 UserPosixPasswordSubcommand::Test { account_id } => {
                     ensure_interactive_session_allowed(output)?;
                     let account_id = validate_account_id(&account_id)?;
-                    test_posix_password(&kanidm, &account_id).map(Some)
+                    test_posix_password_with_config(&kanidm, &context.sftp_runtime, &account_id)
+                        .map(Some)
                 }
                 UserPosixPasswordSubcommand::Diagnose { account_id } => {
                     let account_id = validate_account_id(&account_id)?;
-                    diagnose_posix_password(&kanidm, &account_id).map(Some)
+                    diagnose_posix_password_with_config(&kanidm, &context.sftp_runtime, &account_id)
+                        .map(Some)
                 }
             },
         },
@@ -683,12 +759,14 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             MembershipSubcommand::Add { account_id, groups } => {
                 let account_id = validate_account_id(&account_id)?;
                 let groups = validate_identifier_list("group name", groups)?;
-                add_membership(&kanidm, &account_id, &groups).map(Some)
+                add_membership_with_config(&kanidm, &context.sftp_runtime, &account_id, &groups)
+                    .map(Some)
             }
             MembershipSubcommand::Remove { account_id, groups } => {
                 let account_id = validate_account_id(&account_id)?;
                 let groups = validate_identifier_list("group name", groups)?;
-                remove_membership(&kanidm, &account_id, &groups).map(Some)
+                remove_membership_with_config(&kanidm, &context.sftp_runtime, &account_id, &groups)
+                    .map(Some)
             }
             MembershipSubcommand::Set {
                 account_id,
@@ -697,8 +775,9 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             } => {
                 let account_id = validate_account_id(&account_id)?;
                 let groups = validate_identifier_list("group name", groups)?;
-                set_membership(
+                set_membership_with_config(
                     &kanidm,
+                    &context.sftp_runtime,
                     SetMembershipOptions {
                         account_id,
                         groups,
@@ -808,6 +887,52 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                     stage_jellyfin_password(&account_id, &password_env).map(Some)
                 }
             },
+            LocalSubcommand::Sftp(command) => match command.command {
+                LocalSftpSubcommand::Diagnose {
+                    account_id,
+                    runtime,
+                } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    diagnose_sftp_login_with_policy(
+                        &kanidm,
+                        &context.sftp_runtime,
+                        &account_id,
+                        convergence_policy_from_cli(&runtime)?,
+                    )
+                    .map(Some)
+                }
+                LocalSftpSubcommand::Reconcile {
+                    account_id,
+                    runtime,
+                } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    reconcile_sftp_login_with_policy(
+                        &kanidm,
+                        &context.sftp_runtime,
+                        &account_id,
+                        convergence_policy_from_cli(&runtime)?,
+                    )
+                    .map(Some)
+                }
+                LocalSftpSubcommand::Test {
+                    account_id,
+                    runtime,
+                    auth_test,
+                } => {
+                    if auth_test {
+                        ensure_interactive_session_allowed(output)?;
+                    }
+                    let account_id = validate_account_id(&account_id)?;
+                    test_sftp_login_with_policy(
+                        &kanidm,
+                        &context.sftp_runtime,
+                        &account_id,
+                        auth_test,
+                        convergence_policy_from_cli(&runtime)?,
+                    )
+                    .map(Some)
+                }
+            },
             LocalSubcommand::Vaultwarden(command) => match command.command {
                 LocalVaultwardenSubcommand::Invite { account_id } => {
                     let account_id = validate_account_id(&account_id)?;
@@ -824,6 +949,30 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
         Err(error) => attach_backend_steps_to_error(&kanidm, error),
     }
     result
+}
+
+fn convergence_policy_from_cli(
+    options: &RuntimeCliOptions,
+) -> Result<ConvergencePolicy, kanidm_admin::AppError> {
+    let timeout = options.timeout.unwrap_or(30);
+    let interval = options.interval.unwrap_or(500);
+    if timeout > 300 {
+        return Err(kanidm_admin::AppError::Config {
+            message: "runtime convergence timeout must be 300 seconds or less".to_string(),
+        });
+    }
+    if interval == 0 || interval > 60_000 {
+        return Err(kanidm_admin::AppError::Config {
+            message: "runtime convergence interval must be between 1 and 60000 milliseconds"
+                .to_string(),
+        });
+    }
+
+    Ok(ConvergencePolicy {
+        timeout: Duration::from_secs(timeout),
+        interval: Duration::from_millis(interval),
+        stable_successes_required: 1,
+    })
 }
 
 fn attach_backend_steps(kanidm: &KanidmCli, output: &mut kanidm_admin::output::CommandOutput) {
@@ -1045,6 +1194,42 @@ mod tests {
                     command: LocalVaultwardenSubcommand::Invite { account_id }
                 })
             })) if account_id == "dsaw"
+        ));
+    }
+
+    #[test]
+    fn parses_local_sftp_commands() {
+        let diagnose = Cli::try_parse_from(["kanidm-admin", "local", "sftp", "diagnose", "alice"])
+            .expect("parse diagnose");
+        assert!(matches!(
+            diagnose.command,
+            Some(Commands::Local(LocalCommand {
+                command: LocalSubcommand::Sftp(LocalSftpCommand {
+                    command: LocalSftpSubcommand::Diagnose { account_id, .. }
+                })
+            })) if account_id == "alice"
+        ));
+
+        let test = Cli::try_parse_from([
+            "kanidm-admin",
+            "local",
+            "sftp",
+            "test",
+            "alice",
+            "--auth-test",
+        ])
+        .expect("parse test");
+        assert!(matches!(
+            test.command,
+            Some(Commands::Local(LocalCommand {
+                command: LocalSubcommand::Sftp(LocalSftpCommand {
+                    command: LocalSftpSubcommand::Test {
+                        account_id,
+                        auth_test: true,
+                        ..
+                    }
+                })
+            })) if account_id == "alice"
         ));
     }
 

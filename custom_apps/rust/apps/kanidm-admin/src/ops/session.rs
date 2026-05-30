@@ -334,6 +334,7 @@ printf 'active token for admindsaw\n'
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -361,6 +362,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -394,6 +396,7 @@ EOF
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -439,6 +442,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 

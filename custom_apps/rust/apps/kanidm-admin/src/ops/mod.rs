@@ -7,9 +7,11 @@ pub mod context;
 pub mod executor;
 pub mod group;
 pub mod local;
+pub mod local_runtime;
 pub mod membership;
 pub mod policy;
 pub mod session;
+pub mod sftp;
 pub mod user;
 
 pub(crate) struct ReconciledWrite<T> {

@@ -38,12 +38,12 @@ pub fn run(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError
         let home = load_home(kanidm, &mut home_cache);
         let action = select_main_menu(context, &home)?;
         match action {
-            SimpleMenuAction::CreateUser => create_user_flow(kanidm)?,
-            SimpleMenuAction::ManageUserAccess => manage_user_access_flow(kanidm)?,
+            SimpleMenuAction::CreateUser => create_user_flow(context, kanidm)?,
+            SimpleMenuAction::ManageUserAccess => manage_user_access_flow(context, kanidm)?,
             SimpleMenuAction::FindViewUser => find_view_user_flow(kanidm)?,
             SimpleMenuAction::DisableEnableUser => disable_enable_user_flow(kanidm)?,
             SimpleMenuAction::HelpUserResetPassword => help_user_reset_password_flow(kanidm)?,
-            SimpleMenuAction::SetPosixPassword => set_posix_password_flow(kanidm)?,
+            SimpleMenuAction::SetPosixPassword => set_posix_password_flow(context, kanidm)?,
             SimpleMenuAction::ShowBackendLogs => show_backend_logs_flow(kanidm)?,
             SimpleMenuAction::Advanced => advanced_menu(context, kanidm)?,
             SimpleMenuAction::Exit => break,

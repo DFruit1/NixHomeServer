@@ -33,8 +33,9 @@ use crate::{
             VaultwardenUserState, VaultwardenUserStatus,
         },
         membership::{
-            add_membership, membership_diff, normalize_groups, prepare_membership_picker_inventory,
-            remove_membership, set_membership, show_membership, SetMembershipOptions,
+            add_membership_with_config, membership_diff, normalize_groups,
+            prepare_membership_picker_inventory, remove_membership_with_config,
+            set_membership_with_config, show_membership, SetMembershipOptions,
         },
         policy::{
             reset_group_auth_expiry, reset_group_privilege_expiry, set_group_auth_expiry,
@@ -43,8 +44,8 @@ use crate::{
         session::{session_login, session_logout, session_reauth, session_status},
         user::{
             create_user, delete_user, disable_user, enable_user, load_user, reset_token,
-            set_posix_password, CreateUserOptions, DeleteUserOptions, PosixPasswordOptions,
-            ResetTokenOptions,
+            set_posix_password_with_config, CreateUserOptions, DeleteUserOptions,
+            PosixPasswordOptions, ResetTokenOptions,
         },
     },
     output::{render_backend_steps_full, render_backend_steps_summary, CommandOutput},
@@ -88,7 +89,7 @@ fn advanced_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), Ap
         match selection {
             0 => session_tools_menu(kanidm)?,
             1 => group_inspection_menu(kanidm)?,
-            2 => membership_tools_menu(kanidm)?,
+            2 => membership_tools_menu(context, kanidm)?,
             3 => clients_menu(kanidm)?,
             4 => policy_menu(kanidm)?,
             5 => context_menu(context, kanidm)?,
@@ -146,7 +147,7 @@ fn group_inspection_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
     Ok(())
 }
 
-fn membership_tools_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
+fn membership_tools_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     while let Some(selection) =
         forms::contextual_select("Membership Tools", None, &membership_tools_items(), 0)?
     {
@@ -154,9 +155,9 @@ fn membership_tools_menu(kanidm: &KanidmCli) -> Result<(), AppError> {
             0 => user_target_flow(kanidm, "Select a user to inspect access", |account_id| {
                 show_membership(kanidm, account_id)
             })?,
-            1 => membership_change_flow(kanidm, MembershipChange::Add)?,
-            2 => membership_change_flow(kanidm, MembershipChange::Remove)?,
-            3 => edit_membership_flow(kanidm)?,
+            1 => membership_change_flow(context, kanidm, MembershipChange::Add)?,
+            2 => membership_change_flow(context, kanidm, MembershipChange::Remove)?,
+            3 => edit_membership_flow(context, kanidm)?,
             _ => break,
         }
     }
@@ -349,7 +350,7 @@ fn local_helpers_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(
     Ok(())
 }
 
-fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+fn create_user_flow(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     let Some(account_id) = prompt_submitted(forms::input_required_validated(
         "New account id / username",
         None,
@@ -393,7 +394,7 @@ fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
                 && partial_success_has_observed_user(&error, &account_id)
             {
                 match forms::confirm("Continue to access setup for this existing user?", false)? {
-                    Some(true) => return edit_membership_for_account(kanidm, &account_id),
+                    Some(true) => return edit_membership_for_account(context, kanidm, &account_id),
                     _ => return Ok(()),
                 }
             }
@@ -410,7 +411,7 @@ fn create_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         ),
     );
     forms::pause("Press Enter or Esc to continue to access setup")?;
-    edit_membership_for_account(kanidm, &account_id)
+    edit_membership_for_account(context, kanidm, &account_id)
 }
 
 fn delete_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
@@ -489,7 +490,7 @@ fn help_user_reset_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     })
 }
 
-fn set_posix_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+fn set_posix_password_flow(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     let Some(account_id) = choose_account_id(
         kanidm,
         "Select a user who needs a POSIX/SFTP password set or reset",
@@ -515,8 +516,9 @@ fn set_posix_password_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
         return Ok(());
     };
     run_privileged_command("Set POSIX Password", kanidm, || {
-        set_posix_password(
+        set_posix_password_with_config(
             kanidm,
+            &context.sftp_runtime,
             PosixPasswordOptions {
                 account_id: account_id.clone(),
                 password: password.clone(),
@@ -693,7 +695,7 @@ fn redirect_flow(kanidm: &KanidmCli, add: bool) -> Result<(), AppError> {
     }
 }
 
-fn edit_membership_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+fn edit_membership_flow(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     let Some(account_id) = choose_account_id(
         kanidm,
         "Select a user to authoritatively set direct memberships for",
@@ -701,10 +703,14 @@ fn edit_membership_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     else {
         return Ok(());
     };
-    edit_membership_for_account(kanidm, &account_id)
+    edit_membership_for_account(context, kanidm, &account_id)
 }
 
-fn edit_membership_for_account(kanidm: &KanidmCli, account_id: &str) -> Result<(), AppError> {
+fn edit_membership_for_account(
+    context: &ResolvedContext,
+    kanidm: &KanidmCli,
+    account_id: &str,
+) -> Result<(), AppError> {
     let Some(inventory) =
         perform_interactive_read(kanidm, || prepare_membership_picker_inventory(kanidm))?
     else {
@@ -790,8 +796,9 @@ fn edit_membership_for_account(kanidm: &KanidmCli, account_id: &str) -> Result<(
         match forms::confirm("Apply these membership changes now?", false)? {
             Some(true) => {
                 return run_privileged_command("Memberships", kanidm, || {
-                    set_membership(
+                    set_membership_with_config(
                         kanidm,
+                        &context.sftp_runtime,
                         SetMembershipOptions {
                             account_id: account_id.to_string(),
                             groups: review.selected_visible_groups.clone(),
@@ -817,11 +824,11 @@ fn edit_membership_for_account(kanidm: &KanidmCli, account_id: &str) -> Result<(
     }
 }
 
-fn manage_user_access_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
+fn manage_user_access_flow(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), AppError> {
     let Some(account_id) = choose_account_id(kanidm, "Select a user to manage access for")? else {
         return Ok(());
     };
-    edit_membership_for_account(kanidm, &account_id)
+    edit_membership_for_account(context, kanidm, &account_id)
 }
 
 fn find_view_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
@@ -881,7 +888,11 @@ fn disable_enable_user_flow(kanidm: &KanidmCli) -> Result<(), AppError> {
     }
 }
 
-fn membership_change_flow(kanidm: &KanidmCli, mode: MembershipChange) -> Result<(), AppError> {
+fn membership_change_flow(
+    context: &ResolvedContext,
+    kanidm: &KanidmCli,
+    mode: MembershipChange,
+) -> Result<(), AppError> {
     let Some(account_id) = choose_account_id(kanidm, "Select a user")? else {
         return Ok(());
     };
@@ -947,10 +958,20 @@ fn membership_change_flow(kanidm: &KanidmCli, mode: MembershipChange) -> Result<
     }
     match mode {
         MembershipChange::Add => run_privileged_command("Memberships", kanidm, || {
-            add_membership(kanidm, &account_id, &review.groups_to_add)
+            add_membership_with_config(
+                kanidm,
+                &context.sftp_runtime,
+                &account_id,
+                &review.groups_to_add,
+            )
         }),
         MembershipChange::Remove => run_privileged_command("Memberships", kanidm, || {
-            remove_membership(kanidm, &account_id, &review.groups_to_remove)
+            remove_membership_with_config(
+                kanidm,
+                &context.sftp_runtime,
+                &account_id,
+                &review.groups_to_remove,
+            )
         }),
     }
 }
@@ -2459,6 +2480,7 @@ mod tests {
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: Some("https://passwords.example.test".to_string()),
             vaultwarden_admin_token_file: Some("/run/agenix/vaultwardenAdminToken".into()),
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
         std::mem::forget(dir);

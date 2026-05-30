@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::{
+    context::SftpRuntimeConfig,
     inventory::{
         clients::{parse_client_list, parse_client_record},
         groups::{category_sort_rank, is_operator_visible_group, parse_group_list, GroupSummary},
@@ -14,7 +15,10 @@ use crate::{
     AppError,
 };
 
-use super::user::load_user;
+use super::{
+    sftp::{groups_affect_file_runtime, reconcile_file_access_runtime, verify_removed_file_access},
+    user::load_user,
+};
 
 #[derive(Debug, Clone)]
 pub struct SetMembershipOptions {
@@ -56,6 +60,15 @@ pub fn add_membership(
     account_id: &str,
     groups: &[String],
 ) -> Result<CommandOutput, AppError> {
+    add_membership_with_config(cli, &SftpRuntimeConfig::default(), account_id, groups)
+}
+
+pub fn add_membership_with_config(
+    cli: &KanidmCli,
+    config: &SftpRuntimeConfig,
+    account_id: &str,
+    groups: &[String],
+) -> Result<CommandOutput, AppError> {
     let desired = normalize_groups(groups.to_vec());
     if desired.is_empty() {
         return Err(AppError::Config {
@@ -79,26 +92,50 @@ pub fn add_membership(
         MembershipMode::ContainsAll,
     )?;
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ContainsAll)?;
+    let sftp_reconcile = if groups_affect_file_runtime(config, &desired) {
+        Some(reconcile_file_access_runtime(cli, config, account_id)?)
+    } else {
+        None
+    };
+    let sftp_reconcile_details = sftp_reconcile.as_ref().map(|output| output.details.clone());
+    let sftp_warnings = sftp_reconcile
+        .as_ref()
+        .map(|output| output.warnings.clone())
+        .unwrap_or_default();
+    let mut human = format!(
+        "Added groups to '{}'.\n\nCurrent Direct Groups:\n{}",
+        account_id,
+        render_groups(&user.value.groups)
+    );
+    if sftp_reconcile_details.is_some() {
+        human.push_str("\n\nSFTP runtime path was reconciled and verified.");
+    }
 
     Ok(CommandOutput {
         message: format!("added direct memberships to '{}'", account_id),
-        human: format!(
-            "Added groups to '{}'.\n\nCurrent Direct Groups:\n{}",
-            account_id,
-            render_groups(&user.value.groups)
-        ),
+        human,
         details: json!({
             "account_id": account_id,
             "groups_added": desired,
             "requested_state": requested_state,
             "user": user.value,
+            "sftp_reconcile": sftp_reconcile_details,
         }),
-        warnings: merge_warnings(warnings, user.warnings),
+        warnings: merge_warnings(merge_warnings(warnings, user.warnings), sftp_warnings),
     })
 }
 
 pub fn remove_membership(
     cli: &KanidmCli,
+    account_id: &str,
+    groups: &[String],
+) -> Result<CommandOutput, AppError> {
+    remove_membership_with_config(cli, &SftpRuntimeConfig::default(), account_id, groups)
+}
+
+pub fn remove_membership_with_config(
+    cli: &KanidmCli,
+    config: &SftpRuntimeConfig,
     account_id: &str,
     groups: &[String],
 ) -> Result<CommandOutput, AppError> {
@@ -125,26 +162,56 @@ pub fn remove_membership(
         MembershipMode::ExcludesAll,
     )?;
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ExcludesAll)?;
+    let file_runtime_removal = if groups_affect_file_runtime(config, &desired) {
+        Some(verify_removed_file_access(
+            cli, config, account_id, &desired,
+        )?)
+    } else {
+        None
+    };
+    let file_runtime_removal_details = file_runtime_removal
+        .as_ref()
+        .map(|output| output.details.clone());
+    let file_runtime_warnings = file_runtime_removal
+        .as_ref()
+        .map(|output| output.warnings.clone())
+        .unwrap_or_default();
+    let mut human = format!(
+        "Removed groups from '{}'.\n\nCurrent Direct Groups:\n{}",
+        account_id,
+        render_groups(&user.value.groups)
+    );
+    if file_runtime_removal_details.is_some() {
+        human.push_str("\n\nFile-access sync services were started and removed local runtime access was verified.");
+    }
 
     Ok(CommandOutput {
         message: format!("removed direct memberships from '{}'", account_id),
-        human: format!(
-            "Removed groups from '{}'.\n\nCurrent Direct Groups:\n{}",
-            account_id,
-            render_groups(&user.value.groups)
-        ),
+        human,
         details: json!({
             "account_id": account_id,
             "groups_removed": desired,
             "requested_state": requested_state,
             "user": user.value,
+            "file_runtime_removal": file_runtime_removal_details,
         }),
-        warnings: merge_warnings(warnings, user.warnings),
+        warnings: merge_warnings(
+            merge_warnings(warnings, user.warnings),
+            file_runtime_warnings,
+        ),
     })
 }
 
 pub fn set_membership(
     cli: &KanidmCli,
+    options: SetMembershipOptions,
+) -> Result<CommandOutput, AppError> {
+    set_membership_with_config(cli, &SftpRuntimeConfig::default(), options)
+}
+
+pub fn set_membership_with_config(
+    cli: &KanidmCli,
+    config: &SftpRuntimeConfig,
     options: SetMembershipOptions,
 ) -> Result<CommandOutput, AppError> {
     let desired_groups = normalize_groups(options.groups);
@@ -200,16 +267,59 @@ pub fn set_membership(
         &effective_desired_groups,
         MembershipMode::Exact,
     )?;
+    let file_runtime_changed = groups_affect_file_runtime(config, &diff.added)
+        || groups_affect_file_runtime(config, &diff.removed);
+    let sftp_reconcile =
+        if file_runtime_changed && groups_affect_file_runtime(config, &user.value.groups) {
+            Some(reconcile_file_access_runtime(
+                cli,
+                config,
+                &options.account_id,
+            )?)
+        } else {
+            None
+        };
+    let file_runtime_removal = if groups_affect_file_runtime(config, &diff.removed) {
+        Some(verify_removed_file_access(
+            cli,
+            config,
+            &options.account_id,
+            &diff.removed,
+        )?)
+    } else {
+        None
+    };
+    let sftp_reconcile_details = sftp_reconcile.as_ref().map(|output| output.details.clone());
+    let file_runtime_removal_details = file_runtime_removal
+        .as_ref()
+        .map(|output| output.details.clone());
+    let sftp_warnings = merge_warnings(
+        sftp_reconcile
+            .as_ref()
+            .map(|output| output.warnings.clone())
+            .unwrap_or_default(),
+        file_runtime_removal
+            .as_ref()
+            .map(|output| output.warnings.clone())
+            .unwrap_or_default(),
+    );
+    let mut human = format!(
+        "Set direct memberships for '{}'.\n\nAdded:\n{}\n\nRemoved:\n{}\n\nCurrent Direct Groups:\n{}",
+        options.account_id,
+        render_groups(&diff.added),
+        render_groups(&diff.removed),
+        render_groups(&user.value.groups)
+    );
+    if sftp_reconcile_details.is_some() {
+        human.push_str("\n\nSFTP runtime path was reconciled and verified.");
+    }
+    if file_runtime_removal_details.is_some() {
+        human.push_str("\n\nRemoved file-access runtime state was verified.");
+    }
 
     Ok(CommandOutput {
         message: format!("set direct memberships for '{}'", options.account_id),
-        human: format!(
-            "Set direct memberships for '{}'.\n\nAdded:\n{}\n\nRemoved:\n{}\n\nCurrent Direct Groups:\n{}",
-            options.account_id,
-            render_groups(&diff.added),
-            render_groups(&diff.removed),
-            render_groups(&user.value.groups)
-        ),
+        human,
         details: json!({
             "account_id": options.account_id,
             "desired_groups": desired_groups,
@@ -220,8 +330,10 @@ pub fn set_membership(
             "added": diff.added,
             "removed": diff.removed,
             "user": user.value,
+            "sftp_reconcile": sftp_reconcile_details,
+            "file_runtime_removal": file_runtime_removal_details,
         }),
-        warnings: merge_warnings(warnings, user.warnings),
+        warnings: merge_warnings(merge_warnings(warnings, user.warnings), sftp_warnings),
     })
 }
 

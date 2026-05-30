@@ -78,6 +78,20 @@ impl BackendLog {
         }));
     }
 
+    pub fn record_redacted_result(&self, record: BackendLogRecord<'_>, redaction: Value) {
+        self.push(json!({
+            "step": record.step,
+            "mode": command_mode_label(record.mode),
+            "program": record.program,
+            "args": record.args,
+            "status": record.status,
+            "stdout": record.stdout,
+            "stderr": record.stderr,
+            "error": null,
+            "redaction": redaction,
+        }));
+    }
+
     pub fn record_exec_error(
         &self,
         step: &str,

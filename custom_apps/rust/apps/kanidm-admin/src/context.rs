@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::AppError;
 
@@ -46,7 +46,66 @@ pub struct ResolvedContext {
     pub kanidm_bin: OsString,
     pub vaultwarden_url: Option<String>,
     pub vaultwarden_admin_token_file: Option<PathBuf>,
+    pub sftp_runtime: SftpRuntimeConfig,
     pub runtime_policy: RuntimePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SftpRuntimeConfig {
+    pub sftp_access_group: String,
+    pub local_sftp_access_group: String,
+    pub web_access_group: String,
+    pub shared_access_group: String,
+    pub usb_access_group: String,
+    pub backup_storage_access_group: String,
+    pub sftp_chroot_base: String,
+    pub users_root: String,
+    pub shared_root: String,
+    pub usb_root: String,
+    pub backup_root: String,
+    pub shared_mount_name: String,
+    pub usb_mount_name: String,
+    pub backup_storage_mount_name: String,
+    pub files_sftp_port: u16,
+    pub files_sftp_sshd_service: String,
+    pub kanidm_unixd_service: String,
+    pub posix_groups_service: String,
+    pub user_root_sync_service: String,
+    pub user_root_bind_template: String,
+    pub shared_bind_template: String,
+    pub usb_bind_template: String,
+    pub backup_bind_template: String,
+}
+
+impl Default for SftpRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            sftp_access_group: "files-sftp-users".to_string(),
+            local_sftp_access_group: "files-local-sftp-users".to_string(),
+            web_access_group: "user-files".to_string(),
+            shared_access_group: "files-shared-users".to_string(),
+            usb_access_group: "usb-access".to_string(),
+            backup_storage_access_group: "admin-backups".to_string(),
+            sftp_chroot_base: "/srv/files-sftp/chroots".to_string(),
+            users_root: "/mnt/data/users".to_string(),
+            shared_root: "/mnt/data/shared".to_string(),
+            usb_root: "/mnt/external-usb".to_string(),
+            backup_root: "/mnt/data/backups".to_string(),
+            shared_mount_name: "_Shared".to_string(),
+            usb_mount_name: "_USB".to_string(),
+            backup_storage_mount_name: "_Backups".to_string(),
+            files_sftp_port: 2222,
+            files_sftp_sshd_service: "files-sftp-sshd.service".to_string(),
+            kanidm_unixd_service: "kanidm-unixd.service".to_string(),
+            posix_groups_service: "kanidm-files-posix-groups.service".to_string(),
+            user_root_sync_service: "fileshare-user-root-sync.service".to_string(),
+            user_root_bind_template: "files-sftp-user-root@.service".to_string(),
+            shared_bind_template: "files-shared-bindfs@.service".to_string(),
+            usb_bind_template: "files-usb-bindfs@.service".to_string(),
+            backup_bind_template: "files-backups-bindfs@.service".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,12 +129,15 @@ struct RepoDefaults {
     admin_name: String,
     #[serde(rename = "vaultwardenUrl")]
     vaultwarden_url: Option<String>,
+    #[serde(rename = "sftpRuntime", default)]
+    sftp_runtime: SftpRuntimeConfig,
 }
 
 pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, AppError> {
-    let repo_root = overrides
+    let explicit_repo_root = overrides
         .repo_root
         .or_else(|| env::var_os(ENV_REPO_ROOT).map(PathBuf::from));
+    let repo_root = explicit_repo_root.clone();
     let server_url = overrides
         .server_url
         .or_else(|| env::var(ENV_SERVER_URL).ok());
@@ -103,13 +165,19 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
     };
 
     if let (Some(server_url), Some(admin_name)) = (&server_url, &admin_name) {
+        let resolved_repo_root = repo_root.or_else(find_repo_root_optional);
+        let sftp_runtime = match explicit_repo_root.as_ref() {
+            Some(repo_root) => nix_repo_defaults(&nix_bin, repo_root)?.sftp_runtime,
+            None => SftpRuntimeConfig::default(),
+        };
         return Ok(ResolvedContext {
-            repo_root: repo_root.or_else(find_repo_root_optional),
+            repo_root: resolved_repo_root,
             server_url: server_url.clone(),
             admin_name: admin_name.clone(),
             kanidm_bin,
             vaultwarden_url,
             vaultwarden_admin_token_file,
+            sftp_runtime,
             runtime_policy,
         });
     }
@@ -133,6 +201,7 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
         kanidm_bin,
         vaultwarden_url: vaultwarden_url.or(defaults.vaultwarden_url),
         vaultwarden_admin_token_file,
+        sftp_runtime: defaults.sftp_runtime,
         runtime_policy,
     })
 }
@@ -189,7 +258,45 @@ fn nix_repo_defaults(nix_bin: &OsString, repo_root: &Path) -> Result<RepoDefault
         details: serde_json::json!({ "error": error.to_string(), "repo_root": repo_str }),
     })?;
     let expr = format!(
-        "let repo = {repo_literal}; flake = builtins.getFlake repo; vars = import (builtins.toPath (repo + \"/vars.nix\")) {{ lib = flake.inputs.nixpkgs.lib; }}; in {{ serverUrl = vars.kanidmBaseUrl; adminName = vars.kanidmAdminUser; vaultwardenUrl = \"https://passwords.${{vars.domain}}\"; }}"
+        r#"let
+  repo = {repo_literal};
+  flake = builtins.getFlake repo;
+  lib = flake.inputs.nixpkgs.lib;
+  vars = import (builtins.toPath (repo + "/vars.nix")) {{ inherit lib; }};
+  fileAccess = vars.fileAccess or {{}};
+  backupAccess = vars.backupAccess or {{}};
+  networkingPorts = vars.networking.ports or {{}};
+  dataRoot = vars.dataRoot or "/mnt/data";
+in {{
+  serverUrl = vars.kanidmBaseUrl;
+  adminName = vars.kanidmAdminUser;
+  vaultwardenUrl = "https://passwords.${{vars.domain}}";
+  sftpRuntime = {{
+    sftpAccessGroup = fileAccess.sftpAccessGroup or "files-sftp-users";
+    localSftpAccessGroup = "files-local-sftp-users";
+    webAccessGroup = fileAccess.webAccessGroup or "user-files";
+    sharedAccessGroup = fileAccess.sharedAccessGroup or "files-shared-users";
+    usbAccessGroup = fileAccess.usbAccessGroup or "usb-access";
+    backupStorageAccessGroup = backupAccess.storageGroup or "admin-backups";
+    sftpChrootBase = fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
+    usersRoot = vars.usersRoot or "${{dataRoot}}/users";
+    sharedRoot = vars.sharedRoot or "${{dataRoot}}/shared";
+    usbRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
+    backupRoot = vars.backupRoot or "${{dataRoot}}/backups";
+    sharedMountName = fileAccess.sharedMountName or "_Shared";
+    usbMountName = fileAccess.usbMountName or "_USB";
+    backupStorageMountName = backupAccess.storageMountName or "_Backups";
+    filesSftpPort = networkingPorts.filesSftp or 2222;
+    filesSftpSshdService = "files-sftp-sshd.service";
+    kanidmUnixdService = "kanidm-unixd.service";
+    posixGroupsService = "kanidm-files-posix-groups.service";
+    userRootSyncService = "fileshare-user-root-sync.service";
+    userRootBindTemplate = "files-sftp-user-root@.service";
+    sharedBindTemplate = "files-shared-bindfs@.service";
+    usbBindTemplate = "files-usb-bindfs@.service";
+    backupBindTemplate = "files-backups-bindfs@.service";
+  }};
+}}"#
     );
 
     let output = run_nix_eval(nix_bin, &expr)?;
@@ -354,7 +461,7 @@ mod tests {
         write_script(
             &nix,
             r#"#!/usr/bin/env bash
-printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwardenUrl":"https://passwords.example.test"}'
+printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwardenUrl":"https://passwords.example.test","sftpRuntime":{"sftpAccessGroup":"renamed-sftp-users","localSftpAccessGroup":"renamed-local-sftp-users","webAccessGroup":"renamed-web-users","sharedAccessGroup":"renamed-shared-users","usbAccessGroup":"renamed-usb-users","backupStorageAccessGroup":"renamed-backup-users","sftpChrootBase":"/srv/renamed-chroots","usersRoot":"/srv/renamed-users","sharedRoot":"/srv/renamed-shared","usbRoot":"/srv/renamed-usb","backupRoot":"/srv/renamed-backups","sharedMountName":"SharedRenamed","usbMountName":"UsbRenamed","backupStorageMountName":"BackupsRenamed","filesSftpPort":2202,"filesSftpSshdService":"renamed-sftp.service","kanidmUnixdService":"renamed-unixd.service","posixGroupsService":"renamed-posix.service","userRootSyncService":"renamed-root-sync.service","userRootBindTemplate":"renamed-sftp-user-root@.service","sharedBindTemplate":"renamed-shared@.service","usbBindTemplate":"renamed-usb@.service","backupBindTemplate":"renamed-backup@.service"}}'
 "#,
         );
 
@@ -376,6 +483,20 @@ printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwar
             resolved.vaultwarden_url.as_deref(),
             Some("https://passwords.example.test")
         );
+        assert_eq!(
+            resolved.sftp_runtime.sftp_access_group,
+            "renamed-sftp-users"
+        );
+        assert_eq!(resolved.sftp_runtime.files_sftp_port, 2202);
+        assert_eq!(
+            resolved.sftp_runtime.files_sftp_sshd_service,
+            "renamed-sftp.service"
+        );
+        assert_eq!(
+            resolved.sftp_runtime.backup_storage_access_group,
+            "renamed-backup-users"
+        );
+        assert_eq!(resolved.sftp_runtime.usb_root, "/srv/renamed-usb");
     }
 
     #[test]
@@ -422,13 +543,26 @@ printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwar
 
     #[test]
     fn nix_eval_timeout_is_reported() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempdir().expect("tempdir");
         let script = temp.path().join("sleep.sh");
+        let sleep_bin = std::process::Command::new("bash")
+            .args(["-lc", "command -v sleep"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.trim().to_string())
+            .filter(|stdout| !stdout.is_empty())
+            .unwrap_or_else(|| "/bin/sleep".to_string());
         write_script(
             &script,
-            r#"#!/usr/bin/env bash
-sleep 1
+            &format!(
+                r#"#!/usr/bin/env bash
+{} 1
 "#,
+                sleep_bin
+            ),
         );
 
         let error =

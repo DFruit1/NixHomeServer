@@ -11,6 +11,9 @@ pub mod session_state;
 pub mod validation;
 pub mod verification;
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use serde_json::{json, Value};
 use thiserror::Error;
 

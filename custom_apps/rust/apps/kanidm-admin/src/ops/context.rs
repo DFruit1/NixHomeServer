@@ -22,7 +22,7 @@ pub fn show_context(context: &ResolvedContext) -> CommandOutput {
     CommandOutput {
         message: "loaded kanidm-admin context".to_string(),
         human: format!(
-            "Repository Root: {}\nServer URL: {}\nAdmin Name: {}\nKanidm Binary: {}\nVaultwarden URL: {}\nVaultwarden Admin Token File: {}",
+            "Repository Root: {}\nServer URL: {}\nAdmin Name: {}\nKanidm Binary: {}\nVaultwarden URL: {}\nVaultwarden Admin Token File: {}\nSFTP Access Group: {}\nLocal SFTP Bridge Group: {}\nSFTP Chroot Base: {}\nFiles SFTP Port: {}\nFiles SFTP sshd Service: {}\nUser Root Sync Service: {}",
             repo_root.as_deref().unwrap_or("(not resolved)"),
             context.server_url,
             context.admin_name,
@@ -31,6 +31,12 @@ pub fn show_context(context: &ResolvedContext) -> CommandOutput {
             vaultwarden_admin_token_file
                 .as_deref()
                 .unwrap_or("(not resolved)"),
+            context.sftp_runtime.sftp_access_group,
+            context.sftp_runtime.local_sftp_access_group,
+            context.sftp_runtime.sftp_chroot_base,
+            context.sftp_runtime.files_sftp_port,
+            context.sftp_runtime.files_sftp_sshd_service,
+            context.sftp_runtime.user_root_sync_service,
         ),
         details: json!({
             "repo_root": repo_root,
@@ -39,6 +45,7 @@ pub fn show_context(context: &ResolvedContext) -> CommandOutput {
             "kanidm_bin": kanidm_bin,
             "vaultwarden_url": context.vaultwarden_url,
             "vaultwarden_admin_token_file": vaultwarden_admin_token_file,
+            "sftp_runtime": context.sftp_runtime,
         }),
         warnings: Vec::new(),
     }
@@ -85,6 +92,7 @@ pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutpu
                     .vaultwarden_admin_token_file
                     .as_ref()
                     .map(|path| path.display().to_string()),
+                "sftp_runtime": context.sftp_runtime,
             },
             "session": report.session.to_value(),
             "probes": {
@@ -478,6 +486,7 @@ mod tests {
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: Some("https://passwords.example.test".to_string()),
             vaultwarden_admin_token_file: Some("/run/agenix/vaultwardenAdminToken".into()),
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
         std::mem::forget(dir);
@@ -492,6 +501,7 @@ mod tests {
             kanidm_bin: "/bin/true".into(),
             vaultwarden_url: Some("https://passwords.example.test".to_string()),
             vaultwarden_admin_token_file: Some("/run/agenix/vaultwardenAdminToken".into()),
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         }
     }

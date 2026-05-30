@@ -1,17 +1,18 @@
-use std::process::Command as ProcessCommand;
-
 use serde_json::{json, Value};
 
 use crate::{
+    context::SftpRuntimeConfig,
     inventory::{
         users::{parse_user_list, parse_user_record, UserRecord},
         Parsed,
     },
-    kanidm_cli::{
-        verify_with_retry, ExitStatusSummary, KanidmCli, VerificationCheck, VerificationPolicy,
-    },
+    kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck, VerificationPolicy},
     models::parse_reset_token_summary,
-    ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
+    ops::{
+        reconcile_failed_write,
+        sftp::{diagnose_sftp_login, set_posix_password_and_verify, test_sftp_login},
+        FailedWriteContext, ReconciledWrite,
+    },
     output::CommandOutput,
     validation::{
         validate_account_id, validate_display_name, validate_email, validate_seconds_field,
@@ -382,310 +383,42 @@ pub fn set_posix_password(
     cli: &KanidmCli,
     options: PosixPasswordOptions,
 ) -> Result<CommandOutput, AppError> {
-    let options = PosixPasswordOptions {
-        account_id: validate_account_id(&options.account_id)?,
-        password: options.password,
-        run_auth_test: options.run_auth_test,
-    };
-    if options.password.is_empty() {
-        return Err(AppError::Config {
-            message: "POSIX password must not be empty".to_string(),
-        });
-    }
-    let person = load_user(cli, &options.account_id)?;
+    set_posix_password_with_config(cli, &SftpRuntimeConfig::default(), options)
+}
 
-    let mut backend_steps = Vec::new();
-    let password_update = cli.person_posix_set_password(&options.account_id, &options.password)?;
-    backend_steps.push(password_update.payload("kanidm person posix set-password"));
-
-    let mut warnings = person.warnings;
-    let unixd_cache_invalidated = match cli.unix_cache_invalidate() {
-        Ok(output) => {
-            backend_steps.push(output.payload("kanidm-unix cache-invalidate"));
-            true
-        }
-        Err(error) => {
-            warnings.push(format!(
-                "Kanidm accepted the POSIX password update, but UnixD cache invalidation failed: {}",
-                error.human_message()
-            ));
-            false
-        }
-    };
-    let unixd_online = match cli.unix_status() {
-        Ok(output) => {
-            backend_steps.push(output.payload("kanidm-unix status"));
-            true
-        }
-        Err(error) => {
-            warnings.push(format!(
-                "Kanidm accepted the POSIX password update, but UnixD status check failed: {}",
-                error.human_message()
-            ));
-            false
-        }
-    };
-    let unixd_auth_test_succeeded = if options.run_auth_test {
-        match cli.unix_auth_test(&options.account_id) {
-            Ok(output) => {
-                backend_steps.push(output.payload("kanidm-unix auth-test"));
-                Some(true)
-            }
-            Err(error) => {
-                warnings.push(format!(
-                    "Kanidm accepted the POSIX password update, but UnixD auth-test failed for '{}': {}",
-                    options.account_id,
-                    error.human_message()
-                ));
-                Some(false)
-            }
-        }
-    } else {
-        None
-    };
-    let auth_test_line = match unixd_auth_test_succeeded {
-        Some(true) => "UnixD auth-test: passed.",
-        Some(false) => "UnixD auth-test: failed. Check the warning below.",
-        None => "UnixD auth-test: not run.",
-    };
-
-    Ok(CommandOutput {
-        message: format!(
-            "set or reset Kanidm POSIX password for '{}'",
-            options.account_id
-        ),
-        human: format!(
-            "Kanidm accepted the POSIX/UNIX password update for '{}'.\nUnixD cache invalidated: {}.\nUnixD status: {}.\n{}\n\nDirect SFTP on port 2222 uses this Kanidm POSIX/UNIX password through pam_kanidm, not the user's web/OIDC password, passkey, or Linux shadow password.\n\nKanidm does not expose the stored password value, so the confirmation is that the write command succeeded. UnixD status/auth-test confirms whether the SFTP authentication path can use the new credential.\n\n{}",
-            options.account_id,
-            if unixd_cache_invalidated { "yes" } else { "no" },
-            if unixd_online { "online" } else { "unconfirmed" },
-            auth_test_line,
-            human_user_summary(&person.value)
-        ),
-        details: json!({
-            "account_id": options.account_id,
-            "user": person.value,
-            "action": "person_posix_set_password",
-            "kanidm_update_accepted": true,
-            "unixd_cache_invalidated": unixd_cache_invalidated,
-            "unixd_online": unixd_online,
-            "unixd_auth_test_succeeded": unixd_auth_test_succeeded,
-            "backend_steps": backend_steps,
-        }),
-        warnings,
-    })
+pub fn set_posix_password_with_config(
+    cli: &KanidmCli,
+    config: &SftpRuntimeConfig,
+    options: PosixPasswordOptions,
+) -> Result<CommandOutput, AppError> {
+    set_posix_password_and_verify(cli, config, options)
 }
 
 pub fn test_posix_password(cli: &KanidmCli, account_id: &str) -> Result<CommandOutput, AppError> {
-    let account_id = validate_account_id(account_id)?;
-    let person = load_user(cli, &account_id)?;
-    let mut backend_steps = Vec::new();
-    let status = cli.unix_status()?;
-    backend_steps.push(status.payload("kanidm-unix status"));
-    let auth_test = cli.unix_auth_test(&account_id)?;
-    backend_steps.push(auth_test.payload("kanidm-unix auth-test"));
+    test_posix_password_with_config(cli, &SftpRuntimeConfig::default(), account_id)
+}
 
-    Ok(CommandOutput {
-        message: format!("tested Kanidm POSIX password for '{account_id}' through UnixD"),
-        human: format!(
-            "UnixD accepted the POSIX/UNIX password for '{}'.\n\n{}",
-            account_id,
-            human_user_summary(&person.value)
-        ),
-        details: json!({
-            "account_id": account_id,
-            "user": person.value,
-            "unixd_online": true,
-            "unixd_auth_test_succeeded": true,
-            "backend_steps": backend_steps,
-        }),
-        warnings: person.warnings,
-    })
+pub fn test_posix_password_with_config(
+    cli: &KanidmCli,
+    config: &SftpRuntimeConfig,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    test_sftp_login(cli, config, account_id, true)
 }
 
 pub fn diagnose_posix_password(
     cli: &KanidmCli,
     account_id: &str,
 ) -> Result<CommandOutput, AppError> {
-    let account_id = validate_account_id(account_id)?;
-    let person = load_user(cli, &account_id)?;
-    let mut backend_steps = Vec::new();
-    let mut checks = Vec::new();
-    let mut warnings = person.warnings.clone();
-
-    checks.push(json!({
-        "name": "kanidm_user",
-        "ok": true,
-        "detail": format!("Kanidm user '{}' loaded.", person.value.account_id),
-    }));
-
-    let sftp_group_present = person
-        .value
-        .groups
-        .iter()
-        .any(|group| group == "files-sftp-users" || group.starts_with("files-sftp-users@"));
-    checks.push(json!({
-        "name": "files_sftp_membership",
-        "ok": sftp_group_present,
-        "detail": if sftp_group_present {
-            "User is a direct or domain-qualified member of files-sftp-users.".to_string()
-        } else {
-            "User is not currently shown as a member of files-sftp-users.".to_string()
-        },
-    }));
-
-    let unixd_online = match cli.unix_status() {
-        Ok(output) => {
-            backend_steps.push(output.payload("kanidm-unix status"));
-            true
-        }
-        Err(error) => {
-            warnings.push(format!(
-                "Kanidm UnixD status check failed: {}",
-                error.human_message()
-            ));
-            false
-        }
-    };
-    checks.push(json!({
-        "name": "kanidm_unixd_status",
-        "ok": unixd_online,
-        "detail": if unixd_online { "Kanidm UnixD reports online." } else { "Kanidm UnixD status could not be confirmed." },
-    }));
-
-    let getent = run_local_probe(
-        cli,
-        "local getent passwd",
-        "getent",
-        &["passwd", &account_id],
-    );
-    checks.push(json!({
-        "name": "getent_passwd",
-        "ok": getent.success,
-        "detail": if getent.success { getent.stdout.trim() } else { getent.stderr.trim() },
-        "probe": getent.payload(),
-    }));
-
-    let id = run_local_probe(cli, "local id", "id", &[&account_id]);
-    let local_bridge_present = id.stdout.contains("files-local-sftp-users");
-    checks.push(json!({
-        "name": "unix_groups",
-        "ok": id.success,
-        "detail": if id.success { id.stdout.trim() } else { id.stderr.trim() },
-        "local_bridge_group_present": local_bridge_present,
-        "probe": id.payload(),
-    }));
-    if account_id == "dsaw" && !local_bridge_present {
-        warnings.push("Local Unix user 'dsaw' can shadow the Kanidm account during SFTP AllowGroups checks; ensure files-local-sftp-users is present on the server.".to_string());
-    }
-
-    let sftp_service = run_local_probe(
-        cli,
-        "local systemctl is-active",
-        "systemctl",
-        &["is-active", "files-sftp-sshd.service"],
-    );
-    checks.push(json!({
-        "name": "files_sftp_sshd_service",
-        "ok": sftp_service.success && sftp_service.stdout.trim() == "active",
-        "detail": if sftp_service.stdout.trim().is_empty() { sftp_service.stderr.trim() } else { sftp_service.stdout.trim() },
-        "probe": sftp_service.payload(),
-    }));
-
-    let mut human_lines = vec![
-        format!("POSIX/SFTP diagnosis for '{account_id}':"),
-        format!("- Kanidm user: ok ({})", person.value.account_id),
-        format!(
-            "- files-sftp-users membership: {}",
-            if sftp_group_present { "yes" } else { "no" }
-        ),
-        format!(
-            "- Kanidm UnixD status: {}",
-            if unixd_online { "online" } else { "unconfirmed" }
-        ),
-        format!(
-            "- getent passwd: {}",
-            if getent.success { "found" } else { "not found" }
-        ),
-        format!("- id groups: {}", if id.success { "found" } else { "not found" }),
-        format!(
-            "- local bridge group: {}",
-            if local_bridge_present { "present" } else { "not present" }
-        ),
-        format!(
-            "- files-sftp-sshd service: {}",
-            if sftp_service.success && sftp_service.stdout.trim() == "active" {
-                "active"
-            } else {
-                "not confirmed active"
-            }
-        ),
-        "\nIf these checks pass but SFTP still rejects the password, run `kanidm-admin user posix-password test <user>` and re-enter the POSIX/SFTP password. A failed auth-test means UnixD is denying the credential before the SFTP chroot is reached.".to_string(),
-    ];
-    human_lines.push(format!("\n{}", human_user_summary(&person.value)));
-
-    Ok(CommandOutput {
-        message: format!("diagnosed Kanidm POSIX/SFTP login path for '{account_id}'"),
-        human: human_lines.join("\n"),
-        details: json!({
-            "account_id": account_id,
-            "user": person.value,
-            "checks": checks,
-            "backend_steps": backend_steps,
-        }),
-        warnings,
-    })
+    diagnose_posix_password_with_config(cli, &SftpRuntimeConfig::default(), account_id)
 }
 
-struct ProbeResult {
-    success: bool,
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
-}
-
-impl ProbeResult {
-    fn payload(&self) -> Value {
-        json!({
-            "success": self.success,
-            "code": self.code,
-            "stdout": self.stdout,
-            "stderr": self.stderr,
-        })
-    }
-}
-
-fn run_local_probe(cli: &KanidmCli, step: &str, program: &str, args: &[&str]) -> ProbeResult {
-    let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
-    let result = match ProcessCommand::new(program).args(&args).output() {
-        Ok(output) => {
-            let result = ProbeResult {
-                success: output.status.success(),
-                code: output.status.code(),
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            };
-            result
-        }
-        Err(error) => ProbeResult {
-            success: false,
-            code: None,
-            stdout: String::new(),
-            stderr: error.to_string(),
-        },
-    };
-    cli.record_local_command_result(
-        step,
-        program,
-        &args,
-        ExitStatusSummary {
-            success: result.success,
-            code: result.code,
-        },
-        &result.stdout,
-        &result.stderr,
-    );
-    result
+pub fn diagnose_posix_password_with_config(
+    cli: &KanidmCli,
+    config: &SftpRuntimeConfig,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    diagnose_sftp_login(cli, config, account_id)
 }
 
 pub fn load_user(cli: &KanidmCli, account_id: &str) -> Result<Parsed<UserRecord>, AppError> {
@@ -964,9 +697,11 @@ fn render_group_block(groups: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
+    use std::{
+        env, fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand,
+    };
 
-    use crate::context::ResolvedContext;
+    use crate::{context::ResolvedContext, TEST_ENV_LOCK};
 
     use super::*;
 
@@ -985,6 +720,79 @@ mod tests {
         let mut permissions = fs::metadata(path).expect("metadata").permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("chmod");
+    }
+
+    fn install_sftp_probe_stubs(bin_dir: &Path, account_id: &str, groups: &str) {
+        write_script(
+            &bin_dir.join("getent"),
+            &format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "passwd" && "$2" == {} ]]; then
+  printf '{}:x:2000:2000:Test User:/home/{}:/bin/bash\n'
+  exit 0
+fi
+exit 2
+"#,
+                serde_json::to_string(account_id).expect("json account"),
+                account_id,
+                account_id,
+            ),
+        );
+        write_script(
+            &bin_dir.join("id"),
+            &format!(
+                r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "-nG" && "$2" == {} ]]; then
+  printf '{}\n'
+  exit 0
+fi
+exit 1
+"#,
+                serde_json::to_string(account_id).expect("json account"),
+                groups,
+            ),
+        );
+        write_script(
+            &bin_dir.join("systemctl"),
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "is-active" ]]; then
+  printf 'active\n'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        write_script(
+            &bin_dir.join("findmnt"),
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s on %s type none (rw,bind)\n' "$1" "$1"
+exit 0
+"#,
+        );
+    }
+
+    fn prepend_path(bin_dir: &Path) -> Option<std::ffi::OsString> {
+        let original_path = env::var_os("PATH");
+        let mut entries = vec![bin_dir.to_path_buf()];
+        if let Some(path) = &original_path {
+            entries.extend(env::split_paths(path));
+        }
+        env::set_var(
+            "PATH",
+            env::join_paths(entries).expect("join test PATH entries"),
+        );
+        original_path
+    }
+
+    fn restore_path(original_path: Option<std::ffi::OsString>) {
+        match original_path {
+            Some(path) => env::set_var("PATH", path),
+            None => env::remove_var("PATH"),
+        }
     }
 
     #[test]
@@ -1015,6 +823,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -1077,6 +886,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -1145,6 +955,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -1167,11 +978,18 @@ exit 1
 
     #[test]
     fn set_posix_password_runs_interactive_kanidm_command() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
         let dir = tempfile::tempdir().expect("tempdir");
         let recorded = dir.path().join("recorded-args.txt");
         let cache_recorded = dir.path().join("cache-recorded-args.txt");
         let script = dir.path().join("kanidm");
         let cache_script = dir.path().join("kanidm-unix");
+        let chroot_base = dir.path().join("chroots");
+        let users_root = dir.path().join("users");
+        fs::create_dir_all(chroot_base.join("alice")).expect("chroot");
+        fs::create_dir_all(users_root.join("alice")).expect("user root");
+        install_sftp_probe_stubs(dir.path(), "alice", "users files-sftp-users");
+        let original_path = prepend_path(dir.path());
         write_script(
             &script,
             &format!(
@@ -1179,8 +997,8 @@ exit 1
 set -euo pipefail
 recorded={}
 args=("$@")
-if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
-  printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"mail":["dsaw@example.test"],"memberof":["files-sftp-users"]}}}}'
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "alice" ]]; then
+  printf '{{"attrs":{{"name":["alice"],"displayname":["Alice"],"mail":["alice@example.test"],"directmemberof":["files-sftp-users"]}}}}'
   exit 0
 fi
 if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "posix" && "${{args[2]}}" == "set-password" ]]; then
@@ -1217,21 +1035,29 @@ fi
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
+        let config = SftpRuntimeConfig {
+            sftp_chroot_base: chroot_base.display().to_string(),
+            users_root: users_root.display().to_string(),
+            ..SftpRuntimeConfig::default()
+        };
 
-        let output = set_posix_password(
+        let output = set_posix_password_with_config(
             &cli,
+            &config,
             PosixPasswordOptions {
-                account_id: "dsaw".to_string(),
+                account_id: "alice".to_string(),
                 password: "correct horse battery staple".to_string(),
                 run_auth_test: false,
             },
         )
         .expect("set posix password");
+        restore_path(original_path);
 
         let recorded_args = fs::read_to_string(recorded).expect("recorded args");
-        assert!(recorded_args.contains("person posix set-password dsaw"));
+        assert!(recorded_args.contains("person posix set-password alice"));
         assert!(recorded_args.contains("--name admindsaw"));
         assert!(
             recorded_args.contains("correct horse battery staple\ncorrect horse battery staple")
@@ -1242,18 +1068,28 @@ fi
             .human
             .contains("Kanidm accepted the POSIX/UNIX password update"));
         assert!(output.human.contains("UnixD cache invalidated: yes"));
-        assert!(output.human.contains("Direct SFTP"));
+        assert!(output.human.contains("SFTP readiness: ready"));
         assert_eq!(output.details["kanidm_update_accepted"], true);
         assert_eq!(output.details["unixd_cache_invalidated"], true);
+        assert_eq!(output.details["sftp_readiness"]["ready"], true);
+        let rendered = serde_json::to_string(&output.json_payload()).expect("render json");
+        assert!(!rendered.contains("correct horse battery staple"));
         assert!(output.warnings.is_empty());
     }
 
     #[test]
     fn set_posix_password_warns_when_unixd_cache_invalidation_fails() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
         let dir = tempfile::tempdir().expect("tempdir");
         let recorded = dir.path().join("recorded-args.txt");
         let script = dir.path().join("kanidm");
         let cache_script = dir.path().join("kanidm-unix");
+        let chroot_base = dir.path().join("chroots");
+        let users_root = dir.path().join("users");
+        fs::create_dir_all(chroot_base.join("alice")).expect("chroot");
+        fs::create_dir_all(users_root.join("alice")).expect("user root");
+        install_sftp_probe_stubs(dir.path(), "alice", "users files-sftp-users");
+        let original_path = prepend_path(dir.path());
         write_script(
             &script,
             &format!(
@@ -1261,8 +1097,8 @@ fi
 set -euo pipefail
 recorded={}
 args=("$@")
-if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
-  printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"mail":["dsaw@example.test"],"memberof":["files-sftp-users"]}}}}'
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "alice" ]]; then
+  printf '{{"attrs":{{"name":["alice"],"displayname":["Alice"],"mail":["alice@example.test"],"directmemberof":["files-sftp-users"]}}}}'
   exit 0
 fi
 if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "posix" && "${{args[2]}}" == "set-password" ]]; then
@@ -1281,7 +1117,14 @@ exit 1
             &cache_script,
             r#"#!/usr/bin/env bash
 set -euo pipefail
-printf 'cache unavailable\n' >&2
+if [[ "$1" == "cache-invalidate" ]]; then
+  printf 'cache unavailable\n' >&2
+  exit 1
+fi
+if [[ "$1" == "status" ]]; then
+  printf 'system: online\nKanidm: online\n'
+  exit 0
+fi
 exit 1
 "#,
         );
@@ -1292,18 +1135,26 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
+        let config = SftpRuntimeConfig {
+            sftp_chroot_base: chroot_base.display().to_string(),
+            users_root: users_root.display().to_string(),
+            ..SftpRuntimeConfig::default()
+        };
 
-        let output = set_posix_password(
+        let output = set_posix_password_with_config(
             &cli,
+            &config,
             PosixPasswordOptions {
-                account_id: "dsaw".to_string(),
+                account_id: "alice".to_string(),
                 password: "correct horse battery staple".to_string(),
                 run_auth_test: false,
             },
         )
         .expect("set posix password");
+        restore_path(original_path);
 
         assert!(fs::read_to_string(recorded)
             .expect("recorded args")

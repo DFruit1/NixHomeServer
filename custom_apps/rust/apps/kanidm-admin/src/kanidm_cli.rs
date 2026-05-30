@@ -126,6 +126,30 @@ impl KanidmCli {
         });
     }
 
+    pub fn record_local_command_redacted_result(
+        &self,
+        step: &str,
+        program: &str,
+        args: &[String],
+        status: ExitStatusSummary,
+        stdout: &str,
+        stderr: &str,
+        redaction: Value,
+    ) {
+        self.backend_log.record_redacted_result(
+            BackendLogRecord {
+                step,
+                mode: CommandMode::NonInteractiveRead,
+                program,
+                args,
+                status,
+                stdout,
+                stderr,
+            },
+            redaction,
+        );
+    }
+
     pub fn session_status(&self) -> Result<SessionState, AppError> {
         Ok(self.session_snapshot()?.to_session_state())
     }
@@ -1110,6 +1134,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -1135,6 +1160,7 @@ exit 0
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -1160,6 +1186,7 @@ exit 1
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 
@@ -1187,6 +1214,7 @@ exit 42
             kanidm_bin: script.into_os_string(),
             vaultwarden_url: None,
             vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         });
 

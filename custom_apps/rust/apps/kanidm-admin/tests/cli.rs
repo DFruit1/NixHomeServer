@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
+use std::{env, fs, os::unix::fs::PermissionsExt, path::Path, process::Command as ProcessCommand};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -340,6 +340,170 @@ exit 1
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("brand-new-group"));
+}
+
+#[test]
+fn membership_add_to_sftp_group_triggers_local_sync_services() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state_file = dir.path().join("groups.txt");
+    let services_file = dir.path().join("services.txt");
+    let chroot_base = dir.path().join("chroots");
+    let users_root = dir.path().join("users");
+    fs::write(&state_file, "").expect("seed groups");
+    fs::write(&services_file, "").expect("seed services");
+    fs::write(dir.path().join("vars.nix"), "{}").expect("vars");
+    fs::create_dir_all(chroot_base.join("dsaw")).expect("chroot");
+    fs::create_dir_all(users_root.join("dsaw")).expect("user root");
+    let script = dir.path().join("kanidm");
+    let nix = dir.path().join("nix");
+    let nix_defaults = serde_json::to_string(&serde_json::json!({
+        "serverUrl": "https://id.example.test",
+        "adminName": "admindsaw",
+        "vaultwardenUrl": "https://passwords.example.test",
+        "sftpRuntime": {
+            "sftpAccessGroup": "files-sftp-users",
+            "localSftpAccessGroup": "files-local-sftp-users",
+            "sftpChrootBase": chroot_base.display().to_string(),
+            "usersRoot": users_root.display().to_string(),
+            "filesSftpPort": 2222,
+            "filesSftpSshdService": "files-sftp-sshd.service",
+            "kanidmUnixdService": "kanidm-unixd.service",
+            "posixGroupsService": "kanidm-files-posix-groups.service",
+            "userRootSyncService": "fileshare-user-root-sync.service",
+        }
+    }))
+    .expect("json defaults");
+    write_script(
+        &nix,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' {}
+"#,
+            serde_json::to_string(&nix_defaults).expect("shell json")
+        ),
+    );
+    write_script(
+        &script,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+state_file={}
+args=("$@")
+if [[ "${{args[0]}}" == "group" && "${{args[1]}}" == "add-members" && "${{args[2]}}" == "files-sftp-users" && "${{args[3]}}" == "dsaw" ]]; then
+  printf 'files-sftp-users\n' > "$state_file"
+  exit 0
+fi
+if [[ "${{args[0]}}" == "person" && "${{args[1]}}" == "get" && "${{args[2]}}" == "dsaw" ]]; then
+  if grep -qx 'files-sftp-users' "$state_file"; then
+    printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":["files-sftp-users@example.test"]}}}}'
+  else
+    printf '{{"attrs":{{"name":["dsaw"],"displayname":["Dan"],"directmemberof":[]}}}}'
+  fi
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+            serde_json::to_string(&state_file.display().to_string()).expect("json path"),
+        ),
+    );
+    write_script(
+        &dir.path().join("kanidm-unix"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "status" ]]; then
+  printf 'system: online\nKanidm: online\n'
+  exit 0
+fi
+exit 1
+"#,
+    );
+    write_script(
+        &dir.path().join("sudo"),
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+services_file={}
+if [[ "$1" == "-n" && "$2" == "systemctl" && "$3" == "start" ]]; then
+  printf '%s\n' "$4" >> "$services_file"
+  exit 0
+fi
+exit 1
+"#,
+            serde_json::to_string(&services_file.display().to_string()).expect("json path"),
+        ),
+    );
+    write_script(
+        &dir.path().join("systemctl"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "is-active" ]]; then
+  printf 'active\n'
+  exit 0
+fi
+exit 1
+"#,
+    );
+    write_script(
+        &dir.path().join("getent"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "passwd" && "$2" == "dsaw" ]]; then
+  printf 'dsaw:x:2000:2000:Dan:/home/dsaw:/bin/bash\n'
+  exit 0
+fi
+exit 2
+"#,
+    );
+    write_script(
+        &dir.path().join("id"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "-nG" && "$2" == "dsaw" ]]; then
+  printf 'users files-sftp-users\n'
+  exit 0
+fi
+exit 1
+"#,
+    );
+    write_script(
+        &dir.path().join("findmnt"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+"#,
+    );
+    let mut path_entries = vec![dir.path().to_path_buf()];
+    if let Some(path) = env::var_os("PATH") {
+        path_entries.extend(env::split_paths(&path));
+    }
+    let test_path = env::join_paths(path_entries).expect("join PATH");
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", &script)
+        .env("KANIDM_ADMIN_REPO_ROOT", dir.path())
+        .env("KANIDM_ADMIN_NIX_BIN", &nix)
+        .env("PATH", test_path)
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+            "--output",
+            "json",
+            "membership",
+            "add",
+            "dsaw",
+            "files-sftp-users",
+        ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"sftp_reconcile\""));
+    let services = fs::read_to_string(services_file).expect("services");
+    assert!(services.contains("kanidm-files-posix-groups.service"));
+    assert!(services.contains("fileshare-user-root-sync.service"));
 }
 
 #[test]

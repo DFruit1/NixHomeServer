@@ -4,7 +4,7 @@ use std::{
     io::Write,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    process::Command,
+    time::Duration,
 };
 
 use pbkdf2::pbkdf2_hmac;
@@ -17,7 +17,10 @@ use crate::{
     context::ResolvedContext,
     inventory::{users::UserRecord, Parsed},
     kanidm_cli::KanidmCli,
-    ops::user::load_user,
+    ops::{
+        local_runtime::{execute_local_command, root_action_spec, run_root_action, RootAction},
+        user::load_user,
+    },
     output::CommandOutput,
     validation::validate_account_id,
     AppError,
@@ -109,7 +112,7 @@ pub fn invite_vaultwarden_user(
         context,
         account_id,
         |account_id| load_user(cli, account_id),
-        read_secret_with_sudo_fallback,
+        |path| read_secret_with_sudo_fallback(cli, path),
         fetch_vaultwarden_user_status,
         post_vaultwarden_invite,
         post_vaultwarden_resend_invite,
@@ -133,7 +136,7 @@ pub fn lookup_vaultwarden_user(
             message: "Vaultwarden admin token file is not configured in kanidm-admin context"
                 .to_string(),
         })?;
-    let admin_token = read_secret_with_sudo_fallback(admin_token_path)?;
+    let admin_token = read_secret_with_sudo_fallback_unlogged(admin_token_path)?;
     fetch_vaultwarden_user_status(vaultwarden_url, &admin_token, primary_email)
 }
 
@@ -266,11 +269,11 @@ where
     })
 }
 
-fn read_secret_with_sudo_fallback(path: &Path) -> Result<String, AppError> {
+fn read_secret_with_sudo_fallback(cli: &KanidmCli, path: &Path) -> Result<String, AppError> {
     match fs::read_to_string(path) {
         Ok(contents) => normalize_secret_value(path, contents),
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            read_secret_via_sudo(path)
+            read_secret_via_sudo(cli, path)
         }
         Err(error) => Err(AppError::Io {
             message: format!("failed to read secret file '{}': {error}", path.display()),
@@ -278,45 +281,60 @@ fn read_secret_with_sudo_fallback(path: &Path) -> Result<String, AppError> {
     }
 }
 
-fn read_secret_via_sudo(path: &Path) -> Result<String, AppError> {
-    let output = Command::new("sudo")
-        .args(["-n", "cat"])
-        .arg(path)
-        .output()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                AppError::MissingDependency {
-                    binary: "sudo".to_string(),
-                }
-            } else {
-                AppError::Io {
-                    message: format!(
-                        "failed to read secret file '{}' via sudo fallback: {error}",
-                        path.display()
-                    ),
-                }
-            }
-        })?;
+fn read_secret_via_sudo(cli: &KanidmCli, path: &Path) -> Result<String, AppError> {
+    let execution = run_root_action(
+        cli,
+        "local sudo read secret file",
+        RootAction::ReadSecretFile {
+            path: path.to_path_buf(),
+        },
+        None,
+        Duration::from_secs(20),
+    );
 
-    if !output.status.success() {
+    if !execution
+        .result
+        .allowed_success(&std::collections::BTreeSet::from([0]))
+    {
         return Err(AppError::Io {
             message: format!(
                 "failed to read secret file '{}' via sudo fallback: {}",
                 path.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
+                execution.result.detail()
             ),
         });
     }
 
-    normalize_secret_value(
-        path,
-        String::from_utf8(output.stdout).map_err(|error| AppError::Io {
-            message: format!(
-                "sudo returned non-UTF8 content while reading secret file '{}': {error}",
-                path.display()
-            ),
-        })?,
-    )
+    normalize_secret_value(path, execution.result.stdout)
+}
+
+fn read_secret_with_sudo_fallback_unlogged(path: &Path) -> Result<String, AppError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => normalize_secret_value(path, contents),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let spec = root_action_spec(
+                RootAction::ReadSecretFile {
+                    path: path.to_path_buf(),
+                },
+                None,
+                Duration::from_secs(20),
+            );
+            let result = execute_local_command(&spec);
+            if !result.allowed_success(&std::collections::BTreeSet::from([0])) {
+                return Err(AppError::Io {
+                    message: format!(
+                        "failed to read secret file '{}' via sudo fallback: {}",
+                        path.display(),
+                        result.detail()
+                    ),
+                });
+            }
+            normalize_secret_value(path, result.stdout)
+        }
+        Err(error) => Err(AppError::Io {
+            message: format!("failed to read secret file '{}': {error}", path.display()),
+        }),
+    }
 }
 
 fn normalize_secret_value(path: &Path, contents: String) -> Result<String, AppError> {
@@ -831,6 +849,7 @@ mod tests {
             kanidm_bin: "kanidm".into(),
             vaultwarden_url: Some("https://passwords.example.test".to_string()),
             vaultwarden_admin_token_file: Some(token_path.to_path_buf()),
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
             runtime_policy: crate::context::RuntimePolicy::default(),
         }
     }
@@ -885,7 +904,7 @@ mod tests {
             &context,
             "dsaw",
             |_| Ok(parsed_user(Some("dsaw@example.test"), &["users"])),
-            read_secret_with_sudo_fallback,
+            read_secret_with_sudo_fallback_unlogged,
             |_, _, _| {
                 Ok(VaultwardenUserStatus {
                     state: VaultwardenUserState::Missing,
@@ -933,7 +952,7 @@ mod tests {
             &context,
             "dsaw",
             |_| Ok(parsed_user(Some("dsaw@example.test"), &["users"])),
-            read_secret_with_sudo_fallback,
+            read_secret_with_sudo_fallback_unlogged,
             |_, _, _| {
                 Ok(VaultwardenUserStatus {
                     state: VaultwardenUserState::Active,
@@ -965,7 +984,7 @@ mod tests {
             &context,
             "dsaw",
             |_| Ok(parsed_user(Some("dsaw@example.test"), &["users"])),
-            read_secret_with_sudo_fallback,
+            read_secret_with_sudo_fallback_unlogged,
             |_, _, _| {
                 Ok(VaultwardenUserStatus {
                     state: VaultwardenUserState::InvitePending,
