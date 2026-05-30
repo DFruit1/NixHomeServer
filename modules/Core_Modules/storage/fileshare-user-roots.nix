@@ -472,7 +472,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${sharedMountName}";
-        ExecStart = "${pkgs.bindfs}/bin/bindfs --allow-other --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${sharedMountName}";
         Restart = "on-failure";
       };
