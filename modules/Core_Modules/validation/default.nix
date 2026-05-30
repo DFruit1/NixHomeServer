@@ -210,15 +210,15 @@ in
       message = "nixhomeserver: normal SSH must be limited to the local admin user; Kanidm file users use the dedicated SFTP endpoint only.";
     }
     {
-      assertion = normalSshAllowSftp == false;
+      assertion = !normalSshAllowSftp;
       message = "nixhomeserver: normal SSH must not expose SFTP; file transfers use the dedicated chrooted files SFTP endpoint on vars.networking.ports.filesSftp.";
     }
     {
-      assertion = filesSftpPam.unixAuth == false;
+      assertion = !filesSftpPam.unixAuth;
       message = "nixhomeserver: files-sftp-sshd must not accept local Unix passwords; it should authenticate direct SFTP users through Kanidm PAM.";
     }
     {
-      assertion = filesSftpKanidmAuthUsesFirstPass == false;
+      assertion = !filesSftpKanidmAuthUsesFirstPass;
       message = "nixhomeserver: files-sftp-sshd Kanidm PAM auth must prompt directly instead of using use_first_pass, because Unix auth is disabled for this service.";
     }
     {
