@@ -17,6 +17,7 @@ use crate::{
     },
     backend_log::{BackendLog, BackendLogRecord},
     context::ResolvedContext,
+    sensitivity,
     session_state::{
         classification_diagnostic, concise_session_diagnostic, concise_session_message,
         is_already_exists, is_not_found, preferred_diagnostic, SessionDiagnostic,
@@ -35,7 +36,6 @@ pub use crate::{
 };
 
 const READ_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_millis(750)];
-const REDACTED_BACKEND_OUTPUT: &str = "<redacted>";
 
 pub struct LocalCommandRedactedRecord<'a> {
     pub step: &'a str,
@@ -940,18 +940,14 @@ impl KanidmCli {
             stdout: &success.stdout,
             stderr: &success.stderr,
         };
-        if is_sensitive_backend_invocation(&success.args) {
+        if sensitivity::invocation_args_are_sensitive(&success.args) {
             self.backend_log.record_redacted_result(
                 BackendLogRecord {
-                    stdout: REDACTED_BACKEND_OUTPUT,
-                    stderr: REDACTED_BACKEND_OUTPUT,
+                    stdout: sensitivity::REDACTED,
+                    stderr: sensitivity::REDACTED,
                     ..record
                 },
-                json!({
-                    "stdout": true,
-                    "stderr": true,
-                    "secret_labels": ["kanidm_sensitive_output"],
-                }),
+                sensitivity::backend_output_redaction_payload(),
             );
         } else {
             self.backend_log.record_result(record);
@@ -976,18 +972,14 @@ impl KanidmCli {
             stdout: &result.stdout,
             stderr: &result.stderr,
         };
-        if is_sensitive_backend_invocation(args) {
+        if sensitivity::invocation_args_are_sensitive(args) {
             self.backend_log.record_redacted_result(
                 BackendLogRecord {
-                    stdout: REDACTED_BACKEND_OUTPUT,
-                    stderr: REDACTED_BACKEND_OUTPUT,
+                    stdout: sensitivity::REDACTED,
+                    stderr: sensitivity::REDACTED,
                     ..record
                 },
-                json!({
-                    "stdout": true,
-                    "stderr": true,
-                    "secret_labels": ["kanidm_sensitive_output"],
-                }),
+                sensitivity::backend_output_redaction_payload(),
             );
         } else {
             self.backend_log.record_result(record);
@@ -1088,17 +1080,6 @@ fn command_mode_for_args(args: &[String]) -> CommandMode {
 
 fn is_retryable_exec_error(error: &BackendExecError) -> bool {
     matches!(error, BackendExecError::Timeout { .. })
-}
-
-fn is_sensitive_backend_invocation(args: &[String]) -> bool {
-    args.windows(3).any(|window| {
-        matches!(
-            window,
-            [a, b, c]
-                if a == "person" && b == "credential" && c == "create-reset-token"
-                    || a == "system" && b == "oauth2" && matches!(c.as_str(), "show-basic-secret" | "reset-basic-secret")
-        )
-    })
 }
 
 fn snapshot_from_failure(
@@ -1331,7 +1312,7 @@ exit 1
         let logs = cli.recent_backend_logs();
         let rendered = serde_json::to_string(&logs).expect("logs json");
         assert!(!rendered.contains("SECRET123"));
-        assert!(rendered.contains(REDACTED_BACKEND_OUTPUT));
+        assert!(rendered.contains(sensitivity::REDACTED));
     }
 
     #[derive(Debug)]

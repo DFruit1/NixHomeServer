@@ -9,10 +9,13 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use zeroize::Zeroize;
 
 use crate::{
     backend::ExitStatusSummary,
     kanidm_cli::{KanidmCli, LocalCommandRedactedRecord},
+    output::shell_quote_arg,
+    sensitivity,
     verification::{VerificationDomain, VerificationSummary},
 };
 
@@ -71,7 +74,7 @@ impl LocalCommandSpec {
 
     fn sanitized_args(&self) -> Vec<String> {
         if self.redaction.redact_args {
-            vec!["<redacted>".to_string()]
+            vec![sensitivity::REDACTED.to_string()]
         } else {
             self.args.clone()
         }
@@ -79,7 +82,7 @@ impl LocalCommandSpec {
 
     fn sanitized_stdout<'a>(&self, stdout: &'a str) -> &'a str {
         if self.redaction.redact_stdout {
-            "<redacted>"
+            sensitivity::REDACTED
         } else {
             stdout
         }
@@ -87,7 +90,7 @@ impl LocalCommandSpec {
 
     fn sanitized_stderr<'a>(&self, stderr: &'a str) -> &'a str {
         if self.redaction.redact_stderr {
-            "<redacted>"
+            sensitivity::REDACTED
         } else {
             stderr
         }
@@ -99,6 +102,16 @@ pub enum CommandStdin {
     None,
     Secret(String),
     Bytes(Vec<u8>),
+}
+
+impl Drop for CommandStdin {
+    fn drop(&mut self) {
+        match self {
+            Self::Secret(value) => value.zeroize(),
+            Self::Bytes(value) => value.zeroize(),
+            Self::None => {}
+        }
+    }
 }
 
 impl CommandStdin {
@@ -208,9 +221,17 @@ pub struct DisplayCommand {
 impl DisplayCommand {
     pub fn display_string(&self) -> String {
         if self.args.is_empty() {
-            self.program.clone()
+            shell_quote_arg(&self.program)
         } else {
-            format!("{} {}", self.program, self.args.join(" "))
+            format!(
+                "{} {}",
+                shell_quote_arg(&self.program),
+                self.args
+                    .iter()
+                    .map(|arg| shell_quote_arg(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
         }
     }
 }
@@ -1012,7 +1033,7 @@ printf 'secret stderr\n' >&2
             &sudo,
             r#"#!/usr/bin/env bash
 set -euo pipefail
-/bin/cat >/dev/null
+while IFS= read -r _line; do :; done
 printf 'ok\n'
 "#,
         );

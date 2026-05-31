@@ -5,8 +5,27 @@ use std::{
     time::Duration,
 };
 
+mod checks;
+mod output;
+mod runtime;
+
+pub use checks::groups_affect_file_runtime;
+
+use self::{
+    checks::{
+        backup_mount_path, expected_unix_groups, has_group, is_local_passwd_user,
+        parse_group_words, removed_runtime_groups, sftp_chroot_path, shared_mount_path,
+        usb_mount_path, user_root_path, RemovedRuntimeGroup, RemovedRuntimeKind,
+    },
+    output::{
+        merge_warnings, render_auth_test_line, render_local_shadow_line, render_readiness_human,
+        render_readiness_lines, sftp_next_actions,
+    },
+    runtime::{readiness_from_runtime, ReadinessReport, RuntimeScope},
+};
 use serde::Serialize;
 use serde_json::{json, Value};
+use zeroize::Zeroizing;
 
 use crate::{
     context::SftpRuntimeConfig,
@@ -76,17 +95,6 @@ pub struct SftpSyncReport {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeScope {
-    SftpLogin,
-    FileAccess,
-}
-
-struct ReadinessReport {
-    runtime: RuntimeReport,
-    readiness: SftpReadiness,
-}
-
 pub fn set_posix_password_and_verify(
     cli: &KanidmCli,
     config: &SftpRuntimeConfig,
@@ -101,32 +109,29 @@ pub fn set_posix_password_and_verify_with_policy(
     options: PosixPasswordOptions,
     policy: ConvergencePolicy,
 ) -> Result<CommandOutput, AppError> {
-    let options = PosixPasswordOptions {
-        account_id: validate_account_id(&options.account_id)?,
-        password: options.password,
-        run_auth_test: options.run_auth_test,
-    };
-    if options.password.is_empty() {
+    let account_id = validate_account_id(&options.account_id)?;
+    let password = Zeroizing::new(options.password);
+    let run_auth_test = options.run_auth_test;
+    if password.is_empty() {
         return Err(AppError::Config {
             message: "POSIX password must not be empty".to_string(),
         });
     }
 
-    let person = load_user(cli, &options.account_id)?;
+    let person = load_user(cli, &account_id)?;
     let mut warnings = person.warnings.clone();
 
-    let password_update = cli.person_posix_set_password(&options.account_id, &options.password)?;
+    let password_update = cli.person_posix_set_password(&account_id, password.as_str())?;
 
-    let local_shadow_sync =
-        sync_local_shadow_password(cli, config, &options.account_id, &options.password);
+    let local_shadow_sync = sync_local_shadow_password(cli, config, &account_id, password.as_str());
     if local_shadow_sync.required && !local_shadow_sync.completed {
         return Err(AppError::Verification {
             message: format!(
                 "Kanidm accepted the POSIX password for '{}', but the required local SFTP shadow password sync failed",
-                options.account_id
+                account_id
             ),
             details: json!({
-                "account_id": options.account_id,
+                "account_id": account_id,
                 "kanidm_update_accepted": true,
                 "local_shadow_sync": local_shadow_sync,
                 "runtime": null,
@@ -154,14 +159,14 @@ pub fn set_posix_password_and_verify_with_policy(
     let readiness_report = verify_runtime(
         cli,
         config,
-        &options.account_id,
+        &account_id,
         &person,
         RuntimeScope::SftpLogin,
         policy,
     );
 
-    let unixd_auth_test = if options.run_auth_test {
-        let (auth_test, auth_warnings) = run_unixd_auth_test(cli, &options.account_id);
+    let unixd_auth_test = if run_auth_test {
+        let (auth_test, auth_warnings) = run_unixd_auth_test(cli, &account_id);
         warnings.extend(auth_warnings);
         auth_test
     } else {
@@ -176,10 +181,10 @@ pub fn set_posix_password_and_verify_with_policy(
         return Err(AppError::Verification {
             message: format!(
                 "Kanidm accepted the POSIX password for '{}', but the local SFTP login path is not ready",
-                options.account_id
+                account_id
             ),
             details: json!({
-                "account_id": options.account_id,
+                "account_id": account_id,
                 "user": person.value,
                 "kanidm_update_accepted": true,
                 "unixd_cache_invalidated": unixd_cache_invalidated,
@@ -187,7 +192,7 @@ pub fn set_posix_password_and_verify_with_policy(
                 "unixd_auth_test": unixd_auth_test,
                 "runtime": readiness_report.runtime,
                 "sftp_readiness": readiness_report.readiness,
-                "next_actions": sftp_next_actions(config, &options.account_id),
+                "next_actions": sftp_next_actions(config, &account_id),
             }),
         });
     }
@@ -197,11 +202,11 @@ pub fn set_posix_password_and_verify_with_policy(
     Ok(CommandOutput {
         message: format!(
             "set or reset Kanidm POSIX password for '{}'",
-            options.account_id
+            account_id
         ),
         human: format!(
             "Kanidm accepted the POSIX/UNIX password update for '{}'.\nSFTP readiness: ready.\nUnixD cache invalidated: {}.\n{}\n{}\n\nDirect SFTP on port {} uses this password through pam_kanidm. The readiness check confirmed the local NSS, group, service, chroot, mount, and UnixD path that OpenSSH depends on.\n\n{}",
-            options.account_id,
+            account_id,
             if unixd_cache_invalidated { "yes" } else { "no" },
             auth_line,
             local_shadow_line,
@@ -209,7 +214,7 @@ pub fn set_posix_password_and_verify_with_policy(
             human_user_summary(&person.value),
         ),
         details: json!({
-            "account_id": options.account_id,
+            "account_id": account_id,
             "user": person.value,
             "action": "person_posix_set_password",
             "kanidm_update_accepted": true,
@@ -1242,235 +1247,6 @@ fn auth_outcome_success(outcome: AuthTestOutcome) -> Option<bool> {
         AuthTestOutcome::Failed | AuthTestOutcome::SpawnFailed => Some(false),
         AuthTestOutcome::NotRun | AuthTestOutcome::CompletedUnparseable => None,
     }
-}
-
-fn readiness_from_runtime(report: &RuntimeReport) -> SftpReadiness {
-    SftpReadiness {
-        ready: report.ready,
-        checks: report
-            .checks
-            .iter()
-            .map(|check| SftpReadinessCheck {
-                name: check.id.clone(),
-                ok: check.status == CheckStatus::Passed || check.status == CheckStatus::Skipped,
-                required: check.required,
-                detail: check.summary.clone(),
-                probe: check.probe.clone(),
-            })
-            .collect(),
-    }
-}
-
-fn expected_unix_groups(
-    config: &SftpRuntimeConfig,
-    groups: &[String],
-    scope: RuntimeScope,
-) -> Vec<String> {
-    let mut expected = Vec::new();
-    for group in file_runtime_group_names(config) {
-        if has_group(groups, group) {
-            expected.push(group.to_string());
-        }
-    }
-    if scope == RuntimeScope::SftpLogin
-        && !expected
-            .iter()
-            .any(|group| group == &config.sftp_access_group)
-    {
-        expected.push(config.sftp_access_group.clone());
-    }
-    expected.sort();
-    expected.dedup();
-    expected
-}
-
-fn file_runtime_group_names(config: &SftpRuntimeConfig) -> Vec<&str> {
-    vec![
-        &config.web_access_group,
-        &config.shared_access_group,
-        &config.sftp_access_group,
-        &config.usb_access_group,
-        &config.backup_storage_access_group,
-    ]
-}
-
-pub fn groups_affect_file_runtime(config: &SftpRuntimeConfig, groups: &[String]) -> bool {
-    file_runtime_group_names(config)
-        .iter()
-        .any(|expected| has_group(groups, expected))
-}
-
-fn removed_runtime_groups(
-    config: &SftpRuntimeConfig,
-    groups: &[String],
-) -> Vec<RemovedRuntimeGroup> {
-    let mappings = [
-        (&config.web_access_group, RemovedRuntimeKind::Web),
-        (&config.shared_access_group, RemovedRuntimeKind::Shared),
-        (&config.sftp_access_group, RemovedRuntimeKind::Sftp),
-        (&config.usb_access_group, RemovedRuntimeKind::Usb),
-        (
-            &config.backup_storage_access_group,
-            RemovedRuntimeKind::Backup,
-        ),
-    ];
-    mappings
-        .into_iter()
-        .filter(|(expected, _)| {
-            groups
-                .iter()
-                .any(|group| has_group(std::slice::from_ref(group), expected))
-        })
-        .map(|(group, kind)| RemovedRuntimeGroup {
-            group: group.clone(),
-            kind,
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone)]
-struct RemovedRuntimeGroup {
-    group: String,
-    kind: RemovedRuntimeKind,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum RemovedRuntimeKind {
-    Web,
-    Shared,
-    Sftp,
-    Usb,
-    Backup,
-}
-
-fn has_group(groups: &[String], expected: &str) -> bool {
-    groups.iter().any(|group| {
-        group == expected
-            || group
-                .strip_prefix(expected)
-                .is_some_and(|suffix| suffix.starts_with('@'))
-    })
-}
-
-fn parse_group_words(groups: &str) -> Vec<String> {
-    groups
-        .split_whitespace()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-}
-
-fn is_local_passwd_user(account_id: &str) -> bool {
-    fs::read_to_string("/etc/passwd")
-        .ok()
-        .is_some_and(|passwd| {
-            passwd.lines().any(|line| {
-                line.split(':')
-                    .next()
-                    .is_some_and(|candidate| candidate == account_id)
-            })
-        })
-}
-
-fn sftp_chroot_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {
-    Path::new(&config.sftp_chroot_base).join(account_id)
-}
-
-fn user_root_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {
-    Path::new(&config.users_root).join(account_id)
-}
-
-fn shared_mount_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {
-    user_root_path(config, account_id).join(&config.shared_mount_name)
-}
-
-fn usb_mount_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {
-    user_root_path(config, account_id).join(&config.usb_mount_name)
-}
-
-fn backup_mount_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {
-    user_root_path(config, account_id).join(&config.backup_storage_mount_name)
-}
-
-fn render_readiness_human(
-    config: &SftpRuntimeConfig,
-    account_id: &str,
-    user: &UserRecord,
-    readiness: &SftpReadiness,
-) -> String {
-    format!(
-        "POSIX/SFTP diagnosis for '{}':\nSFTP readiness: {}.\nSFTP port: {}\nChroot base: {}\n\n{}\n\nIf these checks pass but SFTP still rejects the password, run `kanidm-admin local sftp test {}` and include `--auth-test` when you can interactively enter the current POSIX/SFTP password.\n\n{}",
-        account_id,
-        if readiness.ready { "ready" } else { "not ready" },
-        config.files_sftp_port,
-        config.sftp_chroot_base,
-        render_readiness_lines(readiness).join("\n"),
-        account_id,
-        human_user_summary(user),
-    )
-}
-
-fn render_readiness_lines(readiness: &SftpReadiness) -> Vec<String> {
-    readiness
-        .checks
-        .iter()
-        .map(|check| {
-            format!(
-                "- {}: {} ({})",
-                check.name,
-                if check.ok { "ok" } else { "failed" },
-                check.detail
-            )
-        })
-        .collect::<Vec<_>>()
-}
-
-fn render_auth_test_line(auth_test: &UnixdAuthTest) -> String {
-    match auth_test.outcome {
-        AuthTestOutcome::Succeeded => {
-            "UnixD auth-test: auth success and account success observed.".to_string()
-        }
-        AuthTestOutcome::Failed => {
-            "UnixD auth-test: completed, but failure output was observed.".to_string()
-        }
-        AuthTestOutcome::CompletedUnparseable => {
-            "UnixD auth-test: completed; success was not parseable from captured output."
-                .to_string()
-        }
-        AuthTestOutcome::SpawnFailed => "UnixD auth-test: not completed.".to_string(),
-        AuthTestOutcome::NotRun => "UnixD auth-test: not run.".to_string(),
-    }
-}
-
-fn render_local_shadow_line(sync: &LocalShadowSync) -> String {
-    match (sync.required, sync.completed) {
-        (true, true) => "Local SFTP shadow password sync: completed.".to_string(),
-        (true, false) => "Local SFTP shadow password sync: failed.".to_string(),
-        (false, _) => "Local SFTP shadow password sync: not required.".to_string(),
-    }
-}
-
-fn sftp_next_actions(config: &SftpRuntimeConfig, account_id: &str) -> Vec<String> {
-    vec![
-        format!(
-            "Run `kanidm-admin local sftp reconcile {account_id}` to restart `{}` and `{}`.",
-            config.posix_groups_service, config.user_root_sync_service
-        ),
-        format!(
-            "Check `systemctl status {}` and `systemctl status {}` on the server.",
-            config.kanidm_unixd_service, config.files_sftp_sshd_service
-        ),
-        format!(
-            "Confirm NSS and chroot state with `getent passwd {account_id}` and `findmnt {}/{account_id}`.",
-            config.sftp_chroot_base
-        ),
-    ]
-}
-
-fn merge_warnings(mut left: Vec<String>, mut right: Vec<String>) -> Vec<String> {
-    left.append(&mut right);
-    left.sort();
-    left.dedup();
-    left
 }
 
 #[cfg(test)]

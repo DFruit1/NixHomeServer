@@ -13,7 +13,7 @@ use crate::{
         sftp::{diagnose_sftp_login, set_posix_password_and_verify, test_sftp_login},
         FailedWriteContext, ReconciledWrite,
     },
-    output::CommandOutput,
+    output::{CommandOutput, Sensitivity},
     validation::{
         validate_account_id, validate_display_name, validate_email, validate_seconds_field,
         RESET_TOKEN_TTL_MAX_SECONDS, RESET_TOKEN_TTL_MIN_SECONDS,
@@ -363,22 +363,22 @@ pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<Comman
         &summary.value.raw_output
     });
 
-    Ok(CommandOutput {
-        message: format!(
+    Ok(CommandOutput::new(
+        format!(
             "created a password reset token for '{}'",
             options.account_id
         ),
         human,
-        details: json!({
-            "sensitive": true,
+        json!({
             "sensitive_fields": ["reset_token"],
             "account_id": options.account_id,
             "ttl_seconds": options.ttl_seconds,
             "parsed_fields_complete": summary.value.token.is_some() && summary.value.reset_url.is_some() && summary.warnings.is_empty(),
             "reset_token": summary.value,
         }),
-        warnings: summary.warnings,
-    })
+    )
+    .with_sensitivity(Sensitivity::Sensitive)
+    .with_warnings(summary.warnings))
 }
 
 pub fn set_posix_password(

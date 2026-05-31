@@ -1,4 +1,5 @@
 use crate::AppError;
+use std::net::IpAddr;
 
 const DISPLAY_NAME_MAX_LEN: usize = 128;
 const EMAIL_MAX_LEN: usize = 254;
@@ -74,13 +75,58 @@ pub fn validate_redirect_url(value: &str) -> Result<String, AppError> {
             .as_ref()
             .is_some_and(|url| matches!(url.scheme(), "http" | "https"))
         && parsed.as_ref().and_then(|url| url.host_str()).is_some()
-        && parsed.as_ref().is_some_and(|url| url.fragment().is_none());
+        && parsed.as_ref().is_some_and(|url| url.fragment().is_none())
+        && parsed
+            .as_ref()
+            .is_some_and(|url| url.scheme() == "https" || is_loopback_url(url));
     if valid {
         Ok(normalized.to_string())
     } else {
         Err(AppError::Config {
             message: format!(
-                "invalid redirect URL '{value}': expected an absolute http(s) URL without a fragment"
+                "invalid redirect URL '{value}': expected an absolute HTTPS URL without a fragment, or HTTP on loopback for local development"
+            ),
+        })
+    }
+}
+
+pub fn validate_redirect_url_for_server(value: &str, server_url: &str) -> Result<String, AppError> {
+    let normalized = validate_redirect_url(value)?;
+    let redirect = url::Url::parse(&normalized).map_err(|error| AppError::Config {
+        message: format!("invalid redirect URL '{value}': {error}"),
+    })?;
+    if is_loopback_url(&redirect) {
+        return Ok(normalized);
+    }
+
+    let redirect_host = normalized_host(&redirect).ok_or_else(|| AppError::Config {
+        message: format!("invalid redirect URL '{value}': host is required"),
+    })?;
+    let server = url::Url::parse(server_url).map_err(|error| AppError::Config {
+        message: format!(
+            "cannot validate redirect URL against Kanidm server URL '{server_url}': {error}"
+        ),
+    })?;
+    let server_host = normalized_host(&server).ok_or_else(|| AppError::Config {
+        message: format!(
+            "cannot validate redirect URL against Kanidm server URL '{server_url}': host is required"
+        ),
+    })?;
+    let allowed_domain = derived_service_domain(&server_host);
+    let host_allowed = redirect_host == server_host
+        || allowed_domain.as_ref().is_some_and(|domain| {
+            redirect_host == *domain || redirect_host.ends_with(&format!(".{domain}"))
+        });
+
+    if host_allowed {
+        Ok(normalized)
+    } else {
+        let expected = allowed_domain
+            .map(|domain| format!("'{server_host}' or a subdomain of '{domain}'"))
+            .unwrap_or_else(|| format!("'{server_host}'"));
+        Err(AppError::Config {
+            message: format!(
+                "invalid redirect URL '{value}': public redirect host must be {expected}"
             ),
         })
     }
@@ -135,6 +181,35 @@ fn is_printable_non_control(ch: char) -> bool {
 
 fn is_visible_ascii_email_char(ch: char) -> bool {
     ch.is_ascii() && !ch.is_ascii_whitespace() && !ch.is_ascii_control()
+}
+
+fn normalized_host(url: &url::Url) -> Option<String> {
+    url.host_str()
+        .map(|host| host.trim_matches(['[', ']']).to_ascii_lowercase())
+}
+
+fn is_loopback_url(url: &url::Url) -> bool {
+    let Some(host) = normalized_host(url) else {
+        return false;
+    };
+    host == "localhost"
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn derived_service_domain(server_host: &str) -> Option<String> {
+    let labels = server_host.split('.').collect::<Vec<_>>();
+    if labels.len() >= 3
+        || labels
+            .first()
+            .is_some_and(|label| matches!(*label, "id" | "kanidm" | "auth" | "sso"))
+            && labels.len() >= 2
+    {
+        Some(labels[1..].join("."))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -194,11 +269,34 @@ mod tests {
         for value in [
             "/oauth2/callback",
             "ftp://files.example.test/callback",
+            "http://files.example.test/callback",
             "https://files.example.test/callback#frag",
             "not-a-url",
         ] {
             assert!(validate_redirect_url(value).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn validates_redirect_urls_against_server_domain() {
+        assert_eq!(
+            validate_redirect_url_for_server(
+                "https://files.example.test/oauth2/callback",
+                "https://id.example.test"
+            )
+            .unwrap(),
+            "https://files.example.test/oauth2/callback"
+        );
+        assert!(validate_redirect_url_for_server(
+            "https://evil.example.org/oauth2/callback",
+            "https://id.example.test"
+        )
+        .is_err());
+        assert!(validate_redirect_url_for_server(
+            "http://localhost:3000/callback",
+            "https://id.example.test"
+        )
+        .is_ok());
     }
 
     #[test]

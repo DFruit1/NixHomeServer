@@ -28,6 +28,28 @@ fn stub_dir(script_body: &str) -> TempDir {
     dir
 }
 
+fn backend_should_not_run_dir() -> TempDir {
+    stub_dir(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "backend should not be called: $*" >&2
+exit 99
+"#,
+    )
+}
+
+fn command_with_stub(dir: &TempDir) -> Command {
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .args([
+            "--server-url",
+            "https://id.example.test",
+            "--admin-name",
+            "admindsaw",
+        ]);
+    cmd
+}
+
 #[test]
 fn user_list_outputs_human_table() {
     let dir = stub_dir(
@@ -209,29 +231,47 @@ exit 1
 
 #[test]
 fn membership_set_rejects_empty_without_allow_empty() {
-    let dir = stub_dir(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-echo "unexpected args: $*" >&2
-exit 1
-"#,
-    );
+    let dir = backend_should_not_run_dir();
 
-    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
-    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
-        .args([
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "membership",
-            "set",
-            "dsaw",
-        ]);
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["membership", "set", "dsaw"]);
 
     cmd.assert()
         .code(2)
         .stderr(predicate::str::contains("requires --allow-empty"));
+}
+
+#[test]
+fn membership_set_empty_requires_exact_confirmation() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["membership", "set", "dsaw", "--allow-empty"]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("requires --confirm-empty dsaw"));
+}
+
+#[test]
+fn dry_run_membership_set_empty_reports_confirmation_without_backend() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args([
+        "--dry-run",
+        "--output",
+        "json",
+        "membership",
+        "set",
+        "dsaw",
+        "--allow-empty",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"dry_run\": true"))
+        .stdout(predicate::str::contains("--confirm-empty dsaw"));
 }
 
 #[test]
@@ -722,6 +762,8 @@ exit 1
         "client",
         "pkce",
         "disable",
+        "files",
+        "--confirm-insecure-pkce-disable",
         "files",
     ]);
 
@@ -1345,6 +1387,8 @@ exit 1
         "pkce",
         "disable",
         "files",
+        "--confirm-insecure-pkce-disable",
+        "files",
     ]);
 
     cmd.assert()
@@ -1355,27 +1399,10 @@ exit 1
 
 #[test]
 fn user_create_rejects_invalid_account_id_before_backend() {
-    let dir = stub_dir(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-echo "backend should not be called: $*" >&2
-exit 99
-"#,
-    );
+    let dir = backend_should_not_run_dir();
 
-    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
-    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
-        .args([
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "user",
-            "create",
-            "bad name",
-            "--display-name",
-            "Bad Name",
-        ]);
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["user", "create", "bad name", "--display-name", "Bad Name"]);
 
     cmd.assert()
         .code(2)
@@ -1384,29 +1411,18 @@ exit 99
 
 #[test]
 fn user_create_rejects_invalid_email_before_backend() {
-    let dir = stub_dir(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-echo "backend should not be called: $*" >&2
-exit 99
-"#,
-    );
+    let dir = backend_should_not_run_dir();
 
-    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
-    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
-        .args([
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "user",
-            "create",
-            "dsaw",
-            "--display-name",
-            "Dan",
-            "--email",
-            "bad-email",
-        ]);
+    let mut cmd = command_with_stub(&dir);
+    cmd.args([
+        "user",
+        "create",
+        "dsaw",
+        "--display-name",
+        "Dan",
+        "--email",
+        "bad-email",
+    ]);
 
     cmd.assert()
         .code(2)
@@ -1415,27 +1431,10 @@ exit 99
 
 #[test]
 fn client_redirect_add_rejects_relative_url_before_backend() {
-    let dir = stub_dir(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-echo "backend should not be called: $*" >&2
-exit 99
-"#,
-    );
+    let dir = backend_should_not_run_dir();
 
-    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
-    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
-        .args([
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "client",
-            "redirect",
-            "add",
-            "files",
-            "/oauth2/callback",
-        ]);
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["client", "redirect", "add", "files", "/oauth2/callback"]);
 
     cmd.assert()
         .code(2)
@@ -1443,28 +1442,65 @@ exit 99
 }
 
 #[test]
-fn reset_token_rejects_out_of_range_ttl_before_backend() {
-    let dir = stub_dir(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-echo "backend should not be called: $*" >&2
-exit 99
-"#,
-    );
+fn client_redirect_add_rejects_cross_site_public_url_before_backend() {
+    let dir = backend_should_not_run_dir();
 
-    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
-    cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
-        .args([
-            "--server-url",
-            "https://id.example.test",
-            "--admin-name",
-            "admindsaw",
-            "user",
-            "reset-token",
-            "dsaw",
-            "--ttl",
-            "30",
-        ]);
+    let mut cmd = command_with_stub(&dir);
+    cmd.args([
+        "client",
+        "redirect",
+        "add",
+        "files",
+        "https://evil.example.org/oauth2/callback",
+    ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("public redirect host must be"));
+}
+
+#[test]
+fn client_secret_reset_requires_exact_confirmation_before_backend() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["client", "secret", "reset", "files"]);
+
+    cmd.assert().code(2).stderr(predicate::str::contains(
+        "requires --confirm-rotate-secret files",
+    ));
+}
+
+#[test]
+fn client_pkce_disable_requires_exact_confirmation_before_backend() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["client", "pkce", "disable", "files"]);
+
+    cmd.assert().code(2).stderr(predicate::str::contains(
+        "requires --confirm-insecure-pkce-disable files",
+    ));
+}
+
+#[test]
+fn client_consent_disable_requires_exact_confirmation_before_backend() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["client", "consent", "disable", "files"]);
+
+    cmd.assert().code(2).stderr(predicate::str::contains(
+        "requires --confirm-disable-consent files",
+    ));
+}
+
+#[test]
+fn reset_token_rejects_out_of_range_ttl_before_backend() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["user", "reset-token", "dsaw", "--ttl", "30"]);
 
     cmd.assert()
         .code(2)
@@ -1473,30 +1509,178 @@ exit 99
 
 #[test]
 fn policy_auth_expiry_rejects_out_of_range_value_before_backend() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args([
+        "policy",
+        "group",
+        "auth-expiry",
+        "set",
+        "idm_all_persons",
+        "0",
+    ]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid auth expiry '0'"));
+}
+
+#[test]
+fn history_list_runs_without_kanidm_or_nix_context() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let history_dir = dir.path().join("history");
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env_clear()
+        .env("HOME", dir.path())
+        .env("KANIDM_ADMIN_HISTORY_DIR", &history_dir)
+        .args(["history", "list"]);
+
+    cmd.assert().success().stdout(predicate::str::contains(
+        "No kanidm-admin operation history",
+    ));
+}
+
+#[test]
+fn context_show_uses_installed_context_when_repo_root_is_absent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let context_file = dir.path().join("context.json");
+    fs::write(
+        &context_file,
+        r#"{
+  "serverUrl": "https://id.example.test",
+  "adminName": "admindsaw",
+  "vaultwardenUrl": "https://passwords.example.test",
+  "sftpRuntime": {
+    "sftpAccessGroup": "installed-sftp-users",
+    "localSftpAccessGroup": "installed-local-sftp-users"
+  }
+}"#,
+    )
+    .expect("context file");
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env_clear()
+        .env("HOME", dir.path())
+        .env("KANIDM_ADMIN_CONTEXT_FILE", &context_file)
+        .env(
+            "KANIDM_ADMIN_REPO_ROOT",
+            dir.path().join("missing-source-repo"),
+        )
+        .args(["context", "show"]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("https://id.example.test"))
+        .stdout(predicate::str::contains("installed-sftp-users"));
+}
+
+#[test]
+fn history_redact_sensitive_runs_without_kanidm_or_nix_context() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let history_dir = dir.path().join("history");
+    fs::create_dir_all(&history_dir).expect("history dir");
+    fs::write(
+        history_dir.join("operations.jsonl"),
+        r#"{"args":["kanidm-admin","client","secret","show","files"],"details":{"raw_output":"SECRET"}}"#,
+    )
+    .expect("history");
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env_clear()
+        .env("HOME", dir.path())
+        .env("KANIDM_ADMIN_HISTORY_DIR", &history_dir)
+        .args(["history", "redact-sensitive"]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Redacted sensitive fields"));
+    let persisted = fs::read_to_string(history_dir.join("operations.jsonl")).expect("history");
+    assert!(!persisted.contains("SECRET"));
+}
+
+#[test]
+fn jellyfin_password_stage_runs_without_kanidm_or_nix_context() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let hash_dir = dir.path().join("hashes");
+
+    let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
+    cmd.env_clear()
+        .env("HOME", dir.path())
+        .env("JELLYFIN_PASSWORD", "correct horse battery staple")
+        .env("KANIDM_ADMIN_JELLYFIN_PASSWORD_HASH_DIR", &hash_dir)
+        .args(["local", "jellyfin-password", "stage", "alice"]);
+
+    cmd.assert().success().stdout(predicate::str::contains(
+        "Staged the desired Jellyfin password hash",
+    ));
+    assert!(hash_dir.join("alice.pbkdf2").is_file());
+}
+
+#[test]
+fn sensitive_backend_failure_redacts_error_and_history() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash
 set -euo pipefail
-echo "backend should not be called: $*" >&2
-exit 99
+if [[ "$1" == "person" && "$2" == "credential" && "$3" == "create-reset-token" ]]; then
+  printf 'SECRET_RESET_STDOUT\n'
+  printf 'SECRET_RESET_STDERR\n' >&2
+  exit 42
+fi
+echo "unexpected args: $*" >&2
+exit 1
 "#,
     );
+    let history_root = tempfile::tempdir().expect("history root");
+    let history_dir = history_root.path().join("history");
 
     let mut cmd = Command::cargo_bin("kanidm-admin").expect("binary");
     cmd.env("KANIDM_ADMIN_KANIDM_BIN", dir.path().join("kanidm-stub.sh"))
+        .env("KANIDM_ADMIN_HISTORY_DIR", &history_dir)
         .args([
             "--server-url",
             "https://id.example.test",
             "--admin-name",
             "admindsaw",
-            "policy",
-            "group",
-            "auth-expiry",
-            "set",
-            "idm_all_persons",
-            "0",
+            "--json",
+            "user",
+            "reset-token",
+            "alice",
         ]);
 
     cmd.assert()
-        .code(2)
-        .stderr(predicate::str::contains("invalid auth expiry '0'"));
+        .code(10)
+        .stderr(predicate::str::contains("SECRET_RESET").not())
+        .stderr(predicate::str::contains("<redacted>"));
+    let persisted = fs::read_to_string(history_dir.join("operations.jsonl")).expect("history");
+    assert!(!persisted.contains("SECRET_RESET"));
+    assert!(persisted.contains("<redacted>"));
+}
+
+#[test]
+fn local_helper_help_describes_subcommands() {
+    let mut vaultwarden = Command::cargo_bin("kanidm-admin").expect("binary");
+    vaultwarden.args(["local", "vaultwarden", "--help"]);
+    vaultwarden
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Create or refresh a pending Vaultwarden invite",
+        ))
+        .stdout(predicate::str::contains(
+            "Inspect Vaultwarden invite/account state",
+        ));
+
+    let mut jellyfin = Command::cargo_bin("kanidm-admin").expect("binary");
+    jellyfin.args(["local", "jellyfin-password", "--help"]);
+    jellyfin
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Write a staged Jellyfin password hash",
+        ))
+        .stdout(predicate::str::contains(
+            "Start the Jellyfin password reconciler",
+        ));
 }

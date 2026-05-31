@@ -8,6 +8,7 @@ use std::{
 
 use serde::Serialize;
 use serde_json::json;
+use zeroize::Zeroize;
 
 use crate::AppError;
 
@@ -26,6 +27,14 @@ pub struct RawCommandRequest {
     pub mode: CommandMode,
     pub timeout: Duration,
     pub stdin: Option<String>,
+}
+
+impl Drop for RawCommandRequest {
+    fn drop(&mut self) {
+        if let Some(stdin) = &mut self.stdin {
+            stdin.zeroize();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

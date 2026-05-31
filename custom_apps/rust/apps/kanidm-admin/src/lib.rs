@@ -7,6 +7,7 @@ pub mod kanidm_cli;
 pub mod models;
 pub mod ops;
 pub mod output;
+pub mod sensitivity;
 pub mod session_state;
 pub mod validation;
 pub mod verification;
@@ -14,44 +15,9 @@ pub mod verification;
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+use crate::backend::BackendFailure;
 use serde_json::{json, Value};
 use thiserror::Error;
-
-use crate::{backend::BackendFailure, session_state::SessionFailureKind};
-
-#[derive(Debug, Clone)]
-pub struct BackendErrorDetails {
-    pub failure: BackendFailure,
-}
-
-#[derive(Debug, Clone)]
-pub struct SessionErrorDetails {
-    pub kind: SessionFailureKind,
-    pub diagnostic: Value,
-}
-
-#[derive(Debug, Clone)]
-pub struct VerificationErrorDetails {
-    pub details: Value,
-}
-
-#[derive(Debug, Clone)]
-pub struct InventoryErrorDetails {
-    pub details: Value,
-}
-
-#[derive(Debug, Clone)]
-pub enum DomainError {
-    Session(SessionFailureKind, SessionErrorDetails),
-    Backend(BackendErrorDetails),
-    Verification(VerificationErrorDetails),
-    Inventory(InventoryErrorDetails),
-    Config { message: String },
-    Io { message: String },
-    Json { details: Value },
-    AlreadyExists { details: Value },
-    NotFound { details: Value },
-}
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -137,11 +103,20 @@ impl AppError {
                 let stderr = failure.stderr.trim();
                 let stdout = failure.stdout.trim();
                 let mut body = message.clone();
-                if !stdout.is_empty() {
+                if sensitivity::invocation_args_are_sensitive(&failure.args)
+                    && (!stdout.is_empty() || !stderr.is_empty())
+                {
+                    body.push_str(
+                        "\n\nBackend output was redacted because this command can emit secrets.",
+                    );
+                } else if !stdout.is_empty() {
                     body.push_str("\n\nBackend stdout:\n");
                     body.push_str(stdout);
-                }
-                if !stderr.is_empty() {
+                    if !stderr.is_empty() {
+                        body.push_str("\n\nBackend stderr:\n");
+                        body.push_str(stderr);
+                    }
+                } else if !stderr.is_empty() {
                     body.push_str("\n\nBackend stderr:\n");
                     body.push_str(stderr);
                 }
@@ -198,15 +173,22 @@ impl AppError {
             Self::MissingDependency { binary } => {
                 json!({ "kind": "missing_dependency", "binary": binary })
             }
-            Self::Backend { failure, .. } => json!({
-                "kind": "backend",
-                "program": failure.program,
-                "args": failure.args,
-                "status": failure.status,
-                "stdout": failure.stdout,
-                "stderr": failure.stderr,
-                "crash_kind": failure.crash_kind.map(|kind| kind.as_str()),
-            }),
+            Self::Backend { failure, .. } => {
+                let payload = json!({
+                    "kind": "backend",
+                    "program": failure.program,
+                    "args": failure.args,
+                    "status": failure.status,
+                    "stdout": failure.stdout,
+                    "stderr": failure.stderr,
+                    "crash_kind": failure.crash_kind.map(|kind| kind.as_str()),
+                });
+                if sensitivity::invocation_args_are_sensitive(&failure.args) {
+                    sensitivity::sanitize_sensitive_value(payload)
+                } else {
+                    payload
+                }
+            }
             Self::NotFound {
                 resource,
                 name,

@@ -5,7 +5,7 @@ let
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
   backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
-  localSftpAccessGroup = "files-local-sftp-users";
+  localSftpAccessGroup = vars.fileAccess.localSftpAccessGroup or "files-local-sftp-users";
   localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
   sftpKanidmGroups = [
     sftpAccessGroup

@@ -1,6 +1,7 @@
 use std::{
     env,
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread::sleep,
@@ -19,12 +20,14 @@ pub const ENV_NIX_BIN: &str = "KANIDM_ADMIN_NIX_BIN";
 pub const ENV_VAULTWARDEN_URL: &str = "KANIDM_ADMIN_VAULTWARDEN_URL";
 pub const ENV_VAULTWARDEN_ADMIN_TOKEN_FILE: &str = "KANIDM_ADMIN_VAULTWARDEN_ADMIN_TOKEN_FILE";
 pub const ENV_BACKEND_TIMEOUT_SECONDS: &str = "KANIDM_ADMIN_BACKEND_TIMEOUT_SECONDS";
+pub const ENV_CONTEXT_FILE: &str = "KANIDM_ADMIN_CONTEXT_FILE";
 
 const NIX_EVAL_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DEFAULT_BACKEND_TIMEOUT_SECONDS: u64 = 20;
 const MIN_BACKEND_TIMEOUT_SECONDS: u64 = 1;
 const MAX_BACKEND_TIMEOUT_SECONDS: u64 = 300;
+const DEFAULT_CONTEXT_FILE: &str = "/etc/kanidm-admin/context.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextOverrides {
@@ -129,21 +132,33 @@ struct RepoDefaults {
     admin_name: String,
     #[serde(rename = "vaultwardenUrl")]
     vaultwarden_url: Option<String>,
+    #[serde(rename = "vaultwardenAdminTokenFile")]
+    vaultwarden_admin_token_file: Option<PathBuf>,
     #[serde(rename = "sftpRuntime", default)]
     sftp_runtime: SftpRuntimeConfig,
 }
 
 pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, AppError> {
-    let explicit_repo_root = overrides
-        .repo_root
-        .or_else(|| env::var_os(ENV_REPO_ROOT).map(PathBuf::from));
-    let repo_root = explicit_repo_root.clone();
+    let cli_repo_root = overrides.repo_root;
+    let env_repo_root = env::var_os(ENV_REPO_ROOT).map(PathBuf::from);
+    let repo_root_override = cli_repo_root.clone().or(env_repo_root);
+    let installed_defaults = installed_context_defaults()?;
     let server_url = overrides
         .server_url
-        .or_else(|| env::var(ENV_SERVER_URL).ok());
+        .or_else(|| env::var(ENV_SERVER_URL).ok())
+        .or_else(|| {
+            installed_defaults
+                .as_ref()
+                .map(|defaults| defaults.server_url.clone())
+        });
     let admin_name = overrides
         .admin_name
-        .or_else(|| env::var(ENV_ADMIN_NAME).ok());
+        .or_else(|| env::var(ENV_ADMIN_NAME).ok())
+        .or_else(|| {
+            installed_defaults
+                .as_ref()
+                .map(|defaults| defaults.admin_name.clone())
+        });
     let kanidm_bin = overrides
         .kanidm_bin
         .or_else(|| env::var_os(ENV_KANIDM_BIN))
@@ -154,10 +169,20 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
         .unwrap_or_else(|| OsString::from("nix"));
     let vaultwarden_url = overrides
         .vaultwarden_url
-        .or_else(|| env::var(ENV_VAULTWARDEN_URL).ok());
+        .or_else(|| env::var(ENV_VAULTWARDEN_URL).ok())
+        .or_else(|| {
+            installed_defaults
+                .as_ref()
+                .and_then(|defaults| defaults.vaultwarden_url.clone())
+        });
     let vaultwarden_admin_token_file = overrides
         .vaultwarden_admin_token_file
-        .or_else(|| env::var_os(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE).map(PathBuf::from));
+        .or_else(|| env::var_os(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE).map(PathBuf::from))
+        .or_else(|| {
+            installed_defaults
+                .as_ref()
+                .and_then(|defaults| defaults.vaultwarden_admin_token_file.clone())
+        });
     let runtime_policy = RuntimePolicy {
         backend_timeout: Duration::from_secs(resolve_backend_timeout_seconds(
             overrides.backend_timeout_seconds,
@@ -165,10 +190,20 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
     };
 
     if let (Some(server_url), Some(admin_name)) = (&server_url, &admin_name) {
-        let resolved_repo_root = repo_root.or_else(find_repo_root_optional);
-        let sftp_runtime = match explicit_repo_root.as_ref() {
-            Some(repo_root) => nix_repo_defaults(&nix_bin, repo_root)?.sftp_runtime,
-            None => SftpRuntimeConfig::default(),
+        let resolved_repo_root = repo_root_override
+            .as_deref()
+            .filter(|path| path.join("vars.nix").is_file())
+            .map(Path::to_path_buf)
+            .or_else(find_repo_root_optional);
+        let sftp_runtime = if let Some(defaults) = installed_defaults.as_ref() {
+            defaults.sftp_runtime.clone()
+        } else if let Some(repo_root) = repo_root_override
+            .as_deref()
+            .filter(|path| path.join("vars.nix").is_file())
+        {
+            nix_repo_defaults(&nix_bin, repo_root)?.sftp_runtime
+        } else {
+            SftpRuntimeConfig::default()
         };
         return Ok(ResolvedContext {
             repo_root: resolved_repo_root,
@@ -182,12 +217,33 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
         });
     }
 
-    let repo_root = match repo_root.or_else(find_repo_root_optional) {
+    if let Some(defaults) = installed_defaults {
+        return Ok(ResolvedContext {
+            repo_root: repo_root_override
+                .as_deref()
+                .filter(|path| path.join("vars.nix").is_file())
+                .map(Path::to_path_buf)
+                .or_else(find_repo_root_optional),
+            server_url: server_url.unwrap_or(defaults.server_url),
+            admin_name: admin_name.unwrap_or(defaults.admin_name),
+            kanidm_bin,
+            vaultwarden_url: vaultwarden_url.or(defaults.vaultwarden_url),
+            vaultwarden_admin_token_file: vaultwarden_admin_token_file
+                .or(defaults.vaultwarden_admin_token_file),
+            sftp_runtime: defaults.sftp_runtime,
+            runtime_policy,
+        });
+    }
+
+    let repo_root = match repo_root_override
+        .filter(|path| path.join("vars.nix").is_file())
+        .or_else(find_repo_root_optional)
+    {
         Some(path) => path,
         None => {
             return Err(AppError::Config {
                 message: format!(
-                    "could not resolve repository root containing vars.nix; pass --repo-root or set {ENV_REPO_ROOT}"
+                    "could not resolve kanidm-admin context; install {DEFAULT_CONTEXT_FILE}, pass --repo-root, or set {ENV_SERVER_URL} and {ENV_ADMIN_NAME}"
                 ),
             });
         }
@@ -200,9 +256,40 @@ pub fn resolve_context(overrides: ContextOverrides) -> Result<ResolvedContext, A
         admin_name: admin_name.unwrap_or(defaults.admin_name),
         kanidm_bin,
         vaultwarden_url: vaultwarden_url.or(defaults.vaultwarden_url),
-        vaultwarden_admin_token_file,
+        vaultwarden_admin_token_file: vaultwarden_admin_token_file
+            .or(defaults.vaultwarden_admin_token_file),
         sftp_runtime: defaults.sftp_runtime,
         runtime_policy,
+    })
+}
+
+fn installed_context_defaults() -> Result<Option<RepoDefaults>, AppError> {
+    match env::var_os(ENV_CONTEXT_FILE) {
+        Some(path) => read_context_defaults_file(PathBuf::from(path)).map(Some),
+        None => {
+            let path = Path::new(DEFAULT_CONTEXT_FILE);
+            if path.exists() {
+                read_context_defaults_file(path.to_path_buf()).map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn read_context_defaults_file(path: PathBuf) -> Result<RepoDefaults, AppError> {
+    let contents = fs::read_to_string(&path).map_err(|error| AppError::Io {
+        message: format!(
+            "failed to read kanidm-admin context file '{}': {error}",
+            path.display()
+        ),
+    })?;
+    serde_json::from_str(&contents).map_err(|error| AppError::Json {
+        message: format!(
+            "failed to decode kanidm-admin context file '{}'",
+            path.display()
+        ),
+        details: serde_json::json!({ "error": error.to_string() }),
     })
 }
 
@@ -273,7 +360,7 @@ in {{
   vaultwardenUrl = "https://passwords.${{vars.domain}}";
   sftpRuntime = {{
     sftpAccessGroup = fileAccess.sftpAccessGroup or "files-sftp-users";
-    localSftpAccessGroup = "files-local-sftp-users";
+    localSftpAccessGroup = fileAccess.localSftpAccessGroup or "files-local-sftp-users";
     webAccessGroup = fileAccess.webAccessGroup or "user-files";
     sharedAccessGroup = fileAccess.sharedAccessGroup or "files-shared-users";
     usbAccessGroup = fileAccess.usbAccessGroup or "usb-access";
@@ -330,6 +417,10 @@ fn run_nix_eval_with_timeout(
 ) -> Result<std::process::Output, AppError> {
     let args = vec![
         "eval".to_string(),
+        "--extra-experimental-features".to_string(),
+        "nix-command".to_string(),
+        "--extra-experimental-features".to_string(),
+        "flakes".to_string(),
         "--json".to_string(),
         "--impure".to_string(),
         "--expr".to_string(),
@@ -402,6 +493,13 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn restore_env_var(name: &str, original: Option<std::ffi::OsString>) {
+        match original {
+            Some(value) => env::set_var(name, value),
+            None => env::remove_var(name),
+        }
+    }
+
     fn write_script(path: &Path, body: &str) {
         let shell = std::process::Command::new("bash")
             .args(["-lc", "command -v bash"])
@@ -442,14 +540,8 @@ mod tests {
         assert_eq!(resolved.server_url, "https://flag.example.test");
         assert_eq!(resolved.admin_name, "flag-admin");
 
-        match original_server {
-            Some(value) => env::set_var(ENV_SERVER_URL, value),
-            None => env::remove_var(ENV_SERVER_URL),
-        }
-        match original_admin {
-            Some(value) => env::set_var(ENV_ADMIN_NAME, value),
-            None => env::remove_var(ENV_ADMIN_NAME),
-        }
+        restore_env_var(ENV_SERVER_URL, original_server);
+        restore_env_var(ENV_ADMIN_NAME, original_admin);
     }
 
     #[test]
@@ -461,6 +553,10 @@ mod tests {
         write_script(
             &nix,
             r#"#!/usr/bin/env bash
+case " $* " in
+  *" eval --extra-experimental-features nix-command --extra-experimental-features flakes "*) ;;
+  *) echo "missing explicit nix feature flags: $*" >&2; exit 1 ;;
+esac
 printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwardenUrl":"https://passwords.example.test","sftpRuntime":{"sftpAccessGroup":"renamed-sftp-users","localSftpAccessGroup":"renamed-local-sftp-users","webAccessGroup":"renamed-web-users","sharedAccessGroup":"renamed-shared-users","usbAccessGroup":"renamed-usb-users","backupStorageAccessGroup":"renamed-backup-users","sftpChrootBase":"/srv/renamed-chroots","usersRoot":"/srv/renamed-users","sharedRoot":"/srv/renamed-shared","usbRoot":"/srv/renamed-usb","backupRoot":"/srv/renamed-backups","sharedMountName":"SharedRenamed","usbMountName":"UsbRenamed","backupStorageMountName":"BackupsRenamed","filesSftpPort":2202,"filesSftpSshdService":"renamed-sftp.service","kanidmUnixdService":"renamed-unixd.service","posixGroupsService":"renamed-posix.service","userRootSyncService":"renamed-root-sync.service","userRootBindTemplate":"renamed-sftp-user-root@.service","sharedBindTemplate":"renamed-shared@.service","usbBindTemplate":"renamed-usb@.service","backupBindTemplate":"renamed-backup@.service"}}'
 "#,
         );
@@ -531,14 +627,129 @@ printf '{"serverUrl":"https://id.example.test","adminName":"admindsaw","vaultwar
             Some(token_path.as_path())
         );
 
-        match original_url {
-            Some(value) => env::set_var(ENV_VAULTWARDEN_URL, value),
-            None => env::remove_var(ENV_VAULTWARDEN_URL),
-        }
-        match original_token {
-            Some(value) => env::set_var(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE, value),
-            None => env::remove_var(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE),
-        }
+        restore_env_var(ENV_VAULTWARDEN_URL, original_url);
+        restore_env_var(ENV_VAULTWARDEN_ADMIN_TOKEN_FILE, original_token);
+    }
+
+    #[test]
+    fn resolves_installed_context_without_source_repo() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let original_context_file = env::var_os(ENV_CONTEXT_FILE);
+        let original_repo = env::var_os(ENV_REPO_ROOT);
+        let original_server = env::var_os(ENV_SERVER_URL);
+        let original_admin = env::var_os(ENV_ADMIN_NAME);
+        let temp = tempdir().expect("tempdir");
+        let context_file = temp.path().join("context.json");
+        let missing_repo = temp.path().join("missing-repo");
+        let noisy_nix = temp.path().join("nix-should-not-run.sh");
+        write_script(
+            &noisy_nix,
+            r#"#!/usr/bin/env bash
+echo "nix should not run when installed context is available" >&2
+exit 1
+"#,
+        );
+        fs::write(
+            &context_file,
+            r#"{
+  "serverUrl": "https://id.example.test",
+  "adminName": "admindsaw",
+  "vaultwardenUrl": "https://passwords.example.test",
+  "vaultwardenAdminTokenFile": "/run/agenix/vaultwardenAdminToken",
+  "sftpRuntime": {
+    "sftpAccessGroup": "installed-sftp-users",
+    "filesSftpPort": 2223
+  }
+}"#,
+        )
+        .expect("context file");
+
+        env::set_var(ENV_CONTEXT_FILE, &context_file);
+        env::set_var(ENV_REPO_ROOT, &missing_repo);
+        env::remove_var(ENV_SERVER_URL);
+        env::remove_var(ENV_ADMIN_NAME);
+
+        let resolved = resolve_context(ContextOverrides {
+            repo_root: None,
+            server_url: None,
+            admin_name: None,
+            kanidm_bin: None,
+            nix_bin: Some(noisy_nix.into_os_string()),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+            backend_timeout_seconds: None,
+        })
+        .expect("resolve from installed context");
+
+        assert_eq!(resolved.server_url, "https://id.example.test");
+        assert_eq!(resolved.admin_name, "admindsaw");
+        assert_eq!(
+            resolved.vaultwarden_admin_token_file.as_deref(),
+            Some(Path::new("/run/agenix/vaultwardenAdminToken"))
+        );
+        assert_eq!(
+            resolved.sftp_runtime.sftp_access_group,
+            "installed-sftp-users"
+        );
+        assert_eq!(resolved.sftp_runtime.files_sftp_port, 2223);
+        assert_eq!(
+            resolved.sftp_runtime.files_sftp_sshd_service,
+            "files-sftp-sshd.service"
+        );
+
+        restore_env_var(ENV_CONTEXT_FILE, original_context_file);
+        restore_env_var(ENV_REPO_ROOT, original_repo);
+        restore_env_var(ENV_SERVER_URL, original_server);
+        restore_env_var(ENV_ADMIN_NAME, original_admin);
+    }
+
+    #[test]
+    fn env_server_and_admin_do_not_require_env_repo_root() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let original_context_file = env::var_os(ENV_CONTEXT_FILE);
+        let original_repo = env::var_os(ENV_REPO_ROOT);
+        let original_server = env::var_os(ENV_SERVER_URL);
+        let original_admin = env::var_os(ENV_ADMIN_NAME);
+        let temp = tempdir().expect("tempdir");
+        let missing_repo = temp.path().join("missing-repo");
+        let noisy_nix = temp.path().join("nix-should-not-run.sh");
+        write_script(
+            &noisy_nix,
+            r#"#!/usr/bin/env bash
+echo "nix should not run when server and admin are already configured" >&2
+exit 1
+"#,
+        );
+
+        env::remove_var(ENV_CONTEXT_FILE);
+        env::set_var(ENV_REPO_ROOT, &missing_repo);
+        env::set_var(ENV_SERVER_URL, "https://id.example.test");
+        env::set_var(ENV_ADMIN_NAME, "admindsaw");
+
+        let resolved = resolve_context(ContextOverrides {
+            repo_root: None,
+            server_url: None,
+            admin_name: None,
+            kanidm_bin: None,
+            nix_bin: Some(noisy_nix.into_os_string()),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+            backend_timeout_seconds: None,
+        })
+        .expect("resolve from env context");
+
+        assert_eq!(resolved.server_url, "https://id.example.test");
+        assert_eq!(resolved.admin_name, "admindsaw");
+        assert_eq!(
+            resolved.sftp_runtime,
+            SftpRuntimeConfig::default(),
+            "missing env repo root should fall back to built-in runtime defaults"
+        );
+
+        restore_env_var(ENV_CONTEXT_FILE, original_context_file);
+        restore_env_var(ENV_REPO_ROOT, original_repo);
+        restore_env_var(ENV_SERVER_URL, original_server);
+        restore_env_var(ENV_ADMIN_NAME, original_admin);
     }
 
     #[test]

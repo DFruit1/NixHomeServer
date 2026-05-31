@@ -72,6 +72,7 @@ rec {
   fileAccess = {
     webAccessGroup = "user-files"; # Browser file access and personal files root provisioning.
     sftpAccessGroup = "files-sftp-users"; # Restricted SFTP login access.
+    localSftpAccessGroup = "files-local-sftp-users"; # Local Unix bridge group allowed for SFTP shadow password sync.
     sharedAccessGroup = "files-shared-users"; # Adds the protected _Shared view inside personal roots.
     usbAccessGroup = "usb-access"; # Adds the _USB view inside personal roots when external USB media is manually mounted.
     sharedMountName = "_Shared";

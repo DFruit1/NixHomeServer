@@ -266,7 +266,14 @@ pub fn set_membership_with_config(
         &options.account_id,
         &effective_desired_groups,
         MembershipMode::Exact,
-    )?;
+    )
+    .map_err(|error| {
+        annotate_exact_membership_verification_error(
+            error,
+            &options.account_id,
+            &effective_desired_groups,
+        )
+    })?;
     let file_runtime_changed = groups_affect_file_runtime(config, &diff.added)
         || groups_affect_file_runtime(config, &diff.removed);
     let sftp_reconcile =
@@ -535,6 +542,41 @@ fn membership_next_actions(account_id: &str, mode: MembershipMode) -> Vec<String
     ]
 }
 
+fn annotate_exact_membership_verification_error(
+    error: AppError,
+    account_id: &str,
+    expected_groups: &[String],
+) -> AppError {
+    match error {
+        AppError::Verification {
+            message,
+            mut details,
+        } => {
+            if let Some(object) = details.as_object_mut() {
+                object.insert(
+                    "concurrency_hint".to_string(),
+                    json!({
+                        "possible_concurrent_membership_change": true,
+                        "account_id": account_id,
+                        "expected_groups": expected_groups,
+                        "next_actions": [
+                            format!("Inspect live state with `kanidm-admin membership show {account_id}`."),
+                            "Rerun the exact membership command only after confirming the live group set still matches the intended target."
+                        ],
+                    }),
+                );
+            }
+            AppError::Verification {
+                message: format!(
+                    "{message}; possible concurrent membership change detected while setting exact memberships for '{account_id}'"
+                ),
+                details,
+            }
+        }
+        other => other,
+    }
+}
+
 fn merge_warnings(mut left: Vec<String>, mut right: Vec<String>) -> Vec<String> {
     left.append(&mut right);
     left.sort();
@@ -704,5 +746,29 @@ mod tests {
 
         assert!(diff.added.is_empty());
         assert_eq!(diff.removed, vec!["app-admin".to_string()]);
+    }
+
+    #[test]
+    fn exact_membership_verification_error_includes_concurrency_hint() {
+        let error = annotate_exact_membership_verification_error(
+            AppError::Verification {
+                message: "membership verification failed".to_string(),
+                details: json!({ "attempts": [] }),
+            },
+            "alice",
+            &["users".to_string()],
+        );
+
+        match error {
+            AppError::Verification { message, details } => {
+                assert!(message.contains("possible concurrent membership change"));
+                assert_eq!(
+                    details["concurrency_hint"]["possible_concurrent_membership_change"],
+                    true
+                );
+                assert_eq!(details["concurrency_hint"]["account_id"], "alice");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

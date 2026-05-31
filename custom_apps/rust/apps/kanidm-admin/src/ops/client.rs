@@ -4,8 +4,8 @@ use crate::{
     inventory::clients::{parse_client_list, parse_client_record, ClientRecord},
     kanidm_cli::{verify_with_retry, KanidmCli, VerificationCheck, VerificationPolicy},
     ops::{reconcile_failed_write, FailedWriteContext, ReconciledWrite},
-    output::CommandOutput,
-    validation::{validate_identifier_field, validate_redirect_url},
+    output::{CommandOutput, Sensitivity},
+    validation::{validate_identifier_field, validate_redirect_url_for_server},
     AppError,
 };
 
@@ -83,7 +83,7 @@ pub fn client_redirect_add(
     url: &str,
 ) -> Result<CommandOutput, AppError> {
     let client = validate_identifier_field("oauth2 client name", client)?;
-    let url = validate_redirect_url(url)?;
+    let url = validate_redirect_url_for_server(url, cli.server_url())?;
     let mut warnings = Vec::new();
     if let Err(error) = cli.oauth2_add_redirect_url(&client, &url) {
         let ReconciledWrite { value, warning } = reconcile_failed_write(
@@ -133,7 +133,7 @@ pub fn client_redirect_remove(
     url: &str,
 ) -> Result<CommandOutput, AppError> {
     let client = validate_identifier_field("oauth2 client name", client)?;
-    let url = validate_redirect_url(url)?;
+    let url = validate_redirect_url_for_server(url, cli.server_url())?;
     let mut warnings = Vec::new();
     if let Err(error) = cli.oauth2_remove_redirect_url(&client, &url) {
         let ReconciledWrite { value, warning } = reconcile_failed_write(
@@ -438,12 +438,7 @@ fn verify_bool_flag(
 }
 
 fn raw_client_command_output(message: String, human: String, details: Value) -> CommandOutput {
-    CommandOutput {
-        message,
-        human,
-        details,
-        warnings: Vec::new(),
-    }
+    CommandOutput::new(message, human, details).with_sensitivity(Sensitivity::Sensitive)
 }
 
 fn client_observed_state(client: &crate::inventory::Parsed<ClientRecord>) -> Value {

@@ -7,11 +7,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod jellyfin;
+mod vaultwarden;
+
+pub use jellyfin::*;
+pub use vaultwarden::{
+    diagnose_vaultwarden_user, invite_vaultwarden_user, lookup_vaultwarden_user,
+    reconcile_vaultwarden_user, VaultwardenUserState, VaultwardenUserStatus,
+};
+
 use pbkdf2::pbkdf2_hmac;
 use rand::{rngs::OsRng, RngCore};
 use reqwest::blocking::Client;
 use serde_json::json;
 use sha2::Sha512;
+use zeroize::Zeroize;
 
 use crate::{
     context::ResolvedContext,
@@ -37,221 +47,6 @@ const PBKDF2_ITERATIONS: u32 = 210_000;
 const VAULTWARDEN_ADMIN_COOKIE: &str = "VW_ADMIN";
 const VAULTWARDEN_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const VAULTWARDEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VaultwardenUserState {
-    Missing,
-    InvitePending,
-    Active,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VaultwardenUserStatus {
-    pub state: VaultwardenUserState,
-    pub user_uuid: Option<String>,
-    pub sso_linked: bool,
-}
-
-impl VaultwardenUserStatus {
-    pub fn state_label(&self) -> &'static str {
-        match self.state {
-            VaultwardenUserState::Missing => "not present",
-            VaultwardenUserState::InvitePending => "invite pending",
-            VaultwardenUserState::Active => "active",
-        }
-    }
-
-    fn to_value(&self) -> serde_json::Value {
-        json!({
-            "state": self.state_label(),
-            "user_uuid": self.user_uuid,
-            "sso_linked": self.sso_linked,
-        })
-    }
-}
-
-pub fn stage_jellyfin_password(
-    account_id: &str,
-    password_env: &str,
-) -> Result<CommandOutput, AppError> {
-    let account_id = validate_account_id(account_id)?;
-
-    let password = env::var(password_env).map_err(|_| AppError::Config {
-        message: format!("environment variable '{password_env}' is required"),
-    })?;
-    if password.is_empty() {
-        return Err(AppError::Config {
-            message: format!("environment variable '{password_env}' must not be empty"),
-        });
-    }
-
-    let directory = env::var_os(PASSWORD_HASH_DIR_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_PASSWORD_HASH_DIR));
-    let path = directory.join(format!("{account_id}.pbkdf2"));
-
-    write_password_hash_atomic(&directory, &path, &hash_password(&password))?;
-
-    Ok(CommandOutput {
-        message: format!("staged desired Jellyfin password hash for '{account_id}'"),
-        human: format!(
-            "Staged the desired Jellyfin password hash for '{account_id}'.\nPath: {}\nSource env var: {password_env}\nThe Jellyfin reconcile service still needs to apply this staged hash.",
-            path.display()
-        ),
-        details: json!({
-            "account_id": account_id,
-            "path": path,
-            "password_env": password_env,
-            "staged": true,
-            "runtime": jellyfin_password_runtime_report(None, &account_id),
-        }),
-        warnings: vec![
-            "The Jellyfin reconcile timer or service must still converge before the password change is active.".to_string(),
-        ],
-    })
-}
-
-pub fn diagnose_jellyfin_password(
-    cli: &KanidmCli,
-    account_id: &str,
-) -> Result<CommandOutput, AppError> {
-    let account_id = validate_account_id(account_id)?;
-    let runtime = jellyfin_password_runtime_report(Some(cli), &account_id);
-    Ok(jellyfin_password_output(&account_id, runtime, "diagnosed"))
-}
-
-pub fn reconcile_jellyfin_password(
-    cli: &KanidmCli,
-    account_id: &str,
-) -> Result<CommandOutput, AppError> {
-    let account_id = validate_account_id(account_id)?;
-    let start = run_root_action(
-        cli,
-        "local jellyfin password reconcile",
-        RootAction::StartSystemdUnit {
-            unit: JELLYFIN_RECONCILE_SERVICE.to_string(),
-        },
-        None,
-        Duration::from_secs(20),
-    );
-    let mut runtime = jellyfin_password_runtime_report(Some(cli), &account_id);
-    runtime.checks.insert(
-        0,
-        RuntimeCheckReport {
-            id: "jellyfin.password_reconcile.started".to_string(),
-            label: "Jellyfin password reconcile service was started".to_string(),
-            required: true,
-            status: if start
-                .result
-                .allowed_success(&std::collections::BTreeSet::from([0]))
-            {
-                CheckStatus::Passed
-            } else {
-                runtime.ready = false;
-                CheckStatus::Failed
-            },
-            command: start
-                .backend_payload
-                .get("args")
-                .and_then(serde_json::Value::as_array)
-                .map(|args| {
-                    format!(
-                        "sudo {}",
-                        args.iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    )
-                }),
-            summary: start.result.detail(),
-            detail: None,
-            probe: Some(start.backend_payload),
-        },
-    );
-    runtime.ready = runtime.required_checks_passed();
-    if !runtime.ready {
-        return Err(AppError::Verification {
-            message: format!("Jellyfin password runtime did not converge for '{account_id}'"),
-            details: json!({ "runtime": runtime }),
-        });
-    }
-    Ok(jellyfin_password_output(&account_id, runtime, "reconciled"))
-}
-
-pub fn test_jellyfin_password(
-    cli: &KanidmCli,
-    account_id: &str,
-) -> Result<CommandOutput, AppError> {
-    diagnose_jellyfin_password(cli, account_id)
-}
-
-pub fn invite_vaultwarden_user(
-    context: &ResolvedContext,
-    cli: &KanidmCli,
-    account_id: &str,
-) -> Result<CommandOutput, AppError> {
-    invite_vaultwarden_user_with(
-        context,
-        account_id,
-        |account_id| load_user(cli, account_id),
-        |path| read_secret_with_sudo_fallback(cli, path),
-        fetch_vaultwarden_user_status,
-        post_vaultwarden_invite,
-        post_vaultwarden_resend_invite,
-    )
-}
-
-pub fn lookup_vaultwarden_user(
-    context: &ResolvedContext,
-    primary_email: &str,
-) -> Result<VaultwardenUserStatus, AppError> {
-    let vaultwarden_url = context
-        .vaultwarden_url
-        .as_deref()
-        .ok_or_else(|| AppError::Config {
-            message: "Vaultwarden URL is not configured in kanidm-admin context".to_string(),
-        })?;
-    let admin_token_path = context
-        .vaultwarden_admin_token_file
-        .as_deref()
-        .ok_or_else(|| AppError::Config {
-            message: "Vaultwarden admin token file is not configured in kanidm-admin context"
-                .to_string(),
-        })?;
-    let admin_token = read_secret_with_sudo_fallback_unlogged(admin_token_path)?;
-    fetch_vaultwarden_user_status(vaultwarden_url, &admin_token, primary_email)
-}
-
-pub fn diagnose_vaultwarden_user(
-    context: &ResolvedContext,
-    cli: &KanidmCli,
-    account_id: &str,
-) -> Result<CommandOutput, AppError> {
-    let runtime = vaultwarden_runtime_report(context, cli, account_id)?;
-    Ok(vaultwarden_runtime_output(account_id, runtime, "diagnosed"))
-}
-
-pub fn reconcile_vaultwarden_user(
-    context: &ResolvedContext,
-    cli: &KanidmCli,
-    account_id: &str,
-) -> Result<CommandOutput, AppError> {
-    let invite = invite_vaultwarden_user(context, cli, account_id)?;
-    let runtime = vaultwarden_runtime_report(context, cli, account_id)?;
-    if !runtime.ready {
-        return Err(AppError::Verification {
-            message: format!("Vaultwarden runtime did not converge for '{account_id}'"),
-            details: json!({
-                "runtime": runtime,
-                "invite": invite.details,
-            }),
-        });
-    }
-    let mut output = vaultwarden_runtime_output(account_id, runtime, "reconciled");
-    output.details["invite"] = invite.details;
-    output.warnings.extend(invite.warnings);
-    Ok(output)
-}
 
 #[allow(clippy::too_many_arguments)]
 fn invite_vaultwarden_user_with<LoadUser, ReadToken, LookupStatus, SendInvite, ResendInvite>(
@@ -1108,11 +903,14 @@ fn hash_password(password: &str) -> String {
     let mut derived = [0u8; 64];
     pbkdf2_hmac::<Sha512>(password.as_bytes(), &salt, PBKDF2_ITERATIONS, &mut derived);
 
-    format!(
+    let password_hash = format!(
         "$PBKDF2-SHA512$iterations={PBKDF2_ITERATIONS}${}${}",
         hex_upper(&salt),
         hex_upper(&derived)
-    )
+    );
+    salt.zeroize();
+    derived.zeroize();
+    password_hash
 }
 
 fn hex_upper(bytes: &[u8]) -> String {

@@ -1,4 +1,5 @@
 use clap::ValueEnum;
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::AppError;
@@ -17,7 +18,48 @@ pub struct CommandOutput {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sensitivity {
+    Normal,
+    Sensitive,
+}
+
 impl CommandOutput {
+    pub fn new(
+        message: impl Into<String>,
+        human: impl Into<String>,
+        details: impl Serialize,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            human: human.into(),
+            details: serde_json::to_value(details).unwrap_or(Value::Null),
+            warnings: Vec::new(),
+        }
+    }
+
+    pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.warnings = warnings;
+        self
+    }
+
+    pub fn with_sensitivity(mut self, sensitivity: Sensitivity) -> Self {
+        if sensitivity == Sensitivity::Sensitive {
+            match &mut self.details {
+                Value::Object(map) => {
+                    map.insert("sensitive".to_string(), Value::Bool(true));
+                }
+                other => {
+                    self.details = json!({
+                        "sensitive": true,
+                        "value": std::mem::take(other),
+                    });
+                }
+            }
+        }
+        self
+    }
+
     pub fn is_sensitive(&self) -> bool {
         self.details
             .get("sensitive")
@@ -89,7 +131,9 @@ fn render_backend_step_summary(step: &Value) -> String {
     if let Some(mode) = step.get("mode").and_then(Value::as_str) {
         lines.push(format!("Mode: {mode}"));
     }
-    if has_text(step, "stdout")
+    if step.get("redaction").is_some_and(|value| !value.is_null()) {
+        lines.push("Backend stdout/stderr was redacted for this command.".to_string());
+    } else if has_text(step, "stdout")
         || has_text(step, "stderr")
         || step.get("error").is_some_and(|value| !value.is_null())
     {
@@ -168,7 +212,7 @@ fn render_command(step: &Value) -> Option<String> {
     })
 }
 
-fn shell_quote_arg(value: &str) -> String {
+pub fn shell_quote_arg(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
     }
