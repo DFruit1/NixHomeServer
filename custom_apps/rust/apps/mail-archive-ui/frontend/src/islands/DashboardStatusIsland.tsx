@@ -57,7 +57,7 @@ export const DashboardStatusIsland = component$(() => {
       window.clearTimeout(pollTimer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     });
-  });
+  }, { strategy: 'document-ready' });
 
   return null;
 });

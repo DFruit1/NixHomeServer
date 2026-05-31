@@ -8,7 +8,7 @@ export const AttachmentSelectionIsland = component$(() => {
     }
 
     cleanup(setupAttachmentSelection(document));
-  });
+  }, { strategy: 'document-ready' });
 
   return null;
 });

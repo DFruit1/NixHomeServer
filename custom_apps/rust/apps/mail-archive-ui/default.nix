@@ -34,6 +34,14 @@ let
     buildPhase = ''
       runHook preBuild
       pnpm run check
+      test -f dist/.vite/manifest.json || {
+        echo "mail-archive-ui frontend build did not produce dist/.vite/manifest.json" >&2
+        exit 1
+      }
+      test -f dist/q-manifest.json || {
+        echo "mail-archive-ui frontend build did not produce dist/q-manifest.json" >&2
+        exit 1
+      }
       runHook postBuild
     '';
 

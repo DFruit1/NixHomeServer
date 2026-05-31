@@ -28,7 +28,7 @@ export const PrioritySelectIsland = component$(() => {
 
     document.addEventListener('change', onChange);
     cleanup(() => document.removeEventListener('change', onChange));
-  });
+  }, { strategy: 'document-ready' });
 
   return (
     <div class="toast-stack priority-error-stack" aria-live="polite" aria-atomic="true">
