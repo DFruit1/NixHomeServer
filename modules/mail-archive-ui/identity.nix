@@ -16,7 +16,7 @@ in
     };
 
     services.kanidm.provision = {
-      groups."mail-archive-users".members = [ ];
+      groups."mail-archive-users".members = vars.kanidmAppUsers;
 
       systems.oauth2.mail-archive-web = {
         displayName = "Mail Archive";
