@@ -370,6 +370,8 @@ pub fn reset_token(cli: &KanidmCli, options: ResetTokenOptions) -> Result<Comman
         ),
         human,
         details: json!({
+            "sensitive": true,
+            "sensitive_fields": ["reset_token"],
             "account_id": options.account_id,
             "ttl_seconds": options.ttl_seconds,
             "parsed_fields_complete": summary.value.token.is_some() && summary.value.reset_url.is_some() && summary.warnings.is_empty(),

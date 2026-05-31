@@ -113,6 +113,11 @@ in
       users = [ localAdminUser ];
       commands = [
         {
+          # Guarded deploy and bootstrap scripts still invoke ordinary sudo
+          # for nixos-rebuild, systemd status, and detached switch activation.
+          # kanidm-admin itself uses the narrower kanidm-admin-root helper;
+          # `kanidm-admin doctor --deep` reports this broad deploy contract as
+          # a hardening item until deploy sudo is split into exact commands.
           command = "ALL";
           options = [ "NOPASSWD" ];
         }

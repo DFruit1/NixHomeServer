@@ -31,10 +31,9 @@ describe("priority select island helpers", () => {
     expect(select.classList.contains("priority-select-normal")).toBe(false);
   });
 
-  it("submits expected form data and redirects on success", async () => {
+  it("submits expected form data without redirecting on success", async () => {
     const select = selectElement();
     select.value = "high";
-    const assign = vi.fn();
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       const body = init.body as URLSearchParams;
       expect(body.get("sender_kind")).toBe("address");
@@ -48,12 +47,12 @@ describe("priority select island helpers", () => {
 
     const result = await submitPriorityChange(select, {
       fetch: fetchMock as unknown as typeof fetch,
-      assign,
       currentPath: () => "/search",
     });
 
     expect(result.ok).toBe(true);
-    expect(assign).toHaveBeenCalledWith("/search?q=invoice");
+    expect(select.dataset.previousPriority).toBe("high");
+    expect(select.disabled).toBe(false);
   });
 
   it("restores previous value and class on failure", async () => {
@@ -66,7 +65,6 @@ describe("priority select island helpers", () => {
             status: 403,
           }),
       ) as unknown as typeof fetch,
-      assign: vi.fn(),
       currentPath: () => "/search",
     });
 
@@ -78,7 +76,7 @@ describe("priority select island helpers", () => {
 
   it("renders a useful failure message", () => {
     expect(priorityFailureMessage("denied")).toContain(
-      "Priority change failed.",
+      "Sender importance change failed.",
     );
     expect(priorityFailureMessage("denied")).toContain(
       "Server response: denied",

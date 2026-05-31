@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::{
     backend::ExitStatusSummary,
-    kanidm_cli::KanidmCli,
+    kanidm_cli::{KanidmCli, LocalCommandRedactedRecord},
     verification::{VerificationDomain, VerificationSummary},
 };
 
@@ -392,15 +392,15 @@ pub fn run_local_command(
         code: result.exit_code(),
     };
     let redaction = spec.redaction.payload(spec.stdin.is_secret());
-    cli.record_local_command_redacted_result(
+    cli.record_local_command_redacted_result(LocalCommandRedactedRecord {
         step,
-        &spec.program,
-        &sanitized_args,
+        program: &spec.program,
+        args: &sanitized_args,
         status,
-        &stdout,
-        &stderr,
-        redaction.clone(),
-    );
+        stdout: &stdout,
+        stderr: &stderr,
+        redaction: redaction.clone(),
+    });
 
     LocalCommandExecution {
         backend_payload: json!({

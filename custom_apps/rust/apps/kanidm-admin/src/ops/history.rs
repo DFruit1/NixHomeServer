@@ -2,6 +2,7 @@ use std::{
     env,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -12,6 +13,7 @@ use crate::{output::CommandOutput, AppError};
 
 const HISTORY_DIR_ENV: &str = "KANIDM_ADMIN_HISTORY_DIR";
 const HISTORY_FILE: &str = "operations.jsonl";
+const REDACTED: &str = "<redacted>";
 
 pub fn record_operation_best_effort(
     args: &[String],
@@ -20,16 +22,18 @@ pub fn record_operation_best_effort(
     let Ok(dir) = history_dir() else {
         return;
     };
-    if fs::create_dir_all(&dir).is_err() {
+    if ensure_history_dir_best_effort(&dir).is_err() {
         return;
     }
     let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(dir.join(HISTORY_FILE))
     else {
         return;
     };
+    let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
 
     let timestamp = OffsetDateTime::now_utc();
     let operation_id = format!(
@@ -40,11 +44,12 @@ pub fn record_operation_best_effort(
             .replace([':', '.'], "-"),
         std::process::id()
     );
+    let sensitive = is_sensitive_history_invocation(args) || result_is_sensitive(result);
     let (status, message, details, warnings) = match result {
         Ok(Some(output)) => (
             "ok",
             output.message.clone(),
-            output.details.clone(),
+            sanitize_history_value(output.details.clone(), sensitive),
             json!(output.warnings),
         ),
         Ok(None) => (
@@ -55,8 +60,12 @@ pub fn record_operation_best_effort(
         ),
         Err(error) => (
             "error",
-            error.human_message(),
-            error.json_payload(),
+            if sensitive {
+                error.to_string()
+            } else {
+                error.human_message()
+            },
+            sanitize_history_value(error.json_payload(), sensitive),
             json!([]),
         ),
     };
@@ -131,7 +140,7 @@ pub fn show_history(operation_id: &str) -> Result<CommandOutput, AppError> {
 pub fn prune_history(older_than: &str) -> Result<CommandOutput, AppError> {
     let duration = parse_history_duration(older_than)?;
     let cutoff = OffsetDateTime::now_utc() - duration;
-    let path = history_file_path()?;
+    let path = writable_history_file_path()?;
     if !path.exists() {
         return Ok(CommandOutput {
             message: "no kanidm-admin history file exists".to_string(),
@@ -153,22 +162,7 @@ pub fn prune_history(older_than: &str) -> Result<CommandOutput, AppError> {
         })
         .collect::<Vec<_>>();
     let removed = before.saturating_sub(retained.len());
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .map_err(|error| AppError::Io {
-            message: format!(
-                "failed to rewrite history file '{}': {error}",
-                path.display()
-            ),
-        })?;
-    for entry in &retained {
-        writeln!(file, "{entry}").map_err(|error| AppError::Io {
-            message: format!("failed to write history file '{}': {error}", path.display()),
-        })?;
-    }
+    rewrite_history_entries(&path, &retained)?;
     Ok(CommandOutput {
         message: format!("pruned {removed} kanidm-admin history entries"),
         human: format!("Pruned {removed} history entries older than {older_than}."),
@@ -179,6 +173,71 @@ pub fn prune_history(older_than: &str) -> Result<CommandOutput, AppError> {
         }),
         warnings: Vec::new(),
     })
+}
+
+pub fn redact_sensitive_history() -> Result<CommandOutput, AppError> {
+    let path = writable_history_file_path()?;
+    if !path.exists() {
+        return Ok(CommandOutput {
+            message: "no kanidm-admin history file exists".to_string(),
+            human: "No kanidm-admin history file exists.".to_string(),
+            details: json!({ "redacted": 0, "history_file": path.display().to_string() }),
+            warnings: Vec::new(),
+        });
+    }
+
+    let entries = read_history_entries()?;
+    let mut redacted = 0usize;
+    let entries = entries
+        .into_iter()
+        .map(|entry| {
+            let sanitized = sanitize_legacy_history_entry(entry.clone());
+            if sanitized != entry {
+                redacted = redacted.saturating_add(1);
+            }
+            sanitized
+        })
+        .collect::<Vec<_>>();
+    rewrite_history_entries(&path, &entries)?;
+
+    Ok(CommandOutput {
+        message: format!("redacted {redacted} sensitive kanidm-admin history entrie(s)"),
+        human: format!("Redacted sensitive fields in {redacted} history entrie(s)."),
+        details: json!({
+            "redacted": redacted,
+            "retained": entries.len(),
+            "history_file": path.display().to_string(),
+        }),
+        warnings: Vec::new(),
+    })
+}
+
+fn rewrite_history_entries(path: &Path, entries: &[Value]) -> Result<(), AppError> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| AppError::Io {
+            message: format!(
+                "failed to rewrite history file '{}': {error}",
+                path.display()
+            ),
+        })?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| AppError::Io {
+            message: format!(
+                "failed to set history file permissions '{}': {error}",
+                path.display()
+            ),
+        })?;
+    for entry in entries {
+        writeln!(file, "{entry}").map_err(|error| AppError::Io {
+            message: format!("failed to write history file '{}': {error}", path.display()),
+        })?;
+    }
+    Ok(())
 }
 
 fn read_history_entries() -> Result<Vec<Value>, AppError> {
@@ -211,6 +270,26 @@ fn history_file_path() -> Result<PathBuf, AppError> {
     Ok(history_dir()?.join(HISTORY_FILE))
 }
 
+fn writable_history_file_path() -> Result<PathBuf, AppError> {
+    let dir = history_dir()?;
+    ensure_history_dir(&dir)?;
+    Ok(dir.join(HISTORY_FILE))
+}
+
+fn ensure_history_dir_best_effort(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
+
+fn ensure_history_dir(dir: &Path) -> Result<(), AppError> {
+    ensure_history_dir_best_effort(dir).map_err(|error| AppError::Io {
+        message: format!(
+            "failed to prepare history directory '{}': {error}",
+            dir.display()
+        ),
+    })
+}
+
 fn history_dir() -> Result<PathBuf, AppError> {
     if let Some(value) = env::var_os(HISTORY_DIR_ENV) {
         return Ok(PathBuf::from(value));
@@ -223,6 +302,133 @@ fn history_dir() -> Result<PathBuf, AppError> {
         message: format!("{HISTORY_DIR_ENV} is not set and HOME is unavailable"),
     })?;
     Ok(PathBuf::from(home).join(".local/state/kanidm-admin/history"))
+}
+
+fn is_sensitive_history_invocation(args: &[String]) -> bool {
+    args.windows(3).any(|window| {
+        matches!(
+            window,
+            [a, b, c]
+                if a == "user" && b == "reset-token"
+                    || a == "client" && b == "secret" && matches!(c.as_str(), "show" | "reset")
+                    || a == "credential" && b == "create-reset-token"
+                    || a == "oauth2" && matches!(b.as_str(), "show-basic-secret" | "reset-basic-secret")
+        )
+    }) || args.windows(4).any(|window| {
+        matches!(
+            window,
+            [a, b, c, _]
+                if a == "person" && b == "credential" && c == "create-reset-token"
+                    || a == "system" && b == "oauth2" && matches!(c.as_str(), "show-basic-secret" | "reset-basic-secret")
+        )
+    })
+}
+
+fn result_is_sensitive(result: &Result<Option<CommandOutput>, AppError>) -> bool {
+    match result {
+        Ok(Some(output)) => output.is_sensitive(),
+        Ok(None) | Err(_) => false,
+    }
+}
+
+fn sanitize_history_value(value: Value, sensitive: bool) -> Value {
+    if !sensitive {
+        return value;
+    }
+    sanitize_sensitive_value(value)
+}
+
+fn sanitize_legacy_history_entry(entry: Value) -> Value {
+    if history_entry_looks_sensitive(&entry) {
+        sanitize_sensitive_value(entry)
+    } else {
+        entry
+    }
+}
+
+fn history_entry_looks_sensitive(entry: &Value) -> bool {
+    history_entry_args(entry)
+        .as_deref()
+        .is_some_and(is_sensitive_history_invocation)
+        || value_contains_sensitive_history_shape(entry)
+}
+
+fn history_entry_args(entry: &Value) -> Option<Vec<String>> {
+    history_args_array(entry.get("args")?).or_else(|| {
+        entry
+            .get("command")?
+            .get("args")
+            .and_then(history_args_array)
+    })
+}
+
+fn history_args_array(value: &Value) -> Option<Vec<String>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect()
+}
+
+fn value_contains_sensitive_history_shape(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            map.get("sensitive").and_then(Value::as_bool) == Some(true)
+                || map.contains_key("reset_token")
+                || map
+                    .get("args")
+                    .and_then(history_args_array)
+                    .as_deref()
+                    .is_some_and(is_sensitive_history_invocation)
+                || map
+                    .get("backend_steps")
+                    .and_then(Value::as_array)
+                    .is_some_and(|steps| {
+                        steps.iter().any(|step| {
+                            step.get("args")
+                                .and_then(Value::as_array)
+                                .and_then(|args| {
+                                    args.iter()
+                                        .map(|value| value.as_str().map(ToOwned::to_owned))
+                                        .collect::<Option<Vec<_>>>()
+                                })
+                                .as_deref()
+                                .is_some_and(is_sensitive_history_invocation)
+                        })
+                    })
+                || map.values().any(value_contains_sensitive_history_shape)
+        }
+        Value::Array(values) => values.iter().any(value_contains_sensitive_history_shape),
+        _ => false,
+    }
+}
+
+fn sanitize_sensitive_value(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    let sanitized = if is_sensitive_history_key(&key) {
+                        Value::String(REDACTED.to_string())
+                    } else {
+                        sanitize_sensitive_value(value)
+                    };
+                    (key, sanitized)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(sanitize_sensitive_value).collect())
+        }
+        other => other,
+    }
+}
+
+fn is_sensitive_history_key(key: &str) -> bool {
+    matches!(
+        key,
+        "raw_output" | "reset_token" | "reset_url" | "token" | "stdout" | "stderr"
+    )
 }
 
 fn parse_history_duration(value: &str) -> Result<Duration, AppError> {
@@ -250,6 +456,10 @@ fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
 
 #[cfg(test)]
 mod tests {
+    use std::{env, os::unix::fs::PermissionsExt};
+
+    use crate::TEST_ENV_LOCK;
+
     use super::*;
 
     #[test]
@@ -260,5 +470,177 @@ mod tests {
             parse_history_duration("45m").unwrap(),
             Duration::minutes(45)
         );
+    }
+
+    #[test]
+    fn redacts_sensitive_reset_token_history() {
+        let value = json!({
+            "reset_token": {
+                "raw_output": "Reset token: SECRET123",
+                "token": "SECRET123",
+                "reset_url": "https://id.example.test/ui/reset?token=SECRET123",
+            },
+            "backend_steps": [
+                {
+                    "stdout": "Reset token: SECRET123",
+                    "stderr": "SECRET123",
+                    "args": ["person", "credential", "create-reset-token", "alice"],
+                }
+            ],
+        });
+
+        let sanitized = sanitize_history_value(value, true);
+        let rendered = serde_json::to_string(&sanitized).expect("history json");
+
+        assert!(!rendered.contains("SECRET123"));
+        assert!(rendered.contains(REDACTED));
+    }
+
+    #[test]
+    fn history_file_is_private_when_recorded() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let original_history_dir = env::var_os(HISTORY_DIR_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        env::set_var(HISTORY_DIR_ENV, dir.path());
+
+        let output = CommandOutput {
+            message: "done".to_string(),
+            human: "done".to_string(),
+            details: json!({ "ok": true }),
+            warnings: Vec::new(),
+        };
+        record_operation_best_effort(
+            &["kanidm-admin".to_string(), "doctor".to_string()],
+            &Ok(Some(output)),
+        );
+
+        let history_dir_mode = fs::metadata(dir.path())
+            .expect("history dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let history_file_mode = fs::metadata(dir.path().join(HISTORY_FILE))
+            .expect("history file metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(history_dir_mode, 0o700);
+        assert_eq!(history_file_mode, 0o600);
+
+        match original_history_dir {
+            Some(value) => env::set_var(HISTORY_DIR_ENV, value),
+            None => env::remove_var(HISTORY_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn persisted_sensitive_history_is_redacted() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let original_history_dir = env::var_os(HISTORY_DIR_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        env::set_var(HISTORY_DIR_ENV, dir.path());
+
+        let output = CommandOutput {
+            message: "created a password reset token for 'alice'".to_string(),
+            human: "secret output".to_string(),
+            details: json!({
+                "reset_token": {
+                    "raw_output": "Reset token: SECRET123",
+                    "token": "SECRET123",
+                    "reset_url": "https://id.example.test/ui/reset?token=SECRET123",
+                },
+                "backend_steps": [
+                    {
+                        "stdout": "Reset token: SECRET123",
+                        "stderr": "",
+                    }
+                ],
+            }),
+            warnings: Vec::new(),
+        };
+        record_operation_best_effort(
+            &[
+                "kanidm-admin".to_string(),
+                "user".to_string(),
+                "reset-token".to_string(),
+                "alice".to_string(),
+            ],
+            &Ok(Some(output)),
+        );
+
+        let persisted =
+            fs::read_to_string(dir.path().join(HISTORY_FILE)).expect("history file contents");
+        assert!(!persisted.contains("SECRET123"));
+        assert!(persisted.contains(REDACTED));
+
+        match original_history_dir {
+            Some(value) => env::set_var(HISTORY_DIR_ENV, value),
+            None => env::remove_var(HISTORY_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn redacts_existing_sensitive_history_file() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let original_history_dir = env::var_os(HISTORY_DIR_ENV);
+        let dir = tempfile::tempdir().expect("tempdir");
+        env::set_var(HISTORY_DIR_ENV, dir.path());
+        fs::write(
+            dir.path().join(HISTORY_FILE),
+            format!(
+                "{}\n{}\n",
+                json!({
+                "args": ["kanidm-admin", "client", "secret", "show", "files"],
+                "status": "ok",
+                "details": {
+                    "raw_output": "CLIENT_SECRET_XYZ",
+                    "backend_steps": [
+                        {
+                            "args": ["system", "oauth2", "show-basic-secret", "files"],
+                            "stdout": "CLIENT_SECRET_XYZ",
+                            "stderr": "",
+                        }
+                    ]
+                }
+                }),
+                json!({
+                    "command": {
+                        "args": ["user", "reset-token", "alice"],
+                        "details": {
+                            "raw_output": "https://id.example/reset?token=RESET_TOKEN_ABC",
+                            "reset_token": "RESET_TOKEN_ABC",
+                        }
+                    },
+                    "result": {
+                        "details": {
+                            "reset_token": "RESET_TOKEN_ABC",
+                        }
+                    },
+                    "backend": [
+                        {
+                            "args": ["person", "credential", "create-reset-token", "alice"],
+                            "stdout": "RESET_TOKEN_ABC",
+                            "stderr": "",
+                        }
+                    ]
+                })
+            ),
+        )
+        .expect("history file");
+
+        let output = redact_sensitive_history().expect("redact history");
+        assert_eq!(output.details["redacted"], 2);
+
+        let persisted =
+            fs::read_to_string(dir.path().join(HISTORY_FILE)).expect("history contents");
+        assert!(!persisted.contains("CLIENT_SECRET_XYZ"));
+        assert!(!persisted.contains("RESET_TOKEN_ABC"));
+        assert!(persisted.contains(REDACTED));
+
+        match original_history_dir {
+            Some(value) => env::set_var(HISTORY_DIR_ENV, value),
+            None => env::remove_var(HISTORY_DIR_ENV),
+        }
     }
 }

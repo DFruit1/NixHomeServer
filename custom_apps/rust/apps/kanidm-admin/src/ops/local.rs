@@ -35,6 +35,8 @@ const JELLYFIN_RECONCILE_SERVICE: &str = "jellyfin-password-reconcile.service";
 const JELLYFIN_SERVICE: &str = "jellyfin.service";
 const PBKDF2_ITERATIONS: u32 = 210_000;
 const VAULTWARDEN_ADMIN_COOKIE: &str = "VW_ADMIN";
+const VAULTWARDEN_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const VAULTWARDEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultwardenUserState {
@@ -879,10 +881,7 @@ impl VaultwardenAdminSession {
             .header("Cookie", &self.cookie)
             .send()
             .map_err(|error| AppError::Io {
-                message: format!(
-                    "failed to call Vaultwarden admin endpoint '{}': {error}",
-                    url
-                ),
+                message: vaultwarden_request_error("call Vaultwarden admin endpoint", &url, error),
             })?;
         response_text(response, &url, "Vaultwarden admin GET")
     }
@@ -896,10 +895,7 @@ impl VaultwardenAdminSession {
             .json(body)
             .send()
             .map_err(|error| AppError::Io {
-                message: format!(
-                    "failed to call Vaultwarden admin endpoint '{}': {error}",
-                    url
-                ),
+                message: vaultwarden_request_error("call Vaultwarden admin endpoint", &url, error),
             })?;
         response_success(response, &url, "Vaultwarden admin POST")
     }
@@ -913,10 +909,7 @@ impl VaultwardenAdminSession {
             .header("Content-Type", "application/json")
             .send()
             .map_err(|error| AppError::Io {
-                message: format!(
-                    "failed to call Vaultwarden admin endpoint '{}': {error}",
-                    url
-                ),
+                message: vaultwarden_request_error("call Vaultwarden admin endpoint", &url, error),
             })?;
         response_success(response, &url, "Vaultwarden admin POST")
     }
@@ -928,17 +921,22 @@ fn login_vaultwarden_admin(
 ) -> Result<VaultwardenAdminSession, AppError> {
     let base_url = vaultwarden_url.trim_end_matches('/').to_string();
     let admin_url = format!("{base_url}/admin");
-    let client = Client::builder().build().map_err(|error| AppError::Io {
-        message: format!("failed to create Vaultwarden HTTP client: {error}"),
-    })?;
+    let client = Client::builder()
+        .connect_timeout(VAULTWARDEN_CONNECT_TIMEOUT)
+        .timeout(VAULTWARDEN_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| AppError::Io {
+            message: format!("failed to create Vaultwarden HTTP client: {error}"),
+        })?;
     let response = client
         .post(&admin_url)
         .form(&[("token", admin_token)])
         .send()
         .map_err(|error| AppError::Io {
-            message: format!(
-                "failed to log into the Vaultwarden admin panel '{}': {error}",
-                admin_url
+            message: vaultwarden_request_error(
+                "log into the Vaultwarden admin panel",
+                &admin_url,
+                error,
             ),
         })?;
     let cookie = extract_vaultwarden_admin_cookie(response.headers())?;
@@ -949,6 +947,18 @@ fn login_vaultwarden_admin(
         base_url,
         cookie,
     })
+}
+
+fn vaultwarden_request_error(action: &str, url: &str, error: reqwest::Error) -> String {
+    if error.is_timeout() {
+        format!(
+            "timed out while trying to {action} '{}' after {} second(s)",
+            url,
+            VAULTWARDEN_REQUEST_TIMEOUT.as_secs()
+        )
+    } else {
+        format!("failed to {action} '{}': {error}", url)
+    }
 }
 
 fn extract_vaultwarden_admin_cookie(
@@ -1602,5 +1612,11 @@ mod tests {
         assert!(message.contains("no-SMTP Vaultwarden config"));
         assert!(message.contains("persisted SMTP settings"));
         assert!(message.contains("Manual Signup URL"));
+    }
+
+    #[test]
+    fn vaultwarden_http_client_uses_bounded_timeouts() {
+        assert_eq!(VAULTWARDEN_CONNECT_TIMEOUT, Duration::from_secs(3));
+        assert_eq!(VAULTWARDEN_REQUEST_TIMEOUT, Duration::from_secs(15));
     }
 }

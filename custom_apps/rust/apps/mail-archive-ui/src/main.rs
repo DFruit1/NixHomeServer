@@ -127,7 +127,9 @@ struct AccountRecord {
     folder_patterns_json: String,
     encrypted_secret: String,
     sync_enabled: bool,
+    #[allow(dead_code)]
     created_at: String,
+    #[allow(dead_code)]
     updated_at: String,
     last_sync_started_at: Option<String>,
     last_sync_finished_at: Option<String>,
@@ -582,6 +584,13 @@ struct PriorityChangePayload {
 }
 
 #[derive(Debug, Serialize)]
+struct ActionPayload {
+    ok: bool,
+    message: String,
+    account_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
 struct PaperlessHandoffPayload {
     ok: bool,
     message: String,
@@ -857,9 +866,9 @@ impl SenderPriority {
 
     fn dropdown_label(self) -> &'static str {
         match self {
-            Self::High => "High",
+            Self::High => "Important",
             Self::Normal => "Normal",
-            Self::Low => "Low",
+            Self::Low => "Ignore",
         }
     }
 
@@ -902,10 +911,10 @@ impl SenderPriorityFilter {
 
     fn label(self) -> &'static str {
         match self {
-            Self::All => "All priorities",
-            Self::High => "High priority",
-            Self::Normal => "Normal priority",
-            Self::Low => "Low priority",
+            Self::All => "Any importance",
+            Self::High => "Important",
+            Self::Normal => "Normal",
+            Self::Low => "Ignore",
         }
     }
 
@@ -940,13 +949,6 @@ impl SenderRuleKind {
             Self::Domain => "domain",
         }
     }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Address => "address",
-            Self::Domain => "domain",
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -963,7 +965,6 @@ struct SenderDisplay {
 
 #[derive(Clone, Debug)]
 struct SenderPriorityRule {
-    kind: SenderRuleKind,
     value: String,
     priority: SenderPriority,
 }
@@ -979,6 +980,7 @@ struct SenderPriorityView {
     identity: Option<SenderIdentity>,
     priority: SenderPriority,
     address_rule: Option<SenderPriority>,
+    #[allow(dead_code)]
     domain_rule: Option<SenderPriority>,
 }
 
@@ -1210,8 +1212,8 @@ async fn new_account(headers: HeaderMap) -> Response {
             html_response(render_account_form(
                 &identity,
                 "Add Mailbox",
-                "Connect a mailbox with an app password or IMAP password.",
-                "The UI stores the credential encrypted at rest, generates the sync config on demand, and keeps downloaded mail in your private archive only.",
+                "Add a mailbox",
+                "Connect a mailbox so saved messages and attachments can be searched later.",
                 "/accounts",
                 "Save mailbox",
                 true,
@@ -1240,13 +1242,13 @@ async fn edit_account(
             html_response(render_account_form(
                 &identity,
                 "Edit Mailbox",
-                "Adjust connection details, folder patterns, and scheduling.",
-                "Leave the password field empty to keep the current stored mailbox secret.",
+                "Edit mailbox",
+                "Leave the app password blank to keep the current saved password.",
                 &format!("/accounts/{}/update", account.id),
                 "Save changes",
                 false,
                 &form,
-                Some("Leave blank to keep the current stored password."),
+                Some("Leave blank to keep the current saved password."),
                 None,
             ))
         }
@@ -1276,8 +1278,8 @@ async fn create_account(
         Err(error) => html_response(render_account_form(
             &identity,
             "Add Mailbox",
-            "Connect a mailbox with an app password or IMAP password.",
-            "The UI stores the credential encrypted at rest, generates the sync config on demand, and keeps downloaded mail in your private archive only.",
+            "Add a mailbox",
+            "Connect a mailbox so saved messages and attachments can be searched later.",
             "/accounts",
             "Save mailbox",
             true,
@@ -1316,13 +1318,13 @@ async fn update_account(
         Err(error) => html_response(render_account_form(
             &identity,
             "Edit Mailbox",
-            "Adjust connection details, folder patterns, and scheduling.",
-            "Leave the password field empty to keep the current stored mailbox secret.",
+            "Edit mailbox",
+            "Leave the app password blank to keep the current saved password.",
             &format!("/accounts/{account_id}/update"),
             "Save changes",
             false,
             &form,
-            Some("Leave blank to keep the current stored password."),
+            Some("Leave blank to keep the current saved password."),
             Some(&error),
         )),
     }
@@ -1333,19 +1335,41 @@ async fn toggle_sync(
     headers: HeaderMap,
     Path(account_id): Path<i64>,
 ) -> Response {
+    let wants_json = request_accepts_json(&headers);
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
+        Err((status, message)) if wants_json => {
+            return action_json_response(status, false, &message, Some(account_id))
+        }
         Err((status, message)) => return auth_error(status, &message),
     };
 
     if let Err((status, message)) = verify_same_origin_request(&headers) {
+        if wants_json {
+            return action_json_response(status, false, &message, Some(account_id));
+        }
         return auth_error(status, &message);
     }
 
     match toggle_sync_for_user(&state.config, &identity.username, account_id) {
-        Ok(true) => redirect_response("/?flash=Scheduled+sync+enabled"),
-        Ok(false) => redirect_response("/?flash=Scheduled+sync+disabled"),
-        Err(error) => server_error_page("Failed to toggle sync", &error, Some(&identity)),
+        Ok(true) if wants_json => action_json_response(
+            StatusCode::OK,
+            true,
+            "Automatic updates enabled",
+            Some(account_id),
+        ),
+        Ok(false) if wants_json => action_json_response(
+            StatusCode::OK,
+            true,
+            "Automatic updates disabled",
+            Some(account_id),
+        ),
+        Ok(true) => redirect_response("/?flash=Automatic+updates+enabled"),
+        Ok(false) => redirect_response("/?flash=Automatic+updates+disabled"),
+        Err(error) if wants_json => {
+            action_json_response(StatusCode::BAD_REQUEST, false, &error, Some(account_id))
+        }
+        Err(error) => server_error_page("Failed to update schedule", &error, Some(&identity)),
     }
 }
 
@@ -1354,16 +1378,26 @@ async fn sync_account(
     headers: HeaderMap,
     Path(account_id): Path<i64>,
 ) -> Response {
+    let wants_json = request_accepts_json(&headers);
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
+        Err((status, message)) if wants_json => {
+            return action_json_response(status, false, &message, Some(account_id))
+        }
         Err((status, message)) => return auth_error(status, &message),
     };
 
     if let Err((status, message)) = verify_same_origin_request(&headers) {
+        if wants_json {
+            return action_json_response(status, false, &message, Some(account_id));
+        }
         return auth_error(status, &message);
     }
 
     if let Err(error) = load_account_for_user(&state.config, &identity.username, account_id) {
+        if wants_json {
+            return action_json_response(StatusCode::NOT_FOUND, false, &error, Some(account_id));
+        }
         return server_error_page("Failed to load mailbox", &error, Some(&identity));
     }
 
@@ -1373,7 +1407,16 @@ async fn sync_account(
         let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Sync);
     });
 
-    redirect_response("/?flash=Mailbox+sync+requested")
+    if wants_json {
+        action_json_response(
+            StatusCode::ACCEPTED,
+            true,
+            "Mailbox update started",
+            Some(account_id),
+        )
+    } else {
+        redirect_response("/?flash=Mailbox+update+started")
+    }
 }
 
 async fn reindex_account(
@@ -1381,16 +1424,26 @@ async fn reindex_account(
     headers: HeaderMap,
     Path(account_id): Path<i64>,
 ) -> Response {
+    let wants_json = request_accepts_json(&headers);
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
+        Err((status, message)) if wants_json => {
+            return action_json_response(status, false, &message, Some(account_id))
+        }
         Err((status, message)) => return auth_error(status, &message),
     };
 
     if let Err((status, message)) = verify_same_origin_request(&headers) {
+        if wants_json {
+            return action_json_response(status, false, &message, Some(account_id));
+        }
         return auth_error(status, &message);
     }
 
     if let Err(error) = load_account_for_user(&state.config, &identity.username, account_id) {
+        if wants_json {
+            return action_json_response(StatusCode::NOT_FOUND, false, &error, Some(account_id));
+        }
         return server_error_page("Failed to load mailbox", &error, Some(&identity));
     }
 
@@ -1400,7 +1453,16 @@ async fn reindex_account(
         let _ = run_account_action_for_user(&config, &username, account_id, AccountAction::Reindex);
     });
 
-    redirect_response("/?flash=Mailbox+reindex+requested")
+    if wants_json {
+        action_json_response(
+            StatusCode::ACCEPTED,
+            true,
+            "Search repair started",
+            Some(account_id),
+        )
+    } else {
+        redirect_response("/?flash=Search+repair+started")
+    }
 }
 
 async fn search_page(
@@ -1555,22 +1617,22 @@ async fn search_page(
             }
         } else {
             Some(
-                "Saved search defaults are prefilled below. Submit a query to search indexed mail."
+                "Saved search defaults are filled in below. Submit a search when ready."
                     .to_string(),
             )
         }
     } else if !message_filters_have_terms(&filters) && priority_filter == SenderPriorityFilter::All
     {
-        Some("Enter a notmuch query to search your indexed archive.".to_string())
+        Some("Enter a word, name, or email address to search saved mail.".to_string())
     } else if selected_accounts.is_empty() {
         Some("No mailbox is available for this search filter.".to_string())
     } else if indexed_selected_accounts == 0 {
         Some(
-            "The selected mailbox archive has not been indexed yet. Run Sync now or Reindex first."
+            "This mailbox is not ready to search yet. Update it from the dashboard first."
                 .to_string(),
         )
     } else if results.is_empty() {
-        Some("No indexed messages matched the current filters.".to_string())
+        Some("No saved messages matched the current filters.".to_string())
     } else {
         None
     };
@@ -1753,10 +1815,9 @@ async fn upsert_sender_priority(
     match result {
         Ok(Ok(Some(rule))) => {
             let message = format!(
-                "Marked {} {} as {} priority",
-                rule.kind.label(),
+                "Marked sender {} as {}",
                 rule.value,
-                rule.priority.as_stored_value()
+                rule.priority.dropdown_label().to_lowercase()
             );
             if wants_json {
                 priority_change_json_response(StatusCode::OK, true, &message, return_to)
@@ -1769,7 +1830,7 @@ async fn upsert_sender_priority(
             }
         }
         Ok(Ok(None)) => {
-            let message = "Sender priority rule cleared";
+            let message = "Sender importance cleared";
             if wants_json {
                 priority_change_json_response(StatusCode::OK, true, message, return_to)
             } else {
@@ -1797,7 +1858,7 @@ async fn upsert_sender_priority(
             }
         }
         Err(_) => {
-            let message = "Sender priority task failed";
+            let message = "Sender importance task failed";
             if wants_json {
                 priority_change_json_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1851,6 +1912,22 @@ fn priority_change_json_response(
     )
 }
 
+fn action_json_response(
+    status: StatusCode,
+    ok: bool,
+    message: &str,
+    account_id: Option<i64>,
+) -> Response {
+    json_response(
+        status,
+        ActionPayload {
+            ok,
+            message: message.to_string(),
+            account_id,
+        },
+    )
+}
+
 async fn clear_sender_priority(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1876,7 +1953,7 @@ async fn clear_sender_priority(
     match result {
         Ok(Ok(())) => redirect_response(&message_redirect_location(
             return_to.as_deref(),
-            Some("Sender priority rule cleared"),
+            Some("Sender importance cleared"),
             None,
         )),
         Ok(Err(error)) => redirect_response(&message_redirect_location(
@@ -1887,7 +1964,7 @@ async fn clear_sender_priority(
         Err(_) => redirect_response(&message_redirect_location(
             return_to.as_deref(),
             None,
-            Some("Sender priority task failed"),
+            Some("Sender importance task failed"),
         )),
     }
 }
@@ -1897,17 +1974,27 @@ async fn refresh_attachments(
     headers: HeaderMap,
     Form(form): Form<AttachmentRefreshForm>,
 ) -> Response {
+    let wants_json = request_accepts_json(&headers);
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
+        Err((status, message)) if wants_json => {
+            return action_json_response(status, false, &message, None)
+        }
         Err((status, message)) => return auth_error(status, &message),
     };
 
     if let Err((status, message)) = verify_same_origin_request(&headers) {
+        if wants_json {
+            return action_json_response(status, false, &message, None);
+        }
         return auth_error(status, &message);
     }
 
     let selected_account_id = match parse_optional_query_i64(form.account_id.as_deref()) {
         Ok(value) => value,
+        Err(error) if wants_json => {
+            return action_json_response(StatusCode::BAD_REQUEST, false, &error, None);
+        }
         Err(error) => {
             return redirect_response(&attachments_redirect_location(
                 form.return_to.as_deref(),
@@ -1925,16 +2012,31 @@ async fn refresh_attachments(
     .await;
 
     match result {
+        Ok(Ok(())) if wants_json => action_json_response(
+            StatusCode::OK,
+            true,
+            "Attachment list refreshed",
+            selected_account_id,
+        ),
         Ok(Ok(())) => redirect_response(&attachments_redirect_location(
             form.return_to.as_deref(),
             Some("Attachment catalog refreshed"),
             None,
         )),
+        Ok(Err(error)) if wants_json => {
+            action_json_response(StatusCode::BAD_REQUEST, false, &error, selected_account_id)
+        }
         Ok(Err(error)) => redirect_response(&attachments_redirect_location(
             form.return_to.as_deref(),
             None,
             Some(&error),
         )),
+        Err(_) if wants_json => action_json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            false,
+            "Attachment refresh task failed",
+            selected_account_id,
+        ),
         Err(_) => redirect_response(&attachments_redirect_location(
             form.return_to.as_deref(),
             None,
@@ -3288,7 +3390,7 @@ fn upsert_sender_priority_rule(
         .ok_or_else(|| "Sender rule kind must be address or domain".to_string())?;
     let value = normalize_sender_rule_value(kind, raw_value)?;
     let priority = SenderPriority::from_stored(raw_priority.trim())
-        .ok_or_else(|| "Sender priority must be high or low".to_string())?;
+        .ok_or_else(|| "Sender importance must be important or ignored".to_string())?;
     let now = Utc::now().to_rfc3339();
     let connection = open_db(config)?;
     connection
@@ -3315,11 +3417,7 @@ fn upsert_sender_priority_rule(
             ],
         )
         .map_err(|error| format!("failed to save sender priority: {error}"))?;
-    Ok(SenderPriorityRule {
-        kind,
-        value,
-        priority,
-    })
+    Ok(SenderPriorityRule { value, priority })
 }
 
 fn set_sender_priority_rule(
@@ -7783,7 +7881,7 @@ fn rebuild_message_catalog_and_visible_mailboxes(
             &empty,
             account.last_sync_finished_at.as_deref(),
             "stale",
-            Some("Run Sync now or Reindex to rebuild dashboard counts."),
+            Some("Use Update now or Repair search to rebuild dashboard counts."),
         )?;
         return Ok(empty);
     }
@@ -8340,16 +8438,15 @@ fn account_progress_note(
         .is_some_and(|phase| matches!(phase, SyncPhase::Index | SyncPhase::Reconcile))
         && counts.pending_index_count > 0
     {
-        "Archived messages are ahead of search. Run Reindex to catch up.".to_string()
+        "Saved messages are ahead of search. Use Repair search to catch up.".to_string()
     } else if counts.archived_message_count == 0 {
         "No archived messages yet.".to_string()
     } else if counts.pending_index_count > 0 {
-        "Archived messages are ahead of the current search index. Run Reindex to catch up."
-            .to_string()
+        "Saved messages are ahead of search. Use Repair search to catch up.".to_string()
     } else if index_state == IndexState::Indexed {
         "Search index is caught up with the archived messages.".to_string()
     } else {
-        "Run Sync now or Reindex to build the search index.".to_string()
+        "Use Update now or Repair search to prepare saved mail for search.".to_string()
     }
 }
 
@@ -8420,21 +8517,22 @@ fn diagnostic_recommended_action(
     counts: &AccountProgressCounts,
 ) -> Option<String> {
     match diagnostic.phase {
-        Some(SyncPhase::Download | SyncPhase::Preflight) => Some(
-            "Check the mailbox credentials and archive paths, then run Sync now again.".to_string(),
-        ),
+        Some(SyncPhase::Download | SyncPhase::Preflight) => {
+            Some("Check the mailbox credentials, then use Update now again.".to_string())
+        }
         Some(SyncPhase::Index | SyncPhase::Reconcile) if counts.pending_index_count > 0 => {
-            Some("Run Reindex to catch search up with the archived messages.".to_string())
+            Some("Use Repair search to catch search up with saved messages.".to_string())
         }
-        Some(SyncPhase::Index | SyncPhase::Reconcile) => Some(
-            "Run Reindex after checking the notmuch configuration and archive state.".to_string(),
-        ),
+        Some(SyncPhase::Index | SyncPhase::Reconcile) => {
+            Some("Run Repair search after checking that the archive is available.".to_string())
+        }
         Some(SyncPhase::Metrics) => {
-            Some("Check archive and notmuch access, then refresh the dashboard.".to_string())
+            Some("Check that the archive is available, then refresh the dashboard.".to_string())
         }
-        None => {
-            Some("Review the technical detail below, then retry Sync now or Reindex.".to_string())
-        }
+        None => Some(
+            "Open troubleshooting details if needed, then retry Update now or Repair search."
+                .to_string(),
+        ),
     }
 }
 
@@ -8483,11 +8581,11 @@ fn dashboard_sync_notice(
     notice
 }
 
-fn folder_mode_label(mode: &str) -> &str {
-    match mode {
-        "gmail_default" => "gmail-default",
-        "generic_default" => "generic-default",
-        _ => "custom",
+fn provider_label(provider: &str) -> &str {
+    match provider {
+        "gmail" => "Gmail",
+        "generic_imap" => "Other mailbox",
+        _ => "Custom mailbox",
     }
 }
 
@@ -8511,18 +8609,18 @@ fn render_dashboard(
 
     body.push_str(
         "<section class=\"hero\">
-          <p class=\"eyebrow\">Private Mail Archive</p>
-          <h1>Mailbox sync, repair, and metadata search without turning this into webmail.</h1>
-          <p class=\"lede\">Each mailbox stays scoped to your authenticated Kanidm identity. Sync runs through <code>mbsync</code>, indexing runs through <code>notmuch</code>, and downloaded mail stays in your isolated server-side archive.</p>
+          <p class=\"eyebrow\">Mail Archive</p>
+          <h1>Search saved mail and file important attachments.</h1>
+          <p class=\"lede\">Find old messages, download attachments, and send documents to Paperless without opening a full mail client.</p>
           <div class=\"nav\">
-            <a href=\"/accounts/new\">Add mailbox</a>
-            <a class=\"secondary\" href=\"/search\">Search mail</a>
-            <a class=\"secondary\" href=\"/attachments\">Triage attachments</a>
+            <a href=\"/search\">Search mail</a>
+            <a class=\"secondary\" href=\"/attachments\">Find attachments</a>
+            <a class=\"secondary\" href=\"/accounts/new\">Add mailbox</a>
           </div>
         </section>",
     );
 
-    body.push_str("<section class=\"panel stack\"><div class=\"section-head\"><h2>Connected mailboxes</h2><p class=\"meta\">Edit connection details, trigger syncs, or repair indexes without exposing the archive as webmail.</p></div>");
+    body.push_str("<section class=\"panel stack\"><div class=\"section-head\"><h2>Mailboxes</h2><p class=\"meta\">Update mailbox archives and check whether saved mail is ready to search.</p></div>");
     body.push_str(
         "<div id=\"dashboard-status-island\" data-mail-archive-island=\"dashboard-status\"></div>",
     );
@@ -8605,24 +8703,24 @@ fn render_sync_diagnostic_notice(status: &AccountStatusPayload) -> String {
     format!(
         "<div class=\"notice sync{}\" data-sync-diagnostic>
           <p class=\"notice-title{}\" data-diagnostic-summary>{}</p>
-          <p class=\"meta notice-meta{}\" data-diagnostic-meta>{}</p>
           <p class=\"notice-copy{}\" data-diagnostic-impact>{}</p>
           <p class=\"notice-copy{}\" data-diagnostic-action>{}</p>
           <details class=\"notice-details{}\" data-diagnostic-details>
-            <summary>Technical detail</summary>
+            <summary>Troubleshooting details</summary>
+            <p class=\"meta notice-meta{}\" data-diagnostic-meta>{}</p>
             <pre data-diagnostic-detail>{}</pre>
           </details>
         </div>",
         hidden_class(status.diagnostic_summary.is_some()),
         hidden_class(status.diagnostic_summary.is_some()),
         escape_html(status.diagnostic_summary.as_deref().unwrap_or("")),
-        hidden_class(meta.is_some()),
-        escape_html(meta.as_deref().unwrap_or("")),
         hidden_class(status.diagnostic_impact.is_some()),
         escape_html(status.diagnostic_impact.as_deref().unwrap_or("")),
         hidden_class(status.recommended_action.is_some()),
         escape_html(status.recommended_action.as_deref().unwrap_or("")),
         hidden_class(status.diagnostic_detail.is_some()),
+        hidden_class(meta.is_some()),
+        escape_html(meta.as_deref().unwrap_or("")),
         escape_html(status.diagnostic_detail.as_deref().unwrap_or("")),
     )
 }
@@ -8633,7 +8731,7 @@ fn render_progress_warning_notice(status: &AccountStatusPayload) -> String {
           <p class=\"notice-title{}\" data-progress-warning-text>{}</p>
           <p class=\"notice-copy{}\" data-progress-warning-action>{}</p>
           <details class=\"notice-details{}\" data-progress-warning-details>
-            <summary>Technical detail</summary>
+            <summary>Troubleshooting details</summary>
             <pre data-progress-warning-detail>{}</pre>
           </details>
         </div>",
@@ -8662,9 +8760,9 @@ fn render_account_card(view: &DashboardAccountView) -> String {
         "<article class=\"account-card stack\" data-account-card data-account-id=\"{}\">
           <div class=\"card-header\">
             <div>
-              <p class=\"eyebrow\">{}</p>
+              <p class=\"eyebrow\">Mailbox</p>
               <h2>{}</h2>
-              <p class=\"meta\">{} · {}:{}</p>
+              <p class=\"meta\" data-last-activity>Last update {}</p>
             </div>
             <span class=\"status {}\" data-status-badge>{}</span>
           </div>
@@ -8672,59 +8770,58 @@ fn render_account_card(view: &DashboardAccountView) -> String {
             <span class=\"pill\">{}</span>
             <span class=\"pill\" data-index-pill>{}</span>
           </div>
-          <div class=\"hint\">Mailbox user: {} · Folder mode: {}</div>
-          <div class=\"hint\">Added {} · Updated {}</div>
           <div class=\"progress-cluster\">
             <div class=\"progress-metrics\">
-              <div class=\"summary-metric\"><span class=\"metric-label\">Archived</span><strong data-progress-field=\"archived\">{}</strong></div>
-              <div class=\"summary-metric\"><span class=\"metric-label\">Indexed</span><strong data-progress-field=\"indexed\">{}</strong></div>
-              <div class=\"summary-metric\"><span class=\"metric-label\">Pending index</span><strong data-progress-field=\"pending\">{}</strong></div>
-              <div class=\"summary-metric\"><span class=\"metric-label\">Coverage</span><strong data-progress-field=\"coverage\">{}%</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Saved mail</span><strong data-progress-field=\"archived\">{}</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Search ready</span><strong data-progress-field=\"indexed\">{}</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Catching up</span><strong data-progress-field=\"pending\">{}</strong></div>
             </div>
             <div class=\"progress-bar\" aria-label=\"Index coverage\"><span data-progress-bar style=\"width: {}%\"></span></div>
             <p class=\"meta\" data-progress-note>{}</p>
             <p class=\"meta{}\" data-overlap-note>{}</p>
           </div>
-          <div class=\"hint\" data-last-activity>Last activity {}</div>
           <div class=\"action-row\">
-            <form method=\"post\" action=\"/accounts/{}/sync\"><button type=\"submit\">Sync now</button></form>
-            <form method=\"post\" action=\"/accounts/{}/reindex\"><button class=\"secondary\" type=\"submit\">Reindex</button></form>
+            <form method=\"post\" action=\"/accounts/{}/sync\" data-dashboard-action><button type=\"submit\">Update now</button></form>
+            <a class=\"button-link secondary\" href=\"/search?account_id={}\">Search</a>
+            <a class=\"button-link secondary\" href=\"/attachments?account_id={}\">Attachments</a>
             <a class=\"button-link secondary\" href=\"/accounts/{}/edit\">Edit</a>
-            <form method=\"post\" action=\"/accounts/{}/toggle-sync\"><button class=\"secondary\" type=\"submit\">{}</button></form>
           </div>
+          <details class=\"account-settings\">
+            <summary>Mailbox settings</summary>
+            <div class=\"hint\">Provider: {} · Automatic updates: {}</div>
+            <div class=\"action-row\">
+              <form method=\"post\" action=\"/accounts/{}/reindex\" data-dashboard-action><button class=\"secondary\" type=\"submit\">Repair search</button></form>
+              <form method=\"post\" action=\"/accounts/{}/toggle-sync\" data-dashboard-action><button class=\"secondary\" type=\"submit\">{}</button></form>
+            </div>
+          </details>
           {}
           {}",
         account.id,
-        escape_html(&account.provider_kind),
         escape_html(&account.display_name),
-        escape_html(&account.imap_host),
-        account.imap_port,
-        account.id,
+        escape_html(&status.last_activity),
         escape_html(&status.status_class),
         escape_html(&status.status_label),
         escape_html(schedule_label),
         escape_html(&status.index_label),
-        escape_html(&account.imap_username),
-        escape_html(folder_mode_label(&account.folder_mode)),
-        escape_html(&account.created_at),
-        escape_html(&account.updated_at),
         status.archived_message_count,
         status.indexed_message_count,
         status.pending_index_count,
         status.index_coverage_percent,
-        status.index_coverage_percent,
         escape_html(&status.progress_note),
         hidden_class(status.overlap_note.is_some()),
         escape_html(status.overlap_note.as_deref().unwrap_or("")),
-        escape_html(&status.last_activity),
         account.id,
         account.id,
+        account.id,
+        account.id,
+        escape_html(provider_label(&account.provider_kind)),
+        escape_html(schedule_label),
         account.id,
         account.id,
         if account.sync_enabled {
-            "Disable schedule"
+            "Turn off automatic updates"
         } else {
-            "Enable schedule"
+            "Turn on automatic updates"
         },
         render_sync_diagnostic_notice(status),
         render_progress_warning_notice(status),
@@ -8801,45 +8898,47 @@ fn render_account_form(
         &mut body,
         "<form method=\"post\" action=\"{}\" class=\"fields\">
           <div class=\"fields two\">
-            <label>Provider preset
+            <label>Mailbox type
               <select name=\"provider_kind\">
                 <option value=\"gmail\" {}>Gmail</option>
-                <option value=\"generic_imap\" {}>Generic IMAP</option>
+                <option value=\"generic_imap\" {}>Other mailbox</option>
               </select>
             </label>
-            <label>Display name
+            <label>Name shown in the archive
               <input name=\"display_name\" value=\"{}\" placeholder=\"Personal Gmail\">
             </label>
           </div>
           <div class=\"fields two\">
-            <label>IMAP host
-              <input name=\"imap_host\" value=\"{}\" placeholder=\"imap.gmail.com\">
-            </label>
-            <label>IMAP port
-              <input name=\"imap_port\" value=\"{}\" placeholder=\"993\">
-            </label>
-          </div>
-          <div class=\"fields two\">
-            <label>Mailbox username
+            <label>Email address
               <input name=\"imap_username\" value=\"{}\" placeholder=\"you@example.com\">
             </label>
-            <label>Mailbox password / app password
+            <label>App password
               <input type=\"password\" name=\"secret\" value=\"\" autocomplete=\"new-password\" {}>
             </label>
           </div>
           {}
-          <label>Folders to archive
-            <textarea name=\"folder_patterns\" placeholder=\"One IMAP pattern per line\">{}</textarea>
-          </label>
-          <label><input type=\"checkbox\" name=\"sync_enabled\" {}> Enable scheduled background sync</label>
+          <label><input type=\"checkbox\" name=\"sync_enabled\" {}> Update this mailbox automatically</label>
+          <details class=\"account-settings\">
+            <summary>Advanced connection settings</summary>
+            <div class=\"fields two\">
+              <label>Server
+                <input name=\"imap_host\" value=\"{}\" placeholder=\"imap.gmail.com\">
+              </label>
+              <label>Port
+                <input name=\"imap_port\" value=\"{}\" placeholder=\"993\">
+              </label>
+            </div>
+            <label>Folders to save
+              <textarea name=\"folder_patterns\" placeholder=\"One folder pattern per line\">{}</textarea>
+            </label>
+          </details>
           <div class=\"actions\">
             <button type=\"submit\">{}</button>
             <a class=\"button-link secondary\" href=\"/\">Cancel</a>
           </div>
           <ul class=\"muted-list\">
-            <li>Gmail defaults to append-only archive folders.</li>
-            <li>Generic IMAP keeps TLS on port 993 by default.</li>
-            <li>This remains archive and search infrastructure, not a browser mail client.</li>
+            <li>Gmail usually needs an app password.</li>
+            <li>Saved mail can be searched and attachments can be sent to Paperless.</li>
           </ul>
         </form>",
         escape_html(action_url),
@@ -8854,15 +8953,15 @@ fn render_account_form(
             ""
         },
         escape_html(&form.display_name),
-        escape_html(&form.imap_host),
-        escape_html(&form.imap_port),
         escape_html(&form.imap_username),
         if secret_required { "required" } else { "" },
         secret_help
             .map(|text| format!("<p class=\"hint\">{}</p>", escape_html(text)))
             .unwrap_or_default(),
-        escape_html(&form.folder_patterns),
         if form.sync_enabled.is_some() { "checked" } else { "" },
+        escape_html(&form.imap_host),
+        escape_html(&form.imap_port),
+        escape_html(&form.folder_patterns),
         escape_html(submit_label),
     )
     .ok();
@@ -8902,7 +9001,7 @@ fn render_attachments_page(
               <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search attachments\" aria-label=\"Search attachments\">⌕</button>
             </div>
             <details class=\"filter-accordion\">
-              <summary>Basic filters</summary>
+              <summary>Filter attachments</summary>
               <div class=\"filter-groups\">
                 <section class=\"filter-group\">
                   <h2>Scope</h2>
@@ -8913,7 +9012,7 @@ fn render_attachments_page(
                       {}
                     </select>
                     </label>
-                    <label>Sender priority
+                    <label>Sender importance
                     <select name=\"priority\">{}</select>
                     </label>
                     <label class=\"field-short\">Extension
@@ -8955,7 +9054,7 @@ fn render_attachments_page(
               </div>
             </details>
             <details class=\"filter-accordion\">
-              <summary>Advanced filters</summary>
+              <summary>More filters</summary>
               <div class=\"filter-groups\">
                 <section class=\"filter-group\">
                   <h2>Attachment</h2>
@@ -8966,7 +9065,7 @@ fn render_attachments_page(
                     <label class=\"field-wide\">Attachment name
                       <input name=\"attachment_name\" value=\"{}\">
                     </label>
-                    <label class=\"field-wide\">MIME type
+                    <label class=\"field-wide\">Technical file type
                       <input name=\"mime_type\" value=\"{}\">
                     </label>
                   </div>
@@ -8991,13 +9090,13 @@ fn render_attachments_page(
                 <section class=\"filter-group\">
                   <h2>Output</h2>
                   <div class=\"filter-grid\">
-                    <label class=\"checkbox-field\">Body parts
+                    <label class=\"checkbox-field\">Include message body files
                     <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
                     </label>
                     <label class=\"checkbox-field\">Inline images
                     <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
                     </label>
-                    <label class=\"checkbox-field\">MIME detail
+                    <label class=\"checkbox-field\">Show technical file type
                     <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
                     </label>
                     <label class=\"field-wide\">ZIP subfolder
@@ -9015,20 +9114,21 @@ fn render_attachments_page(
           {}
           <div class=\"attachment-toolbar\">
             <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
+            <span class=\"selection-count\" data-selected-count>0 selected</span>
             <button class=\"secondary\" type=\"button\" data-select-page title=\"Select visible attachments\">Select page</button>
             <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
               {}
-              <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\">↓</button>
+              <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\" data-bulk-action>↓</button>
               {}
             </form>
             <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button>&#8594;</button>
+              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button data-bulk-action>&#8594;</button>
             </form>
-            <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\">
+            <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\" data-refresh-attachments-form>
               <input type=\"hidden\" name=\"account_id\" value=\"{}\">
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary icon-button\" type=\"submit\" title=\"Refresh catalog\" aria-label=\"Refresh catalog\">↻</button>
+              <button class=\"secondary icon-button\" type=\"submit\" title=\"Refresh attachment list\" aria-label=\"Refresh attachment list\">↻</button>
             </form>
           </div>
         </section>",
@@ -9075,15 +9175,14 @@ fn render_attachments_page(
 
     writeln!(
         &mut body,
-        "<section class=\"panel result-summary\"><strong>{}</strong><span class=\"meta\"> catalogued attachments matching the current view</span></section>",
+        "<section class=\"panel result-summary\"><strong>{}</strong><span class=\"meta\"> attachments matching the current view</span></section>",
         pluralize_results(data.state.result_count),
     )
     .ok();
 
     body.push_str(
         "<section class=\"notice\">
-          <p class=\"notice-title\">Document filing</p>
-          <p class=\"notice-copy\">Attachments can be downloaded locally or handed to the Paperless consume inbox.</p>
+          <p class=\"notice-title\">Download files or send documents to Paperless.</p>
         </section>",
     );
 
@@ -9329,8 +9428,7 @@ fn render_attachment_item(
             escape_html(&item.attachment.attachment_key),
         )
     };
-    let (address_priority, domain_priority) =
-        render_sender_priority_select_cells(&item.sender_priority, return_to);
+    let sender_importance = render_sender_importance_select(&item.sender_priority, return_to);
 
     format!(
         "<article class=\"attachment-row\" data-attachment-row data-attachment-key=\"{}\" tabindex=\"0\" aria-selected=\"false\">
@@ -9341,7 +9439,6 @@ fn render_attachment_item(
           </div>
           <span class=\"badge truncate\" title=\"{}\">{}</span>
           <div class=\"row-actions\">{}{}</div>
-          <div class=\"priority-cell\">{}</div>
           <div class=\"priority-cell\">{}</div>
         </article>",
         escape_html(&item.attachment.attachment_key),
@@ -9361,8 +9458,7 @@ fn render_attachment_item(
         escape_html(&type_label),
         download_action,
         paperless_action,
-        address_priority,
-        domain_priority,
+        sender_importance,
     )
 }
 
@@ -9372,8 +9468,7 @@ fn render_attachment_list_header() -> String {
       <span>Attachment</span>
       <span>Type</span>
       <span>Actions</span>
-      <span>Address priority</span>
-      <span>Domain priority</span>
+      <span>Sender importance</span>
     </div>"
         .to_string()
 }
@@ -9470,7 +9565,7 @@ fn render_search(
               <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search mail\" aria-label=\"Search mail\">⌕</button>
             </div>
             <details class=\"filter-accordion\">
-              <summary>Basic filters</summary>
+              <summary>Filter results</summary>
               <div class=\"filter-grid\">
                 <label class=\"field-wide\">Mailbox
                   <select name=\"account_id\">
@@ -9478,7 +9573,7 @@ fn render_search(
                     {}
                   </select>
                 </label>
-                <label>Sender priority
+                <label>Sender importance
                   <select name=\"priority\">{}</select>
                 </label>
                 <label class=\"field-wide\">Sender address
@@ -9667,27 +9762,16 @@ fn search_page_href(
     }
 }
 
-fn render_sender_priority_select_cells(
-    view: &SenderPriorityView,
-    return_to: &str,
-) -> (String, String) {
+fn render_sender_importance_select(view: &SenderPriorityView, return_to: &str) -> String {
     let Some(identity) = view.identity.as_ref() else {
-        return (String::new(), String::new());
+        return String::new();
     };
 
-    (
-        render_sender_priority_select(
-            SenderRuleKind::Address,
-            &identity.address,
-            view.address_rule.unwrap_or(SenderPriority::Normal),
-            return_to,
-        ),
-        render_sender_priority_select(
-            SenderRuleKind::Domain,
-            &identity.domain,
-            view.domain_rule.unwrap_or(SenderPriority::Normal),
-            return_to,
-        ),
+    render_sender_priority_select(
+        SenderRuleKind::Address,
+        &identity.address,
+        view.address_rule.unwrap_or(SenderPriority::Normal),
+        return_to,
     )
 }
 
@@ -9697,10 +9781,7 @@ fn render_sender_priority_select(
     selected: SenderPriority,
     return_to: &str,
 ) -> String {
-    let label = match kind {
-        SenderRuleKind::Address => "Address priority",
-        SenderRuleKind::Domain => "Domain priority",
-    };
+    let label = "Sender importance";
     let options = [
         SenderPriority::High,
         SenderPriority::Normal,
@@ -9764,8 +9845,7 @@ fn render_sender_cell(raw_sender: &str) -> String {
 }
 
 fn render_search_result(result: &SearchResult, return_to: &str) -> String {
-    let (address_priority, domain_priority) =
-        render_sender_priority_select_cells(&result.sender_priority, return_to);
+    let sender_importance = render_sender_importance_select(&result.sender_priority, return_to);
     let source = format!("{} · {}", result.account_name, result.message_relpath);
 
     let tags = if result.tags.is_empty() {
@@ -9787,7 +9867,6 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
           </div>
           <div class=\"tag-list compact\">{}</div>
           <div class=\"priority-cell\">{}</div>
-          <div class=\"priority-cell\">{}</div>
         </article>",
         escape_html(&format_timestamp_tooltip_label(result.timestamp)),
         escape_html(&result.date_label),
@@ -9796,8 +9875,7 @@ fn render_search_result(result: &SearchResult, return_to: &str) -> String {
         escape_html(&result.subject),
         escape_html(&result.subject),
         tags.join(""),
-        address_priority,
-        domain_priority,
+        sender_importance,
     )
 }
 
@@ -9807,8 +9885,7 @@ fn render_mail_list_header() -> String {
       <span>Sender</span>
       <span>Message</span>
       <span>Tags</span>
-      <span>Address priority</span>
-      <span>Domain priority</span>
+      <span>Sender importance</span>
     </div>"
         .to_string()
 }
@@ -9909,6 +9986,17 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
   </head>
   <body>
     <main class="page">
+      <header class="app-header">
+        <a class="brand-link" href="/" aria-label="Mail Archive dashboard">
+          <span class="brand-icon" aria-hidden="true"><span class="brand-envelope"></span></span>
+          <span>Mail Archive</span>
+        </a>
+        <nav class="top-nav" aria-label="Main navigation">
+          <a class="{}" href="/search">Mail</a>
+          <a class="{}" href="/attachments">Attachments</a>
+          <a class="{}" href="/accounts/new">Add mailbox</a>
+        </nav>
+      </header>
       {}
       <footer class="page-footer">
         <nav class="footer-nav">
@@ -9925,6 +10013,9 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
 </html>"#,
         escape_html(title),
         frontend_tags,
+        nav_active_class(active_nav == "search"),
+        nav_active_class(active_nav == "attachments"),
+        nav_active_class(active_nav == "accounts"),
         body,
         nav_active_class(active_nav == "dashboard"),
         nav_active_class(active_nav == "accounts"),
@@ -9936,14 +10027,7 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
 
 fn identity_summary(identity: Option<&Identity>) -> String {
     identity
-        .map(|identity| {
-            format!(
-                "{} · {} · groups: {}",
-                identity.username,
-                identity.email.as_deref().unwrap_or("no forwarded email"),
-                identity.groups.join(", ")
-            )
-        })
+        .map(|identity| format!("Signed in as {}", identity.username))
         .unwrap_or_else(|| "Authentication required".to_string())
 }
 
@@ -10532,8 +10616,7 @@ mod tests {
                     .to_string(),
             ),
             recommended_action: Some(
-                "Check the mailbox credentials and archive paths, then run Sync now again."
-                    .to_string(),
+                "Check the mailbox credentials, then use Update now again.".to_string(),
             ),
             progress_warning: None,
             progress_warning_detail: None,
@@ -11136,7 +11219,7 @@ mod tests {
             assert!(html.contains("@vite/client"));
             assert!(html.contains("/src/entry.dev.tsx"));
             assert!(html.contains("mail-archive-ui-islands"));
-            assert!(html.contains("alice@example.com"));
+            assert!(html.contains("Signed in as alice"));
 
             let response = html_response(html);
             assert_eq!(
@@ -11213,8 +11296,8 @@ mod tests {
 
         let html = render_account_card(&view);
         assert!(html.contains("Mailbox download failed before new mail could be indexed."));
-        assert!(html.contains("Technical detail"));
-        assert!(html.contains("Check the mailbox credentials and archive paths"));
+        assert!(html.contains("Troubleshooting details"));
+        assert!(html.contains("Check the mailbox credentials"));
         assert!(html.contains("physical message files representing 6668 logical messages"));
     }
 
@@ -11223,8 +11306,8 @@ mod tests {
         let html = render_dashboard(&sample_identity(), &[], None, None);
 
         assert!(html.contains("class=\"hero\""));
-        assert!(html.contains("Private Mail Archive"));
-        assert!(html.contains("Mailbox sync, repair, and metadata search"));
+        assert!(html.contains("Mail Archive"));
+        assert!(html.contains("Search saved mail and file important attachments."));
     }
 
     #[test]
@@ -11859,8 +11942,7 @@ mod tests {
         assert!(html.contains("page-heading"));
         assert!(html.contains("Search mail"));
         assert!(html.contains("mail-list-header"));
-        assert!(html.contains("Address priority"));
-        assert!(html.contains("Domain priority"));
+        assert!(html.contains("Sender importance"));
         assert!(!html.contains("Query your downloaded mail with notmuch."));
     }
 
@@ -11878,15 +11960,15 @@ mod tests {
                 empty_message: None,
                 priority_filter: SenderPriorityFilter::All,
             },
-            Some("Sender+priority+rule+cleared"),
-            Some("Sender+priority+task+failed"),
+            Some("Sender+importance+cleared"),
+            Some("Sender+importance+task+failed"),
         );
 
         assert!(html.contains("toast-stack"));
         assert!(html.contains("class=\"toast success\""));
         assert!(html.contains("class=\"toast error\""));
-        assert!(html.contains("Sender priority rule cleared"));
-        assert!(html.contains("Sender priority task failed"));
+        assert!(html.contains("Sender importance cleared"));
+        assert!(html.contains("Sender importance task failed"));
         assert!(!html.contains("class=\"flash\""));
     }
 
@@ -11970,15 +12052,12 @@ mod tests {
         assert!(html.contains("truncate"));
         assert!(html.contains(&format_timestamp_tooltip_label(0)));
         assert!(!html.contains("Normal priority"));
-        assert!(html.contains("Address priority"));
-        assert!(html.contains("Domain priority"));
+        assert!(html.contains("Sender importance"));
         assert!(html.contains("name=\"priority\""));
         assert!(html.contains("priority-select-normal"));
         assert!(html.contains("data-priority-select"));
         assert!(html.contains("data-sender-kind=\"address\""));
-        assert!(html.contains("data-sender-kind=\"domain\""));
         assert!(html.contains("data-sender-value=\"billing@example.com\""));
-        assert!(html.contains("data-sender-value=\"example.com\""));
         assert!(html.contains(
             "Personal Gmail · Inbox/very/long/path/that/should/not/overflow/message.eml"
         ));
@@ -12711,8 +12790,7 @@ mod tests {
             assert!(html.contains("<span>Date</span>"));
             assert!(!html.contains("<span>Select</span>"));
             assert!(!html.contains("<span>Tags</span>"));
-            assert!(html.contains("Address priority"));
-            assert!(html.contains("Domain priority"));
+            assert!(html.contains("Sender importance"));
             assert!(html.contains("name=\"priority\""));
             assert!(!html.contains("<span>Source</span>"));
             assert!(html.contains("Source: "));

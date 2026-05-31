@@ -35,6 +35,17 @@ pub use crate::{
 };
 
 const READ_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_millis(750)];
+const REDACTED_BACKEND_OUTPUT: &str = "<redacted>";
+
+pub struct LocalCommandRedactedRecord<'a> {
+    pub step: &'a str,
+    pub program: &'a str,
+    pub args: &'a [String],
+    pub status: ExitStatusSummary,
+    pub stdout: &'a str,
+    pub stderr: &'a str,
+    pub redaction: Value,
+}
 
 #[derive(Clone)]
 pub struct KanidmCli {
@@ -126,27 +137,18 @@ impl KanidmCli {
         });
     }
 
-    pub fn record_local_command_redacted_result(
-        &self,
-        step: &str,
-        program: &str,
-        args: &[String],
-        status: ExitStatusSummary,
-        stdout: &str,
-        stderr: &str,
-        redaction: Value,
-    ) {
+    pub fn record_local_command_redacted_result(&self, record: LocalCommandRedactedRecord<'_>) {
         self.backend_log.record_redacted_result(
             BackendLogRecord {
-                step,
+                step: record.step,
                 mode: CommandMode::NonInteractiveRead,
-                program,
-                args,
-                status,
-                stdout,
-                stderr,
+                program: record.program,
+                args: record.args,
+                status: record.status,
+                stdout: record.stdout,
+                stderr: record.stderr,
             },
-            redaction,
+            record.redaction,
         );
     }
 
@@ -929,7 +931,7 @@ impl KanidmCli {
     }
 
     fn record_backend_success(&self, step: &str, mode: CommandMode, success: &BackendSuccess) {
-        self.backend_log.record_result(BackendLogRecord {
+        let record = BackendLogRecord {
             step,
             mode,
             program: &success.program,
@@ -937,7 +939,23 @@ impl KanidmCli {
             status: success.status,
             stdout: &success.stdout,
             stderr: &success.stderr,
-        });
+        };
+        if is_sensitive_backend_invocation(&success.args) {
+            self.backend_log.record_redacted_result(
+                BackendLogRecord {
+                    stdout: REDACTED_BACKEND_OUTPUT,
+                    stderr: REDACTED_BACKEND_OUTPUT,
+                    ..record
+                },
+                json!({
+                    "stdout": true,
+                    "stderr": true,
+                    "secret_labels": ["kanidm_sensitive_output"],
+                }),
+            );
+        } else {
+            self.backend_log.record_result(record);
+        }
     }
 
     fn record_backend_result(
@@ -948,15 +966,32 @@ impl KanidmCli {
         args: &[String],
         result: &crate::backend::RawCommandResult,
     ) {
-        self.backend_log.record_result(BackendLogRecord {
+        let program = program.to_string_lossy();
+        let record = BackendLogRecord {
             step,
             mode,
-            program: &program.to_string_lossy(),
+            program: &program,
             args,
             status: result.status,
             stdout: &result.stdout,
             stderr: &result.stderr,
-        });
+        };
+        if is_sensitive_backend_invocation(args) {
+            self.backend_log.record_redacted_result(
+                BackendLogRecord {
+                    stdout: REDACTED_BACKEND_OUTPUT,
+                    stderr: REDACTED_BACKEND_OUTPUT,
+                    ..record
+                },
+                json!({
+                    "stdout": true,
+                    "stderr": true,
+                    "secret_labels": ["kanidm_sensitive_output"],
+                }),
+            );
+        } else {
+            self.backend_log.record_result(record);
+        }
     }
 
     fn record_backend_exec_error(
@@ -1053,6 +1088,17 @@ fn command_mode_for_args(args: &[String]) -> CommandMode {
 
 fn is_retryable_exec_error(error: &BackendExecError) -> bool {
     matches!(error, BackendExecError::Timeout { .. })
+}
+
+fn is_sensitive_backend_invocation(args: &[String]) -> bool {
+    args.windows(3).any(|window| {
+        matches!(
+            window,
+            [a, b, c]
+                if a == "person" && b == "credential" && c == "create-reset-token"
+                    || a == "system" && b == "oauth2" && matches!(c.as_str(), "show-basic-secret" | "reset-basic-secret")
+        )
+    })
 }
 
 fn snapshot_from_failure(
@@ -1250,6 +1296,42 @@ exit 42
         let recent = cli.recent_backend_logs();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0]["status"]["code"].as_i64(), Some(42));
+    }
+
+    #[test]
+    fn backend_log_redacts_sensitive_success_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+if [[ "$1" == "person" && "$2" == "credential" && "$3" == "create-reset-token" ]]; then
+  printf 'Reset token: SECRET123\n'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
+            runtime_policy: crate::context::RuntimePolicy::default(),
+        });
+
+        let stdout = cli
+            .person_create_reset_token("alice", 3600)
+            .expect("reset token output");
+        assert!(stdout.contains("SECRET123"));
+
+        let logs = cli.recent_backend_logs();
+        let rendered = serde_json::to_string(&logs).expect("logs json");
+        assert!(!rendered.contains("SECRET123"));
+        assert!(rendered.contains(REDACTED_BACKEND_OUTPUT));
     }
 
     #[derive(Debug)]

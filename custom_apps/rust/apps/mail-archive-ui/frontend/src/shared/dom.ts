@@ -36,7 +36,7 @@ const setOptionalText = (
   }
 };
 
-const showToast = (
+export const showToast = (
   doc: Document,
   message: string,
   kind: "success" | "error",
@@ -128,7 +128,7 @@ export const applyAccountStatus = (
   setOptionalText(card, "[data-overlap-note]", account.overlap_note);
   setText(
     card.querySelector("[data-last-activity]"),
-    `Last activity ${account.last_activity}`,
+    `Last update ${account.last_activity}`,
   );
 
   const progressBar = card.querySelector<HTMLElement>("[data-progress-bar]");
@@ -220,6 +220,17 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
   let selectionAnchor: number | null = null;
 
   const syncSelectedInputs = (): void => {
+    const selectedCount = selectedKeys.size;
+    setText(
+      doc.querySelector("[data-selected-count]"),
+      `${selectedCount} selected`,
+    );
+    doc
+      .querySelectorAll<HTMLButtonElement>("[data-bulk-action]")
+      .forEach((button) => {
+        button.disabled = selectedCount === 0;
+      });
+
     attachmentRows.forEach((row) => {
       const key = row.dataset.attachmentKey ?? "";
       const selected = selectedKeys.has(key);
@@ -357,7 +368,122 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
     cleanups.push(() => form.removeEventListener("submit", onSubmit));
   });
 
+  const refreshForm = doc.querySelector<HTMLFormElement>(
+    "form[data-refresh-attachments-form]",
+  );
+  if (refreshForm) {
+    const onSubmit = (event: SubmitEvent): void => {
+      event.preventDefault();
+      submitJsonAction(refreshForm, {
+        fetch: window.fetch.bind(window),
+        doc,
+      }).then((result) => {
+        showToast(doc, result.message, result.ok ? "success" : "error");
+      });
+    };
+    refreshForm.addEventListener("submit", onSubmit);
+    cleanups.push(() => refreshForm.removeEventListener("submit", onSubmit));
+  }
+
   syncSelectedInputs();
+  return () => cleanups.forEach((cleanup) => cleanup());
+};
+
+type ActionPayload = {
+  ok?: boolean;
+  message?: string;
+  account_id?: number | null;
+};
+
+type JsonActionDeps = {
+  fetch: typeof fetch;
+  doc: Document;
+};
+
+export const submitJsonAction = async (
+  form: HTMLFormElement,
+  deps: JsonActionDeps,
+): Promise<{ ok: boolean; message: string }> => {
+  const buttons = Array.from(
+    form.querySelectorAll<HTMLButtonElement>("button"),
+  );
+  buttons.forEach((button) => {
+    button.disabled = true;
+    button.dataset.previousLabel = button.textContent || "";
+    button.textContent = "...";
+  });
+
+  try {
+    const response = await deps.fetch(form.action, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      body: new FormData(form),
+    });
+    const responseText = await response.text();
+    let payload: ActionPayload | null = null;
+    if (responseText) {
+      try {
+        payload = JSON.parse(responseText) as ActionPayload;
+      } catch {
+        payload = { message: responseText };
+      }
+    }
+    const ok = response.ok && Boolean(payload?.ok);
+    return {
+      ok,
+      message:
+        payload?.message ||
+        (ok ? "Action completed" : `Request failed with ${response.status}`),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Request failed",
+    };
+  } finally {
+    buttons.forEach((button) => {
+      button.disabled = false;
+      button.textContent = button.dataset.previousLabel || "";
+      delete button.dataset.previousLabel;
+    });
+  }
+};
+
+export const setupDashboardActions = (doc: Document): Cleanup => {
+  const forms = Array.from(
+    doc.querySelectorAll<HTMLFormElement>("form[data-dashboard-action]"),
+  );
+  const cleanups: Cleanup[] = [];
+
+  forms.forEach((form) => {
+    const onSubmit = (event: SubmitEvent): void => {
+      event.preventDefault();
+      submitJsonAction(form, {
+        fetch: window.fetch.bind(window),
+        doc,
+      }).then((result) => {
+        showToast(doc, result.message, result.ok ? "success" : "error");
+        if (result.ok) {
+          window
+            .fetch("/api/accounts/status", {
+              cache: "no-store",
+              headers: { Accept: "application/json" },
+            })
+            .then((response) => (response.ok ? response.json() : null))
+            .then((payload: AccountStatusPayload | null) => {
+              if (payload) {
+                applyDashboardStatusPayload(doc, payload);
+              }
+            })
+            .catch(() => undefined);
+        }
+      });
+    };
+    form.addEventListener("submit", onSubmit);
+    cleanups.push(() => form.removeEventListener("submit", onSubmit));
+  });
+
   return () => cleanups.forEach((cleanup) => cleanup());
 };
 
@@ -495,7 +621,7 @@ export const priorityFailureMessage = (detail: string): string => {
     "the network connection failed before the change was saved",
   ];
   return [
-    "Priority change failed.",
+    "Sender importance change failed.",
     detail ? `Server response: ${detail}` : "",
     "",
     "Potential reasons:",
@@ -507,14 +633,13 @@ export const priorityFailureMessage = (detail: string): string => {
 
 export type PrioritySubmitDeps = {
   fetch: typeof fetch;
-  assign: (url: string) => void;
   currentPath: () => string;
 };
 
 export const submitPriorityChange = async (
   select: HTMLSelectElement,
   deps: PrioritySubmitDeps,
-): Promise<{ ok: true } | { ok: false; message: string }> => {
+): Promise<{ ok: true; message: string } | { ok: false; message: string }> => {
   const previousPriority = select.dataset.previousPriority || "normal";
   const nextPriority = select.value;
   setPriorityClass(select, nextPriority);
@@ -552,10 +677,9 @@ export const submitPriorityChange = async (
       throw new Error(payload?.message || `HTTP ${response.status}`);
     }
 
-    deps.assign(
-      payload.return_to || form.get("return_to") || deps.currentPath(),
-    );
-    return { ok: true };
+    select.dataset.previousPriority = nextPriority;
+    select.disabled = false;
+    return { ok: true, message: payload.message || "Sender importance saved" };
   } catch (error) {
     select.value = previousPriority;
     setPriorityClass(select, previousPriority);

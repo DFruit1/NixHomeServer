@@ -1,5 +1,5 @@
 import { component$, useSignal, useVisibleTask$ } from "@builder.io/qwik";
-import { submitPriorityChange } from "../shared/dom";
+import { showToast, submitPriorityChange } from "../shared/dom";
 
 export const PrioritySelectIsland = component$(() => {
   const error = useSignal("");
@@ -21,11 +21,12 @@ export const PrioritySelectIsland = component$(() => {
         error.value = "";
         const result = await submitPriorityChange(select, {
           fetch: window.fetch.bind(window),
-          assign: (url) => window.location.assign(url),
           currentPath: () => window.location.pathname + window.location.search,
         });
         if (!result.ok) {
           error.value = result.message;
+        } else {
+          showToast(document, result.message, "success");
         }
       };
 

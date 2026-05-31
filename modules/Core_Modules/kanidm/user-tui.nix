@@ -18,9 +18,14 @@ in
     (lib.concatMapStringsSep "\n" toString allowedSecretPaths)
     + lib.optionalString (allowedSecretPaths != [ ]) "\n";
 
-  # TODO(kanidm-admin): after the rest of the operator workflows move onto
-  # RootAction, remove the broad bootstrap sudo policy and keep this exact
-  # helper contract as the only passwordless admin path.
+  systemd.tmpfiles.rules = [
+    "d /var/lib/kanidm-admin 0700 ${vars.localAdminUser} users -"
+    "d /var/lib/kanidm-admin/history 0700 ${vars.localAdminUser} users -"
+  ];
+
+  # kanidm-admin local runtime actions use this exact helper contract. The
+  # broader deploy/bootstrap sudo policy is documented in base-system and is
+  # reported by `kanidm-admin doctor --deep` until deploy sudo is narrowed.
   security.sudo.extraRules = [
     {
       users = [ vars.localAdminUser ];
@@ -39,6 +44,7 @@ in
     KANIDM_ADMIN_NAME = vars.kanidmAdminUser;
     KANIDM_ADMIN_KANIDM_BIN = "${pkgs.kanidm_1_9}/bin/kanidm";
     KANIDM_ADMIN_NIX_BIN = "${pkgs.nix}/bin/nix";
+    KANIDM_ADMIN_HISTORY_DIR = "/var/lib/kanidm-admin/history";
     KANIDM_ADMIN_ROOT_HELPER = rootHelper;
     KANIDM_ADMIN_ROOT_ALLOWED_SECRET_PATHS_FILE = "/etc/kanidm-admin-root/allowed-secret-paths";
   };

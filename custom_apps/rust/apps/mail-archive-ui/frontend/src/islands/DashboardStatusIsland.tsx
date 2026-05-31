@@ -1,5 +1,8 @@
 import { component$, useVisibleTask$ } from "@builder.io/qwik";
-import { applyDashboardStatusPayload } from "../shared/dom";
+import {
+  applyDashboardStatusPayload,
+  setupDashboardActions,
+} from "../shared/dom";
 import type { AccountStatusPayload } from "../shared/types";
 
 const RUNNING_INTERVAL_MS = 3000;
@@ -12,6 +15,7 @@ export const DashboardStatusIsland = component$(() => {
         return;
       }
 
+      const cleanupDashboardActions = setupDashboardActions(document);
       let pollTimer = 0;
       let stopped = false;
 
@@ -62,6 +66,7 @@ export const DashboardStatusIsland = component$(() => {
         stopped = true;
         window.clearTimeout(pollTimer);
         document.removeEventListener("visibilitychange", onVisibilityChange);
+        cleanupDashboardActions();
       });
     },
     { strategy: "document-ready" },

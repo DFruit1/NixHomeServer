@@ -16,7 +16,10 @@ use kanidm_admin::{
             RecoveryTarget,
         },
         group::{group_members, list_groups, search_groups, show_group},
-        history::{list_history, prune_history, record_operation_best_effort, show_history},
+        history::{
+            list_history, prune_history, record_operation_best_effort, redact_sensitive_history,
+            show_history,
+        },
         local::{
             diagnose_jellyfin_password, diagnose_vaultwarden_user, invite_vaultwarden_user,
             reconcile_jellyfin_password, reconcile_vaultwarden_user, stage_jellyfin_password,
@@ -536,6 +539,8 @@ enum HistorySubcommand {
         )]
         older_than: String,
     },
+    #[command(about = "Redact sensitive reset-token and client-secret data in persisted history.")]
+    RedactSensitive,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1023,6 +1028,7 @@ fn run(
             HistorySubcommand::List => list_history().map(Some),
             HistorySubcommand::Show { operation_id } => show_history(&operation_id).map(Some),
             HistorySubcommand::Prune { older_than } => prune_history(&older_than).map(Some),
+            HistorySubcommand::RedactSensitive => redact_sensitive_history().map(Some),
         },
     };
     match &mut result {
@@ -1349,6 +1355,18 @@ mod tests {
             Some(Commands::History(HistoryCommand {
                 command: HistorySubcommand::Prune { older_than }
             })) if older_than == "30d"
+        ));
+    }
+
+    #[test]
+    fn parses_history_redact_sensitive() {
+        let cli =
+            Cli::try_parse_from(["kanidm-admin", "history", "redact-sensitive"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::History(HistoryCommand {
+                command: HistorySubcommand::RedactSensitive
+            }))
         ));
     }
 

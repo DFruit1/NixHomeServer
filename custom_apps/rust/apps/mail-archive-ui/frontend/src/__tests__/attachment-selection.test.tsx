@@ -4,8 +4,9 @@ import { setupAttachmentSelection, submitPaperlessForm } from "../shared/dom";
 const setup = () => {
   document.body.innerHTML = `
     <button data-select-page type="button">Select page</button>
-    <form id="attachment-download-form"></form>
-    <form id="attachment-paperless-form" action="/attachments/send-paperless" data-paperless-form></form>
+    <span data-selected-count></span>
+    <form id="attachment-download-form"><button data-bulk-action type="submit">Download</button></form>
+    <form id="attachment-paperless-form" action="/attachments/send-paperless" data-paperless-form><button data-bulk-action type="submit">Send selected</button></form>
     <article data-attachment-row data-attachment-key="first" tabindex="0">
       <form action="/attachments/send-paperless" data-paperless-form>
         <input type="hidden" name="attachment_keys" value="first">
@@ -43,6 +44,9 @@ describe("attachment selection island helpers", () => {
         ),
       ).map((input) => input.value),
     ).toEqual(["first"]);
+    expect(document.querySelector("[data-selected-count]")?.textContent).toBe(
+      "1 selected",
+    );
     cleanup();
   });
 

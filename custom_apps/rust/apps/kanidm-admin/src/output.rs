@@ -18,6 +18,13 @@ pub struct CommandOutput {
 }
 
 impl CommandOutput {
+    pub fn is_sensitive(&self) -> bool {
+        self.details
+            .get("sensitive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
     pub fn render_human(&self) -> String {
         let mut body = self.human.clone();
         if let Some(backend) = render_backend_steps_summary(self.details.get("backend_steps")) {
@@ -44,6 +51,7 @@ impl CommandOutput {
         json!({
             "status": "ok",
             "message": self.message,
+            "sensitive": self.is_sensitive(),
             "details": self.details,
             "warnings": self.warnings,
         })
@@ -239,6 +247,19 @@ mod tests {
         assert!(rendered.contains("\"status\": \"ok\""));
         assert!(rendered.contains("\"count\": 1"));
         assert!(rendered.contains("\"warnings\""));
+    }
+
+    #[test]
+    fn renders_sensitive_success_flag() {
+        let output = CommandOutput {
+            message: "secret".to_string(),
+            human: "secret".to_string(),
+            details: json!({ "sensitive": true }),
+            warnings: Vec::new(),
+        };
+
+        let rendered = render_output(OutputFormat::Json, &output);
+        assert!(rendered.contains("\"sensitive\": true"));
     }
 
     #[test]

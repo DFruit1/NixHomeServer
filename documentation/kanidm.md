@@ -143,9 +143,12 @@ kanidm-admin user reset-token "$NEW_USER" --ttl 3600
 ```
 
 Password-reset note:
-- `kanidm-admin user reset-token` always preserves the raw backend output.
+- `kanidm-admin user reset-token` preserves the raw backend output in the immediate terminal/JSON command result so the operator can recover if parsing is incomplete.
+- Persisted operation history redacts reset links, fallback tokens, raw backend output, and backend stdout/stderr for this command.
 - If the wrapper cannot parse a reset URL or token cleanly, it emits warnings instead of pretending the structured fields are complete.
 - The TUI now shows the target user and TTL before creating the reset link, then reminds the operator to share the result only through a secure channel.
+- If older history may contain unredacted reset links or tokens, run `kanidm-admin history redact-sensitive`.
+- On deployed hosts, history is stored in `/var/lib/kanidm-admin/history` with private permissions for the local admin account.
 
 ## Membership Management
 
@@ -261,6 +264,12 @@ kanidm-admin client pkce disable files
 kanidm-admin client consent enable files
 kanidm-admin client consent disable files
 ```
+
+Client-secret note:
+- `client secret show` and `client secret reset` intentionally reveal secret material in the immediate command output.
+- JSON output marks these responses with `"sensitive": true`.
+- Persisted operation history and in-process backend logs redact the secret-bearing raw output.
+- If older history may contain unredacted client secrets, run `kanidm-admin history redact-sensitive`.
 
 Expected result:
 - OAuth2 clients are discovered live from Kanidm

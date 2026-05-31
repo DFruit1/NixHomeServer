@@ -51,7 +51,12 @@ pub fn client_secret_show(cli: &KanidmCli, client: &str) -> Result<CommandOutput
     Ok(raw_client_command_output(
         format!("shown oauth2 basic secret for '{client}'"),
         format!("OAuth2 basic secret for '{client}':\n\n{}", stdout.trim()),
-        json!({ "client": client, "raw_output": stdout.trim() }),
+        json!({
+            "sensitive": true,
+            "sensitive_fields": ["raw_output"],
+            "client": client,
+            "raw_output": stdout.trim()
+        }),
     ))
 }
 
@@ -63,7 +68,12 @@ pub fn client_secret_reset(cli: &KanidmCli, client: &str) -> Result<CommandOutpu
             "Reset the oauth2 basic secret for '{client}'.\n\n{}",
             stdout.trim()
         ),
-        json!({ "client": client, "raw_output": stdout.trim() }),
+        json!({
+            "sensitive": true,
+            "sensitive_fields": ["raw_output"],
+            "client": client,
+            "raw_output": stdout.trim()
+        }),
     ))
 }
 

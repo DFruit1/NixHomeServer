@@ -41,6 +41,86 @@ a {
   padding: 1.4rem 0 4rem;
 }
 
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.brand-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 800;
+}
+
+.brand-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 2.45rem;
+  height: 2.45rem;
+  border-radius: var(--radius);
+  background: linear-gradient(145deg, #0f6b5c, #57aa8f);
+  box-shadow: 0 8px 18px rgba(15, 107, 92, 0.18);
+}
+
+.brand-envelope {
+  position: relative;
+  display: block;
+  width: 1.35rem;
+  height: 0.95rem;
+  border: 2px solid #fff;
+  border-radius: 3px;
+}
+
+.brand-envelope::before,
+.brand-envelope::after {
+  position: absolute;
+  top: 0.1rem;
+  width: 0.72rem;
+  height: 0.72rem;
+  border-top: 2px solid #fff;
+  content: "";
+}
+
+.brand-envelope::before {
+  left: 0.1rem;
+  transform: rotate(38deg);
+  transform-origin: top left;
+}
+
+.brand-envelope::after {
+  right: 0.1rem;
+  transform: rotate(-38deg);
+  transform-origin: top right;
+}
+
+.top-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.top-nav a {
+  min-height: 2.35rem;
+  padding: 0.48rem 0.82rem;
+  border-radius: 999px;
+  color: var(--accent-strong);
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.top-nav a.active {
+  background: var(--accent-soft);
+}
+
 .hero,
 .panel,
 .result,
@@ -110,13 +190,13 @@ a {
 .mail-row {
   grid-template-columns:
     minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr)
-    minmax(10rem, 1.1fr) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+    minmax(10rem, 1.1fr) minmax(8.5rem, 0.7fr);
 }
 
 .attachment-row {
   grid-template-columns:
     minmax(8.6rem, 0.72fr) minmax(24rem, 3fr) minmax(5rem, 0.46fr)
-    minmax(5.2rem, auto) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+    minmax(5.2rem, auto) minmax(8.5rem, 0.7fr);
   border-width: 2px;
   cursor: pointer;
 }
@@ -124,13 +204,13 @@ a {
 .mail-list-header {
   grid-template-columns:
     minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr)
-    minmax(10rem, 1.1fr) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+    minmax(10rem, 1.1fr) minmax(8.5rem, 0.7fr);
 }
 
 .attachment-list-header {
   grid-template-columns:
     minmax(8.6rem, 0.72fr) minmax(24rem, 3fr) minmax(5rem, 0.46fr)
-    minmax(5.2rem, auto) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+    minmax(5.2rem, auto) minmax(8.5rem, 0.7fr);
   text-align: left;
 }
 
@@ -250,6 +330,12 @@ button.icon-button,
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
+}
+
+.selection-count {
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 700;
 }
 
 .attachment-selector-placeholder {
@@ -889,6 +975,17 @@ textarea {
   font-weight: 600;
 }
 
+.account-settings {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.account-settings summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
 .notice-details pre {
   margin: 0.65rem 0 0;
   padding: 0.8rem 0.9rem;
@@ -973,6 +1070,15 @@ code {
   .page {
     width: min(100% - 1rem, 1180px);
     padding-top: 1rem;
+  }
+
+  .app-header {
+    align-items: flex-start;
+    display: grid;
+  }
+
+  .top-nav {
+    justify-content: flex-start;
   }
 
   .hero,

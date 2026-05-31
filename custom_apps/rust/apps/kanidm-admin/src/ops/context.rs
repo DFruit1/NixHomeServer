@@ -1,3 +1,5 @@
+use std::{env, fs, os::unix::fs::PermissionsExt, path::Path, time::Duration};
+
 use serde_json::{json, Value};
 
 use crate::{
@@ -5,7 +7,8 @@ use crate::{
     inventory::{clients::parse_client_list, groups::parse_group_list, users::parse_user_list},
     kanidm_cli::{BaseSessionState, KanidmCli, PrivilegedWriteState},
     ops::local_runtime::{
-        execute_local_command, CheckStatus, LocalCommandSpec, RuntimeCheckReport,
+        execute_local_command, root_action_spec, run_local_command, CheckStatus, LocalCommandSpec,
+        RootAction, RuntimeCheckReport,
     },
     output::CommandOutput,
     AppError,
@@ -449,75 +452,81 @@ fn probe_vaultwarden_helper_context(context: &ResolvedContext) -> VaultwardenDoc
 }
 
 fn probe_deep_runtime(context: &ResolvedContext, cli: &KanidmCli) -> Vec<RuntimeCheckReport> {
-    let mut checks = Vec::new();
-    checks.push(command_check(
-        "doctor.root_bridge.sudo_contract",
-        "root bridge sudo contract is callable",
-        false,
-        LocalCommandSpec::new(
-            "sudo",
-            [
-                "-n".to_string(),
-                std::env::var("KANIDM_ADMIN_ROOT_HELPER")
-                    .unwrap_or_else(|_| "kanidm-admin-root".to_string()),
-                "--help".to_string(),
-            ],
+    let mut checks = vec![
+        command_check(
+            "doctor.root_bridge.sudo_contract",
+            "root bridge sudo contract is callable",
+            false,
+            LocalCommandSpec::new(
+                "sudo",
+                [
+                    "-n".to_string(),
+                    std::env::var("KANIDM_ADMIN_ROOT_HELPER")
+                        .unwrap_or_else(|_| "kanidm-admin-root".to_string()),
+                    "--help".to_string(),
+                ],
+            ),
         ),
-    ));
-    checks.push(command_check(
-        "doctor.kanidm_unix.status",
-        "kanidm-unix status is available",
-        false,
-        LocalCommandSpec::new("kanidm-unix", ["status".to_string()]),
-    ));
-    checks.push(command_check(
-        "doctor.systemd.kanidm_unixd.active",
-        "kanidm-unixd service is active",
-        false,
-        LocalCommandSpec::new(
-            "systemctl",
-            [
-                "is-active".to_string(),
-                context.sftp_runtime.kanidm_unixd_service.clone(),
-            ],
+        command_check(
+            "doctor.kanidm_unix.status",
+            "kanidm-unix status is available",
+            false,
+            LocalCommandSpec::new("kanidm-unix", ["status".to_string()]),
         ),
-    ));
-    checks.push(command_check(
-        "doctor.systemd.files_sftp_sshd.active",
-        "files SFTP sshd service is active",
-        false,
-        LocalCommandSpec::new(
-            "systemctl",
-            [
-                "is-active".to_string(),
-                context.sftp_runtime.files_sftp_sshd_service.clone(),
-            ],
+        command_check(
+            "doctor.systemd.kanidm_unixd.active",
+            "kanidm-unixd service is active",
+            false,
+            LocalCommandSpec::new(
+                "systemctl",
+                [
+                    "is-active".to_string(),
+                    context.sftp_runtime.kanidm_unixd_service.clone(),
+                ],
+            ),
         ),
-    ));
-    checks.push(command_check(
-        "doctor.systemd.posix_groups.exists",
-        "POSIX group sync service exists",
-        false,
-        LocalCommandSpec::new(
-            "systemctl",
-            [
-                "status".to_string(),
-                context.sftp_runtime.posix_groups_service.clone(),
-            ],
+        command_check(
+            "doctor.systemd.files_sftp_sshd.active",
+            "files SFTP sshd service is active",
+            false,
+            LocalCommandSpec::new(
+                "systemctl",
+                [
+                    "is-active".to_string(),
+                    context.sftp_runtime.files_sftp_sshd_service.clone(),
+                ],
+            ),
         ),
-    ));
-    checks.push(command_check(
-        "doctor.systemd.user_root_sync.exists",
-        "fileshare user root sync service exists",
-        false,
-        LocalCommandSpec::new(
-            "systemctl",
-            [
-                "status".to_string(),
-                context.sftp_runtime.user_root_sync_service.clone(),
-            ],
+        command_check(
+            "doctor.systemd.posix_groups.exists",
+            "POSIX group sync service exists",
+            false,
+            LocalCommandSpec::new(
+                "systemctl",
+                [
+                    "status".to_string(),
+                    context.sftp_runtime.posix_groups_service.clone(),
+                ],
+            ),
         ),
-    ));
+        command_check(
+            "doctor.systemd.user_root_sync.exists",
+            "fileshare user root sync service exists",
+            false,
+            LocalCommandSpec::new(
+                "systemctl",
+                [
+                    "status".to_string(),
+                    context.sftp_runtime.user_root_sync_service.clone(),
+                ],
+            ),
+        ),
+        history_permissions_check(),
+        broad_sudo_policy_check(context),
+    ];
+    if let Some(path) = &context.vaultwarden_admin_token_file {
+        checks.push(vaultwarden_token_root_helper_check(cli, path));
+    }
     for group in [
         &context.sftp_runtime.sftp_access_group,
         &context.sftp_runtime.local_sftp_access_group,
@@ -548,6 +557,169 @@ fn probe_deep_runtime(context: &ResolvedContext, cli: &KanidmCli) -> Vec<Runtime
         });
     }
     checks
+}
+
+fn history_permissions_check() -> RuntimeCheckReport {
+    let path = resolved_history_dir_for_check();
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => {
+            let mode = metadata.permissions().mode() & 0o777;
+            let status = if mode == 0o700 {
+                CheckStatus::Passed
+            } else {
+                CheckStatus::Failed
+            };
+            RuntimeCheckReport {
+                id: "doctor.history.permissions".to_string(),
+                label: "kanidm-admin history directory is private".to_string(),
+                required: false,
+                status,
+                command: None,
+                summary: format!("{} mode {:03o}", path.display(), mode),
+                detail: (status == CheckStatus::Failed).then(|| {
+                    "Expected mode 0700. New writes enforce this, but existing directories may need chmod 700.".to_string()
+                }),
+                probe: Some(json!({
+                    "path": path.display().to_string(),
+                    "mode": format!("{mode:03o}"),
+                    "expected_mode": "700",
+                })),
+            }
+        }
+        Ok(_) => RuntimeCheckReport {
+            id: "doctor.history.permissions".to_string(),
+            label: "kanidm-admin history directory is private".to_string(),
+            required: false,
+            status: CheckStatus::Failed,
+            command: None,
+            summary: format!("{} exists but is not a directory", path.display()),
+            detail: None,
+            probe: Some(json!({ "path": path.display().to_string() })),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => RuntimeCheckReport {
+            id: "doctor.history.permissions".to_string(),
+            label: "kanidm-admin history directory is private".to_string(),
+            required: false,
+            status: CheckStatus::Skipped,
+            command: None,
+            summary: format!("{} does not exist yet", path.display()),
+            detail: None,
+            probe: Some(json!({ "path": path.display().to_string() })),
+        },
+        Err(error) => RuntimeCheckReport {
+            id: "doctor.history.permissions".to_string(),
+            label: "kanidm-admin history directory is private".to_string(),
+            required: false,
+            status: CheckStatus::Unknown,
+            command: None,
+            summary: format!("failed to inspect {}: {error}", path.display()),
+            detail: None,
+            probe: Some(json!({ "path": path.display().to_string() })),
+        },
+    }
+}
+
+fn resolved_history_dir_for_check() -> std::path::PathBuf {
+    if let Some(path) = env::var_os("KANIDM_ADMIN_HISTORY_DIR") {
+        return path.into();
+    }
+    let system = Path::new("/var/lib/kanidm-admin/history");
+    if system.exists() {
+        return system.to_path_buf();
+    }
+    env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|home| home.join(".local/state/kanidm-admin/history"))
+        .unwrap_or_else(|| system.to_path_buf())
+}
+
+fn broad_sudo_policy_check(context: &ResolvedContext) -> RuntimeCheckReport {
+    let path = context
+        .repo_root
+        .as_ref()
+        .map(|repo| repo.join("modules/Core_Modules/base-system/default.nix"));
+    let Some(path) = path else {
+        return RuntimeCheckReport {
+            id: "doctor.sudo.broad_nopasswd".to_string(),
+            label: "broad passwordless sudo policy is absent".to_string(),
+            required: false,
+            status: CheckStatus::Skipped,
+            command: None,
+            summary: "repository root is not resolved".to_string(),
+            detail: None,
+            probe: None,
+        };
+    };
+
+    match fs::read_to_string(&path) {
+        Ok(contents) => {
+            let broad = contents.contains("command = \"ALL\"")
+                && contents.contains("options = [ \"NOPASSWD\" ]");
+            RuntimeCheckReport {
+                id: "doctor.sudo.broad_nopasswd".to_string(),
+                label: "broad passwordless sudo policy is absent".to_string(),
+                required: false,
+                status: if broad {
+                    CheckStatus::Failed
+                } else {
+                    CheckStatus::Passed
+                },
+                command: None,
+                summary: if broad {
+                    "repo declares NOPASSWD sudo for ALL commands".to_string()
+                } else {
+                    "repo does not declare broad NOPASSWD sudo".to_string()
+                },
+                detail: broad.then(|| {
+                    "This is retained for deploy/bootstrap compatibility; replacing it requires a separate deploy sudo contract.".to_string()
+                }),
+                probe: Some(json!({ "path": path.display().to_string(), "broad_nopasswd_all": broad })),
+            }
+        }
+        Err(error) => RuntimeCheckReport {
+            id: "doctor.sudo.broad_nopasswd".to_string(),
+            label: "broad passwordless sudo policy is absent".to_string(),
+            required: false,
+            status: CheckStatus::Unknown,
+            command: None,
+            summary: format!("failed to inspect {}: {error}", path.display()),
+            detail: None,
+            probe: Some(json!({ "path": path.display().to_string() })),
+        },
+    }
+}
+
+fn vaultwarden_token_root_helper_check(cli: &KanidmCli, path: &Path) -> RuntimeCheckReport {
+    let spec = root_action_spec(
+        RootAction::ReadSecretFile {
+            path: path.to_path_buf(),
+        },
+        None,
+        Duration::from_secs(5),
+    );
+    let command = spec.display_command().display_string();
+    let execution = run_local_command(cli, "doctor vaultwarden token root helper", spec);
+    let success = execution
+        .result
+        .allowed_success(&std::collections::BTreeSet::from([0]));
+    RuntimeCheckReport {
+        id: "doctor.vaultwarden.token_root_helper".to_string(),
+        label: "Vaultwarden token is readable through kanidm-admin-root".to_string(),
+        required: false,
+        status: if success {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
+        command: Some(command),
+        summary: if success {
+            "token read helper succeeded with redacted output".to_string()
+        } else {
+            execution.result.detail()
+        },
+        detail: None,
+        probe: Some(execution.backend_payload),
+    }
 }
 
 fn command_check(

@@ -210,6 +210,14 @@ That mode runs:
 - `kanidm-admin-test`
 - `mail-archive-ui-test`
 
+Kanidm admin hardening checks:
+
+```bash
+kanidm-admin doctor --deep
+```
+
+The deep doctor output includes local runtime probes, history directory permission checks, the redacted `kanidm-admin-root` secret-read path, and a warning if the repo still declares broad `NOPASSWD: ALL` sudo for the local admin. Broad sudo is currently retained for guarded deploy and bootstrap workflows that call ordinary `sudo`; replacing it should be handled as a deploy sudo-contract change, not as a kanidm-admin-only edit.
+
 ## Guarded Deploy
 
 ```bash
