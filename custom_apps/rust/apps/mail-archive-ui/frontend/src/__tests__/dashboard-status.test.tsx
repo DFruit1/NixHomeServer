@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { applyDashboardStatusPayload } from '../shared/dom';
-import type { AccountStatusPayload } from '../shared/types';
+import { describe, expect, it } from "vitest";
+import { applyDashboardStatusPayload } from "../shared/dom";
+import type { AccountStatusPayload } from "../shared/types";
 
-const payload = (overrides: Partial<AccountStatusPayload['accounts'][number]> = {}): AccountStatusPayload => ({
+const payload = (
+  overrides: Partial<AccountStatusPayload["accounts"][number]> = {},
+): AccountStatusPayload => ({
   totals: {
     archived_message_count: 10,
     indexed_message_count: 8,
@@ -12,17 +14,17 @@ const payload = (overrides: Partial<AccountStatusPayload['accounts'][number]> = 
   accounts: [
     {
       id: 42,
-      status_class: 'error',
-      status_label: 'sync failed',
-      index_label: 'Index behind',
-      last_activity: 'now',
+      status_class: "error",
+      status_label: "sync failed",
+      index_label: "Index behind",
+      last_activity: "now",
       archived_message_count: 10,
       indexed_message_count: 8,
       pending_index_count: 2,
       index_coverage_percent: 80,
       archive_file_count: 10,
       overlap_file_count: 0,
-      progress_note: 'Index needs work.',
+      progress_note: "Index needs work.",
       diagnostic_summary: null,
       diagnostic_detail: null,
       diagnostic_impact: null,
@@ -35,8 +37,8 @@ const payload = (overrides: Partial<AccountStatusPayload['accounts'][number]> = 
   ],
 });
 
-describe('dashboard status island helpers', () => {
-  it('updates dashboard totals and account status fields', () => {
+describe("dashboard status island helpers", () => {
+  it("updates dashboard totals and account status fields", () => {
     document.body.innerHTML = `
       <div data-dashboard-summary>
         <strong data-summary-field="archived"></strong>
@@ -72,14 +74,25 @@ describe('dashboard status island helpers', () => {
 
     applyDashboardStatusPayload(document, payload());
 
-    expect(document.querySelector('[data-summary-field="coverage"]')?.textContent).toBe('80%');
-    expect(document.querySelector('[data-status-badge]')?.textContent).toBe('sync failed');
-    expect(document.querySelector('[data-status-badge]')?.className).toBe('status error');
-    expect(document.querySelector('[data-index-pill]')?.textContent).toBe('Index behind');
-    expect((document.querySelector('[data-progress-bar]') as HTMLElement).style.width).toBe('80%');
+    expect(
+      document.querySelector('[data-summary-field="coverage"]')?.textContent,
+    ).toBe("80%");
+    expect(document.querySelector("[data-status-badge]")?.textContent).toBe(
+      "sync failed",
+    );
+    expect(document.querySelector("[data-status-badge]")?.className).toBe(
+      "status error",
+    );
+    expect(document.querySelector("[data-index-pill]")?.textContent).toBe(
+      "Index behind",
+    );
+    expect(
+      (document.querySelector("[data-progress-bar]") as HTMLElement).style
+        .width,
+    ).toBe("80%");
   });
 
-  it('shows diagnostic and progress warning blocks when payload includes them', () => {
+  it("shows diagnostic and progress warning blocks when payload includes them", () => {
     document.body.innerHTML = `
       <article data-account-id="42">
         <span data-status-badge></span>
@@ -110,19 +123,31 @@ describe('dashboard status island helpers', () => {
     applyDashboardStatusPayload(
       document,
       payload({
-        diagnostic_phase: 'download',
-        diagnostic_code: 'download_failed',
-        diagnostic_summary: 'Download failed',
-        diagnostic_detail: 'mbsync failed',
-        progress_warning: 'Index stale',
-        progress_warning_action: 'Run reindex',
-        progress_warning_detail: 'notmuch unavailable',
+        diagnostic_phase: "download",
+        diagnostic_code: "download_failed",
+        diagnostic_summary: "Download failed",
+        diagnostic_detail: "mbsync failed",
+        progress_warning: "Index stale",
+        progress_warning_action: "Run reindex",
+        progress_warning_detail: "notmuch unavailable",
       }),
     );
 
-    expect(document.querySelector('[data-sync-diagnostic]')?.classList.contains('hidden')).toBe(false);
-    expect(document.querySelector('[data-diagnostic-meta]')?.textContent).toBe('Phase download · Code download_failed');
-    expect(document.querySelector('[data-progress-warning]')?.classList.contains('hidden')).toBe(false);
-    expect(document.querySelector('[data-progress-warning-action]')?.textContent).toBe('Run reindex');
+    expect(
+      document
+        .querySelector("[data-sync-diagnostic]")
+        ?.classList.contains("hidden"),
+    ).toBe(false);
+    expect(document.querySelector("[data-diagnostic-meta]")?.textContent).toBe(
+      "Phase download · Code download_failed",
+    );
+    expect(
+      document
+        .querySelector("[data-progress-warning]")
+        ?.classList.contains("hidden"),
+    ).toBe(false);
+    expect(
+      document.querySelector("[data-progress-warning-action]")?.textContent,
+    ).toBe("Run reindex");
   });
 });

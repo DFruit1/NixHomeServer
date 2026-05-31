@@ -108,21 +108,29 @@ a {
 }
 
 .mail-row {
-  grid-template-columns: minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr) minmax(10rem, 1.1fr) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+  grid-template-columns:
+    minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr)
+    minmax(10rem, 1.1fr) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
 }
 
 .attachment-row {
-  grid-template-columns: minmax(8.6rem, 0.72fr) minmax(24rem, 3fr) minmax(5rem, 0.46fr) minmax(5.2rem, auto) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+  grid-template-columns:
+    minmax(8.6rem, 0.72fr) minmax(24rem, 3fr) minmax(5rem, 0.46fr)
+    minmax(5.2rem, auto) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
   border-width: 2px;
   cursor: pointer;
 }
 
 .mail-list-header {
-  grid-template-columns: minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr) minmax(10rem, 1.1fr) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+  grid-template-columns:
+    minmax(6.8rem, 0.68fr) minmax(14rem, 1.55fr) minmax(17rem, 2.45fr)
+    minmax(10rem, 1.1fr) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
 }
 
 .attachment-list-header {
-  grid-template-columns: minmax(8.6rem, 0.72fr) minmax(24rem, 3fr) minmax(5rem, 0.46fr) minmax(5.2rem, auto) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
+  grid-template-columns:
+    minmax(8.6rem, 0.72fr) minmax(24rem, 3fr) minmax(5rem, 0.46fr)
+    minmax(5.2rem, auto) minmax(6.7rem, 0.58fr) minmax(6.7rem, 0.58fr);
   text-align: left;
 }
 
@@ -557,20 +565,50 @@ form {
 }
 
 .filter-accordion {
-  border: 1px solid rgba(29, 31, 28, 0.1);
+  border: 1px solid rgba(29, 31, 28, 0.08);
   border-radius: var(--radius);
-  background: rgba(255, 250, 241, 0.58);
+  background: rgba(255, 250, 241, 0.42);
 }
 
 .filter-accordion summary {
   cursor: pointer;
-  padding: 0.72rem 0.85rem;
+  padding: 0.76rem 0.92rem;
   color: var(--accent-strong);
-  font-weight: 700;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .filter-accordion[open] summary {
   border-bottom: 1px solid rgba(29, 31, 28, 0.08);
+}
+
+.filter-groups {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.35rem 0.7rem 0.75rem;
+}
+
+.filter-group {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.65rem 0.15rem 0.8rem;
+  border-bottom: 1px solid rgba(29, 31, 28, 0.06);
+}
+
+.filter-group:last-child {
+  border-bottom: 0;
+  padding-bottom: 0.25rem;
+}
+
+.filter-group h2 {
+  margin: 0;
+  color: rgba(29, 31, 28, 0.62);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .filter-grid {
@@ -579,7 +617,7 @@ form {
   align-items: end;
   justify-items: start;
   gap: 0.78rem;
-  padding: 0.85rem;
+  padding: 0;
 }
 
 .filter-grid label {
@@ -598,7 +636,10 @@ form {
 .search-form select {
   min-height: 2.35rem;
   border-radius: var(--radius);
+  border-color: rgba(29, 31, 28, 0.12);
+  background: rgba(255, 252, 246, 0.78);
   padding: 0.5rem 0.68rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
 }
 
 .search-form input[type="checkbox"] {
@@ -609,6 +650,7 @@ form {
 .search-form .primary-search-input {
   min-height: 3rem;
   border-radius: 999px;
+  border-color: rgba(29, 31, 28, 0.12);
   padding: 0.72rem 1.15rem;
   font-size: 1.08rem;
 }
@@ -617,6 +659,60 @@ form {
   grid-auto-flow: column;
   grid-template-columns: 1fr auto;
   align-items: end;
+}
+
+.attachment-presets {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(29, 31, 28, 0.08);
+  border-radius: var(--radius);
+  background: rgba(219, 240, 232, 0.24);
+}
+
+.preset-save-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 18rem) auto;
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.preset-save-form input {
+  min-height: 2.35rem;
+  border-color: rgba(29, 31, 28, 0.12);
+  background: rgba(255, 252, 246, 0.82);
+  padding: 0.5rem 0.68rem;
+}
+
+.preset-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.preset-chip {
+  display: inline-grid;
+  grid-template-columns: minmax(0, auto) auto;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.22rem;
+  border: 1px solid rgba(12, 92, 80, 0.14);
+  border-radius: var(--radius);
+  background: rgba(255, 252, 246, 0.7);
+}
+
+.preset-chip .button-link {
+  min-height: 2rem;
+  padding: 0.35rem 0.65rem;
+}
+
+.preset-chip .icon-button {
+  min-width: 2rem;
+  min-height: 2rem;
+}
+
+.preset-empty {
+  margin: 0;
 }
 
 .attachment-filter-actions {
@@ -631,8 +727,10 @@ form {
 
 label {
   display: grid;
-  gap: 0.4rem;
-  font-weight: 600;
+  gap: 0.35rem;
+  color: rgba(29, 31, 28, 0.8);
+  font-size: 0.93rem;
+  font-weight: 650;
 }
 
 input,
@@ -906,6 +1004,10 @@ code {
   .filter-grid .field-wide,
   .filter-grid .field-short {
     width: 100%;
+  }
+
+  .preset-save-form {
+    grid-template-columns: 1fr;
   }
 
   .mail-list-header,

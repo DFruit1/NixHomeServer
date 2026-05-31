@@ -497,6 +497,40 @@ struct AttachmentPaperlessForm {
     return_to: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct AttachmentPresetSaveForm {
+    preset_name: String,
+    q: Option<String>,
+    account_id: Option<String>,
+    priority: Option<String>,
+    sender_address: Option<String>,
+    sender_name: Option<String>,
+    sender_domain: Option<String>,
+    subject: Option<String>,
+    body_text: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    has_attachments: Option<String>,
+    extension: Option<String>,
+    attachment_name: Option<String>,
+    mime_type: Option<String>,
+    min_size: Option<String>,
+    max_size: Option<String>,
+    min_attachments: Option<String>,
+    max_attachments: Option<String>,
+    include_inline: Option<String>,
+    include_inline_images: Option<String>,
+    show_mime_details: Option<String>,
+    download_subfolder: Option<String>,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentPresetDeleteForm {
+    preset_id: i64,
+    return_to: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SenderPriorityForm {
     sender_kind: String,
@@ -544,6 +578,15 @@ struct ErrorPayload {
 struct PriorityChangePayload {
     ok: bool,
     message: String,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PaperlessHandoffPayload {
+    ok: bool,
+    message: String,
+    error: Option<String>,
+    sent_attachment_keys: Vec<String>,
     return_to: Option<String>,
 }
 
@@ -978,6 +1021,7 @@ struct AttachmentListViewState {
 struct AttachmentPageData {
     accounts: Vec<AccountRecord>,
     selected_account_id: Option<i64>,
+    presets: Vec<AttachmentFilterPreset>,
     filters: AttachmentSearchFilters,
     include_inline: bool,
     include_inline_images: bool,
@@ -995,6 +1039,13 @@ struct AttachmentBaseQuery<'a> {
     include_inline_images: bool,
     show_mime_details: bool,
     download_subfolder: &'a str,
+}
+
+#[derive(Debug, Clone)]
+struct AttachmentFilterPreset {
+    id: i64,
+    name: String,
+    query: String,
 }
 
 #[tokio::main]
@@ -1068,6 +1119,11 @@ fn router(state: AppState) -> Router {
         .route("/sender-priorities", post(upsert_sender_priority))
         .route("/sender-priorities/clear", post(clear_sender_priority))
         .route("/attachments", get(attachments_page))
+        .route("/attachments/presets", post(save_attachment_filter_preset))
+        .route(
+            "/attachments/presets/delete",
+            post(delete_attachment_filter_preset),
+        )
         .route("/attachments/refresh", post(refresh_attachments))
         .route(
             "/attachments/{attachment_key}/download/browser",
@@ -1577,6 +1633,88 @@ async fn attachments_page(
     ))
 }
 
+async fn save_attachment_filter_preset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AttachmentPresetSaveForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let return_to = form.return_to.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        save_attachment_filter_preset_for_user(&config, &username, &form)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(preset)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            Some(&format!("Saved attachment filter preset {}", preset.name)),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some("Attachment preset task failed"),
+        )),
+    }
+}
+
+async fn delete_attachment_filter_preset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AttachmentPresetDeleteForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let return_to = form.return_to.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        delete_attachment_filter_preset_for_user(&config, &username, form.preset_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            Some("Attachment filter preset deleted"),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some("Attachment preset delete task failed"),
+        )),
+    }
+}
+
 async fn upsert_sender_priority(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1891,6 +2029,7 @@ async fn send_attachments_paperless(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let wants_json = request_accepts_json(&headers);
     let identity = match identity_from_headers(&headers) {
         Ok(identity) => identity,
         Err((status, message)) => return auth_error(status, &message),
@@ -1916,28 +2055,100 @@ async fn send_attachments_paperless(
             } else {
                 Some(summary.failure_message())
             };
-            redirect_response(&attachments_redirect_location(
-                return_to.as_deref(),
-                Some(&summary.flash_message()),
-                failure_message.as_deref(),
-            ))
+            if wants_json {
+                paperless_handoff_json_response(
+                    StatusCode::OK,
+                    true,
+                    &summary.flash_message(),
+                    failure_message.as_deref(),
+                    summary.sent_attachment_keys,
+                    return_to,
+                )
+            } else {
+                redirect_response(&attachments_redirect_location(
+                    return_to.as_deref(),
+                    Some(&summary.flash_message()),
+                    failure_message.as_deref(),
+                ))
+            }
         }
-        Ok(Ok(summary)) => redirect_response(&attachments_redirect_location(
-            return_to.as_deref(),
-            None,
-            Some(&summary.failure_message()),
-        )),
-        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
-            return_to.as_deref(),
-            None,
-            Some(&error),
-        )),
-        Err(_) => redirect_response(&attachments_redirect_location(
-            return_to.as_deref(),
-            None,
-            Some("Paperless handoff task failed"),
-        )),
+        Ok(Ok(summary)) => {
+            let message = summary.failure_message();
+            if wants_json {
+                paperless_handoff_json_response(
+                    StatusCode::BAD_REQUEST,
+                    false,
+                    &message,
+                    Some(&message),
+                    Vec::new(),
+                    return_to,
+                )
+            } else {
+                redirect_response(&attachments_redirect_location(
+                    return_to.as_deref(),
+                    None,
+                    Some(&message),
+                ))
+            }
+        }
+        Ok(Err(error)) => {
+            if wants_json {
+                paperless_handoff_json_response(
+                    StatusCode::BAD_REQUEST,
+                    false,
+                    &error,
+                    Some(&error),
+                    Vec::new(),
+                    return_to,
+                )
+            } else {
+                redirect_response(&attachments_redirect_location(
+                    return_to.as_deref(),
+                    None,
+                    Some(&error),
+                ))
+            }
+        }
+        Err(_) => {
+            let message = "Paperless handoff task failed";
+            if wants_json {
+                paperless_handoff_json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    false,
+                    message,
+                    Some(message),
+                    Vec::new(),
+                    return_to,
+                )
+            } else {
+                redirect_response(&attachments_redirect_location(
+                    return_to.as_deref(),
+                    None,
+                    Some(message),
+                ))
+            }
+        }
     }
+}
+
+fn paperless_handoff_json_response(
+    status: StatusCode,
+    ok: bool,
+    message: &str,
+    error: Option<&str>,
+    sent_attachment_keys: Vec<String>,
+    return_to: Option<String>,
+) -> Response {
+    json_response(
+        status,
+        PaperlessHandoffPayload {
+            ok,
+            message: message.to_string(),
+            error: error.map(ToString::to_string),
+            sent_attachment_keys,
+            return_to,
+        },
+    )
 }
 
 async fn healthz(State(state): State<AppState>) -> Response {
@@ -1945,10 +2156,7 @@ async fn healthz(State(state): State<AppState>) -> Response {
     json_response(status, payload)
 }
 
-async fn frontend_asset(
-    State(state): State<AppState>,
-    Path(asset_path): Path<String>,
-) -> Response {
+async fn frontend_asset(State(state): State<AppState>, Path(asset_path): Path<String>) -> Response {
     let root = PathBuf::from(state.config.frontend_dist_dir.as_ref());
     let candidate = root.join(&asset_path);
     let root = match root.canonicalize() {
@@ -2297,6 +2505,19 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_sender_priorities_user_priority
             ON sender_priorities (username, priority, sender_kind, sender_value);
+
+            CREATE TABLE IF NOT EXISTS attachment_filter_presets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (username, name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_filter_presets_user
+            ON attachment_filter_presets (username, name);
 
             CREATE TABLE IF NOT EXISTS attachment_paperless_handoffs (
                 username TEXT NOT NULL,
@@ -5288,6 +5509,38 @@ fn attachment_filters_from_params(params: &AttachmentListParams) -> AttachmentSe
     }
 }
 
+fn attachment_params_from_preset_form(
+    form: &AttachmentPresetSaveForm,
+) -> Result<AttachmentListParams, String> {
+    Ok(AttachmentListParams {
+        q: form.q.clone(),
+        account_id: parse_optional_query_i64(form.account_id.as_deref())?,
+        priority: form.priority.clone(),
+        sender_address: form.sender_address.clone(),
+        sender_name: form.sender_name.clone(),
+        sender_domain: form.sender_domain.clone(),
+        subject: form.subject.clone(),
+        body_text: form.body_text.clone(),
+        date_from: form.date_from.clone(),
+        date_to: form.date_to.clone(),
+        has_attachments: form.has_attachments.clone(),
+        extension: form.extension.clone(),
+        attachment_name: form.attachment_name.clone(),
+        mime_type: form.mime_type.clone(),
+        min_size: form.min_size.clone(),
+        max_size: form.max_size.clone(),
+        min_attachments: form.min_attachments.clone(),
+        max_attachments: form.max_attachments.clone(),
+        include_inline: form.include_inline.clone(),
+        include_inline_images: form.include_inline_images.clone(),
+        show_mime_details: form.show_mime_details.clone(),
+        download_subfolder: form.download_subfolder.clone(),
+        page: None,
+        flash: None,
+        error: None,
+    })
+}
+
 fn parse_message_search_filters(
     filters: MessageSearchFilters,
 ) -> Result<ParsedMessageSearchFilters, String> {
@@ -5531,6 +5784,28 @@ fn build_attachment_base_query(state: AttachmentBaseQuery<'_>) -> String {
         .join("&")
 }
 
+fn attachment_preset_query_from_form(form: &AttachmentPresetSaveForm) -> Result<String, String> {
+    let params = attachment_params_from_preset_form(form)?;
+    let filters = attachment_filters_from_params(&params);
+    let parsed_filters = parse_attachment_search_filters(filters)?;
+    let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
+    let include_inline = query_bool_is_true(params.include_inline.as_deref());
+    let include_inline_images = query_bool_is_true(params.include_inline_images.as_deref());
+    let show_mime_details = query_bool_is_true(params.show_mime_details.as_deref());
+    let download_subfolder =
+        normalize_download_subfolder(params.download_subfolder.as_deref().unwrap_or_default())?;
+
+    Ok(build_attachment_base_query(AttachmentBaseQuery {
+        filters: &parsed_filters.raw,
+        selected_account_id: params.account_id,
+        priority_filter,
+        include_inline,
+        include_inline_images,
+        show_mime_details,
+        download_subfolder: &download_subfolder,
+    }))
+}
+
 fn append_message_filter_query_pairs(
     pairs: &mut Vec<(&'static str, String)>,
     filters: &MessageSearchFilters,
@@ -5589,12 +5864,116 @@ fn message_filters_have_terms(filters: &MessageSearchFilters) -> bool {
         || filters.has_attachments.is_some()
 }
 
+fn normalize_attachment_preset_name(raw: &str) -> Result<String, String> {
+    let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        return Err("Preset name is required.".to_string());
+    }
+    if name.chars().count() > 80 {
+        return Err("Preset name must be 80 characters or fewer.".to_string());
+    }
+    Ok(name)
+}
+
+fn list_attachment_filter_presets(
+    config: &AppConfig,
+    username: &str,
+) -> Result<Vec<AttachmentFilterPreset>, String> {
+    let connection = open_db(config)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, name, query
+            FROM attachment_filter_presets
+            WHERE username = ?1
+            ORDER BY lower(name), name
+            "#,
+        )
+        .map_err(|error| format!("failed to load attachment filter presets: {error}"))?;
+    let rows = statement
+        .query_map(params![username], |row| {
+            Ok(AttachmentFilterPreset {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                query: row.get(2)?,
+            })
+        })
+        .map_err(|error| format!("failed to read attachment filter presets: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode attachment filter preset: {error}"))
+}
+
+fn save_attachment_filter_preset_for_user(
+    config: &AppConfig,
+    username: &str,
+    form: &AttachmentPresetSaveForm,
+) -> Result<AttachmentFilterPreset, String> {
+    let name = normalize_attachment_preset_name(&form.preset_name)?;
+    let query = attachment_preset_query_from_form(form)?;
+    if query.trim().is_empty() {
+        return Err("Add at least one attachment filter before saving a preset.".to_string());
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO attachment_filter_presets (username, name, query, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?4)
+            ON CONFLICT(username, name) DO UPDATE SET
+                query = excluded.query,
+                updated_at = excluded.updated_at
+            "#,
+            params![username, name, query, now],
+        )
+        .map_err(|error| format!("failed to save attachment filter preset: {error}"))?;
+
+    connection
+        .query_row(
+            r#"
+            SELECT id, name, query
+            FROM attachment_filter_presets
+            WHERE username = ?1 AND name = ?2
+            LIMIT 1
+            "#,
+            params![username, name],
+            |row| {
+                Ok(AttachmentFilterPreset {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    query: row.get(2)?,
+                })
+            },
+        )
+        .map_err(|error| format!("failed to reload attachment filter preset: {error}"))
+}
+
+fn delete_attachment_filter_preset_for_user(
+    config: &AppConfig,
+    username: &str,
+    preset_id: i64,
+) -> Result<(), String> {
+    let connection = open_db(config)?;
+    let deleted = connection
+        .execute(
+            "DELETE FROM attachment_filter_presets WHERE username = ?1 AND id = ?2",
+            params![username, preset_id],
+        )
+        .map_err(|error| format!("failed to delete attachment filter preset: {error}"))?;
+    if deleted == 0 {
+        return Err("Attachment filter preset was not found.".to_string());
+    }
+    Ok(())
+}
+
 fn load_attachment_page_data(
     config: &AppConfig,
     username: &str,
     params: &AttachmentListParams,
 ) -> Result<AttachmentPageData, String> {
     let accounts = list_accounts_for_user(config, username)?;
+    let presets = list_attachment_filter_presets(config, username)?;
     let selected_account_id = normalize_selected_account_id(&accounts, params.account_id);
     let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
     let raw_filters = attachment_filters_from_params(params);
@@ -5739,6 +6118,7 @@ fn load_attachment_page_data(
     Ok(AttachmentPageData {
         accounts,
         selected_account_id,
+        presets,
         filters: filters.raw,
         include_inline,
         include_inline_images,
@@ -6008,6 +6388,7 @@ fn load_attachment_paperless_handoff(
 struct PaperlessHandoffSummary {
     sent: usize,
     skipped: usize,
+    sent_attachment_keys: Vec<String>,
     failures: Vec<PaperlessHandoffFailure>,
 }
 
@@ -6189,6 +6570,7 @@ fn send_attachments_to_paperless(
             continue;
         }
         summary.sent += 1;
+        summary.sent_attachment_keys.push(key.to_string());
     }
 
     if summary.sent == 0 && summary.failures.is_empty() {
@@ -6298,6 +6680,9 @@ fn publish_staged_paperless_file(tmp_path: &FsPath, final_path: &FsPath) -> Resu
                     final_path.display()
                 ));
             }
+            Err(error) if is_cross_device_link(&error) => {
+                return copy_staged_paperless_file_across_devices(tmp_path, final_path);
+            }
             Err(error) => {
                 let _ = fs::remove_file(tmp_path);
                 return Err(format!(
@@ -6313,6 +6698,107 @@ fn publish_staged_paperless_file(tmp_path: &FsPath, final_path: &FsPath) -> Resu
         "failed to publish Paperless consume file {}",
         final_path.display()
     ))
+}
+
+fn is_cross_device_link(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(18)
+}
+
+fn copy_staged_paperless_file_across_devices(
+    tmp_path: &FsPath,
+    final_path: &FsPath,
+) -> Result<(), String> {
+    let final_parent = final_path.parent().ok_or_else(|| {
+        format!(
+            "Paperless consume path {} has no parent",
+            final_path.display()
+        )
+    })?;
+
+    for attempt in 0..PAPERLESS_PUBLISH_RETRY_ATTEMPTS {
+        let consume_tmp_path = final_parent.join(format!(
+            "{}publish-{}{}",
+            PAPERLESS_HANDOFF_STAGING_PREFIX,
+            random_hex(8),
+            PAPERLESS_HANDOFF_STAGING_SUFFIX
+        ));
+
+        if let Err(error) = copy_file_to_new_path(tmp_path, &consume_tmp_path, 0o660) {
+            let _ = fs::remove_file(&consume_tmp_path);
+            let _ = fs::remove_file(tmp_path);
+            return Err(error);
+        }
+
+        match fs::hard_link(&consume_tmp_path, final_path) {
+            Ok(()) => {
+                fs::remove_file(&consume_tmp_path).map_err(|error| {
+                    format!(
+                        "failed to remove temporary Paperless consume file {}: {error}",
+                        consume_tmp_path.display()
+                    )
+                })?;
+                let _ = fs::remove_file(tmp_path);
+                sync_directory(final_parent)?;
+                return Ok(());
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&consume_tmp_path);
+                if attempt + 1 < PAPERLESS_PUBLISH_RETRY_ATTEMPTS {
+                    sleep_before_paperless_publish_retry();
+                    continue;
+                }
+                let _ = fs::remove_file(tmp_path);
+                return Err(format!(
+                    "Paperless consume file {} already exists after waiting",
+                    final_path.display()
+                ));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&consume_tmp_path);
+                let _ = fs::remove_file(tmp_path);
+                return Err(format!(
+                    "failed to publish Paperless consume file {}: {error}",
+                    final_path.display()
+                ));
+            }
+        }
+    }
+
+    let _ = fs::remove_file(tmp_path);
+    Err(format!(
+        "failed to publish Paperless consume file {}",
+        final_path.display()
+    ))
+}
+
+fn copy_file_to_new_path(
+    source_path: &FsPath,
+    target_path: &FsPath,
+    mode: u32,
+) -> Result<(), String> {
+    let mut source = fs::File::open(source_path)
+        .map_err(|error| format!("failed to open {}: {error}", source_path.display()))?;
+    let mut target = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(target_path)
+        .map_err(|error| format!("failed to create {}: {error}", target_path.display()))?;
+    std::io::copy(&mut source, &mut target)
+        .map_err(|error| format!("failed to copy {}: {error}", target_path.display()))?;
+    target
+        .sync_all()
+        .map_err(|error| format!("failed to sync {}: {error}", target_path.display()))?;
+    fs::set_permissions(target_path, fs::Permissions::from_mode(mode)).map_err(|error| {
+        format!(
+            "failed to set permissions on {}: {error}",
+            target_path.display()
+        )
+    })?;
+    if let Some(parent) = target_path.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(())
 }
 
 fn cleanup_old_paperless_handoff_staging(handoff_staging_root: &FsPath) -> Result<(), String> {
@@ -8037,7 +8523,9 @@ fn render_dashboard(
     );
 
     body.push_str("<section class=\"panel stack\"><div class=\"section-head\"><h2>Connected mailboxes</h2><p class=\"meta\">Edit connection details, trigger syncs, or repair indexes without exposing the archive as webmail.</p></div>");
-    body.push_str("<div id=\"dashboard-status-island\" data-mail-archive-island=\"dashboard-status\"></div>");
+    body.push_str(
+        "<div id=\"dashboard-status-island\" data-mail-archive-island=\"dashboard-status\"></div>",
+    );
     body.push_str(&render_dashboard_totals(accounts));
     if accounts.is_empty() {
         body.push_str(
@@ -8401,6 +8889,7 @@ fn render_attachments_page(
 
     let return_to = attachment_return_to(&data.state);
     let filter_hiddens = render_attachment_filter_hiddens(data, &return_to);
+    let preset_panel = render_attachment_presets(data, &return_to, &filter_hiddens);
     let show_download_all = data.state.result_count > data.items.len();
     writeln!(
         &mut body,
@@ -8414,78 +8903,108 @@ fn render_attachments_page(
             </div>
             <details class=\"filter-accordion\">
               <summary>Basic filters</summary>
-              <div class=\"filter-grid\">
-                <label class=\"field-wide\">Mailbox
-                <select name=\"account_id\">
-                  <option value=\"\">All mailboxes</option>
-                  {}
-                </select>
-                </label>
-                <label>Sender priority
-                <select name=\"priority\">{}</select>
-                </label>
-                <label class=\"field-short\">Extension
-                  <input name=\"extension\" value=\"{}\">
-                </label>
-                <label class=\"field-wide\">Sender address
-                  <input name=\"sender_address\" value=\"{}\">
-                </label>
-                <label>Sender name
-                  <input name=\"sender_name\" value=\"{}\">
-                </label>
-                <label>Sender domain
-                  <input name=\"sender_domain\" value=\"{}\">
-                </label>
-                <label class=\"field-wide\">Subject
-                  <input name=\"subject\" value=\"{}\">
-                </label>
-                <label class=\"field-wide\">Body text
-                  <input name=\"body_text\" value=\"{}\">
-                </label>
-                <label>Date from
-                  <input type=\"date\" name=\"date_from\" value=\"{}\">
-                </label>
-                <label>Date to
-                  <input type=\"date\" name=\"date_to\" value=\"{}\">
-                </label>
+              <div class=\"filter-groups\">
+                <section class=\"filter-group\">
+                  <h2>Scope</h2>
+                  <div class=\"filter-grid\">
+                    <label class=\"field-wide\">Mailbox
+                    <select name=\"account_id\">
+                      <option value=\"\">All mailboxes</option>
+                      {}
+                    </select>
+                    </label>
+                    <label>Sender priority
+                    <select name=\"priority\">{}</select>
+                    </label>
+                    <label class=\"field-short\">Extension
+                      <input name=\"extension\" value=\"{}\">
+                    </label>
+                  </div>
+                </section>
+                <section class=\"filter-group\">
+                  <h2>Sender</h2>
+                  <div class=\"filter-grid\">
+                    <label class=\"field-wide\">Sender address
+                      <input name=\"sender_address\" value=\"{}\">
+                    </label>
+                    <label>Sender name
+                      <input name=\"sender_name\" value=\"{}\">
+                    </label>
+                    <label>Sender domain
+                      <input name=\"sender_domain\" value=\"{}\">
+                    </label>
+                  </div>
+                </section>
+                <section class=\"filter-group\">
+                  <h2>Message</h2>
+                  <div class=\"filter-grid\">
+                    <label class=\"field-wide\">Subject
+                      <input name=\"subject\" value=\"{}\">
+                    </label>
+                    <label class=\"field-wide\">Body text
+                      <input name=\"body_text\" value=\"{}\">
+                    </label>
+                    <label>Date from
+                      <input type=\"date\" name=\"date_from\" value=\"{}\">
+                    </label>
+                    <label>Date to
+                      <input type=\"date\" name=\"date_to\" value=\"{}\">
+                    </label>
+                  </div>
+                </section>
               </div>
             </details>
             <details class=\"filter-accordion\">
               <summary>Advanced filters</summary>
-              <div class=\"filter-grid\">
-                <label>Has attachments
-                <select name=\"has_attachments\">{}</select>
-                </label>
-                <label class=\"field-wide\">Attachment name
-                  <input name=\"attachment_name\" value=\"{}\">
-                </label>
-                <label class=\"field-wide\">MIME type
-                  <input name=\"mime_type\" value=\"{}\">
-                </label>
-                <label class=\"field-short\">Min size
-                  <input name=\"min_size\" value=\"{}\" inputmode=\"numeric\">
-                </label>
-                <label class=\"field-short\">Max size
-                  <input name=\"max_size\" value=\"{}\" inputmode=\"numeric\">
-                </label>
-                <label class=\"field-short\">Min attachments
-                  <input name=\"min_attachments\" value=\"{}\" inputmode=\"numeric\">
-                </label>
-                <label class=\"field-short\">Max attachments
-                  <input name=\"max_attachments\" value=\"{}\" inputmode=\"numeric\">
-                </label>
-                <label class=\"checkbox-field\">Body parts
-                <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
-                </label>
-                <label class=\"checkbox-field\">Inline images
-                <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
-                </label>
-                <label class=\"checkbox-field\">MIME detail
-                <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
-                </label>
-                <label class=\"field-wide\">ZIP subfolder
-                  <input name=\"download_subfolder\" value=\"{}\">
-                </label>
+              <div class=\"filter-groups\">
+                <section class=\"filter-group\">
+                  <h2>Attachment</h2>
+                  <div class=\"filter-grid\">
+                    <label>Has attachments
+                    <select name=\"has_attachments\">{}</select>
+                    </label>
+                    <label class=\"field-wide\">Attachment name
+                      <input name=\"attachment_name\" value=\"{}\">
+                    </label>
+                    <label class=\"field-wide\">MIME type
+                      <input name=\"mime_type\" value=\"{}\">
+                    </label>
+                  </div>
+                </section>
+                <section class=\"filter-group\">
+                  <h2>Limits</h2>
+                  <div class=\"filter-grid\">
+                    <label class=\"field-short\">Min size
+                      <input name=\"min_size\" value=\"{}\" inputmode=\"numeric\">
+                    </label>
+                    <label class=\"field-short\">Max size
+                      <input name=\"max_size\" value=\"{}\" inputmode=\"numeric\">
+                    </label>
+                    <label class=\"field-short\">Min attachments
+                      <input name=\"min_attachments\" value=\"{}\" inputmode=\"numeric\">
+                    </label>
+                    <label class=\"field-short\">Max attachments
+                      <input name=\"max_attachments\" value=\"{}\" inputmode=\"numeric\">
+                    </label>
+                  </div>
+                </section>
+                <section class=\"filter-group\">
+                  <h2>Output</h2>
+                  <div class=\"filter-grid\">
+                    <label class=\"checkbox-field\">Body parts
+                    <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
+                    </label>
+                    <label class=\"checkbox-field\">Inline images
+                    <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
+                    </label>
+                    <label class=\"checkbox-field\">MIME detail
+                    <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
+                    </label>
+                    <label class=\"field-wide\">ZIP subfolder
+                      <input name=\"download_subfolder\" value=\"{}\">
+                    </label>
+                  </div>
+                </section>
               </div>
             </details>
             <div class=\"action-row\">
@@ -8493,6 +9012,7 @@ fn render_attachments_page(
               <a class=\"button-link secondary icon-button\" href=\"/search\" title=\"Back to search\" aria-label=\"Back to search\">↩</a>
             </div>
           </form>
+          {}
           <div class=\"attachment-toolbar\">
             <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
             <button class=\"secondary\" type=\"button\" data-select-page title=\"Select visible attachments\">Select page</button>
@@ -8501,9 +9021,9 @@ fn render_attachments_page(
               <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\">↓</button>
               {}
             </form>
-            <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\">
+            <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\">&#8594;</button>
+              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button>&#8594;</button>
             </form>
             <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\">
               <input type=\"hidden\" name=\"account_id\" value=\"{}\">
@@ -8538,6 +9058,7 @@ fn render_attachments_page(
         },
         if data.show_mime_details { "checked" } else { "" },
         escape_html(&data.download_subfolder),
+        preset_panel,
         filter_hiddens,
         if show_download_all {
             "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
@@ -8597,6 +9118,60 @@ fn render_attachments_page(
     }
 
     layout("Attachments", Some(identity), "attachments", &body)
+}
+
+fn render_attachment_presets(
+    data: &AttachmentPageData,
+    return_to: &str,
+    filter_hiddens: &str,
+) -> String {
+    let mut html = String::new();
+    html.push_str(
+        "<section class=\"attachment-presets\" aria-label=\"Attachment filter presets\">",
+    );
+    html.push_str(
+        "<form method=\"post\" action=\"/attachments/presets\" class=\"preset-save-form\">
+          <label>Preset name
+            <input name=\"preset_name\" maxlength=\"80\">
+          </label>",
+    );
+    html.push_str(filter_hiddens);
+    html.push_str(
+        "<button class=\"secondary\" type=\"submit\">Save preset</button>
+        </form>",
+    );
+
+    if data.presets.is_empty() {
+        html.push_str("<p class=\"meta preset-empty\">No saved attachment presets</p>");
+    } else {
+        html.push_str("<div class=\"preset-list\">");
+        for preset in &data.presets {
+            let href = if preset.query.trim().is_empty() {
+                "/attachments".to_string()
+            } else {
+                format!("/attachments?{}", preset.query)
+            };
+            writeln!(
+                &mut html,
+                "<div class=\"preset-chip\">
+                  <a class=\"button-link secondary\" href=\"{}\">{}</a>
+                  <form method=\"post\" action=\"/attachments/presets/delete\" class=\"icon-form\">
+                    <input type=\"hidden\" name=\"preset_id\" value=\"{}\">
+                    <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                    <button class=\"secondary icon-button\" type=\"submit\" title=\"Delete preset\" aria-label=\"Delete preset\">×</button>
+                  </form>
+                </div>",
+                escape_html(&href),
+                escape_html(&preset.name),
+                preset.id,
+                escape_html(return_to),
+            )
+            .ok();
+        }
+        html.push_str("</div>");
+    }
+    html.push_str("</section>");
+    html
 }
 
 fn render_attachment_filter_hiddens(data: &AttachmentPageData, return_to: &str) -> String {
@@ -8739,16 +9314,16 @@ fn render_attachment_item(
     );
     let paperless_action = if let Some(sent_at) = item.paperless_sent_at.as_deref() {
         format!(
-            "<button class=\"icon-button paperless-sent-button\" type=\"button\" title=\"Successfully sent to Paperless on {}\" aria-label=\"Successfully sent to Paperless on {}\">✓</button>",
+            "<button class=\"icon-button paperless-sent-button\" type=\"button\" title=\"Successfully sent to Paperless on {}\" aria-label=\"Successfully sent to Paperless on {}\" data-paperless-sent-button>✓</button>",
             escape_html(sent_at),
             escape_html(sent_at),
         )
     } else {
         format!(
-            "<form method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\">
+            "<form method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
               <input type=\"hidden\" name=\"attachment_keys\" value=\"{}\">
-              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send attachment to Paperless\" aria-label=\"Send attachment to Paperless\">&#8594;</button>
+              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send attachment to Paperless\" aria-label=\"Send attachment to Paperless\" data-paperless-button>&#8594;</button>
             </form>",
             escape_html(return_to),
             escape_html(&item.attachment.attachment_key),
@@ -9280,8 +9855,8 @@ fn production_asset_tags(dist_dir: &str, entrypoint: &str) -> Result<String, Str
             manifest_path.display()
         )
     })?;
-    let manifest: serde_json::Value =
-        serde_json::from_str(&manifest_text).map_err(|error| format!("invalid manifest: {error}"))?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_text)
+        .map_err(|error| format!("invalid manifest: {error}"))?;
     let entry = manifest
         .get(entrypoint)
         .and_then(|value| value.as_object())
@@ -12146,6 +12721,44 @@ mod tests {
             assert!(!html.contains("Restore on next sync"));
             assert!(!html.contains("/messages/"));
         });
+    }
+
+    #[test]
+    fn attachment_filter_presets_are_user_scoped_and_rendered() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let preset = save_attachment_filter_preset_for_user(
+            &config,
+            "alice",
+            &AttachmentPresetSaveForm {
+                preset_name: "  Invoices  ".to_string(),
+                q: Some("rent review".to_string()),
+                priority: Some("high".to_string()),
+                extension: Some("PDF".to_string()),
+                include_inline: Some("1".to_string()),
+                download_subfolder: Some("Invoices".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("save preset");
+
+        assert_eq!(preset.name, "Invoices");
+        assert!(preset.query.contains("q=rent+review"));
+        assert!(preset.query.contains("priority=high"));
+        assert!(preset.query.contains("extension=pdf"));
+        assert!(preset.query.contains("include_inline=1"));
+        assert!(preset.query.contains("download_subfolder=Invoices"));
+        assert!(list_attachment_filter_presets(&config, "bob")
+            .expect("bob presets")
+            .is_empty());
+
+        let page = load_attachment_page_data(&config, "alice", &AttachmentListParams::default())
+            .expect("page");
+        let html = render_attachments_page(&sample_identity(), &page, None, None);
+        assert!(html.contains("Invoices"));
+        assert!(html.contains("/attachments/presets/delete"));
+        assert!(html.contains("q=rent+review"));
     }
 
     #[test]
