@@ -111,8 +111,15 @@ describe("attachment selection island helpers", () => {
     const form = document.querySelector<HTMLFormElement>(
       "form[data-paperless-form]",
     )!;
-    const fetchMock = async () =>
-      new Response(
+    const fetchMock = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+      });
+      expect(init?.body).toBeInstanceOf(URLSearchParams);
+      const body = init?.body as URLSearchParams;
+      expect(body.get("attachment_keys")).toBe("first");
+
+      return new Response(
         JSON.stringify({
           ok: true,
           message: "1 attachment sent to Paperless",
@@ -120,6 +127,7 @@ describe("attachment selection island helpers", () => {
         }),
         { status: 200 },
       );
+    };
 
     const result = await submitPaperlessForm(form, {
       fetch: fetchMock as typeof fetch,

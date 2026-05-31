@@ -400,6 +400,16 @@ type JsonActionDeps = {
   doc: Document;
 };
 
+const urlEncodedFormBody = (form: HTMLFormElement): URLSearchParams => {
+  const body = new URLSearchParams();
+  new FormData(form).forEach((value, key) => {
+    if (typeof value === "string") {
+      body.append(key, value);
+    }
+  });
+  return body;
+};
+
 export const submitJsonAction = async (
   form: HTMLFormElement,
   deps: JsonActionDeps,
@@ -417,8 +427,11 @@ export const submitJsonAction = async (
     const response = await deps.fetch(form.action, {
       method: "POST",
       credentials: "same-origin",
-      headers: { Accept: "application/json" },
-      body: new FormData(form),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+      },
+      body: urlEncodedFormBody(form),
     });
     const responseText = await response.text();
     let payload: ActionPayload | null = null;
@@ -528,8 +541,9 @@ export const submitPaperlessForm = async (
       credentials: "same-origin",
       headers: {
         Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
       },
-      body: new FormData(form),
+      body: urlEncodedFormBody(form),
     });
     const responseText = await response.text();
     let payload: PaperlessPayload | null = null;

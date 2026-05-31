@@ -18,6 +18,7 @@ let
   memberGroups = lib.unique (cfg.memberGroups ++ [
     webAccessGroup
     sftpAccessGroup
+    sharedAccessGroup
     usbAccessGroup
     backupStorageAccessGroup
   ]);
@@ -559,6 +560,15 @@ in
       script = ''
         ${syncFileshareUserRoots}
       '';
+    };
+
+    systemd.timers.fileshare-user-root-sync = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        Unit = "fileshare-user-root-sync.service";
+        OnCalendar = "*-*-* 00/6:00:00";
+        Persistent = true;
+      };
     };
 
     systemd.services."files-shared-bindfs@" = {

@@ -16,7 +16,12 @@ use crate::{
 };
 
 use super::{
-    sftp::{groups_affect_file_runtime, reconcile_file_access_runtime, verify_removed_file_access},
+    sftp::{
+        groups_affect_file_runtime,
+        reconcile_file_access_runtime,
+        trigger_sftp_sync_services,
+        verify_removed_file_access,
+    },
     user::load_user,
 };
 
@@ -92,6 +97,7 @@ pub fn add_membership_with_config(
         MembershipMode::ContainsAll,
     )?;
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ContainsAll)?;
+    let file_sync_report = trigger_sftp_sync_services(cli, config);
     let sftp_reconcile = if groups_affect_file_runtime(config, &desired) {
         Some(reconcile_file_access_runtime(cli, config, account_id)?)
     } else {
@@ -120,8 +126,15 @@ pub fn add_membership_with_config(
             "requested_state": requested_state,
             "user": user.value,
             "sftp_reconcile": sftp_reconcile_details,
+            "file_access_sync_services": file_sync_report.service_steps,
         }),
-        warnings: merge_warnings(merge_warnings(warnings, user.warnings), sftp_warnings),
+        warnings: merge_warnings(
+            merge_warnings(
+                merge_warnings(warnings, user.warnings),
+                file_sync_report.warnings,
+            ),
+            sftp_warnings,
+        ),
     })
 }
 
@@ -162,6 +175,7 @@ pub fn remove_membership_with_config(
         MembershipMode::ExcludesAll,
     )?;
     let user = verify_membership(cli, account_id, &desired, MembershipMode::ExcludesAll)?;
+    let file_sync_report = trigger_sftp_sync_services(cli, config);
     let file_runtime_removal = if groups_affect_file_runtime(config, &desired) {
         Some(verify_removed_file_access(
             cli, config, account_id, &desired,
@@ -194,9 +208,13 @@ pub fn remove_membership_with_config(
             "requested_state": requested_state,
             "user": user.value,
             "file_runtime_removal": file_runtime_removal_details,
+            "file_access_sync_services": file_sync_report.service_steps,
         }),
         warnings: merge_warnings(
-            merge_warnings(warnings, user.warnings),
+            merge_warnings(
+                merge_warnings(warnings, user.warnings),
+                file_sync_report.warnings,
+            ),
             file_runtime_warnings,
         ),
     })
@@ -276,6 +294,7 @@ pub fn set_membership_with_config(
     })?;
     let file_runtime_changed = groups_affect_file_runtime(config, &diff.added)
         || groups_affect_file_runtime(config, &diff.removed);
+    let file_sync_report = trigger_sftp_sync_services(cli, config);
     let sftp_reconcile =
         if file_runtime_changed && groups_affect_file_runtime(config, &user.value.groups) {
             Some(reconcile_file_access_runtime(
@@ -339,8 +358,15 @@ pub fn set_membership_with_config(
             "user": user.value,
             "sftp_reconcile": sftp_reconcile_details,
             "file_runtime_removal": file_runtime_removal_details,
+            "file_access_sync_services": file_sync_report.service_steps,
         }),
-        warnings: merge_warnings(merge_warnings(warnings, user.warnings), sftp_warnings),
+        warnings: merge_warnings(
+            merge_warnings(
+                merge_warnings(warnings, user.warnings),
+                file_sync_report.warnings,
+            ),
+            sftp_warnings,
+        ),
     })
 }
 
