@@ -46,6 +46,23 @@ pub struct VerificationReport {
     pub attempts: Vec<VerificationAttempt>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationDomain {
+    Kanidm,
+    LocalRuntime,
+    HttpApp,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VerificationSummary {
+    pub domain: VerificationDomain,
+    pub target: String,
+    pub ready: bool,
+    pub attempts: usize,
+    pub elapsed_ms: u128,
+}
+
 impl VerificationPolicy {
     pub fn name(self) -> &'static str {
         match self {

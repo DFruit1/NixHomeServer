@@ -10,9 +10,15 @@ use std::{
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::{backend::ExitStatusSummary, kanidm_cli::KanidmCli};
+use crate::{
+    backend::ExitStatusSummary,
+    kanidm_cli::KanidmCli,
+    verification::{VerificationDomain, VerificationSummary},
+};
 
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_ROOT_HELPER: &str = "kanidm-admin-root";
+const ENV_ROOT_HELPER: &str = "KANIDM_ADMIN_ROOT_HELPER";
 pub const DEFAULT_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_CONVERGENCE_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -346,6 +352,16 @@ impl RuntimeReport {
             .iter()
             .all(|check| !check.required || check.status == CheckStatus::Passed)
     }
+
+    pub fn verification_summary(&self) -> VerificationSummary {
+        VerificationSummary {
+            domain: VerificationDomain::LocalRuntime,
+            target: self.target.clone(),
+            ready: self.ready,
+            attempts: self.attempts,
+            elapsed_ms: self.elapsed_ms,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -516,31 +532,41 @@ pub fn root_action_spec(
     secret_stdin: Option<String>,
     timeout: Duration,
 ) -> LocalCommandSpec {
+    let helper = std::env::var(ENV_ROOT_HELPER).unwrap_or_else(|_| DEFAULT_ROOT_HELPER.to_string());
     match action {
         RootAction::StartSystemdUnit { unit } => LocalCommandSpec::new(
             "sudo",
             [
                 "-n".to_string(),
-                "systemctl".to_string(),
-                "start".to_string(),
+                helper.clone(),
+                "systemd-start".to_string(),
                 unit,
             ],
         )
         .with_timeout(timeout),
         RootAction::Chpasswd { username } => {
             let stdin = secret_stdin.unwrap_or_default();
-            LocalCommandSpec::new("sudo", ["-n", "chpasswd"])
-                .with_timeout(timeout)
-                .with_stdin(CommandStdin::Secret(stdin))
-                .with_redaction(RedactionPolicy::secret_stdin(format!(
-                    "chpasswd:{username}"
-                )))
+            LocalCommandSpec::new(
+                "sudo",
+                [
+                    "-n".to_string(),
+                    helper.clone(),
+                    "chpasswd".to_string(),
+                    username.clone(),
+                ],
+            )
+            .with_timeout(timeout)
+            .with_stdin(CommandStdin::Secret(stdin))
+            .with_redaction(RedactionPolicy::secret_stdin(format!(
+                "chpasswd:{username}"
+            )))
         }
         RootAction::ReadSecretFile { path } => LocalCommandSpec::new(
             "sudo",
             [
                 "-n".to_string(),
-                "cat".to_string(),
+                helper,
+                "read-secret".to_string(),
                 path.display().to_string(),
             ],
         )
@@ -668,7 +694,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::context::{ResolvedContext, RuntimePolicy, SftpRuntimeConfig};
+    use crate::{
+        context::{ResolvedContext, RuntimePolicy, SftpRuntimeConfig},
+        TEST_ENV_LOCK,
+    };
 
     use super::*;
 
@@ -907,5 +936,123 @@ printf 'secret stderr\n' >&2
 
         assert!(!report.ready);
         assert!(report.attempts >= 1);
+    }
+
+    #[test]
+    fn root_action_systemd_start_uses_fixed_helper_contract() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let previous = std::env::var_os(ENV_ROOT_HELPER);
+        std::env::remove_var(ENV_ROOT_HELPER);
+
+        let spec = root_action_spec(
+            RootAction::StartSystemdUnit {
+                unit: "kanidm-files-posix-groups.service".to_string(),
+            },
+            None,
+            Duration::from_secs(5),
+        );
+
+        assert_eq!(spec.program, "sudo");
+        assert_eq!(
+            spec.args,
+            vec![
+                "-n",
+                "kanidm-admin-root",
+                "systemd-start",
+                "kanidm-files-posix-groups.service"
+            ]
+        );
+
+        match previous {
+            Some(value) => std::env::set_var(ENV_ROOT_HELPER, value),
+            None => std::env::remove_var(ENV_ROOT_HELPER),
+        }
+    }
+
+    #[test]
+    fn root_action_respects_configured_helper_path() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let previous = std::env::var_os(ENV_ROOT_HELPER);
+        std::env::set_var(
+            ENV_ROOT_HELPER,
+            "/run/current-system/sw/bin/kanidm-admin-root",
+        );
+
+        let spec = root_action_spec(
+            RootAction::ReadSecretFile {
+                path: "/run/agenix/vaultwardenAdminToken".into(),
+            },
+            None,
+            Duration::from_secs(5),
+        );
+
+        assert_eq!(
+            spec.args,
+            vec![
+                "-n",
+                "/run/current-system/sw/bin/kanidm-admin-root",
+                "read-secret",
+                "/run/agenix/vaultwardenAdminToken"
+            ]
+        );
+        assert!(spec.redaction.redact_stdout);
+
+        match previous {
+            Some(value) => std::env::set_var(ENV_ROOT_HELPER, value),
+            None => std::env::remove_var(ENV_ROOT_HELPER),
+        }
+    }
+
+    #[test]
+    fn root_action_chpasswd_never_logs_password_stdin() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let dir = tempdir().expect("tempdir");
+        let sudo = dir.path().join("sudo");
+        write_script(
+            &sudo,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+/bin/cat >/dev/null
+printf 'ok\n'
+"#,
+        );
+        let previous_path = std::env::var_os("PATH");
+        let previous_helper = std::env::var_os(ENV_ROOT_HELPER);
+        let test_path = match &previous_path {
+            Some(path) => {
+                let mut value = dir.path().as_os_str().to_os_string();
+                value.push(":");
+                value.push(path);
+                value
+            }
+            None => dir.path().as_os_str().to_os_string(),
+        };
+        std::env::set_var("PATH", test_path);
+        std::env::remove_var(ENV_ROOT_HELPER);
+
+        let execution = run_root_action(
+            &cli_for(&sudo),
+            "test chpasswd",
+            RootAction::Chpasswd {
+                username: "alice".to_string(),
+            },
+            Some("alice:correct horse battery staple\n".to_string()),
+            Duration::from_secs(5),
+        );
+
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match previous_helper {
+            Some(value) => std::env::set_var(ENV_ROOT_HELPER, value),
+            None => std::env::remove_var(ENV_ROOT_HELPER),
+        }
+
+        assert_eq!(execution.result.status, CommandStatus::Exited(0));
+        let rendered = serde_json::to_string(&execution.backend_payload).expect("payload");
+        assert!(!rendered.contains("correct horse battery staple"));
+        assert!(rendered.contains("kanidm-admin-root"));
+        assert!(rendered.contains("chpasswd"));
     }
 }

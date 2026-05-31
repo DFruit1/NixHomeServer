@@ -75,379 +75,9 @@ const ATTACHMENT_TEXT_MIME_PATTERNS: &[&str] = &[
     "^application/vnd[.]openxmlformats-officedocument[.]wordprocessingml[.]document$",
     "^text/plain$",
 ];
-const CUSTOM_CSS: &str = include_str!("../static/custom.css");
-const DASHBOARD_JS: &str = r#"const DASHBOARD_ROOT = document.querySelector("[data-dashboard-status-root]");
-
-if (DASHBOARD_ROOT) {
-  const numberFormatter = new Intl.NumberFormat();
-  const RUNNING_INTERVAL_MS = 3000;
-  const IDLE_INTERVAL_MS = 15000;
-  let pollTimer = null;
-
-    const setText = (element, value) => {
-    if (element) {
-      element.textContent = value;
-    }
-  };
-
-  const setVisibility = (element, visible) => {
-    if (element) {
-      element.classList.toggle("hidden", !visible);
-    }
-  };
-
-  const setOptionalText = (root, selector, value) => {
-    const element = root.querySelector(selector);
-    if (!element) {
-      return;
-    }
-
-    if (value) {
-      element.textContent = value;
-      element.classList.remove("hidden");
-    } else {
-      element.textContent = "";
-      element.classList.add("hidden");
-    }
-  };
-
-  const setCount = (root, selector, value, suffix = "") => {
-    const element = root.querySelector(selector);
-    if (element) {
-      element.textContent = `${numberFormatter.format(value)}${suffix}`;
-    }
-  };
-
-  const updateSummary = (totals) => {
-    const summary = document.querySelector("[data-dashboard-summary]");
-    if (!summary) {
-      return;
-    }
-
-    setCount(
-      summary,
-      '[data-summary-field="archived"]',
-      totals.archived_message_count,
-    );
-    setCount(
-      summary,
-      '[data-summary-field="indexed"]',
-      totals.indexed_message_count,
-    );
-    setCount(
-      summary,
-      '[data-summary-field="pending"]',
-      totals.pending_index_count,
-    );
-    setCount(
-      summary,
-      '[data-summary-field="coverage"]',
-      totals.index_coverage_percent,
-      "%",
-    );
-  };
-
-    const updateAccountCard = (account) => {
-    const card = document.querySelector(`[data-account-id="${account.id}"]`);
-    if (!card) {
-      return;
-    }
-
-    const statusBadge = card.querySelector("[data-status-badge]");
-    if (statusBadge) {
-      statusBadge.className = `status ${account.status_class}`;
-      statusBadge.textContent = account.status_label;
-    }
-
-    setText(card.querySelector("[data-index-pill]"), account.index_label);
-    setText(
-      card.querySelector('[data-progress-field="archived"]'),
-      numberFormatter.format(account.archived_message_count),
-    );
-    setText(
-      card.querySelector('[data-progress-field="indexed"]'),
-      numberFormatter.format(account.indexed_message_count),
-    );
-    setText(
-      card.querySelector('[data-progress-field="pending"]'),
-      numberFormatter.format(account.pending_index_count),
-    );
-    setText(
-      card.querySelector('[data-progress-field="coverage"]'),
-      `${account.index_coverage_percent}%`,
-    );
-    setText(card.querySelector("[data-progress-note]"), account.progress_note);
-    setOptionalText(card, "[data-overlap-note]", account.overlap_note);
-    setText(card.querySelector("[data-last-activity]"), `Last activity ${account.last_activity}`);
-
-    const progressBar = card.querySelector("[data-progress-bar]");
-    if (progressBar) {
-      progressBar.style.width = `${account.index_coverage_percent}%`;
-    }
-
-    const syncNotice = card.querySelector("[data-sync-diagnostic]");
-    if (syncNotice) {
-      const metaParts = [];
-      if (account.diagnostic_phase) {
-        metaParts.push(`Phase ${account.diagnostic_phase}`);
-      }
-      if (account.diagnostic_code) {
-        metaParts.push(`Code ${account.diagnostic_code}`);
-      }
-      setVisibility(syncNotice, Boolean(account.diagnostic_summary));
-      setOptionalText(syncNotice, "[data-diagnostic-summary]", account.diagnostic_summary);
-      setOptionalText(syncNotice, "[data-diagnostic-impact]", account.diagnostic_impact);
-      setOptionalText(syncNotice, "[data-diagnostic-action]", account.recommended_action);
-      setOptionalText(
-        syncNotice,
-        "[data-diagnostic-meta]",
-        metaParts.length > 0 ? metaParts.join(" · ") : "",
-      );
-      setText(
-        syncNotice.querySelector("[data-diagnostic-detail]"),
-        account.diagnostic_detail || "",
-      );
-
-      const detailWrap = syncNotice.querySelector("[data-diagnostic-details]");
-      if (detailWrap) {
-        detailWrap.open = false;
-        detailWrap.classList.toggle("hidden", !account.diagnostic_detail);
-      }
-    }
-
-    const progressWarning = card.querySelector("[data-progress-warning]");
-    if (progressWarning) {
-      setVisibility(progressWarning, Boolean(account.progress_warning));
-      setOptionalText(progressWarning, "[data-progress-warning-text]", account.progress_warning);
-      setOptionalText(
-        progressWarning,
-        "[data-progress-warning-action]",
-        account.progress_warning_action,
-      );
-      setText(
-        progressWarning.querySelector("[data-progress-warning-detail]"),
-        account.progress_warning_detail || "",
-      );
-
-      const detailWrap = progressWarning.querySelector("[data-progress-warning-details]");
-      if (detailWrap) {
-        detailWrap.open = false;
-        detailWrap.classList.toggle("hidden", !account.progress_warning_detail);
-      }
-    }
-
-  };
-
-  const scheduleNextPoll = (accounts) => {
-    const hasRunningAccount = accounts.some((account) => account.status_label === "syncing");
-    const delay = document.hidden || !hasRunningAccount ? IDLE_INTERVAL_MS : RUNNING_INTERVAL_MS;
-    pollTimer = window.setTimeout(fetchStatus, delay);
-  };
-
-  const fetchStatus = async () => {
-    window.clearTimeout(pollTimer);
-
-    try {
-      const response = await fetch("/api/accounts/status", {
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-      });
-
-      if (!response.ok) {
-        throw new Error(`status ${response.status}`);
-      }
-
-      const payload = await response.json();
-      updateSummary(payload.totals);
-      payload.accounts.forEach(updateAccountCard);
-      scheduleNextPoll(payload.accounts);
-    } catch (error) {
-      console.error("mail archive status refresh failed", error);
-      pollTimer = window.setTimeout(fetchStatus, IDLE_INTERVAL_MS);
-    }
-  };
-
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      fetchStatus();
-    }
-  });
-
-  fetchStatus();
-}
-"#;
-const ATTACHMENTS_JS: &str = r##"const attachmentRows = Array.from(document.querySelectorAll("[data-attachment-row]"));
-const bulkForms = [
-  document.querySelector("#attachment-download-form"),
-  document.querySelector("#attachment-paperless-form"),
-].filter(Boolean);
-const selectedKeys = new Set();
-let selectionAnchor = null;
-
-const interactiveSelector = "a, button, input, select, textarea, form, label";
-
-const syncSelectedInputs = () => {
-  attachmentRows.forEach((row) => {
-    const selected = selectedKeys.has(row.dataset.attachmentKey);
-    row.classList.toggle("attachment-row-selected", selected);
-    row.setAttribute("aria-selected", selected ? "true" : "false");
-  });
-
-  bulkForms.forEach((form) => {
-    form.querySelectorAll('input[data-selection-hidden]').forEach((input) => input.remove());
-    selectedKeys.forEach((key) => {
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = "attachment_keys";
-      input.value = key;
-      input.dataset.selectionHidden = "true";
-      form.appendChild(input);
-    });
-  });
-};
-
-const setRange = (fromIndex, toIndex) => {
-  const [start, end] = fromIndex <= toIndex ? [fromIndex, toIndex] : [toIndex, fromIndex];
-  selectedKeys.clear();
-  attachmentRows.slice(start, end + 1).forEach((row) => selectedKeys.add(row.dataset.attachmentKey));
-};
-
-const selectRow = (row, event) => {
-  const key = row.dataset.attachmentKey;
-  const index = attachmentRows.indexOf(row);
-
-  if (event.shiftKey && selectionAnchor !== null) {
-    setRange(selectionAnchor, index);
-  } else if (event.ctrlKey || event.metaKey) {
-    if (selectedKeys.has(key)) {
-      selectedKeys.delete(key);
-    } else {
-      selectedKeys.add(key);
-    }
-    selectionAnchor = index;
-  } else {
-    selectedKeys.clear();
-    selectedKeys.add(key);
-    selectionAnchor = index;
-  }
-
-  syncSelectedInputs();
-};
-
-attachmentRows.forEach((row) => {
-  row.addEventListener("mousedown", (event) => {
-    if (event.target.closest(interactiveSelector)) {
-      return;
-    }
-    if (event.shiftKey || event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-    }
-  });
-
-  row.addEventListener("click", (event) => {
-    if (event.target.closest(interactiveSelector)) {
-      return;
-    }
-    selectRow(row, event);
-  });
-
-  row.addEventListener("keydown", (event) => {
-    if (![" ", "Enter"].includes(event.key)) {
-      return;
-    }
-    event.preventDefault();
-    selectRow(row, event);
-  });
-});
-
-const selectPage = document.querySelector("[data-select-page]");
-if (selectPage) {
-  selectPage.addEventListener("click", () => {
-    selectedKeys.clear();
-    attachmentRows.forEach((row) => selectedKeys.add(row.dataset.attachmentKey));
-    selectionAnchor = attachmentRows.length > 0 ? 0 : null;
-    syncSelectedInputs();
-  });
-}
-"##;
-const PRIORITY_JS: &str = r#"const priorityClassPrefix = "priority-select-";
-const priorityValues = ["high", "normal", "low"];
-
-const setPriorityClass = (select, value) => {
-  priorityValues.forEach((priority) => {
-    select.classList.remove(`${priorityClassPrefix}${priority}`);
-  });
-  select.classList.add(`${priorityClassPrefix}${value}`);
-};
-
-const priorityFailureMessage = (detail) => {
-  const reasons = [
-    "the login session expired",
-    "same-origin protection blocked the request",
-    "the sender address or domain could not be validated",
-    "the server could not write the priority database",
-    "the network connection failed before the change was saved",
-  ];
-  return [
-    "Priority change failed.",
-    detail ? `Server response: ${detail}` : "",
-    "",
-    "Potential reasons:",
-    ...reasons.map((reason) => `- ${reason}`),
-  ].filter(Boolean).join("\n");
-};
-
-document.addEventListener("change", async (event) => {
-  const select = event.target.closest("[data-priority-select]");
-  if (!select) {
-    return;
-  }
-
-  const previousPriority = select.dataset.previousPriority || "normal";
-  const nextPriority = select.value;
-  setPriorityClass(select, nextPriority);
-  select.disabled = true;
-
-  const form = new URLSearchParams();
-  form.set("sender_kind", select.dataset.senderKind || "");
-  form.set("sender_value", select.dataset.senderValue || "");
-  form.set("priority", nextPriority);
-  form.set("return_to", select.dataset.returnTo || window.location.pathname + window.location.search);
-
-  try {
-    const response = await fetch("/sender-priorities", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-      },
-      body: form,
-    });
-
-    let payload = null;
-    const responseText = await response.text();
-    if (responseText) {
-      try {
-        payload = JSON.parse(responseText);
-      } catch (_) {
-        payload = { message: responseText };
-      }
-    }
-
-    if (!response.ok || !payload || !payload.ok) {
-      throw new Error(payload?.message || `HTTP ${response.status}`);
-    }
-
-    window.location.assign(payload.return_to || form.get("return_to") || window.location.href);
-  } catch (error) {
-    select.value = previousPriority;
-    setPriorityClass(select, previousPriority);
-    alert(priorityFailureMessage(error instanceof Error ? error.message : ""));
-    select.disabled = false;
-  }
-});
-"#;
+const DEFAULT_FRONTEND_DIST_DIR: &str = "frontend/dist";
+const DEFAULT_VITE_ORIGIN: &str = "http://127.0.0.1:5173";
+const FRONTEND_ENTRYPOINT: &str = "src/entry.prod.tsx";
 const GROUP_NAME: &str = "mail-archive-users";
 
 #[derive(Clone, Debug)]
@@ -463,6 +93,13 @@ struct AppConfig {
     paperless_handoff_staging_root: Option<Arc<str>>,
     visible_mirror_read_group: Option<Arc<str>>,
     default_tags: Arc<[String]>,
+    frontend_dist_dir: Arc<str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendMode {
+    Production,
+    Vite,
 }
 
 #[derive(Clone, Debug)]
@@ -1442,10 +1079,7 @@ fn router(state: AppState) -> Router {
             post(send_attachments_paperless),
         )
         .route("/healthz", get(healthz))
-        .route("/static/custom.css", get(custom_css))
-        .route("/static/dashboard.js", get(dashboard_js))
-        .route("/static/attachments.js", get(attachments_js))
-        .route("/static/priority.js", get(priority_js))
+        .route("/static/frontend/{*asset_path}", get(frontend_asset))
         .with_state(state)
 }
 
@@ -2311,40 +1945,51 @@ async fn healthz(State(state): State<AppState>) -> Response {
     json_response(status, payload)
 }
 
-async fn custom_css() -> Response {
-    let response = (
-        [(CONTENT_TYPE, "text/css; charset=utf-8")],
-        CUSTOM_CSS.to_string(),
-    )
-        .into_response();
-    harden_response(response)
-}
-
-async fn dashboard_js() -> Response {
-    let response = (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        DASHBOARD_JS.to_string(),
-    )
-        .into_response();
-    harden_response(response)
-}
-
-async fn attachments_js() -> Response {
-    let response = (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        ATTACHMENTS_JS.to_string(),
-    )
-        .into_response();
-    harden_response(response)
-}
-
-async fn priority_js() -> Response {
-    let response = (
-        [(CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        PRIORITY_JS.to_string(),
-    )
-        .into_response();
-    harden_response(response)
+async fn frontend_asset(
+    State(state): State<AppState>,
+    Path(asset_path): Path<String>,
+) -> Response {
+    let root = PathBuf::from(state.config.frontend_dist_dir.as_ref());
+    let candidate = root.join(&asset_path);
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return html_response_with_status(
+                StatusCode::NOT_FOUND,
+                format!("frontend dist directory is unavailable: {error}"),
+            )
+        }
+    };
+    let candidate = match candidate.canonicalize() {
+        Ok(candidate) => candidate,
+        Err(_) => {
+            return html_response_with_status(
+                StatusCode::NOT_FOUND,
+                "frontend asset not found".to_string(),
+            )
+        }
+    };
+    if candidate == root || !candidate.starts_with(&root) {
+        return html_response_with_status(
+            StatusCode::NOT_FOUND,
+            "frontend asset not found".to_string(),
+        );
+    }
+    match fs::read(&candidate) {
+        Ok(bytes) => {
+            let mut response = Response::new(Body::from(bytes));
+            *response.status_mut() = StatusCode::OK;
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static(content_type_for_path(&candidate)),
+            );
+            harden_response(response)
+        }
+        Err(_) => html_response_with_status(
+            StatusCode::NOT_FOUND,
+            "frontend asset not found".to_string(),
+        ),
+    }
 }
 
 fn load_config() -> AppConfig {
@@ -2391,6 +2036,8 @@ fn load_config() -> AppConfig {
         })
         .filter(|tags| !tags.is_empty())
         .unwrap_or_else(|| vec!["new".to_string()]);
+    let frontend_dist_dir = env::var("MAIL_ARCHIVE_UI_FRONTEND_DIST_DIR")
+        .unwrap_or_else(|_| DEFAULT_FRONTEND_DIST_DIR.to_string());
 
     AppConfig {
         address: Arc::<str>::from(address),
@@ -2404,6 +2051,7 @@ fn load_config() -> AppConfig {
         paperless_handoff_staging_root,
         visible_mirror_read_group,
         default_tags: Arc::from(default_tags),
+        frontend_dist_dir: Arc::<str>::from(frontend_dist_dir),
     }
 }
 
@@ -8389,6 +8037,7 @@ fn render_dashboard(
     );
 
     body.push_str("<section class=\"panel stack\"><div class=\"section-head\"><h2>Connected mailboxes</h2><p class=\"meta\">Edit connection details, trigger syncs, or repair indexes without exposing the archive as webmail.</p></div>");
+    body.push_str("<div id=\"dashboard-status-island\" data-mail-archive-island=\"dashboard-status\"></div>");
     body.push_str(&render_dashboard_totals(accounts));
     if accounts.is_empty() {
         body.push_str(
@@ -8845,6 +8494,7 @@ fn render_attachments_page(
             </div>
           </form>
           <div class=\"attachment-toolbar\">
+            <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
             <button class=\"secondary\" type=\"button\" data-select-page title=\"Select visible attachments\">Select page</button>
             <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
               {}
@@ -9588,15 +9238,91 @@ fn render_mail_list_header() -> String {
         .to_string()
 }
 
-fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str) -> String {
-    let page_script = match active_nav {
-        "dashboard" => r#"<script src="/static/dashboard.js" defer></script>"#,
-        "attachments" => {
-            r#"<script src="/static/attachments.js" defer></script><script src="/static/priority.js" defer></script>"#
+fn frontend_mode() -> FrontendMode {
+    match env::var("MAIL_ARCHIVE_UI_FRONTEND_MODE")
+        .unwrap_or_else(|_| "production".to_string())
+        .trim()
+    {
+        "vite" => FrontendMode::Vite,
+        _ => FrontendMode::Production,
+    }
+}
+
+fn frontend_dist_dir_from_env() -> String {
+    env::var("MAIL_ARCHIVE_UI_FRONTEND_DIST_DIR")
+        .unwrap_or_else(|_| DEFAULT_FRONTEND_DIST_DIR.to_string())
+}
+
+fn vite_origin_from_env() -> String {
+    env::var("MAIL_ARCHIVE_UI_VITE_ORIGIN").unwrap_or_else(|_| DEFAULT_VITE_ORIGIN.to_string())
+}
+
+fn render_frontend_tags() -> String {
+    match frontend_mode() {
+        FrontendMode::Production => {
+            match production_asset_tags(&frontend_dist_dir_from_env(), FRONTEND_ENTRYPOINT) {
+                Ok(tags) => tags,
+                Err(error) => format!(
+                    "<!-- mail-archive-ui frontend assets unavailable: {} -->",
+                    escape_html(&error)
+                ),
+            }
         }
-        "search" => r#"<script src="/static/priority.js" defer></script>"#,
-        _ => "",
-    };
+        FrontendMode::Vite => vite_asset_tags(&vite_origin_from_env()),
+    }
+}
+
+fn production_asset_tags(dist_dir: &str, entrypoint: &str) -> Result<String, String> {
+    let manifest_path = PathBuf::from(dist_dir).join(".vite").join("manifest.json");
+    let manifest_text = fs::read_to_string(&manifest_path).map_err(|error| {
+        format!(
+            "failed to read Vite manifest at {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_text).map_err(|error| format!("invalid manifest: {error}"))?;
+    let entry = manifest
+        .get(entrypoint)
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| format!("manifest is missing entrypoint {entrypoint}"))?;
+    let file = entry
+        .get("file")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("manifest entrypoint {entrypoint} is missing file"))?;
+
+    let mut tags = String::new();
+    if let Some(css_files) = entry.get("css").and_then(|value| value.as_array()) {
+        for css_file in css_files.iter().filter_map(|value| value.as_str()) {
+            writeln!(
+                &mut tags,
+                r#"<link rel="stylesheet" href="/static/frontend/{}">"#,
+                escape_html(css_file)
+            )
+            .ok();
+        }
+    }
+    writeln!(
+        &mut tags,
+        r#"<script type="module" src="/static/frontend/{}"></script>"#,
+        escape_html(file)
+    )
+    .ok();
+    Ok(tags)
+}
+
+fn vite_asset_tags(origin: &str) -> String {
+    let origin = origin.trim_end_matches('/');
+    format!(
+        r#"<script type="module" src="{}/@vite/client"></script>
+<script type="module" src="{}/src/entry.dev.tsx"></script>"#,
+        escape_html(origin),
+        escape_html(origin),
+    )
+}
+
+fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str) -> String {
+    let frontend_tags = render_frontend_tags();
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -9604,7 +9330,6 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{}</title>
-    <link rel="stylesheet" href="/static/custom.css">
     {}
   </head>
   <body>
@@ -9620,10 +9345,11 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
         <p class="meta footer-meta">{}</p>
       </footer>
     </main>
+    <div id="mail-archive-ui-islands"></div>
   </body>
 </html>"#,
         escape_html(title),
-        page_script,
+        frontend_tags,
         body,
         nav_active_class(active_nav == "dashboard"),
         nav_active_class(active_nav == "accounts"),
@@ -9914,6 +9640,44 @@ fn redirect_response(location: &str) -> Response {
     harden_response(Redirect::to(location).into_response())
 }
 
+fn content_type_for_path(path: &FsPath) -> &'static str {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("css") => "text/css; charset=utf-8",
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("wasm") => "application/wasm",
+        _ => "application/octet-stream",
+    }
+}
+
+fn vite_ws_origin(origin: &str) -> String {
+    if let Some(rest) = origin.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = origin.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        origin.to_string()
+    }
+}
+
+fn content_security_policy() -> String {
+    match frontend_mode() {
+        FrontendMode::Production => {
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'".to_string()
+        }
+        FrontendMode::Vite => {
+            let origin = vite_origin_from_env();
+            let origin = origin.trim_end_matches('/');
+            let ws_origin = vite_ws_origin(origin);
+            format!(
+                "default-src 'self'; script-src 'self' {origin}; style-src 'self' 'unsafe-inline' {origin}; connect-src 'self' {origin} {ws_origin}; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'"
+            )
+        }
+    }
+}
+
 fn harden_response(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert("X-Frame-Options", HeaderValue::from_static("DENY"));
@@ -9924,9 +9688,11 @@ fn harden_response(mut response: Response) -> Response {
     headers.insert("Referrer-Policy", HeaderValue::from_static("same-origin"));
     headers.insert(
         "Content-Security-Policy",
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
-        ),
+        HeaderValue::from_str(&content_security_policy()).unwrap_or_else(|_| {
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
+            )
+        }),
     );
     response
 }
@@ -10053,6 +9819,24 @@ mod tests {
         ENV_LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn with_env_var<F, R>(key: &str, value: &str, test: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = env::var_os(key);
+        env::set_var(key, value);
+        let result = test();
+        if let Some(previous) = previous {
+            env::set_var(key, previous);
+        } else {
+            env::remove_var(key);
+        }
+        result
+    }
+
     fn test_config(tempdir: &TempDir) -> AppConfig {
         let data_dir = tempdir.path().join("data");
         let store_root = tempdir.path().join("store");
@@ -10072,6 +9856,13 @@ mod tests {
             paperless_handoff_staging_root: None,
             visible_mirror_read_group: None,
             default_tags: Arc::from(vec!["new".to_string()]),
+            frontend_dist_dir: Arc::<str>::from(
+                tempdir
+                    .path()
+                    .join("frontend-dist")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
         }
     }
 
@@ -10754,27 +10545,88 @@ mod tests {
 
     #[test]
     fn html_page_references_stylesheet_and_security_headers() {
-        let identity = Identity {
-            username: "alice".to_string(),
-            email: Some("alice@example.com".to_string()),
-            groups: vec!["mail-archive-users".to_string()],
-        };
+        with_env_var("MAIL_ARCHIVE_UI_FRONTEND_MODE", "vite", || {
+            let identity = Identity {
+                username: "alice".to_string(),
+                email: Some("alice@example.com".to_string()),
+                groups: vec!["mail-archive-users".to_string()],
+            };
 
-        let html = layout(
-            "Mail Archive",
-            Some(&identity),
-            "dashboard",
-            "<section>Body</section>",
-        );
-        assert!(html.contains("/static/custom.css"));
-        assert!(html.contains("/static/dashboard.js"));
-        assert!(html.contains("alice@example.com"));
+            let html = layout(
+                "Mail Archive",
+                Some(&identity),
+                "dashboard",
+                "<section>Body</section>",
+            );
+            assert!(html.contains("@vite/client"));
+            assert!(html.contains("/src/entry.dev.tsx"));
+            assert!(html.contains("mail-archive-ui-islands"));
+            assert!(html.contains("alice@example.com"));
 
-        let response = html_response(html);
-        assert_eq!(
-            response.headers().get("X-Frame-Options").expect("header"),
-            "DENY"
-        );
+            let response = html_response(html);
+            assert_eq!(
+                response.headers().get("X-Frame-Options").expect("header"),
+                "DENY"
+            );
+            assert!(response
+                .headers()
+                .get("Content-Security-Policy")
+                .expect("csp")
+                .to_str()
+                .expect("csp string")
+                .contains("http://127.0.0.1:5173"));
+        });
+    }
+
+    #[test]
+    fn production_frontend_tags_are_read_from_vite_manifest() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let manifest_dir = tempdir.path().join(".vite");
+        fs::create_dir_all(&manifest_dir).expect("manifest dir");
+        fs::write(
+            manifest_dir.join("manifest.json"),
+            r#"{
+              "src/entry.prod.tsx": {
+                "file": "assets/entry.prod-abc.js",
+                "css": ["assets/entry.prod-abc.css"]
+              }
+            }"#,
+        )
+        .expect("manifest");
+
+        let tags = production_asset_tags(
+            tempdir.path().to_str().expect("utf8 path"),
+            FRONTEND_ENTRYPOINT,
+        )
+        .expect("tags");
+
+        assert!(tags.contains("/static/frontend/assets/entry.prod-abc.css"));
+        assert!(tags.contains("/static/frontend/assets/entry.prod-abc.js"));
+    }
+
+    #[test]
+    fn production_frontend_tags_report_missing_manifest_clearly() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let error = production_asset_tags(
+            tempdir.path().to_str().expect("utf8 path"),
+            FRONTEND_ENTRYPOINT,
+        )
+        .expect_err("missing manifest should fail");
+
+        assert!(error.contains("failed to read Vite manifest"));
+    }
+
+    #[test]
+    fn csp_only_allows_vite_origin_in_vite_mode() {
+        with_env_var("MAIL_ARCHIVE_UI_FRONTEND_MODE", "production", || {
+            let csp = content_security_policy();
+            assert!(!csp.contains("127.0.0.1:5173"));
+        });
+        with_env_var("MAIL_ARCHIVE_UI_FRONTEND_MODE", "vite", || {
+            let csp = content_security_policy();
+            assert!(csp.contains("http://127.0.0.1:5173"));
+            assert!(csp.contains("ws://127.0.0.1:5173"));
+        });
     }
 
     #[test]
@@ -11434,7 +11286,6 @@ mod tests {
         assert!(html.contains("mail-list-header"));
         assert!(html.contains("Address priority"));
         assert!(html.contains("Domain priority"));
-        assert!(html.contains("/static/priority.js"));
         assert!(!html.contains("Query your downloaded mail with notmuch."));
     }
 
@@ -12288,7 +12139,6 @@ mod tests {
             assert!(html.contains("Address priority"));
             assert!(html.contains("Domain priority"));
             assert!(html.contains("name=\"priority\""));
-            assert!(html.contains("/static/priority.js"));
             assert!(!html.contains("<span>Source</span>"));
             assert!(html.contains("Source: "));
             assert!(!html.contains("Search and download archived mail attachments."));

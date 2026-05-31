@@ -6,6 +6,7 @@ pub mod client;
 pub mod context;
 pub mod executor;
 pub mod group;
+pub mod history;
 pub mod local;
 pub mod local_runtime;
 pub mod membership;

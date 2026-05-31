@@ -16,7 +16,12 @@ use kanidm_admin::{
             RecoveryTarget,
         },
         group::{group_members, list_groups, search_groups, show_group},
-        local::{invite_vaultwarden_user, stage_jellyfin_password},
+        history::{list_history, prune_history, record_operation_best_effort, show_history},
+        local::{
+            diagnose_jellyfin_password, diagnose_vaultwarden_user, invite_vaultwarden_user,
+            reconcile_jellyfin_password, reconcile_vaultwarden_user, stage_jellyfin_password,
+            test_jellyfin_password,
+        },
         local_runtime::ConvergencePolicy,
         membership::{
             add_membership_with_config, remove_membership_with_config, set_membership_with_config,
@@ -27,8 +32,8 @@ use kanidm_admin::{
             set_group_privilege_expiry, show_group_policy,
         },
         session::{
-            ensure_interactive_session_allowed, session_login, session_logout, session_reauth,
-            session_status,
+            ensure_interactive_session_allowed, session_diagnose, session_login, session_logout,
+            session_reauth, session_status,
         },
         sftp::{
             diagnose_sftp_login_with_policy, reconcile_sftp_login_with_policy,
@@ -122,7 +127,7 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     #[command(about = "Run basic environment and connectivity checks.")]
-    Doctor,
+    Doctor(DoctorCommand),
     #[command(about = "Inspect the resolved repo and Kanidm connection context.")]
     Context(ContextCommand),
     #[command(about = "Inspect or manage the current Kanidm CLI session.")]
@@ -139,12 +144,23 @@ enum Commands {
     Policy(PolicyCommand),
     #[command(about = "Run local helper utilities outside normal Kanidm operations.")]
     Local(LocalCommand),
+    #[command(about = "Inspect persisted kanidm-admin operation history.")]
+    History(HistoryCommand),
 }
 
 #[derive(Debug, Args)]
 struct ContextCommand {
     #[command(subcommand)]
     command: ContextSubcommand,
+}
+
+#[derive(Debug, Args)]
+struct DoctorCommand {
+    #[arg(
+        long,
+        help = "Run non-mutating local runtime checks in addition to fast Kanidm probes."
+    )]
+    deep: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -162,6 +178,8 @@ struct SessionCommand {
 enum SessionSubcommand {
     #[command(about = "Show whether the current Kanidm CLI session is active.")]
     Status,
+    #[command(about = "Show parser confidence and recovery guidance for the current session.")]
+    Diagnose,
     #[command(about = "Start a new delegated operator session.", after_help = SESSION_LOGIN_AFTER_HELP)]
     Login,
     #[command(about = "Refresh privileged write access for the current session.", after_help = SESSION_LOGIN_AFTER_HELP)]
@@ -434,6 +452,15 @@ enum LocalJellyfinPasswordSubcommand {
         #[arg(long, default_value = "JELLYFIN_PASSWORD")]
         password_env: String,
     },
+    Diagnose {
+        account_id: String,
+    },
+    Reconcile {
+        account_id: String,
+    },
+    Test {
+        account_id: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -487,16 +514,43 @@ struct LocalVaultwardenCommand {
     command: LocalVaultwardenSubcommand,
 }
 
+#[derive(Debug, Args)]
+struct HistoryCommand {
+    #[command(subcommand)]
+    command: HistorySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum HistorySubcommand {
+    #[command(about = "List recent persisted operation history entries.")]
+    List,
+    #[command(about = "Show one persisted operation history entry.")]
+    Show { operation_id: String },
+    #[command(
+        about = "Prune persisted operation history entries older than a duration such as 30d."
+    )]
+    Prune {
+        #[arg(
+            long,
+            help = "Remove entries older than this duration, for example 30d, 12h, or 90m."
+        )]
+        older_than: String,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 enum LocalVaultwardenSubcommand {
     Invite { account_id: String },
+    Diagnose { account_id: String },
+    Reconcile { account_id: String },
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let invocation_args = std::env::args().collect::<Vec<_>>();
+    let cli = Cli::parse_from(&invocation_args);
     let output = cli.output_format();
 
-    match run(cli) {
+    match run(cli, &invocation_args) {
         Ok(Some(command_output)) => {
             println!("{}", render_output(output, &command_output));
         }
@@ -606,8 +660,12 @@ fn recover_cli_session_interactively(
     Ok(true)
 }
 
-fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_admin::AppError> {
+fn run(
+    cli: Cli,
+    invocation_args: &[String],
+) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_admin::AppError> {
     let output = cli.output_format();
+    let records_history = !matches!(&cli.command, Some(Commands::History(_)));
     let context = resolve_context(ContextOverrides {
         repo_root: cli.repo_root,
         server_url: cli.server_url,
@@ -631,12 +689,13 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             interactive::run(&context, &kanidm)?;
             Ok(None)
         }
-        Some(Commands::Doctor) => doctor(&context, &kanidm).map(Some),
+        Some(Commands::Doctor(command)) => doctor(&context, &kanidm, command.deep).map(Some),
         Some(Commands::Context(command)) => match command.command {
             ContextSubcommand::Show => Ok(Some(show_context(&context))),
         },
         Some(Commands::Session(command)) => match command.command {
             SessionSubcommand::Status => session_status(&kanidm).map(Some),
+            SessionSubcommand::Diagnose => session_diagnose(&kanidm).map(Some),
             SessionSubcommand::Login => {
                 ensure_interactive_session_allowed(output)?;
                 session_login(&kanidm).map(Some)
@@ -886,6 +945,18 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                     let account_id = validate_account_id(&account_id)?;
                     stage_jellyfin_password(&account_id, &password_env).map(Some)
                 }
+                LocalJellyfinPasswordSubcommand::Diagnose { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    diagnose_jellyfin_password(&kanidm, &account_id).map(Some)
+                }
+                LocalJellyfinPasswordSubcommand::Reconcile { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    reconcile_jellyfin_password(&kanidm, &account_id).map(Some)
+                }
+                LocalJellyfinPasswordSubcommand::Test { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    test_jellyfin_password(&kanidm, &account_id).map(Some)
+                }
             },
             LocalSubcommand::Sftp(command) => match command.command {
                 LocalSftpSubcommand::Diagnose {
@@ -938,7 +1009,20 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
                     let account_id = validate_account_id(&account_id)?;
                     invite_vaultwarden_user(&context, &kanidm, &account_id).map(Some)
                 }
+                LocalVaultwardenSubcommand::Diagnose { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    diagnose_vaultwarden_user(&context, &kanidm, &account_id).map(Some)
+                }
+                LocalVaultwardenSubcommand::Reconcile { account_id } => {
+                    let account_id = validate_account_id(&account_id)?;
+                    reconcile_vaultwarden_user(&context, &kanidm, &account_id).map(Some)
+                }
             },
+        },
+        Some(Commands::History(command)) => match command.command {
+            HistorySubcommand::List => list_history().map(Some),
+            HistorySubcommand::Show { operation_id } => show_history(&operation_id).map(Some),
+            HistorySubcommand::Prune { older_than } => prune_history(&older_than).map(Some),
         },
     };
     match &mut result {
@@ -947,6 +1031,9 @@ fn run(cli: Cli) -> Result<Option<kanidm_admin::output::CommandOutput>, kanidm_a
             let _ = kanidm.take_backend_steps();
         }
         Err(error) => attach_backend_steps_to_error(&kanidm, error),
+    }
+    if records_history {
+        record_operation_best_effort(invocation_args, &result);
     }
     result
 }
@@ -1041,12 +1128,32 @@ mod tests {
     }
 
     #[test]
+    fn parses_doctor_deep() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "doctor", "--deep"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Doctor(DoctorCommand { deep: true }))
+        ));
+    }
+
+    #[test]
     fn parses_session_login() {
         let cli = Cli::try_parse_from(["kanidm-admin", "session", "login"]).expect("parse");
         assert!(matches!(
             cli.command,
             Some(Commands::Session(SessionCommand {
                 command: SessionSubcommand::Login
+            }))
+        ));
+    }
+
+    #[test]
+    fn parses_session_diagnose() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "session", "diagnose"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Session(SessionCommand {
+                command: SessionSubcommand::Diagnose
             }))
         ));
     }
@@ -1230,6 +1337,18 @@ mod tests {
                     }
                 })
             })) if account_id == "alice"
+        ));
+    }
+
+    #[test]
+    fn parses_history_prune() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "history", "prune", "--older-than", "30d"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::History(HistoryCommand {
+                command: HistorySubcommand::Prune { older_than }
+            })) if older_than == "30d"
         ));
     }
 

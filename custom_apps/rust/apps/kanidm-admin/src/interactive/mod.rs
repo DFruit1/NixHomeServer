@@ -258,7 +258,7 @@ fn context_menu(context: &ResolvedContext, kanidm: &KanidmCli) -> Result<(), App
                 render_output("Context", show_context(context))?;
             }
             1 => {
-                run_command("Doctor", kanidm, || doctor(context, kanidm))?;
+                run_command("Doctor", kanidm, || doctor(context, kanidm, false))?;
             }
             _ => break,
         }

@@ -21,6 +21,8 @@ let
       "MAIL_ARCHIVE_UI_RUNTIME_DIR=${cfg.runtimeDir}"
       "MAIL_ARCHIVE_UI_LOCK_DIR=${cfg.lockDir}"
       "MAIL_ARCHIVE_UI_DEFAULT_TAGS=${lib.concatStringsSep ";" defaultTags}"
+      "MAIL_ARCHIVE_UI_FRONTEND_MODE=production"
+      "MAIL_ARCHIVE_UI_FRONTEND_DIST_DIR=${cfg.package}/share/mail-archive-ui/frontend"
       "TMPDIR=${cfg.runtimeDir}"
       "SQLITE_TMPDIR=${cfg.runtimeDir}"
     ];

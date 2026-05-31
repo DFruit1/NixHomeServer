@@ -177,6 +177,19 @@ impl KanidmCli {
         }
     }
 
+    pub fn cli_version(&self) -> Result<String, AppError> {
+        let output = self.run_success(
+            vec!["--version".to_string()],
+            "failed to inspect the Kanidm CLI version",
+        )?;
+        let version = output.stdout.trim();
+        if !version.is_empty() {
+            Ok(version.to_string())
+        } else {
+            Ok(output.stderr.trim().to_string())
+        }
+    }
+
     pub fn person_list<T: DeserializeOwned>(&self) -> Result<T, AppError> {
         self.run_json(
             self.json_args(["person", "list"]),
@@ -1027,6 +1040,7 @@ fn command_mode_for_args(args: &[String]) -> CommandMode {
     let third = args.get(2).map(String::as_str);
 
     match (first, second, third) {
+        (Some("--version"), _, _) => CommandMode::NonInteractiveRead,
         (Some("session"), Some("list"), _) => CommandMode::NonInteractiveRead,
         (Some("person"), Some("list" | "get"), _) => CommandMode::NonInteractiveRead,
         (Some("group"), Some("list" | "get" | "list-members"), _) => {

@@ -18,11 +18,10 @@ let
   ];
 
   rustChecks = lib.concatMapAttrs
-    (name: app: {
-      "${name}-fmt" = app.checks.fmt;
-      "${name}-clippy" = app.checks.clippy;
-      "${name}-test" = app.checks.test;
-    })
+    (name: app:
+      lib.mapAttrs'
+        (checkName: check: lib.nameValuePair "${name}-${checkName}" check)
+        app.checks)
     rustApps;
 in
 {

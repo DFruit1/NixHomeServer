@@ -87,6 +87,86 @@ pub fn session_status(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     })
 }
 
+pub fn session_diagnose(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
+    let snapshot = cli.session_snapshot()?;
+    let version_probe = match cli.cli_version() {
+        Ok(version) if !version.trim().is_empty() => json!({
+            "ok": true,
+            "version": version,
+        }),
+        Ok(_) => json!({
+            "ok": false,
+            "version": null,
+            "error": "kanidm --version returned empty output",
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "version": null,
+            "error": error.human_message(),
+        }),
+    };
+    let cli_version = version_probe
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let structured = snapshot.parse_confidence == ParseConfidence::High;
+    let privileged_ready =
+        structured && snapshot.privileged_write_state == PrivilegedWriteState::Ready;
+    let privileged_write_state = if privileged_ready {
+        PrivilegedWriteState::Ready
+    } else if structured {
+        snapshot.privileged_write_state
+    } else {
+        PrivilegedWriteState::Unknown
+    };
+    let session_details = json!({
+        "base_state": base_session_state_label(snapshot.base_session_state),
+        "privileged_write_state": privileged_write_state_label(privileged_write_state),
+        "raw_privileged_write_state": privileged_write_state_label(snapshot.privileged_write_state),
+        "parse_confidence": parse_confidence_label(snapshot.parse_confidence),
+        "source": if structured { "text" } else { "text_heuristic" },
+        "kanidm_cli_version": cli_version,
+        "diagnostic": snapshot.diagnostic_raw.trim(),
+        "snapshot": session_snapshot_details(&snapshot),
+    });
+    let mut warnings = Vec::new();
+    if !structured {
+        warnings.push(
+            "Session output was classified heuristically; privileged write access is reported as unknown until the parser sees a known format."
+                .to_string(),
+        );
+    }
+    if privileged_write_state != PrivilegedWriteState::Ready {
+        warnings.push(session_recovery_hint(&snapshot).to_string());
+    }
+
+    Ok(CommandOutput {
+        message: if privileged_write_state == PrivilegedWriteState::Ready {
+            "Kanidm session diagnostics show privileged write access is ready".to_string()
+        } else {
+            "Kanidm session diagnostics require operator attention".to_string()
+        },
+        human: format!(
+            "Session diagnostics for '{}'\nBase session: {}\nPrivileged writes: {}\nParse confidence: {}\nSource: {}\nKanidm CLI: {}\n\n{}",
+            cli.admin_name(),
+            base_session_state_label(snapshot.base_session_state),
+            privileged_write_state_label(privileged_write_state),
+            parse_confidence_label(snapshot.parse_confidence),
+            if structured { "text" } else { "text_heuristic" },
+            session_details
+                .get("kanidm_cli_version")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("(unknown)"),
+            session_recovery_hint(&snapshot),
+        ),
+        details: json!({
+            "session": session_details,
+            "version_probe": version_probe,
+        }),
+        warnings,
+    })
+}
+
 pub fn session_login(cli: &KanidmCli) -> Result<CommandOutput, AppError> {
     match verify_session_recovery(cli, RecoveryTarget::BaseSession, || cli.login()) {
         Ok(verification) => {
@@ -199,6 +279,25 @@ fn parsed_expiry_label(expiry: &ParsedExpiry) -> String {
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| expiry.to_string()),
         ParsedExpiry::Unknown(value) => format!("unknown:{value}"),
+    }
+}
+
+fn session_recovery_hint(snapshot: &SessionSnapshot) -> &'static str {
+    match (snapshot.base_session_state, snapshot.privileged_write_state) {
+        (BaseSessionState::Missing | BaseSessionState::Unknown, _) => {
+            "Run `kanidm-admin session login` from an interactive terminal."
+        }
+        (BaseSessionState::Expired, _) => {
+            "Run `kanidm-admin session login` to refresh the expired base session."
+        }
+        (BaseSessionState::Present, PrivilegedWriteState::Ready)
+            if snapshot.parse_confidence == ParseConfidence::High =>
+        {
+            "No recovery command is required."
+        }
+        (BaseSessionState::Present, _) => {
+            "Run `kanidm-admin session reauth` from an interactive terminal."
+        }
     }
 }
 
@@ -342,6 +441,49 @@ printf 'active token for admindsaw\n'
         assert!(output.human.contains("requires reauthentication"));
         assert!(output.human.contains("kanidm-admin session reauth"));
         assert_eq!(output.details["state"], "reauth_required");
+    }
+
+    #[test]
+    fn session_diagnose_does_not_report_heuristic_privileged_state_as_ready() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm-stub.sh");
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "--version" ]]; then
+  printf 'kanidm 1.9.0\n'
+  exit 0
+fi
+printf 'active token for admindsaw\n'
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+            sftp_runtime: crate::context::SftpRuntimeConfig::default(),
+            runtime_policy: crate::context::RuntimePolicy::default(),
+        });
+
+        let output = session_diagnose(&cli).expect("session diagnose");
+        assert_eq!(output.details["session"]["parse_confidence"], "heuristic");
+        assert_eq!(output.details["session"]["source"], "text_heuristic");
+        assert_eq!(
+            output.details["session"]["privileged_write_state"],
+            "unknown"
+        );
+        assert_eq!(
+            output.details["session"]["kanidm_cli_version"],
+            "kanidm 1.9.0"
+        );
+        assert!(output
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("heuristically")));
     }
 
     #[test]

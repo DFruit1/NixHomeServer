@@ -4,6 +4,9 @@ use crate::{
     context::ResolvedContext,
     inventory::{clients::parse_client_list, groups::parse_group_list, users::parse_user_list},
     kanidm_cli::{BaseSessionState, KanidmCli, PrivilegedWriteState},
+    ops::local_runtime::{
+        execute_local_command, CheckStatus, LocalCommandSpec, RuntimeCheckReport,
+    },
     output::CommandOutput,
     AppError,
 };
@@ -51,7 +54,11 @@ pub fn show_context(context: &ResolvedContext) -> CommandOutput {
     }
 }
 
-pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutput, AppError> {
+pub fn doctor(
+    context: &ResolvedContext,
+    cli: &KanidmCli,
+    deep: bool,
+) -> Result<CommandOutput, AppError> {
     let session = probe_session(cli);
     let users = probe_count(|| {
         let parsed = parse_user_list(&cli.person_list::<Value>()?)?;
@@ -73,6 +80,11 @@ pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutpu
         clients,
         vaultwarden: probe_vaultwarden_helper_context(context),
     };
+    let deep_checks = if deep {
+        Some(probe_deep_runtime(context, cli))
+    } else {
+        None
+    };
     let repo_root = context
         .repo_root
         .as_ref()
@@ -80,7 +92,20 @@ pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutpu
 
     Ok(CommandOutput {
         message: "completed kanidm-admin doctor checks".to_string(),
-        human: report.render_human(context),
+        human: {
+            let mut human = report.render_human(context);
+            if let Some(checks) = &deep_checks {
+                human.push_str("\n\nDeep Runtime Checks:\n");
+                human.push_str(
+                    &checks
+                        .iter()
+                        .map(|check| format!("- {}: {:?}", check.label, check.status))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            human
+        },
         details: json!({
             "context": {
                 "repo_root": repo_root,
@@ -110,6 +135,10 @@ pub fn doctor(context: &ResolvedContext, cli: &KanidmCli) -> Result<CommandOutpu
                 "users": report.users.warnings,
                 "groups": report.groups.warnings,
                 "clients": report.clients.warnings,
+            },
+            "deep": {
+                "enabled": deep,
+                "checks": deep_checks,
             },
         }),
         warnings: Vec::new(),
@@ -419,6 +448,133 @@ fn probe_vaultwarden_helper_context(context: &ResolvedContext) -> VaultwardenDoc
     }
 }
 
+fn probe_deep_runtime(context: &ResolvedContext, cli: &KanidmCli) -> Vec<RuntimeCheckReport> {
+    let mut checks = Vec::new();
+    checks.push(command_check(
+        "doctor.root_bridge.sudo_contract",
+        "root bridge sudo contract is callable",
+        false,
+        LocalCommandSpec::new(
+            "sudo",
+            [
+                "-n".to_string(),
+                std::env::var("KANIDM_ADMIN_ROOT_HELPER")
+                    .unwrap_or_else(|_| "kanidm-admin-root".to_string()),
+                "--help".to_string(),
+            ],
+        ),
+    ));
+    checks.push(command_check(
+        "doctor.kanidm_unix.status",
+        "kanidm-unix status is available",
+        false,
+        LocalCommandSpec::new("kanidm-unix", ["status".to_string()]),
+    ));
+    checks.push(command_check(
+        "doctor.systemd.kanidm_unixd.active",
+        "kanidm-unixd service is active",
+        false,
+        LocalCommandSpec::new(
+            "systemctl",
+            [
+                "is-active".to_string(),
+                context.sftp_runtime.kanidm_unixd_service.clone(),
+            ],
+        ),
+    ));
+    checks.push(command_check(
+        "doctor.systemd.files_sftp_sshd.active",
+        "files SFTP sshd service is active",
+        false,
+        LocalCommandSpec::new(
+            "systemctl",
+            [
+                "is-active".to_string(),
+                context.sftp_runtime.files_sftp_sshd_service.clone(),
+            ],
+        ),
+    ));
+    checks.push(command_check(
+        "doctor.systemd.posix_groups.exists",
+        "POSIX group sync service exists",
+        false,
+        LocalCommandSpec::new(
+            "systemctl",
+            [
+                "status".to_string(),
+                context.sftp_runtime.posix_groups_service.clone(),
+            ],
+        ),
+    ));
+    checks.push(command_check(
+        "doctor.systemd.user_root_sync.exists",
+        "fileshare user root sync service exists",
+        false,
+        LocalCommandSpec::new(
+            "systemctl",
+            [
+                "status".to_string(),
+                context.sftp_runtime.user_root_sync_service.clone(),
+            ],
+        ),
+    ));
+    for group in [
+        &context.sftp_runtime.sftp_access_group,
+        &context.sftp_runtime.local_sftp_access_group,
+        &context.sftp_runtime.web_access_group,
+        &context.sftp_runtime.usb_access_group,
+        &context.sftp_runtime.backup_storage_access_group,
+    ] {
+        let status = match cli.group_get::<Value>(group) {
+            Ok(_) => CheckStatus::Passed,
+            Err(_) => CheckStatus::Failed,
+        };
+        checks.push(RuntimeCheckReport {
+            id: "doctor.kanidm.group.exists".to_string(),
+            label: format!("Kanidm group '{group}' exists"),
+            required: false,
+            status,
+            command: Some(format!(
+                "kanidm group get {} --url {} --name {}",
+                group, context.server_url, context.admin_name
+            )),
+            summary: if status == CheckStatus::Passed {
+                "found".to_string()
+            } else {
+                "not found or unavailable".to_string()
+            },
+            detail: None,
+            probe: None,
+        });
+    }
+    checks
+}
+
+fn command_check(
+    id: &'static str,
+    label: &str,
+    required: bool,
+    spec: LocalCommandSpec,
+) -> RuntimeCheckReport {
+    let command = spec.display_command().display_string();
+    let result = execute_local_command(&spec);
+    let status = if result.allowed_success(&std::collections::BTreeSet::from([0])) {
+        CheckStatus::Passed
+    } else {
+        CheckStatus::Failed
+    };
+    RuntimeCheckReport {
+        id: id.to_string(),
+        label: label.to_string(),
+        required,
+        status,
+        command: Some(command),
+        summary: result.detail(),
+        detail: None,
+        probe: None,
+    }
+}
+
 fn append_probe_error(label: &str, probe: &DoctorProbe, errors: &mut Vec<String>) {
     if let Some(error) = &probe.error {
         let message = error
@@ -532,7 +688,7 @@ exit 1
 "#,
         );
 
-        let output = doctor(&context(), &cli).expect("doctor");
+        let output = doctor(&context(), &cli, false).expect("doctor");
         assert!(output.human.contains("Users: unavailable"));
         assert!(output.human.contains("Errors:"));
         assert_eq!(output.details["counts"]["groups"], 1);
@@ -565,7 +721,7 @@ exit 1
 "#,
         );
 
-        let output = doctor(&context(), &cli).expect("doctor");
+        let output = doctor(&context(), &cli, false).expect("doctor");
         assert!(output.human.contains("Session: missing"));
         assert!(output.human.contains("Run `kanidm-admin session login`"));
     }
@@ -596,7 +752,7 @@ exit 1
 "#,
         );
 
-        let output = doctor(&context(), &cli).expect("doctor");
+        let output = doctor(&context(), &cli, false).expect("doctor");
         assert!(output.human.contains("Warnings:"));
         assert!(output.human.contains("skipped malformed"));
         assert_eq!(output.details["counts"]["users"], 0);
@@ -628,7 +784,7 @@ exit 1
 "#,
         );
 
-        let output = doctor(&context(), &cli).expect("doctor");
+        let output = doctor(&context(), &cli, false).expect("doctor");
         assert!(output
             .human
             .contains("Vaultwarden Local Helper: local invite helper context is configured"));
@@ -672,7 +828,7 @@ exit 1
         let mut context = context();
         context.vaultwarden_url = None;
         context.vaultwarden_admin_token_file = None;
-        let output = doctor(&context, &cli).expect("doctor");
+        let output = doctor(&context, &cli, false).expect("doctor");
         assert_eq!(output.details["probes"]["vaultwarden"]["status"], "warning");
         assert_eq!(
             output.details["probes"]["vaultwarden"]["url_configured"],

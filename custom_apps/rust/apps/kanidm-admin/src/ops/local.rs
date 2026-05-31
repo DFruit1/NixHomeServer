@@ -2,9 +2,9 @@ use std::{
     env,
     fs::{self, File, OpenOptions},
     io::Write,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use pbkdf2::pbkdf2_hmac;
@@ -18,7 +18,10 @@ use crate::{
     inventory::{users::UserRecord, Parsed},
     kanidm_cli::KanidmCli,
     ops::{
-        local_runtime::{execute_local_command, root_action_spec, run_root_action, RootAction},
+        local_runtime::{
+            execute_local_command, root_action_spec, run_local_command, run_root_action,
+            CheckStatus, LocalCommandSpec, RootAction, RuntimeCheckReport, RuntimeReport,
+        },
         user::load_user,
     },
     output::CommandOutput,
@@ -28,6 +31,8 @@ use crate::{
 
 const DEFAULT_PASSWORD_HASH_DIR: &str = "/var/lib/jellyfin/.nixos-managed/desired-password-hashes";
 const PASSWORD_HASH_DIR_ENV: &str = "KANIDM_ADMIN_JELLYFIN_PASSWORD_HASH_DIR";
+const JELLYFIN_RECONCILE_SERVICE: &str = "jellyfin-password-reconcile.service";
+const JELLYFIN_SERVICE: &str = "jellyfin.service";
 const PBKDF2_ITERATIONS: u32 = 210_000;
 const VAULTWARDEN_ADMIN_COOKIE: &str = "VW_ADMIN";
 
@@ -96,11 +101,86 @@ pub fn stage_jellyfin_password(
             "path": path,
             "password_env": password_env,
             "staged": true,
+            "runtime": jellyfin_password_runtime_report(None, &account_id),
         }),
         warnings: vec![
             "The Jellyfin reconcile timer or service must still converge before the password change is active.".to_string(),
         ],
     })
+}
+
+pub fn diagnose_jellyfin_password(
+    cli: &KanidmCli,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    let account_id = validate_account_id(account_id)?;
+    let runtime = jellyfin_password_runtime_report(Some(cli), &account_id);
+    Ok(jellyfin_password_output(&account_id, runtime, "diagnosed"))
+}
+
+pub fn reconcile_jellyfin_password(
+    cli: &KanidmCli,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    let account_id = validate_account_id(account_id)?;
+    let start = run_root_action(
+        cli,
+        "local jellyfin password reconcile",
+        RootAction::StartSystemdUnit {
+            unit: JELLYFIN_RECONCILE_SERVICE.to_string(),
+        },
+        None,
+        Duration::from_secs(20),
+    );
+    let mut runtime = jellyfin_password_runtime_report(Some(cli), &account_id);
+    runtime.checks.insert(
+        0,
+        RuntimeCheckReport {
+            id: "jellyfin.password_reconcile.started".to_string(),
+            label: "Jellyfin password reconcile service was started".to_string(),
+            required: true,
+            status: if start
+                .result
+                .allowed_success(&std::collections::BTreeSet::from([0]))
+            {
+                CheckStatus::Passed
+            } else {
+                runtime.ready = false;
+                CheckStatus::Failed
+            },
+            command: start
+                .backend_payload
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|args| {
+                    format!(
+                        "sudo {}",
+                        args.iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )
+                }),
+            summary: start.result.detail(),
+            detail: None,
+            probe: Some(start.backend_payload),
+        },
+    );
+    runtime.ready = runtime.required_checks_passed();
+    if !runtime.ready {
+        return Err(AppError::Verification {
+            message: format!("Jellyfin password runtime did not converge for '{account_id}'"),
+            details: json!({ "runtime": runtime }),
+        });
+    }
+    Ok(jellyfin_password_output(&account_id, runtime, "reconciled"))
+}
+
+pub fn test_jellyfin_password(
+    cli: &KanidmCli,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    diagnose_jellyfin_password(cli, account_id)
 }
 
 pub fn invite_vaultwarden_user(
@@ -138,6 +218,37 @@ pub fn lookup_vaultwarden_user(
         })?;
     let admin_token = read_secret_with_sudo_fallback_unlogged(admin_token_path)?;
     fetch_vaultwarden_user_status(vaultwarden_url, &admin_token, primary_email)
+}
+
+pub fn diagnose_vaultwarden_user(
+    context: &ResolvedContext,
+    cli: &KanidmCli,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    let runtime = vaultwarden_runtime_report(context, cli, account_id)?;
+    Ok(vaultwarden_runtime_output(account_id, runtime, "diagnosed"))
+}
+
+pub fn reconcile_vaultwarden_user(
+    context: &ResolvedContext,
+    cli: &KanidmCli,
+    account_id: &str,
+) -> Result<CommandOutput, AppError> {
+    let invite = invite_vaultwarden_user(context, cli, account_id)?;
+    let runtime = vaultwarden_runtime_report(context, cli, account_id)?;
+    if !runtime.ready {
+        return Err(AppError::Verification {
+            message: format!("Vaultwarden runtime did not converge for '{account_id}'"),
+            details: json!({
+                "runtime": runtime,
+                "invite": invite.details,
+            }),
+        });
+    }
+    let mut output = vaultwarden_runtime_output(account_id, runtime, "reconciled");
+    output.details["invite"] = invite.details;
+    output.warnings.extend(invite.warnings);
+    Ok(output)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -345,6 +456,375 @@ fn normalize_secret_value(path: &Path, contents: String) -> Result<String, AppEr
         });
     }
     Ok(trimmed)
+}
+
+fn jellyfin_password_runtime_report(cli: Option<&KanidmCli>, account_id: &str) -> RuntimeReport {
+    let started = Instant::now();
+    let directory = env::var_os(PASSWORD_HASH_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PASSWORD_HASH_DIR));
+    let path = directory.join(format!("{account_id}.pbkdf2"));
+    let mut checks = Vec::new();
+
+    let metadata = fs::symlink_metadata(&path);
+    checks.push(match &metadata {
+        Ok(metadata) if metadata.file_type().is_file() => runtime_check(
+            "jellyfin.password_stage.pending",
+            "Staged Jellyfin password hash exists",
+            true,
+            CheckStatus::Passed,
+            format!("found {}", path.display()),
+        ),
+        Ok(_) => runtime_check(
+            "jellyfin.password_stage.pending",
+            "Staged Jellyfin password hash exists",
+            true,
+            CheckStatus::Failed,
+            format!("{} is not a regular file", path.display()),
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => runtime_check(
+            "jellyfin.password_stage.pending",
+            "Staged Jellyfin password hash exists",
+            true,
+            CheckStatus::Failed,
+            format!("{} is missing", path.display()),
+        ),
+        Err(error) => runtime_check(
+            "jellyfin.password_stage.pending",
+            "Staged Jellyfin password hash exists",
+            true,
+            CheckStatus::Unknown,
+            format!("failed to inspect {}: {error}", path.display()),
+        ),
+    });
+
+    checks.push(match metadata {
+        Ok(metadata) => {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode == 0o600 {
+                runtime_check(
+                    "jellyfin.secret_file.permissions",
+                    "Staged Jellyfin hash permissions are 0600",
+                    true,
+                    CheckStatus::Passed,
+                    "mode 0600".to_string(),
+                )
+            } else {
+                runtime_check(
+                    "jellyfin.secret_file.permissions",
+                    "Staged Jellyfin hash permissions are 0600",
+                    true,
+                    CheckStatus::Failed,
+                    format!("mode {mode:o}"),
+                )
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => runtime_check(
+            "jellyfin.secret_file.permissions",
+            "Staged Jellyfin hash permissions are 0600",
+            true,
+            CheckStatus::Failed,
+            "staged file is missing".to_string(),
+        ),
+        Err(error) => runtime_check(
+            "jellyfin.secret_file.permissions",
+            "Staged Jellyfin hash permissions are 0600",
+            true,
+            CheckStatus::Unknown,
+            format!("failed to inspect permissions: {error}"),
+        ),
+    });
+
+    checks.push(match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            runtime_check(
+                "jellyfin.secret_file.exists",
+                "Jellyfin staged password directory is safe",
+                true,
+                CheckStatus::Passed,
+                format!("directory {}", directory.display()),
+            )
+        }
+        Ok(_) => runtime_check(
+            "jellyfin.secret_file.exists",
+            "Jellyfin staged password directory is safe",
+            true,
+            CheckStatus::Failed,
+            format!("{} is not a plain directory", directory.display()),
+        ),
+        Err(error) => runtime_check(
+            "jellyfin.secret_file.exists",
+            "Jellyfin staged password directory is safe",
+            true,
+            CheckStatus::Failed,
+            format!("failed to inspect {}: {error}", directory.display()),
+        ),
+    });
+
+    if let Some(cli) = cli {
+        checks.push(systemd_active_runtime_check(
+            cli,
+            "jellyfin.service.active",
+            "Jellyfin service is active",
+            JELLYFIN_SERVICE,
+            true,
+        ));
+        checks.push(systemd_active_runtime_check(
+            cli,
+            "jellyfin.password_stage.applied",
+            "Jellyfin password reconcile service is not failed",
+            JELLYFIN_RECONCILE_SERVICE,
+            false,
+        ));
+    } else {
+        checks.push(runtime_check(
+            "jellyfin.service.active",
+            "Jellyfin service is active",
+            false,
+            CheckStatus::Skipped,
+            "not checked by stage command".to_string(),
+        ));
+    }
+
+    let ready = checks
+        .iter()
+        .all(|check| !check.required || check.status == CheckStatus::Passed);
+    RuntimeReport {
+        target: "jellyfin_password".to_string(),
+        subject: account_id.to_string(),
+        ready,
+        attempts: 1,
+        elapsed_ms: started.elapsed().as_millis(),
+        checks,
+    }
+}
+
+fn jellyfin_password_output(account_id: &str, runtime: RuntimeReport, verb: &str) -> CommandOutput {
+    let ready = runtime.ready;
+    let verification = runtime.verification_summary();
+    CommandOutput {
+        message: format!("Jellyfin password runtime {verb} for '{account_id}'"),
+        human: format!(
+            "Account ID: {account_id}\nJellyfin password runtime ready: {}",
+            if ready { "yes" } else { "no" }
+        ),
+        details: json!({
+            "account_id": account_id,
+            "verification": verification,
+            "runtime": runtime,
+        }),
+        warnings: if ready {
+            Vec::new()
+        } else {
+            vec!["Jellyfin password runtime is not ready; inspect runtime.checks for the failing prerequisite.".to_string()]
+        },
+    }
+}
+
+fn vaultwarden_runtime_report(
+    context: &ResolvedContext,
+    cli: &KanidmCli,
+    account_id: &str,
+) -> Result<RuntimeReport, AppError> {
+    let started = Instant::now();
+    let account_id = validate_account_id(account_id)?;
+    let mut checks = Vec::new();
+
+    let user = load_user(cli, &account_id)?;
+    let primary_email = user.value.primary_email.clone();
+    checks.push(if let Some(email) = &primary_email {
+        runtime_check(
+            "vaultwarden.kanidm.primary_email",
+            "Kanidm user has a primary email",
+            true,
+            CheckStatus::Passed,
+            email.clone(),
+        )
+    } else {
+        runtime_check(
+            "vaultwarden.kanidm.primary_email",
+            "Kanidm user has a primary email",
+            true,
+            CheckStatus::Failed,
+            "primary email is missing".to_string(),
+        )
+    });
+
+    let vaultwarden_url = context.vaultwarden_url.as_deref();
+    checks.push(if let Some(url) = vaultwarden_url {
+        runtime_check(
+            "vaultwarden.url.configured",
+            "Vaultwarden URL is configured",
+            true,
+            CheckStatus::Passed,
+            url.to_string(),
+        )
+    } else {
+        runtime_check(
+            "vaultwarden.url.configured",
+            "Vaultwarden URL is configured",
+            true,
+            CheckStatus::Failed,
+            "Vaultwarden URL is not configured".to_string(),
+        )
+    });
+
+    let admin_token_path = context.vaultwarden_admin_token_file.as_deref();
+    checks.push(if let Some(path) = admin_token_path {
+        runtime_check(
+            "vaultwarden.admin_token.path_configured",
+            "Vaultwarden admin token path is configured",
+            true,
+            CheckStatus::Passed,
+            path.display().to_string(),
+        )
+    } else {
+        runtime_check(
+            "vaultwarden.admin_token.path_configured",
+            "Vaultwarden admin token path is configured",
+            true,
+            CheckStatus::Failed,
+            "Vaultwarden admin token path is not configured".to_string(),
+        )
+    });
+
+    let mut status_value = serde_json::Value::Null;
+    if let (Some(url), Some(path), Some(email)) = (vaultwarden_url, admin_token_path, primary_email)
+    {
+        match read_secret_with_sudo_fallback(cli, path)
+            .and_then(|token| fetch_vaultwarden_user_status(url, &token, &email))
+        {
+            Ok(status) => {
+                status_value = status.to_value();
+                checks.push(runtime_check(
+                    "vaultwarden.admin_login.succeeds",
+                    "Vaultwarden admin login and user lookup succeeds",
+                    true,
+                    CheckStatus::Passed,
+                    format!("user state: {}", status.state_label()),
+                ));
+            }
+            Err(error) => checks.push(runtime_check(
+                "vaultwarden.admin_login.succeeds",
+                "Vaultwarden admin login and user lookup succeeds",
+                true,
+                CheckStatus::Failed,
+                error.human_message(),
+            )),
+        }
+    } else {
+        checks.push(runtime_check(
+            "vaultwarden.admin_login.succeeds",
+            "Vaultwarden admin login and user lookup succeeds",
+            true,
+            CheckStatus::Skipped,
+            "required Vaultwarden context is incomplete".to_string(),
+        ));
+    }
+
+    let ready = checks
+        .iter()
+        .all(|check| !check.required || check.status == CheckStatus::Passed);
+    let mut report = RuntimeReport {
+        target: "vaultwarden".to_string(),
+        subject: account_id,
+        ready,
+        attempts: 1,
+        elapsed_ms: started.elapsed().as_millis(),
+        checks,
+    };
+    if status_value != serde_json::Value::Null {
+        report.checks.push(RuntimeCheckReport {
+            id: "vaultwarden.user.state".to_string(),
+            label: "Vaultwarden user state".to_string(),
+            required: false,
+            status: CheckStatus::Passed,
+            command: None,
+            summary: status_value["state"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            detail: None,
+            probe: Some(status_value),
+        });
+    }
+    Ok(report)
+}
+
+fn vaultwarden_runtime_output(
+    account_id: &str,
+    runtime: RuntimeReport,
+    verb: &str,
+) -> CommandOutput {
+    let ready = runtime.ready;
+    let verification = runtime.verification_summary();
+    CommandOutput {
+        message: format!("Vaultwarden runtime {verb} for '{account_id}'"),
+        human: format!(
+            "Account ID: {account_id}\nVaultwarden runtime ready: {}",
+            if ready { "yes" } else { "no" }
+        ),
+        details: json!({
+            "account_id": account_id,
+            "verification": verification,
+            "runtime": runtime,
+        }),
+        warnings: if ready {
+            Vec::new()
+        } else {
+            vec!["Vaultwarden runtime is not ready; inspect runtime.checks for the failing prerequisite.".to_string()]
+        },
+    }
+}
+
+fn systemd_active_runtime_check(
+    cli: &KanidmCli,
+    id: &'static str,
+    label: &str,
+    service: &str,
+    required: bool,
+) -> RuntimeCheckReport {
+    let spec = LocalCommandSpec::new("systemctl", ["is-active".to_string(), service.to_string()]);
+    let command = spec.display_command().display_string();
+    let execution = run_local_command(cli, &format!("local systemctl is-active {service}"), spec);
+    let success = execution
+        .result
+        .allowed_success(&std::collections::BTreeSet::from([0]));
+    RuntimeCheckReport {
+        id: id.to_string(),
+        label: label.to_string(),
+        required,
+        status: if success {
+            CheckStatus::Passed
+        } else if required {
+            CheckStatus::Failed
+        } else {
+            CheckStatus::Unknown
+        },
+        command: Some(command),
+        summary: execution.result.detail(),
+        detail: None,
+        probe: Some(execution.backend_payload),
+    }
+}
+
+fn runtime_check(
+    id: &'static str,
+    label: &str,
+    required: bool,
+    status: CheckStatus,
+    summary: String,
+) -> RuntimeCheckReport {
+    RuntimeCheckReport {
+        id: id.to_string(),
+        label: label.to_string(),
+        required,
+        status,
+        command: None,
+        summary,
+        detail: None,
+        probe: None,
+    }
 }
 
 fn fetch_vaultwarden_user_status(

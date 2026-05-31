@@ -72,6 +72,29 @@ cargo nextest run
 cargo run
 ```
 
+Frontend commands from `custom_apps/rust/apps/mail-archive-ui/frontend`:
+
+```bash
+pnpm install
+pnpm run dev
+pnpm run check
+```
+
+The browser UI is Rust-rendered HTML with Qwik islands for interactive
+behavior. Production deploys use the Vite build copied into the Nix package.
+For hot reloading during UI work, run the Vite dev server and start Rust with:
+
+```bash
+MAIL_ARCHIVE_UI_FRONTEND_MODE=vite \
+MAIL_ARCHIVE_UI_VITE_ORIGIN=http://127.0.0.1:5173 \
+cargo run
+```
+
+CSS and Qwik island changes hot reload through Vite. Rust route, HTML, and API
+changes still require restarting `cargo run`. `pnpm` is used to match the
+existing `youtube-downloader` frontend and Nix packaging; Bun is intentionally
+not part of this app.
+
 CLI sync mode:
 
 ```bash

@@ -425,7 +425,7 @@ exit 1
             r#"#!/usr/bin/env bash
 set -euo pipefail
 services_file={}
-if [[ "$1" == "-n" && "$2" == "systemctl" && "$3" == "start" ]]; then
+if [[ "$1" == "-n" && "$2" == "kanidm-admin-root" && "$3" == "systemd-start" ]]; then
   printf '%s\n' "$4" >> "$services_file"
   exit 0
 fi
