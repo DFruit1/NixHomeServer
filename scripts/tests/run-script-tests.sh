@@ -29,7 +29,9 @@ done
 
 test_scripts=(
   scripts/tests/test-app-module-structure.sh
+  scripts/tests/test-module-boundaries.sh
   scripts/tests/test-deploy-cli.sh
+  scripts/tests/test-export-inventory.sh
   scripts/tests/test-secret-definitions.sh
 )
 

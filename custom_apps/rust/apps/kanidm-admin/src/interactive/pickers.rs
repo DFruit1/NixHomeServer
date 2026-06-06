@@ -88,6 +88,16 @@ where
     let Some(client) = choose_client_name(kanidm, prompt)? else {
         return Ok(());
     };
+    render::print_note(
+        "Review OAuth2 Client Change",
+        &format!(
+            "Client: {client}\n\nThis command will use privileged Kanidm write access.\nKanidm will validate the client change, then kanidm-admin will verify the resulting client state where the command supports it."
+        ),
+    );
+    match forms::confirm("Apply this OAuth2 client change now?", false)? {
+        Some(true) => {}
+        _ => return Ok(()),
+    }
     run_privileged_command("OAuth2 Client", kanidm, || action(&client))
 }
 

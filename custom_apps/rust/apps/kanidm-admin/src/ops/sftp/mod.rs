@@ -19,7 +19,7 @@ use self::{
     },
     output::{
         merge_warnings, render_auth_test_line, render_local_shadow_line, render_readiness_human,
-        render_readiness_lines, sftp_next_actions,
+        render_readiness_lines, sftp_auth_failure_next_actions, sftp_next_actions,
     },
     runtime::{readiness_from_runtime, ReadinessReport, RuntimeScope},
 };
@@ -76,6 +76,7 @@ pub enum AuthTestOutcome {
     NotRun,
     Succeeded,
     Failed,
+    SkippedLocalBridge,
     CompletedUnparseable,
     SpawnFailed,
 }
@@ -122,6 +123,24 @@ pub fn set_posix_password_and_verify_with_policy(
     let mut warnings = person.warnings.clone();
 
     let password_update = cli.person_posix_set_password(&account_id, password.as_str())?;
+    if let Some(diagnostic) = posix_password_update_rejection(&password_update) {
+        return Err(AppError::Verification {
+            message: format!(
+                "Kanidm did not confirm the POSIX password update for '{}': {}",
+                account_id, diagnostic
+            ),
+            details: json!({
+                "account_id": account_id,
+                "failure_kind": "posix_password_update_rejected",
+                "kanidm_update_accepted": false,
+                "backend_steps": [password_update.payload("kanidm person posix set-password")],
+                "next_actions": [
+                    "Choose a different POSIX/SFTP password that satisfies Kanidm password policy and history requirements.".to_string(),
+                    format!("Retry `kanidm-admin user posix-password set {account_id}` and stop if Kanidm reports a policy, history, or complexity error."),
+                ],
+            }),
+        });
+    }
 
     let local_shadow_sync = sync_local_shadow_password(cli, config, &account_id, password.as_str());
     if local_shadow_sync.required && !local_shadow_sync.completed {
@@ -132,6 +151,7 @@ pub fn set_posix_password_and_verify_with_policy(
             ),
             details: json!({
                 "account_id": account_id,
+                "failure_kind": "local_runtime_not_ready",
                 "kanidm_update_accepted": true,
                 "local_shadow_sync": local_shadow_sync,
                 "runtime": null,
@@ -166,25 +186,52 @@ pub fn set_posix_password_and_verify_with_policy(
     );
 
     let unixd_auth_test = if run_auth_test {
-        let (auth_test, auth_warnings) = run_unixd_auth_test(cli, &account_id);
-        warnings.extend(auth_warnings);
-        auth_test
+        if local_shadow_sync.required {
+            unixd_auth_test_skipped_local_bridge()
+        } else {
+            let (auth_test, auth_warnings) = run_unixd_auth_test(cli, &account_id);
+            warnings.extend(auth_warnings);
+            auth_test
+        }
     } else {
         unixd_auth_test_not_run()
     };
 
-    let auth_failed = matches!(
-        unixd_auth_test.outcome,
-        AuthTestOutcome::Failed | AuthTestOutcome::SpawnFailed
-    );
+    let auth_failed = run_auth_test
+        && !local_shadow_sync.required
+        && unixd_auth_test.outcome != AuthTestOutcome::Succeeded;
     if !readiness_report.runtime.ready || auth_failed {
+        let (failure_kind, message, next_actions) = if auth_failed {
+            (
+                "unixd_auth_failed",
+                if readiness_report.runtime.ready {
+                    format!(
+                        "Kanidm accepted the POSIX password for '{}', but UnixD rejected the password entered for verification",
+                        account_id
+                    )
+                } else {
+                    format!(
+                        "Kanidm accepted the POSIX password for '{}', but UnixD rejected the password entered for verification and local SFTP readiness is incomplete",
+                        account_id
+                    )
+                },
+                sftp_auth_failure_next_actions(config, &account_id),
+            )
+        } else {
+            (
+                "sftp_runtime_not_ready",
+                format!(
+                    "Kanidm accepted the POSIX password for '{}', but the local SFTP login path is not ready",
+                    account_id
+                ),
+                sftp_next_actions(config, &account_id),
+            )
+        };
         return Err(AppError::Verification {
-            message: format!(
-                "Kanidm accepted the POSIX password for '{}', but the local SFTP login path is not ready",
-                account_id
-            ),
+            message,
             details: json!({
                 "account_id": account_id,
+                "failure_kind": failure_kind,
                 "user": person.value,
                 "kanidm_update_accepted": true,
                 "unixd_cache_invalidated": unixd_cache_invalidated,
@@ -192,25 +239,33 @@ pub fn set_posix_password_and_verify_with_policy(
                 "unixd_auth_test": unixd_auth_test,
                 "runtime": readiness_report.runtime,
                 "sftp_readiness": readiness_report.readiness,
-                "next_actions": sftp_next_actions(config, &account_id),
+                "next_actions": next_actions,
             }),
         });
     }
 
     let auth_line = render_auth_test_line(&unixd_auth_test);
     let local_shadow_line = render_local_shadow_line(&local_shadow_sync);
+    let sftp_auth_description = if local_shadow_sync.required {
+        format!(
+            "Direct SFTP on port {} uses the synced local shadow password for '{}', because that bare username resolves from /etc/passwd before Kanidm. Domain-qualified Kanidm identities continue to use pam_kanidm.",
+            config.files_sftp_port, account_id
+        )
+    } else {
+        format!(
+            "Direct SFTP on port {} uses this password through pam_kanidm.",
+            config.files_sftp_port
+        )
+    };
     Ok(CommandOutput {
-        message: format!(
-            "set or reset Kanidm POSIX password for '{}'",
-            account_id
-        ),
+        message: format!("set or reset Kanidm POSIX password for '{}'", account_id),
         human: format!(
-            "Kanidm accepted the POSIX/UNIX password update for '{}'.\nSFTP readiness: ready.\nUnixD cache invalidated: {}.\n{}\n{}\n\nDirect SFTP on port {} uses this password through pam_kanidm. The readiness check confirmed the local NSS, group, service, chroot, mount, and UnixD path that OpenSSH depends on.\n\n{}",
+            "Kanidm accepted the POSIX/UNIX password update for '{}'.\nSFTP readiness: ready.\nUnixD cache invalidated: {}.\n{}\n{}\n\n{} The readiness check confirmed the local NSS, group, service, chroot, mount, and authentication path that OpenSSH depends on.\n\n{}",
             account_id,
             if unixd_cache_invalidated { "yes" } else { "no" },
             auth_line,
             local_shadow_line,
-            config.files_sftp_port,
+            sftp_auth_description,
             human_user_summary(&person.value),
         ),
         details: json!({
@@ -307,6 +362,7 @@ pub fn reconcile_sftp_login_with_policy(
             ),
             details: json!({
                 "account_id": account_id,
+                "failure_kind": "sftp_runtime_not_ready",
                 "user": person.value,
                 "sftp_runtime": config,
                 "runtime": readiness_report.runtime,
@@ -368,25 +424,43 @@ pub fn test_sftp_login_with_policy(
         RuntimeScope::SftpLogin,
         policy,
     );
+    let local_bridge_auth = local_sftp_bridge_present(cli, config, &account_id);
     let (unixd_auth_test, auth_warnings) = if run_auth_test {
-        run_unixd_auth_test(cli, &account_id)
+        if local_bridge_auth {
+            (unixd_auth_test_skipped_local_bridge(), Vec::new())
+        } else {
+            run_unixd_auth_test(cli, &account_id)
+        }
     } else {
         (unixd_auth_test_not_run(), Vec::new())
     };
     let warnings = merge_warnings(person.warnings.clone(), auth_warnings);
 
-    let auth_failed = run_auth_test && unixd_auth_test.outcome != AuthTestOutcome::Succeeded;
+    let auth_failed = run_auth_test
+        && !local_bridge_auth
+        && unixd_auth_test.outcome != AuthTestOutcome::Succeeded;
     if !readiness_report.runtime.ready || auth_failed {
+        let failure_kind = if auth_failed {
+            "unixd_auth_failed"
+        } else {
+            "sftp_runtime_not_ready"
+        };
+        let next_actions = if auth_failed {
+            sftp_auth_failure_next_actions(config, &account_id)
+        } else {
+            sftp_next_actions(config, &account_id)
+        };
         return Err(AppError::Verification {
             message: format!("SFTP login test failed for '{account_id}'"),
             details: json!({
                 "account_id": account_id,
+                "failure_kind": failure_kind,
                 "user": person.value,
                 "sftp_runtime": config,
                 "runtime": readiness_report.runtime,
                 "sftp_readiness": readiness_report.readiness,
                 "unixd_auth_test": unixd_auth_test,
-                "next_actions": sftp_next_actions(config, &account_id),
+                "next_actions": next_actions,
             }),
         });
     }
@@ -436,11 +510,13 @@ pub fn reconcile_file_access_runtime(
             ),
             details: json!({
                 "account_id": account_id,
+                "failure_kind": "local_runtime_not_ready",
                 "user": person.value,
                 "sftp_runtime": config,
                 "runtime": readiness_report.runtime,
                 "sftp_readiness": readiness_report.readiness,
                 "sync_services": sync_service_steps,
+                "next_actions": sftp_next_actions(config, &account_id),
             }),
         });
     }
@@ -483,11 +559,13 @@ pub fn verify_removed_file_access(
             ),
             details: json!({
                 "account_id": account_id,
+                "failure_kind": "local_runtime_not_ready",
                 "groups_removed": removed_groups,
                 "user": person.value,
                 "sftp_runtime": config,
                 "runtime": report,
                 "sync_services": sync_report.service_steps,
+                "next_actions": sftp_next_actions(config, &account_id),
             }),
         });
     }
@@ -627,10 +705,24 @@ fn build_runtime_checks(
             format!("{} service is active", config.files_sftp_sshd_service),
             config.files_sftp_sshd_service.clone(),
         ));
+        checks.push(tcp_port_listening_check(
+            cli.clone(),
+            "network.files_sftp.port_listening",
+            format!(
+                "files SFTP TCP port {} is listening",
+                config.files_sftp_port
+            ),
+            config.files_sftp_port,
+        ));
     } else {
         checks.push(skipped_check(
             "systemd.files_sftp_sshd.active",
             "SFTP sshd service is active",
+            "skipped because direct SFTP access is not expected for this user",
+        ));
+        checks.push(skipped_check(
+            "network.files_sftp.port_listening",
+            "files SFTP TCP port is listening",
             "skipped because direct SFTP access is not expected for this user",
         ));
     }
@@ -835,6 +927,57 @@ fn systemctl_active_check(
     )
 }
 
+fn tcp_port_listening_check(
+    cli: KanidmCli,
+    id: &'static str,
+    label: String,
+    port: u16,
+) -> RuntimeCheck {
+    let spec = LocalCommandSpec::new("ss", ["-ltn".to_string()]);
+    local_command_check(
+        cli,
+        id,
+        label,
+        true,
+        format!("local ss -ltn port {port}"),
+        spec,
+        move |execution| {
+            let command_success = execution.result.allowed_success(&BTreeSet::from([0]));
+            let listening =
+                command_success && ss_output_has_listening_port(&execution.result.stdout, port);
+            let summary = if listening {
+                format!("A TCP listener is present on port {port}.")
+            } else if command_success {
+                format!("No TCP listener was found on port {port}.")
+            } else {
+                format!(
+                    "Could not inspect TCP listeners for port {port}: {}",
+                    execution.result.detail()
+                )
+            };
+            RuntimeCheckResult {
+                status: status_from_success(listening),
+                summary,
+                detail: None,
+                probe: Some(command_probe_payload(execution)),
+            }
+        },
+    )
+}
+
+fn ss_output_has_listening_port(output: &str, port: u16) -> bool {
+    let suffix = format!(":{port}");
+    output.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        let state = fields.next();
+        let _recv_q = fields.next();
+        let _send_q = fields.next();
+        let local_address = fields.next();
+        matches!(state, Some("LISTEN"))
+            && local_address.is_some_and(|address| address.ends_with(&suffix))
+    })
+}
+
 fn getent_passwd_check(cli: KanidmCli, account_id: String) -> RuntimeCheck {
     let spec = LocalCommandSpec::new("getent", ["passwd".to_string(), account_id.clone()]);
     local_command_check(
@@ -887,12 +1030,16 @@ fn unix_groups_check(
         move |execution| {
             let success = execution.result.allowed_success(&BTreeSet::from([0]));
             let unix_groups = parse_group_words(&execution.result.stdout);
+            let local_bridge_satisfies_sftp = scope == RuntimeScope::SftpLogin
+                && is_local_passwd_user(&account_id)
+                && has_group(&unix_groups, &config.local_sftp_access_group);
             let mut missing = expected_groups
                 .iter()
                 .filter(|group| !has_group(&unix_groups, group))
                 .cloned()
                 .collect::<Vec<_>>();
-            if scope == RuntimeScope::SftpLogin
+            if !local_bridge_satisfies_sftp
+                && scope == RuntimeScope::SftpLogin
                 && !has_group(&unix_groups, &config.local_sftp_access_group)
                 && !has_group(&unix_groups, &config.sftp_access_group)
                 && !missing
@@ -903,12 +1050,19 @@ fn unix_groups_check(
             }
             missing.sort();
             missing.dedup();
-            let ok = success && missing.is_empty();
+            let ok = success && (missing.is_empty() || local_bridge_satisfies_sftp);
             let summary = if ok {
-                format!(
-                    "Unix groups include expected file-access groups: {}",
-                    unix_groups.join(" ")
-                )
+                if local_bridge_satisfies_sftp && !missing.is_empty() {
+                    format!(
+                        "Local Unix bridge group '{}' permits SFTP login for local account '{}'; Kanidm file-access membership and mounts are checked separately.",
+                        config.local_sftp_access_group, account_id
+                    )
+                } else {
+                    format!(
+                        "Unix groups include expected file-access groups: {}",
+                        unix_groups.join(" ")
+                    )
+                }
             } else if success {
                 format!(
                     "Unix groups are missing expected file-access groups: {}",
@@ -1176,7 +1330,28 @@ fn sync_local_shadow_password(
     }
 }
 
+fn local_sftp_bridge_present(
+    cli: &KanidmCli,
+    config: &SftpRuntimeConfig,
+    account_id: &str,
+) -> bool {
+    if !is_local_passwd_user(account_id) {
+        return false;
+    }
+    let id_spec = LocalCommandSpec::new("id", ["-nG".to_string(), account_id.to_string()]);
+    let id = run_local_command(cli, "local id -nG for SFTP bridge auth check", id_spec);
+    let groups = parse_group_words(&id.result.stdout);
+    id.result.allowed_success(&BTreeSet::from([0]))
+        && has_group(&groups, &config.local_sftp_access_group)
+}
+
 fn run_unixd_auth_test(cli: &KanidmCli, account_id: &str) -> (UnixdAuthTest, Vec<String>) {
+    eprintln!(
+        "{}",
+        crate::output::warning_text(&format!(
+            "Verification step for '{account_id}': enter the POSIX/SFTP password.\nThis is the password used by direct SFTP through Kanidm UnixD/PAM.\nIt will not set or change the password again; it only confirms that the local login path accepts it."
+        ))
+    );
     match cli.unix_auth_test(account_id) {
         Ok(output) => {
             let outcome = parse_unixd_auth_outcome(&output.stdout, &output.stderr);
@@ -1217,6 +1392,18 @@ fn unixd_auth_test_not_run() -> UnixdAuthTest {
     }
 }
 
+fn unixd_auth_test_skipped_local_bridge() -> UnixdAuthTest {
+    UnixdAuthTest {
+        completed: false,
+        succeeded: None,
+        outcome: AuthTestOutcome::SkippedLocalBridge,
+        detail: Some(
+            "local account uses the files SFTP bridge; UnixD-only auth-test does not include pam_unix"
+                .to_string(),
+        ),
+    }
+}
+
 fn parse_unixd_auth_outcome(stdout: &str, stderr: &str) -> AuthTestOutcome {
     let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
     let auth_success = combined.contains("auth success");
@@ -1241,11 +1428,49 @@ fn parse_unixd_auth_outcome(stdout: &str, stderr: &str) -> AuthTestOutcome {
     AuthTestOutcome::CompletedUnparseable
 }
 
+fn posix_password_update_rejection(output: &crate::kanidm_cli::BackendSuccess) -> Option<String> {
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+    let lower = combined.to_ascii_lowercase();
+    let markers = [
+        "password history",
+        "history requirement",
+        "complexity requirement",
+        "complexity requirements",
+        "password complexity",
+        "password quality",
+        "quality requirement",
+        "quality requirements",
+        "minimum length",
+        "too short",
+        "was rejected",
+        "password rejected",
+        "policy violation",
+        "violates policy",
+        "does not meet",
+        "failed to set",
+        "failed to update",
+        "error:",
+    ];
+    markers
+        .iter()
+        .any(|marker| lower.contains(marker))
+        .then(|| {
+            combined
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("password update was rejected by policy")
+                .to_string()
+        })
+}
+
 fn auth_outcome_success(outcome: AuthTestOutcome) -> Option<bool> {
     match outcome {
         AuthTestOutcome::Succeeded => Some(true),
         AuthTestOutcome::Failed | AuthTestOutcome::SpawnFailed => Some(false),
-        AuthTestOutcome::NotRun | AuthTestOutcome::CompletedUnparseable => None,
+        AuthTestOutcome::NotRun
+        | AuthTestOutcome::SkippedLocalBridge
+        | AuthTestOutcome::CompletedUnparseable => None,
     }
 }
 
@@ -1411,6 +1636,18 @@ exit 3
 "#,
         );
         write_script(
+            &dir.path().join("ss"),
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "-ltn" ]]; then
+  printf 'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n'
+  printf 'LISTEN 0      128    0.0.0.0:2202       0.0.0.0:*\n'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        write_script(
             &dir.path().join("findmnt"),
             r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -1466,6 +1703,16 @@ exit 0
         };
         assert_eq!(auth.succeeded, None);
         assert_ne!(auth.outcome, AuthTestOutcome::Succeeded);
+    }
+
+    #[test]
+    fn ss_listener_parser_requires_listen_on_target_port() {
+        let output = "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n\
+LISTEN 0      128    127.0.0.1:2222      0.0.0.0:*\n\
+ESTAB  0      0      127.0.0.1:2223      127.0.0.1:44444\n";
+        assert!(ss_output_has_listening_port(output, 2222));
+        assert!(!ss_output_has_listening_port(output, 2223));
+        assert!(!ss_output_has_listening_port(output, 22));
     }
 
     #[test]

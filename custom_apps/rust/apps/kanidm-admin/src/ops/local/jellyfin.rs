@@ -100,10 +100,15 @@ pub fn reconcile_jellyfin_password(
         },
     );
     runtime.ready = runtime.required_checks_passed();
+    runtime.refresh_derived();
     if !runtime.ready {
         return Err(AppError::Verification {
             message: format!("Jellyfin password runtime did not converge for '{account_id}'"),
-            details: json!({ "runtime": runtime }),
+            details: json!({
+                "failure_kind": "local_runtime_not_ready",
+                "account_id": account_id,
+                "runtime": runtime,
+            }),
         });
     }
     Ok(jellyfin_password_output(&account_id, runtime, "reconciled"))

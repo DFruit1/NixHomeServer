@@ -103,6 +103,15 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    services.kiwix-serve = {
+      enable = true;
+      package = cfg.package;
+      address = cfg.address;
+      port = cfg.port;
+      libraryPath = libraryFile;
+      extraArgs = [ "--monitorLibrary" ];
+    };
+
     systemd.services.kiwix-library-sync = {
       description = "Synchronize the generated Kiwix library catalog with uploaded ZIM files";
       wantedBy = [ "multi-user.target" ];
@@ -116,7 +125,7 @@ in
         "data-pool-layout.service"
         "local-fs.target"
       ];
-      before = [ "kiwix.service" ];
+      before = [ "kiwix-serve.service" ];
       serviceConfig = {
         Type = "oneshot";
       };
@@ -125,37 +134,19 @@ in
       '';
     };
 
-    systemd.services.kiwix = {
-      description = "Kiwix offline content server";
-      wantedBy = [ "multi-user.target" ];
+    systemd.services.kiwix-serve = {
       wants = [
         "kiwix-library-sync.service"
-        "network-online.target"
         "local-fs.target"
       ];
       after = [
         "kiwix-library-sync.service"
-        "network-online.target"
         "local-fs.target"
       ];
       serviceConfig = {
-        Type = "simple";
+        DynamicUser = lib.mkForce false;
         User = "kiwix";
         Group = "kiwix";
-        ExecStart = lib.concatStringsSep " " (map lib.escapeShellArg [
-          "${cfg.package}/bin/kiwix-serve"
-          "--library"
-          libraryFile
-          "--monitorLibrary"
-          "--address=${cfg.address}"
-          "--port=${toString cfg.port}"
-        ]);
-        Restart = "on-failure";
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_NETLINK" "AF_UNIX" ];
         ReadOnlyPaths = [
           cfg.libraryRoot
           cfg.stateDir

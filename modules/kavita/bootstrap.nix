@@ -142,40 +142,6 @@ in
           printf '%s' "$1" | ${pkgs.perl}/bin/perl -pe 's/\x27/\x27\x27/g'
         }
 
-        migrate_library_path() {
-          local old_path="$1"
-          local new_path="$2"
-          local escaped_old escaped_new matching_count
-
-          escaped_old="$(escape_sql "$old_path")"
-          escaped_new="$(escape_sql "$new_path")"
-          matching_count="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
-            "select count(*) from FolderPath where Path = '$escaped_old' and not exists (select 1 from FolderPath where Path = '$escaped_new');" \
-            2>/dev/null || true)"
-          [[ "$matching_count" =~ ^[0-9]+$ ]] || return 0
-          (( matching_count > 0 )) || return 0
-
-          run_sqlite_write "update FolderPath set Path = '$escaped_new' where Path = '$escaped_old' and not exists (select 1 from FolderPath where Path = '$escaped_new');"
-          changed=1
-          echo "Kavita OIDC bootstrap migrated library path $old_path -> $new_path"
-        }
-
-        migrate_library_path "$shared_books_root/ebooks" "$shared_books_root/_Ebooks"
-        migrate_library_path "$shared_books_root/comics" "$shared_books_root/_Comics"
-        migrate_library_path "$shared_books_root/manga" "$shared_books_root/_Manga"
-        migrate_library_path "$users_root/shared/books/ebooks" "$shared_books_root/_Ebooks"
-        migrate_library_path "$users_root/shared/books/comics" "$shared_books_root/_Comics"
-        migrate_library_path "$users_root/shared/books/manga" "$shared_books_root/_Manga"
-        migrate_library_path "${vars.sharedRoot}/books/ebooks" "$shared_books_root/_Ebooks"
-        migrate_library_path "${vars.sharedRoot}/books/comics" "$shared_books_root/_Comics"
-        migrate_library_path "${vars.sharedRoot}/books/manga" "$shared_books_root/_Manga"
-
-        for username in ${lib.escapeShellArgs vars.kanidmAppUsers}; do
-          migrate_library_path "$users_root/$username/books/ebooks" "$users_root/$username/_Books/_Ebooks"
-          migrate_library_path "$users_root/$username/books/comics" "$users_root/$username/_Books/_Comics"
-          migrate_library_path "$users_root/$username/books/manga" "$users_root/$username/_Books/_Manga"
-        done
-
         if [[ "$current" != "$updated" ]]; then
           escaped="$(escape_sql "$updated")"
           run_sqlite_write "update ServerSetting set Value = '$escaped' where Key = 40;"

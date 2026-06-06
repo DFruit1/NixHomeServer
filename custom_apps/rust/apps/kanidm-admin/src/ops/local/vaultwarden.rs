@@ -89,6 +89,8 @@ pub fn reconcile_vaultwarden_user(
         return Err(AppError::Verification {
             message: format!("Vaultwarden runtime did not converge for '{account_id}'"),
             details: json!({
+                "failure_kind": "local_runtime_not_ready",
+                "account_id": account_id,
                 "runtime": runtime,
                 "invite": invite.details,
             }),

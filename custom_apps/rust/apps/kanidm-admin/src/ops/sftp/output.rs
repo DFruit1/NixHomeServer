@@ -1,4 +1,5 @@
 use super::*;
+use crate::output::{dim_text, error_text, success_text};
 
 pub(super) fn render_readiness_human(
     config: &SftpRuntimeConfig,
@@ -26,7 +27,11 @@ pub(super) fn render_readiness_lines(readiness: &SftpReadiness) -> Vec<String> {
             format!(
                 "- {}: {} ({})",
                 check.name,
-                if check.ok { "ok" } else { "failed" },
+                if check.ok {
+                    success_text("ok")
+                } else {
+                    error_text("failed")
+                },
                 check.detail
             )
         })
@@ -36,25 +41,47 @@ pub(super) fn render_readiness_lines(readiness: &SftpReadiness) -> Vec<String> {
 pub(super) fn render_auth_test_line(auth_test: &UnixdAuthTest) -> String {
     match auth_test.outcome {
         AuthTestOutcome::Succeeded => {
-            "UnixD auth-test: auth success and account success observed.".to_string()
+            format!(
+                "UnixD auth-test: {}",
+                success_text("auth success and account success observed.")
+            )
         }
         AuthTestOutcome::Failed => {
-            "UnixD auth-test: completed, but failure output was observed.".to_string()
+            format!(
+                "UnixD auth-test: {}",
+                error_text("password authentication failed; account access was allowed.")
+            )
+        }
+        AuthTestOutcome::SkippedLocalBridge => {
+            format!(
+                "UnixD auth-test: {}",
+                dim_text("skipped for local SFTP bridge; this login uses the synced local shadow password through PAM.")
+            )
         }
         AuthTestOutcome::CompletedUnparseable => {
-            "UnixD auth-test: completed; success was not parseable from captured output."
-                .to_string()
+            format!(
+                "UnixD auth-test: {}",
+                error_text("could not confirm success from terminal output; treated as failed.")
+            )
         }
-        AuthTestOutcome::SpawnFailed => "UnixD auth-test: not completed.".to_string(),
-        AuthTestOutcome::NotRun => "UnixD auth-test: not run.".to_string(),
+        AuthTestOutcome::SpawnFailed => {
+            format!("UnixD auth-test: {}", error_text("not completed."))
+        }
+        AuthTestOutcome::NotRun => format!("UnixD auth-test: {}", dim_text("not run.")),
     }
 }
 
 pub(super) fn render_local_shadow_line(sync: &LocalShadowSync) -> String {
     match (sync.required, sync.completed) {
-        (true, true) => "Local SFTP shadow password sync: completed.".to_string(),
-        (true, false) => "Local SFTP shadow password sync: failed.".to_string(),
-        (false, _) => "Local SFTP shadow password sync: not required.".to_string(),
+        (true, true) => format!(
+            "Local SFTP shadow password sync: {}",
+            success_text("completed.")
+        ),
+        (true, false) => format!("Local SFTP shadow password sync: {}", error_text("failed.")),
+        (false, _) => format!(
+            "Local SFTP shadow password sync: {}",
+            dim_text("not required.")
+        ),
     }
 }
 
@@ -69,8 +96,34 @@ pub(super) fn sftp_next_actions(config: &SftpRuntimeConfig, account_id: &str) ->
             config.kanidm_unixd_service, config.files_sftp_sshd_service
         ),
         format!(
+            "Confirm the dedicated SFTP listener with `ss -ltn 'sport = :{}'` on the server.",
+            config.files_sftp_port
+        ),
+        format!(
             "Confirm NSS and chroot state with `getent passwd {account_id}` and `findmnt {}/{account_id}`.",
             config.sftp_chroot_base
+        ),
+    ]
+}
+
+pub(super) fn sftp_auth_failure_next_actions(
+    config: &SftpRuntimeConfig,
+    account_id: &str,
+) -> Vec<String> {
+    vec![
+        format!(
+            "Re-run the password test and enter the exact POSIX/SFTP password you just set: `kanidm-admin local sftp test {account_id} --auth-test`."
+        ),
+        format!(
+            "If the password may have been mistyped during setup, run `kanidm-admin user posix-password set {account_id}` and use the same value during the verification prompt."
+        ),
+        format!(
+            "If authentication still fails, inspect `journalctl -u {}` for the matching `Authentication Denied` entry.",
+            config.kanidm_unixd_service
+        ),
+        format!(
+            "Confirm the dedicated SFTP endpoint is listening with `ss -ltn 'sport = :{}'`, then retry `sftp -P {} {account_id}@<server>`.",
+            config.files_sftp_port, config.files_sftp_port
         ),
     ]
 }

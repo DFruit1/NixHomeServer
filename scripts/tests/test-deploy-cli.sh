@@ -33,6 +33,11 @@ if rg -Fq -- "--target-host" <<<"$default_output"; then
   echo "$default_output"
   exit 1
 fi
+if ! rg -Fq "rebuild_command=nix run --inputs-from . nixpkgs#nixos-rebuild" <<<"$default_output"; then
+  echo "❌ Deploy should resolve nixos-rebuild from the repo flake inputs."
+  echo "$default_output"
+  exit 1
+fi
 
 local_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-locally --action switch)"
 if ! rg -Fq "mode=local" <<<"$local_output"; then

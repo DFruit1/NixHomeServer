@@ -97,6 +97,14 @@ impl VerificationPolicy {
     pub fn allow_partial_success_warning(self) -> bool {
         !matches!(self, Self::SessionRecovery)
     }
+
+    fn failure_kind(self) -> Option<&'static str> {
+        match self {
+            Self::SessionRecovery => Some("session_recovery_unstable"),
+            Self::MembershipConvergence => Some("membership_convergence_timeout"),
+            Self::ReadAfterWrite | Self::PolicyConvergence | Self::ClientConvergence => None,
+        }
+    }
 }
 
 pub fn verify_with_retry<T, F>(
@@ -216,20 +224,27 @@ fn verification_error(
         attempts,
     };
 
+    let mut details = json!({
+        "elapsed_ms": report.elapsed_ms,
+        "expected_state": report.expected_state,
+        "verification_policy": {
+            "name": report.policy_name,
+            "total_time_budget_ms": report.total_time_budget_ms,
+            "allow_partial_success_warning": report.allow_partial_success_warning,
+        },
+        "attempts": report.attempts,
+        "write_completed": report.write_completed,
+        "fatal_error": fatal_error,
+    });
+    if let Some(failure_kind) = policy.failure_kind() {
+        if let Some(object) = details.as_object_mut() {
+            object.insert("failure_kind".to_string(), json!(failure_kind));
+        }
+    }
+
     AppError::Verification {
         message: context.to_string(),
-        details: json!({
-            "elapsed_ms": report.elapsed_ms,
-            "expected_state": report.expected_state,
-            "verification_policy": {
-                "name": report.policy_name,
-                "total_time_budget_ms": report.total_time_budget_ms,
-                "allow_partial_success_warning": report.allow_partial_success_warning,
-            },
-            "attempts": report.attempts,
-            "write_completed": report.write_completed,
-            "fatal_error": fatal_error,
-        }),
+        details,
     }
 }
 
@@ -256,6 +271,26 @@ mod tests {
         match error {
             AppError::Verification { details, .. } => {
                 assert_eq!(details["attempts"][0]["outcome"], "fatal");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn membership_convergence_timeout_sets_failure_kind() {
+        let error = verification_error(
+            VerificationPolicy::MembershipConvergence,
+            "membership did not converge",
+            json!({"groups": ["users"]}),
+            true,
+            14000,
+            Vec::new(),
+            None,
+        );
+
+        match error {
+            AppError::Verification { details, .. } => {
+                assert_eq!(details["failure_kind"], "membership_convergence_timeout");
             }
             other => panic!("unexpected error: {other:?}"),
         }

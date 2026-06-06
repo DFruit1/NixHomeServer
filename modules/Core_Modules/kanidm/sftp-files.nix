@@ -51,20 +51,12 @@ let
 in
 {
   services.kanidm = {
-    enablePam = true;
-    unixSettings = {
+    unix.enable = true;
+    unix.settings = {
       version = "2";
       default_shell = "/run/current-system/sw/bin/bash";
       home_attr = "name";
       home_alias = "name";
-      # The pinned NixOS module exposes the old top-level option, while the
-      # Kanidm 1.9 unix daemon expects this under [kanidm] for version 2.
-      pam_allowed_login_groups = [
-        webAccessGroup
-        sftpAccessGroup
-        usbAccessGroup
-        backupStorageAccessGroup
-      ];
       kanidm = {
         pam_allowed_login_groups = [
           webAccessGroup
@@ -89,7 +81,10 @@ in
   security.pam.services.sshd.unixAuth = lib.mkForce true;
   security.pam.services.files-sftp-sshd = {
     startSession = true;
-    unixAuth = false;
+    # The local admin account also exists in /etc/passwd, so NSS resolves the
+    # bare username before Kanidm. Permit pam_unix only for this local bridge;
+    # non-local file users still authenticate through pam_kanidm.
+    unixAuth = lib.mkForce localAdminNeedsSftpBridge;
     rules.auth.kanidm.settings.use_first_pass = lib.mkForce false;
   };
 

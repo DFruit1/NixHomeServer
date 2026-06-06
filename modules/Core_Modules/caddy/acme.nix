@@ -6,7 +6,7 @@
     defaults = {
       email = vars.kanidmAdminEmail;
       dnsProvider = "cloudflare";
-      credentialsFile = config.age.secrets.cfAPIToken.path;
+      credentialFiles.CF_DNS_API_TOKEN_FILE = config.age.secrets.cfAPIToken.path;
       dnsResolver = "9.9.9.9:53";
     };
     certs."${vars.domain}" = {

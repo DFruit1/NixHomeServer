@@ -175,6 +175,10 @@ pub(in crate::interactive) fn set_posix_password_flow(
         Some(true) => {}
         _ => return Ok(()),
     }
+    render::print_note(
+        "POSIX Password Prompt",
+        "Enter the new POSIX/SFTP password next.\nThis is separate from the user's web/OIDC password and passkeys.\nAfter Kanidm accepts it, the tool will ask for the same password again to verify UnixD/PAM and direct SFTP login readiness.",
+    );
     let Some(password) = prompt_submitted(forms::password_confirmed("New POSIX/SFTP password")?)
     else {
         return Ok(());

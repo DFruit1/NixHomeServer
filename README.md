@@ -46,6 +46,7 @@ Useful first-run helpers:
 
 - `nix run .#validate-config-readiness`
 - `nix run .#show-config-summary`
+- `nix run .#export-inventory`
 - `nix run .#bootstrap-storage-plan`
 
 `modules/Core_Modules` is the fixed platform layer and has a `default.nix` that
@@ -65,7 +66,7 @@ Mail archive control plane: see [Mail Archive UI](./custom_apps/rust/apps/mail-a
 Files are served through the authenticated Filestash UI and a dedicated
 OpenSSH SFTP endpoint. Filestash uses the signed-in user's Kanidm password to
 connect to SFTP, so file writes land as the real Unix user.
-Kavita-managed book roots use `ebooks`, `comics`, and `manga`.
+Kavita-managed book roots use `_Ebooks`, `_Comics`, and `_Manga`.
 
 Vaultwarden stays private and is intended for LAN and NetBird use only. See
 [Vaultwarden Guide](./documentation/vaultwarden.md) for the local-login invite

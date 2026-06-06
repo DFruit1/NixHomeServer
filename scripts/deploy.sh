@@ -100,7 +100,7 @@ fi
 make_rebuild_command() {
   local -n out_cmd="$1"
 
-  out_cmd=(nix run nixpkgs#nixos-rebuild -- "$action" --flake ".#${hostname}" --sudo)
+  out_cmd=(nix run --inputs-from . nixpkgs#nixos-rebuild -- "$action" --flake ".#${hostname}" --sudo)
 
   if [[ "$build_locally" == "true" ]]; then
     out_cmd+=(--target-host "$target_host")

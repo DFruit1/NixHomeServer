@@ -113,7 +113,7 @@ let
 
   paperlessPackage = pkgs.callPackage (pkgs.path + "/pkgs/by-name/pa/paperless-ngx/package.nix") {
     fetchFromGitHub = patchedPaperlessFetchFromGitHub;
-    nodejs_20 = pkgs.nodejs_22;
+    nodejs = pkgs.nodejs_24;
   };
 in
 {

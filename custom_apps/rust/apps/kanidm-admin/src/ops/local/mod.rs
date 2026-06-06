@@ -386,14 +386,14 @@ fn jellyfin_password_runtime_report(cli: Option<&KanidmCli>, account_id: &str) -
     let ready = checks
         .iter()
         .all(|check| !check.required || check.status == CheckStatus::Passed);
-    RuntimeReport {
-        target: "jellyfin_password".to_string(),
-        subject: account_id.to_string(),
+    RuntimeReport::new(
+        "jellyfin_password",
+        account_id,
         ready,
-        attempts: 1,
-        elapsed_ms: started.elapsed().as_millis(),
+        1,
+        started.elapsed().as_millis(),
         checks,
-    }
+    )
 }
 
 fn jellyfin_password_output(account_id: &str, runtime: RuntimeReport, verb: &str) -> CommandOutput {
@@ -522,14 +522,14 @@ fn vaultwarden_runtime_report(
     let ready = checks
         .iter()
         .all(|check| !check.required || check.status == CheckStatus::Passed);
-    let mut report = RuntimeReport {
-        target: "vaultwarden".to_string(),
-        subject: account_id,
+    let mut report = RuntimeReport::new(
+        "vaultwarden",
+        account_id,
         ready,
-        attempts: 1,
-        elapsed_ms: started.elapsed().as_millis(),
+        1,
+        started.elapsed().as_millis(),
         checks,
-    };
+    );
     if status_value != serde_json::Value::Null {
         report.checks.push(RuntimeCheckReport {
             id: "vaultwarden.user.state".to_string(),

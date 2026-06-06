@@ -486,6 +486,18 @@ exit 1
 "#,
     );
     write_script(
+        &dir.path().join("ss"),
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "-ltn" ]]; then
+  printf 'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n'
+  printf 'LISTEN 0      128    0.0.0.0:2222       0.0.0.0:*\n'
+  exit 0
+fi
+exit 1
+"#,
+    );
+    write_script(
         &dir.path().join("getent"),
         r#"#!/usr/bin/env bash
 set -euo pipefail

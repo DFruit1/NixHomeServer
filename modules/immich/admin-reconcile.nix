@@ -16,7 +16,7 @@ let
     gnugrep
     gnused
     jq
-    kanidm_1_9
+    kanidm_1_10
     postgresql
     util-linux
   ];

@@ -20,7 +20,7 @@ in
     allowedGroups = [ "users" ];
     serviceDependencies = [
       "caddy.service"
-      "kiwix.service"
+      "kiwix-serve.service"
     ];
   });
 }

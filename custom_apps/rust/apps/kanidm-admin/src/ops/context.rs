@@ -10,7 +10,7 @@ use crate::{
         execute_local_command, root_action_spec, run_local_command, CheckStatus, LocalCommandSpec,
         RootAction, RuntimeCheckReport,
     },
-    output::CommandOutput,
+    output::{status_text, CommandOutput},
     AppError,
 };
 
@@ -98,14 +98,8 @@ pub fn doctor(
         human: {
             let mut human = report.render_human(context);
             if let Some(checks) = &deep_checks {
-                human.push_str("\n\nDeep Runtime Checks:\n");
-                human.push_str(
-                    &checks
-                        .iter()
-                        .map(|check| format!("- {}: {:?}", check.label, check.status))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
+                human.push_str("\n\n");
+                human.push_str(&render_deep_checks(checks));
             }
             human
         },
@@ -497,29 +491,15 @@ fn probe_deep_runtime(context: &ResolvedContext, cli: &KanidmCli) -> Vec<Runtime
                 ],
             ),
         ),
-        command_check(
+        systemctl_loaded_check(
             "doctor.systemd.posix_groups.exists",
             "POSIX group sync service exists",
-            false,
-            LocalCommandSpec::new(
-                "systemctl",
-                [
-                    "status".to_string(),
-                    context.sftp_runtime.posix_groups_service.clone(),
-                ],
-            ),
+            &context.sftp_runtime.posix_groups_service,
         ),
-        command_check(
+        systemctl_loaded_check(
             "doctor.systemd.user_root_sync.exists",
             "fileshare user root sync service exists",
-            false,
-            LocalCommandSpec::new(
-                "systemctl",
-                [
-                    "status".to_string(),
-                    context.sftp_runtime.user_root_sync_service.clone(),
-                ],
-            ),
+            &context.sftp_runtime.user_root_sync_service,
         ),
         history_permissions_check(),
         broad_sudo_policy_check(context),
@@ -535,7 +515,8 @@ fn probe_deep_runtime(context: &ResolvedContext, cli: &KanidmCli) -> Vec<Runtime
         &context.sftp_runtime.backup_storage_access_group,
     ] {
         let status = match cli.group_get::<Value>(group) {
-            Ok(_) => CheckStatus::Passed,
+            Ok(Value::Object(_)) => CheckStatus::Passed,
+            Ok(_) => CheckStatus::Failed,
             Err(_) => CheckStatus::Failed,
         };
         checks.push(RuntimeCheckReport {
@@ -722,6 +703,44 @@ fn vaultwarden_token_root_helper_check(cli: &KanidmCli, path: &Path) -> RuntimeC
     }
 }
 
+fn systemctl_loaded_check(id: &'static str, label: &str, service: &str) -> RuntimeCheckReport {
+    let spec = LocalCommandSpec::new(
+        "systemctl",
+        [
+            "show".to_string(),
+            "-p".to_string(),
+            "LoadState".to_string(),
+            "--value".to_string(),
+            service.to_string(),
+        ],
+    );
+    let command = spec.display_command().display_string();
+    let result = execute_local_command(&spec);
+    let load_state = result.stdout.trim();
+    let loaded =
+        result.allowed_success(&std::collections::BTreeSet::from([0])) && load_state == "loaded";
+    RuntimeCheckReport {
+        id: id.to_string(),
+        label: label.to_string(),
+        required: false,
+        status: if loaded {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
+        command: Some(command),
+        summary: if loaded {
+            format!("{service} is loaded")
+        } else if load_state.is_empty() {
+            format!("{service} is not confirmed loaded: {}", result.detail())
+        } else {
+            format!("{service} load state is {load_state}")
+        },
+        detail: None,
+        probe: None,
+    }
+}
+
 fn command_check(
     id: &'static str,
     label: &str,
@@ -745,6 +764,89 @@ fn command_check(
         detail: None,
         probe: None,
     }
+}
+
+fn render_deep_checks(checks: &[RuntimeCheckReport]) -> String {
+    let mut body = vec!["Deep Runtime Checks:".to_string()];
+    for (title, statuses) in [
+        ("Failed", &[CheckStatus::Failed][..]),
+        ("Warning / Unknown", &[CheckStatus::Unknown][..]),
+        ("Passed", &[CheckStatus::Passed][..]),
+        ("Skipped", &[CheckStatus::Skipped][..]),
+    ] {
+        let matching = checks
+            .iter()
+            .filter(|check| statuses.contains(&check.status))
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            continue;
+        }
+        body.push(format!("\n{title}:"));
+        for check in matching {
+            body.push(render_deep_check_line(check));
+        }
+    }
+
+    let fixes = likely_deep_fixes(checks);
+    if !fixes.is_empty() {
+        body.push("\nMost likely fix:".to_string());
+        body.extend(fixes.into_iter().map(|fix| format!("- {fix}")));
+    }
+
+    body.join("\n")
+}
+
+fn render_deep_check_line(check: &RuntimeCheckReport) -> String {
+    let mut line = format!(
+        "- [{}] {}: {}",
+        status_text(check_status_word(check.status)),
+        check.label,
+        check.summary
+    );
+    if matches!(check.status, CheckStatus::Failed | CheckStatus::Unknown) {
+        if let Some(detail) = &check.detail {
+            line.push_str(&format!("\n  detail: {detail}"));
+        }
+        if let Some(command) = &check.command {
+            line.push_str(&format!("\n  command: {command}"));
+        }
+    }
+    line
+}
+
+fn check_status_word(status: CheckStatus) -> &'static str {
+    match status {
+        CheckStatus::Passed => "passed",
+        CheckStatus::Failed => "failed",
+        CheckStatus::Skipped => "skipped",
+        CheckStatus::Unknown => "unknown",
+    }
+}
+
+fn likely_deep_fixes(checks: &[RuntimeCheckReport]) -> Vec<String> {
+    let mut fixes = checks
+        .iter()
+        .filter(|check| matches!(check.status, CheckStatus::Failed | CheckStatus::Unknown))
+        .filter_map(|check| {
+            if check.id.starts_with("doctor.systemd.") {
+                Some("Inspect the named unit with `systemctl status <unit>` on the server.")
+            } else if check.id == "doctor.root_bridge.sudo_contract" {
+                Some("Check the `kanidm-admin-root` sudo contract and bootstrap sudo deployment.")
+            } else if check.id == "doctor.kanidm.group.exists" {
+                Some("Confirm the group names in `vars.nix` and rerun provisioning if they are missing in Kanidm.")
+            } else if check.id == "doctor.history.permissions" {
+                Some("Run `chmod 700` on the kanidm-admin history directory.")
+            } else if check.id == "doctor.vaultwarden.token_root_helper" {
+                Some("Check the Vaultwarden agenix token path and the root helper read-secret permission.")
+            } else {
+                None
+            }
+        })
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    fixes.sort();
+    fixes.dedup();
+    fixes
 }
 
 fn append_probe_error(label: &str, probe: &DoctorProbe, errors: &mut Vec<String>) {
@@ -1013,5 +1115,37 @@ exit 1
         assert!(output
             .human
             .contains("Vaultwarden Local Helper: local invite helper context is incomplete"));
+    }
+
+    #[test]
+    fn deep_doctor_render_groups_failures_with_commands_and_fixes() {
+        let rendered = render_deep_checks(&[
+            RuntimeCheckReport {
+                id: "doctor.systemd.files_sftp_sshd.active".to_string(),
+                label: "files SFTP sshd service is active".to_string(),
+                required: false,
+                status: CheckStatus::Failed,
+                command: Some("systemctl is-active files-sftp-sshd.service".to_string()),
+                summary: "files-sftp-sshd.service is inactive".to_string(),
+                detail: Some("inactive".to_string()),
+                probe: None,
+            },
+            RuntimeCheckReport {
+                id: "doctor.history.permissions".to_string(),
+                label: "kanidm-admin history directory is private".to_string(),
+                required: false,
+                status: CheckStatus::Passed,
+                command: None,
+                summary: "mode 700".to_string(),
+                detail: None,
+                probe: None,
+            },
+        ]);
+
+        assert!(rendered.contains("Deep Runtime Checks:"));
+        assert!(rendered.contains("Failed:"));
+        assert!(rendered.contains("command: systemctl is-active files-sftp-sshd.service"));
+        assert!(rendered.contains("Most likely fix:"));
+        assert!(rendered.contains("Passed:"));
     }
 }

@@ -768,6 +768,18 @@ exit 1
 "#,
         );
         write_script(
+            &bin_dir.join("ss"),
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "-ltn" ]]; then
+  printf 'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n'
+  printf 'LISTEN 0      128    0.0.0.0:2222       0.0.0.0:*\n'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        write_script(
             &bin_dir.join("findmnt"),
             r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -1077,6 +1089,146 @@ fi
         let rendered = serde_json::to_string(&output.json_payload()).expect("render json");
         assert!(!rendered.contains("correct horse battery staple"));
         assert!(output.warnings.is_empty());
+    }
+
+    #[test]
+    fn set_posix_password_hard_fails_unparseable_auth_test() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm");
+        let cache_script = dir.path().join("kanidm-unix");
+        let chroot_base = dir.path().join("chroots");
+        let users_root = dir.path().join("users");
+        fs::create_dir_all(chroot_base.join("alice")).expect("chroot");
+        fs::create_dir_all(users_root.join("alice")).expect("user root");
+        install_sftp_probe_stubs(dir.path(), "alice", "users files-sftp-users");
+        let original_path = prepend_path(dir.path());
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "person" && "${args[1]}" == "get" && "${args[2]}" == "alice" ]]; then
+  printf '{"attrs":{"name":["alice"],"displayname":["Alice"],"mail":["alice@example.test"],"directmemberof":["files-sftp-users"]}}'
+  exit 0
+fi
+if [[ "${args[0]}" == "person" && "${args[1]}" == "posix" && "${args[2]}" == "set-password" ]]; then
+  cat >/dev/null
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+        write_script(
+            &cache_script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "cache-invalidate" || "$1" == "auth-test" ]]; then
+  exit 0
+fi
+if [[ "$1" == "status" ]]; then
+  printf 'system: online\nKanidm: online\n'
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+            sftp_runtime: SftpRuntimeConfig::default(),
+            runtime_policy: crate::context::RuntimePolicy::default(),
+        });
+        let config = SftpRuntimeConfig {
+            sftp_chroot_base: chroot_base.display().to_string(),
+            users_root: users_root.display().to_string(),
+            ..SftpRuntimeConfig::default()
+        };
+
+        let error = set_posix_password_with_config(
+            &cli,
+            &config,
+            PosixPasswordOptions {
+                account_id: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+                run_auth_test: true,
+            },
+        )
+        .expect_err("unparseable auth test should fail");
+        restore_path(original_path);
+
+        match error {
+            crate::AppError::Verification { details, .. } => {
+                assert_eq!(details["failure_kind"], "unixd_auth_failed");
+                assert_eq!(details["kanidm_update_accepted"], true);
+                assert_eq!(
+                    details["unixd_auth_test"]["outcome"],
+                    "completed_unparseable"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_posix_password_hard_fails_policy_rejection_output() {
+        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("kanidm");
+        let original_path = prepend_path(dir.path());
+        write_script(
+            &script,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "person" && "${args[1]}" == "get" && "${args[2]}" == "alice" ]]; then
+  printf '{"attrs":{"name":["alice"],"displayname":["Alice"],"mail":["alice@example.test"],"directmemberof":["files-sftp-users"]}}'
+  exit 0
+fi
+if [[ "${args[0]}" == "person" && "${args[1]}" == "posix" && "${args[2]}" == "set-password" ]]; then
+  cat >/dev/null
+  printf 'password rejected: password history requirement not met\n' >&2
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+"#,
+        );
+        let cli = KanidmCli::new(&ResolvedContext {
+            repo_root: None,
+            server_url: "https://id.example.test".to_string(),
+            admin_name: "admindsaw".to_string(),
+            kanidm_bin: script.into_os_string(),
+            vaultwarden_url: None,
+            vaultwarden_admin_token_file: None,
+            sftp_runtime: SftpRuntimeConfig::default(),
+            runtime_policy: crate::context::RuntimePolicy::default(),
+        });
+
+        let error = set_posix_password_with_config(
+            &cli,
+            &SftpRuntimeConfig::default(),
+            PosixPasswordOptions {
+                account_id: "alice".to_string(),
+                password: "correct horse battery staple".to_string(),
+                run_auth_test: false,
+            },
+        )
+        .expect_err("policy rejection output should fail");
+        restore_path(original_path);
+
+        match error {
+            crate::AppError::Verification { details, .. } => {
+                assert_eq!(details["failure_kind"], "posix_password_update_rejected");
+                assert_eq!(details["kanidm_update_accepted"], false);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

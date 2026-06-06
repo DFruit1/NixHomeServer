@@ -5,7 +5,7 @@ rustLib.mkRustApp {
   binaryName = "kanidm-admin";
   srcDir = ./.;
   modulePath = ../../../modules/Core_Modules/kanidm;
-  extraDevShellPackages = [ pkgs.kanidm_1_9 pkgs.nix ];
+  extraDevShellPackages = [ pkgs.kanidm_1_10 pkgs.nix ];
   meta = {
     description = "Focused operator CLI for Kanidm user and access management.";
   };

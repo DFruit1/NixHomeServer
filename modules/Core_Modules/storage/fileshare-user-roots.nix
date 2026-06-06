@@ -39,7 +39,7 @@ let
     findutils
     getent
     jq
-    kanidm_1_9
+    kanidm_1_10
     systemd
     util-linux
   ];
@@ -96,32 +96,6 @@ let
     install -d -m 0750 -o root -g root "$root"
     chown root:root "$root"
     chmod 0750 "$root"
-
-    rename_directory_if_present() {
-      local old_path="$1"
-      local new_path="$2"
-
-      if [[ -d "$old_path" && ! -e "$new_path" ]]; then
-        mv -- "$old_path" "$new_path"
-      fi
-    }
-
-    rename_directory_if_present "$root/files" "$root/_Files"
-    rename_directory_if_present "$root/audiobooks" "$root/_Audiobooks"
-    rename_directory_if_present "$root/videos" "$root/_Videos"
-    rename_directory_if_present "$root/books" "$root/_Books"
-    rename_directory_if_present "$root/emails" "$root/_Emails"
-
-    rename_directory_if_present "$root/_Videos/movies" "$root/_Videos/_Movies"
-    rename_directory_if_present "$root/_Videos/shows" "$root/_Videos/_Shows"
-    rename_directory_if_present "$root/_Videos/home" "$root/_Videos/_Home"
-    rename_directory_if_present "$root/_Videos/music-videos" "$root/_Videos/_Music-videos"
-    rename_directory_if_present "$root/_Videos/youtube" "$root/_Videos/_YouTube"
-    rename_directory_if_present "$root/_Books/ebooks" "$root/_Books/_Ebooks"
-    rename_directory_if_present "$root/_Books/comics" "$root/_Books/_Comics"
-    rename_directory_if_present "$root/_Books/manga" "$root/_Books/_Manga"
-
-    rmdir --ignore-fail-on-non-empty "$root/photos" "$root/documents" "$root/uploads" 2>/dev/null || true
 
     provision_user_writable_dir() {
       local path="$1"
@@ -246,7 +220,7 @@ let
       local group_name="$1"
 
       if group_json="$(
-        ${pkgs.kanidm_1_9}/bin/kanidm group get \
+        ${pkgs.kanidm_1_10}/bin/kanidm group get \
           "$group_name" \
           -H ${kanidmCliUrl} \
           -D idm_admin \
@@ -276,7 +250,7 @@ let
     ensure_posix_account() {
       local username="$1"
 
-      ${pkgs.kanidm_1_9}/bin/kanidm person posix set \
+      ${pkgs.kanidm_1_10}/bin/kanidm person posix set \
         "$username" \
         --shell ${lib.escapeShellArg "${pkgs.bashInteractive}/bin/bash"} \
         -H ${kanidmCliUrl} \
@@ -321,7 +295,7 @@ let
       ${pkgs.acl}/bin/setfacl -R -m g:${lib.escapeShellArg sharedAccessGroup}:rwX ${lib.escapeShellArg vars.sharedRoot}
     }
 
-    ${pkgs.kanidm_1_9}/bin/kanidm login \
+    ${pkgs.kanidm_1_10}/bin/kanidm login \
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 

@@ -13,7 +13,6 @@ required_app_files=(
   networking.nix
   identity.nix
   bootstrap.nix
-  filepaths.nix
   services.nix
 )
 

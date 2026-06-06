@@ -3,8 +3,7 @@
   nixConfig.extra-experimental-features = [ "nix-command" "flakes" ];
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/release-25.11";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     crane.url = "github:ipetkov/crane";
     agenix.url = "github:ryantm/agenix";
     impermanence.url = "github:nix-community/impermanence";
@@ -12,18 +11,17 @@
     filestashNix.url = "github:dermetfan/filestash.nix";
   };
 
-  outputs = inputs@{ self, nixpkgs, nixpkgs-unstable, crane, ... }:
+  outputs = inputs@{ self, nixpkgs, crane, ... }:
     let
       system = "x86_64-linux";
       lib = nixpkgs.lib;
       pkgs = nixpkgs.legacyPackages.${system};
-      pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
       vars = import ./vars.nix { inherit lib; };
       packageData = import ./flake/packages.nix {
         inherit lib pkgs crane;
       };
       host = import ./flake/system.nix {
-        inherit inputs lib pkgs pkgsUnstable vars system;
+        inherit inputs lib pkgs vars system;
         appPackages = packageData.appPackages;
       };
     in

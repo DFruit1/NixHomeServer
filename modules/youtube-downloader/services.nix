@@ -5,13 +5,7 @@ let
   serviceGroup = "youtube-downloader";
   listenAddress = vars.networking.loopbackIPv4;
   listenPort = vars.networking.ports.youtubeDownloader;
-  stateRoot = "/var/lib/youtube-downloader";
-  stateDir = "${stateRoot}/state";
-  cacheRoot = "/var/cache/youtube-downloader";
-  tempDir = "${cacheRoot}/tmp";
-  sharedVideoRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/_YouTube";
-  sharedAudiobooksRoot = config.repo.audiobookshelf.paths.sharedAudiobooksRoot;
-  sharedAudioRoot = "${sharedAudiobooksRoot}/_YouTube";
+  paths = config.repo.youtubeDownloader.paths;
   youtubeDownloader = pkgs.callPackage ../../custom_apps/node/apps/youtube-downloader { };
   host = "ytdownload.${vars.domain}";
 in
@@ -38,11 +32,11 @@ in
         environment = {
           YOUTUBE_DOWNLOADER_HOST = listenAddress;
           YOUTUBE_DOWNLOADER_PORT = toString listenPort;
-          YOUTUBE_DOWNLOADER_STATE_DIR = stateDir;
-          YOUTUBE_DOWNLOADER_DATABASE = "${stateDir}/youtube-downloader.sqlite";
-          YOUTUBE_DOWNLOADER_TEMP_DIR = tempDir;
-          YOUTUBE_DOWNLOADER_SHARED_VIDEO_ROOT = sharedVideoRoot;
-          YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT = sharedAudioRoot;
+          YOUTUBE_DOWNLOADER_STATE_DIR = paths.stateDir;
+          YOUTUBE_DOWNLOADER_DATABASE = "${paths.stateDir}/youtube-downloader.sqlite";
+          YOUTUBE_DOWNLOADER_TEMP_DIR = paths.tempDir;
+          YOUTUBE_DOWNLOADER_SHARED_VIDEO_ROOT = paths.sharedVideoRoot;
+          YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT = paths.sharedAudioRoot;
           YOUTUBE_DOWNLOADER_USERS_ROOT = vars.usersRoot;
           YOUTUBE_DOWNLOADER_CONCURRENCY = "1";
           YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP = vars.fileAccess.sharedAccessGroup or "files-shared-users";
@@ -62,10 +56,10 @@ in
           ProtectSystem = "strict";
           ProtectHome = true;
           ReadWritePaths = [
-            stateRoot
-            cacheRoot
-            sharedVideoRoot
-            sharedAudiobooksRoot
+            paths.stateRoot
+            paths.cacheRoot
+            paths.sharedVideoRoot
+            paths.sharedAudioRoot
             vars.usersRoot
           ];
         };

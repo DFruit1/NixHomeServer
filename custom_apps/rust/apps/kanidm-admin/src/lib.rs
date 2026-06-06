@@ -254,21 +254,30 @@ fn render_already_exists(message: &str, details: &Value) -> String {
 }
 
 fn render_partial_success(message: &str, details: &Value) -> String {
-    let mut body = vec![format!("What happened:\n{message}")];
+    let mut body = Vec::new();
+
+    if let Some(completed_steps) = render_step_list(details.get("completed_steps")) {
+        body.push(format!("Completed:\n{completed_steps}"));
+    } else {
+        body.push(
+            "Completed:\n- At least one earlier step completed before the failure was detected."
+                .to_string(),
+        );
+    }
+
+    if let Some(failed_step) = details.get("failed_step").and_then(Value::as_str) {
+        body.push(format!(
+            "Not yet confirmed:\n- {message}\n- Failed step: {failed_step}"
+        ));
+    } else {
+        body.push(format!("Not yet confirmed:\n- {message}"));
+    }
 
     if let Some(observed_state) = details.get("observed_state") {
         body.push(format!(
             "Current observed state:\n{}",
             render_json_block(observed_state)
         ));
-    }
-
-    if let Some(completed_steps) = render_step_list(details.get("completed_steps")) {
-        body.push(format!("Completed steps:\n{completed_steps}"));
-    }
-
-    if let Some(failed_step) = details.get("failed_step").and_then(Value::as_str) {
-        body.push(format!("Failed step:\n- {failed_step}"));
     }
 
     if let Some(next_actions) = render_actions(details) {
@@ -283,10 +292,31 @@ fn render_partial_success(message: &str, details: &Value) -> String {
 }
 
 fn render_verification(message: &str, details: &Value) -> String {
-    let mut body = vec![
-        "The command may have started, but the final state did not confirm in time.".to_string(),
-        format!("What happened:\n{message}"),
-    ];
+    let lead = match details.get("failure_kind").and_then(Value::as_str) {
+        Some("unixd_auth_failed") => {
+            "The password update completed, but the UnixD password verification failed."
+        }
+        Some("posix_password_update_rejected") => {
+            "Kanidm rejected the POSIX password update, so no local verification was attempted."
+        }
+        Some("sftp_runtime_not_ready") => {
+            "The command completed, but the SFTP runtime checks did not all pass."
+        }
+        Some("membership_convergence_timeout") => {
+            "The membership write may have completed, but Kanidm did not report the expected group state before the timeout."
+        }
+        Some("local_runtime_not_ready") => {
+            "The remote change completed, but a local runtime prerequisite is still not ready."
+        }
+        Some("session_recovery_unstable") => {
+            "Kanidm accepted the session command, but the expected session state was not confirmed."
+        }
+        Some("context_eval_failed") => {
+            "The installed context was unavailable, and deriving context from the repo failed."
+        }
+        _ => "The command may have started, but the final state did not confirm in time.",
+    };
+    let mut body = vec![lead.to_string(), format!("What happened:\n{message}")];
 
     if let Some(expected) = details.get("expected_state") {
         body.push(format!("Expected state:\n{}", render_json_block(expected)));
@@ -299,7 +329,15 @@ fn render_verification(message: &str, details: &Value) -> String {
         ));
     }
 
+    if let Some(failed_checks) = render_failed_checks(details) {
+        body.push(format!("Not yet confirmed:\n{failed_checks}"));
+    }
+
     if let Some(next_actions) = render_actions(details) {
+        body.push(format!("Next action:\n{next_actions}"));
+    } else if let Some(next_actions) =
+        default_next_actions_for_failure_kind(details.get("failure_kind").and_then(Value::as_str))
+    {
         body.push(format!("Next action:\n{next_actions}"));
     } else {
         body.push(
@@ -382,7 +420,11 @@ fn render_json_error(message: &str, details: &Value) -> String {
 }
 
 fn render_actions(details: &Value) -> Option<String> {
-    render_step_list(details.get("next_actions"))
+    render_step_list(details.get("next_actions")).or_else(|| {
+        details
+            .get("concurrency_hint")
+            .and_then(|hint| render_step_list(hint.get("next_actions")))
+    })
 }
 
 fn render_step_list(value: Option<&Value>) -> Option<String> {
@@ -397,6 +439,55 @@ fn render_step_list(value: Option<&Value>) -> Option<String> {
 
 fn render_json_block(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+fn render_failed_checks(details: &Value) -> Option<String> {
+    let direct = details.get("failed_required_checks");
+    let runtime = details
+        .get("runtime")
+        .and_then(|runtime| runtime.get("failed_required_checks"));
+    let items = direct
+        .or(runtime)
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then(|| items.join("\n"))
+}
+
+fn default_next_actions_for_failure_kind(failure_kind: Option<&str>) -> Option<String> {
+    let actions = match failure_kind? {
+        "membership_convergence_timeout" => vec![
+            "Inspect the current memberships with `kanidm-admin membership show <account_id>`.",
+            "Retry only after confirming the target group list is still intended.",
+        ],
+        "local_runtime_not_ready" => vec![
+            "Run the matching local diagnose command to inspect failed runtime checks.",
+            "Check the failed systemd unit or mount listed under Not yet confirmed.",
+        ],
+        "session_recovery_unstable" => vec![
+            "Run `kanidm-admin session diagnose`.",
+            "Retry `kanidm-admin session login` or `kanidm-admin session reauth` after the session state is clear.",
+        ],
+        "context_eval_failed" => vec![
+            "Run the guarded rebuild/deploy helper so `/etc/kanidm-admin/context.json` is installed.",
+            "If running from a checkout, pass `--repo-root` or set `KANIDM_ADMIN_REPO_ROOT` to a directory containing `vars.nix`.",
+            "Set `KANIDM_ADMIN_CONTEXT_FILE` to a valid installed context file when using this outside the repo.",
+        ],
+        "posix_password_update_rejected" => vec![
+            "Choose a POSIX/SFTP password that satisfies Kanidm password policy and history requirements.",
+            "Retry the password-set command and stop if Kanidm reports another policy or complexity rejection.",
+        ],
+        _ => return None,
+    };
+    Some(
+        actions
+            .into_iter()
+            .map(|action| format!("- {action}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 fn last_observed_state(details: &Value) -> Option<Value> {
@@ -487,6 +578,41 @@ mod tests {
         assert!(rendered.contains("final state did not confirm in time"));
         assert!(rendered.contains("Expected state"));
         assert!(rendered.contains("Last observed state"));
+    }
+
+    #[test]
+    fn unixd_auth_verification_errors_use_specific_summary() {
+        let error = AppError::Verification {
+            message: "UnixD rejected the password".to_string(),
+            details: json!({
+                "failure_kind": "unixd_auth_failed",
+                "next_actions": ["retry the auth test"],
+            }),
+        };
+
+        let rendered = error.human_message();
+        assert!(rendered.contains("UnixD password verification failed"));
+        assert!(rendered.contains("UnixD rejected the password"));
+        assert!(rendered.contains("retry the auth test"));
+    }
+
+    #[test]
+    fn partial_success_splits_completed_and_unconfirmed_state() {
+        let error = AppError::PartialSuccess {
+            message: "user 'alice' was modified, but 'mail_update' did not finish cleanly"
+                .to_string(),
+            details: json!({
+                "completed_steps": ["person_create"],
+                "failed_step": "mail_update",
+                "next_actions": ["inspect alice"],
+            }),
+        };
+
+        let rendered = error.human_message();
+        assert!(rendered.contains("Completed:\n- person_create"));
+        assert!(rendered.contains("Not yet confirmed:"));
+        assert!(rendered.contains("Failed step: mail_update"));
+        assert!(rendered.contains("inspect alice"));
     }
 
     #[test]

@@ -16,7 +16,7 @@ let
   );
   kanidmFilesPosixGroupsPath = with pkgs; [
     coreutils
-    kanidm_1_9
+    kanidm_1_10
   ];
 in
 {

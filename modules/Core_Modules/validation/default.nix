@@ -99,6 +99,7 @@ let
   filesSftpPam = config.security.pam.services.files-sftp-sshd;
   filesSftpKanidmAuthUsesFirstPass =
     filesSftpPam.rules.auth.kanidm.settings.use_first_pass or false;
+  localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
 in
 {
   assertions = [
@@ -217,8 +218,8 @@ in
       message = "nixhomeserver: normal SSH must not expose SFTP; file transfers use the dedicated chrooted files SFTP endpoint on vars.networking.ports.filesSftp.";
     }
     {
-      assertion = !filesSftpPam.unixAuth;
-      message = "nixhomeserver: files-sftp-sshd must not accept local Unix passwords; it should authenticate direct SFTP users through Kanidm PAM.";
+      assertion = filesSftpPam.unixAuth == localAdminNeedsSftpBridge;
+      message = "nixhomeserver: files-sftp-sshd unixAuth must be enabled only when the local admin is also a files SFTP user; that local bridge is required because /etc/passwd resolves the bare admin username before Kanidm.";
     }
     {
       assertion = !filesSftpKanidmAuthUsesFirstPass;

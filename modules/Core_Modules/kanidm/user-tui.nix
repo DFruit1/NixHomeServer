@@ -161,7 +161,7 @@ in
     KANIDM_ADMIN_CONTEXT_FILE = contextFile;
     KANIDM_ADMIN_SERVER_URL = vars.kanidmBaseUrl;
     KANIDM_ADMIN_NAME = vars.kanidmAdminUser;
-    KANIDM_ADMIN_KANIDM_BIN = "${pkgs.kanidm_1_9}/bin/kanidm";
+    KANIDM_ADMIN_KANIDM_BIN = "${pkgs.kanidm_1_10}/bin/kanidm";
     KANIDM_ADMIN_NIX_BIN = "${pkgs.nix}/bin/nix";
     KANIDM_ADMIN_HISTORY_DIR = "/var/lib/kanidm-admin/history";
     KANIDM_ADMIN_ROOT_HELPER = rootHelper;

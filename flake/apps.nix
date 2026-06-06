@@ -48,6 +48,18 @@ let
       script = "scripts/admin/show-config-summary.sh";
     };
 
+    export-inventory = {
+      description = "Export evaluated operations inventory as JSON or text";
+      runtimeInputs = with pkgs; [
+        bash
+        coreutils
+        jq
+        nix
+        gnused
+      ];
+      script = "scripts/admin/export-inventory.sh";
+    };
+
     bootstrap-storage-plan = {
       description = "Read-only disk inventory and storage settings helper for blank-machine bootstrap";
       runtimeInputs = with pkgs; [

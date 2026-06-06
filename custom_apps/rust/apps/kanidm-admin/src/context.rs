@@ -389,12 +389,10 @@ in {{
     let output = run_nix_eval(nix_bin, &expr)?;
 
     if !output.status.success() {
-        return Err(AppError::Config {
-            message: format!(
-                "failed to derive defaults from vars.nix via nix eval\n\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        });
+        return Err(nix_eval_failed_error(
+            repo_root,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
     }
 
     serde_json::from_slice(&output.stdout).map_err(|error| AppError::Json {
@@ -404,6 +402,36 @@ in {{
             "stdout": String::from_utf8_lossy(&output.stdout),
         }),
     })
+}
+
+fn nix_eval_failed_error(repo_root: &Path, stderr: &str) -> AppError {
+    let missing_vars = stderr.contains("vars.nix") && stderr.contains("does not exist");
+    let message = if missing_vars {
+        format!(
+            "Installed context points at {}, but {}/vars.nix does not exist.",
+            repo_root.display(),
+            repo_root.display()
+        )
+    } else {
+        format!(
+            "failed to derive defaults from vars.nix via nix eval for repo '{}'",
+            repo_root.display()
+        )
+    };
+    AppError::Verification {
+        message,
+        details: serde_json::json!({
+            "failure_kind": "context_eval_failed",
+            "repo_root": repo_root.display().to_string(),
+            "stderr": stderr,
+            "diagnostic": stderr,
+            "next_actions": [
+                "Run the guarded rebuild/deploy helper so /etc/kanidm-admin/context.json is installed.",
+                "If running from a checkout, pass --repo-root or set KANIDM_ADMIN_REPO_ROOT to the repo containing vars.nix.",
+                "Set KANIDM_ADMIN_CONTEXT_FILE to a valid context JSON file when running outside the repo."
+            ],
+        }),
+    }
 }
 
 fn run_nix_eval(nix_bin: &OsString, expr: &str) -> Result<std::process::Output, AppError> {
@@ -781,5 +809,25 @@ exit 1
                 .expect_err("timeout");
 
         assert!(matches!(error, AppError::BackendTimeout { .. }));
+    }
+
+    #[test]
+    fn missing_vars_nix_eval_error_is_actionable() {
+        let error = nix_eval_failed_error(
+            Path::new("/etc/nixos"),
+            "error: path '/etc/nixos/vars.nix' does not exist",
+        );
+
+        match &error {
+            AppError::Verification { details, .. } => {
+                assert_eq!(details["failure_kind"], "context_eval_failed");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        let rendered = error.human_message();
+        assert!(rendered.contains(
+            "Installed context points at /etc/nixos, but /etc/nixos/vars.nix does not exist."
+        ));
+        assert!(rendered.contains("KANIDM_ADMIN_CONTEXT_FILE"));
     }
 }

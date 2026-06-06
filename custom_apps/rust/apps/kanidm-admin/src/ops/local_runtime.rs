@@ -349,6 +349,10 @@ pub struct RuntimeReport {
     pub ready: bool,
     pub attempts: usize,
     pub elapsed_ms: u128,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed_required_checks: Vec<String>,
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    pub suppressed_attempts: usize,
     pub checks: Vec<RuntimeCheckReport>,
 }
 
@@ -368,10 +372,45 @@ pub struct RuntimeCheckReport {
 }
 
 impl RuntimeReport {
+    pub fn new(
+        target: impl Into<String>,
+        subject: impl Into<String>,
+        ready: bool,
+        attempts: usize,
+        elapsed_ms: u128,
+        checks: Vec<RuntimeCheckReport>,
+    ) -> Self {
+        let failed_required_checks = checks
+            .iter()
+            .filter(|check| check.required && check.status != CheckStatus::Passed)
+            .map(|check| check.id.clone())
+            .collect::<Vec<_>>();
+        Self {
+            target: target.into(),
+            subject: subject.into(),
+            ready,
+            attempts,
+            elapsed_ms,
+            failed_required_checks,
+            suppressed_attempts: attempts.saturating_sub(1),
+            checks,
+        }
+    }
+
     pub fn required_checks_passed(&self) -> bool {
         self.checks
             .iter()
             .all(|check| !check.required || check.status == CheckStatus::Passed)
+    }
+
+    pub fn refresh_derived(&mut self) {
+        self.failed_required_checks = self
+            .checks
+            .iter()
+            .filter(|check| check.required && check.status != CheckStatus::Passed)
+            .map(|check| check.id.clone())
+            .collect();
+        self.suppressed_attempts = self.attempts.saturating_sub(1);
     }
 
     pub fn verification_summary(&self) -> VerificationSummary {
@@ -383,6 +422,10 @@ impl RuntimeReport {
             elapsed_ms: self.elapsed_ms,
         }
     }
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone)]
@@ -634,14 +677,7 @@ where
     let started = Instant::now();
     let mut attempts = 0usize;
     let mut stable_successes = 0usize;
-    let mut latest = RuntimeReport {
-        target: target.into(),
-        subject: subject.into(),
-        ready: false,
-        attempts: 0,
-        elapsed_ms: 0,
-        checks: Vec::new(),
-    };
+    let mut latest = RuntimeReport::new(target, subject, false, 0, 0, Vec::new());
 
     loop {
         attempts = attempts.saturating_add(1);
@@ -658,14 +694,14 @@ where
             stable_successes = 0;
         }
         let converged = stable_successes >= policy.stable_successes_required.max(1);
-        latest = RuntimeReport {
-            target: latest.target,
-            subject: latest.subject,
-            ready: checks_ready && converged,
+        latest = RuntimeReport::new(
+            latest.target,
+            latest.subject,
+            checks_ready && converged,
             attempts,
-            elapsed_ms: started.elapsed().as_millis(),
+            started.elapsed().as_millis(),
             checks,
-        };
+        );
         if latest.ready || started.elapsed() >= policy.timeout {
             return latest;
         }
@@ -896,6 +932,8 @@ printf 'secret stderr\n' >&2
 
         assert!(!report.ready);
         assert_eq!(report.attempts, 1);
+        assert_eq!(report.failed_required_checks, vec!["required.unknown"]);
+        assert_eq!(report.suppressed_attempts, 0);
     }
 
     #[test]
@@ -932,6 +970,8 @@ printf 'secret stderr\n' >&2
 
         assert!(report.ready);
         assert_eq!(report.attempts, 3);
+        assert_eq!(report.suppressed_attempts, 2);
+        assert!(report.failed_required_checks.is_empty());
     }
 
     #[test]
@@ -957,6 +997,7 @@ printf 'secret stderr\n' >&2
 
         assert!(!report.ready);
         assert!(report.attempts >= 1);
+        assert_eq!(report.failed_required_checks, vec!["never"]);
     }
 
     #[test]

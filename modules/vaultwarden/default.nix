@@ -2,7 +2,6 @@
 
 {
   imports = [
-    ./filepaths.nix
     ./identity.nix
     ./networking.nix
     ./services.nix

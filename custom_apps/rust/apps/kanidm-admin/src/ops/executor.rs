@@ -254,11 +254,16 @@ fn repeated_recovery_error(target: RecoveryTarget) -> AppError {
     AppError::Verification {
         message: "session recovery did not stabilize after multiple attempts".to_string(),
         details: json!({
+            "failure_kind": "session_recovery_unstable",
             "max_recovery_attempts": MAX_RECOVERY_CYCLES,
             "target": match target {
                 RecoveryTarget::BaseSession => "base_session",
                 RecoveryTarget::PrivilegedWrites => "privileged_writes",
             },
+            "next_actions": [
+                "Run `kanidm-admin session diagnose` to inspect the current session state.",
+                "Retry login or reauthentication after the diagnostic reports a clear state.",
+            ],
         }),
     }
 }

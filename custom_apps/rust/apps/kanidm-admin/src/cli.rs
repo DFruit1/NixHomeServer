@@ -681,6 +681,14 @@ pub fn main() {
 }
 
 fn prompt_confirmed_password(prompt: &str) -> Result<String, kanidm_admin::AppError> {
+    if prompt.contains("POSIX") || prompt.contains("SFTP") {
+        eprintln!(
+            "{}",
+            kanidm_admin::output::warning_text(
+                "Password prompt: enter the new POSIX/SFTP password.\nThis is separate from the web/OIDC password and passkeys.\nAfter Kanidm accepts it, the tool will ask you to enter the same password once more to verify the UnixD/SFTP login path."
+            )
+        );
+    }
     Password::new()
         .with_prompt(prompt)
         .with_confirmation("Confirm POSIX/SFTP password", "passwords did not match")
@@ -1180,9 +1188,6 @@ fn run(
                     runtime,
                     auth_test,
                 } => {
-                    if auth_test {
-                        ensure_interactive_session_allowed(output)?;
-                    }
                     let account_id = validate_account_id(&account_id)?;
                     test_sftp_login_with_policy(
                         &kanidm,
@@ -1828,7 +1833,9 @@ fn require_exact_confirmation(
         Ok(())
     } else {
         Err(kanidm_admin::AppError::Config {
-            message: format!("{action} for '{target}' requires {flag} {target}"),
+            message: format!(
+                "{action} for '{target}' requires {flag} {target}; confirmation was not provided.\n\nWhat to enter:\n- Re-run with `{flag} {target}`.\n\nWhy this is required:\n- This action can reveal, rotate, remove, or weaken access controls, so the target name must be repeated exactly."
+            ),
         })
     }
 }

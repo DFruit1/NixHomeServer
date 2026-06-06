@@ -13,6 +13,8 @@ bootstrap remains the installer-side exception.
 - Local validation gate: `nix flake check --no-build` then `scripts/validate-repo.sh`
 - Flake-inclusive local gate: `scripts/validate-repo.sh --run-flake-check`
 - Full local gate: `scripts/validate-repo.sh --full`
+- Human config summary: `nix run .#show-config-summary`
+- Machine-readable inventory: `nix run .#export-inventory`
 - Guarded deploy: `./scripts/deploy.sh --action test`
 - Full guarded deploy: `./scripts/deploy.sh --action test --debug`
 - Guarded switch: `./scripts/deploy.sh --action switch`
@@ -90,6 +92,11 @@ The `rm` through `_Shared` is expected to fail with permission denied. The final
 Kavita-managed book roots are aligned to the same simpler taxonomy used by
 the rest of the stack: `_Ebooks`, `_Comics`, and `_Manga`. The old `other`
 category is no longer part of the managed layout.
+
+Current installs are expected to already use the underscore-prefixed content
+layout. The repo no longer carries automatic migration helpers for old paths
+such as `videos`, `books`, or `audiobooks`; restore or migration work from an
+older layout should be handled deliberately before deploy.
 
 Do not guess share hostnames manually; use the evaluated share hostname from
 `nix run .#show-config-summary` or `vars.nix`.

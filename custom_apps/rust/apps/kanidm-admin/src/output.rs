@@ -1,4 +1,5 @@
 use clap::ValueEnum;
+use console::style;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -70,7 +71,7 @@ impl CommandOutput {
     pub fn render_human(&self) -> String {
         let mut body = self.human.clone();
         if let Some(backend) = render_backend_steps_summary(self.details.get("backend_steps")) {
-            body.push_str("\n\nBackend Commands:\n");
+            body.push_str(&format!("\n\n{}:\n", section_title("Backend Commands")));
             body.push_str(&backend);
         }
 
@@ -78,8 +79,9 @@ impl CommandOutput {
             body
         } else {
             format!(
-                "{}\n\nWarnings:\n{}",
+                "{}\n\n{}:\n{}",
                 body,
+                warning_text("Warnings"),
                 self.warnings
                     .iter()
                     .map(|warning| format!("- {warning}"))
@@ -102,10 +104,62 @@ impl CommandOutput {
 
 pub fn render_backend_steps_summary(value: Option<&Value>) -> Option<String> {
     let steps = value.and_then(Value::as_array)?;
-    let rendered = steps
+    if steps.is_empty() {
+        return None;
+    }
+
+    let collapsed = collapse_backend_steps(steps);
+    let failed = collapsed
         .iter()
-        .map(render_backend_step_summary)
+        .filter(|entry| !backend_step_succeeded(entry.step))
         .collect::<Vec<_>>();
+    if failed.is_empty() {
+        let unique = collapsed.len();
+        let total = steps.len();
+        let note = if total == 1 {
+            "1 successful backend command suppressed; open Show Backend Logs for raw output."
+                .to_string()
+        } else if unique == total {
+            format!(
+                "{total} successful backend commands suppressed; open Show Backend Logs for raw output."
+            )
+        } else {
+            format!(
+                "{total} successful backend commands suppressed ({unique} unique); open Show Backend Logs for raw output."
+            )
+        };
+        return Some(dim_text(&note));
+    }
+
+    let mut rendered = failed
+        .iter()
+        .map(|entry| render_backend_step_summary(entry.step, entry.count))
+        .collect::<Vec<_>>();
+    let rendered_success_count = if let Some(last_success) = collapsed
+        .iter()
+        .rev()
+        .find(|entry| backend_step_succeeded(entry.step))
+    {
+        rendered.push(format!(
+            "{}\n{}",
+            dim_text("Last successful backend command:"),
+            render_backend_step_summary(last_success.step, last_success.count)
+        ));
+        last_success.count
+    } else {
+        0
+    };
+    let successful_count = collapsed
+        .iter()
+        .filter(|entry| backend_step_succeeded(entry.step))
+        .map(|entry| entry.count)
+        .sum::<usize>();
+    let suppressed_success_count = successful_count.saturating_sub(rendered_success_count);
+    if suppressed_success_count > 0 {
+        rendered.push(dim_text(&format!(
+            "{suppressed_success_count} additional successful backend command(s) suppressed; open Show Backend Logs for raw output."
+        )));
+    }
     (!rendered.is_empty()).then(|| rendered.join("\n\n"))
 }
 
@@ -118,26 +172,87 @@ pub fn render_backend_steps_full(value: Option<&Value>) -> Option<String> {
     (!rendered.is_empty()).then(|| rendered.join("\n\n"))
 }
 
-fn render_backend_step_summary(step: &Value) -> String {
+struct CollapsedBackendStep<'a> {
+    step: &'a Value,
+    count: usize,
+}
+
+fn collapse_backend_steps(steps: &[Value]) -> Vec<CollapsedBackendStep<'_>> {
+    let mut collapsed: Vec<CollapsedBackendStep<'_>> = Vec::new();
+    for step in steps {
+        let key = backend_step_summary_key(step);
+        if let Some(existing) = collapsed
+            .iter_mut()
+            .find(|entry| backend_step_summary_key(entry.step) == key)
+        {
+            existing.count += 1;
+        } else {
+            collapsed.push(CollapsedBackendStep { step, count: 1 });
+        }
+    }
+    collapsed
+}
+
+fn backend_step_summary_key(step: &Value) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}",
+        step.get("step").and_then(Value::as_str).unwrap_or(""),
+        step.get("program").and_then(Value::as_str).unwrap_or(""),
+        step.get("mode").and_then(Value::as_str).unwrap_or(""),
+        step.get("args")
+            .and_then(Value::as_array)
+            .map(|args| {
+                args.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\u{1f}")
+            })
+            .unwrap_or_default(),
+        render_status_plain(step),
+    )
+}
+
+fn backend_step_succeeded(step: &Value) -> bool {
+    step.get("status")
+        .and_then(|status| status.get("success"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn render_backend_step_summary(step: &Value, count: usize) -> String {
     let label = step
         .get("step")
         .and_then(Value::as_str)
         .unwrap_or("backend command");
     let status = render_status(step);
-    let mut lines = vec![format!("== {label} ==",), format!("Status: {status}")];
+    let mut lines = vec![
+        format!(
+            "{} {label} {}",
+            style("==").cyan().dim(),
+            style("==").cyan().dim()
+        ),
+        format!("{}: {status}", field_label("Status")),
+    ];
+    if count > 1 {
+        lines.push(format!("{}: {count} times", field_label("Repeated")));
+    }
     if let Some(command) = render_command(step) {
-        lines.push(format!("Command: {command}"));
+        lines.push(format!("{}: {command}", field_label("Command")));
     }
     if let Some(mode) = step.get("mode").and_then(Value::as_str) {
-        lines.push(format!("Mode: {mode}"));
+        lines.push(format!("{}: {mode}", field_label("Mode")));
     }
     if step.get("redaction").is_some_and(|value| !value.is_null()) {
-        lines.push("Backend stdout/stderr was redacted for this command.".to_string());
+        lines.push(dim_text(
+            "Backend stdout/stderr was redacted for this command.",
+        ));
     } else if has_text(step, "stdout")
         || has_text(step, "stderr")
         || step.get("error").is_some_and(|value| !value.is_null())
     {
-        lines.push("Raw stdout/stderr is available from Show Backend Logs.".to_string());
+        lines.push(dim_text(
+            "Raw stdout/stderr is available from Show Backend Logs.",
+        ));
     }
     lines.join("\n")
 }
@@ -158,20 +273,24 @@ fn render_backend_step_full(step: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("backend command");
     let mut lines = vec![
-        format!("== {label} =="),
-        format!("Status: {}", render_status(step)),
+        format!(
+            "{} {label} {}",
+            style("==").cyan().dim(),
+            style("==").cyan().dim()
+        ),
+        format!("{}: {}", field_label("Status"), render_status(step)),
     ];
     if let Some(sequence) = step.get("sequence").and_then(Value::as_u64) {
-        lines.push(format!("Sequence: {sequence}"));
+        lines.push(format!("{}: {sequence}", field_label("Sequence")));
     }
     if let Some(recorded_at) = step.get("recorded_at").and_then(Value::as_str) {
-        lines.push(format!("Recorded At: {recorded_at}"));
+        lines.push(format!("{}: {recorded_at}", field_label("Recorded At")));
     }
     if let Some(mode) = step.get("mode").and_then(Value::as_str) {
-        lines.push(format!("Mode: {mode}"));
+        lines.push(format!("{}: {mode}", field_label("Mode")));
     }
     if let Some(command) = render_command(step) {
-        lines.push(format!("Command: {command}"));
+        lines.push(format!("{}: {command}", field_label("Command")));
     }
     if let Some(error) = step.get("error").filter(|value| !value.is_null()) {
         lines.push(format!(
@@ -227,6 +346,17 @@ pub fn shell_quote_arg(value: &str) -> String {
 }
 
 fn render_status(step: &Value) -> String {
+    let plain = render_status_plain(step);
+    if plain.starts_with("success") {
+        success_text(&plain)
+    } else if plain.starts_with("failure") || plain.starts_with("exec error") {
+        error_text(&plain)
+    } else {
+        warning_text(&plain)
+    }
+}
+
+fn render_status_plain(step: &Value) -> String {
     if let Some(status) = step.get("status").filter(|status| !status.is_null()) {
         let success = status
             .get("success")
@@ -266,10 +396,115 @@ pub fn render_output(format: OutputFormat, output: &CommandOutput) -> String {
 
 pub fn render_error(format: OutputFormat, error: &AppError) -> String {
     match format {
-        OutputFormat::Human => error.human_message(),
+        OutputFormat::Human => {
+            let mut body = colorize_error(&error.human_message());
+            if let Some(summary) =
+                render_backend_steps_summary(error_details(error).and_then(|details| {
+                    details.get("backend_steps").or_else(|| {
+                        details
+                            .get("details")
+                            .and_then(|nested| nested.get("backend_steps"))
+                    })
+                }))
+            {
+                body.push_str(&format!(
+                    "\n\n{}:\n{summary}",
+                    section_title("Backend Commands")
+                ));
+            }
+            body
+        }
         OutputFormat::Json => serde_json::to_string_pretty(&error.json_payload())
             .unwrap_or_else(|_| error.json_payload().to_string()),
     }
+}
+
+fn error_details(error: &AppError) -> Option<&Value> {
+    match error {
+        AppError::NotFound { details, .. }
+        | AppError::AlreadyExists { details, .. }
+        | AppError::Verification { details, .. }
+        | AppError::PartialSuccess { details, .. }
+        | AppError::SessionRequired { details, .. }
+        | AppError::ReauthRequired { details, .. }
+        | AppError::Json { details, .. }
+        | AppError::BackendTimeout { details, .. }
+        | AppError::InventoryIncomplete { details, .. }
+        | AppError::Unsupported { details, .. } => Some(details),
+        AppError::Config { .. }
+        | AppError::MissingDependency { .. }
+        | AppError::Backend { .. }
+        | AppError::Io { .. } => None,
+    }
+}
+
+pub fn section_title(value: &str) -> String {
+    style(value).cyan().bold().to_string()
+}
+
+pub fn field_label(value: &str) -> String {
+    style(value).cyan().to_string()
+}
+
+pub fn success_text(value: &str) -> String {
+    style(value).green().to_string()
+}
+
+pub fn warning_text(value: &str) -> String {
+    style(value).yellow().to_string()
+}
+
+pub fn error_text(value: &str) -> String {
+    style(value).red().to_string()
+}
+
+pub fn dim_text(value: &str) -> String {
+    style(value).dim().to_string()
+}
+
+pub fn status_text(value: &str) -> String {
+    match value {
+        "ok" | "ready" | "passed" | "success" | "yes" => success_text(value),
+        "warning" | "unknown" | "skipped" | "partial" | "no" => warning_text(value),
+        "error" | "failed" | "failure" | "not ready" => error_text(value),
+        _ => value.to_string(),
+    }
+}
+
+fn colorize_error(message: &str) -> String {
+    message
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                error_text(line)
+            } else if matches!(
+                line,
+                "What happened:"
+                    | "Expected state:"
+                    | "Last observed state:"
+                    | "Next action:"
+                    | "Backend diagnostic:"
+                    | "Raw output:"
+                    | "Parser error:"
+                    | "Command:"
+                    | "Completed:"
+                    | "Completed steps:"
+                    | "Not yet confirmed:"
+                    | "Failed step:"
+                    | "Current observed state:"
+                    | "Warnings:"
+                    | "Most likely fix:"
+            ) {
+                section_title(line)
+            } else if line.starts_with("- ") {
+                dim_text(line)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -342,8 +577,75 @@ mod tests {
 
         let rendered = render_output(OutputFormat::Human, &output);
         assert!(rendered.contains("Backend Commands:"));
-        assert!(rendered.contains("== write =="));
-        assert!(rendered.contains("Raw stdout/stderr is available from Show Backend Logs."));
+        assert!(rendered.contains("1 successful backend command suppressed"));
+        assert!(!rendered.contains("== write =="));
+    }
+
+    #[test]
+    fn backend_summary_suppresses_repeated_successful_polling_commands() {
+        let rendered = render_backend_steps_summary(Some(&json!([
+            {
+                "step": "local id -nG",
+                "program": "id",
+                "args": ["-nG", "dsaw"],
+                "mode": "non_interactive_read",
+                "status": { "success": true, "code": 0 },
+                "stdout": "users\n",
+                "stderr": ""
+            },
+            {
+                "step": "local id -nG",
+                "program": "id",
+                "args": ["-nG", "dsaw"],
+                "mode": "non_interactive_read",
+                "status": { "success": true, "code": 0 },
+                "stdout": "users\n",
+                "stderr": ""
+            }
+        ])))
+        .expect("rendered");
+
+        assert!(rendered.contains("2 successful backend commands suppressed"));
+        assert!(!rendered.contains("Command: id -nG dsaw"));
+    }
+
+    #[test]
+    fn backend_summary_keeps_failures_and_suppresses_successes() {
+        let rendered = render_backend_steps_summary(Some(&json!([
+            {
+                "step": "local getent passwd",
+                "program": "getent",
+                "args": ["passwd", "dsaw"],
+                "mode": "non_interactive_read",
+                "status": { "success": true, "code": 0 },
+                "stdout": "dsaw:x:2000:2000::/home/dsaw:/bin/bash\n",
+                "stderr": ""
+            },
+            {
+                "step": "local findmnt",
+                "program": "findmnt",
+                "args": ["/srv/files-sftp/chroots/dsaw"],
+                "mode": "non_interactive_read",
+                "status": { "success": false, "code": 1 },
+                "stdout": "",
+                "stderr": "not mounted\n"
+            },
+            {
+                "step": "local findmnt",
+                "program": "findmnt",
+                "args": ["/srv/files-sftp/chroots/dsaw"],
+                "mode": "non_interactive_read",
+                "status": { "success": false, "code": 1 },
+                "stdout": "",
+                "stderr": "not mounted\n"
+            }
+        ])))
+        .expect("rendered");
+
+        assert!(rendered.contains("== local findmnt =="));
+        assert!(rendered.contains("Repeated: 2 times"));
+        assert!(rendered.contains("Last successful backend command:"));
+        assert!(rendered.contains("Command: getent passwd dsaw"));
     }
 
     #[test]
@@ -379,5 +681,41 @@ mod tests {
         .expect("rendered");
 
         assert!(rendered.contains("kanidm person create 'alice user' 'Alice'\\''s User'"));
+    }
+
+    #[test]
+    fn error_render_includes_concise_backend_summary_from_details() {
+        let error = AppError::Verification {
+            message: "runtime failed".to_string(),
+            details: json!({
+                "backend_steps": [
+                    {
+                        "step": "local findmnt",
+                        "program": "findmnt",
+                        "args": ["/srv/files-sftp/chroots/dsaw"],
+                        "mode": "non_interactive_read",
+                        "status": { "success": false, "code": 1 },
+                        "stdout": "",
+                        "stderr": "not mounted\n"
+                    }
+                ]
+            }),
+        };
+
+        let rendered = render_error(OutputFormat::Human, &error);
+        assert!(rendered.contains("Backend Commands:"));
+        assert!(rendered.contains("== local findmnt =="));
+    }
+
+    #[test]
+    fn json_error_render_does_not_include_ansi_codes() {
+        let error = AppError::Verification {
+            message: "runtime failed".to_string(),
+            details: json!({ "failure_kind": "local_runtime_not_ready" }),
+        };
+
+        let rendered = render_error(OutputFormat::Json, &error);
+        assert!(rendered.contains("\"status\": \"error\""));
+        assert!(!rendered.contains("\u{1b}["));
     }
 }

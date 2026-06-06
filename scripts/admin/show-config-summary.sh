@@ -35,29 +35,15 @@ if [[ -z "$host" ]]; then
   host="$(default_host)"
 fi
 
-preview_json="$(nix_json_for_host "$host" "
-  let
-    settings = removeAttrs flake.lib.nixhomeserverSettings.${host} [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ];
-  in
-  {
-    inherit settings;
-    caddyHosts = builtins.attrNames cfg.services.caddy.virtualHosts;
-    cloudflaredHosts = builtins.attrNames cfg.services.cloudflared.tunnels.\${settings.cloudflareTunnelName}.ingress;
-    oauthClients = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
-    groups = builtins.attrNames cfg.services.kanidm.provision.groups;
-    userContentSubdirs = cfg.repo.storage.userRoots.contentSubdirs;
-    sharedContentSubdirs = cfg.repo.storage.sharedRoots.contentSubdirs;
-    externalSecrets = builtins.attrNames ((import ${repo_root}/secrets/manifest.nix).externalSecrets);
-  }
-")"
+preview_json="$(inventory_json_for_host "$host")"
 settings_json="$(jq -c '.settings' <<<"$preview_json")"
-caddy_hosts_json="$(jq -c '.caddyHosts' <<<"$preview_json")"
-cloudflared_hosts_json="$(jq -c '.cloudflaredHosts' <<<"$preview_json")"
-oauth_clients_json="$(jq -c '.oauthClients' <<<"$preview_json")"
-groups_json="$(jq -c '.groups' <<<"$preview_json")"
-user_content_subdirs_json="$(jq -c '.userContentSubdirs' <<<"$preview_json")"
-shared_content_subdirs_json="$(jq -c '.sharedContentSubdirs' <<<"$preview_json")"
-external_secrets_json="$(jq -c '.externalSecrets' <<<"$preview_json")"
+caddy_hosts_json="$(jq -c '.network.caddyHosts' <<<"$preview_json")"
+cloudflared_hosts_json="$(jq -c '.network.cloudflaredHosts' <<<"$preview_json")"
+oauth_clients_json="$(jq -c '.identity.oauthClients' <<<"$preview_json")"
+groups_json="$(jq -c '.identity.kanidmGroups' <<<"$preview_json")"
+user_content_subdirs_json="$(jq -c '.storage.userContentSubdirs' <<<"$preview_json")"
+shared_content_subdirs_json="$(jq -c '.storage.sharedContentSubdirs' <<<"$preview_json")"
+external_secrets_json="$(jq -c '.secrets.externalSecretNames' <<<"$preview_json")"
 
 echo "NixHomeServer configuration preview"
 echo "host: ${host}"

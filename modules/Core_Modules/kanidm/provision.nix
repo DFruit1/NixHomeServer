@@ -63,7 +63,7 @@ let
       fi
     '';
   kanidmIdentityReconcilePath = with pkgs; [
-    kanidm_1_9
+    kanidm_1_10
   ];
 in
 {

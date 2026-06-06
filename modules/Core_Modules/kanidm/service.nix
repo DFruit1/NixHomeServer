@@ -6,12 +6,12 @@ let
 in
 {
   services.kanidm = {
-    enableServer = true;
-    enableClient = true;
-    clientSettings.uri = vars.kanidmBaseUrl;
-    package = pkgs.kanidmWithSecretProvisioning_1_9;
+    server.enable = true;
+    client.enable = true;
+    client.settings.uri = vars.kanidmBaseUrl;
+    package = pkgs.kanidmWithSecretProvisioning_1_10;
 
-    serverSettings = {
+    server.settings = {
       origin = "https://${vars.kanidmDomain}";
       domain = vars.domain;
       bindaddress = "${loopback}:${toString kanidmPort}";

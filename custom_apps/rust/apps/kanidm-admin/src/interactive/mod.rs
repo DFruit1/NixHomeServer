@@ -40,7 +40,10 @@ use crate::{
             PosixPasswordOptions, ResetTokenOptions,
         },
     },
-    output::{render_backend_steps_full, render_backend_steps_summary, CommandOutput},
+    output::{
+        render_backend_steps_full, render_backend_steps_summary, render_error, section_title,
+        CommandOutput, OutputFormat,
+    },
     session_state::{
         concise_session_message, login_prompt_message, should_prompt_for_startup_login,
     },
@@ -524,9 +527,9 @@ fn render_error_with_backend_summary(kanidm: &KanidmCli, error: &AppError) {
         render::print_error(error);
         return;
     }
-    let mut body = error.human_message();
+    let mut body = render_error(OutputFormat::Human, error);
     if let Some(summary) = render_backend_steps_summary(Some(&serde_json::Value::Array(steps))) {
-        body.push_str("\n\nBackend Commands:\n");
+        body.push_str(&format!("\n\n{}:\n", section_title("Backend Commands")));
         body.push_str(&summary);
     }
     render::print_block("Error", &body);

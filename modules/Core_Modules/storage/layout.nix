@@ -223,31 +223,6 @@ in
         ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
 
         ${zfsDatasetLayoutScript}
-        rename_directory_if_present() {
-          local old_path="$1"
-          local new_path="$2"
-
-          if [[ -d "$old_path" && ! -e "$new_path" ]]; then
-            mv -- "$old_path" "$new_path"
-          fi
-        }
-
-        rename_directory_if_present '${vars.sharedRoot}/files' '${vars.sharedRoot}/_Files'
-        rename_directory_if_present '${vars.sharedRoot}/audiobooks' '${vars.sharedRoot}/_Audiobooks'
-        rename_directory_if_present '${vars.sharedRoot}/videos' '${vars.sharedRoot}/_Videos'
-        rename_directory_if_present '${vars.sharedRoot}/books' '${vars.sharedRoot}/_Books'
-        rename_directory_if_present '${vars.sharedRoot}/emails' '${vars.sharedRoot}/_Emails'
-        rename_directory_if_present '${vars.sharedRoot}/kiwix' '${vars.sharedRoot}/_Kiwix'
-        rename_directory_if_present '${vars.sharedRoot}/music' '${vars.sharedRoot}/_Music'
-        rename_directory_if_present '${vars.sharedRoot}/_Videos/movies' '${vars.sharedRoot}/_Videos/_Movies'
-        rename_directory_if_present '${vars.sharedRoot}/_Videos/shows' '${vars.sharedRoot}/_Videos/_Shows'
-        rename_directory_if_present '${vars.sharedRoot}/_Videos/home' '${vars.sharedRoot}/_Videos/_Home'
-        rename_directory_if_present '${vars.sharedRoot}/_Videos/music-videos' '${vars.sharedRoot}/_Videos/_Music-videos'
-        rename_directory_if_present '${vars.sharedRoot}/_Videos/youtube' '${vars.sharedRoot}/_Videos/_YouTube'
-        rename_directory_if_present '${vars.sharedRoot}/_Audiobooks/youtube' '${vars.sharedRoot}/_Audiobooks/_YouTube'
-        rename_directory_if_present '${vars.sharedRoot}/_Books/ebooks' '${vars.sharedRoot}/_Books/_Ebooks'
-        rename_directory_if_present '${vars.sharedRoot}/_Books/comics' '${vars.sharedRoot}/_Books/_Comics'
-        rename_directory_if_present '${vars.sharedRoot}/_Books/manga' '${vars.sharedRoot}/_Books/_Manga'
         ${zfsContentLayoutScript}
       '';
     };

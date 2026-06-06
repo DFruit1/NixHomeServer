@@ -64,7 +64,6 @@ in
   time.timeZone = vars.timeZone;
 
   services.dbus.enable = true;
-  systemd.services.dbus.stopIfChanged = true;
 
   users.users.root = {
     shell = pkgs.bashInteractive;

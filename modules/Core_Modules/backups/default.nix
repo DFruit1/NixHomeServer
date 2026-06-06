@@ -67,10 +67,6 @@ let
   ];
 in
 {
-  imports = [
-    ./bootstrap.nix
-  ];
-
   options.repo.backups = {
     appStateEntries = lib.mkOption {
       type = lib.types.listOf (lib.types.submodule {

@@ -4,7 +4,7 @@ let
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   kanidmBrandingPath = with pkgs; [
-    kanidm_1_9
+    kanidm_1_10
   ];
 in
 {

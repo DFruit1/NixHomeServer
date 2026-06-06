@@ -77,3 +77,60 @@ nix_json_for_host() {
       ${expr}
   "
 }
+
+inventory_json_for_host() {
+  local host="$1"
+
+  nix_json_for_host "$host" "
+    let
+      settings = removeAttrs flake.lib.nixhomeserverSettings.${host} [
+        \"kanidmIssuer\"
+        \"kanidmDiscoveryUrl\"
+      ];
+      tunnel = cfg.services.cloudflared.tunnels.\${settings.cloudflareTunnelName};
+      secretManifest = import ${repo_root}/secrets/manifest.nix;
+    in
+    {
+      schemaVersion = 1;
+      host = \"${host}\";
+      inherit settings;
+      network = {
+        caddyHosts = builtins.attrNames cfg.services.caddy.virtualHosts;
+        cloudflaredHosts = builtins.attrNames tunnel.ingress;
+        privateDnsHosts = cfg.services.unbound.privateHosts;
+        ports = settings.networking.ports;
+      };
+      identity = {
+        kanidmGroups = builtins.attrNames cfg.services.kanidm.provision.groups;
+        oauthClients = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
+      };
+      storage = {
+        dataRoot = settings.dataRoot;
+        usersRoot = settings.usersRoot;
+        sharedRoot = settings.sharedRoot;
+        backupRoot = settings.backupRoot;
+        dataPool = settings.zfsDataPool;
+        userContentSubdirs = cfg.repo.storage.userRoots.contentSubdirs;
+        sharedContentSubdirs = cfg.repo.storage.sharedRoots.contentSubdirs;
+      };
+      backups = {
+        inherit (cfg.repo.backups)
+          appStateEntries
+          criticalPaths
+          pathInventories
+          sqliteDumps;
+      };
+      impermanence = {
+        directories = cfg.repo.impermanence.inventory.persistenceDirectories;
+        files = cfg.repo.impermanence.inventory.persistenceFiles;
+      };
+      secrets = {
+        ageSecretNames = builtins.attrNames cfg.age.secrets;
+        externalSecretNames = builtins.attrNames secretManifest.externalSecrets;
+      };
+      systemd = {
+        serviceNames = builtins.attrNames cfg.systemd.services;
+      };
+    }
+  "
+}

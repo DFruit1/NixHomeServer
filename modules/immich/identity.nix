@@ -5,15 +5,11 @@ let
   proxyGroup = "immich-public-proxy";
   proxyUid = 3001;
   proxyGid = 3001;
-  proxySubIdStart = 400000;
-  proxySubIdCount = 65536;
   host = "photos.${vars.domain}";
 in
 
 {
   config = {
-    users.manageLingering = true;
-
     users.groups.${proxyGroup} = {
       gid = proxyGid;
     };
@@ -24,19 +20,6 @@ in
       group = proxyGroup;
       home = "/var/lib/immich-public-proxy";
       createHome = true;
-      linger = true;
-      subUidRanges = [
-        {
-          startUid = proxySubIdStart;
-          count = proxySubIdCount;
-        }
-      ];
-      subGidRanges = [
-        {
-          startGid = proxySubIdStart;
-          count = proxySubIdCount;
-        }
-      ];
     };
 
     services.kanidm.provision = {

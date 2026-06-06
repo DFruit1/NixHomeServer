@@ -111,7 +111,6 @@ rec {
       mailArchiveUi = 9011;
       immich = 2283;
       immichPublicProxy = 3300;
-      immichPublicProxyContainer = 3000;
       kiwix = 8081;
       kavita = 5000;
       vaultwarden = 8222;
