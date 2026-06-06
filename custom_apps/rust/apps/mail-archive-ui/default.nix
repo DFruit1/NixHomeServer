@@ -18,15 +18,16 @@ let
     version = "0.1.0";
     src = frontendSrc;
 
-    pnpmDeps = pkgs.pnpm.fetchDeps {
+    pnpmDeps = pkgs.fetchPnpmDeps {
       inherit (finalAttrs) pname version src;
-      fetcherVersion = 2;
-      hash = "sha256-Moxeypu7x9iKpmlwukS4XQPD+U0eUMa9As3DRMusZYY=";
+      fetcherVersion = 3;
+      hash = "sha256-GU8O2kA3o+SmAA5BRF/ws7jQqG+Tg7OX41bSw6ownZk=";
     };
 
     nativeBuildInputs = [
       pkgs.nodejs
-      pkgs.pnpm.configHook
+      pkgs.pnpm
+      pkgs.pnpmConfigHook
     ];
 
     CI = "true";

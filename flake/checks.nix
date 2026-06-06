@@ -1,4 +1,11 @@
-{ self, lib, pkgs, rustApps, nodePackages }:
+{ self
+, lib
+, pkgs
+, rustApps
+, nodeApps
+, nixosConfigurations
+, nixhomeserverSettings
+}:
 
 let
   checkNativeBuildInputs = with pkgs; [
@@ -23,9 +30,60 @@ let
         (checkName: check: lib.nameValuePair "${name}-${checkName}" check)
         app.checks)
     rustApps;
+  hostName = builtins.head (builtins.attrNames nixosConfigurations);
+  hostConfig = nixosConfigurations.${hostName}.config;
+  hostSettings = removeAttrs nixhomeserverSettings.${hostName} [
+    "kanidmIssuer"
+    "kanidmDiscoveryUrl"
+  ];
+  cloudflaredTunnel = hostConfig.services.cloudflared.tunnels.${hostSettings.cloudflareTunnelName};
+  secretManifest = import ../secrets/manifest.nix;
+  inventoryJson = builtins.toJSON {
+    schemaVersion = 1;
+    host = hostName;
+    settings = hostSettings;
+    network = {
+      caddyHosts = builtins.attrNames hostConfig.services.caddy.virtualHosts;
+      cloudflaredHosts = builtins.attrNames cloudflaredTunnel.ingress;
+      privateDnsHosts = hostConfig.services.unbound.privateHosts;
+      ports = hostSettings.networking.ports;
+    };
+    identity = {
+      kanidmGroups = builtins.attrNames hostConfig.services.kanidm.provision.groups;
+      oauthClients = builtins.attrNames hostConfig.services.kanidm.provision.systems.oauth2;
+    };
+    storage = {
+      dataRoot = hostSettings.dataRoot;
+      usersRoot = hostSettings.usersRoot;
+      sharedRoot = hostSettings.sharedRoot;
+      backupRoot = hostSettings.backupRoot;
+      dataPool = hostSettings.zfsDataPool;
+      userContentSubdirs = hostConfig.repo.storage.userRoots.contentSubdirs;
+      sharedContentSubdirs = hostConfig.repo.storage.sharedRoots.contentSubdirs;
+    };
+    backups = {
+      inherit (hostConfig.repo.backups)
+        appStateEntries
+        criticalPaths
+        pathInventories
+        sqliteDumps;
+    };
+    impermanence = {
+      directories = hostConfig.repo.impermanence.inventory.persistenceDirectories;
+      files = hostConfig.repo.impermanence.inventory.persistenceFiles;
+    };
+    secrets = {
+      ageSecretNames = builtins.attrNames hostConfig.age.secrets;
+      externalSecretNames = builtins.attrNames secretManifest.externalSecrets;
+    };
+    systemd = {
+      serviceNames = builtins.attrNames hostConfig.systemd.services;
+    };
+  };
+  inventoryJsonFile = pkgs.writeText "nixhomeserver-inventory.json" inventoryJson;
 in
 {
-  youtube-downloader = nodePackages.youtube-downloader;
+  youtube-downloader = nodeApps.youtube-downloader;
 
   shellcheck = pkgs.runCommand "shellcheck"
     {
@@ -63,6 +121,8 @@ in
   repo-policy = pkgs.runCommand "repo-policy"
     {
       nativeBuildInputs = checkNativeBuildInputs;
+      NIXHOMESERVER_DEFAULT_HOST = hostName;
+      NIXHOMESERVER_INVENTORY_JSON_FILE = inventoryJsonFile;
     } ''
     export HOME="$TMPDIR"
     export NIX_CONFIG="experimental-features = nix-command flakes"

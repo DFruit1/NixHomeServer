@@ -9,16 +9,16 @@ in
     assertions = map
       (user: {
         assertion = builtins.hasAttr user config.users.users;
-        message = "services.kiwixServe.extraUploadUsers entry '${user}' must name a local Unix account.";
+        message = "repo.kiwix.extraUploadUsers entry '${user}' must name a local Unix account.";
       })
-      config.services.kiwixServe.extraUploadUsers;
+      config.repo.kiwix.extraUploadUsers;
 
     users.groups.kiwix = { };
 
     users.users.kiwix = {
       isSystemUser = true;
       group = "kiwix";
-      home = config.services.kiwixServe.stateDir;
+      home = config.repo.kiwix.stateDir;
       createHome = false;
     };
 

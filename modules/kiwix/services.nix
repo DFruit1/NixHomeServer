@@ -1,14 +1,14 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  cfg = config.services.kiwixServe;
+  cfg = config.repo.kiwix;
   kiwixStateDirDefault = "/var/lib/kiwix";
   kiwixPort = vars.networking.ports.kiwix;
   libraryFile = "${cfg.stateDir}/library.xml";
   syncLibraryScript = pkgs.writeShellScript "kiwix-sync-library" ''
         set -euo pipefail
 
-        library_root=${lib.escapeShellArg cfg.libraryRoot}
+        library_root=${lib.escapeShellArg cfg.paths.libraryRoot}
         library_file=${lib.escapeShellArg libraryFile}
         state_dir=${lib.escapeShellArg cfg.stateDir}
         tmp_library="$(${pkgs.coreutils}/bin/mktemp "$state_dir/library.XXXXXX.xml")"
@@ -36,7 +36,7 @@ in
     ./oauth2-proxy.nix
   ];
 
-  options.services.kiwixServe = {
+  options.repo.kiwix = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -61,9 +61,9 @@ in
       description = "Port the Kiwix server listens on.";
     };
 
-    libraryRoot = lib.mkOption {
+    paths.libraryRoot = lib.mkOption {
       type = lib.types.str;
-      default = config.repo.kiwix.paths.libraryRoot;
+      default = "${vars.dataRoot}/kiwix";
       description = "Directory containing uploaded ZIM files.";
     };
 
@@ -73,7 +73,7 @@ in
         if builtins.hasAttr vars.localAdminUser config.users.users then
           vars.localAdminUser
         else
-          throw "services.kiwixServe.uploadUser must name a local Unix account.";
+          throw "repo.kiwix.uploadUser must name a local Unix account.";
       description = ''
         Local Unix account allowed to upload ZIM files. This must be a
         machine account; the Kanidm principal alone is not sufficient.
@@ -94,12 +94,6 @@ in
       default = kiwixStateDirDefault;
       description = "Writable directory containing the generated Kiwix library catalog.";
     };
-  };
-
-  options.repo.kiwix.paths.libraryRoot = lib.mkOption {
-    type = lib.types.str;
-    default = "${vars.dataRoot}/kiwix";
-    description = "Kiwix uploaded ZIM library root.";
   };
 
   config = lib.mkIf cfg.enable {
@@ -148,7 +142,7 @@ in
         User = "kiwix";
         Group = "kiwix";
         ReadOnlyPaths = [
-          cfg.libraryRoot
+          cfg.paths.libraryRoot
           cfg.stateDir
         ];
       };

@@ -1,7 +1,7 @@
 { config, lib, pkgs, vars, ... }:
 
 let
-  cfg = config.services.kiwixServe;
+  cfg = config.repo.kiwix;
   uploadUsers = lib.unique ([ cfg.uploadUser ] ++ cfg.extraUploadUsers);
   dirWriterAclArgs = lib.concatStringsSep " " (
     lib.concatMap
@@ -34,7 +34,7 @@ in
       script = ''
         set -euo pipefail
 
-        library_root=${lib.escapeShellArg cfg.libraryRoot}
+        library_root=${lib.escapeShellArg cfg.paths.libraryRoot}
 
         if [[ ! -d "$library_root" ]]; then
           ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g kiwix "$library_root"

@@ -1,10 +1,12 @@
-{
-  lib,
-  stdenvNoCC,
-  nodejs,
-  pnpm,
-  makeWrapper,
-  sqlite,
+{ lib
+, stdenvNoCC
+, nodejs
+, pnpm
+, fetchPnpmDeps
+, pnpmConfigHook
+, makeWrapper
+, sqlite
+,
 }:
 
 stdenvNoCC.mkDerivation (finalAttrs: {
@@ -13,15 +15,16 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   src = ./.;
 
-  pnpmDeps = pnpm.fetchDeps {
+  pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
-    fetcherVersion = 2;
-    hash = "sha256-f9m+sbm2/pZQa3am0DiwD+At/EKIVa3/ugt/sNg4t2U=";
+    fetcherVersion = 3;
+    hash = "sha256-cjG6fSRnbfEQS1Wklweur9g148U0SRiEL8hfYKvAcTA=";
   };
 
   nativeBuildInputs = [
     nodejs
-    pnpm.configHook
+    pnpm
+    pnpmConfigHook
     makeWrapper
     sqlite
   ];

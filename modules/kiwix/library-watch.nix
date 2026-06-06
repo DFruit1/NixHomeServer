@@ -1,14 +1,14 @@
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.services.kiwixServe;
+  cfg = config.repo.kiwix;
   mkSettledWatcherScript = import ../../lib/settled-watcher.nix { inherit pkgs; };
   watcherScript = mkSettledWatcherScript {
     name = "kiwix-library-watch";
-    watchedRoots = [ cfg.libraryRoot ];
+    watchedRoots = [ cfg.paths.libraryRoot ];
     triggerUnit = "kiwix-library-sync.service";
     includeRegex = ".*\\.zim$";
-    pathRegex = "${cfg.libraryRoot}.*";
+    pathRegex = "${cfg.paths.libraryRoot}.*";
     settleSeconds = 20;
     pollSeconds = 5;
   };

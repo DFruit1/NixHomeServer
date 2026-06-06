@@ -17,9 +17,7 @@ use crate::{
 
 use super::{
     sftp::{
-        groups_affect_file_runtime,
-        reconcile_file_access_runtime,
-        trigger_sftp_sync_services,
+        groups_affect_file_runtime, reconcile_file_access_runtime, trigger_sftp_sync_services,
         verify_removed_file_access,
     },
     user::load_user,

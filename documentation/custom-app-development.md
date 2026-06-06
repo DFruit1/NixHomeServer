@@ -61,6 +61,13 @@ nix build .#checks.x86_64-linux.mail-archive-ui-frontend --no-link --print-build
 ## Package Manager
 
 Use `pnpm` for custom frontend apps. The repo already packages
-`youtube-downloader` with `pnpm.fetchDeps`, and `mail-archive-ui` follows that
-same reproducible path. Do not add Bun unless a future app has a specific
-Bun-only requirement.
+`youtube-downloader` with `fetchPnpmDeps`, and `mail-archive-ui` follows that
+same reproducible path.
+
+For NixOS 26.05 and newer, do not use `node2nix`, `pkgs.nodePackages`, or
+Corepack-dependent builds for new custom apps. Package pnpm projects with
+top-level `fetchPnpmDeps`, `pnpmConfigHook`, and an explicit `pnpm` entry in
+`nativeBuildInputs`. The default `nodejs` package is Node 24 LTS, so pin a
+specific `nodejs_*` only when upstream cannot run on Node 24.
+
+Do not add Bun unless a future app has a specific Bun-only requirement.

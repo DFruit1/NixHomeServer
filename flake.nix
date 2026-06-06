@@ -6,9 +6,11 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     crane.url = "github:ipetkov/crane";
     agenix.url = "github:ryantm/agenix";
+    agenix.inputs.nixpkgs.follows = "nixpkgs";
     impermanence.url = "github:nix-community/impermanence";
     impermanence.inputs.nixpkgs.follows = "nixpkgs";
     filestashNix.url = "github:dermetfan/filestash.nix";
+    filestashNix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs = inputs@{ self, nixpkgs, crane, ... }:
@@ -31,7 +33,8 @@
       formatter.${system} = pkgs.nixpkgs-fmt;
       checks.${system} = import ./flake/checks.nix {
         inherit self lib pkgs;
-        inherit (packageData) rustApps nodePackages;
+        inherit (host) nixosConfigurations nixhomeserverSettings;
+        inherit (packageData) rustApps nodeApps;
       };
       devShells.${system} = import ./flake/dev-shells.nix {
         inherit pkgs;

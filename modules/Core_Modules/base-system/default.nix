@@ -34,7 +34,7 @@ in
 
   boot.initrd.supportedFilesystems = [ "btrfs" "vfat" "zfs" ];
   boot.kernelModules = [ "jitterentropy_rng" "zfs" ];
-  boot.initrd.kernelModules = [ "jitterentropy_rng" "crc32c-intel" "zfs" ];
+  boot.initrd.kernelModules = [ "jitterentropy_rng" "zfs" ];
   boot.initrd.availableKernelModules = [ "nvme" "ahci" "xhci_pci" "usb_storage" "sd_mod" ];
   boot.supportedFilesystems = [ "btrfs" "vfat" "zfs" ];
 

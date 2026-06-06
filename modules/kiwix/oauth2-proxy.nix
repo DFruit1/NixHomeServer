@@ -1,7 +1,7 @@
 { config, lib, oauth2Proxy, vars, ... }:
 
 let
-  cfg = config.services.kiwixServe;
+  cfg = config.repo.kiwix;
   loopback = vars.networking.loopbackIPv4;
   kiwixOauth2ProxyPort = vars.networking.ports.oauth2ProxyKiwix;
   host = "wiki.${vars.domain}";

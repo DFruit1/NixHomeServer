@@ -1,9 +1,9 @@
-{ pkgs, vars, ... }:
+{ config, pkgs, vars, ... }:
 
 let
   proxyUser = "immich-public-proxy";
   proxyGroup = "immich-public-proxy";
-  loopback = vars.networking.loopbackIPv4;
+  proxyUid = config.users.users.${proxyUser}.uid;
   proxyListenPort = vars.networking.ports.immichPublicProxy;
   photosHost = "photos.${vars.domain}";
   shareHost = "sharephotos.${vars.domain}";
@@ -22,8 +22,7 @@ in
         "network-online.target"
       ];
       environment = {
-        HOST = loopback;
-        PORT = toString proxyListenPort;
+        IPP_PORT = toString proxyListenPort;
         IMMICH_URL = "https://${photosHost}";
         PUBLIC_BASE_URL = "https://${shareHost}";
       };
@@ -32,6 +31,12 @@ in
         User = proxyUser;
         Group = proxyGroup;
         WorkingDirectory = "/var/lib/immich-public-proxy";
+        ExecStartPre = "+${pkgs.writeShellScript "immich-public-proxy-stale-podman-cleanup" ''
+          ${pkgs.util-linux}/bin/runuser -u ${proxyUser} -- \
+            env XDG_RUNTIME_DIR=/run/user/${toString proxyUid} \
+            ${pkgs.systemd}/bin/systemctl --user stop immich-public-proxy.service || true
+          ${pkgs.procps}/bin/pkill -u ${proxyUser} -f 'podman|conmon|passt|node dist/index.js' || true
+        ''}";
         ExecStart = "${pkgs.immich-public-proxy}/bin/immich-public-proxy";
         Restart = "on-failure";
         RestartSec = "5s";

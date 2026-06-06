@@ -148,7 +148,8 @@ in
               exit 0
             }
 
-            ${pkgs.sqlite}/bin/sqlite3 "$db" <<'SQL'
+            for attempt in $(seq 1 30); do
+              if ${pkgs.sqlite}/bin/sqlite3 -cmd '.timeout 60000' "$db" <<'SQL'
             BEGIN;
             INSERT INTO auth_group (name)
             SELECT 'paperless-users'
@@ -188,6 +189,17 @@ in
               );
             COMMIT;
             SQL
+              then
+                exit 0
+              else
+                rc=$?
+              fi
+
+              if [[ "$attempt" -eq 30 ]]; then
+                exit "$rc"
+              fi
+              sleep 2
+            done
           '';
         };
       }

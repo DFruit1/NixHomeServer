@@ -24,7 +24,6 @@ declare -A app_roots=(
   [services.immich]=immich
   [services.jellyfin]=jellyfin
   [services.kavita]=kavita
-  [services.kiwixServe]=kiwix
   [services.mail-archive-ui]=mail-archive-ui
   [services.paperless]=paperless
   [services.vaultwarden]=vaultwarden

@@ -45,7 +45,9 @@ case "$format" in
     ;;
 esac
 
-if [[ -n "${NIXHOMESERVER_INVENTORY_JSON:-}" ]]; then
+if [[ -n "${NIXHOMESERVER_INVENTORY_JSON_FILE:-}" ]]; then
+  inventory_json="$(< "$NIXHOMESERVER_INVENTORY_JSON_FILE")"
+elif [[ -n "${NIXHOMESERVER_INVENTORY_JSON:-}" ]]; then
   inventory_json="$NIXHOMESERVER_INVENTORY_JSON"
 else
   if [[ -z "$host" ]]; then

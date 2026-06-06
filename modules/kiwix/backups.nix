@@ -1,7 +1,7 @@
 { config, ... }:
 
 let
-  libraryRoot = config.services.kiwixServe.libraryRoot;
+  libraryRoot = config.repo.kiwix.paths.libraryRoot;
 in
 
 {

@@ -220,7 +220,17 @@ let
         }
   '';
   filestashBackendWithProxyAuth = filestashPackages.backend.overrideAttrs (old: {
+    passthru = old.passthru // {
+      overrideModAttrs = lib.composeExtensions old.passthru.overrideModAttrs (_final: _prev: {
+        env = (_prev.env or { }) // {
+          GOFLAGS = "-mod=mod -trimpath";
+        };
+      });
+    };
+
     postPatch = ''
+        rm -rf vendor server/vendor
+
         chmod -R u+w server/plugin server/ctrl
         mkdir -p server/plugin/plg_authenticate_proxy_password
         install -m 0644 ${proxyPasswordPlugin} server/plugin/plg_authenticate_proxy_password/index.go

@@ -111,6 +111,7 @@ struct AppState {
 struct Identity {
     username: String,
     email: Option<String>,
+    #[allow(dead_code)]
     groups: Vec<String>,
 }
 
@@ -123,6 +124,7 @@ struct AccountRecord {
     imap_host: String,
     imap_port: u16,
     imap_username: String,
+    #[allow(dead_code)]
     folder_mode: String,
     folder_patterns_json: String,
     encrypted_secret: String,

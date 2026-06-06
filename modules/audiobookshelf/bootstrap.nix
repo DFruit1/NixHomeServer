@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   repoRoot = ../..;
