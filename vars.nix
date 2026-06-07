@@ -89,7 +89,7 @@ rec {
   };
 
   phoneBackup = {
-    enable = false; # Set true after replacing the Syncthing device ID below.
+    enable = true; # Set true after replacing the Syncthing device ID below.
     maxRepositoryBytes = 75 * 1024 * 1024 * 1024;
     minimumSuccessfulSnapshots = 7;
     compression = "zstd";
@@ -97,7 +97,7 @@ rec {
     stateDir = "/persist/appdata/kopia-phone";
     syncthing = {
       deviceName = "phone";
-      deviceId = "REPLACE_WITH_SYNCTHING_FORK_DEVICE_ID";
+      deviceId = "BEAF3NP-DUDLXFK-DCCSELQ-LIL5664-HGHQP7Z-2EZNUXF-OZ7VIGK-ZMJMGQ6";
       folderId = "nixhomeserver-kopia-phone";
     };
     sources = {

@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
+import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -29,6 +30,14 @@ export const handleRequest = async (config: AppConfig, request: IncomingMessage,
       return;
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/sftp-key') {
+      const user = currentUserFromHeaders(request.headers, config.devUser);
+      const body = await readJson<{ publicKey?: string }>(request);
+      const publicKey = normalisePublicKey(body.publicKey);
+      sendJson(response, 200, await installSftpPublicKey(config, user, publicKey));
+      return;
+    }
+
     if (url.pathname.startsWith('/api/')) {
       sendJson(response, 404, { error: 'api route not found' });
       return;
@@ -40,6 +49,15 @@ export const handleRequest = async (config: AppConfig, request: IncomingMessage,
     const status = message.includes('authenticated user') ? 401 : 500;
     sendJson(response, status, { error: message });
   }
+};
+
+const readJson = async <T>(request: IncomingMessage): Promise<T> => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const text = Buffer.concat(chunks).toString('utf8');
+  return text ? (JSON.parse(text) as T) : ({} as T);
 };
 
 const sendJson = (response: ServerResponse, status: number, value: unknown): void => {

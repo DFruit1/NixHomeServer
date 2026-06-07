@@ -20,6 +20,7 @@ a {
 
 button,
 input,
+textarea,
 select {
   font: inherit;
 }
@@ -87,7 +88,7 @@ h3 {
 }
 
 .session a,
-.tabs button,
+.tabs a,
 .guide-list button {
   border: 1px solid #d6dde8;
   border-radius: 6px;
@@ -108,13 +109,13 @@ h3 {
   max-width: 1180px;
 }
 
-.tabs button {
+.tabs a {
   min-width: 88px;
   padding: 10px 14px;
   font-weight: 700;
 }
 
-.tabs button.selected,
+.tabs a.selected,
 .guide-list button.selected {
   border-color: #245b9f;
   background: #245b9f;
@@ -131,51 +132,27 @@ h3 {
   padding: 12px 14px;
 }
 
-.summary-grid,
 .section {
   margin: 0 auto 18px;
   max-width: 1180px;
 }
 
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.summary,
 .section,
 .folder-card,
 .guide-panel,
+.key-form,
 .disabled-list {
   border: 1px solid #dfe5ee;
   border-radius: 8px;
   background: #fff;
 }
 
-.summary {
-  padding: 18px;
-}
-
-.summary span {
-  display: block;
-  overflow-wrap: anywhere;
-  font-size: 26px;
-  font-weight: 800;
-}
-
-.summary p,
 .section-heading p,
 .service-tile p,
-.service-tile small,
 .folder-card dt,
 .guide-list small,
 .admin-steps p {
   color: #607086;
-}
-
-.summary p {
-  margin: 4px 0 0;
 }
 
 .section {
@@ -201,6 +178,7 @@ h3 {
 }
 
 .service-tile {
+  position: relative;
   display: grid;
   min-height: 174px;
   align-content: space-between;
@@ -208,7 +186,6 @@ h3 {
   border: 1px solid #dfe5ee;
   border-radius: 8px;
   padding: 16px;
-  text-decoration: none;
 }
 
 .service-tile:hover {
@@ -216,7 +193,6 @@ h3 {
   box-shadow: 0 8px 24px rgba(31, 42, 56, 0.08);
 }
 
-.category,
 .state {
   display: inline-flex;
   width: max-content;
@@ -228,18 +204,82 @@ h3 {
   font-weight: 800;
 }
 
+.app-symbol {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #d6dde8;
+  border-radius: 8px;
+  background: #eef4f8;
+  color: #245b9f;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.app-symbol.large {
+  position: static;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 12px;
+  font-size: 18px;
+}
+
 .state.off {
   background: #f2ece6;
   color: #76512f;
 }
 
+.service-tile h3 {
+  max-width: calc(100% - 44px);
+}
+
+.service-tile h3 a {
+  text-decoration: none;
+}
+
 .service-tile p {
+  max-width: calc(100% - 16px);
   margin-bottom: 0;
   line-height: 1.45;
 }
 
-.service-tile small {
-  line-height: 1.4;
+.tile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.open-link {
+  color: #245b9f;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.settings-button,
+.modal-close {
+  display: grid;
+  place-items: center;
+  border: 1px solid #cfd8e5;
+  border-radius: 999px;
+  background: #fff;
+  color: #263445;
+  cursor: pointer;
+}
+
+.settings-button {
+  width: 34px;
+  height: 34px;
+}
+
+.settings-button:hover,
+.modal-close:hover {
+  border-color: #245b9f;
+  color: #245b9f;
 }
 
 .disabled-list {
@@ -344,6 +384,92 @@ code {
   font-size: 13px;
 }
 
+.command-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.command-grid code + code {
+  margin-top: 8px;
+}
+
+.hint {
+  margin: 14px 0 0;
+  color: #607086;
+}
+
+.key-form {
+  padding: 18px;
+}
+
+.key-form p {
+  color: #607086;
+  line-height: 1.5;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #cfd8e5;
+  border-radius: 6px;
+  padding: 12px;
+  color: #18202a;
+}
+
+.key-form button {
+  margin-top: 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #245b9f;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 11px 14px;
+}
+
+.key-form button:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+.key-status {
+  margin: 12px 0 0;
+  border-radius: 6px;
+  background: #eef4f8;
+  padding: 10px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 20;
+  padding: 20px;
+  background: rgba(15, 23, 32, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.modal {
+  position: relative;
+  width: min(100%, 620px);
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: auto;
+  border-radius: 8px;
+  background: #fff;
+  padding: 24px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+}
+
+.modal-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  font-weight: 800;
+}
+
 @media (max-width: 760px) {
   .shell {
     padding: 18px;
@@ -359,7 +485,6 @@ code {
     font-size: 34px;
   }
 
-  .summary-grid,
   .two-column,
   .upload-layout {
     grid-template-columns: 1fr;

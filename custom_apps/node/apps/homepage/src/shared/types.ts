@@ -41,3 +41,8 @@ export type HomepageData = {
   folderGuides: FolderGuide[];
   adminGuide: AdminStep[];
 };
+
+export type SftpKeyResponse = {
+  ok: boolean;
+  message: string;
+};

@@ -34,6 +34,41 @@ let
   mailArchiveEnabled = hostEnabled emailsHost;
   youtubeDownloaderEnabled = hostEnabled downloadsHost;
   kopiaEnabled = hostEnabled backupsHost;
+  sftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
+  installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" ''
+    set -euo pipefail
+
+    username="''${1:-}"
+    case "$username" in
+      ""|*/*|*..*|*[!A-Za-z0-9._-]*)
+        echo "invalid username" >&2
+        exit 1
+        ;;
+    esac
+
+    public_key="$(${pkgs.coreutils}/bin/cat | ${pkgs.coreutils}/bin/tr -d '\r' | ${pkgs.gnused}/bin/sed -e 's/[[:space:]]*$//')"
+    case "$public_key" in
+      "ssh-ed25519 "*|"ssh-rsa "*|"ecdsa-sha2-nistp256 "*|"ecdsa-sha2-nistp384 "*|"ecdsa-sha2-nistp521 "*|"sk-ssh-ed25519@openssh.com "*|"sk-ecdsa-sha2-nistp256@openssh.com "*)
+        ;;
+      *)
+        echo "invalid OpenSSH public key" >&2
+        exit 1
+        ;;
+    esac
+
+    if printf '%s' "$public_key" | ${pkgs.gnugrep}/bin/grep -q '[[:cntrl:]]'; then
+      echo "invalid control character in public key" >&2
+      exit 1
+    fi
+
+    ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpAuthorizedKeysDir}
+    tmp="$(${pkgs.coreutils}/bin/mktemp ${lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX"})"
+    trap 'rm -f "$tmp"' EXIT
+    ${pkgs.coreutils}/bin/printf '%s\n' "$public_key" > "$tmp"
+    ${pkgs.coreutils}/bin/chown root:root "$tmp"
+    ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
+    ${pkgs.coreutils}/bin/mv "$tmp" "${sftpAuthorizedKeysDir}/$username"
+  '';
 
   serviceCards = [
     {
@@ -313,6 +348,8 @@ in
           HOMEPAGE_HOST = listenAddress;
           HOMEPAGE_PORT = toString listenPort;
           HOMEPAGE_CONFIG_FILE = homepageConfig;
+          HOMEPAGE_SFTP_KEY_INSTALL_COMMAND = installSftpKey;
+          HOMEPAGE_SUDO = "${pkgs.sudo}/bin/sudo";
         };
         serviceConfig = {
           Type = "simple";
@@ -321,15 +358,33 @@ in
           ExecStart = "${appPackages.homepage}/bin/homepage";
           Restart = "on-failure";
           RestartSec = "5s";
-          NoNewPrivileges = true;
           PrivateTmp = true;
           ProtectSystem = "strict";
           ProtectHome = true;
+          ReadWritePaths = [
+            sftpAuthorizedKeysDir
+          ];
           ReadOnlyPaths = [
             homepageConfig
           ];
         };
       };
+
+      systemd.tmpfiles.rules = [
+        "d ${sftpAuthorizedKeysDir} 0755 root root -"
+      ];
+
+      security.sudo.extraRules = [
+        {
+          users = [ serviceUser ];
+          commands = [
+            {
+              command = "${installSftpKey}";
+              options = [ "NOPASSWD" ];
+            }
+          ];
+        }
+      ];
     }
 
     (oauth2Proxy.mkSidecarService {
