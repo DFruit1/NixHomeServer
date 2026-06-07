@@ -97,6 +97,7 @@ let
   inventoryJsonFile = pkgs.writeText "nixhomeserver-inventory.json" inventoryJson;
 in
 {
+  homepage = nodeApps.homepage;
   youtube-downloader = nodeApps.youtube-downloader;
 
   shellcheck = pkgs.runCommand "shellcheck"

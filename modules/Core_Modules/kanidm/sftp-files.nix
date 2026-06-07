@@ -21,6 +21,7 @@ let
     ++ lib.optionals localAdminNeedsSftpBridge [ localSftpAccessGroup ];
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
   sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
+  userSftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
   filesSftpPort = vars.networking.ports.filesSftp;
   lanIface = vars.networking.interfaces.lan;
   filesSftpSshdConfig = pkgs.writeText "files-sftp-sshd_config" ''
@@ -32,12 +33,12 @@ let
     HostKey /etc/ssh/ssh_host_rsa_key
     UsePAM yes
     PAMServiceName files-sftp-sshd
-    PasswordAuthentication yes
-    KbdInteractiveAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
     PermitRootLogin no
     AllowGroups ${lib.concatStringsSep " " sftpUnixGroups}
     PubkeyAuthentication yes
-    AuthorizedKeysFile ${sftpAuthorizedKeysDir}/%u
+    AuthorizedKeysFile ${sftpAuthorizedKeysDir}/%u ${userSftpAuthorizedKeysDir}/%u
     AllowTcpForwarding no
     PermitTunnel no
     PermitTTY no
@@ -97,6 +98,7 @@ in
   systemd.tmpfiles.rules = [
     "d /srv/files-sftp 0755 root root -"
     "d ${chrootBase} 0755 root root -"
+    "d ${userSftpAuthorizedKeysDir} 0755 root root -"
   ];
 
   systemd.services.files-sftp-chroot-layout = {

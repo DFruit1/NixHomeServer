@@ -1349,7 +1349,7 @@ fn run_unixd_auth_test(cli: &KanidmCli, account_id: &str) -> (UnixdAuthTest, Vec
     eprintln!(
         "{}",
         crate::output::warning_text(&format!(
-            "Verification step for '{account_id}': enter the POSIX/SFTP password.\nThis is the password used by direct SFTP through Kanidm UnixD/PAM.\nIt will not set or change the password again; it only confirms that the local login path accepts it."
+            "Verification step for '{account_id}': enter the POSIX/UNIX password.\nThis checks Kanidm UnixD/PAM only. Direct SFTP uses SSH public keys.\nIt will not set or change the password again; it only confirms that the local UnixD auth path accepts it."
         ))
     );
     match cli.unix_auth_test(account_id) {

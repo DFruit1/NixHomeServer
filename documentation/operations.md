@@ -58,8 +58,8 @@ Filestash and SFTP file roots:
 
 - Filestash authenticates through OAuth2 Proxy and connects to the local SFTP endpoint as that Unix user with the managed Filestash SFTP key.
 - Filestash opens a single normal-user source, `Files`, rooted at the user's SFTP chroot.
-- Direct SFTP opens the same personal root at `sftp://<username>@server.home.arpa:<filesSftp-port>/`, currently port `2222`, and authenticates with the user's Kanidm POSIX/UNIX password.
-- The Kanidm POSIX/UNIX password is set live in Kanidm with `kanidm-admin user posix-password set <username>` and is separate from the normal web/OIDC password or passkey.
+- Direct SFTP opens the same personal root at `sftp://<username>@server.home.arpa:<filesSftp-port>/`, currently port `2222`, and authenticates with the user's SSH key.
+- Direct SFTP password and keyboard-interactive login are disabled; install user public keys as root in `/persist/appdata/files-sftp-authorized-keys/<username>`.
 - Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
 - Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB filesystems are mounted manually by an operator under that root.

@@ -8,6 +8,7 @@
 
     ./modules/audiobookshelf
     ./modules/files
+    ./modules/homepage
     ./modules/immich
     ./modules/jellyfin
     ./modules/kiwix

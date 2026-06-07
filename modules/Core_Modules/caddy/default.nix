@@ -29,7 +29,7 @@ in
         useACMEHost = vars.domain;
         extraConfig = ''
           ${accessLogConfig}
-          redir https://${vars.kanidmDomain}{uri} 308
+          redir https://homepage.${vars.domain}{uri} 308
         '';
       };
 
@@ -37,7 +37,7 @@ in
         useACMEHost = vars.domain;
         extraConfig = ''
           ${accessLogConfig}
-          redir https://${vars.kanidmDomain}{uri} 308
+          redir https://homepage.${vars.domain}{uri} 308
         '';
       };
 

@@ -215,8 +215,8 @@ fn curated_group_help(name: &str) -> Option<GroupHelp> {
             category: GroupCategory::Foundation,
         },
         "files-sftp-users" => GroupHelp {
-            summary: "Grants POSIX-password access to the restricted files SFTP endpoint.",
-            detail: "Add this only when the user should connect directly to the dedicated SFTP port. The endpoint uses Kanidm POSIX/UNIX password auth through PAM, forces internal-sftp, and does not grant normal shell SSH. Set the POSIX password live with `kanidm-admin user posix-password set <user>`.",
+            summary: "Grants public-key access to the restricted files SFTP endpoint.",
+            detail: "Add this only when the user should connect directly to the dedicated SFTP port. The endpoint uses SSH public-key auth, forces internal-sftp, and does not grant normal shell SSH. Install the user's public key in `/persist/appdata/files-sftp-authorized-keys/<user>`.",
             category: GroupCategory::Foundation,
         },
         "files-shared-users" => GroupHelp {

@@ -197,7 +197,7 @@ Normal onboarding sequence:
 3. Add only the live groups they need for file, app, or admin access.
 4. For browser file access and a personal root, add `user-files` explicitly.
 5. For SFTP login, add `files-sftp-users` explicitly.
-6. For SFTP login, set their Kanidm POSIX/UNIX password live with `kanidm-admin user posix-password set "$NEW_USER"`.
+6. For SFTP login, install their SSH public key in `/persist/appdata/files-sftp-authorized-keys/$NEW_USER`.
 7. For the shared `_Shared` folder inside their personal root, add `files-shared-users` explicitly.
 8. Add `app-admin` only when they should be an application operator in the apps they already use.
 9. Bootstrap `system_admins` manually with the regular `kanidm` CLI only when someone truly needs high-authority server administration.
@@ -213,21 +213,21 @@ Interactive guidance note:
 
 ## Files SFTP Access
 
-Direct files SFTP access uses Kanidm identity through PAM/NSS and the user's
-Kanidm POSIX/UNIX password. That POSIX password is a separate Kanidm credential
-from the normal web/OIDC password or passkey. It does not use per-user SSH
-public keys.
+Direct files SFTP access uses Kanidm identity through NSS for Unix account and
+group resolution, but authentication is public-key only. Users may protect their
+private key with a local passphrase if they want an extra client-side unlock
+step. The server does not accept Kanidm POSIX/UNIX passwords for direct SFTP.
 
 Grant direct SFTP access:
 
 ```bash
 kanidm-admin membership add alice files-sftp-users
 kanidm-admin membership add alice files-shared-users
-kanidm-admin user posix-password set alice
+sudo install -m 0644 -o root -g root alice.pub /persist/appdata/files-sftp-authorized-keys/alice
 ```
 
-The user can then connect from a local file browser and sign in with their
-Kanidm POSIX/UNIX password:
+The user can then connect from a local file browser or SFTP client with the
+matching private key:
 
 ```text
 sftp://alice@server.home.arpa:2222/
@@ -235,8 +235,9 @@ sftp://alice@server.home.arpa:2222/
 
 Important:
 - `files-sftp-users` controls SFTP login eligibility on the dedicated files SFTP port
-- direct SFTP password login requires a Kanidm POSIX/UNIX password set live with `kanidm-admin user posix-password set <username>`
-- the POSIX/UNIX password is not declared in NixOS config and is not automatically kept in sync with the user's web/OIDC password or passkey
+- direct SFTP password and keyboard-interactive login are disabled
+- per-user direct SFTP public keys are stored in `/persist/appdata/files-sftp-authorized-keys/<username>`
+- the managed Filestash SFTP key remains in the runtime key directory and is separate from user-managed keys
 - `files-shared-users` controls whether `_Shared` appears inside the user's personal root
 - `user-files` controls browser file access through Filestash
 - the dedicated SFTP endpoint forces `internal-sftp` and does not grant normal SSH shell access
@@ -302,7 +303,7 @@ Expected result:
 
 ## App-Specific First Login Notes
 
-- `files.<domain>`: Filestash browser access requires `user-files` and connects to the chrooted SFTP endpoint with the managed Filestash SFTP key. Direct SFTP login requires `files-sftp-users` and the user's separate Kanidm POSIX/UNIX password. `files-shared-users` adds `_Shared` to either view; `app-admin` and `system_admins` do not expose shared files there.
+- `files.<domain>`: Filestash browser access requires `user-files` and connects to the chrooted SFTP endpoint with the managed Filestash SFTP key. Direct SFTP login requires `files-sftp-users` plus a user SSH public key in `/persist/appdata/files-sftp-authorized-keys/<username>`. `files-shared-users` adds `_Shared` to either view; `app-admin` and `system_admins` do not expose shared files there.
 - `emails.<domain>`: browser access is enforced by `mail-archive-users`. That group grants access to the private mail-archive UI only; it does not grant direct access to the hidden `.internal-sync` payload tree. User-visible mailbox `.eml` files are exposed through the visible mirror under each personal `_Emails/` root.
 - `passwords.<domain>`: Vaultwarden is local-auth only. Use `kanidm-admin local vaultwarden invite "$ACCOUNT_ID"` as an email-resolution helper, then the user signs in with Vaultwarden local credentials. See [Vaultwarden Guide](./vaultwarden.md).
 - `wiki.<domain>`: baseline `users` membership is sufficient.

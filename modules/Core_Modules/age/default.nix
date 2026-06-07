@@ -36,6 +36,8 @@ in
     kiwixOauth2ProxyCookieSecret = { file = secretFile "kiwixOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     youtubeDownloaderOauth2ProxyClientSecret = { file = secretFile "youtubeDownloaderOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     youtubeDownloaderOauth2ProxyCookieSecret = { file = secretFile "youtubeDownloaderOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    homepageOauth2ProxyClientSecret = { file = secretFile "homepageOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    homepageOauth2ProxyCookieSecret = { file = secretFile "homepageOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     kopiaServerPassword = { file = secretFile "kopiaServerPassword"; owner = "root"; mode = "0400"; };
     kopiaPhonePassword = { file = secretFile "kopiaPhonePassword"; owner = "root"; mode = "0400"; };
     kopiaOauth2ProxyClientSecret = { file = secretFile "kopiaOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };

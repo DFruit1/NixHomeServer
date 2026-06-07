@@ -56,6 +56,14 @@
       description = "Cookie secret for the YouTube downloader OAuth2 Proxy.";
       bytes = 32;
     };
+    homepageOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the home page OAuth2 Proxy.";
+      bytes = 32;
+    };
+    homepageOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the home page OAuth2 Proxy.";
+      bytes = 32;
+    };
     kopiaServerPassword = {
       description = "Generated native basic-auth password for the Kopia web UI.";
       bytes = 32;

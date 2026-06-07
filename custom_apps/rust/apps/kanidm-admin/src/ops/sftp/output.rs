@@ -8,7 +8,7 @@ pub(super) fn render_readiness_human(
     readiness: &SftpReadiness,
 ) -> String {
     format!(
-        "POSIX/SFTP diagnosis for '{}':\nSFTP readiness: {}.\nSFTP port: {}\nChroot base: {}\n\n{}\n\nIf these checks pass but SFTP still rejects the password, run `kanidm-admin local sftp test {}` and include `--auth-test` when you can interactively enter the current POSIX/SFTP password.\n\n{}",
+        "SFTP diagnosis for '{}':\nSFTP readiness: {}.\nSFTP port: {}\nChroot base: {}\n\n{}\n\nDirect SFTP uses SSH public keys. If these checks pass but SFTP still rejects login, confirm the user's public key is installed in `/persist/appdata/files-sftp-authorized-keys/{}` and that the matching private key is selected by the client.\n\n{}",
         account_id,
         if readiness.ready { "ready" } else { "not ready" },
         config.files_sftp_port,

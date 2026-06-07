@@ -290,7 +290,7 @@ enum UserSubcommand {
         )]
         ttl: u64,
     },
-    #[command(about = "Set or reset the separate POSIX/UNIX password used by SFTP.")]
+    #[command(about = "Set or reset the separate POSIX/UNIX password used by Kanidm UnixD.")]
     PosixPassword(UserPosixPasswordCommand),
 }
 

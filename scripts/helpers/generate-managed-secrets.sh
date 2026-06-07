@@ -25,6 +25,8 @@ generated_secret_specs=(
   "kiwixOauth2ProxyCookieSecret:32"
   "youtubeDownloaderOauth2ProxyClientSecret:32"
   "youtubeDownloaderOauth2ProxyCookieSecret:32"
+  "homepageOauth2ProxyClientSecret:32"
+  "homepageOauth2ProxyCookieSecret:32"
   "kopiaServerPassword:32"
   "kopiaPhonePassword:32"
   "kopiaOauth2ProxyClientSecret:32"
@@ -38,7 +40,7 @@ generate_secret_value() {
   local name="$1"
   local bytes="$2"
 
-  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "youtubeDownloaderOauth2ProxyCookieSecret" || "$name" == "kopiaOauth2ProxyCookieSecret" ]]; then
+  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "youtubeDownloaderOauth2ProxyCookieSecret" || "$name" == "homepageOauth2ProxyCookieSecret" || "$name" == "kopiaOauth2ProxyCookieSecret" ]]; then
     openssl rand -hex 16
   else
     openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))"

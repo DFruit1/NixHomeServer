@@ -130,7 +130,9 @@ rec {
       oauth2ProxyDownloads = 4183;
       oauth2ProxyFilestash = 4184;
       oauth2ProxyKopia = 4185;
+      oauth2ProxyHomepage = 4186;
       kopia = 51515;
+      homepage = 8084;
       paperless = 8000;
       audiobookshelf = 13378;
       filestash = 8334;

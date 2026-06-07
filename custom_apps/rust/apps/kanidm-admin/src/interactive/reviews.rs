@@ -275,7 +275,7 @@ pub(super) fn build_reset_password_review(user: &UserRecord, ttl_seconds: u64) -
 
 pub(super) fn build_posix_password_review(user: &UserRecord) -> String {
     format!(
-        "{}\n\nThis will set or reset the separate Kanidm POSIX/UNIX password for direct SFTP.\n\nWarning:\n- This does not change the user's web/OIDC password or passkeys.\n- Share any temporary password only through a secure channel.",
+        "{}\n\nThis will set or reset the separate Kanidm POSIX/UNIX password used by Kanidm UnixD.\n\nWarning:\n- Direct SFTP uses SSH public keys, not this password.\n- This does not change the user's web/OIDC password or passkeys.\n- Share any temporary password only through a secure channel.",
         human_operator_user_summary(user),
     )
 }

@@ -45,8 +45,8 @@ pub(super) fn simple_menu_items() -> Vec<forms::ContextualItem> {
         ),
         menu_item(
             "Set / Reset POSIX Password",
-            "Set the separate POSIX/UNIX password used for direct SFTP.",
-            "Use this after granting `files-sftp-users`, or when the user's direct SFTP password needs to be rotated. This does not change their web/OIDC password or passkeys.",
+            "Set the separate POSIX/UNIX password used by Kanidm UnixD.",
+            "Use this only when a workflow explicitly needs a POSIX/UNIX password. Direct SFTP uses SSH public keys. This does not change the user's web/OIDC password or passkeys.",
         ),
         menu_item(
             "Show Backend Logs",
