@@ -60,6 +60,10 @@
       description = "Generated native basic-auth password for the Kopia web UI.";
       bytes = 32;
     };
+    kopiaPhonePassword = {
+      description = "Generated repository password for the phone-scoped Kopia backup seed.";
+      bytes = 32;
+    };
     kopiaOauth2ProxyClientSecret = {
       description = "OIDC client secret for the Kopia OAuth2 Proxy.";
       bytes = 32;

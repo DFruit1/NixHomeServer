@@ -77,6 +77,7 @@ in
       port = vars.networking.ports.oauth2ProxyDownloads;
       upstream = "http://${listenAddress}:${toString listenPort}";
       allowedGroups = [ "downloads-users" ];
+      codeChallengeMethod = "S256";
       serviceDependencies = [
         "caddy.service"
         "youtube-downloader.service"

@@ -26,6 +26,7 @@ generated_secret_specs=(
   "youtubeDownloaderOauth2ProxyClientSecret:32"
   "youtubeDownloaderOauth2ProxyCookieSecret:32"
   "kopiaServerPassword:32"
+  "kopiaPhonePassword:32"
   "kopiaOauth2ProxyClientSecret:32"
   "kopiaOauth2ProxyCookieSecret:32"
   "vaultwardenAdminToken:32"

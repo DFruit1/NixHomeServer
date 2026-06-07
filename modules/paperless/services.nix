@@ -89,6 +89,7 @@ in
         PAPERLESS_OCR_CLEAN = "clean";
         PAPERLESS_OCR_OUTPUT_TYPE = "pdfa";
         PAPERLESS_CONSUMER_INOTIFY_DELAY = "2";
+        PAPERLESS_CONSUMER_POLLING = "60";
         PAPERLESS_CONSUMER_IGNORE_PATTERNS = paperlessConsumerIgnorePatterns;
       };
     };

@@ -86,6 +86,31 @@ rec {
     storageMountName = "_Backups";
   };
 
+  phoneBackup = {
+    enable = false; # Set true after replacing the Syncthing device ID below.
+    maxRepositoryBytes = 75 * 1024 * 1024 * 1024;
+    minimumSuccessfulSnapshots = 7;
+    compression = "zstd";
+    repositoryPath = "${backupRoot}/kopia-phone";
+    stateDir = "/persist/appdata/kopia-phone";
+    syncthing = {
+      deviceName = "phone";
+      deviceId = "REPLACE_WITH_SYNCTHING_FORK_DEVICE_ID";
+      folderId = "nixhomeserver-kopia-phone";
+    };
+    sources = {
+      includePersist = true;
+      extraPaths = [ ];
+      excludePatterns = [
+        "**/.cache/**"
+        "**/cache/**"
+        "**/tmp/**"
+        "**/thumbs/**"
+        "**/encoded-video/**"
+      ];
+    };
+  };
+
   advanced = rec {
     # Advanced networking values are rarely changed on first install.
     loopbackIPv4 = "127.0.0.1";

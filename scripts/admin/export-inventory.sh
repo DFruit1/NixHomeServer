@@ -91,6 +91,8 @@ echo "  app state entries: $(jq '.backups.appStateEntries | length' <<<"$invento
 echo "  critical paths: $(jq '.backups.criticalPaths | length' <<<"$inventory_json")"
 echo "  path inventories: $(jq '.backups.pathInventories | length' <<<"$inventory_json")"
 echo "  SQLite dumps: $(jq '.backups.sqliteDumps | length' <<<"$inventory_json")"
+echo "  phone backup enabled: $(jq -r '.backups.phoneBackup.enable' <<<"$inventory_json")"
+echo "  phone backup repo: $(jq -r '.backups.phoneBackup.repositoryPath' <<<"$inventory_json")"
 echo
 
 echo "Impermanence"

@@ -439,7 +439,6 @@ in
         url = "http://${loopback}:${toString filesPort}/";
       };
       extraProxyArgs = [
-        "--user-id-claim=preferred_username"
         "--session-cookie-minimal=true"
         "--skip-auth-preflight=true"
         "--upstream-timeout=30m0s"

@@ -6169,6 +6169,7 @@ fn load_attachment_page_data(
             }
             item.paperless_sent_at = load_attachment_paperless_handoff(
                 &connection,
+                &config,
                 username,
                 &item.attachment.attachment_key,
             )?;
@@ -6471,17 +6472,43 @@ fn build_attachments_zip(
 
 fn load_attachment_paperless_handoff(
     connection: &Connection,
+    config: &AppConfig,
     username: &str,
     attachment_key: &str,
 ) -> Result<Option<String>, String> {
-    connection
+    let row = connection
         .query_row(
-            "SELECT sent_at FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2 LIMIT 1",
+            "SELECT sent_at, consume_filename FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2 LIMIT 1",
             params![username, attachment_key],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
-        .map_err(|error| format!("failed to query Paperless handoff state: {error}"))
+        .map_err(|error| format!("failed to query Paperless handoff state: {error}"))?;
+    let (sent_at, consume_filename) = match row {
+        Some(row) => row,
+        None => return Ok(None),
+    };
+    let consume_root = match config.paperless_consume_root.as_deref() {
+        Some(value) => value,
+        None => return Ok(Some(sent_at)),
+    };
+    let consume_root = PathBuf::from(consume_root);
+    if !consume_root.is_dir() {
+        return Ok(Some(sent_at));
+    }
+    if !consume_root.join(&consume_filename).is_file() {
+        if let Err(error) = connection.execute(
+            "DELETE FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2",
+            params![username, attachment_key],
+        ) {
+            eprintln!(
+                "failed to clear stale Paperless handoff for user {} attachment {}: {error}",
+                username, attachment_key
+            );
+        }
+        return Ok(None);
+    }
+    Ok(Some(sent_at))
 }
 
 #[derive(Debug, Default)]
@@ -6614,7 +6641,7 @@ fn send_attachments_to_paperless(
         }
 
         let connection = open_db(config)?;
-        if load_attachment_paperless_handoff(&connection, username, key)?.is_some() {
+        if load_attachment_paperless_handoff(&connection, config, username, key)?.is_some() {
             summary.skipped += 1;
             continue;
         }
@@ -9109,7 +9136,7 @@ fn render_attachments_page(
               </div>
             </details>
             <div class=\"action-row\">
-              <a class=\"button-link secondary icon-button\" href=\"/attachments\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
+              <a class=\"button-link secondary icon-button\" href=\"/attachments?q=\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
               <a class=\"button-link secondary icon-button\" href=\"/search\" title=\"Back to search\" aria-label=\"Back to search\">↩</a>
             </div>
           </form>
@@ -9605,7 +9632,7 @@ fn render_search(
               </div>
             </details>
             <div class=\"action-row\">
-              <a class=\"button-link secondary icon-button\" href=\"/search\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
+              <a class=\"button-link secondary icon-button\" href=\"/search?q=\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
               <a class=\"button-link secondary icon-button\" href=\"/\" title=\"Back to dashboard\" aria-label=\"Back to dashboard\">↩</a>
             </div>
           </form>
@@ -11949,6 +11976,28 @@ mod tests {
     }
 
     #[test]
+    fn search_reset_link_clears_saved_query() {
+        let html = render_search(
+            &sample_identity(),
+            &[],
+            &test_message_filters("remembered query"),
+            None,
+            &[],
+            &SearchViewState {
+                submitted: false,
+                result_count: 0,
+                empty_message: None,
+                priority_filter: SenderPriorityFilter::All,
+            },
+            None,
+            None,
+        );
+
+        assert!(html.contains("href=\"/search?q=\""));
+        assert!(!html.contains("href=\"/search\" title=\"Reset filters\""));
+    }
+
+    #[test]
     fn redirect_feedback_renders_as_toasts_not_page_banners() {
         let html = render_search(
             &sample_identity(),
@@ -12782,6 +12831,8 @@ mod tests {
             assert!(!html.contains("/save/paperless"));
             assert!(html.contains("aria-label=\"Download selected attachments\""));
             assert!(html.contains("aria-label=\"Send selected attachments to Paperless\""));
+            assert!(html.contains("href=\"/attachments?q=\""));
+            assert!(!html.contains("href=\"/attachments\" title=\"Reset filters\""));
             assert!(html.contains("title=\"Download attachment locally\""));
             assert!(html.contains("/attachments/send-paperless"));
             assert!(html.contains("data-attachment-row"));
@@ -12932,6 +12983,80 @@ mod tests {
             assert!(html.contains("paperless-sent-button"));
 
             assert!(send_attachments_to_paperless(&config, "alice", &[key]).is_err());
+        });
+    }
+
+    #[test]
+    fn stale_paperless_handoff_records_are_cleared_and_allows_resend() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <stale-paperless@example.com>\nFrom: Docs <docs@example.com>\nSubject: Stale Paperless\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Stale Paperless".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            assert_eq!(page.items.len(), 1);
+            let key = page.items[0].attachment.attachment_key.clone();
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            fs::create_dir_all(&consume_root).expect("consume root");
+
+            let connection = open_db(&config).expect("db");
+            connection
+                .execute(
+                    "INSERT OR REPLACE INTO attachment_paperless_handoffs (username, attachment_key, attachment_sha256, original_filename, consume_filename, sent_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        "alice",
+                        &key,
+                        page.items[0].attachment.attachment_sha256,
+                        page.items[0].attachment.original_filename,
+                        "missing-stale.pdf",
+                        Utc::now().to_rfc3339(),
+                    ],
+                )
+                .expect("manual handoff insert");
+
+            let reloaded = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Stale Paperless".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("reloaded page");
+            assert!(reloaded.items[0].paperless_sent_at.is_none());
+
+            let remaining = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2",
+                    params!["alice", &key],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("handoff row check");
+            assert_eq!(remaining, 0);
+
+            let summary =
+                send_attachments_to_paperless(&config, "alice", &[key.clone()]).expect("resend");
+            assert_eq!(summary.sent, 1);
+            assert!(summary.sent_attachment_keys.contains(&key));
         });
     }
 

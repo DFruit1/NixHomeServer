@@ -119,6 +119,20 @@ inventory_json_for_host() {
           criticalPaths
           pathInventories
           sqliteDumps;
+        phoneBackup = {
+          inherit (settings.phoneBackup)
+            enable
+            maxRepositoryBytes
+            minimumSuccessfulSnapshots
+            repositoryPath
+            stateDir;
+          syncthing = {
+            inherit (settings.phoneBackup.syncthing)
+              deviceName
+              folderId;
+          };
+          sources = settings.phoneBackup.sources;
+        };
       };
       impermanence = {
         directories = cfg.repo.impermanence.inventory.persistenceDirectories;

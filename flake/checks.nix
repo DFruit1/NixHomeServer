@@ -67,6 +67,20 @@ let
         criticalPaths
         pathInventories
         sqliteDumps;
+      phoneBackup = {
+        inherit (hostSettings.phoneBackup)
+          enable
+          maxRepositoryBytes
+          minimumSuccessfulSnapshots
+          repositoryPath
+          stateDir;
+        syncthing = {
+          inherit (hostSettings.phoneBackup.syncthing)
+            deviceName
+            folderId;
+        };
+        sources = hostSettings.phoneBackup.sources;
+      };
     };
     impermanence = {
       directories = hostConfig.repo.impermanence.inventory.persistenceDirectories;

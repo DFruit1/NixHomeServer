@@ -10,10 +10,12 @@ let
     "/var/lib/kanidm"
     "/var/lib/netbird-main"
     "/var/lib/nixos"
+    "/var/lib/syncthing"
     "/var/lib/systemd/timers"
     "/var/lib/unbound"
     "/var/log/journal"
     "/var/log/atop"
+    "/persist/appdata/kopia-phone"
   ];
 
   appPersistenceDirectories = [

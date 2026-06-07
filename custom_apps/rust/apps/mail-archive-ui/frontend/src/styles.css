@@ -308,8 +308,8 @@ button.icon-button,
 }
 
 .paperless-send-button {
-  border: 1px solid rgba(15, 107, 92, 0.28);
-  background: transparent;
+  border: 1px solid rgba(83, 88, 78, 0.28);
+  background: #fffdf5;
   color: var(--accent-strong);
 }
 
@@ -496,6 +496,12 @@ button.danger {
 .button-link,
 button {
   max-width: 100%;
+}
+
+.secondary.paperless-send-button {
+  border: 1px solid rgba(83, 88, 78, 0.28);
+  background: #fffdf5;
+  color: var(--accent-strong);
 }
 
 .pill,

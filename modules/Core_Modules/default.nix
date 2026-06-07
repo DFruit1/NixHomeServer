@@ -13,6 +13,7 @@
     ./kopia
     ./netbird
     ./oauth2-proxy/identity.nix
+    ./phone-backup
     ./storage
     ./storage-monitoring
     ./unbound

@@ -6,7 +6,6 @@ let
   loopback = vars.networking.loopbackIPv4;
 
   commonExtraConfig = {
-    "code-challenge-method" = "S256";
     "oidc-groups-claim" = "groups";
     "pass-user-headers" = true;
     "provider-ca-file" = "/etc/ssl/certs/ca-bundle.crt";
@@ -19,6 +18,7 @@ let
     , port
     , upstream
     , scope ? defaultScope
+    , codeChallengeMethod ? "S256"
     , redirectPath ? "/oauth2/callback"
     , issuerUrl ? vars.kanidmIssuer clientId
     ,
@@ -39,7 +39,7 @@ let
       "--oidc-groups-claim=groups"
       "--provider-ca-file=/etc/ssl/certs/ca-bundle.crt"
       "--skip-provider-button=true"
-      "--code-challenge-method=S256"
+      "--code-challenge-method=${codeChallengeMethod}"
     ];
 
   mkDiscoveryWaitScript =
@@ -107,6 +107,7 @@ let
     , upstream
     , allowedGroups ? [ ]
     , scope ? defaultScope
+    , codeChallengeMethod ? "S256"
     , redirectPath ? "/oauth2/callback"
     , issuerUrl ? vars.kanidmIssuer clientId
     , extraArgs ? [ ]
@@ -115,6 +116,7 @@ let
     commonProxyArgs
       {
         inherit clientId domain port upstream scope redirectPath issuerUrl;
+        inherit codeChallengeMethod;
       }
     ++ [
       "--client-secret-file=${clientSecretFile}"
@@ -132,6 +134,7 @@ in
     , upstream
     , allowedGroups ? [ ]
     , scope ? defaultScope
+    , codeChallengeMethod ? "S256"
     , redirectPath ? "/oauth2/callback"
     , extraConfig ? { }
     ,
@@ -151,6 +154,7 @@ in
       setXauthrequest = true;
       extraConfig =
         commonExtraConfig
+        // { "code-challenge-method" = codeChallengeMethod; }
         // lib.optionalAttrs (allowedGroups != [ ]) {
           "allowed-group" = allowedGroups;
         }
@@ -169,6 +173,7 @@ in
     , upstream
     , allowedGroups ? [ ]
     , scope ? defaultScope
+    , codeChallengeMethod ? "S256"
     , redirectPath ? "/oauth2/callback"
     , serviceDependencies ? [ ]
     , upstreamCheck ? null
@@ -189,6 +194,7 @@ in
           upstream
           allowedGroups
           scope
+          codeChallengeMethod
           redirectPath
           ;
         extraArgs = extraProxyArgs;
