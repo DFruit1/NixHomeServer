@@ -98,7 +98,7 @@ export default component$(() => {
             steps={[
               'Install Bitwarden from the app store.',
               `Choose self-hosted server and enter ${passwordsUrl}.`,
-              'Sign in after an admin has sent your Vaultwarden invite.',
+              'Open the Vaultwarden signup page and create your account.',
             ]}
           />
           <AppSetupCard
@@ -138,7 +138,7 @@ export default component$(() => {
         <div>
           <h2>Passwords And Recovery</h2>
           <ol class="steps">
-            <li>Store app-local passwords, recovery codes, and server notes in Passwords after your invite is accepted.</li>
+            <li>Store app-local passwords, recovery codes, and server notes in Passwords after your account is created.</li>
             <li>Keep Kanidm recovery codes somewhere you can still reach if the server or phone is unavailable.</li>
             <li>Ask an admin before deleting synced backup or media folders from a phone app.</li>
           </ol>

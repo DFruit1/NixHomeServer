@@ -180,7 +180,8 @@ else
 fi
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  untracked="$(git status --porcelain --untracked-files=all | awk '$1 == "??" {print $2}' | head -n 10)"
+  git_status="$(git status --porcelain --untracked-files=all)"
+  untracked="$(awk '$1 == "??" {print $2; count++; if (count >= 10) exit}' <<<"$git_status")"
   if [[ -n "$untracked" ]]; then
     warn "untracked files exist; add intended new files before rebuilds: $(tr '\n' ' ' <<<"$untracked")"
   else

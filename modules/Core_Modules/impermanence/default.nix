@@ -16,6 +16,7 @@ let
     "/var/log/journal"
     "/var/log/atop"
     "/persist/appdata/kopia-phone"
+    "/persist/appdata/offline-music"
   ];
 
   appPersistenceDirectories = [

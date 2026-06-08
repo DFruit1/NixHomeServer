@@ -1,64 +1,163 @@
-import { component$, useContext } from '@builder.io/qwik';
+import { $, component$, useContext, useSignal } from '@builder.io/qwik';
 import type { DocumentHead } from '@builder.io/qwik-city';
 import { HomepageContext } from '../../shared/homepage-context.js';
+
+const isProtectedGroup = (group: string): boolean =>
+  group === 'users' || group === 'system_admins' || group === 'domain_admins' || group.startsWith('idm_');
+
+const shellQuote = (value: string): string =>
+  `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\\"')}`;
+
+const buildUserArg = (username: string): string =>
+  username.trim() ? shellQuote(username) : '"$NEW_USER"';
+
+const buildEmailArg = (email: string): string =>
+  email.trim() ? shellQuote(email) : '"$EMAIL"';
+
+const buildDisplayNameArg = (username: string): string => {
+  const trimmed = username.trim();
+  return trimmed ? shellQuote(trimmed) : '"$DISPLAY_NAME"';
+};
+
+const buildMembershipCommands = (groups: string[], userArg: string): string[] => {
+  if (groups.length === 0) {
+    return [];
+  }
+  const quotedGroups = groups.slice().sort().map((group) => shellQuote(group)).join(' ');
+  return [`for group in ${quotedGroups}; do`, `  kanidm group add-members "$group" ${userArg}`, 'done'];
+};
+
+const formatCommandBlock = (commands: string[]): string =>
+  commands.length ? commands.join('\n') : '# Select one or more access groups above, then copy generated commands.';
 
 export default component$(() => {
   const homepage = useContext(HomepageContext);
   const adminGuide = homepage.data?.adminGuide ?? [];
+  const domain = homepage.data?.domain ?? 'example.test';
+  const username = useSignal('');
+  const email = useSignal('');
+  const accessGroups = (homepage.data?.kanidmGroups ?? [])
+    .filter((group) => !isProtectedGroup(group))
+    .sort((a, b) => a.localeCompare(b));
+  const selectedGroups = useSignal<string[]>([]);
+
+  const userArg = buildUserArg(username.value);
+  const emailArg = buildEmailArg(email.value);
+  const displayNameArg = buildDisplayNameArg(username.value);
+
+  const membershipCommand = formatCommandBlock(buildMembershipCommands(selectedGroups.value, userArg));
+
+  const setUsername = $((event: Event) => {
+    const input = event.target as HTMLInputElement;
+    username.value = input.value;
+  });
+
+  const setEmail = $((event: Event) => {
+    const input = event.target as HTMLInputElement;
+    email.value = input.value;
+  });
+
+  const toggleGroup = $((group: string, event: Event) => {
+    const input = event.target as HTMLInputElement;
+    selectedGroups.value = input.checked
+      ? [...new Set([...selectedGroups.value, group])].sort()
+      : selectedGroups.value.filter((current) => current !== group);
+  });
 
   return (
     <>
       <section class="section">
-        <div class="section-heading">
-          <h2>Server Bootstrap</h2>
-          <p>Operator checklist for a new host or a routine guarded deploy.</p>
-        </div>
-        <ol class="admin-steps">
-          {adminGuide.map((step) => (
-            <li key={step.title}>
-              <h3>{step.title}</h3>
-              <p>{step.detail}</p>
-              {step.command && <code>{step.command}</code>}
-            </li>
-          ))}
-        </ol>
+        <details class="admin-accordion">
+          <summary class="admin-accordion__summary">
+            <h2>Server Bootstrap</h2>
+            <p>Operator checklist for a new host or a routine guarded deploy.</p>
+          </summary>
+          <div class="admin-accordion__content">
+            <ol class="admin-steps">
+              {adminGuide.map((step) => (
+                <li key={step.title}>
+                  <h3>{step.title}</h3>
+                  <p>{step.detail}</p>
+                  {step.command && <code>{step.command}</code>}
+                </li>
+              ))}
+            </ol>
+          </div>
+        </details>
       </section>
       <section class="section">
-        <div class="section-heading stacked">
-          <h2>New User Onboarding</h2>
-          <p>Create identity first, grant only the access groups needed, then hand off first-sign-in and app setup.</p>
-        </div>
-        <ol class="admin-steps">
-          <li>
-            <h3>Create the Kanidm account</h3>
-            <p>Use the guided admin tool or create the account directly with a username, display name, and primary email.</p>
-            <code>kanidm-admin user create "$NEW_USER" --display-name "$DISPLAY_NAME" --email "$EMAIL"</code>
-          </li>
-          <li>
-            <h3>Grant baseline access</h3>
-            <p>Add the account to the baseline users group, then add only the app, file, or admin groups the person should have.</p>
-            <code>kanidm-admin membership add "$NEW_USER" users</code>
-          </li>
-          <li>
-            <h3>Add file access when needed</h3>
-            <p>Use user-files for browser Files access, files-sftp-users for direct SFTP, and files-shared-users for the shared folder view.</p>
-            <code>kanidm-admin membership add "$NEW_USER" user-files files-sftp-users files-shared-users</code>
-          </li>
-          <li>
-            <h3>Invite password-manager users</h3>
-            <p>Vaultwarden is local-auth only, so invite the Kanidm primary email when the person should use Passwords.</p>
-            <code>kanidm-admin local vaultwarden invite "$NEW_USER"</code>
-          </li>
-          <li>
-            <h3>Create the first sign-in link</h3>
-            <p>Generate a short-lived reset link and share it only through a secure channel so the person can set credentials and MFA.</p>
-            <code>kanidm-admin user reset-token "$NEW_USER" --ttl 3600</code>
-          </li>
-          <li>
-            <h3>Hand off first sign-in</h3>
-            <p>Ask the person to complete Kanidm password and MFA setup, open each granted app once, and save recovery details securely.</p>
-          </li>
-        </ol>
+        <details class="admin-accordion" open>
+          <summary class="admin-accordion__summary">
+            <h2>New User Onboarding</h2>
+            <p>Create identity first, grant only the access groups needed, then hand off first-sign-in and app setup.</p>
+          </summary>
+          <div class="admin-accordion__content">
+            <div class="admin-input-grid">
+              <label>
+                Username
+                <input type="text" value={username.value} onInput$={setUsername} placeholder="alice" />
+              </label>
+              <label>
+                Email
+                <input type="email" value={email.value} onInput$={setEmail} placeholder="alice@example.com" />
+              </label>
+            </div>
+            <ol class="admin-steps">
+              <li>
+                <h3>Check the user exists</h3>
+                <p>Use this if re-running steps or after creation to confirm identity visibility.</p>
+                <code>{`kanidm person get ${userArg}`}</code>
+              </li>
+              <li>
+                <h3>Create the Kanidm account</h3>
+                <p>Create the account record and set the primary email.</p>
+                <code>{`kanidm person create ${userArg} ${displayNameArg}`}</code>
+                <code>{`kanidm person update ${userArg} --mail ${emailArg}`}</code>
+              </li>
+              <li>
+                <h3>Grant baseline access</h3>
+                <p>Baseline identity membership enables Kanidm sign-in and normal user resolution.</p>
+                <code>{`kanidm group add-members users ${userArg}`}</code>
+              </li>
+              <li>
+                <h3>Grant app/file/admin access</h3>
+                <p>Pick one or more non-protected groups and run the generated command.</p>
+                {accessGroups.length > 0 ? (
+                  <div class="group-picker">
+                    {accessGroups.map((group) => (
+                      <label key={group} class="group-picker__option">
+                        <input
+                          type="checkbox"
+                          checked={selectedGroups.value.includes(group)}
+                          onChange$={(event) => toggleGroup(group, event)}
+                        />
+                        <span>{group}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <p>No non-protected groups are currently exposed from the configured Kanidm catalog.</p>
+                )}
+                <code>{membershipCommand}</code>
+              </li>
+              <li>
+                <h3>Signup for Vaultwarden</h3>
+                <p>Users can register their own Vaultwarden account from the browser when trusted on LAN/NetBird.</p>
+                <p>Have them open this URL and register with the same email used in Kanidm:</p>
+                <code>{`https://passwords.${domain}/#/signup`}</code>
+              </li>
+              <li>
+                <h3>Create the first sign-in link</h3>
+                <p>Generate a short-lived Kanidm reset link and share only through a secure channel.</p>
+                <code>{`kanidm person credential create-reset-token ${userArg} 3600`}</code>
+              </li>
+              <li>
+                <h3>Hand off first sign-in</h3>
+                <p>Ask the person to complete Kanidm password and MFA setup, open each granted app once, and save recovery details securely.</p>
+              </li>
+            </ol>
+          </div>
+        </details>
       </section>
       <section class="section two-column">
         <div>

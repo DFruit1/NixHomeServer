@@ -19,9 +19,9 @@ in
         ROCKET_ADDRESS = vars.networking.loopbackIPv4;
         ROCKET_PORT = vaultwardenPort;
         ENABLE_WEBSOCKET = true;
-        SIGNUPS_ALLOWED = false;
+        SIGNUPS_ALLOWED = true;
         SIGNUPS_VERIFY = false;
-        INVITATIONS_ALLOWED = true;
+        INVITATIONS_ALLOWED = false;
         ORG_CREATION_USERS = "none";
         PASSWORD_HINTS_ALLOWED = false;
         SHOW_PASSWORD_HINT = false;

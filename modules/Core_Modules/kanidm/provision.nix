@@ -70,6 +70,7 @@ in
   config = {
     services.kanidm.provision = {
       enable = true;
+      autoRemove = false;
       idmAdminPasswordFile = config.age.secrets.kanidmAdminPass.path;
       adminPasswordFile = config.age.secrets.kanidmSysAdminPass.path;
       instanceUrl = kanidmCliUrl;

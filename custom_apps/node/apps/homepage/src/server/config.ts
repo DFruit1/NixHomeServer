@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
-import type { AdminStep, FolderGuide, ServiceCard } from '../shared/types.js';
+import type { AdminStep, FolderGuide, OfflineMusicSetup, ServiceCard } from '../shared/types.js';
 
 export type HomepageConfig = {
   domain: string;
   services: ServiceCard[];
   folderGuides: FolderGuide[];
   adminGuide: AdminStep[];
+  kanidmGroups?: string[];
+  offlineMusic?: OfflineMusicSetup;
 };
 
 export type AppConfig = {
@@ -15,6 +17,8 @@ export type AppConfig = {
   devUser?: string;
   sftpKeyInstallCommand?: string;
   syncthingDeviceIdCommand?: string;
+  offlineMusicStatusCommand?: string;
+  offlineMusicEnrollCommand?: string;
   sudoPath: string;
   homepage: HomepageConfig;
 };
@@ -33,6 +37,8 @@ const fallbackHomepage: HomepageConfig = {
   services: [],
   folderGuides: [],
   adminGuide: [],
+  kanidmGroups: [],
+  offlineMusic: undefined,
 };
 
 export const loadHomepageConfig = (path: string | undefined): HomepageConfig => {
@@ -49,6 +55,8 @@ export const loadConfig = (): AppConfig => ({
   devUser: process.env.HOMEPAGE_DEV_USER,
   sftpKeyInstallCommand: process.env.HOMEPAGE_SFTP_KEY_INSTALL_COMMAND,
   syncthingDeviceIdCommand: process.env.HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND,
+  offlineMusicStatusCommand: process.env.HOMEPAGE_OFFLINE_MUSIC_STATUS_COMMAND,
+  offlineMusicEnrollCommand: process.env.HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND,
   sudoPath: process.env.HOMEPAGE_SUDO ?? 'sudo',
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });

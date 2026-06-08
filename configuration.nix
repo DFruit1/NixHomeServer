@@ -14,6 +14,7 @@
     ./modules/kiwix
     ./modules/kavita
     ./modules/mail-archive-ui
+    ./modules/offline-music
     ./modules/youtube-downloader
     ./modules/paperless
     ./modules/vaultwarden

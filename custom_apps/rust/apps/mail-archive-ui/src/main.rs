@@ -6169,7 +6169,7 @@ fn load_attachment_page_data(
             }
             item.paperless_sent_at = load_attachment_paperless_handoff(
                 &connection,
-                &config,
+                config,
                 username,
                 &item.attachment.attachment_key,
             )?;
@@ -13054,7 +13054,8 @@ mod tests {
             assert_eq!(remaining, 0);
 
             let summary =
-                send_attachments_to_paperless(&config, "alice", &[key.clone()]).expect("resend");
+                send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&key))
+                    .expect("resend");
             assert_eq!(summary.sent, 1);
             assert!(summary.sent_attachment_keys.contains(&key));
         });

@@ -8,8 +8,6 @@ let
   placeholderDeviceId = "REPLACE_WITH_SYNCTHING_FORK_DEVICE_ID";
   backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
-  lanIface = vars.networking.interfaces.lan;
-  netbirdIface = vars.networking.interfaces.netbird;
   stateDir = cfg.stateDir or "/persist/appdata/kopia-phone";
   cacheDir = "${stateDir}/cache";
   logDir = "${stateDir}/logs";
@@ -224,24 +222,7 @@ in
     systemd.services.kopia-persist-snapshot.unitConfig.OnSuccess = [ "kopia-phone-snapshot.service" ];
 
     services.syncthing = {
-      enable = true;
-      systemService = true;
-      user = "syncthing";
-      group = "syncthing";
-      dataDir = "/var/lib/syncthing";
-      configDir = "/var/lib/syncthing/.config/syncthing";
-      guiAddress = "127.0.0.1:8384";
-      openDefaultPorts = false;
-      overrideDevices = true;
-      overrideFolders = true;
-
       settings = {
-        options = {
-          relaysEnabled = false;
-          globalAnnounceEnabled = false;
-          localAnnounceEnabled = true;
-        };
-
         devices.${syncthing.deviceName}.id = syncthing.deviceId;
 
         folders.${syncthing.folderId} = {
@@ -251,23 +232,6 @@ in
           fsWatcherEnabled = false;
           rescanIntervalS = 3600;
         };
-      };
-    };
-
-    networking.firewall.interfaces = {
-      ${lanIface} = {
-        allowedTCPPorts = [ 22000 ];
-        allowedUDPPorts = [
-          22000
-          21027
-        ];
-      };
-      ${netbirdIface} = {
-        allowedTCPPorts = [ 22000 ];
-        allowedUDPPorts = [
-          22000
-          21027
-        ];
       };
     };
   };

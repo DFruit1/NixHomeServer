@@ -69,11 +69,11 @@ Filestash and SFTP file roots:
 Useful file-access checks:
 
 ```bash
-kanidm-admin group members user-files
-kanidm-admin group members files-sftp-users
-kanidm-admin group members files-shared-users
-kanidm-admin group members usb-access
-kanidm-admin group members admin-backups
+kanidm group get user-files
+kanidm group get files-sftp-users
+kanidm group get files-shared-users
+kanidm group get usb-access
+kanidm group get admin-backups
 
 systemctl status 'files-shared-bindfs@<user>.service'
 systemctl status 'files-usb-bindfs@<user>.service'
@@ -213,17 +213,9 @@ scripts/validate-repo.sh --full
 That mode runs:
 - `nix flake check --no-build` unless `--skip-flake-check` is used
 - `scripts/tests/run-script-tests.sh`
-- `kanidm-admin-clippy`
-- `kanidm-admin-test`
 - `mail-archive-ui-test`
 
-Kanidm admin hardening checks:
-
-```bash
-kanidm-admin doctor --deep
-```
-
-The deep doctor output includes local runtime probes, history directory permission checks, the redacted `kanidm-admin-root` secret-read path, and a warning if the repo still declares broad `NOPASSWD: ALL` sudo for the local admin. Broad sudo is currently retained for guarded deploy and bootstrap workflows that call ordinary `sudo`; replacing it should be handled as a deploy sudo-contract change, not as a kanidm-admin-only edit.
+Kanidm checks are now native to the runtime scripts and do not rely on the archived `kanidm-admin` package.
 
 ## Guarded Deploy
 

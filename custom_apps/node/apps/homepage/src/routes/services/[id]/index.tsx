@@ -25,7 +25,15 @@ export default component$(() => {
     );
   }
 
-  return <ServiceDetail service={service} phoneBackup={data?.phoneBackup} domain={domain} username={data?.user.username} />;
+  return (
+    <ServiceDetail
+      service={service}
+      phoneBackup={data?.phoneBackup}
+      offlineMusic={data?.offlineMusic}
+      domain={domain}
+      username={data?.user.username}
+    />
+  );
 });
 
 export const head: DocumentHead = {

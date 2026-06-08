@@ -6,6 +6,85 @@ let
   lanIface = vars.networking.interfaces.lan;
   netbirdIface = vars.networking.interfaces.netbird;
   splitDnsMode = vars.networking.dns.mode == "split-horizon";
+  domainSuffix = ".${vars.domain}";
+  lanDomain = vars.networking.dns.lanDomain;
+  shortAliasLongHosts = [
+    "homepage.${vars.domain}"
+    "photos.${vars.domain}"
+    "sharephotos.${vars.domain}"
+    "files.${vars.domain}"
+    "paperless.${vars.domain}"
+    "audiobooks.${vars.domain}"
+    "videos.${vars.domain}"
+    "books.${vars.domain}"
+    "wiki.${vars.domain}"
+    "passwords.${vars.domain}"
+    "emails.${vars.domain}"
+    "ytdownload.${vars.domain}"
+    vars.kopiaDomain
+  ];
+  shortAliasCaddyHosts = lib.listToAttrs (
+    map
+      (hostName:
+        let
+          shortHost = lib.removeSuffix domainSuffix hostName;
+          httpAlias = "http://${shortHost}";
+        in
+        {
+          name = httpAlias;
+          value = {
+            extraConfig = ''
+              redir https://${hostName}{uri} 308
+            '';
+          };
+        }
+      )
+      shortAliasLongHosts
+  );
+  shortAliasPrivateHosts = lib.listToAttrs (
+    map
+      (hostName:
+        {
+          name = lib.removeSuffix domainSuffix hostName;
+          value = {
+            target = "private";
+          };
+        }
+      )
+      shortAliasLongHosts
+  );
+  shortAliasLanCaddyHosts = lib.listToAttrs (
+    map
+      (hostName:
+        let
+          shortHost = lib.removeSuffix domainSuffix hostName;
+        in
+        {
+          name = "${shortHost}.${lanDomain}";
+          value = {
+            extraConfig = ''
+              redir https://${hostName}{uri} 308
+            '';
+          };
+        }
+      )
+      shortAliasLongHosts
+  );
+  shortAliasLanPrivateHosts = lib.listToAttrs (
+    map
+      (hostName:
+        let
+          shortHost = lib.removeSuffix domainSuffix hostName;
+        in
+        {
+          name = "${shortHost}.${lanDomain}";
+          value = {
+            target = "private";
+          };
+        }
+      )
+      shortAliasLongHosts
+  );
   accessLogConfig = ''
     log {
       output file /var/log/caddy/access.log {
@@ -57,8 +136,9 @@ in
           }
         '';
       };
-    };
+    } // shortAliasCaddyHosts // shortAliasLanCaddyHosts;
   };
+  services.unbound.privateHosts = shortAliasPrivateHosts // shortAliasLanPrivateHosts;
 
   networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts = [
     ports.http

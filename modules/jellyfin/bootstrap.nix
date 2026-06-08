@@ -23,6 +23,7 @@ let
   jellyfinPort = vars.networking.ports.jellyfin;
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
+  sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   dataDir = "/var/lib/jellyfin";
   dataDbPath = "${dataDir}/data/jellyfin.db";
   managedDir = "${dataDir}/.nixos-managed";
@@ -401,6 +402,7 @@ in
         }
 
         jellyfin_members_json="$(group_members_json jellyfin-users)"
+        shared_members_json="$(group_members_json ${lib.escapeShellArg sharedAccessGroup})"
         app_admin_members_json="$(group_members_json app-admin)"
         jellyfin_admin_members_json="$(
           jq -n \
@@ -509,43 +511,41 @@ in
           current_policy="$(jq -c --arg id "$user_id" '.[] | select(.Id == $id) | .Policy // {}' <<<"$jellyfin_users" | head -n 1)"
           [[ -n "$current_policy" ]] || current_policy='{}'
 
-          if [[ "$is_admin" == "true" ]]; then
-            desired_policy="$(
-              jq -c '
-                .IsAdministrator = true
-                | .EnableAllFolders = true
-                | .EnabledFolders = []
-                | .EnableMediaPlayback = true
-              ' <<<"$current_policy"
-            )"
-          else
-            expected_count="$(
-              jq --arg name "$username" '[.[] | select((.owner == null) or (.owner == $name))] | length' <<<"$expected_libraries"
-            )"
-            folder_ids="$(
-              jq -n \
-                --arg name "$username" \
-                --argjson expected "$expected_libraries" \
-                --argjson folders "$virtual_folders" \
-                '[ $expected[] | select((.owner == null) or (.owner == $name)) as $spec |
-                  ($folders[] | select(.Name == $spec.name and ((.Locations // []) | index($spec.path) != null)) | .ItemId // empty)
-                ] | unique'
-            )"
-            actual_count="$(jq 'length' <<<"$folder_ids")"
-            if [[ "$actual_count" != "$expected_count" ]]; then
-              echo "Expected $expected_count Jellyfin folder IDs for '$username' but found $actual_count." >&2
-              exit 1
-            fi
-
-            desired_policy="$(
-              jq -c --argjson folderIds "$folder_ids" '
-                .IsAdministrator = false
-                | .EnableAllFolders = false
-                | .EnabledFolders = $folderIds
-                | .EnableMediaPlayback = true
-              ' <<<"$current_policy"
-            )"
+          has_shared_access=false
+          if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$shared_members_json"; then
+            has_shared_access=true
           fi
+          if [[ "$has_shared_access" != "true" ]]; then
+            is_admin=false
+          fi
+          expected_count="$(
+            jq --arg name "$username" --argjson hasSharedAccess "$has_shared_access" \
+              '[.[] | select((.owner == $name) or (.owner == null and $hasSharedAccess))] | length' <<<"$expected_libraries"
+          )"
+          folder_ids="$(
+            jq -n \
+              --arg name "$username" \
+              --argjson hasSharedAccess "$has_shared_access" \
+              --argjson expected "$expected_libraries" \
+              --argjson folders "$virtual_folders" \
+              '[ $expected[] | select((.owner == $name) or (.owner == null and $hasSharedAccess)) as $spec |
+                ($folders[] | select(.Name == $spec.name and ((.Locations // []) | index($spec.path) != null)) | .ItemId // empty)
+              ] | unique'
+          )"
+          actual_count="$(jq 'length' <<<"$folder_ids")"
+          if [[ "$actual_count" != "$expected_count" ]]; then
+            echo "Expected $expected_count Jellyfin folder IDs for '$username' but found $actual_count." >&2
+            exit 1
+          fi
+
+          desired_policy="$(
+            jq -c --argjson isAdmin "$is_admin" --argjson folderIds "$folder_ids" '
+              .IsAdministrator = $isAdmin
+              | .EnableAllFolders = false
+              | .EnabledFolders = $folderIds
+              | .EnableMediaPlayback = true
+            ' <<<"$current_policy"
+          )"
 
           if [[ "$current_policy" != "$desired_policy" ]]; then
             echo "Updating Jellyfin policy for '$username'"

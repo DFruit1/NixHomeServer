@@ -63,7 +63,13 @@ export const BackupSetup = component$(({ phoneBackup, domain }: { phoneBackup?: 
         <li>On the phone, install Syncthing-Fork or another Syncthing client and open its add-device screen.</li>
         <li>Scan the Server Device ID QR code or paste the Server Device ID. Use the LAN or Netbird address if discovery does not find the server.</li>
         <li>Confirm the phone Device ID matches the configured value above, then wait for the server to offer the folder.</li>
-        <li>Accept the folder using the Folder ID above, choose receive-only on the phone, and store it at {setupPath} or another dedicated folder.</li>
+        <li>
+          When pairing, add the server as a device with <strong>Device name</strong> set to <strong>{phoneBackup.deviceName}</strong> and
+          paste in the Server Device ID above. On the folder screen, set <strong>Folder ID</strong> to the value above, <strong>Folder
+          label</strong> to <strong>{phoneBackup.folderLabel}</strong>, and save it to <strong>{setupPath}</strong> (or another dedicated folder).
+          Use <strong>Folder type: Receive Only</strong>, turn <strong>Watch for Changes</strong> off, and keep <strong>File Versioning</strong> as
+          <strong> None</strong>.
+        </li>
         <li>Leave Syncthing running until the folder shows up to date. The files are encrypted Kopia repository data; restore through Kopia, not by opening those files directly.</li>
       </ol>
     </section>

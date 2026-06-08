@@ -24,11 +24,9 @@ in
         basicSecretFile = config.age.secrets.kavitaClientSecret.path;
         preferShortUsername = true;
         scopeMaps."kavita-users" = [ "openid" "profile" "email" "kavita_roles" ];
-        supplementaryScopeMaps."app-admin" = [ "kavita_roles" ];
         claimMaps.kavita_roles = {
           joinType = "array";
           valuesByGroup."kavita-users" = [ "Login" ];
-          valuesByGroup."app-admin" = [ "Admin" ];
         };
       };
     };

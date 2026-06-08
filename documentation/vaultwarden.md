@@ -3,8 +3,7 @@
 Use this as the operator guide for:
 - first deploy validation of the private Vaultwarden service
 - break-glass local admin handling
-- local Vaultwarden onboarding
-- manual signup activation from pending invites
+- local Vaultwarden onboarding and user self-service signup
 - the standard Kanidm credential-item workflow for end users
 
 Guarded deploys, service health, and DNS checks live in [Operations](./operations.md). Kanidm session and user lookup details live in [Kanidm Guide](./kanidm.md).
@@ -15,15 +14,14 @@ Vaultwarden is intentionally private-only in this stack:
 - private hostname: `passwords.<domain>` from the imported Vaultwarden module, or `nix run .#show-config-summary -- --host <host>`
 - reachable on LAN and NetBird
 - not published through Cloudflare Tunnel
-- all users sign in with Vaultwarden local login
-- invites create pending local signup records; no SMTP is required
-- Kanidm is only used by the helper as an address book for resolving a user's primary email
+- all users sign in with Vaultwarden local credentials
+- no SMTP is required for account onboarding
 - the delegated operator keeps a local Vaultwarden login for break-glass access
 
 Operational rule:
-- normal users should sign in with their local Vaultwarden credentials
+- normal users should self-register at `/#/signup` from trusted LAN/NetBird
 - Vaultwarden access is not granted by a Kanidm group or OAuth2 client
-- user onboarding stays operator-approved but activation is manual at `/#/signup`
+- the local operator account remains the recovery path for service administration
 
 ## Before First Live Deploy
 
@@ -33,7 +31,7 @@ Refresh the repo-managed secrets:
 ./scripts/generate-all-secrets.sh
 ```
 
-Vaultwarden does not need SMTP in this stack. The admin helper creates a pending user record, and the user activates it manually with the exact invited email address.
+Vaultwarden does not need SMTP in this stack. Users create local accounts directly on the Vaultwarden signup page.
 
 ## SSO Removal Migration
 
@@ -85,51 +83,31 @@ echo "$KANIDM_ADMIN_VAULTWARDEN_ADMIN_TOKEN_FILE"
 
 Use the local break-glass account path for initial admin setup:
 1. Open `https://<passwords-domain>`.
-2. Use the invite flow below for the delegated operator.
-3. Open `https://<passwords-domain>/#/signup` and activate the local Vaultwarden account for that operator with the exact invited email.
+2. Open `https://<passwords-domain>/#/signup`.
+3. Create and keep a local Vaultwarden account for the delegated operator.
 4. Keep that local login available for break-glass use.
 
 Do not treat the Vaultwarden admin token as a day-to-day user login secret. It is only for the admin backend and operator helpers.
 
 ## User Onboarding
 
-Preferred operator path:
+Preferred onboarding path:
+- users create their account on `https://<passwords-domain>/#/signup` with the same email as their Kanidm primary email when trusted on LAN/NetBird.
+- no operator invite is required.
 
-```bash
-kanidm-admin
-```
-
-TUI path:
-1. Open `Advanced`.
-2. Open `Local Helpers`.
-3. Choose `Invite user to Vaultwarden`.
-4. Select the current Kanidm user from the live picker.
-5. Review the resolved email and whether Vaultwarden already shows the user as pending or active.
-6. Confirm the action.
-
-Direct CLI path:
-
-```bash
-kanidm-admin local vaultwarden invite "$ACCOUNT_ID"
-```
-
-The helper does this in one flow:
-- resolves the Kanidm user
-- requires a primary email
-- logs into the local Vaultwarden admin UI with the managed admin token
-- creates a pending signup record only when the Vaultwarden account does not already exist
-- refreshes the pending signup when Vaultwarden already has an unactivated account
-- skips redundant work when the Vaultwarden account is already active
+If an operator must guide a specific person:
+1. Confirm Kanidm identity and email for that person.
+2. Point them to `https://<passwords-domain>/#/signup`.
+3. Instruct them to register with the exact email that will be used for credential storage and recovery.
+4. Confirm the account appears in Vaultwarden and works from at least one target device.
 
 Expected result:
-- the user opens `https://<passwords-domain>/#/signup`
-- the user registers with the exact email resolved by the helper
 - the user creates local Vaultwarden credentials
-- the user can then store Kanidm credentials inside Vaultwarden as an item
+- the user stores shared Kanidm credentials in Vaultwarden via one predictable item
 
 ## Break-Glass Admin Pattern
 
-Invite the delegated operator into Vaultwarden first and keep that account maintained manually.
+Keep the delegated operator Vaultwarden account maintained manually.
 
 Break-glass categories that the delegated operator should create manually in Vaultwarden include:
 - Kanidm admin and recovery credentials
@@ -152,7 +130,7 @@ That gives less technical users one predictable place to manage all three creden
 
 Suggested operator guidance for users:
 1. Open `https://<passwords-domain>/#/signup`.
-2. Register with the exact email address invited by the operator.
+2. Register with the email used in Kanidm.
 3. Create or confirm local Vaultwarden credentials.
 4. Create the initial Kanidm login item in Vaultwarden.
 5. Store the password, TOTP, and passkey under that one item.
@@ -160,14 +138,13 @@ Suggested operator guidance for users:
 
 ## Troubleshooting
 
-If pending signup creation fails:
+If signup fails:
 - check `journalctl -u vaultwarden -n 100 --no-pager`
 - verify `vaultwarden-secret-materialize.service` wrote the runtime env file
 - verify the account is not already active in the Vaultwarden admin UI
 
 If local login fails:
-- check whether the account is pending or active in the Vaultwarden admin UI
-- confirm the user registered at `/#/signup` with the exact invited email
+- confirm the user registered at `/#/signup` with the expected email
 - confirm the user is trying Vaultwarden local credentials, not Kanidm credentials directly
 - verify the private hostname resolves correctly through Unbound
 

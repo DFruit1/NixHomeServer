@@ -16,6 +16,7 @@
     ./phone-backup
     ./storage
     ./storage-monitoring
+    ./syncthing
     ./unbound
     ./validation
   ];

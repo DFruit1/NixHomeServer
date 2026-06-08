@@ -4,6 +4,7 @@ export const serviceSymbols: Record<string, string> = {
   files: 'F',
   audiobooks: 'A',
   videos: 'V',
+  music: 'N',
   books: 'B',
   wiki: 'W',
   emails: 'M',
@@ -34,6 +35,10 @@ export const serviceTips: Record<string, string[]> = {
     'Use _Movies for films, _Shows for series, _Home for personal video, _Music-videos for music clips, and _YouTube for downloaded video.',
     'Keep subtitle files beside the matching video file.',
   ],
+  music: [
+    'Put music files in your personal _Music folder.',
+    'Use Syncthing to copy music offline to one enrolled device; the server copy remains authoritative.',
+  ],
   books: [
     'Use _Ebooks for prose, _Comics for comics, and _Manga for manga.',
     'CBZ and CBR are preferred for comics and manga archives.',
@@ -51,7 +56,7 @@ export const serviceTips: Record<string, string[]> = {
     'Audio and video outputs are routed into the matching media folders.',
   ],
   passwords: [
-    'Vaultwarden uses its own local login after an admin invite.',
+    'Vaultwarden supports self-service signup on trusted networks; create your account first before storing secrets.',
     'Store Kanidm recovery codes and app-local passwords here.',
   ],
   backups: [

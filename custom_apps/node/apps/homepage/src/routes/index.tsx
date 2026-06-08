@@ -37,7 +37,7 @@ export default component$(() => {
             <li>Open Kanidm from any app sign-in button and set your password plus MFA.</li>
             <li>Use Files for general uploads, then place media in the app-specific folders.</li>
             <li>Open each app once after access is granted so its local account can be created.</li>
-            <li>Use Passwords only after an admin sends a Vaultwarden invite.</li>
+            <li>Use Passwords after opening its signup page and creating your own Vaultwarden account.</li>
           </ol>
         </div>
         <div class="folder-card">

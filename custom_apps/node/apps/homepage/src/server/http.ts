@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
+import { enrollOfflineMusicDevice, getOfflineMusicSetup } from './offlineMusic.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { buildHomepageData } from './homepageData.js';
 
@@ -41,6 +42,19 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       const body = await readJson<{ publicKey?: string }>(request);
       const publicKey = normalisePublicKey(body.publicKey);
       sendJson(response, 200, await installSftpPublicKey(config, user, publicKey));
+      return true;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/offline-music') {
+      const user = currentUserFromHeaders(request.headers, config.devUser);
+      sendJson(response, 200, await getOfflineMusicSetup(config, user));
+      return true;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/offline-music/device') {
+      const user = currentUserFromHeaders(request.headers, config.devUser);
+      const body = await readJson<{ deviceId?: string; deviceName?: string }>(request);
+      sendJson(response, 200, await enrollOfflineMusicDevice(config, user, body));
       return true;
     }
 

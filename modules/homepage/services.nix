@@ -22,9 +22,20 @@ let
   phoneBackupCfg = vars.phoneBackup or { enable = false; };
   phoneBackupSyncthing = phoneBackupCfg.syncthing or { };
   phoneBackupRepositoryPath = phoneBackupCfg.repositoryPath or "${vars.backupRoot}/kopia-phone";
+  offlineMusicCfg = vars.offlineMusic or { enable = false; };
+  offlineMusicEnabled = offlineMusicCfg.enable or false;
+  offlineMusicFolderName = offlineMusicCfg.folderName or "_Music";
+  offlineMusicStateDir = offlineMusicCfg.stateDir or "/persist/appdata/offline-music";
+  offlineMusicStateFile = "${offlineMusicStateDir}/devices.json";
+  offlineMusicFolderIdPrefix = offlineMusicCfg.folderIdPrefix or "nixhomeserver-music";
   syncthingDataDir = "/var/lib/syncthing";
   syncthingConfigDir = "/var/lib/syncthing/.config/syncthing";
   serverLanHost = "${vars.network.hostname}.${vars.networking.dns.lanDomain}";
+  kanidmGroups = lib.sort (a: b: a < b) (
+    builtins.filter
+      (group: !(lib.hasPrefix "idm_" group) && group != "system_admins" && group != "domain_admins")
+      (builtins.attrNames (config.services.kanidm.provision.groups or { }))
+  );
 
   caddyHosts = config.services.caddy.virtualHosts;
   hostEnabled = name: builtins.hasAttr name caddyHosts;
@@ -34,6 +45,7 @@ let
   audiobookshelfEnabled = hostEnabled audiobooksHost;
   filesEnabled = hostEnabled filesHost;
   jellyfinEnabled = hostEnabled videosHost;
+  musicEnabled = offlineMusicEnabled;
   kavitaEnabled = hostEnabled booksHost;
   kiwixEnabled = hostEnabled wikiHost;
   vaultwardenEnabled = hostEnabled passwordsHost;
@@ -98,6 +110,198 @@ let
       --config=${lib.escapeShellArg syncthingConfigDir} \
       --data=${lib.escapeShellArg syncthingDataDir} \
       device-id
+  '';
+  offlineMusicStatus = pkgs.writeShellScript "homepage-offline-music-status" ''
+    set -euo pipefail
+
+    username="''${1:-}"
+    case "$username" in
+      ""|*/*|*..*|*[!A-Za-z0-9._-]*)
+        echo "invalid username" >&2
+        exit 1
+        ;;
+    esac
+
+    state_file=${lib.escapeShellArg offlineMusicStateFile}
+    folder_id=${lib.escapeShellArg offlineMusicFolderIdPrefix}-$username
+    folder_label="NixHomeServer Music - $username"
+    folder_path=${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg offlineMusicFolderName}
+
+    if [[ -f "$state_file" ]]; then
+      user_state="$(${pkgs.jq}/bin/jq --arg username "$username" '.[$username] // {}' "$state_file")"
+    else
+      user_state="{}"
+    fi
+
+    ${pkgs.jq}/bin/jq -n \
+      --arg folderId "$folder_id" \
+      --arg folderLabel "$folder_label" \
+      --arg serverFolderPath "$folder_path" \
+      --argjson userState "$user_state" \
+      '{
+        folderId: $folderId,
+        folderLabel: $folderLabel,
+        serverFolderPath: $serverFolderPath
+      }
+      + (if ($userState.deviceId // "") != "" then { enrolledDeviceId: $userState.deviceId } else {} end)
+      + (if ($userState.deviceName // "") != "" then { enrolledDeviceName: $userState.deviceName } else {} end)'
+  '';
+  offlineMusicEnroll = pkgs.writeShellScript "homepage-offline-music-enroll" ''
+    set -euo pipefail
+
+    username="''${1:-}"
+    case "$username" in
+      ""|*/*|*..*|*[!A-Za-z0-9._-]*)
+        echo "invalid username" >&2
+        exit 1
+        ;;
+    esac
+
+    payload="$(${pkgs.coreutils}/bin/cat)"
+    device_id="$(${pkgs.jq}/bin/jq -er '.deviceId' <<<"$payload")"
+    device_name="$(${pkgs.jq}/bin/jq -r --arg fallback "$username-music" '.deviceName // $fallback' <<<"$payload")"
+
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$' <<<"$device_id"; then
+      echo "invalid Syncthing device ID" >&2
+      exit 1
+    fi
+    if [[ "''${#device_name}" -lt 1 || "''${#device_name}" -gt 64 ]] \
+      || ${pkgs.gnugrep}/bin/grep -q '[[:cntrl:]]' <<<"$device_name" \
+      || ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Za-z0-9._ -]+$' <<<"$device_name"; then
+      echo "invalid Syncthing device name" >&2
+      exit 1
+    fi
+
+    state_dir=${lib.escapeShellArg offlineMusicStateDir}
+    state_file=${lib.escapeShellArg offlineMusicStateFile}
+    folder_id=${lib.escapeShellArg offlineMusicFolderIdPrefix}-$username
+    folder_label="NixHomeServer Music - $username"
+    folder_path=${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg offlineMusicFolderName}
+
+    if [[ ! -d "$folder_path" ]]; then
+      ${pkgs.systemd}/bin/systemctl start fileshare-user-root-sync.service
+    fi
+    if [[ ! -d "$folder_path" ]]; then
+      echo "music folder is not provisioned for $username: $folder_path" >&2
+      exit 1
+    fi
+
+    install -d -m 0750 -o root -g root "$state_dir"
+    if [[ ! -f "$state_file" ]]; then
+      ${pkgs.coreutils}/bin/printf '{}\n' > "$state_file"
+      chmod 0640 "$state_file"
+      chown root:root "$state_file"
+    fi
+
+    api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
+    headers_file="$(${pkgs.coreutils}/bin/mktemp)"
+    trap 'rm -f "$api_key_file" "$headers_file"' EXIT
+    ${pkgs.libxml2}/bin/xmllint \
+      --xpath 'string(configuration/gui/apikey)' \
+      ${lib.escapeShellArg syncthingConfigDir}/config.xml \
+      >"$api_key_file"
+    { ${pkgs.coreutils}/bin/printf 'X-API-Key: '; ${pkgs.coreutils}/bin/cat "$api_key_file"; } >"$headers_file"
+
+    api() {
+      local path="$1"
+      shift
+      ${pkgs.curl}/bin/curl -fsSLk \
+        -H "@$headers_file" \
+        "$@" \
+        "http://127.0.0.1:8384$path"
+    }
+
+    api_json() {
+      local method="$1"
+      local path="$2"
+      local json="$3"
+
+      ${pkgs.coreutils}/bin/printf '%s' "$json" | ${pkgs.curl}/bin/curl -fsSLk \
+        -X "$method" \
+        -H "@$headers_file" \
+        -H 'content-type: application/json' \
+        --data-binary @- \
+        "http://127.0.0.1:8384$path" >/dev/null
+    }
+
+    api /rest/system/ping >/dev/null
+
+    old_device_id="$(${pkgs.jq}/bin/jq -r --arg username "$username" '.[$username].deviceId // empty' "$state_file")"
+
+    device_json="$(
+      api /rest/config/defaults/device \
+        | ${pkgs.jq}/bin/jq \
+          --arg deviceId "$device_id" \
+          --arg name "$device_name" \
+          '.deviceID = $deviceId | .name = $name | .addresses = ["dynamic"]'
+    )"
+    api_json POST /rest/config/devices "$device_json"
+
+    folder_json="$(
+      api /rest/config/defaults/folder \
+        | ${pkgs.jq}/bin/jq \
+          --arg folderId "$folder_id" \
+          --arg label "$folder_label" \
+          --arg path "$folder_path" \
+          --arg deviceId "$device_id" \
+          '.id = $folderId
+          | .label = $label
+          | .path = $path
+          | .type = "sendonly"
+          | .devices = [{ deviceID: $deviceId }]
+          | .fsWatcherEnabled = true
+          | .rescanIntervalS = 3600'
+    )"
+    api_json POST /rest/config/folders "$folder_json"
+
+    if [[ -n "$old_device_id" && "$old_device_id" != "$device_id" ]]; then
+      old_refs="$(api /rest/config/folders | ${pkgs.jq}/bin/jq --arg deviceId "$old_device_id" '[.[].devices[]? | select(.deviceID == $deviceId)] | length')"
+      if [[ "$old_refs" == "0" ]]; then
+        api /rest/config/devices/"$old_device_id" -X DELETE >/dev/null || true
+      fi
+    fi
+
+    tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
+    ${pkgs.jq}/bin/jq \
+      --arg username "$username" \
+      --arg deviceId "$device_id" \
+      --arg deviceName "$device_name" \
+      --arg folderId "$folder_id" \
+      --arg updatedAt "$(${pkgs.coreutils}/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '.[$username] = {
+        deviceId: $deviceId,
+        deviceName: $deviceName,
+        folderId: $folderId,
+        updatedAt: $updatedAt
+      }' \
+      "$state_file" > "$tmp"
+    chmod 0640 "$tmp"
+    chown root:root "$tmp"
+    mv "$tmp" "$state_file"
+
+    if api /rest/config/restart-required | ${pkgs.jq}/bin/jq -e '.requiresRestart == true' >/dev/null; then
+      ${pkgs.systemd}/bin/systemctl restart syncthing.service
+    fi
+
+    server_device_id="$(${showSyncthingDeviceId})"
+    ${pkgs.jq}/bin/jq -n \
+      --arg username "$username" \
+      --arg folderId "$folder_id" \
+      --arg folderLabel "$folder_label" \
+      --arg serverDeviceId "$server_device_id" \
+      --arg serverFolderPath "$folder_path" \
+      --arg enrolledDeviceId "$device_id" \
+      --arg enrolledDeviceName "$device_name" \
+      '{
+        ok: true,
+        username: $username,
+        folderId: $folderId,
+        folderLabel: $folderLabel,
+        serverDeviceId: $serverDeviceId,
+        serverFolderPath: $serverFolderPath,
+        enrolledDeviceId: $enrolledDeviceId,
+        enrolledDeviceName: $enrolledDeviceName
+      }'
   '';
 
   serviceCards = [
@@ -172,6 +376,18 @@ let
       uploadNotes = "Place videos under _Videos with the matching library folder.";
     }
     {
+      id = "music";
+      name = "Offline Music";
+      url = "/services/music";
+      enabled = musicEnabled;
+      category = "media";
+      description = "Personal music folders synced offline to one enrolled device with Syncthing.";
+      loginNotes = "Use Kanidm on the homepage, then enroll your Syncthing device ID.";
+      projectUrl = "https://syncthing.net";
+      logoUrl = "https://cdn.simpleicons.org/syncthing";
+      uploadNotes = "Place music files under _Music in your personal files root.";
+    }
+    {
       id = "books";
       name = "Books";
       url = "https://${booksHost}";
@@ -224,7 +440,7 @@ let
       enabled = vaultwardenEnabled;
       category = "identity";
       description = "Shared password manager for server and account credentials.";
-      loginNotes = "Vaultwarden uses local login after an admin invite.";
+      loginNotes = "Vaultwarden is self-service: open the signup page on first visit and register with your local account email.";
       projectUrl = "https://github.com/dani-garcia/vaultwarden";
       logoUrl = "https://cdn.simpleicons.org/vaultwarden";
       uploadNotes = "Store Kanidm credentials, recovery codes, and app-local passwords here.";
@@ -301,6 +517,20 @@ let
       ];
     }
     {
+      id = "music";
+      title = "Offline Music";
+      enabled = musicEnabled;
+      serviceIds = [ "music" "files" ];
+      fileTypes = [ "mp3" "flac" "m4a" "opus" "ogg" "wav" ];
+      personalPath = "/mnt/data/users/{username}/${offlineMusicFolderName}";
+      sharedPath = "${vars.sharedRoot}/${offlineMusicFolderName}";
+      instructions = [
+        "Place music files in your personal _Music folder."
+        "Enroll your phone or music device from the Offline Music service page."
+        "The server publishes music as send-only; device-side deletes do not remove the server copy."
+      ];
+    }
+    {
       id = "books";
       title = "Books, Comics, Manga";
       enabled = kavitaEnabled;
@@ -351,6 +581,11 @@ let
       detail = "Set identity, network, DNS, storage, and access groups before bootstrap or deploy.";
     }
     {
+      title = "Manage Kanidm entity removal explicitly";
+      command = "$EDITOR modules/Core_Modules/kanidm/provision.nix";
+      detail = "Kanidm is configured with autoremove disabled, so deleted module groups/users are kept for rescue/reprovisioning safety. Clean up stale groups/users intentionally (for example using `present = false` in provision entries) before retiring a module or host.";
+    }
+    {
       title = "Validate settings";
       command = "nix run .#validate-config-readiness && nix run .#show-config-summary";
       detail = "Evaluate the flake and preview hostnames, OAuth clients, groups, storage, and required secrets.";
@@ -380,6 +615,7 @@ let
   homepageConfig = pkgs.writeText "homepage-config.json" (builtins.toJSON {
     domain = vars.domain;
     services = serviceCards;
+    kanidmGroups = kanidmGroups;
     phoneBackup = {
       enabled = phoneBackupCfg.enable or false;
       deviceName = phoneBackupSyncthing.deviceName or "phone";
@@ -387,6 +623,16 @@ let
       folderId = phoneBackupSyncthing.folderId or "nixhomeserver-kopia-phone";
       folderLabel = "NixHomeServer Kopia phone backup";
       repositoryPath = phoneBackupRepositoryPath;
+      connectionAddresses = [
+        "tcp://${serverLanHost}:22000"
+        "tcp://${vars.networking.lan.ip}:22000"
+        "tcp://${vars.networking.netbird.ip}:22000"
+      ];
+    };
+    offlineMusic = {
+      enabled = offlineMusicEnabled;
+      folderName = offlineMusicFolderName;
+      folderIdPrefix = offlineMusicFolderIdPrefix;
       connectionAddresses = [
         "tcp://${serverLanHost}:22000"
         "tcp://${vars.networking.lan.ip}:22000"
@@ -423,6 +669,8 @@ in
           HOMEPAGE_CONFIG_FILE = homepageConfig;
           HOMEPAGE_SFTP_KEY_INSTALL_COMMAND = installSftpKey;
           HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND = showSyncthingDeviceId;
+          HOMEPAGE_OFFLINE_MUSIC_STATUS_COMMAND = offlineMusicStatus;
+          HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND = offlineMusicEnroll;
           HOMEPAGE_SUDO = "/run/wrappers/bin/sudo";
         };
         serviceConfig = {
@@ -458,6 +706,14 @@ in
             }
             {
               command = "${showSyncthingDeviceId}";
+              options = [ "NOPASSWD" ];
+            }
+            {
+              command = "${offlineMusicStatus}";
+              options = [ "NOPASSWD" ];
+            }
+            {
+              command = "${offlineMusicEnroll}";
               options = [ "NOPASSWD" ];
             }
           ];

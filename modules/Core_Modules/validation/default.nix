@@ -10,6 +10,26 @@ let
   cloudflareHosts = builtins.attrNames config.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
   privateDnsHosts = config.services.unbound.privateHosts;
   privateDnsHostNames = builtins.attrNames privateDnsHosts;
+  domainSuffix = ".${vars.domain}";
+  lanDomainSuffix = ".${vars.networking.dns.lanDomain}";
+  localAliasCandidates =
+    builtins.filter
+      (
+        name:
+          let
+            short = lib.removeSuffix domainSuffix name;
+          in
+          lib.hasSuffix domainSuffix name
+          && name != vars.domain
+          && name != "www.${vars.domain}"
+          && name != vars.kanidmDomain
+          && short != ""
+          && !lib.hasInfix "." short
+      )
+      caddyHosts;
+  allowedLanAliasHosts =
+    map (name: "http://${lib.removeSuffix domainSuffix name}") localAliasCandidates
+    ++ map (name: "${lib.removeSuffix domainSuffix name}${lanDomainSuffix}") localAliasCandidates;
   coreHosts = [
     vars.domain
     "www.${vars.domain}"
@@ -18,14 +38,22 @@ let
   invalidHostNames =
     lib.filter
       (name:
+        let
+          isAllowedLanAlias = builtins.elem name allowedLanAliasHosts;
+        in
         name == ""
-        || lib.hasInfix "://" name
-        || lib.hasInfix "/" name
-        || lib.hasInfix ":" name)
+        || (lib.hasInfix "://" name && !isAllowedLanAlias)
+        || (lib.hasInfix "/" name && !isAllowedLanAlias)
+        || (lib.hasInfix ":" name && !isAllowedLanAlias))
       (caddyHosts ++ cloudflareHosts ++ privateDnsHostNames);
   offDomainAppHosts =
     lib.filter
-      (name: !(builtins.elem name coreHosts) && !(lib.hasSuffix ".${vars.domain}" name))
+      (
+        name:
+          !(builtins.elem name coreHosts)
+          && !(lib.hasSuffix ".${vars.domain}" name)
+          && !builtins.elem name allowedLanAliasHosts
+      )
       caddyHosts;
   cloudflareWithoutCaddy =
     lib.filter

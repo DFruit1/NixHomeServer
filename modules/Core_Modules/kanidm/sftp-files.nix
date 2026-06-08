@@ -20,6 +20,7 @@ let
       )
     ++ lib.optionals localAdminNeedsSftpBridge [ localSftpAccessGroup ];
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
   userSftpAuthorizedKeysDir = vars.fileAccess.userSftpAuthorizedKeysDir or "/persist/appdata/files-sftp-authorized-keys";
   filesSftpPort = vars.networking.ports.filesSftp;
@@ -59,12 +60,13 @@ in
       home_attr = "name";
       home_alias = "name";
       kanidm = {
-        pam_allowed_login_groups = [
+      pam_allowed_login_groups = [
           webAccessGroup
           sftpAccessGroup
           usbAccessGroup
           backupStorageAccessGroup
-        ];
+          sharedAccessGroup
+      ];
       };
     };
   };

@@ -22,6 +22,9 @@ let
   dataDir = "/var/lib/kavita";
   dbPath = "${dataDir}/config/kavita.db";
   kanidmDb = "/var/lib/kanidm/kanidm.db";
+  kanidmPort = vars.networking.ports.kanidm;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
+  sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   sharedBooksRoot = config.repo.kavita.paths.sharedBooksRoot;
   adminMailAddresses =
     if vars.kanidmAdminMailAddresses != [ ] then
@@ -36,12 +39,14 @@ let
   ];
   kavitaOidcBootstrapPath = with pkgs; [
     jq
+    kanidm_1_10
     sqlite
   ];
 in
 {
   config = {
     assertions = mkSecretAssertions [
+      "kanidmAdminPass"
       "kavitaClientSecret"
       "kavitaTokenKey"
     ];
@@ -89,6 +94,7 @@ in
         kanidm_db="${kanidmDb}"
         shared_books_root=${lib.escapeShellArg sharedBooksRoot}
         users_root=${lib.escapeShellArg vars.usersRoot}
+        shared_access_group=${lib.escapeShellArg sharedAccessGroup}
         changed=0
         for _ in $(seq 1 30); do
           [[ -f "$db" ]] && break
@@ -141,6 +147,33 @@ in
         escape_sql() {
           printf '%s' "$1" | ${pkgs.perl}/bin/perl -pe 's/\x27/\x27\x27/g'
         }
+
+        export HOME="$(mktemp -d)"
+        trap 'rm -rf "$HOME"' EXIT
+        KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+        export KANIDM_PASSWORD
+        kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
+
+        group_members_json() {
+          local group_name="$1"
+          local group_json
+
+          if group_json="$(
+            kanidm group get \
+              "$group_name" \
+              -H ${kanidmCliUrl} \
+              -D idm_admin \
+              -o json
+          )"; then
+            jq -r '.attrs.member[]? | split("@")[0]' <<<"$group_json" \
+              | sort -u \
+              | jq -R -s 'split("\n") | map(select(length > 0))'
+          else
+            printf '[]\n'
+          fi
+        }
+
+        shared_members_json="$(group_members_json "$shared_access_group")"
 
         if [[ "$current" != "$updated" ]]; then
           escaped="$(escape_sql "$updated")"
@@ -206,11 +239,19 @@ in
             fi
           fi
 
+          has_shared_access=0
+          if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$shared_members_json"; then
+            has_shared_access=1
+          fi
+
           is_kavita_admin=0
           case "$username" in
             ${lib.concatMapStringsSep "\n            " (user: "${lib.escapeShellArg user}) is_kavita_admin=1 ;;") vars.kanidmAppAdminUsers}
             *) ;;
           esac
+          if (( has_shared_access != 1 )); then
+            is_kavita_admin=0
+          fi
           if (( is_kavita_admin == 1 )); then
             desired_role_names_sql="'Login', 'Admin'"
             removable_role_names_sql="'Pleb'"
@@ -264,10 +305,15 @@ in
             select distinct l.Id
             from Library l
             join FolderPath fp on fp.LibraryId = l.Id
-            where fp.Path = '$escaped_shared_root'
-               or substr(fp.Path, 1, length('$escaped_shared_prefix')) = '$escaped_shared_prefix'
-               or fp.Path = '$escaped_personal_root'
+            where fp.Path = '$escaped_personal_root'
                or substr(fp.Path, 1, length('$escaped_personal_prefix')) = '$escaped_personal_prefix'
+               or (
+                 $has_shared_access = 1
+                 and (
+                   fp.Path = '$escaped_shared_root'
+                   or substr(fp.Path, 1, length('$escaped_shared_prefix')) = '$escaped_shared_prefix'
+                 )
+               )
           "
 
           current_library_count="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \

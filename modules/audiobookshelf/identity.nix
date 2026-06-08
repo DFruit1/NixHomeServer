@@ -24,11 +24,9 @@ in
         basicSecretFile = config.age.secrets.absClientSecret.path;
         preferShortUsername = true;
         scopeMaps."audiobookshelf-users" = [ "openid" "profile" "email" "abs_role" ];
-        supplementaryScopeMaps."app-admin" = [ "abs_role" ];
         claimMaps.abs_role = {
           joinType = "array";
           valuesByGroup."audiobookshelf-users" = [ "user" ];
-          valuesByGroup."app-admin" = [ "admin" ];
         };
       };
     };

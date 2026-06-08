@@ -111,6 +111,14 @@ rec {
     };
   };
 
+  offlineMusic = {
+    enable = true;
+    folderName = "_Music";
+    stateDir = "/persist/appdata/offline-music";
+    folderIdPrefix = "nixhomeserver-music";
+    accessGroup = "users";
+  };
+
   advanced = rec {
     # Advanced networking values are rarely changed on first install.
     loopbackIPv4 = "127.0.0.1";

@@ -11,5 +11,7 @@
 /rebuild.log
 /.cache/
 /custom_apps/rust/apps/*/target/
+/custom_apps/rust/_archive/*/target/
+/custom_apps/rust/_archive/kanidm-admin/
 /custom_apps/node/apps/*/node_modules/
 /custom_apps/node/apps/*/dist/

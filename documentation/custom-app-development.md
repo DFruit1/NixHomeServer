@@ -5,8 +5,6 @@ This repo has two browser custom app surfaces:
 - `mail-archive-ui`: Rust/Axum server-rendered pages with Qwik islands for browser interactivity.
 - `youtube-downloader`: Qwik/Vite client app with a Node server.
 
-`kanidm-admin` is a terminal TUI and does not have browser hot reload.
-
 ## Mail Archive UI
 
 Production deploys build the Qwik/Vite frontend and copy the output into the
