@@ -132,6 +132,12 @@ h4 {
   font-weight: 900;
 }
 
+.profile-trigger::-webkit-details-marker,
+.profile-trigger::marker {
+  display: none;
+  content: "";
+}
+
 .profile-trigger img,
 .profile-preview img {
   width: 100%;
@@ -660,33 +666,79 @@ code {
   margin-top: 8px;
 }
 
-.accordion-list {
-  display: grid;
-  gap: 10px;
-}
-
-.accordion-card {
+.os-picker {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 16px;
   border: 1px solid #dfe5ee;
   border-radius: 8px;
   background: #f8fafc;
-  padding: 0;
+  padding: 4px;
 }
 
-.accordion-card summary {
+.os-radio {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.os-picker label {
+  border-radius: 6px;
+  background: transparent;
+  color: #4b596c;
   cursor: pointer;
-  padding: 12px 14px;
-  color: #1f2a38;
-  font-weight: 900;
+  font-weight: 800;
+  padding: 8px 12px;
 }
 
-.accordion-card > p,
-.accordion-card > code,
-.accordion-card > dl {
-  margin: 0 14px 12px;
+.sftp-setup-card #sftp-setup-windows:checked ~ .os-picker label[for="sftp-setup-windows"],
+.sftp-setup-card #sftp-setup-macos:checked ~ .os-picker label[for="sftp-setup-macos"],
+.sftp-setup-card #sftp-setup-linux:checked ~ .os-picker label[for="sftp-setup-linux"],
+.sftp-access-card #sftp-access-windows:checked ~ .os-picker label[for="sftp-access-windows"],
+.sftp-access-card #sftp-access-macos:checked ~ .os-picker label[for="sftp-access-macos"],
+.sftp-access-card #sftp-access-linux:checked ~ .os-picker label[for="sftp-access-linux"] {
+  background: #245b9f;
+  color: #fff;
 }
 
-.accordion-card > code + code {
-  margin-top: 0;
+.os-panel {
+  display: none;
+}
+
+.sftp-setup-card #sftp-setup-windows:checked ~ .sftp-step-list .os-panel.windows,
+.sftp-setup-card #sftp-setup-macos:checked ~ .sftp-step-list .os-panel.macos,
+.sftp-setup-card #sftp-setup-linux:checked ~ .sftp-step-list .os-panel.linux,
+.sftp-access-card #sftp-access-windows:checked ~ .os-panel.windows,
+.sftp-access-card #sftp-access-macos:checked ~ .os-panel.macos,
+.sftp-access-card #sftp-access-linux:checked ~ .os-panel.linux {
+  display: block;
+}
+
+.sftp-step-list {
+  display: grid;
+  gap: 16px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.sftp-step-list li {
+  margin-bottom: 0;
+}
+
+.sftp-step-list h3 {
+  margin-bottom: 6px;
+}
+
+.sftp-step-list p,
+.sftp-access-panel p {
+  color: #44546a;
+  line-height: 1.5;
+}
+
+.sftp-access-panel {
+  display: grid;
+  gap: 8px;
 }
 
 .hint {

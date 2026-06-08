@@ -1,0 +1,81 @@
+{
+  "domain": "sydneybasiniot.org",
+  "services": [
+    {
+      "id": "photos",
+      "name": "Photos",
+      "url": "https://photos.sydneybasiniot.org",
+      "enabled": true,
+      "category": "media",
+      "description": "Photo and video library with private login and public share-link support.",
+      "loginNotes": "Use Kanidm.",
+      "uploadNotes": "Upload through Immich web or the mobile app."
+    },
+    {
+      "id": "files",
+      "name": "Files",
+      "url": "https://files.sydneybasiniot.org",
+      "enabled": true,
+      "category": "files",
+      "description": "Browser file workspace backed by each user's restricted SFTP root.",
+      "loginNotes": "Requires user-files for browser access.",
+      "uploadNotes": "Use Files for general uploads and app-specific media folders."
+    },
+    {
+      "id": "sftp",
+      "name": "SFTP Access",
+      "url": "/uploads",
+      "enabled": true,
+      "category": "files",
+      "description": "Private SFTP endpoint for large uploads and automated folder sync.",
+      "loginNotes": "Use uploaded SFTP public key authentication and port 2222 on server.home.arpa.",
+      "uploadNotes": "Upload your public key once, then connect with an SFTP client."
+    },
+    {
+      "id": "backups",
+      "name": "Backups",
+      "url": "https://backups.sydneybasiniot.org",
+      "enabled": true,
+      "category": "operations",
+      "description": "Kopia backup management for system state and repositories.",
+      "loginNotes": "Requires backup-admins plus the native Kopia password.",
+      "uploadNotes": "Backup repository files are managed by Kopia."
+    }
+  ],
+  "folderGuides": [
+    {
+      "id": "documents",
+      "title": "Documents",
+      "enabled": true,
+      "serviceIds": ["documents"],
+      "fileTypes": ["PDF", "images"],
+      "personalPath": "/mnt/data/users/{username}/_Documents",
+      "instructions": ["Upload PDFs and scans here."]
+    },
+    {
+      "id": "audiobooks",
+      "title": "Audiobooks",
+      "enabled": true,
+      "serviceIds": ["audiobooks"],
+      "fileTypes": ["M4B", "MP3"],
+      "personalPath": "/mnt/data/users/{username}/_Audiobooks",
+      "sharedPath": "/mnt/data/shared/_Audiobooks",
+      "instructions": ["Keep one book per folder."]
+    }
+  ],
+  "adminGuide": [
+    {
+      "title": "Guarded deploy",
+      "command": "./scripts/deploy.sh --action test",
+      "detail": "Stage the repo archive and run the normal remote rebuild test path on the server."
+    }
+  ],
+  "phoneBackup": {
+    "enabled": false,
+    "deviceName": "phone",
+    "folderId": "nixhomeserver-kopia-phone",
+    "folderLabel": "NixHomeServer Kopia phone backup",
+    "repositoryPath": "/mnt/backup/kopia-phone",
+    "connectionAddresses": []
+  }
+}

@@ -9,5 +9,5 @@
     "types": ["node", "vitest/globals"],
     "noEmit": false
   },
-  "include": ["src/server", "src/shared"]
+  "include": ["src/server", "src/shared/types.ts"]
 }

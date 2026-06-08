@@ -17,7 +17,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
     fetcherVersion = 3;
-    hash = "sha256-BXb0vIcqLF6c4GxV+bIG3hDUoGTNgvdHJGB1j+s28i8=";
+    hash = "sha256-SP2WZUkRAj32GBjwXgnhjfKD1t+qr3XXAsDiZaAviaU=";
   };
 
   nativeBuildInputs = [
@@ -39,8 +39,8 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   checkPhase = ''
     runHook preCheck
     pnpm run check
-    test -f dist/client/index.html || {
-      echo "homepage client build did not produce dist/client/index.html" >&2
+    test -f dist/server/entry.node-server.js || {
+      echo "homepage server build did not produce dist/server/entry.node-server.js" >&2
       exit 1
     }
     test -f dist/client/q-manifest.json || {
@@ -58,7 +58,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     cp -R dist/client "$out/share/homepage/client"
 
     makeWrapper ${nodejs}/bin/node "$out/bin/homepage" \
-      --add-flags "$out/lib/homepage/server/server/index.js" \
+      --add-flags "$out/lib/homepage/server/entry.node-server.js" \
       --set-default HOMEPAGE_STATIC_DIR "$out/share/homepage/client"
 
     runHook postInstall

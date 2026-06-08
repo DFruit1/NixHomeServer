@@ -15,7 +15,7 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "jsxImportSource": "@builder.io/qwik",
-    "types": ["vitest/globals"]
+    "types": ["node", "vitest/globals"]
   },
-  "include": ["src/client", "src/shared", "src/root.tsx", "src/entry.dev.tsx", "vite.config.ts"]
+  "include": ["src", "adapters", "vite.config.ts"]
 }

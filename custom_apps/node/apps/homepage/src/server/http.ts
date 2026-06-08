@@ -5,8 +5,7 @@ import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
-import { getSyncthingDeviceId } from './syncthing.js';
-import type { HomepageData } from '../shared/types.js';
+import { buildHomepageData } from './homepageData.js';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -17,33 +16,24 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 export const handleRequest = async (config: AppConfig, request: IncomingMessage, response: ServerResponse): Promise<void> => {
+  if (await handleApiRequest(config, request, response)) {
+    return;
+  }
+  const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  await serveStatic(config, response, url.pathname);
+};
+
+export const handleApiRequest = async (config: AppConfig, request: IncomingMessage, response: ServerResponse): Promise<boolean> => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   try {
     if (request.method === 'GET' && url.pathname === '/healthz') {
       sendJson(response, 200, { ok: true });
-      return;
+      return true;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/home') {
-      const body: HomepageData = {
-        ...config.homepage,
-        user: currentUserFromHeaders(request.headers, config.devUser),
-      };
-      if (body.phoneBackup?.enabled) {
-        try {
-          body.phoneBackup = {
-            ...body.phoneBackup,
-            serverDeviceId: await getSyncthingDeviceId(config),
-          };
-        } catch (caught) {
-          body.phoneBackup = {
-            ...body.phoneBackup,
-            serverDeviceIdError: caught instanceof Error ? caught.message : String(caught),
-          };
-        }
-      }
-      sendJson(response, 200, body);
-      return;
+      sendJson(response, 200, await buildHomepageData(config, request.headers));
+      return true;
     }
 
     if (request.method === 'POST' && url.pathname === '/api/sftp-key') {
@@ -51,19 +41,20 @@ export const handleRequest = async (config: AppConfig, request: IncomingMessage,
       const body = await readJson<{ publicKey?: string }>(request);
       const publicKey = normalisePublicKey(body.publicKey);
       sendJson(response, 200, await installSftpPublicKey(config, user, publicKey));
-      return;
+      return true;
     }
 
     if (url.pathname.startsWith('/api/')) {
       sendJson(response, 404, { error: 'api route not found' });
-      return;
+      return true;
     }
 
-    await serveStatic(config, response, url.pathname);
+    return false;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = message.includes('authenticated user') ? 401 : 500;
     sendJson(response, status, { error: message });
+    return true;
   }
 };
 
