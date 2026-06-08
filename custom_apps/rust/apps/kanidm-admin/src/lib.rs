@@ -293,12 +293,6 @@ fn render_partial_success(message: &str, details: &Value) -> String {
 
 fn render_verification(message: &str, details: &Value) -> String {
     let lead = match details.get("failure_kind").and_then(Value::as_str) {
-        Some("unixd_auth_failed") => {
-            "The password update completed, but the UnixD password verification failed."
-        }
-        Some("posix_password_update_rejected") => {
-            "Kanidm rejected the POSIX password update, so no local verification was attempted."
-        }
         Some("sftp_runtime_not_ready") => {
             "The command completed, but the SFTP runtime checks did not all pass."
         }
@@ -475,10 +469,6 @@ fn default_next_actions_for_failure_kind(failure_kind: Option<&str>) -> Option<S
             "If running from a checkout, pass `--repo-root` or set `KANIDM_ADMIN_REPO_ROOT` to a directory containing `vars.nix`.",
             "Set `KANIDM_ADMIN_CONTEXT_FILE` to a valid installed context file when using this outside the repo.",
         ],
-        "posix_password_update_rejected" => vec![
-            "Choose a POSIX/SFTP password that satisfies Kanidm password policy and history requirements.",
-            "Retry the password-set command and stop if Kanidm reports another policy or complexity rejection.",
-        ],
         _ => return None,
     };
     Some(
@@ -578,22 +568,6 @@ mod tests {
         assert!(rendered.contains("final state did not confirm in time"));
         assert!(rendered.contains("Expected state"));
         assert!(rendered.contains("Last observed state"));
-    }
-
-    #[test]
-    fn unixd_auth_verification_errors_use_specific_summary() {
-        let error = AppError::Verification {
-            message: "UnixD rejected the password".to_string(),
-            details: json!({
-                "failure_kind": "unixd_auth_failed",
-                "next_actions": ["retry the auth test"],
-            }),
-        };
-
-        let rendered = error.human_message();
-        assert!(rendered.contains("UnixD password verification failed"));
-        assert!(rendered.contains("UnixD rejected the password"));
-        assert!(rendered.contains("retry the auth test"));
     }
 
     #[test]

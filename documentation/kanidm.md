@@ -109,6 +109,20 @@ Expected result:
 Create a user:
 
 ```bash
+kanidm-admin user create-new
+```
+
+The prompted path collects the normal onboarding inputs in one flow:
+- account id / username
+- display name
+- optional primary email
+- initial direct groups such as `users`, `user-files`, or app-specific `*-users`
+- whether to clear validity restrictions
+- whether to create a temporary password reset link
+
+Scripted create path:
+
+```bash
 kanidm-admin user create "$NEW_USER" --display-name "$NEW_USER" --email "$EMAIL"
 ```
 
@@ -216,7 +230,7 @@ Interactive guidance note:
 Direct files SFTP access uses Kanidm identity through NSS for Unix account and
 group resolution, but authentication is public-key only. Users may protect their
 private key with a local passphrase if they want an extra client-side unlock
-step. The server does not accept Kanidm POSIX/UNIX passwords for direct SFTP.
+step. Direct SFTP login is validated from the installed public key.
 
 Grant direct SFTP access:
 

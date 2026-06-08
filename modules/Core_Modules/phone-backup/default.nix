@@ -160,8 +160,7 @@ in
           --keep-latest=30 \
           --keep-daily=30 \
           --keep-weekly=8 \
-          --keep-monthly=12 \
-          --manual
+          --keep-monthly=12
 
         chown -R root:${lib.escapeShellArg (toString backupStorageAccessGid)} ${lib.escapeShellArg repositoryPath}
         chmod 0750 ${lib.escapeShellArg repositoryPath}

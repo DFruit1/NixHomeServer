@@ -323,18 +323,6 @@ impl KanidmCli {
         )
     }
 
-    pub fn person_posix_set_password(
-        &self,
-        account_id: &str,
-        password: &str,
-    ) -> Result<BackendSuccess, AppError> {
-        self.run_success_with_stdin(
-            self.base_args(["person", "posix", "set-password", account_id]),
-            format!("{password}\n{password}\n"),
-            &format!("failed to set POSIX password for Kanidm user '{account_id}'"),
-        )
-    }
-
     pub fn unix_cache_invalidate(&self) -> Result<BackendSuccess, AppError> {
         self.run_kanidm_unix_success(
             vec!["cache-invalidate".to_string()],
@@ -347,14 +335,6 @@ impl KanidmCli {
             vec!["status".to_string()],
             "failed to inspect Kanidm UnixD status",
         )
-    }
-
-    pub fn unix_auth_test(&self, account_id: &str) -> Result<BackendSuccess, AppError> {
-        self.run_kanidm_unix_inherited(vec![
-            "auth-test".to_string(),
-            "--name".to_string(),
-            account_id.to_string(),
-        ])
     }
 
     fn run_kanidm_unix_success(
@@ -398,49 +378,6 @@ impl KanidmCli {
             Err(AppError::Backend {
                 message: context.to_string(),
                 failure: Box::new(BackendFailure::from_raw(&program, args, output)),
-            })
-        }
-    }
-
-    fn run_kanidm_unix_inherited(&self, args: Vec<String>) -> Result<BackendSuccess, AppError> {
-        let program = self.kanidm_unix_program();
-        let backend = ProcessKanidmBackend::new(program.clone());
-        let result = match backend.exec(RawCommandRequest {
-            args: args.clone(),
-            mode: CommandMode::InteractiveAuth,
-            timeout: self.backend_timeout,
-            stdin: None,
-        }) {
-            Ok(result) => result,
-            Err(error) => {
-                self.record_backend_exec_error(
-                    "kanidm-unix",
-                    CommandMode::InteractiveAuth,
-                    &program,
-                    &args,
-                    &error,
-                );
-                return Err(error.into_app_error());
-            }
-        };
-        if result.status.success {
-            let success = BackendSuccess::from_raw(&program, args, result);
-            self.record_backend_success("kanidm-unix", CommandMode::InteractiveAuth, &success);
-            Ok(success)
-        } else {
-            self.record_backend_result(
-                "kanidm-unix",
-                CommandMode::InteractiveAuth,
-                &program,
-                &args,
-                &result,
-            );
-            Err(AppError::Backend {
-                message: format!(
-                    "{} exited unsuccessfully; inspect the terminal output above",
-                    program.to_string_lossy()
-                ),
-                failure: Box::new(BackendFailure::from_raw(&program, args, result)),
             })
         }
     }
@@ -699,50 +636,6 @@ impl KanidmCli {
         match self.run_raw(args, context)? {
             Ok(output) => Ok(output),
             Err(failure) => Err(self.classify_failure(context, failure)),
-        }
-    }
-
-    fn run_success_with_stdin(
-        &self,
-        args: Vec<String>,
-        stdin: String,
-        context: &str,
-    ) -> Result<BackendSuccess, AppError> {
-        let output = match self.backend.exec(RawCommandRequest {
-            args: args.clone(),
-            mode: CommandMode::NonInteractiveWrite,
-            timeout: self.backend_timeout,
-            stdin: Some(stdin),
-        }) {
-            Ok(output) => output,
-            Err(error) => {
-                self.record_backend_exec_error(
-                    "kanidm",
-                    CommandMode::NonInteractiveWrite,
-                    &self.program,
-                    &args,
-                    &error,
-                );
-                return Err(error.into_app_error());
-            }
-        };
-
-        if output.status.success {
-            let success = BackendSuccess::from_raw(&self.program, args, output);
-            self.record_backend_success("kanidm", CommandMode::NonInteractiveWrite, &success);
-            Ok(success)
-        } else {
-            self.record_backend_result(
-                "kanidm",
-                CommandMode::NonInteractiveWrite,
-                &self.program,
-                &args,
-                &output,
-            );
-            Err(self.classify_failure(
-                context,
-                BackendFailure::from_raw(&self.program, args, output),
-            ))
         }
     }
 

@@ -60,8 +60,14 @@ in
     };
   };
 
-  networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts = [ ports.https ];
-  networking.firewall.interfaces.${lanIface}.allowedTCPPorts = lib.mkIf splitDnsMode [ ports.https ];
+  networking.firewall.interfaces.${netbirdIface}.allowedTCPPorts = [
+    ports.http
+    ports.https
+  ];
+  networking.firewall.interfaces.${lanIface}.allowedTCPPorts = lib.mkIf splitDnsMode [
+    ports.http
+    ports.https
+  ];
 
   systemd.services.caddy = {
     wants = [

@@ -27,25 +27,8 @@ pub fn args_have_sensitive_output(args: &[String]) -> bool {
 }
 
 pub fn args_have_secret_stdin(args: &[String]) -> bool {
-    args.windows(3).any(|window| {
-        matches!(
-            window,
-            [a, b, c]
-                if a == "person" && b == "posix" && c == "set-password"
-                    || a == "user" && b == "posix-password" && c == "set"
-                    || b == "kanidm-admin-root" && c == "chpasswd"
-                    || b.ends_with("/kanidm-admin-root") && c == "chpasswd"
-        )
-    }) || args.windows(4).any(|window| {
-        matches!(
-            window,
-            [a, b, c, d]
-                if a == "sudo"
-                    && b == "-n"
-                    && (c == "kanidm-admin-root" || c.ends_with("/kanidm-admin-root"))
-                    && d == "chpasswd"
-        )
-    })
+    let _ = args;
+    false
 }
 
 pub fn backend_output_redaction_payload() -> Value {
@@ -101,12 +84,6 @@ mod tests {
             "secret".to_string(),
             "show".to_string(),
             "files".to_string(),
-        ]));
-        assert!(args_have_secret_stdin(&[
-            "person".to_string(),
-            "posix".to_string(),
-            "set-password".to_string(),
-            "alice".to_string(),
         ]));
         assert!(args_have_sensitive_output(&[
             "sudo".to_string(),

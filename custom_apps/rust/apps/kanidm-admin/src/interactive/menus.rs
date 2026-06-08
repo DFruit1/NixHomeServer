@@ -44,11 +44,6 @@ pub(super) fn simple_menu_items() -> Vec<forms::ContextualItem> {
             "Use this when someone cannot sign in and needs to set a new password. The result should be shared through a secure channel because it grants temporary password reset access.",
         ),
         menu_item(
-            "Set / Reset POSIX Password",
-            "Set the separate POSIX/UNIX password used by Kanidm UnixD.",
-            "Use this only when a workflow explicitly needs a POSIX/UNIX password. Direct SFTP uses SSH public keys. This does not change the user's web/OIDC password or passkeys.",
-        ),
-        menu_item(
             "Show Backend Logs",
             "Inspect recent raw Kanidm and Kanidm UnixD command output.",
             "Use this when a result needs debugging. The log includes recent backend commands, exit status, stdout, stderr, and execution errors from this TUI session.",

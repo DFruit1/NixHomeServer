@@ -63,6 +63,7 @@ pub struct SftpRuntimeConfig {
     pub usb_access_group: String,
     pub backup_storage_access_group: String,
     pub sftp_chroot_base: String,
+    pub user_sftp_authorized_keys_dir: String,
     pub users_root: String,
     pub shared_root: String,
     pub usb_root: String,
@@ -91,6 +92,8 @@ impl Default for SftpRuntimeConfig {
             usb_access_group: "usb-access".to_string(),
             backup_storage_access_group: "admin-backups".to_string(),
             sftp_chroot_base: "/srv/files-sftp/chroots".to_string(),
+            user_sftp_authorized_keys_dir: "/persist/appdata/files-sftp-authorized-keys"
+                .to_string(),
             users_root: "/mnt/data/users".to_string(),
             shared_root: "/mnt/data/shared".to_string(),
             usb_root: "/mnt/external-usb".to_string(),
@@ -366,6 +369,7 @@ in {{
     usbAccessGroup = fileAccess.usbAccessGroup or "usb-access";
     backupStorageAccessGroup = backupAccess.storageGroup or "admin-backups";
     sftpChrootBase = fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
+    userSftpAuthorizedKeysDir = fileAccess.userSftpAuthorizedKeysDir or "/persist/appdata/files-sftp-authorized-keys";
     usersRoot = vars.usersRoot or "${{dataRoot}}/users";
     sharedRoot = vars.sharedRoot or "${{dataRoot}}/shared";
     usbRoot = vars.externalUsbMountRoot or "/mnt/external-usb";

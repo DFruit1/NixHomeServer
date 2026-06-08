@@ -19,6 +19,12 @@ let
   emailsHost = "emails.${vars.domain}";
   downloadsHost = "ytdownload.${vars.domain}";
   backupsHost = vars.kopiaDomain;
+  phoneBackupCfg = vars.phoneBackup or { enable = false; };
+  phoneBackupSyncthing = phoneBackupCfg.syncthing or { };
+  phoneBackupRepositoryPath = phoneBackupCfg.repositoryPath or "${vars.backupRoot}/kopia-phone";
+  syncthingDataDir = "/var/lib/syncthing";
+  syncthingConfigDir = "/var/lib/syncthing/.config/syncthing";
+  serverLanHost = "${vars.network.hostname}.${vars.networking.dns.lanDomain}";
 
   caddyHosts = config.services.caddy.virtualHosts;
   hostEnabled = name: builtins.hasAttr name caddyHosts;
@@ -67,7 +73,31 @@ let
     ${pkgs.coreutils}/bin/printf '%s\n' "$public_key" > "$tmp"
     ${pkgs.coreutils}/bin/chown root:root "$tmp"
     ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
-    ${pkgs.coreutils}/bin/mv "$tmp" "${sftpAuthorizedKeysDir}/$username"
+    target="${sftpAuthorizedKeysDir}/$username"
+    ${pkgs.coreutils}/bin/mv "$tmp" "$target"
+
+    saved_key="$(${pkgs.coreutils}/bin/cat "$target")"
+    if [ "$saved_key" != "$public_key" ]; then
+      echo "saved public key did not match submitted key" >&2
+      exit 1
+    fi
+
+    owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$target")"
+    mode="$(${pkgs.coreutils}/bin/stat -c '%a' "$target")"
+    if [ "$owner_group" != "root:root" ] || [ "$mode" != "644" ]; then
+      echo "saved public key has incorrect ownership or mode: $owner_group $mode" >&2
+      exit 1
+    fi
+
+    ${pkgs.coreutils}/bin/printf 'installed %s owner=%s mode=%s\n' "$target" "$owner_group" "$mode"
+  '';
+  showSyncthingDeviceId = pkgs.writeShellScript "homepage-show-syncthing-device-id" ''
+    set -euo pipefail
+
+    exec ${pkgs.syncthing}/bin/syncthing \
+      --config=${lib.escapeShellArg syncthingConfigDir} \
+      --data=${lib.escapeShellArg syncthingDataDir} \
+      device-id
   '';
 
   serviceCards = [
@@ -79,6 +109,8 @@ let
       category = "media";
       description = "Photo and video library with private login and public share-link support.";
       loginNotes = "Use Kanidm. Public shares use https://${sharePhotosHost}.";
+      projectUrl = "https://immich.app";
+      logoUrl = "https://cdn.simpleicons.org/immich";
       uploadNotes = "Upload through Immich web or the mobile app.";
     }
     {
@@ -89,6 +121,8 @@ let
       category = "files";
       description = "Paperless document archive with OCR, search, tags, and exports.";
       loginNotes = "Use Kanidm; first login creates the local account.";
+      projectUrl = "https://docs.paperless-ngx.com";
+      logoUrl = "https://cdn.simpleicons.org/paperlessngx";
       uploadNotes = "Upload PDFs and image documents through Paperless or the consume inbox.";
     }
     {
@@ -99,7 +133,19 @@ let
       category = "files";
       description = "Browser file workspace backed by each user's restricted SFTP root.";
       loginNotes = "Requires user-files for browser access.";
+      projectUrl = "https://www.filestash.app";
+      logoUrl = "https://raw.githubusercontent.com/mickael-kerjean/filestash/master/public/assets/logo/favicon.svg";
       uploadNotes = "Use Files for general uploads and app-specific media folders.";
+    }
+    {
+      id = "sftp";
+      name = "SFTP Access";
+      url = "/uploads";
+      enabled = filesEnabled;
+      category = "files";
+      description = "Private SFTP endpoint for large uploads and automated folder sync.";
+      loginNotes = "Use uploaded SFTP public key authentication and port 2222 on server.home.arpa.";
+      uploadNotes = "Upload your public key once, then connect with an SFTP client.";
     }
     {
       id = "audiobooks";
@@ -109,6 +155,8 @@ let
       category = "media";
       description = "Audiobooks and long-form audio libraries.";
       loginNotes = "Use Kanidm; app-admin grants app admin when combined with access.";
+      projectUrl = "https://www.audiobookshelf.org";
+      logoUrl = "https://cdn.simpleicons.org/audiobookshelf";
       uploadNotes = "Place audiobook folders under _Audiobooks.";
     }
     {
@@ -119,6 +167,8 @@ let
       category = "media";
       description = "Movies, shows, home videos, music videos, and YouTube video libraries.";
       loginNotes = "Jellyfin uses local sign-in; Kanidm groups drive managed account policy.";
+      projectUrl = "https://jellyfin.org";
+      logoUrl = "https://cdn.simpleicons.org/jellyfin";
       uploadNotes = "Place videos under _Videos with the matching library folder.";
     }
     {
@@ -129,6 +179,8 @@ let
       category = "media";
       description = "Ebooks, comics, and manga in Kavita.";
       loginNotes = "Use Kanidm; first login provisions the local account.";
+      projectUrl = "https://www.kavitareader.com";
+      logoUrl = "https://raw.githubusercontent.com/Kareadita/Kavita/develop/UI/Web/src/assets/images/logo.svg";
       uploadNotes = "Place books under _Books/_Ebooks, _Comics, or _Manga.";
     }
     {
@@ -139,6 +191,8 @@ let
       category = "knowledge";
       description = "Kiwix ZIM library for offline reference material.";
       loginNotes = "Use Kanidm with baseline users membership.";
+      projectUrl = "https://kiwix.org";
+      logoUrl = "https://cdn.simpleicons.org/kiwix";
       uploadNotes = "Operators upload .zim files to the configured Kiwix library root.";
     }
     {
@@ -159,6 +213,8 @@ let
       category = "media";
       description = "Authenticated yt-dlp queue for audio and video downloads.";
       loginNotes = "Requires downloads-users.";
+      projectUrl = "https://github.com/yt-dlp/yt-dlp";
+      logoUrl = "https://cdn.simpleicons.org/youtube";
       uploadNotes = "Downloads land in personal or shared media folders.";
     }
     {
@@ -169,6 +225,8 @@ let
       category = "identity";
       description = "Shared password manager for server and account credentials.";
       loginNotes = "Vaultwarden uses local login after an admin invite.";
+      projectUrl = "https://github.com/dani-garcia/vaultwarden";
+      logoUrl = "https://cdn.simpleicons.org/vaultwarden";
       uploadNotes = "Store Kanidm credentials, recovery codes, and app-local passwords here.";
     }
     {
@@ -179,6 +237,8 @@ let
       category = "operations";
       description = "Kopia backup management for system state and repositories.";
       loginNotes = "Requires backup-admins plus the native Kopia password.";
+      projectUrl = "https://kopia.io";
+      logoUrl = "https://raw.githubusercontent.com/kopia/kopia/master/icons/kopia.svg";
       uploadNotes = "Backup repository files are managed by Kopia.";
     }
   ];
@@ -320,6 +380,19 @@ let
   homepageConfig = pkgs.writeText "homepage-config.json" (builtins.toJSON {
     domain = vars.domain;
     services = serviceCards;
+    phoneBackup = {
+      enabled = phoneBackupCfg.enable or false;
+      deviceName = phoneBackupSyncthing.deviceName or "phone";
+      configuredPhoneDeviceId = phoneBackupSyncthing.deviceId or "";
+      folderId = phoneBackupSyncthing.folderId or "nixhomeserver-kopia-phone";
+      folderLabel = "NixHomeServer Kopia phone backup";
+      repositoryPath = phoneBackupRepositoryPath;
+      connectionAddresses = [
+        "tcp://${serverLanHost}:22000"
+        "tcp://${vars.networking.lan.ip}:22000"
+        "tcp://${vars.networking.netbird.ip}:22000"
+      ];
+    };
     inherit folderGuides adminGuide;
   });
 in
@@ -349,7 +422,8 @@ in
           HOMEPAGE_PORT = toString listenPort;
           HOMEPAGE_CONFIG_FILE = homepageConfig;
           HOMEPAGE_SFTP_KEY_INSTALL_COMMAND = installSftpKey;
-          HOMEPAGE_SUDO = "${pkgs.sudo}/bin/sudo";
+          HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND = showSyncthingDeviceId;
+          HOMEPAGE_SUDO = "/run/wrappers/bin/sudo";
         };
         serviceConfig = {
           Type = "simple";
@@ -380,6 +454,10 @@ in
           commands = [
             {
               command = "${installSftpKey}";
+              options = [ "NOPASSWD" ];
+            }
+            {
+              command = "${showSyncthingDeviceId}";
               options = [ "NOPASSWD" ];
             }
           ];

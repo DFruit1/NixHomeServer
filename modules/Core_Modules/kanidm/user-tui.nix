@@ -10,7 +10,6 @@ let
   backupAccess = vars.backupAccess or { };
   networkingPorts = vars.networking.ports or { };
   dataRoot = vars.dataRoot or "/mnt/data";
-  localSftpAccessGroup = fileAccess.localSftpAccessGroup or "files-local-sftp-users";
   allowedSecretPaths =
     lib.optional
       (builtins.hasAttr "vaultwardenAdminToken" config.age.secrets)
@@ -32,6 +31,7 @@ let
       usbAccessGroup = fileAccess.usbAccessGroup or "usb-access";
       backupStorageAccessGroup = backupAccess.storageGroup or "admin-backups";
       sftpChrootBase = fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
+      userSftpAuthorizedKeysDir = fileAccess.userSftpAuthorizedKeysDir or "/persist/appdata/files-sftp-authorized-keys";
       usersRoot = vars.usersRoot or "${dataRoot}/users";
       sharedRoot = vars.sharedRoot or "${dataRoot}/shared";
       usbRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
@@ -68,10 +68,6 @@ let
         command = "${rootHelper} systemd-start jellyfin-password-reconcile.service";
         options = [ "NOPASSWD" ];
       }
-      {
-        command = "${rootHelper} chpasswd *";
-        options = [ "NOPASSWD" ];
-      }
     ]
     ++ map
       (path: {
@@ -86,7 +82,6 @@ in
   environment.etc."kanidm-admin-root/allowed-secret-paths".text =
     (lib.concatMapStringsSep "\n" toString allowedSecretPaths)
     + lib.optionalString (allowedSecretPaths != [ ]) "\n";
-  environment.etc."kanidm-admin-root/chpasswd-group".text = "${localSftpAccessGroup}\n";
   environment.etc."kanidm-admin/context.json".text = builtins.toJSON installedContext + "\n";
 
   systemd.tmpfiles.rules = [

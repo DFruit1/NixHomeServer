@@ -118,6 +118,7 @@ rec {
     loopbackIPv4Cidr = "127.0.0.0/8";
     loopbackProxyCidr = "127.0.0.1/32";
     ports = {
+      http = 80;
       https = 443;
       dns = 53;
       dnscryptProxy = 5053;

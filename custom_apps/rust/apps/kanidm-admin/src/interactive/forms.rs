@@ -1,5 +1,5 @@
 use console::{Key, Term};
-use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect, Password, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect, Select};
 
 use crate::{
     inventory::groups::{resolve_group_help, GroupSummary},
@@ -842,18 +842,6 @@ where
         PromptResult::Submitted(value) => Ok(PromptResult::Submitted(Some(value))),
         PromptResult::Cancelled => Ok(PromptResult::Cancelled),
     }
-}
-
-pub fn password_confirmed(prompt: &str) -> Result<PromptResult<String>, AppError> {
-    Password::with_theme(&theme())
-        .with_prompt(prompt)
-        .with_confirmation("Confirm POSIX/SFTP password", "passwords did not match")
-        .allow_empty_password(false)
-        .interact()
-        .map(PromptResult::Submitted)
-        .map_err(|error| AppError::Config {
-            message: format!("interactive password input failed: {error}"),
-        })
 }
 
 pub fn confirm(prompt: &str, default: bool) -> Result<Option<bool>, AppError> {

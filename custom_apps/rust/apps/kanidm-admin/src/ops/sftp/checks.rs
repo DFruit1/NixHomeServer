@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::*;
 
 pub(super) fn expected_unix_groups(
@@ -112,6 +114,10 @@ pub(super) fn is_local_passwd_user(account_id: &str) -> bool {
 
 pub(super) fn sftp_chroot_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {
     Path::new(&config.sftp_chroot_base).join(account_id)
+}
+
+pub(super) fn sftp_authorized_keys_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {
+    Path::new(&config.user_sftp_authorized_keys_dir).join(account_id)
 }
 
 pub(super) fn user_root_path(config: &SftpRuntimeConfig, account_id: &str) -> PathBuf {

@@ -13,10 +13,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
-    "@builder.io/qwik": "1.16.0"
+    "@builder.io/qwik": "1.16.0",
+    "qrcode": "1.5.4"
   },
   "devDependencies": {
     "@types/node": "24.10.3",
+    "@types/qrcode": "1.5.6",
     "typescript": "5.9.3",
     "vite": "7.3.0",
     "vitest": "4.0.15"

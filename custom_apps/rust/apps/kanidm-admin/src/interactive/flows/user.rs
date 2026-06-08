@@ -151,51 +151,6 @@ pub(in crate::interactive) fn help_user_reset_password_flow(
     })
 }
 
-pub(in crate::interactive) fn set_posix_password_flow(
-    context: &ResolvedContext,
-    kanidm: &KanidmCli,
-) -> Result<(), AppError> {
-    let Some(account_id) = choose_account_id(
-        kanidm,
-        "Select a user who needs a POSIX/SFTP password set or reset",
-    )?
-    else {
-        return Ok(());
-    };
-    let Some(user) =
-        require_complete_user_for_action(kanidm, &account_id, "set a POSIX/SFTP password for")?
-    else {
-        return Ok(());
-    };
-    render::print_note(
-        "Review POSIX Password",
-        &build_posix_password_review(&user.value),
-    );
-    match forms::confirm("Set the POSIX/UNIX password now?", false)? {
-        Some(true) => {}
-        _ => return Ok(()),
-    }
-    render::print_note(
-        "POSIX Password Prompt",
-        "Enter the new POSIX/UNIX password next.\nThis is separate from the user's web/OIDC password and passkeys.\nAfter Kanidm accepts it, the tool may ask for the same password again to verify UnixD/PAM readiness.",
-    );
-    let Some(password) = prompt_submitted(forms::password_confirmed("New POSIX/UNIX password")?)
-    else {
-        return Ok(());
-    };
-    run_privileged_command("Set POSIX Password", kanidm, || {
-        set_posix_password_with_config(
-            kanidm,
-            &context.sftp_runtime,
-            PosixPasswordOptions {
-                account_id: account_id.clone(),
-                password: password.clone(),
-                run_auth_test: true,
-            },
-        )
-    })
-}
-
 pub(in crate::interactive) fn manage_user_access_flow(
     context: &ResolvedContext,
     kanidm: &KanidmCli,

@@ -431,7 +431,6 @@ fn is_zero_usize(value: &usize) -> bool {
 #[derive(Debug, Clone)]
 pub enum RootAction {
     StartSystemdUnit { unit: String },
-    Chpasswd { username: String },
     ReadSecretFile { path: PathBuf },
 }
 
@@ -593,7 +592,7 @@ pub fn run_root_action(
 
 pub fn root_action_spec(
     action: RootAction,
-    secret_stdin: Option<String>,
+    _secret_stdin: Option<String>,
     timeout: Duration,
 ) -> LocalCommandSpec {
     let helper = std::env::var(ENV_ROOT_HELPER).unwrap_or_else(|_| DEFAULT_ROOT_HELPER.to_string());
@@ -608,23 +607,6 @@ pub fn root_action_spec(
             ],
         )
         .with_timeout(timeout),
-        RootAction::Chpasswd { username } => {
-            let stdin = secret_stdin.unwrap_or_default();
-            LocalCommandSpec::new(
-                "sudo",
-                [
-                    "-n".to_string(),
-                    helper.clone(),
-                    "chpasswd".to_string(),
-                    username.clone(),
-                ],
-            )
-            .with_timeout(timeout)
-            .with_stdin(CommandStdin::Secret(stdin))
-            .with_redaction(RedactionPolicy::secret_stdin(format!(
-                "chpasswd:{username}"
-            )))
-        }
         RootAction::ReadSecretFile { path } => LocalCommandSpec::new(
             "sudo",
             [
@@ -1063,58 +1045,5 @@ printf 'secret stderr\n' >&2
             Some(value) => std::env::set_var(ENV_ROOT_HELPER, value),
             None => std::env::remove_var(ENV_ROOT_HELPER),
         }
-    }
-
-    #[test]
-    fn root_action_chpasswd_never_logs_password_stdin() {
-        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-        let dir = tempdir().expect("tempdir");
-        let sudo = dir.path().join("sudo");
-        write_script(
-            &sudo,
-            r#"#!/usr/bin/env bash
-set -euo pipefail
-while IFS= read -r _line; do :; done
-printf 'ok\n'
-"#,
-        );
-        let previous_path = std::env::var_os("PATH");
-        let previous_helper = std::env::var_os(ENV_ROOT_HELPER);
-        let test_path = match &previous_path {
-            Some(path) => {
-                let mut value = dir.path().as_os_str().to_os_string();
-                value.push(":");
-                value.push(path);
-                value
-            }
-            None => dir.path().as_os_str().to_os_string(),
-        };
-        std::env::set_var("PATH", test_path);
-        std::env::remove_var(ENV_ROOT_HELPER);
-
-        let execution = run_root_action(
-            &cli_for(&sudo),
-            "test chpasswd",
-            RootAction::Chpasswd {
-                username: "alice".to_string(),
-            },
-            Some("alice:correct horse battery staple\n".to_string()),
-            Duration::from_secs(5),
-        );
-
-        match previous_path {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
-        match previous_helper {
-            Some(value) => std::env::set_var(ENV_ROOT_HELPER, value),
-            None => std::env::remove_var(ENV_ROOT_HELPER),
-        }
-
-        assert_eq!(execution.result.status, CommandStatus::Exited(0));
-        let rendered = serde_json::to_string(&execution.backend_payload).expect("payload");
-        assert!(!rendered.contains("correct horse battery staple"));
-        assert!(rendered.contains("kanidm-admin-root"));
-        assert!(rendered.contains("chpasswd"));
     }
 }

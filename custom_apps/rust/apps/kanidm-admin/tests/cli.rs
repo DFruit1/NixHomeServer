@@ -110,6 +110,18 @@ exit 1
 }
 
 #[test]
+fn user_create_new_rejects_json_output_before_spawn() {
+    let dir = backend_should_not_run_dir();
+
+    let mut cmd = command_with_stub(&dir);
+    cmd.args(["--output", "json", "user", "create-new"]);
+
+    cmd.assert()
+        .code(2)
+        .stderr(predicate::str::contains("only support --output human"));
+}
+
+#[test]
 fn session_status_ignores_other_users_sessions() {
     let dir = stub_dir(
         r#"#!/usr/bin/env bash
@@ -389,11 +401,18 @@ fn membership_add_to_sftp_group_triggers_local_sync_services() {
     let services_file = dir.path().join("services.txt");
     let chroot_base = dir.path().join("chroots");
     let users_root = dir.path().join("users");
+    let authorized_keys_dir = dir.path().join("authorized-keys");
     fs::write(&state_file, "").expect("seed groups");
     fs::write(&services_file, "").expect("seed services");
     fs::write(dir.path().join("vars.nix"), "{}").expect("vars");
     fs::create_dir_all(chroot_base.join("dsaw")).expect("chroot");
     fs::create_dir_all(users_root.join("dsaw")).expect("user root");
+    fs::create_dir_all(&authorized_keys_dir).expect("authorized keys dir");
+    fs::write(
+        authorized_keys_dir.join("dsaw"),
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey dsaw@example.test\n",
+    )
+    .expect("authorized key");
     let script = dir.path().join("kanidm");
     let nix = dir.path().join("nix");
     let nix_defaults = serde_json::to_string(&serde_json::json!({
@@ -404,6 +423,7 @@ fn membership_add_to_sftp_group_triggers_local_sync_services() {
             "sftpAccessGroup": "files-sftp-users",
             "localSftpAccessGroup": "files-local-sftp-users",
             "sftpChrootBase": chroot_base.display().to_string(),
+            "userSftpAuthorizedKeysDir": authorized_keys_dir.display().to_string(),
             "usersRoot": users_root.display().to_string(),
             "filesSftpPort": 2222,
             "filesSftpSshdService": "files-sftp-sshd.service",

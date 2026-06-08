@@ -5,6 +5,8 @@ import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
+import { getSyncthingDeviceId } from './syncthing.js';
+import type { HomepageData } from '../shared/types.js';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -23,10 +25,24 @@ export const handleRequest = async (config: AppConfig, request: IncomingMessage,
     }
 
     if (request.method === 'GET' && url.pathname === '/api/home') {
-      sendJson(response, 200, {
+      const body: HomepageData = {
         ...config.homepage,
         user: currentUserFromHeaders(request.headers, config.devUser),
-      });
+      };
+      if (body.phoneBackup?.enabled) {
+        try {
+          body.phoneBackup = {
+            ...body.phoneBackup,
+            serverDeviceId: await getSyncthingDeviceId(config),
+          };
+        } catch (caught) {
+          body.phoneBackup = {
+            ...body.phoneBackup,
+            serverDeviceIdError: caught instanceof Error ? caught.message : String(caught),
+          };
+        }
+      }
+      sendJson(response, 200, body);
       return;
     }
 

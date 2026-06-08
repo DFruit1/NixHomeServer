@@ -21,7 +21,7 @@ let
     ++ lib.optionals localAdminNeedsSftpBridge [ localSftpAccessGroup ];
   webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
   sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
-  userSftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
+  userSftpAuthorizedKeysDir = vars.fileAccess.userSftpAuthorizedKeysDir or "/persist/appdata/files-sftp-authorized-keys";
   filesSftpPort = vars.networking.ports.filesSftp;
   lanIface = vars.networking.interfaces.lan;
   filesSftpSshdConfig = pkgs.writeText "files-sftp-sshd_config" ''

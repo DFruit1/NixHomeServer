@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand};
-use dialoguer::Password;
+use dialoguer::{Confirm, Input};
 use kanidm_admin::{
     context::{resolve_context, ContextOverrides, ResolvedContext},
     interactive,
@@ -43,13 +43,11 @@ use kanidm_admin::{
             test_sftp_login_with_policy,
         },
         user::{
-            create_user, delete_user, diagnose_posix_password_with_config, disable_user,
-            enable_user, list_users, reset_token, set_posix_password_with_config, show_user,
-            test_posix_password_with_config, CreateUserOptions, DeleteUserOptions,
-            PosixPasswordOptions, ResetTokenOptions,
+            create_user, delete_user, disable_user, enable_user, list_users, reset_token,
+            show_user, CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
-    output::{render_error, render_output, CommandOutput, OutputFormat},
+    output::{render_error, render_output, CommandOutput, OutputFormat, Sensitivity},
     session_state::SessionSnapshot,
     validation::{
         validate_account_id, validate_display_name, validate_email, validate_identifier_field,
@@ -60,7 +58,6 @@ use kanidm_admin::{
 };
 use serde_json::json;
 use std::time::Duration;
-use zeroize::Zeroizing;
 
 const ROOT_AFTER_HELP: &str =
     "Examples:\n  kanidm-admin\n  kanidm-admin context show\n  kanidm-admin doctor";
@@ -70,11 +67,11 @@ const GROUP_SEARCH_AFTER_HELP: &str =
     "Example:\n  kanidm-admin group search storage\n\nMatches are case-insensitive and search both group names and descriptions.";
 const USER_CREATE_AFTER_HELP: &str =
     "Examples:\n  kanidm-admin user create alice --display-name \"Alice\" --email alice@example.com\n  kanidm-admin user create service-user --display-name \"Service User\" --preserve-validity";
+const USER_CREATE_NEW_AFTER_HELP: &str =
+    "Example:\n  kanidm-admin user create-new\n\nPrompts for identity fields, initial direct groups, validity handling, and an optional password reset link. Alias: kanidm-admin user new";
 const MEMBERSHIP_SET_AFTER_HELP: &str =
     "Examples:\n  kanidm-admin membership set alice users paperless-users\n  kanidm-admin membership set alice --allow-empty --confirm-empty alice";
 const DELETE_USER_AFTER_HELP: &str = "Example:\n  kanidm-admin user delete alice --confirm alice";
-const POSIX_PASSWORD_AFTER_HELP: &str =
-    "Example:\n  kanidm-admin user posix-password set alice\n\nThis refreshes privileged write access before prompting for the new POSIX/UNIX password. The value is separate from the user's web/OIDC password and passkeys.";
 
 #[derive(Debug, Parser)]
 #[command(name = "kanidm-admin")]
@@ -267,6 +264,13 @@ enum UserSubcommand {
         )]
         preserve_validity: bool,
     },
+    #[command(
+        name = "create-new",
+        alias = "new",
+        about = "Prompt for the normal new-user details and create the account.",
+        after_help = USER_CREATE_NEW_AFTER_HELP
+    )]
+    CreateNew,
     #[command(about = "Disable a user without deleting their identity.")]
     Disable { account_id: String },
     #[command(about = "Re-enable a disabled or restricted user.")]
@@ -290,30 +294,6 @@ enum UserSubcommand {
         )]
         ttl: u64,
     },
-    #[command(about = "Set or reset the separate POSIX/UNIX password used by Kanidm UnixD.")]
-    PosixPassword(UserPosixPasswordCommand),
-}
-
-#[derive(Debug, Args)]
-struct UserPosixPasswordCommand {
-    #[command(subcommand)]
-    command: UserPosixPasswordSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum UserPosixPasswordSubcommand {
-    #[command(
-        about = "Open an interactive prompt to set or reset a user's POSIX/UNIX password.",
-        after_help = POSIX_PASSWORD_AFTER_HELP
-    )]
-    Set { account_id: String },
-    #[command(
-        about = "Interactively test a user's POSIX/UNIX password through Kanidm UnixD.",
-        after_help = "Example:\n  kanidm-admin user posix-password test alice\n\nThis prompts for the current POSIX/UNIX password and validates the same UnixD channel used by pam_kanidm."
-    )]
-    Test { account_id: String },
-    #[command(about = "Inspect the non-secret SFTP/POSIX login prerequisites for a user.")]
-    Diagnose { account_id: String },
 }
 
 #[derive(Debug, Args)]
@@ -608,12 +588,6 @@ enum LocalSftpSubcommand {
         account_id: String,
         #[command(flatten)]
         runtime: RuntimeCliOptions,
-        #[arg(
-            long,
-            default_value_t = false,
-            help = "Also run interactive kanidm-unix auth-test for the current POSIX/SFTP password."
-        )]
-        auth_test: bool,
     },
 }
 
@@ -680,70 +654,426 @@ pub fn main() {
     }
 }
 
-fn prompt_confirmed_password(prompt: &str) -> Result<String, kanidm_admin::AppError> {
-    if prompt.contains("POSIX") || prompt.contains("SFTP") {
-        eprintln!(
-            "{}",
-            kanidm_admin::output::warning_text(
-                "Password prompt: enter the new POSIX/SFTP password.\nThis is separate from the web/OIDC password and passkeys.\nAfter Kanidm accepts it, the tool will ask you to enter the same password once more to verify the UnixD/SFTP login path."
-            )
-        );
-    }
-    Password::new()
-        .with_prompt(prompt)
-        .with_confirmation("Confirm POSIX/SFTP password", "passwords did not match")
-        .allow_empty_password(false)
-        .interact()
-        .map_err(|error| kanidm_admin::AppError::Config {
-            message: format!("interactive password input failed: {error}"),
-        })
+#[derive(Debug, Clone)]
+struct PromptedCreateNewUserOptions {
+    account_id: String,
+    display_name: String,
+    email: Option<String>,
+    groups: Vec<String>,
+    clear_validity: bool,
+    create_reset_token: bool,
+    reset_token_ttl_seconds: u64,
 }
 
-fn set_posix_password_interactive(
+fn create_new_user_interactive(
     kanidm: &KanidmCli,
     sftp_runtime: &kanidm_admin::context::SftpRuntimeConfig,
     output: OutputFormat,
-    account_id: String,
 ) -> Result<CommandOutput, kanidm_admin::AppError> {
     ensure_interactive_session_allowed(output)?;
+    let options = prompt_create_new_user_options()?;
+    if !confirm_create_new_user(&options)? {
+        return Ok(CommandOutput {
+            message: "new user creation cancelled".to_string(),
+            human: "New user creation cancelled. No changes were applied.".to_string(),
+            details: json!({ "executed": false }),
+            warnings: Vec::new(),
+        });
+    }
 
-    let mut password: Option<Zeroizing<String>> = None;
     match execute_interactive_operation(
         kanidm,
         OperationKind::PrivilegedWrite,
         OperationPreconditions::PrivilegedWriteReady,
-        || {
-            let password = match password.as_ref() {
-                Some(password) => password.as_str().to_string(),
-                None => {
-                    password = Some(Zeroizing::new(prompt_confirmed_password(
-                        "New POSIX/SFTP password",
-                    )?));
-                    password
-                        .as_ref()
-                        .map(|password| password.as_str().to_string())
-                        .unwrap_or_default()
-                }
-            };
-            set_posix_password_with_config(
-                kanidm,
-                sftp_runtime,
-                PosixPasswordOptions {
-                    account_id: account_id.clone(),
-                    password,
-                    run_auth_test: true,
-                },
-            )
-        },
+        || perform_create_new_user(kanidm, sftp_runtime, &options),
         |target, error, snapshot| {
-            recover_cli_session_interactively(kanidm, output, target, error, snapshot)
+            recover_cli_session_interactively(
+                kanidm,
+                output,
+                target,
+                error,
+                snapshot,
+                "new user creation",
+            )
         },
     )? {
         OperationOutcome::Success(output) => Ok(output),
         OperationOutcome::Cancelled => Err(kanidm_admin::AppError::Config {
-            message: "POSIX password update cancelled before authentication completed".to_string(),
+            message: "new user creation cancelled before authentication completed".to_string(),
         }),
         OperationOutcome::RecoverableFailure(error) | OperationOutcome::Fatal(error) => Err(error),
+    }
+}
+
+fn prompt_create_new_user_options() -> Result<PromptedCreateNewUserOptions, kanidm_admin::AppError>
+{
+    let account_id = prompt_required_validated("Account id / username", None, validate_account_id)?;
+    let display_name = prompt_required_validated(
+        "Display name",
+        Some(account_id.as_str()),
+        validate_display_name,
+    )?;
+    let email = prompt_optional_validated("Primary email", None, validate_email)?;
+    let groups = prompt_group_list()?;
+    let clear_validity = prompt_confirm("Clear validity restrictions after creation?", true)?;
+    let create_reset_token = prompt_confirm("Create a temporary password reset link?", true)?;
+    let reset_token_ttl_seconds = if create_reset_token {
+        prompt_ttl_seconds()?
+    } else {
+        0
+    };
+
+    Ok(PromptedCreateNewUserOptions {
+        account_id,
+        display_name,
+        email,
+        groups,
+        clear_validity,
+        create_reset_token,
+        reset_token_ttl_seconds,
+    })
+}
+
+fn perform_create_new_user(
+    kanidm: &KanidmCli,
+    sftp_runtime: &kanidm_admin::context::SftpRuntimeConfig,
+    options: &PromptedCreateNewUserOptions,
+) -> Result<CommandOutput, kanidm_admin::AppError> {
+    let mut completed_steps = Vec::new();
+    let mut warnings = Vec::new();
+
+    let create_output = create_user(
+        kanidm,
+        CreateUserOptions {
+            account_id: options.account_id.clone(),
+            display_name: options.display_name.clone(),
+            email: options.email.clone(),
+            clear_validity: options.clear_validity,
+        },
+    )?;
+    completed_steps.push("create_user".to_string());
+    warnings.extend(create_output.warnings.clone());
+
+    let membership_output = match set_membership_with_config(
+        kanidm,
+        sftp_runtime,
+        SetMembershipOptions {
+            account_id: options.account_id.clone(),
+            groups: options.groups.clone(),
+            preserve_groups: Vec::new(),
+            allow_empty: true,
+        },
+    ) {
+        Ok(output) => {
+            completed_steps.push("set_membership".to_string());
+            warnings.extend(output.warnings.clone());
+            output
+        }
+        Err(error) => {
+            return Err(create_new_user_partial_error(
+                options,
+                &completed_steps,
+                "set_membership",
+                error,
+            ));
+        }
+    };
+
+    let reset_output = if options.create_reset_token {
+        match reset_token(
+            kanidm,
+            ResetTokenOptions {
+                account_id: options.account_id.clone(),
+                ttl_seconds: options.reset_token_ttl_seconds,
+            },
+        ) {
+            Ok(output) => {
+                completed_steps.push("reset_token".to_string());
+                warnings.extend(output.warnings.clone());
+                Some(output)
+            }
+            Err(error) => {
+                return Err(create_new_user_partial_error(
+                    options,
+                    &completed_steps,
+                    "reset_token",
+                    error,
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut human = format!(
+        "Created new Kanidm user '{}'.\n\n{}\n\n{}",
+        options.account_id, create_output.human, membership_output.human
+    );
+    if let Some(reset_output) = &reset_output {
+        human.push_str("\n\n");
+        human.push_str(&reset_output.human);
+    } else {
+        human.push_str("\n\nPassword Reset:\nNo password reset link was created.");
+    }
+    human.push_str("\n\nNext Steps:");
+    if reset_output.is_some() {
+        human.push_str("\n- Have the user open the reset link and set their web/OIDC credentials.");
+    } else {
+        human.push_str(&format!(
+            "\n- Create a reset link when needed with `kanidm-admin user reset-token {} --ttl 3600`.",
+            options.account_id
+        ));
+    }
+    human.push_str(&format!(
+        "\n- For direct SFTP access, install their SSH public key at `/persist/appdata/files-sftp-authorized-keys/{}`.\n- For Vaultwarden, run `kanidm-admin local vaultwarden invite {}` if they should use the shared password manager.",
+        options.account_id, options.account_id
+    ));
+
+    let mut output = CommandOutput {
+        message: format!("created new Kanidm user '{}'", options.account_id),
+        human,
+        details: json!({
+            "account_id": options.account_id,
+            "requested_state": {
+                "display_name": options.display_name,
+                "email": options.email,
+                "groups": options.groups,
+                "clear_validity": options.clear_validity,
+                "create_reset_token": options.create_reset_token,
+                "reset_token_ttl_seconds": if options.create_reset_token {
+                    json!(options.reset_token_ttl_seconds)
+                } else {
+                    json!(null)
+                },
+            },
+            "completed_steps": completed_steps,
+            "create_user": create_output.details,
+            "membership": membership_output.details,
+            "reset_token": reset_output.as_ref().map(|output| output.details.clone()),
+        }),
+        warnings,
+    };
+    if reset_output.is_some() {
+        output = output.with_sensitivity(Sensitivity::Sensitive);
+    }
+    Ok(output)
+}
+
+fn create_new_user_partial_error(
+    options: &PromptedCreateNewUserOptions,
+    completed_steps: &[String],
+    failed_step: &str,
+    error: kanidm_admin::AppError,
+) -> kanidm_admin::AppError {
+    kanidm_admin::AppError::PartialSuccess {
+        message: format!(
+            "new user '{}' was partially created, but '{failed_step}' did not finish cleanly",
+            options.account_id
+        ),
+        details: json!({
+            "resource": "user",
+            "name": options.account_id,
+            "requested_state": {
+                "display_name": options.display_name,
+                "email": options.email,
+                "groups": options.groups,
+                "clear_validity": options.clear_validity,
+                "create_reset_token": options.create_reset_token,
+                "reset_token_ttl_seconds": if options.create_reset_token {
+                    json!(options.reset_token_ttl_seconds)
+                } else {
+                    json!(null)
+                },
+            },
+            "completed_steps": completed_steps,
+            "failed_step": failed_step,
+            "next_actions": create_new_user_next_actions(options, failed_step),
+            "backend": error.json_payload(),
+        }),
+    }
+}
+
+fn create_new_user_next_actions(
+    options: &PromptedCreateNewUserOptions,
+    failed_step: &str,
+) -> Vec<String> {
+    let mut actions = vec![format!(
+        "Inspect the user with `kanidm-admin user show {}`.",
+        options.account_id
+    )];
+    if failed_step == "set_membership" {
+        if options.groups.is_empty() {
+            actions.push(format!(
+                "If the empty direct-group set is intended, run `kanidm-admin membership set {} --allow-empty --confirm-empty {}`.",
+                options.account_id, options.account_id
+            ));
+        } else {
+            actions.push(format!(
+                "Retry access assignment with `kanidm-admin membership set {} {} --allow-empty`.",
+                options.account_id,
+                options.groups.join(" ")
+            ));
+        }
+    }
+    if options.create_reset_token {
+        actions.push(format!(
+            "Create a reset link with `kanidm-admin user reset-token {} --ttl {}`.",
+            options.account_id, options.reset_token_ttl_seconds
+        ));
+    }
+    actions
+}
+
+fn prompt_required_validated<F>(
+    prompt: &str,
+    default: Option<&str>,
+    validator: F,
+) -> Result<String, kanidm_admin::AppError>
+where
+    F: Fn(&str) -> Result<String, kanidm_admin::AppError>,
+{
+    loop {
+        let value = prompt_input(prompt, default, false)?;
+        match validator(&value) {
+            Ok(value) => return Ok(value),
+            Err(error) => eprintln!("{}", error.human_message()),
+        }
+    }
+}
+
+fn prompt_optional_validated<F>(
+    prompt: &str,
+    default: Option<&str>,
+    validator: F,
+) -> Result<Option<String>, kanidm_admin::AppError>
+where
+    F: Fn(&str) -> Result<String, kanidm_admin::AppError>,
+{
+    loop {
+        let value = prompt_input(prompt, default, true)?;
+        if value.trim().is_empty() {
+            return Ok(None);
+        }
+        match validator(&value) {
+            Ok(value) => return Ok(Some(value)),
+            Err(error) => eprintln!("{}", error.human_message()),
+        }
+    }
+}
+
+fn prompt_group_list() -> Result<Vec<String>, kanidm_admin::AppError> {
+    loop {
+        let value = prompt_input(
+            "Initial direct groups (space or comma separated)",
+            Some("users"),
+            true,
+        )?;
+        let groups = match parse_prompted_group_list(&value) {
+            Ok(groups) => groups,
+            Err(error) => {
+                eprintln!("{}", error.human_message());
+                continue;
+            }
+        };
+        if !groups.is_empty() || prompt_confirm("Create with no direct groups?", false)? {
+            return Ok(groups);
+        }
+    }
+}
+
+fn prompt_ttl_seconds() -> Result<u64, kanidm_admin::AppError> {
+    loop {
+        let value = prompt_input(
+            "Password reset link lifetime in seconds",
+            Some("3600"),
+            false,
+        )?;
+        let parsed = match value.parse::<u64>() {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                eprintln!("invalid reset token TTL '{value}': {error}");
+                continue;
+            }
+        };
+        match validate_seconds_field(
+            "reset token TTL",
+            parsed,
+            RESET_TOKEN_TTL_MIN_SECONDS,
+            RESET_TOKEN_TTL_MAX_SECONDS,
+        ) {
+            Ok(value) => return Ok(value),
+            Err(error) => eprintln!("{}", error.human_message()),
+        }
+    }
+}
+
+fn prompt_input(
+    prompt: &str,
+    default: Option<&str>,
+    allow_empty: bool,
+) -> Result<String, kanidm_admin::AppError> {
+    let mut input = Input::<String>::new().with_prompt(prompt.to_string());
+    if let Some(default) = default {
+        input = input.with_initial_text(default.to_string());
+    }
+    input
+        .allow_empty(allow_empty)
+        .interact_text()
+        .map(|value| value.trim().to_string())
+        .map_err(|error| kanidm_admin::AppError::Config {
+            message: format!("interactive input failed: {error}"),
+        })
+}
+
+fn prompt_confirm(prompt: &str, default: bool) -> Result<bool, kanidm_admin::AppError> {
+    Confirm::new()
+        .with_prompt(prompt)
+        .default(default)
+        .interact()
+        .map_err(|error| kanidm_admin::AppError::Config {
+            message: format!("interactive confirmation failed: {error}"),
+        })
+}
+
+fn confirm_create_new_user(
+    options: &PromptedCreateNewUserOptions,
+) -> Result<bool, kanidm_admin::AppError> {
+    eprintln!(
+        "New user review:\n  account id: {}\n  display name: {}\n  primary email: {}\n  direct groups: {}\n  clear validity restrictions: {}\n  create reset link: {}",
+        options.account_id,
+        options.display_name,
+        options.email.as_deref().unwrap_or("-"),
+        if options.groups.is_empty() {
+            "-".to_string()
+        } else {
+            options.groups.join(", ")
+        },
+        yes_no(options.clear_validity),
+        if options.create_reset_token {
+            format!("yes, TTL {} seconds", options.reset_token_ttl_seconds)
+        } else {
+            "no".to_string()
+        }
+    );
+    prompt_confirm("Create this user now?", false)
+}
+
+fn parse_prompted_group_list(value: &str) -> Result<Vec<String>, kanidm_admin::AppError> {
+    let groups = value
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .filter_map(|group| {
+            let trimmed = group.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
+        .collect::<Vec<_>>();
+    validate_identifier_list("group name", groups)
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
     }
 }
 
@@ -753,6 +1083,7 @@ fn recover_cli_session_interactively(
     target: RecoveryTarget,
     error: Option<&kanidm_admin::AppError>,
     snapshot: Option<&SessionSnapshot>,
+    operation: &str,
 ) -> Result<bool, kanidm_admin::AppError> {
     if let Some(error) = error {
         eprintln!("{}", render_error(output, error));
@@ -767,7 +1098,7 @@ fn recover_cli_session_interactively(
                     snapshot.diagnostic_raw.trim()
                 );
             }
-            eprintln!("Starting Kanidm login before continuing the POSIX password update.");
+            eprintln!("Starting Kanidm login before continuing {operation}.");
             let recovery = session_login(kanidm)?;
             eprintln!("{}", render_output(output, &recovery));
         }
@@ -779,9 +1110,7 @@ fn recover_cli_session_interactively(
                     snapshot.diagnostic_raw.trim()
                 );
             }
-            eprintln!(
-                "Starting Kanidm reauthentication before continuing the POSIX password update."
-            );
+            eprintln!("Starting Kanidm reauthentication before continuing {operation}.");
             let recovery = session_reauth(kanidm)?;
             eprintln!("{}", render_output(output, &recovery));
         }
@@ -885,6 +1214,9 @@ fn run(
                 )
                 .map(Some)
             }
+            UserSubcommand::CreateNew => {
+                create_new_user_interactive(&kanidm, &context.sftp_runtime, output).map(Some)
+            }
             UserSubcommand::Disable { account_id } => {
                 let account_id = validate_account_id(&account_id)?;
                 disable_user(&kanidm, &account_id).map(Some)
@@ -924,29 +1256,6 @@ fn run(
                 )
                 .map(Some)
             }
-            UserSubcommand::PosixPassword(command) => match command.command {
-                UserPosixPasswordSubcommand::Set { account_id } => {
-                    let account_id = validate_account_id(&account_id)?;
-                    set_posix_password_interactive(
-                        &kanidm,
-                        &context.sftp_runtime,
-                        output,
-                        account_id,
-                    )
-                    .map(Some)
-                }
-                UserPosixPasswordSubcommand::Test { account_id } => {
-                    ensure_interactive_session_allowed(output)?;
-                    let account_id = validate_account_id(&account_id)?;
-                    test_posix_password_with_config(&kanidm, &context.sftp_runtime, &account_id)
-                        .map(Some)
-                }
-                UserPosixPasswordSubcommand::Diagnose { account_id } => {
-                    let account_id = validate_account_id(&account_id)?;
-                    diagnose_posix_password_with_config(&kanidm, &context.sftp_runtime, &account_id)
-                        .map(Some)
-                }
-            },
         },
         Some(Commands::Group(command)) => match command.command {
             GroupSubcommand::List => list_groups(&kanidm).map(Some),
@@ -1186,14 +1495,12 @@ fn run(
                 LocalSftpSubcommand::Test {
                     account_id,
                     runtime,
-                    auth_test,
                 } => {
                     let account_id = validate_account_id(&account_id)?;
                     test_sftp_login_with_policy(
                         &kanidm,
                         &context.sftp_runtime,
                         &account_id,
-                        auth_test,
                         convergence_policy_from_cli(&runtime)?,
                     )
                     .map(Some)
@@ -1343,6 +1650,10 @@ fn dry_run_command(
                     Vec::new(),
                 ))
             }
+            UserSubcommand::CreateNew => Err(kanidm_admin::AppError::Config {
+                message: "user create-new is interactive and does not support --dry-run"
+                    .to_string(),
+            }),
             UserSubcommand::Disable { account_id } => {
                 let account_id = validate_account_id(account_id)?;
                 Ok(dry_run_output(
@@ -1389,22 +1700,6 @@ fn dry_run_command(
                     &account_id,
                     format!("Would create a temporary password reset link for '{account_id}'."),
                     json!({ "account_id": account_id, "ttl_seconds": ttl, "would_emit_secret": true }),
-                    Vec::new(),
-                ))
-            }
-            UserSubcommand::PosixPassword(UserPosixPasswordCommand {
-                command: UserPosixPasswordSubcommand::Set { account_id },
-            }) => {
-                let account_id = validate_account_id(account_id)?;
-                Ok(dry_run_output(
-                    "user.posix_password.set",
-                    &account_id,
-                    format!("Would prompt for and set the POSIX/SFTP password for '{account_id}'."),
-                    json!({
-                        "account_id": account_id,
-                        "would_prompt_for_password": true,
-                        "would_run_auth_test": true,
-                    }),
                     Vec::new(),
                 ))
             }
@@ -1942,18 +2237,30 @@ mod tests {
     }
 
     #[test]
-    fn parses_user_posix_password_set() {
-        let cli = Cli::try_parse_from(["kanidm-admin", "user", "posix-password", "set", "alice"])
-            .expect("parse");
+    fn parses_user_create_new_alias() {
+        let cli = Cli::try_parse_from(["kanidm-admin", "user", "new"]).expect("parse");
 
         assert!(matches!(
             cli.command,
             Some(Commands::User(UserCommand {
-                command: UserSubcommand::PosixPassword(UserPosixPasswordCommand {
-                    command: UserPosixPasswordSubcommand::Set { account_id }
-                })
-            })) if account_id == "alice"
+                command: UserSubcommand::CreateNew
+            }))
         ));
+    }
+
+    #[test]
+    fn parse_prompted_group_list_accepts_commas_and_spaces() {
+        let groups = parse_prompted_group_list("users, user-files files-sftp-users")
+            .expect("groups should parse");
+
+        assert_eq!(
+            groups,
+            vec![
+                "users".to_string(),
+                "user-files".to_string(),
+                "files-sftp-users".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -2060,24 +2367,13 @@ mod tests {
             })) if account_id == "alice"
         ));
 
-        let test = Cli::try_parse_from([
-            "kanidm-admin",
-            "local",
-            "sftp",
-            "test",
-            "alice",
-            "--auth-test",
-        ])
-        .expect("parse test");
+        let test = Cli::try_parse_from(["kanidm-admin", "local", "sftp", "test", "alice"])
+            .expect("parse test");
         assert!(matches!(
             test.command,
             Some(Commands::Local(LocalCommand {
                 command: LocalSubcommand::Sftp(LocalSftpCommand {
-                    command: LocalSftpSubcommand::Test {
-                        account_id,
-                        auth_test: true,
-                        ..
-                    }
+                    command: LocalSftpSubcommand::Test { account_id, .. }
                 })
             })) if account_id == "alice"
         ));

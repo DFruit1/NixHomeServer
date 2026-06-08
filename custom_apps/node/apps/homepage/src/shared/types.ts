@@ -14,6 +14,8 @@ export type ServiceCard = {
   category: ServiceCategory;
   description: string;
   loginNotes: string;
+  projectUrl?: string;
+  logoUrl?: string;
   uploadNotes?: string;
 };
 
@@ -34,15 +36,29 @@ export type AdminStep = {
   detail: string;
 };
 
+export type PhoneBackupSetup = {
+  enabled: boolean;
+  deviceName: string;
+  configuredPhoneDeviceId?: string;
+  serverDeviceId?: string;
+  serverDeviceIdError?: string;
+  folderId: string;
+  folderLabel: string;
+  repositoryPath: string;
+  connectionAddresses: string[];
+};
+
 export type HomepageData = {
   domain: string;
   user: CurrentUser;
   services: ServiceCard[];
   folderGuides: FolderGuide[];
   adminGuide: AdminStep[];
+  phoneBackup?: PhoneBackupSetup;
 };
 
 export type SftpKeyResponse = {
   ok: boolean;
   message: string;
+  details?: string;
 };

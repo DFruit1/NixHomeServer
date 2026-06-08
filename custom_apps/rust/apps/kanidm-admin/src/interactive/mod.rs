@@ -36,8 +36,7 @@ use crate::{
         session::{session_login, session_logout, session_reauth, session_status},
         user::{
             create_user, delete_user, disable_user, enable_user, load_user, reset_token,
-            set_posix_password_with_config, CreateUserOptions, DeleteUserOptions,
-            PosixPasswordOptions, ResetTokenOptions,
+            CreateUserOptions, DeleteUserOptions, ResetTokenOptions,
         },
     },
     output::{
@@ -767,7 +766,6 @@ mod tests {
                 "Find / View User",
                 "Disable / Enable User",
                 "Help User Reset Password",
-                "Set / Reset POSIX Password",
                 "Show Backend Logs",
                 "Advanced",
                 "Exit",
@@ -1207,24 +1205,6 @@ exit 99
         assert!(rendered.contains("Reset Link TTL: 3600 seconds"));
         assert!(rendered.contains("secure channel"));
         assert!(rendered.contains("Account ID: dsaw"));
-    }
-
-    #[test]
-    fn posix_password_review_distinguishes_sftp_password() {
-        let rendered = build_posix_password_review(&UserRecord {
-            account_id: "dsaw".to_string(),
-            display_name: Some("Dan".to_string()),
-            primary_email: Some("dsaw@example.test".to_string()),
-            spn: None,
-            uuid: None,
-            valid_from: None,
-            expiry: None,
-            groups: vec!["files-sftp-users".to_string()],
-        });
-
-        assert!(rendered.contains("POSIX/UNIX password"));
-        assert!(rendered.contains("direct SFTP"));
-        assert!(rendered.contains("web/OIDC password"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ export type AppConfig = {
   staticDir: string;
   devUser?: string;
   sftpKeyInstallCommand?: string;
+  syncthingDeviceIdCommand?: string;
   sudoPath: string;
   homepage: HomepageConfig;
 };
@@ -47,6 +48,7 @@ export const loadConfig = (): AppConfig => ({
   staticDir: process.env.HOMEPAGE_STATIC_DIR ?? new URL('../../client', import.meta.url).pathname,
   devUser: process.env.HOMEPAGE_DEV_USER,
   sftpKeyInstallCommand: process.env.HOMEPAGE_SFTP_KEY_INSTALL_COMMAND,
+  syncthingDeviceIdCommand: process.env.HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND,
   sudoPath: process.env.HOMEPAGE_SUDO ?? 'sudo',
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });

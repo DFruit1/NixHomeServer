@@ -32,25 +32,29 @@ export const installSftpPublicKey = async (config: AppConfig, user: CurrentUser,
   }
 
   const installCommand = config.sftpKeyInstallCommand;
-  await runInstaller(config, installCommand, user.username, publicKey);
+  const details = await runInstaller(config, installCommand, user.username, publicKey);
   return {
     ok: true,
-    message: 'SFTP public key saved. Use the matching private key in your file browser or SFTP client.',
+    message: 'SFTP public key saved and verified on the server.',
+    details,
   };
 };
 
-const runInstaller = (config: AppConfig, installCommand: string, username: string, publicKey: string): Promise<void> =>
+const runInstaller = (config: AppConfig, installCommand: string, username: string, publicKey: string): Promise<string | undefined> =>
   new Promise((resolve, reject) => {
     const child = spawn(config.sudoPath, ['-n', installCommand, username], {
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as ChildProcessWithoutNullStreams;
+    const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
 
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
     child.on('error', reject);
     child.on('close', (code) => {
       if (code === 0) {
-        resolve();
+        const detail = Buffer.concat(stdout).toString('utf8').trim();
+        resolve(detail || undefined);
         return;
       }
       const detail = Buffer.concat(stderr).toString('utf8').trim();
