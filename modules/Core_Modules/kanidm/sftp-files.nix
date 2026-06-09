@@ -7,6 +7,17 @@ let
   backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
   localSftpAccessGroup = vars.fileAccess.localSftpAccessGroup or "files-local-sftp-users";
   localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
+  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
+  localBridgeFileAccessGroups = lib.filter
+    (group: builtins.hasAttr group vars.fileAccessPosixGids)
+    (lib.unique [
+      webAccessGroup
+      sftpAccessGroup
+      sharedAccessGroup
+      usbAccessGroup
+      backupStorageAccessGroup
+    ]);
   sftpKanidmGroups = [
     sftpAccessGroup
     usbAccessGroup
@@ -19,8 +30,6 @@ let
         ++ map (group: "${group}@${vars.domain}") sftpKanidmGroups
       )
     ++ lib.optionals localAdminNeedsSftpBridge [ localSftpAccessGroup ];
-  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
-  sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   sftpAuthorizedKeysDir = "/run/files-sftp-authorized-keys";
   userSftpAuthorizedKeysDir = vars.fileAccess.userSftpAuthorizedKeysDir or "/persist/appdata/files-sftp-authorized-keys";
   filesSftpPort = vars.networking.ports.filesSftp;
@@ -60,13 +69,13 @@ in
       home_attr = "name";
       home_alias = "name";
       kanidm = {
-      pam_allowed_login_groups = [
+        pam_allowed_login_groups = [
           webAccessGroup
           sftpAccessGroup
           usbAccessGroup
           backupStorageAccessGroup
           sharedAccessGroup
-      ];
+        ];
       };
     };
   };
@@ -91,9 +100,15 @@ in
     rules.auth.kanidm.settings.use_first_pass = lib.mkForce false;
   };
 
-  users.groups.${localSftpAccessGroup} = lib.mkIf localAdminNeedsSftpBridge {
-    members = [ vars.localAdminUser ];
-  };
+  users.groups = lib.mkIf localAdminNeedsSftpBridge (
+    {
+      ${localSftpAccessGroup}.members = [ vars.localAdminUser ];
+    }
+    // lib.genAttrs localBridgeFileAccessGroups (group: {
+      gid = vars.fileAccessPosixGids.${group};
+      members = [ vars.localAdminUser ];
+    })
+  );
 
   networking.firewall.interfaces.${lanIface}.allowedTCPPorts = [ filesSftpPort ];
 

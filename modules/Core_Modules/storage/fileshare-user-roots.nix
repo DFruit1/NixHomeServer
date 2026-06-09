@@ -9,6 +9,9 @@ let
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
   backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  sharedAccessGid = vars.fileAccessPosixGids.${sharedAccessGroup};
+  usbAccessGid = vars.fileAccessPosixGids.${usbAccessGroup};
+  backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   sharedMountName = vars.fileAccess.sharedMountName or "_Shared";
   usbMountName = vars.fileAccess.usbMountName or "_USB";
   backupStorageMountName = vars.backupAccess.storageMountName or "_Backups";
@@ -557,7 +560,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${sharedMountName}";
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${sharedMountName}";
         Restart = "on-failure";
       };
@@ -572,7 +575,7 @@ in
           "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${usbMountName}"
           "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${externalUsbMountRoot}"
         ];
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --delete-deny ${externalUsbMountRoot} ${vars.usersRoot}/%i/${usbMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString usbAccessGid} --perms=g+rwX,o-rwx --delete-deny ${externalUsbMountRoot} ${vars.usersRoot}/%i/${usbMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${usbMountName}";
         Restart = "on-failure";
       };
@@ -586,7 +589,7 @@ in
       serviceConfig = {
         Type = "simple";
         ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${backupStorageMountName}";
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -r -o allow_other --delete-deny ${backupRoot} ${vars.usersRoot}/%i/${backupStorageMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -r -o allow_other --force-group=${toString backupStorageAccessGid} --perms=g+rX,o-rwx --delete-deny ${backupRoot} ${vars.usersRoot}/%i/${backupStorageMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${backupStorageMountName}";
         Restart = "on-failure";
       };

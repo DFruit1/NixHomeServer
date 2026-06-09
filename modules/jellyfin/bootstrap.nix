@@ -50,6 +50,7 @@ let
   sharedLibrariesJson = builtins.toJSON sharedLibraries;
   personalLibrariesJson = builtins.toJSON config.repo.jellyfin.libraries.personal;
   jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or vars.kanidmAppAdminUsers);
+  jellyfinAdminOwnerUser = vars.kanidmAdminUser or "admindsaw";
   jellyfinLibraryBootstrapPath = with pkgs; [
     coreutils
     curl
@@ -227,6 +228,7 @@ in
         managed_users_file=${lib.escapeShellArg managedUsersFile}
         api_key_file=${lib.escapeShellArg apiKeyFile}
         api_key_name=${lib.escapeShellArg apiKeyName}
+        jellyfin_admin_owner_user=${lib.escapeShellArg jellyfinAdminOwnerUser}
         base_url="http://${loopback}:${toString jellyfinPort}"
         api_keys_table=""
         api_key=""
@@ -494,6 +496,17 @@ in
                 | .EnabledFolders = []
               ' <<<"$created_user"
             )"
+            if [[ "$username" == "$jellyfin_admin_owner_user" ]]; then
+              initial_policy="$(
+                jq -c '
+                  .IsAdministrator = true
+                  | .IsHidden = false
+                  | .IsDisabled = false
+                  | .EnableAllFolders = false
+                  | .EnableMediaPlayback = true
+                ' <<<"$initial_policy"
+              )"
+            fi
             post_policy "$user_id" "$initial_policy"
             managed_users_json="$(
               jq --arg name "$username" --arg id "$user_id" '
@@ -510,6 +523,7 @@ in
 
           current_policy="$(jq -c --arg id "$user_id" '.[] | select(.Id == $id) | .Policy // {}' <<<"$jellyfin_users" | head -n 1)"
           [[ -n "$current_policy" ]] || current_policy='{}'
+          current_is_admin="$(jq -r '.IsAdministrator // false' <<<"$current_policy")"
 
           has_shared_access=false
           if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$shared_members_json"; then
@@ -517,6 +531,17 @@ in
           fi
           if [[ "$has_shared_access" != "true" ]]; then
             is_admin=false
+          fi
+          if [[ "$username" == "$jellyfin_admin_owner_user" ]]; then
+            is_admin=true
+          fi
+
+          if [[ "$current_is_admin" == "true" && "$is_admin" != "true" ]]; then
+            current_admin_count="$(jq 'map(select((.Policy // {}).IsAdministrator == true)) | length' <<<"$jellyfin_users")"
+            if [[ "$current_admin_count" == "1" ]]; then
+              echo "Preserving Jellyfin admin status for '$username' to avoid removing the only administrative account."
+              is_admin=true
+            fi
           fi
           expected_count="$(
             jq --arg name "$username" --argjson hasSharedAccess "$has_shared_access" \
@@ -546,6 +571,17 @@ in
               | .EnableMediaPlayback = true
             ' <<<"$current_policy"
           )"
+          if [[ "$username" == "$jellyfin_admin_owner_user" ]]; then
+            desired_policy="$(
+              jq -c '
+                .IsAdministrator = true
+                | .IsHidden = false
+                | .IsDisabled = false
+                | .EnableAllFolders = false
+                | .EnableMediaPlayback = true
+              ' <<<"$desired_policy"
+            )"
+          fi
 
           if [[ "$current_policy" != "$desired_policy" ]]; then
             echo "Updating Jellyfin policy for '$username'"
@@ -555,6 +591,10 @@ in
 
         while IFS=$'\t' read -r username user_id; do
           [[ -n "$username" && -n "$user_id" ]] || continue
+          if [[ "$username" == "$jellyfin_admin_owner_user" ]]; then
+            echo "Skipping policy reset for dedicated Jellyfin admin '$username'"
+            continue
+          fi
           if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$jellyfin_members_json"; then
             continue
           fi
@@ -564,6 +604,7 @@ in
 
           current_policy="$(jq -c --arg id "$user_id" '.[] | select(.Id == $id) | .Policy // {}' <<<"$jellyfin_users" | head -n 1)"
           [[ -n "$current_policy" ]] || current_policy='{}'
+          current_is_admin="$(jq -r '.IsAdministrator // false' <<<"$current_policy")"
           desired_policy="$(
             jq -c '
               .IsAdministrator = false
@@ -573,6 +614,13 @@ in
             ' <<<"$current_policy"
           )"
           if [[ "$current_policy" != "$desired_policy" ]]; then
+            if [[ "$current_is_admin" == "true" ]]; then
+              current_admin_count="$(jq 'map(select((.Policy // {}).IsAdministrator == true)) | length' <<<"$jellyfin_users")"
+              if [[ "$current_admin_count" == "1" ]]; then
+                echo "Skipping admin removal for '$username' because it would leave Jellyfin without any administrative users."
+                continue
+              fi
+            fi
             echo "Disabling managed Jellyfin user '$username' removed from jellyfin-users"
             post_policy "$user_id" "$desired_policy"
           fi

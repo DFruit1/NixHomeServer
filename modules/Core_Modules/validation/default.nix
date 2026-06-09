@@ -16,15 +16,15 @@ let
     builtins.filter
       (
         name:
-          let
-            short = lib.removeSuffix domainSuffix name;
-          in
-          lib.hasSuffix domainSuffix name
-          && name != vars.domain
-          && name != "www.${vars.domain}"
-          && name != vars.kanidmDomain
-          && short != ""
-          && !lib.hasInfix "." short
+        let
+          short = lib.removeSuffix domainSuffix name;
+        in
+        lib.hasSuffix domainSuffix name
+        && name != vars.domain
+        && name != "www.${vars.domain}"
+        && name != vars.kanidmDomain
+        && short != ""
+        && !lib.hasInfix "." short
       )
       caddyHosts;
   allowedLanAliasHosts =
@@ -50,9 +50,9 @@ let
     lib.filter
       (
         name:
-          !(builtins.elem name coreHosts)
-          && !(lib.hasSuffix ".${vars.domain}" name)
-          && !builtins.elem name allowedLanAliasHosts
+        !(builtins.elem name coreHosts)
+        && !(lib.hasSuffix ".${vars.domain}" name)
+        && !builtins.elem name allowedLanAliasHosts
       )
       caddyHosts;
   cloudflareWithoutCaddy =
@@ -128,6 +128,21 @@ let
   filesSftpKanidmAuthUsesFirstPass =
     filesSftpPam.rules.auth.kanidm.settings.use_first_pass or false;
   localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
+  localBridgeFileAccessGroups = lib.filter
+    (group: builtins.hasAttr group vars.fileAccessPosixGids)
+    (lib.unique [
+      (vars.fileAccess.webAccessGroup or "user-files")
+      (vars.fileAccess.sftpAccessGroup or "files-sftp-users")
+      (vars.fileAccess.sharedAccessGroup or "files-shared-users")
+      (vars.fileAccess.usbAccessGroup or "usb-access")
+      (vars.backupAccess.storageGroup or "admin-backups")
+    ]);
+  localBridgeGroupsWithWrongGid = lib.filter
+    (group: (config.users.groups.${group}.gid or null) != vars.fileAccessPosixGids.${group})
+    localBridgeFileAccessGroups;
+  localBridgeGroupsMissingLocalAdmin = lib.filter
+    (group: !(builtins.elem vars.localAdminUser (config.users.groups.${group}.members or [ ])))
+    localBridgeFileAccessGroups;
 in
 {
   assertions = [
@@ -248,6 +263,14 @@ in
     {
       assertion = filesSftpPam.unixAuth == localAdminNeedsSftpBridge;
       message = "nixhomeserver: files-sftp-sshd unixAuth must be enabled only when the local admin is also a files SFTP user; that local bridge is required because /etc/passwd resolves the bare admin username before Kanidm.";
+    }
+    {
+      assertion = !localAdminNeedsSftpBridge || localBridgeGroupsWithWrongGid == [ ];
+      message = "nixhomeserver: local files SFTP bridge groups must use vars.fileAccessPosixGids: ${lib.concatStringsSep ", " localBridgeGroupsWithWrongGid}";
+    }
+    {
+      assertion = !localAdminNeedsSftpBridge || localBridgeGroupsMissingLocalAdmin == [ ];
+      message = "nixhomeserver: local files SFTP bridge user '${vars.localAdminUser}' must be a local member of these file-access groups: ${lib.concatStringsSep ", " localBridgeGroupsMissingLocalAdmin}";
     }
     {
       assertion = !filesSftpKanidmAuthUsesFirstPass;

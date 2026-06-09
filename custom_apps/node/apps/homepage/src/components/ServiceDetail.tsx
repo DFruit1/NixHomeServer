@@ -21,6 +21,11 @@ export const ServiceDetail = component$(
     username?: string;
   }) => {
     const displayUsername = username ?? '{username}';
+    const baseTips = serviceTips[service.id] ?? ['Open the app once after access is granted so local account setup can finish.'];
+    const tips =
+      service.id === 'photos'
+        ? [...baseTips, `Use ${service.url} as the Immich mobile app server endpoint.`]
+        : baseTips;
 
     return (
       <article class="service-detail">
@@ -51,6 +56,12 @@ export const ServiceDetail = component$(
             <dt>Open</dt>
             <dd>{service.id === 'sftp' ? `sftp://${displayUsername}@server.home.arpa:2222/` : service.url}</dd>
           </div>
+          {service.id === 'photos' && (
+            <div>
+              <dt>Mobile app endpoint</dt>
+              <dd>{service.url}</dd>
+            </div>
+          )}
           <div>
             <dt>Access</dt>
             <dd>{service.loginNotes}</dd>
@@ -65,7 +76,7 @@ export const ServiceDetail = component$(
         <section class="detail-block">
           <h3>Getting Started</h3>
           <ol class="steps">
-            {(serviceTips[service.id] ?? ['Open the app once after access is granted so local account setup can finish.']).map((tip) => (
+            {tips.map((tip) => (
               <li key={tip}>{tip}</li>
             ))}
           </ol>
