@@ -30,7 +30,7 @@ const baseConfig = (dir: string, sudoPath: string): AppConfig => ({
       enabled: true,
       folderName: '_Music',
       folderIdPrefix: 'nixhomeserver-music',
-      connectionAddresses: ['tcp://server.home.arpa:22000'],
+      connectionAddresses: ['tcp://server.internal:22000'],
     },
   },
 });

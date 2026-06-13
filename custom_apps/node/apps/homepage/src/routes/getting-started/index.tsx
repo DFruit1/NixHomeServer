@@ -14,6 +14,7 @@ export default component$(() => {
   const videosUrl = serviceUrl('videos', `https://videos.${domain}`);
   const passwordsUrl = serviceUrl('passwords', `https://passwords.${domain}`);
   const syncthingAddresses = data?.phoneBackup?.connectionAddresses ?? [];
+  const serverHost = data?.serverLanHost ?? 'server.home.arpa';
 
   return (
     <>
@@ -39,7 +40,7 @@ export default component$(() => {
             </div>
             <div>
               <dt>Home LAN Server</dt>
-              <dd>server.home.arpa</dd>
+              <dd>{serverHost}</dd>
             </div>
             {syncthingAddresses.map((address) => (
               <div key={address}>

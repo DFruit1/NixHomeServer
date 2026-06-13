@@ -64,6 +64,8 @@ export type OfflineMusicSetup = {
 
 export type HomepageData = {
   domain: string;
+  serverLanHost?: string;
+  sshfsHost?: string;
   user: CurrentUser;
   services: ServiceCard[];
   folderGuides: FolderGuide[];

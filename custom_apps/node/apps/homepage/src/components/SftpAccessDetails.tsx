@@ -1,33 +1,17 @@
 import { component$ } from '@builder.io/qwik';
 import type { SftpOs } from '../shared/ui-types.js';
+import { sshfsMountCommands } from '../shared/ui-constants.js';
 
-export const SftpAccessDetails = component$(({ os, username }: { os: SftpOs; username: string }) => {
+const mountCommand = (os: SftpOs, username: string, serverHost: string) =>
+  sshfsMountCommands[os].replace('{username}', username).replace('{host}', serverHost);
+
+export const SftpAccessDetails = component$(({ os, username, serverHost }: { os: SftpOs; username: string; serverHost: string }) => {
   if (os === 'windows') {
     return (
       <div>
-        <p>Use WinSCP with these settings:</p>
-        <dl class="info-list compact">
-          <div>
-            <dt>Protocol</dt>
-            <dd>SFTP</dd>
-          </div>
-          <div>
-            <dt>Host</dt>
-            <dd>server.home.arpa</dd>
-          </div>
-          <div>
-            <dt>Port</dt>
-            <dd>2222</dd>
-          </div>
-          <div>
-            <dt>Username</dt>
-            <dd>{username}</dd>
-          </div>
-          <div>
-            <dt>Private key</dt>
-            <dd>$env:USERPROFILE\\.ssh\\nixhomeserver-files</dd>
-          </div>
-        </dl>
+        <p>Install WinFsp and SSHFS-Win, then mount the server as a drive:</p>
+        <code>{mountCommand(os, username, serverHost)}</code>
+        <p>Use the private key at $env:USERPROFILE\\.ssh\\nixhomeserver-files when SSHFS-Win asks for authentication.</p>
       </div>
     );
   }
@@ -35,18 +19,18 @@ export const SftpAccessDetails = component$(({ os, username }: { os: SftpOs; use
   if (os === 'macos') {
     return (
       <div>
-        <p>In Finder, choose Go &gt; Connect to Server, then enter:</p>
-        <code>sftp://{username}@server.home.arpa:2222/</code>
-        <p>When prompted, select the private key that matches the public key you uploaded.</p>
+        <p>Install macFUSE and sshfs, then mount the server into your home folder:</p>
+        <code>{mountCommand(os, username, serverHost)}</code>
+        <p>Open ~/NixHomeServerFiles after the command completes.</p>
       </div>
     );
   }
 
   return (
     <div>
-      <p>In Nemo, choose File &gt; Connect to Server, then use:</p>
-      <code>sftp://{username}@server.home.arpa:2222/</code>
-      <p>When prompted, select the private key that matches the public key you uploaded.</p>
+      <p>Install sshfs, then mount the server into your home folder:</p>
+      <code>{mountCommand(os, username, serverHost)}</code>
+      <p>Open ~/NixHomeServerFiles after the command completes. Unmount with fusermount -u ~/NixHomeServerFiles.</p>
     </div>
   );
 });

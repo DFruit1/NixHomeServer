@@ -13,12 +13,14 @@ export const ServiceDetail = component$(
     offlineMusic,
     domain,
     username,
+    serverHost,
   }: {
     service: ServiceCard;
     phoneBackup?: PhoneBackupSetup;
     offlineMusic?: OfflineMusicSetup;
     domain: string;
     username?: string;
+    serverHost: string;
   }) => {
     const displayUsername = username ?? '{username}';
     const baseTips = serviceTips[service.id] ?? ['Open the app once after access is granted so local account setup can finish.'];
@@ -54,7 +56,7 @@ export const ServiceDetail = component$(
         <dl class="info-list">
           <div>
             <dt>Open</dt>
-            <dd>{service.id === 'sftp' ? `sftp://${displayUsername}@server.home.arpa:2222/` : service.url}</dd>
+            <dd>{service.id === 'sftp' ? `sshfs ${displayUsername}@${serverHost}:/` : service.url}</dd>
           </div>
           {service.id === 'photos' && (
             <div>
@@ -83,7 +85,7 @@ export const ServiceDetail = component$(
         </section>
         {service.id === 'backups' && <BackupSetup phoneBackup={phoneBackup} domain={domain} />}
         {service.id === 'music' && <MusicSetup offlineMusic={offlineMusic} username={username} />}
-        {service.id === 'sftp' && <SftpAccessInstructions username={displayUsername} />}
+        {service.id === 'sftp' && <SftpAccessInstructions username={displayUsername} serverHost={serverHost} />}
       </article>
     );
   },

@@ -39,7 +39,7 @@ rec {
   dnsSettings = {
     mode = "split-horizon"; # Either "split-horizon" or "netbird-only".
     privacyMode = "encrypted-only"; # Keep recursive upstream DNS on encrypted transports only.
-    lanDomain = "home.arpa";
+    lanDomain = "internal";
     lanHosts = {
       "${network.hostname}" = network.lanIp;
       router = network.lanGateway;

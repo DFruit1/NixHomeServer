@@ -2,7 +2,7 @@ import { component$ } from '@builder.io/qwik';
 import type { SftpOs } from '../shared/ui-types.js';
 import { SftpAccessDetails } from './SftpAccessDetails.js';
 
-export const SftpAccessInstructions = component$(({ username }: { username: string }) => {
+export const SftpAccessInstructions = component$(({ username, serverHost }: { username: string; serverHost: string }) => {
   const osRadio = {
     windows: 'sftp-access-windows',
     macos: 'sftp-access-macos',
@@ -26,13 +26,13 @@ export const SftpAccessInstructions = component$(({ username }: { username: stri
         </label>
       </div>
       <div class="os-panel windows">
-        <SftpAccessDetails os="windows" username={username} />
+        <SftpAccessDetails os="windows" username={username} serverHost={serverHost} />
       </div>
       <div class="os-panel macos">
-        <SftpAccessDetails os="macos" username={username} />
+        <SftpAccessDetails os="macos" username={username} serverHost={serverHost} />
       </div>
       <div class="os-panel linux">
-        <SftpAccessDetails os="linux" username={username} />
+        <SftpAccessDetails os="linux" username={username} serverHost={serverHost} />
       </div>
     </div>
   );

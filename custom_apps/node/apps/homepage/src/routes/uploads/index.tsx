@@ -1,7 +1,6 @@
 import { $, component$, useContext, useSignal } from '@builder.io/qwik';
 import { Link, useLocation, type DocumentHead } from '@builder.io/qwik-city';
 import { GuidePanel } from '../../components/GuidePanel.js';
-import { SftpAccessInstructions } from '../../components/SftpAccessInstructions.js';
 import { SftpSetup } from '../../components/SftpSetup.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { SftpKeyResponse } from '../../shared/types.js';
@@ -16,6 +15,7 @@ export default component$(() => {
   const activeGuide = guide?.id ?? requestedGuide;
   const username = data?.user.username ?? '{username}';
   const domain = data?.domain ?? 'sydneybasiniot.org';
+  const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
   const keyStatus = useSignal('');
   const keyStatusKind = useSignal<'success' | 'error'>('success');
   const keySubmitting = useSignal(false);
@@ -71,10 +71,10 @@ export default component$(() => {
       </section>
 
       <section class="section two-column">
-        <SftpSetup username={username} domain={domain} />
+        <SftpSetup username={username} domain={domain} serverHost={serverHost} />
         <section class="key-form">
-          <h2>Upload SFTP Public Key</h2>
-          <p>Paste one OpenSSH public key. Saving replaces your current direct-SFTP key file on the server.</p>
+          <h2>Upload SSHFS Public Key</h2>
+          <p>Paste one OpenSSH public key after generating it with the selector above. Saving replaces your current SSHFS key file on the server.</p>
           <textarea
             id="sftp-public-key"
             placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... laptop"
@@ -88,11 +88,6 @@ export default component$(() => {
             {keySubmitting.value ? 'Saving...' : 'Save Public Key'}
           </button>
           {keyStatus.value && <p class={{ 'key-status': true, error: keyStatusKind.value === 'error' }}>{keyStatus.value}</p>}
-        </section>
-        <section class="detail-block">
-          <h3>Connect using a file explorer</h3>
-          <p>After you upload your public key, connect with one of these common clients:</p>
-          <SftpAccessInstructions username={username} />
         </section>
       </section>
     </>

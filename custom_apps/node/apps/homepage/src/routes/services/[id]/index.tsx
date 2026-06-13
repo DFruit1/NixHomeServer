@@ -10,6 +10,7 @@ export default component$(() => {
   const serviceId = location.params.id ? decodeURIComponent(location.params.id) : '';
   const service = data?.services.find((item) => item.enabled && item.id === serviceId);
   const domain = data?.domain ?? 'sydneybasiniot.org';
+  const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
 
   if (!service) {
     return (
@@ -32,6 +33,7 @@ export default component$(() => {
       offlineMusic={data?.offlineMusic}
       domain={domain}
       username={data?.user.username}
+      serverHost={serverHost}
     />
   );
 });

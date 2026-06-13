@@ -347,9 +347,9 @@ let
       url = "/uploads";
       enabled = filesEnabled;
       category = "files";
-      description = "Private SFTP endpoint for large uploads and automated folder sync.";
-      loginNotes = "Use uploaded SFTP public key authentication and port 2222 on server.home.arpa.";
-      uploadNotes = "Upload your public key once, then connect with an SFTP client.";
+      description = "Private SSHFS/SFTP endpoint for large uploads and automated folder sync.";
+      loginNotes = "Use uploaded SSHFS public key authentication and port 2222 on ${serverLanHost}.";
+      uploadNotes = "Upload your public key once, then mount the server with SSHFS.";
     }
     {
       id = "audiobooks";
@@ -614,6 +614,8 @@ let
 
   homepageConfig = pkgs.writeText "homepage-config.json" (builtins.toJSON {
     domain = vars.domain;
+    serverLanHost = serverLanHost;
+    sshfsHost = vars.network.hostname;
     services = serviceCards;
     kanidmGroups = kanidmGroups;
     phoneBackup = {

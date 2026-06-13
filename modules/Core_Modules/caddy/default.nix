@@ -60,7 +60,7 @@ let
           shortHost = lib.removeSuffix domainSuffix hostName;
         in
         {
-          name = "${shortHost}.${lanDomain}";
+          name = "http://${shortHost}.${lanDomain}";
           value = {
             extraConfig = ''
               redir https://${hostName}{uri} 308

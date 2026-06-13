@@ -135,6 +135,8 @@ let
       ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl \
         -m "d:u:''${username}:rwx" \
         '{}' +
+      ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
+      ${pkgs.findutils}/bin/find "$path" -type f -exec ${pkgs.coreutils}/bin/chmod ug-x,o-rwx '{}' +
     done
     if [[ -d "$root/_Emails" ]]; then
       ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:r-X" "$root/_Emails"
@@ -296,6 +298,8 @@ let
         -m d:g:${lib.escapeShellArg sharedAccessGroup}:rwx \
         '{}' +
       ${pkgs.acl}/bin/setfacl -R -m g:${lib.escapeShellArg sharedAccessGroup}:rwX ${lib.escapeShellArg vars.sharedRoot}
+      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
+      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type f -exec ${pkgs.coreutils}/bin/chmod ug-x,o-rwx '{}' +
     }
 
     ${pkgs.kanidm_1_10}/bin/kanidm login \

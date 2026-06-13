@@ -29,7 +29,7 @@ let
       caddyHosts;
   allowedLanAliasHosts =
     map (name: "http://${lib.removeSuffix domainSuffix name}") localAliasCandidates
-    ++ map (name: "${lib.removeSuffix domainSuffix name}${lanDomainSuffix}") localAliasCandidates;
+    ++ map (name: "http://${lib.removeSuffix domainSuffix name}${lanDomainSuffix}") localAliasCandidates;
   coreHosts = [
     vars.domain
     "www.${vars.domain}"

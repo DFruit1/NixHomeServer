@@ -10,6 +10,7 @@ export default component$(() => {
   const disabledServices = data?.services.filter((service) => !service.enabled) ?? [];
   const domain = data?.domain ?? 'sydneybasiniot.org';
   const user = data?.user.username;
+  const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
 
   return (
     <>
@@ -52,8 +53,8 @@ export default component$(() => {
               <dd>https://files.{domain}</dd>
             </div>
             <div>
-              <dt>SFTP</dt>
-              <dd>sftp://{user ?? '{username}'}@server.home.arpa:2222/</dd>
+              <dt>SSHFS</dt>
+              <dd>sshfs {user ?? '{username}'}@{serverHost}:/</dd>
             </div>
           </dl>
         </div>

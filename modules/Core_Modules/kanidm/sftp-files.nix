@@ -55,7 +55,7 @@ let
     PermitUserEnvironment no
     GatewayPorts no
     ChrootDirectory ${chrootBase}/%u
-    ForceCommand internal-sftp -d /
+    ForceCommand internal-sftp -u 0007 -d /
     Subsystem sftp internal-sftp
     PidFile /run/files-sftp-sshd/sshd.pid
   '';

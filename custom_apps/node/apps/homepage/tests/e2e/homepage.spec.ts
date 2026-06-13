@@ -21,24 +21,24 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
 
   await page.getByRole('link', { name: 'SFTP Access', exact: true }).click();
   await expect(page).toHaveURL(/\/uploads$/);
-  await expect(page.getByRole('heading', { name: 'Direct SFTP Setup' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'SSHFS Mount Setup' })).toBeVisible();
 
-  const setup = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Direct SFTP Setup' }) });
+  const setup = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SSHFS Mount Setup' }) });
   await expect(setup.locator('code.windows')).toBeVisible();
   await expect(setup.locator('code.windows')).toContainText('New-Item -ItemType Directory -Force');
   await expect(setup.locator('code.windows')).toContainText('ssh-keygen -t ed25519');
   await expect(setup.locator('code.windows')).toContainText('Get-Content $env:USERPROFILE');
-  await expect(setup.getByText('Use WinSCP with these settings:')).toBeVisible();
+  await expect(setup.getByText('Install WinFsp and SSHFS-Win')).toBeVisible();
 
   await setup.locator('label[for="sftp-setup-macos"]').click();
   await expect(setup.locator('code.macos')).toBeVisible();
   await expect(setup.locator('code.macos')).toContainText('mkdir -p ~/.ssh && chmod 700 ~/.ssh');
-  await expect(setup.getByText('In Finder, choose Go > Connect to Server')).toBeVisible();
+  await expect(setup.getByText('Install macFUSE and sshfs')).toBeVisible();
 
   await setup.locator('label[for="sftp-setup-linux"]').click();
-  await expect(setup.getByText('In Nemo, choose File > Connect to Server')).toBeVisible();
+  await expect(setup.getByText('Install sshfs, then mount the server')).toBeVisible();
 
-  const uploadHeading = page.getByRole('heading', { name: 'Upload SFTP Public Key' });
+  const uploadHeading = page.getByRole('heading', { name: 'Upload SSHFS Public Key' });
   await uploadHeading.scrollIntoViewIfNeeded();
   const beforeEmptySaveUrl = page.url();
   await page.getByRole('button', { name: 'Save Public Key' }).click();

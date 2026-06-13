@@ -64,8 +64,8 @@ export const serviceTips: Record<string, string[]> = {
     'Use this only for backup administration and restore checks.',
   ],
   sftp: [
-    'Generate an SFTP key pair, upload the public key, then connect from your file explorer or SSH client.',
-    'Use port 2222 on server.home.arpa for the SSH/SFTP endpoint.',
+    'Generate an SSH key pair, upload the public key, then mount your files with SSHFS.',
+    'Use port 2222 on the server LAN hostname for the SSHFS/SFTP endpoint.',
   ],
 };
 
@@ -79,4 +79,10 @@ export const sftpKeygenCommands = {
   windows: 'New-Item -ItemType Directory -Force -Path $env:USERPROFILE\\.ssh | Out-Null; ssh-keygen -t ed25519 -a 64 -f $env:USERPROFILE\\.ssh\\nixhomeserver-files; Get-Content $env:USERPROFILE\\.ssh\\nixhomeserver-files.pub',
   macos: 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -a 64 -f ~/.ssh/nixhomeserver-files && cat ~/.ssh/nixhomeserver-files.pub',
   linux: 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -a 64 -f ~/.ssh/nixhomeserver-files && cat ~/.ssh/nixhomeserver-files.pub',
+};
+
+export const sshfsMountCommands = {
+  windows: 'net use Z: "\\\\sshfs.k\\{username}@{host}!2222\\" /persistent:yes',
+  macos: 'mkdir -p ~/NixHomeServerFiles && sshfs -p 2222 -o IdentityFile=~/.ssh/nixhomeserver-files -o IdentitiesOnly=yes -o umask=0007 {username}@{host}:/ ~/NixHomeServerFiles',
+  linux: 'mkdir -p ~/NixHomeServerFiles && sshfs -p 2222 -o IdentityFile=~/.ssh/nixhomeserver-files -o IdentitiesOnly=yes -o reconnect -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o umask=0007 {username}@{host}:/ ~/NixHomeServerFiles',
 };
