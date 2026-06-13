@@ -17,6 +17,7 @@ export type ServiceCard = {
   projectUrl?: string;
   logoUrl?: string;
   uploadNotes?: string;
+  requiredGroups?: string[];
 };
 
 export type FolderGuide = {

@@ -23,6 +23,7 @@ let
     "ytdownload.${vars.domain}"
     "syncthing.${vars.domain}"
     vars.kopiaDomain
+    vars.rcloneDomain
   ];
   shortAliasCaddyHosts = lib.listToAttrs (
     map

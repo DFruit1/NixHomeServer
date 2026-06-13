@@ -143,9 +143,11 @@ rec {
       oauth2ProxyKopia = 4185;
       oauth2ProxyHomepage = 4186;
       oauth2ProxyMonitor = 4187;
+      oauth2ProxyRclone = 4188;
       beszelHub = 8090;
       beszelAgent = 45876;
       kopia = 51515;
+      rcloneRc = 5572;
       homepage = 8084;
       paperless = 8000;
       audiobookshelf = 13378;
@@ -275,7 +277,8 @@ rec {
   sharedContentSubdirs = [ ];
 
   kanidmDomain = "id.${domain}";
-  kopiaDomain = "backups.${domain}";
+  kopiaDomain = "kopia.${domain}";
+  rcloneDomain = "rclone.${domain}";
   monitorDomain = "monitor.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";

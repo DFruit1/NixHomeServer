@@ -28,7 +28,7 @@ sudo systemctl --failed --no-pager
 
 ## Scenario: Restore SSD-Backed App State
 
-Use the Kopia UI at the backups hostname to browse snapshots and restore the
+Use the Kopia UI at the kopia hostname to browse snapshots and restore the
 needed paths. If an operator has manually copied `/mnt/data/backups/kopia` to
 external media, copy it back under `/mnt/data/backups/kopia` or connect Kopia to
 that copied filesystem repository explicitly.

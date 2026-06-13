@@ -92,6 +92,14 @@
       description = "Cookie secret for the Kopia OAuth2 Proxy.";
       bytes = 32;
     };
+    rcloneOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Rclone OAuth2 Proxy.";
+      bytes = 32;
+    };
+    rcloneOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Rclone OAuth2 Proxy.";
+      bytes = 32;
+    };
     vaultwardenAdminToken = {
       description = "Vaultwarden admin token.";
       bytes = 32;

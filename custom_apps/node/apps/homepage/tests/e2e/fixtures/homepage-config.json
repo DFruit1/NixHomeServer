@@ -35,13 +35,23 @@
     },
     {
       "id": "backups",
-      "name": "Backups",
-      "url": "https://backups.sydneybasiniot.org",
+      "name": "Local Backups",
+      "url": "https://kopia.sydneybasiniot.org",
       "enabled": true,
       "category": "operations",
-      "description": "Kopia backup management for system state and repositories.",
+      "description": "Kopia local backup management for system state and encrypted repositories.",
       "loginNotes": "Requires backup-admin plus the native Kopia password.",
       "uploadNotes": "Backup repository files are managed by Kopia."
+    },
+    {
+      "id": "offsite-backups",
+      "name": "Offsite Backups",
+      "url": "https://rclone.sydneybasiniot.org",
+      "enabled": true,
+      "category": "operations",
+      "description": "Rclone Web GUI for configuring and running offsite copies of the encrypted Kopia repository.",
+      "loginNotes": "Requires backup-admin through Kanidm.",
+      "uploadNotes": "Configure a MEGA remote, then copy or sync /mnt/data/backups/kopia."
     },
     {
       "id": "offline-media",

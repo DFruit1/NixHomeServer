@@ -11,6 +11,7 @@ let
     "/var/lib/kanidm"
     "/var/lib/netbird-main"
     "/var/lib/nixos"
+    "/var/lib/rclone"
     "/var/lib/syncthing"
     "/var/lib/systemd/timers"
     "/var/lib/unbound"

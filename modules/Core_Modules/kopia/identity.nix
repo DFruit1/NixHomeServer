@@ -2,7 +2,7 @@
 
 {
   services.kanidm.provision.systems.oauth2.kopia-web = {
-    displayName = "Backups";
+    displayName = "Kopia";
     imageFile = ../kanidm/assets/portal.svg;
     originUrl = "https://${vars.kopiaDomain}/oauth2/callback";
     originLanding = "https://${vars.kopiaDomain}";

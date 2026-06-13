@@ -173,7 +173,7 @@ export default component$(() => {
           <ol class="steps">
             <li>Grant users the right Kanidm groups before asking them to open apps.</li>
             <li>For phone backup, configure the phone Syncthing device ID before enabling the phone-backup module.</li>
-            <li>Use the Backups service page to help users scan the server Syncthing details.</li>
+            <li>Use the Local Backups service page to help users scan the server Syncthing details.</li>
           </ol>
         </div>
       </section>

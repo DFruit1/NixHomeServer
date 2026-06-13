@@ -13,12 +13,20 @@ export const headersToIncomingHttpHeaders = (headers: Headers): IncomingHttpHead
   return incoming;
 };
 
+const hasRequiredGroups = (requiredGroups: string[] | undefined, userGroups: string[]): boolean => {
+  if (!requiredGroups?.length) {
+    return true;
+  }
+  return requiredGroups.every((group) => userGroups.includes(group));
+};
+
 export const buildHomepageData = async (config: AppConfig, headers: IncomingHttpHeaders): Promise<HomepageData> => {
   const body: HomepageData = {
     ...config.homepage,
     kanidmGroups: config.homepage.kanidmGroups ?? [],
     user: currentUserFromHeaders(headers, config.devUser),
   };
+  body.services = body.services.filter((service) => hasRequiredGroups(service.requiredGroups, body.user.groups));
 
   if (body.phoneBackup?.enabled) {
     try {

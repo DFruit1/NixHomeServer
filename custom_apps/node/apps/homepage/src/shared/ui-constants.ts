@@ -10,7 +10,8 @@ export const serviceSymbols: Record<string, string> = {
   emails: 'M',
   downloads: 'Y',
   passwords: 'K',
-  backups: 'R',
+  backups: 'L',
+  'offsite-backups': 'O',
   sftp: 'S',
 };
 
@@ -63,7 +64,11 @@ export const serviceTips: Record<string, string[]> = {
   ],
   backups: [
     'Kopia browser access is separately protected and still needs the native Kopia password.',
-    'Use this only for backup administration and restore checks.',
+    'Use this for local backup administration and restore checks.',
+  ],
+  'offsite-backups': [
+    'Configure your MEGA remote in the Rclone Web GUI.',
+    'Use /mnt/data/backups/kopia as the source when copying the encrypted Kopia repository offsite.',
   ],
   sftp: [
     'Generate an SSH key pair, upload the public key, then mount your files with SSHFS.',

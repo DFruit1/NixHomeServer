@@ -34,7 +34,8 @@ URLs for a site with `nix run .#show-config-summary -- --host <host>`.
 - Public Immich share links: `https://<share-photos-domain>`
 - Authenticated Filestash UI and SFTP: `https://<files-domain>/`
 - Private Vaultwarden: `https://<passwords-domain>`
-- Backup management UI: `https://<backups-domain>/`
+- Local Kopia backup management UI: `https://<kopia-domain>/`
+- Offsite rclone backup GUI: `https://<rclone-domain>/`
 
 Use the private photos hostname for the owner's normal Immich login on LAN or
 NetBird. Use the public share hostname only for public album or photo links sent
@@ -47,12 +48,20 @@ Use the passwords hostname only on LAN or NetBird paths. The canonical operator
 workflow for invites, break-glass local admin handling, and the standard
 credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 
-Use the backups hostname for Kopia backup management. Browser access is gated by
+Use the kopia hostname for local Kopia backup management. Browser access is gated by
 Kanidm through OAuth2 Proxy and requires membership in `backup-admin`.
 After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
 from the generated `kopiaServerPassword` secret. The managed repository is a
 local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`, and
 `kopia-persist-snapshot.timer` snapshots `/persist` into it daily.
+
+Use the rclone hostname for offsite backup setup. Browser access is gated by
+Kanidm through OAuth2 Proxy and requires membership in `backup-admin`. Configure
+the MEGA remote in the rclone GUI; the rclone config is stored on the server
+under `/var/lib/rclone/.config/rclone/rclone.conf`, not in the repository. Use
+`/mnt/data/backups/kopia` as the source path when copying the encrypted Kopia
+repository offsite, for example to an operator-chosen target such as
+`mega:NixHomeServer/kopia`.
 
 Filestash and SFTP file roots:
 
@@ -324,6 +333,10 @@ Storage monitoring now discovers disks live at runtime:
 Kopia uses a managed encrypted filesystem repository at
 `/mnt/data/backups/kopia`. The `kopia-persist-snapshot.timer` creates daily
 snapshots of `/persist`.
+
+Rclone provides an authenticated Web GUI for configuring offsite copies of that
+encrypted repository. No automatic rclone sync timer is enabled; operators start
+or schedule rclone jobs deliberately after configuring a remote.
 
 External USB storage is no longer a managed backup target. If an operator wants
 to copy backups to a removable SSD, mount it manually under `/mnt/external-usb`

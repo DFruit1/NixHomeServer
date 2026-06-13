@@ -56,7 +56,7 @@ export const BackupSetup = component$(({ phoneBackup, domain }: { phoneBackup?: 
         </div>
         <div>
           <dt>Backup App</dt>
-          <dd>https://backups.{domain}</dd>
+          <dd>https://kopia.{domain}</dd>
         </div>
       </dl>
       <ol class="steps">

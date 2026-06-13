@@ -19,6 +19,7 @@ let
   emailsHost = "emails.${vars.domain}";
   downloadsHost = "ytdownload.${vars.domain}";
   backupsHost = vars.kopiaDomain;
+  rcloneHost = vars.rcloneDomain;
   monitorHost = vars.monitorDomain;
   syncthingHost = "syncthing.${vars.domain}";
   phoneBackupCfg = vars.phoneBackup or { enable = false; };
@@ -78,6 +79,7 @@ let
   mailArchiveEnabled = hostEnabled emailsHost;
   youtubeDownloaderEnabled = hostEnabled downloadsHost;
   kopiaEnabled = hostEnabled backupsHost;
+  rcloneEnabled = hostEnabled rcloneHost;
   monitorEnabled = hostEnabled monitorHost;
   sftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
   installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" ''
@@ -671,15 +673,29 @@ let
     }
     {
       id = "backups";
-      name = "Backups";
+      name = "Local Backups";
       url = "https://${backupsHost}";
       enabled = kopiaEnabled;
       category = "operations";
-      description = "Kopia backup management for system state and repositories.";
+      description = "Kopia local backup management for system state and encrypted repositories.";
       loginNotes = "Requires backup-admin plus the native Kopia password.";
       projectUrl = "https://kopia.io";
       logoUrl = "https://raw.githubusercontent.com/kopia/kopia/master/icons/kopia.svg";
       uploadNotes = "Backup repository files are managed by Kopia.";
+      requiredGroups = [ vars.backupAccess.adminGroup ];
+    }
+    {
+      id = "offsite-backups";
+      name = "Offsite Backups";
+      url = "https://${rcloneHost}";
+      enabled = rcloneEnabled;
+      category = "operations";
+      description = "Rclone Web GUI for configuring and running offsite copies of the encrypted Kopia repository.";
+      loginNotes = "Requires backup-admin through Kanidm.";
+      projectUrl = "https://rclone.org";
+      logoUrl = "https://rclone.org/img/logo_on_light__horizontal_color.svg";
+      uploadNotes = "Configure a MEGA remote, then copy or sync /mnt/data/backups/kopia.";
+      requiredGroups = [ vars.backupAccess.adminGroup ];
     }
     {
       id = "monitor";
