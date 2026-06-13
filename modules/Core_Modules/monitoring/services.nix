@@ -5,6 +5,8 @@ let
   hubPort = vars.networking.ports.beszelHub;
   agentPort = vars.networking.ports.beszelAgent;
   hubDataDir = "/var/lib/beszel-hub";
+  hubPocketbaseDataDir = "${hubDataDir}/beszel_data";
+  hubPrivateKeyFile = "${hubDataDir}/beszel_data/id_ed25519";
   agentRuntimeDir = "/run/beszel-agent";
   hubPublicKeyFile = "${agentRuntimeDir}/hub-key.pub";
 
@@ -70,6 +72,9 @@ lib.mkMerge [
         APP_URL = "https://${vars.monitorDomain}";
         CHECK_UPDATES = "false";
         CONTAINER_DETAILS = "false";
+        DISABLE_PASSWORD_AUTH = "true";
+        TRUSTED_AUTH_HEADER = "X-Forwarded-Email";
+        USER_CREATION = "true";
         USER_EMAIL = vars.kanidmAdminEmail;
       };
       environmentFile = config.age.secrets.beszelHubEnv.path;
@@ -95,8 +100,18 @@ lib.mkMerge [
     };
 
     systemd.services.beszel-hub.preStart = ''
-      install -m 0640 ${beszelConfig} ${hubDataDir}/config.yml
+      install -d -m 0750 -o beszel-hub -g beszel-hub ${hubPocketbaseDataDir}
+      install -m 0640 -o beszel-hub -g beszel-hub ${beszelConfig} ${hubPocketbaseDataDir}/config.yml
     '';
+
+    users.groups.beszel-hub = { };
+    users.users.beszel-hub = {
+      isSystemUser = true;
+      group = "beszel-hub";
+      home = hubDataDir;
+    };
+
+    systemd.services.beszel-hub.serviceConfig.DynamicUser = lib.mkForce false;
 
     systemd.services.beszel-agent = {
       wants = [ "beszel-hub.service" ];
@@ -107,15 +122,15 @@ lib.mkMerge [
       ];
       preStart = ''
         for _ in $(seq 1 60); do
-          if [ -s ${hubDataDir}/id_ed25519 ]; then
-            ssh-keygen -y -f ${hubDataDir}/id_ed25519 > ${hubPublicKeyFile}
+          if [ -s ${hubPrivateKeyFile} ]; then
+            ssh-keygen -y -f ${hubPrivateKeyFile} > ${hubPublicKeyFile}
             chmod 0444 ${hubPublicKeyFile}
             exit 0
           fi
           sleep 1
         done
 
-        echo "Timed out waiting for Beszel hub key at ${hubDataDir}/id_ed25519" >&2
+        echo "Timed out waiting for Beszel hub key at ${hubPrivateKeyFile}" >&2
         exit 1
       '';
       serviceConfig = {

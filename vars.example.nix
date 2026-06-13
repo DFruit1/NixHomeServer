@@ -73,6 +73,7 @@ rec {
     localSftpAccessGroup = "files-local-sftp-users"; # Local Unix bridge group allowed for SFTP shadow password sync.
     sharedAccessGroup = "files-shared-users"; # Adds the protected _Shared view inside personal roots.
     usbAccessGroup = "usb-access"; # Adds the _USB view inside personal roots when external USB media is manually mounted.
+    usbUsers = [ ]; # Kanidm users allowed to see _USB inside their personal file root.
     sharedMountName = "_Shared";
     usbMountName = "_USB";
     sftpChrootBase = "/srv/files-sftp/chroots";
@@ -139,10 +140,14 @@ rec {
       oauth2ProxyDownloads = 4183;
       oauth2ProxyFilestash = 4184;
       oauth2ProxyKopia = 4185;
+      oauth2ProxyHomepage = 4186;
       oauth2ProxyMonitor = 4187;
+      oauth2ProxyRclone = 4188;
       beszelHub = 8090;
       beszelAgent = 45876;
       kopia = 51515;
+      rcloneRc = 5572;
+      homepage = 8084;
       paperless = 8000;
       audiobookshelf = 13378;
       filestash = 8334;
@@ -249,14 +254,21 @@ rec {
   usersRoot = "${dataRoot}/users";
   sharedRoot = "${dataRoot}/shared";
   backupRoot = "${dataRoot}/backups";
+  rcloneMega = {
+    enable = false;
+    remoteName = "mega";
+    email = "REPLACE_WITH_MEGA_EMAIL";
+    sourcePath = "${backupRoot}/kopia";
+    destination = "mega:NixHomeServer/kopia";
+    syncOnCalendar = "*-*-* 04:30:00";
+    randomizedDelaySec = "30m";
+    transfers = 4;
+    checkers = 8;
+  };
   externalUsbMountRoot = "/mnt/external-usb";
   staleReferenceCleanup = {
     users = false;
     shared = false;
-  };
-  uploadSecurity = {
-    stagingRoot = "${dataRoot}/upload-staging";
-    quarantineRoot = "${dataRoot}/quarantine/uploads";
   };
   fileAccessPosixGids = {
     "files-personal-users" = 2001;
@@ -272,6 +284,7 @@ rec {
 
   kanidmDomain = "id.${domain}";
   kopiaDomain = "backups.${domain}";
+  rcloneDomain = "rclone.${domain}";
   monitorDomain = "monitor.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";

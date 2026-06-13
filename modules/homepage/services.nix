@@ -690,11 +690,11 @@ let
       url = "https://${rcloneHost}";
       enabled = rcloneEnabled;
       category = "operations";
-      description = "Rclone Web GUI for configuring and running offsite copies of the encrypted Kopia repository.";
+      description = "Rclone Web GUI for inspecting declarative offsite copies of the encrypted Kopia repository.";
       loginNotes = "Requires backup-admin through Kanidm.";
       projectUrl = "https://rclone.org";
       logoUrl = "https://rclone.org/img/logo_on_light__horizontal_color.svg";
-      uploadNotes = "Configure a MEGA remote, then copy or sync /mnt/data/backups/kopia.";
+      uploadNotes = "MEGA sync is scheduled by rclone-mega-kopia-sync.timer.";
       requiredGroups = [ vars.backupAccess.adminGroup ];
     }
     {
@@ -765,7 +765,6 @@ let
       instructions = [
         "Put films in _Movies and series in _Shows so Jellyfin can identify them."
         "Use _YouTube for downloader output and _Other for other videos you want synced to devices."
-        "_Music-videos is retired; keep separate video and audio copies in the relevant video and audio folders."
         "Subtitle and metadata files should live beside the matching video file."
       ];
     }

@@ -149,7 +149,6 @@ in
 
           install -d -m 1770 -o root -g root "$videos_root/_Other"
           move_children "$videos_root/_Home" "$videos_root/_Other" "_Home"
-          move_children "$videos_root/_Music-videos" "$videos_root/_Retired/_Music-videos" "_Music-videos"
         }
 
         migrate_video_root ${lib.escapeShellArg cfg.paths.sharedVideosRoot}

@@ -5,7 +5,7 @@ let
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
   backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
-  stagingRoot = "/persist/appdata/system-state-backup";
+  stagingRoot = "/persist/appdata/backup-metadata";
   metadataRoot = "${stagingRoot}/metadata";
   dumpsRoot = "${stagingRoot}/dumps";
   inventoryRoot = "${metadataRoot}/inventories";
@@ -50,20 +50,6 @@ let
       stateRoot = "/var/lib/beszel-hub";
       payloadRoots = [ ];
       notes = "Monitoring hub database, SSH key, and local dashboard state.";
-    }
-    {
-      app = "retired-uploads";
-      component = "staging";
-      stateRoot = vars.uploadSecurity.stagingRoot;
-      payloadRoots = [ ];
-      notes = "Retained Copyparty upload staging data; no active service writes here.";
-    }
-    {
-      app = "retired-uploads";
-      component = "quarantine";
-      stateRoot = vars.uploadSecurity.quarantineRoot;
-      payloadRoots = [ ];
-      notes = "Retained historical upload quarantine data; no active scanner writes here.";
     }
   ];
   coreCriticalPaths = [
@@ -176,14 +162,6 @@ in
         {
           label = "encrypted-backups";
           root = backupRoot;
-        }
-        {
-          label = "retired-upload-staging";
-          root = vars.uploadSecurity.stagingRoot;
-        }
-        {
-          label = "retired-upload-quarantine";
-          root = vars.uploadSecurity.quarantineRoot;
         }
       ];
     };

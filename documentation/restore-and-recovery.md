@@ -41,6 +41,6 @@ Useful restored dump files:
 Useful restored metadata files:
 
 - `metadata/critical-paths.tsv`: expected core state and payload roots.
-- `metadata/upload-flow-roots.tsv`: retained upload staging and quarantine root status, when present.
+- `metadata/app-content-roots.tsv`: app-owned content root status, when present.
 - `metadata/mail-archive-roots.tsv`: per-user mail archive root status and counts, without listing message or attachment names.
 - `metadata/mail-archive-attachments.json`: attachment blob verification report generated before backup.

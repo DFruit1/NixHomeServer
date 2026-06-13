@@ -1,8 +1,9 @@
-{ config, ... }:
+{ config, vars, ... }:
 
 let
   repoRoot = ../../..;
   ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
+  megaEnabled = (vars.rcloneMega or { }).enable or false;
   mkSecretAssertions = secretNames:
     map
       (name:
@@ -24,5 +25,7 @@ in
   config.assertions = mkSecretAssertions [
     "rcloneOauth2ProxyClientSecret"
     "rcloneOauth2ProxyCookieSecret"
-  ];
+  ] ++ mkSecretAssertions (
+    if megaEnabled then [ "rcloneMegaPassword" ] else [ ]
+  );
 }

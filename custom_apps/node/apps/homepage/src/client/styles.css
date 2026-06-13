@@ -718,6 +718,48 @@ code {
   font-size: 13px;
 }
 
+.command-snippet {
+  margin: 0;
+  overflow-x: auto;
+  border: 1px solid #273443;
+  border-radius: 6px;
+  background: #101820;
+  padding: 0;
+}
+
+.command-snippet code {
+  white-space: pre;
+  background: transparent;
+  color: #eef5f8;
+  line-height: 1.65;
+}
+
+.syntax-command {
+  color: #8fd6ff;
+  font-weight: 800;
+}
+
+.syntax-option {
+  color: #f6cc72;
+}
+
+.syntax-variable {
+  color: #a9e8a0;
+}
+
+.syntax-path,
+.syntax-target {
+  color: #ffb48f;
+}
+
+.syntax-string {
+  color: #c3d9ff;
+}
+
+.syntax-continuation {
+  color: #9fb2c4;
+}
+
 .qr-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

@@ -34,7 +34,7 @@ in
           root = paths.root;
         }
       ];
-      pathRows.upload-flow-roots = [
+      pathRows.app-content-roots = [
         {
           label = "paperless-inbox";
           path = paths.inbox;

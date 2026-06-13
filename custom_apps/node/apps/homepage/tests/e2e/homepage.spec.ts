@@ -24,19 +24,23 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await expect(page.getByRole('heading', { name: 'SSHFS Mount Setup' })).toBeVisible();
 
   const setup = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SSHFS Mount Setup' }) });
-  await expect(setup.locator('code.windows')).toBeVisible();
-  await expect(setup.locator('code.windows')).toContainText('New-Item -ItemType Directory -Force');
-  await expect(setup.locator('code.windows')).toContainText('ssh-keygen -t ed25519');
-  await expect(setup.locator('code.windows')).toContainText('Get-Content $env:USERPROFILE');
+  await expect(setup.locator('pre.windows code').first()).toBeVisible();
+  await expect(setup.locator('pre.windows code').first()).toContainText('New-Item -ItemType Directory -Force');
+  await expect(setup.locator('pre.windows code').first()).toContainText('ssh-keygen -t ed25519');
+  await expect(setup.locator('pre.windows code').first()).toContainText('Get-Content $env:USERPROFILE');
   await expect(setup.getByText('Install WinFsp and SSHFS-Win')).toBeVisible();
+  await expect(setup.getByText('Mount the same drive automatically when Windows starts')).toBeVisible();
+  await expect(setup.locator('pre.windows code').nth(2)).toContainText('/persistent:yes');
 
   await setup.locator('label[for="sftp-setup-macos"]').click();
-  await expect(setup.locator('code.macos')).toBeVisible();
-  await expect(setup.locator('code.macos')).toContainText('mkdir -p ~/.ssh && chmod 700 ~/.ssh');
+  await expect(setup.locator('pre.macos code').first()).toBeVisible();
+  await expect(setup.locator('pre.macos code').first()).toContainText('mkdir -p ~/.ssh && chmod 700 ~/.ssh');
   await expect(setup.getByText('Install macFUSE and sshfs')).toBeVisible();
+  await expect(setup.locator('pre.macos code').nth(2)).toContainText('LaunchAgents/org.nixhomeserver.sshfs.plist');
 
   await setup.locator('label[for="sftp-setup-linux"]').click();
-  await expect(setup.getByText('Install sshfs, then mount the server')).toBeVisible();
+  await expect(setup.getByText('Install sshfs, then mount the server manually')).toBeVisible();
+  await expect(setup.locator('pre.linux code').nth(2)).toContainText('systemctl --user enable --now nixhomeserver-files.service');
 
   const uploadHeading = page.getByRole('heading', { name: 'Upload SSHFS Public Key' });
   await uploadHeading.scrollIntoViewIfNeeded();

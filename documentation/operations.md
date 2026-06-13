@@ -55,13 +55,32 @@ from the generated `kopiaServerPassword` secret. The managed repository is a
 local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`, and
 `kopia-persist-snapshot.timer` snapshots `/persist` into it daily.
 
-Use the rclone hostname for offsite backup setup. Browser access is gated by
-Kanidm through OAuth2 Proxy and requires membership in `backup-admin`. Configure
-the MEGA remote in the rclone GUI; the rclone config is stored on the server
-under `/var/lib/rclone/.config/rclone/rclone.conf`, not in the repository. Use
-`/mnt/data/backups/kopia` as the source path when copying the encrypted Kopia
-repository offsite, for example to an operator-chosen target such as
-`mega:NixHomeServer/kopia`.
+Use the rclone hostname for offsite backup inspection. Browser access is gated
+by Kanidm through OAuth2 Proxy and requires membership in `backup-admin`.
+The MEGA remote and regular Kopia offsite sync are managed declaratively:
+
+1. Set `rcloneMega.email` in `vars.nix` to the MEGA account email.
+2. Confirm `rcloneMega.destination`, normally `mega:NixHomeServer/kopia`.
+3. Stage the MEGA password locally:
+   ```bash
+   install -d -m 0700 secrets/unencrypted
+   install -m 0440 /path/to/mega-password-file secrets/unencrypted/rcloneMegaPassword
+   ./scripts/generate-all-secrets.sh
+   ```
+4. Deploy the host. Activation renders `/run/rclone/rclone.conf` from the
+   agenix secret and keeps the plaintext password out of the Nix store and repo.
+5. The recurring sync is `rclone-mega-kopia-sync.timer`. Start an immediate
+   upload with:
+   ```bash
+   systemctl start rclone-mega-kopia-sync.service
+   ```
+
+The scheduled job syncs `/mnt/data/backups/kopia` to the configured MEGA
+destination through the running Rclone RC daemon, so jobs are visible from the
+Rclone Web GUI while systemd remains the source of truth for schedule and logs.
+Check status with `systemctl status rclone-mega-kopia-sync.timer`,
+`systemctl status rclone-mega-kopia-sync.service`, or
+`journalctl -u rclone-mega-kopia-sync.service`.
 
 Filestash and SFTP file roots:
 
@@ -309,20 +328,6 @@ curl -kI --resolve <passwords-domain>:443:<server-lan-ip> https://<passwords-dom
 
 - if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
 
-## Retired Upload Quarantine
-
-The Copyparty upload host, upload processor, ClamAV scanner, and VirusTotal
-lookup path are retired. Historical staging and quarantine directories are kept
-until an operator intentionally archives or deletes them.
-
-Backup policy for the upload flow:
-
-- pending uploads live under `/mnt/data/upload-staging`
-- quarantined uploads live under `/mnt/data/quarantine/uploads`
-
-Kopia inventories those retained paths for visibility. New uploads should go
-through Filestash or SFTP directly into the user's files root.
-
 Storage monitoring now discovers disks live at runtime:
 - `system` is the static `vars.mainDisk`
 - `dataN` are the current live `data` pool members discovered from ZFS
@@ -334,9 +339,11 @@ Kopia uses a managed encrypted filesystem repository at
 `/mnt/data/backups/kopia`. The `kopia-persist-snapshot.timer` creates daily
 snapshots of `/persist`.
 
-Rclone provides an authenticated Web GUI for configuring offsite copies of that
-encrypted repository. No automatic rclone sync timer is enabled; operators start
-or schedule rclone jobs deliberately after configuring a remote.
+Rclone provides an authenticated Web GUI for inspecting offsite copies of that
+encrypted repository. The MEGA remote is rendered from `vars.rcloneMega` and the
+`rcloneMegaPassword` agenix secret at activation time, and
+`rclone-mega-kopia-sync.timer` regularly syncs the local encrypted Kopia
+repository to MEGA.
 
 External USB storage is no longer a managed backup target. If an operator wants
 to copy backups to a removable SSD, mount it manually under `/mnt/external-usb`

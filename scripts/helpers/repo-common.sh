@@ -103,7 +103,6 @@ create_deploy_repo_archive() {
     --exclude='./secrets/unencrypted' \
     --exclude='./SensitivePrivateSecrets' \
     --exclude='./custom_apps/rust/apps/mail-archive-ui/target' \
-    --exclude='./custom_apps/rust/apps/kanidm-admin/target' \
     -cf "$archive_path" .
 }
 

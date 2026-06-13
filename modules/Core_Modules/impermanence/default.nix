@@ -17,9 +17,6 @@ let
     "/var/lib/unbound"
     "/var/log/journal"
     "/var/log/atop"
-    "/persist/appdata/kopia-phone"
-    "/persist/appdata/offline-media"
-    "/persist/appdata/offline-music"
   ];
 
   appPersistenceDirectories = [
@@ -163,6 +160,71 @@ in
 
     fileSystems."/persist".neededForBoot = true;
     fileSystems."/nix".neededForBoot = true;
+
+    systemd.services.persist-nesting-migration = {
+      description = "Migrate accidental /persist/persist contents up one level";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "local-fs.target" ];
+      before = [
+        "kopia.service"
+        "kopia-persist-snapshot.service"
+        "kopia-phone-snapshot.service"
+        "homepage.service"
+        "mail-archive-ui.service"
+        "fileshare-user-root-sync.service"
+        "files-sftp-chroot-layout.service"
+        "files-sftp-sshd.service"
+      ];
+      unitConfig.ConditionPathIsDirectory = "/persist/persist";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      path = [
+        pkgs.coreutils
+        pkgs.findutils
+      ];
+      script = ''
+        set -euo pipefail
+
+        nested=/persist/persist
+        target_root=/persist
+        conflict_root="$target_root/.nested-persist-migration-conflicts/$(date -u +%Y%m%dT%H%M%SZ)"
+
+        merge_item() {
+          local source="$1"
+          local target="$2"
+          local base
+          local conflict_target
+
+          if [[ ! -e "$target" ]]; then
+            mv "$source" "$target"
+            return 0
+          fi
+
+          if [[ -d "$source" && -d "$target" ]]; then
+            while IFS= read -r -d "" child; do
+              base="$(basename "$child")"
+              merge_item "$child" "$target/$base"
+            done < <(find "$source" -mindepth 1 -maxdepth 1 -print0)
+            rmdir --ignore-fail-on-non-empty "$source" || true
+            return 0
+          fi
+
+          conflict_target="$conflict_root''${source#$nested}"
+          install -d -m 0700 "$(dirname "$conflict_target")"
+          mv "$source" "$conflict_target"
+          echo "Moved conflicting nested persist item to $conflict_target" >&2
+        }
+
+        while IFS= read -r -d "" item; do
+          base="$(basename "$item")"
+          merge_item "$item" "$target_root/$base"
+        done < <(find "$nested" -mindepth 1 -maxdepth 1 -print0)
+
+        rmdir --ignore-fail-on-non-empty "$nested" || true
+      '';
+    };
 
     environment.persistence."/persist" = lib.mkIf cfg.enablePersistence {
       hideMounts = true;

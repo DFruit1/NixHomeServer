@@ -8,9 +8,7 @@ export default component$(() => {
   const data = homepage.data;
   const services = data?.services.filter((service) => service.enabled) ?? [];
   const disabledServices = data?.services.filter((service) => !service.enabled) ?? [];
-  const domain = data?.domain ?? 'sydneybasiniot.org';
-  const user = data?.user.username;
-  const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
+  const userGroups = (data?.user?.groups ?? []).slice().sort((a, b) => a.localeCompare(b));
 
   return (
     <>
@@ -42,21 +40,18 @@ export default component$(() => {
           </ol>
         </div>
         <div class="folder-card">
-          <h2>My Folders</h2>
-          <dl>
-            <div>
-              <dt>Files</dt>
-              <dd>/mnt/data/users/{user ?? '{username}'}</dd>
-            </div>
-            <div>
-              <dt>Browser</dt>
-              <dd>https://files.{domain}</dd>
-            </div>
-            <div>
-              <dt>SSHFS</dt>
-              <dd>sshfs {user ?? '{username}'}@{serverHost}:/</dd>
-            </div>
-          </dl>
+          <h2>My Groups</h2>
+          {userGroups.length > 0 ? (
+            <dl>
+              {userGroups.map((group) => (
+                <div key={group}>
+                  <dt>{group}</dt>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p>No Kanidm groups were returned for this session.</p>
+          )}
         </div>
       </section>
     </>

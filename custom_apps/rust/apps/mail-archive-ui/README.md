@@ -107,7 +107,7 @@ CLI attachment verification:
 cargo run -- verify-attachments --repair --report /tmp/mail-archive-attachments.json
 ```
 
-The system-state backup preparation runs the same verifier with `--repair` and
+The backup metadata preparation runs the same verifier with `--repair` and
 stores the JSON report in the backup metadata directory.
 
 Repo validation:

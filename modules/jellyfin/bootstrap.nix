@@ -56,11 +56,6 @@ let
       label = "Home Videos";
     }
     {
-      dir = "_Music-videos";
-      collectionType = "musicvideos";
-      label = "Music Videos";
-    }
-    {
       dir = "_YouTube";
       collectionType = "homevideos";
       label = "YouTube";

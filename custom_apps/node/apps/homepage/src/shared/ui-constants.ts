@@ -67,8 +67,8 @@ export const serviceTips: Record<string, string[]> = {
     'Use this for local backup administration and restore checks.',
   ],
   'offsite-backups': [
-    'Configure your MEGA remote in the Rclone Web GUI.',
-    'Use /mnt/data/backups/kopia as the source when copying the encrypted Kopia repository offsite.',
+    'The MEGA remote and Kopia offsite sync are managed declaratively.',
+    'Use the Rclone Web GUI for remote inspection and active job visibility.',
   ],
   sftp: [
     'Generate an SSH key pair, upload the public key, then mount your files with SSHFS.',
@@ -88,8 +88,68 @@ export const sftpKeygenCommands = {
   linux: 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -a 64 -f ~/.ssh/nixhomeserver-files && cat ~/.ssh/nixhomeserver-files.pub',
 };
 
-export const sshfsMountCommands = {
+export const sshfsManualMountCommands = {
+  windows: 'net use Z: "\\\\sshfs.k\\{username}@{host}!2222\\" /persistent:no',
+  macos: `mkdir -p ~/NixHomeServerFiles && sshfs -p 2222 \\
+  -o IdentityFile=~/.ssh/nixhomeserver-files \\
+  -o IdentitiesOnly=yes \\
+  -o reconnect \\
+  -o ServerAliveInterval=15 \\
+  -o ServerAliveCountMax=3 \\
+  -o umask=0007 \\
+  {username}@{host}:/ ~/NixHomeServerFiles`,
+  linux: `mkdir -p ~/NixHomeServerFiles && sshfs -p 2222 \\
+  -o IdentityFile=~/.ssh/nixhomeserver-files \\
+  -o IdentitiesOnly=yes \\
+  -o reconnect \\
+  -o ServerAliveInterval=15 \\
+  -o ServerAliveCountMax=3 \\
+  -o umask=0007 \\
+  {username}@{host}:/ ~/NixHomeServerFiles`,
+};
+
+export const sshfsStartupMountCommands = {
   windows: 'net use Z: "\\\\sshfs.k\\{username}@{host}!2222\\" /persistent:yes',
-  macos: 'mkdir -p ~/NixHomeServerFiles && sshfs -p 2222 -o IdentityFile=~/.ssh/nixhomeserver-files -o IdentitiesOnly=yes -o umask=0007 {username}@{host}:/ ~/NixHomeServerFiles',
-  linux: 'mkdir -p ~/NixHomeServerFiles && sshfs -p 2222 -o IdentityFile=~/.ssh/nixhomeserver-files -o IdentitiesOnly=yes -o reconnect -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o umask=0007 {username}@{host}:/ ~/NixHomeServerFiles',
+  macos: `mkdir -p ~/NixHomeServerFiles ~/Library/LaunchAgents && cat > ~/Library/LaunchAgents/org.nixhomeserver.sshfs.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.nixhomeserver.sshfs</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>/usr/local/bin/sshfs -p 2222 -o IdentityFile=$HOME/.ssh/nixhomeserver-files -o IdentitiesOnly=yes -o reconnect -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o umask=0007 {username}@{host}:/ $HOME/NixHomeServerFiles</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>NetworkState</key><true/></dict>
+</dict>
+</plist>
+PLIST
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/org.nixhomeserver.sshfs.plist`,
+  linux: `mkdir -p ~/.config/systemd/user ~/NixHomeServerFiles && cat > ~/.config/systemd/user/nixhomeserver-files.service <<'UNIT'
+[Unit]
+Description=Mount NixHomeServer files with SSHFS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sshfs -f -p 2222 -o IdentityFile=%h/.ssh/nixhomeserver-files -o IdentitiesOnly=yes -o reconnect -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o umask=0007 {username}@{host}:/ %h/NixHomeServerFiles
+ExecStop=/usr/bin/fusermount -u %h/NixHomeServerFiles
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now nixhomeserver-files.service`,
+};
+
+export const sshfsUnmountCommands = {
+  windows: 'net use Z: /delete',
+  macos: 'umount ~/NixHomeServerFiles',
+  linux: 'fusermount -u ~/NixHomeServerFiles',
 };

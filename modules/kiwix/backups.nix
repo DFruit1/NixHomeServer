@@ -16,7 +16,7 @@ in
           root = libraryRoot;
         }
       ];
-      pathRows.upload-flow-roots = [
+      pathRows.app-content-roots = [
         {
           label = "kiwix-library";
           path = libraryRoot;

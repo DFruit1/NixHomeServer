@@ -1,5 +1,6 @@
 import { component$ } from '@builder.io/qwik';
 import { sftpKeygenCommands, sftpOsLabels } from '../shared/ui-constants.js';
+import { CommandSnippet } from './CommandSnippet.js';
 import { SftpAccessDetails } from './SftpAccessDetails.js';
 
 export const SftpSetup = component$(({ username, domain, serverHost }: { username: string; domain: string; serverHost: string }) => {
@@ -31,9 +32,9 @@ export const SftpSetup = component$(({ username, domain, serverHost }: { usernam
         <li>
           <h3>Generate an SSH key pair</h3>
           <p>Choose your OS above and run the matching command on your device. Use a passphrase if you want extra key protection.</p>
-          <code class="os-panel windows">{sftpKeygenCommands.windows}</code>
-          <code class="os-panel macos">{sftpKeygenCommands.macos}</code>
-          <code class="os-panel linux">{sftpKeygenCommands.linux}</code>
+          <CommandSnippet class="os-panel windows" command={sftpKeygenCommands.windows} />
+          <CommandSnippet class="os-panel macos" command={sftpKeygenCommands.macos} />
+          <CommandSnippet class="os-panel linux" command={sftpKeygenCommands.linux} />
         </li>
         <li>
           <h3>Upload the public key</h3>

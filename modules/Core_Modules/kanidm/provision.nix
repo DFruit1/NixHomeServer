@@ -7,6 +7,7 @@ let
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
     ++ vars.kanidmBackupUsers
+    ++ (vars.fileAccess.usbUsers or [ ])
   );
   adminMailAddresses =
     if vars.kanidmAdminMailAddresses != [ ] then
@@ -90,7 +91,7 @@ in
         ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;
         ${vars.fileAccess.sftpAccessGroup} = mkManualGroup (vars.filesSftpUsers or [ ]);
         ${vars.fileAccess.sharedAccessGroup} = mkManualGroup [ ];
-        ${vars.fileAccess.usbAccessGroup} = mkManualGroup [ ];
+        ${vars.fileAccess.usbAccessGroup} = mkManualGroup (vars.fileAccess.usbUsers or [ ]);
         users = mkManualGroup vars.kanidmAppUsers;
       } // backupAccessGroups;
     };

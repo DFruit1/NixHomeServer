@@ -75,6 +75,7 @@ rec {
     localSftpAccessGroup = "files-local-sftp-users"; # Local Unix bridge group allowed for SFTP shadow password sync.
     sharedAccessGroup = "files-shared-users"; # Adds the protected _Shared view inside personal roots.
     usbAccessGroup = "usb-access"; # Adds the _USB view inside personal roots when external USB media is manually mounted.
+    usbUsers = [ "dsaw" ]; # Kanidm users allowed to see _USB inside their personal file root.
     sharedMountName = "_Shared";
     usbMountName = "_USB";
     sftpChrootBase = "/srv/files-sftp/chroots";
@@ -255,14 +256,21 @@ rec {
   usersRoot = "${dataRoot}/users";
   sharedRoot = "${dataRoot}/shared";
   backupRoot = "${dataRoot}/backups";
+  rcloneMega = {
+    enable = true;
+    remoteName = "mega";
+    email = "dsaw@tuta.io";
+    sourcePath = "${backupRoot}/kopia";
+    destination = "mega:NixHomeServer/kopia";
+    syncOnCalendar = "*-*-* 04:30:00";
+    randomizedDelaySec = "30m";
+    transfers = 4;
+    checkers = 8;
+  };
   externalUsbMountRoot = "/mnt/external-usb";
   staleReferenceCleanup = {
     users = true;
     shared = true;
-  };
-  uploadSecurity = {
-    stagingRoot = "${dataRoot}/upload-staging";
-    quarantineRoot = "${dataRoot}/quarantine/uploads";
   };
   fileAccessPosixGids = {
     "files-personal-users" = 2001;

@@ -52,6 +52,7 @@ encrypt_staged_secret netbirdSetupKey validate_netbird
 encrypt_staged_secret cfHomeCreds validate_cf
 encrypt_staged_secret cfAPIToken validate_cf_api_token
 encrypt_staged_secret storageAlertWebhookUrl validate_webhook_url
+encrypt_staged_secret rcloneMegaPassword validate_nonempty_secret
 echo
 echo "✅ Validated and encrypted staged external secrets."
 echo "🔏 Clear-text copies are in ${secrets_unencrypted_dir} - delete or move them to a secure vault when you're done."

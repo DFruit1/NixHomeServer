@@ -47,6 +47,7 @@ in
     kopiaOauth2ProxyCookieSecret = { file = secretFile "kopiaOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     rcloneOauth2ProxyClientSecret = { file = secretFile "rcloneOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     rcloneOauth2ProxyCookieSecret = { file = secretFile "rcloneOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    rcloneMegaPassword = { file = secretFile "rcloneMegaPassword"; owner = "root"; mode = "0400"; };
     vaultwardenAdminToken = { file = secretFile "vaultwardenAdminToken"; owner = "vaultwarden"; mode = "0400"; };
     serverBootstrapSudoPassword = { file = secretFile "serverBootstrapSudoPassword"; owner = "root"; mode = "0400"; };
     storageAlertWebhookUrl = { file = secretFile "storageAlertWebhookUrl"; owner = "root"; mode = "0400"; };

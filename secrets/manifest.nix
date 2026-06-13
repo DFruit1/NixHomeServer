@@ -135,5 +135,10 @@
       format = "https URL";
       settingPath = "secrets/unencrypted/storageAlertWebhookUrl";
     };
+    rcloneMegaPassword = {
+      description = "MEGA account password used by declarative Rclone offsite Kopia sync.";
+      format = "plain text MEGA password";
+      settingPath = "secrets/unencrypted/rcloneMegaPassword";
+    };
   };
 }
