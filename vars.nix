@@ -70,7 +70,7 @@ rec {
   };
 
   fileAccess = {
-    webAccessGroup = "user-files"; # Browser file access and personal files root provisioning.
+    webAccessGroup = "files-personal-users"; # Browser file access and personal files root provisioning.
     sftpAccessGroup = "files-sftp-users"; # Restricted SFTP login access.
     localSftpAccessGroup = "files-local-sftp-users"; # Local Unix bridge group allowed for SFTP shadow password sync.
     sharedAccessGroup = "files-shared-users"; # Adds the protected _Shared view inside personal roots.
@@ -81,9 +81,9 @@ rec {
   };
 
   backupAccess = {
-    adminGroup = "backup-admins"; # Grants access to the Kopia backup-management UI.
+    adminGroup = "backup-admin"; # Grants access to the Kopia backup-management UI.
     adminUsers = [ "dsaw" ]; # Extra existing Kanidm users allowed to manage backups.
-    storageGroup = "admin-backups"; # Grants read access to encrypted backup repository files.
+    storageGroup = "backup-admin"; # Grants read access to encrypted backup repository files.
     storageUsers = [ "dsaw" ]; # Extra existing Kanidm users allowed to browse backup repository files.
     storageMountName = "_Backups";
   };
@@ -113,11 +113,13 @@ rec {
     };
   };
 
-  offlineMusic = {
+  offlineMedia = {
     enable = true;
-    folderName = "_Music";
-    stateDir = "/persist/appdata/offline-music";
-    folderIdPrefix = "nixhomeserver-music";
+    musicFolderName = "_Music";
+    stateDir = "/persist/appdata/offline-media";
+    musicFolderIdPrefix = "nixhomeserver-music";
+    youtubeFolderIdPrefix = "nixhomeserver-youtube-videos";
+    otherFolderIdPrefix = "nixhomeserver-other-videos";
     accessGroup = "users";
   };
 
@@ -140,6 +142,9 @@ rec {
       oauth2ProxyFilestash = 4184;
       oauth2ProxyKopia = 4185;
       oauth2ProxyHomepage = 4186;
+      oauth2ProxyMonitor = 4187;
+      beszelHub = 8090;
+      beszelAgent = 45876;
       kopia = 51515;
       homepage = 8084;
       paperless = 8000;
@@ -181,8 +186,13 @@ rec {
   kanidmAdminUser = identity.adminUser;
   kanidmAppUsers = lib.unique ([ identity.adminUser ] ++ (identity.appUsers or [ ]));
   kanidmAppAdminUsers = lib.unique ([ identity.adminUser ] ++ (identity.appAdminUsers or [ ]));
-  kanidmBackupAdminUsers = lib.unique ([ identity.adminUser ] ++ (backupAccess.adminUsers or [ ]));
-  kanidmBackupStorageUsers = lib.unique ([ identity.adminUser ] ++ (backupAccess.storageUsers or (backupAccess.adminUsers or [ ])));
+  kanidmBackupUsers = lib.unique (
+    [ identity.adminUser ]
+    ++ (backupAccess.adminUsers or [ ])
+    ++ (backupAccess.storageUsers or [ ])
+  );
+  kanidmBackupAdminUsers = kanidmBackupUsers;
+  kanidmBackupStorageUsers = kanidmBackupUsers;
   kanidmAppUserEmails = identity.appUserEmails or { };
   kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
   kanidmAdminEmail = identity.adminEmail;
@@ -253,11 +263,11 @@ rec {
     quarantineRoot = "${dataRoot}/quarantine/uploads";
   };
   fileAccessPosixGids = {
-    "user-files" = 2001;
+    "files-personal-users" = 2001;
     "files-sftp-users" = 2002;
     "files-shared-users" = 2003;
     "usb-access" = 2004;
-    "admin-backups" = 2005;
+    "backup-admin" = 2005;
   };
   filesSftpUsers = kanidmAppUsers; # Kanidm users with POSIX accounts and restricted files SFTP chroots.
   jellyfinAdminUsers = kanidmAppAdminUsers;
@@ -266,6 +276,7 @@ rec {
 
   kanidmDomain = "id.${domain}";
   kopiaDomain = "backups.${domain}";
+  monitorDomain = "monitor.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";
   kanidmDiscoveryUrl = clientId: "${kanidmIssuer clientId}/.well-known/openid-configuration";

@@ -49,6 +49,23 @@ let
     config.repo.jellyfin.libraries.shared;
   sharedLibrariesJson = builtins.toJSON sharedLibraries;
   personalLibrariesJson = builtins.toJSON config.repo.jellyfin.libraries.personal;
+  legacyVideoLibrariesJson = builtins.toJSON [
+    {
+      dir = "_Home";
+      collectionType = "homevideos";
+      label = "Home Videos";
+    }
+    {
+      dir = "_Music-videos";
+      collectionType = "musicvideos";
+      label = "Music Videos";
+    }
+    {
+      dir = "_YouTube";
+      collectionType = "homevideos";
+      label = "YouTube";
+    }
+  ];
   jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or vars.kanidmAppAdminUsers);
   jellyfinAdminOwnerUser = vars.kanidmAdminUser or "admindsaw";
   jellyfinLibraryBootstrapPath = with pkgs; [
@@ -207,6 +224,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [
         "jellyfin.service"
+        "media-folder-layout-v2.service"
         "jellyfin-storage-layout-v1.service"
         "fileshare-user-root-sync.service"
         "kanidm.service"
@@ -214,6 +232,7 @@ in
       ];
       wants = [
         "jellyfin.service"
+        "media-folder-layout-v2.service"
         "jellyfin-storage-layout-v1.service"
         "fileshare-user-root-sync.service"
         "kanidm.service"
@@ -235,6 +254,7 @@ in
         changed=0
         shared_libraries_json=${lib.escapeShellArg sharedLibrariesJson}
         personal_libraries_json=${lib.escapeShellArg personalLibrariesJson}
+        legacy_video_libraries_json=${lib.escapeShellArg legacyVideoLibrariesJson}
         jellyfin_admin_users_json=${lib.escapeShellArg jellyfinAdminUsersJson}
 
         install -d -m 0750 -o jellyfin -g jellyfin "$managed_dir"
@@ -378,6 +398,30 @@ in
             | head -n 1
         }
 
+        delete_virtual_folder() {
+          local name="$1"
+          local path="$2"
+
+          if ! jq -e \
+            --arg name "$name" \
+            --arg path "$path" \
+            'any(.[]; .Name == $name and ((.Locations // []) | index($path) != null))' \
+            >/dev/null <<<"$virtual_folders"; then
+            return 0
+          fi
+
+          echo "Removing legacy managed Jellyfin library '$name' at $path"
+          curl_jellyfin \
+            -X DELETE \
+            -G \
+            --data-urlencode "name=$name" \
+            --data-urlencode "refreshLibrary=false" \
+            "$base_url/Library/VirtualFolders" \
+            >/dev/null
+          changed=1
+          refresh_virtual_folders
+        }
+
         export HOME="$(mktemp -d)"
         trap 'rm -rf "$HOME"' EXIT
         KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
@@ -426,7 +470,32 @@ in
             } ]'
         )"
 
+        legacy_libraries="$(
+          jq -n \
+            --arg usersRoot ${lib.escapeShellArg vars.usersRoot} \
+            --arg sharedVideosRoot ${lib.escapeShellArg config.repo.jellyfin.paths.sharedVideosRoot} \
+            --argjson legacy "$legacy_video_libraries_json" \
+            --argjson users "$jellyfin_members_json" \
+            '[ $legacy[] | . + {
+              name: ("Shared " + .label),
+              path: ($sharedVideosRoot + "/" + .dir),
+              owner: null
+            } ]
+            + [ $users[] as $user | $legacy[] | . + {
+              name: ($user + " " + .label),
+              path: ($usersRoot + "/" + $user + "/_Videos/" + .dir),
+              owner: $user
+            } ]'
+        )"
+
         refresh_virtual_folders
+
+        while IFS=$'\t' read -r name path; do
+          [[ -n "$name" && -n "$path" ]] || continue
+          delete_virtual_folder "$name" "$path"
+        done < <(
+          jq -r '.[] | [.name, .path] | @tsv' <<<"$legacy_libraries"
+        )
 
         while IFS=$'\t' read -r name collection_type path; do
           [[ -n "$name" ]] || continue

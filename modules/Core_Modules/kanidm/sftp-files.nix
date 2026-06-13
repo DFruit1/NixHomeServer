@@ -4,10 +4,10 @@ let
   chrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   localSftpAccessGroup = vars.fileAccess.localSftpAccessGroup or "files-local-sftp-users";
   localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
-  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   localBridgeFileAccessGroups = lib.filter
     (group: builtins.hasAttr group vars.fileAccessPosixGids)

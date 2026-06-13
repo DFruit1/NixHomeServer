@@ -64,6 +64,18 @@
       description = "Cookie secret for the home page OAuth2 Proxy.";
       bytes = 32;
     };
+    monitorOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the monitor OAuth2 Proxy.";
+      bytes = 32;
+    };
+    monitorOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the monitor OAuth2 Proxy.";
+      bytes = 32;
+    };
+    beszelHubEnv = {
+      description = "Systemd environment file for Beszel hub local admin bootstrap.";
+      bytes = 32;
+    };
     kopiaServerPassword = {
       description = "Generated native basic-auth password for the Kopia web UI.";
       bytes = 32;

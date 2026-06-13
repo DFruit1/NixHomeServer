@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { AdminStep, FolderGuide, OfflineMusicSetup, ServiceCard } from '../shared/types.js';
+import type { AdminStep, FolderGuide, OfflineMediaSetup, ServiceCard } from '../shared/types.js';
 
 export type HomepageConfig = {
   domain: string;
@@ -7,7 +7,8 @@ export type HomepageConfig = {
   folderGuides: FolderGuide[];
   adminGuide: AdminStep[];
   kanidmGroups?: string[];
-  offlineMusic?: OfflineMusicSetup;
+  offlineMedia?: OfflineMediaSetup;
+  offlineMusic?: OfflineMediaSetup;
 };
 
 export type AppConfig = {
@@ -17,8 +18,9 @@ export type AppConfig = {
   devUser?: string;
   sftpKeyInstallCommand?: string;
   syncthingDeviceIdCommand?: string;
-  offlineMusicStatusCommand?: string;
-  offlineMusicEnrollCommand?: string;
+  offlineMediaStatusCommand?: string;
+  offlineMediaEnrollCommand?: string;
+  offlineMediaRemoveCommand?: string;
   sudoPath: string;
   homepage: HomepageConfig;
 };
@@ -38,6 +40,7 @@ const fallbackHomepage: HomepageConfig = {
   folderGuides: [],
   adminGuide: [],
   kanidmGroups: [],
+  offlineMedia: undefined,
   offlineMusic: undefined,
 };
 
@@ -55,8 +58,9 @@ export const loadConfig = (): AppConfig => ({
   devUser: process.env.HOMEPAGE_DEV_USER,
   sftpKeyInstallCommand: process.env.HOMEPAGE_SFTP_KEY_INSTALL_COMMAND,
   syncthingDeviceIdCommand: process.env.HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND,
-  offlineMusicStatusCommand: process.env.HOMEPAGE_OFFLINE_MUSIC_STATUS_COMMAND,
-  offlineMusicEnrollCommand: process.env.HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND,
+  offlineMediaStatusCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_STATUS_COMMAND,
+  offlineMediaEnrollCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND,
+  offlineMediaRemoveCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND,
   sudoPath: process.env.HOMEPAGE_SUDO ?? 'sudo',
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });

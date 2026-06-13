@@ -13,7 +13,7 @@ let
   uiPreferencesFile = "${stateDir}/ui-preferences.json";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
   repositoryPath = "${backupRoot}/kopia";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   credentials = {
     serverPassword = "kopia-server-password";

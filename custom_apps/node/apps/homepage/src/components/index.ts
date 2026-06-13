@@ -1,6 +1,7 @@
 export { AppSetupCard } from './AppSetupCard.js';
 export { BackupSetup } from './BackupSetup.js';
 export { GuidePanel } from './GuidePanel.js';
+export { OfflineMediaSetupPanel } from './OfflineMediaSetup.js';
 export { ProfileMenu } from './ProfileMenu.js';
 export { QrValue } from './QrValue.js';
 export { SftpAccessDetails } from './SftpAccessDetails.js';

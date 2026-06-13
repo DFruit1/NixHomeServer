@@ -13,21 +13,6 @@ let
       collectionType = "tvshows";
       label = "Shows";
     }
-    {
-      dir = "_Home";
-      collectionType = "homevideos";
-      label = "Home Videos";
-    }
-    {
-      dir = "_Music-videos";
-      collectionType = "musicvideos";
-      label = "Music Videos";
-    }
-    {
-      dir = "_YouTube";
-      collectionType = "homevideos";
-      label = "YouTube";
-    }
   ];
   libraryType = lib.types.submodule {
     options = {
@@ -102,16 +87,86 @@ in
     };
 
     repo.storage.sharedRoots.contentSubdirs = [ "_Videos" ];
+    repo.storage.sharedRoots.videoSubdirs = userVideoSubdirs;
 
     systemd.tmpfiles.rules = [
       "d ${logDir} 0750 jellyfin jellyfin -"
     ];
 
-    systemd.services.jellyfin-storage-layout-v1 = {
-      description = "Provision Jellyfin storage layout";
+    systemd.services.media-folder-layout-v2 = {
+      description = "Migrate media video folder layout to Movies, Shows, YouTube, and Other";
       wantedBy = [ "multi-user.target" ];
       wants = [ "data-pool-layout.service" "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
+      before = [
+        "fileshare-user-root-sync.service"
+        "jellyfin-storage-layout-v1.service"
+        "jellyfin-library-bootstrap-v1.service"
+        "youtube-downloader.service"
+      ];
+      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      path = [
+        pkgs.coreutils
+        pkgs.findutils
+      ];
+      script = ''
+        set -euo pipefail
+
+        timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+
+        move_children() {
+          local source="$1"
+          local destination="$2"
+          local collision_label="$3"
+          local item
+          local base
+          local collision_root
+
+          [[ -d "$source" ]] || return 0
+          install -d -m 1770 -o root -g root "$destination"
+
+          while IFS= read -r -d "" item; do
+            base="$(basename "$item")"
+            if [[ -e "$destination/$base" ]]; then
+              collision_root="$destination/.migrated-from-$collision_label/$timestamp"
+              install -d -m 1770 -o root -g root "$collision_root"
+              mv "$item" "$collision_root/$base"
+            else
+              mv "$item" "$destination/"
+            fi
+          done < <(find "$source" -mindepth 1 -maxdepth 1 -print0)
+
+          rmdir --ignore-fail-on-non-empty "$source" || true
+        }
+
+        migrate_video_root() {
+          local videos_root="$1"
+          [[ -d "$videos_root" ]] || return 0
+
+          install -d -m 1770 -o root -g root "$videos_root/_Other"
+          move_children "$videos_root/_Home" "$videos_root/_Other" "_Home"
+          move_children "$videos_root/_Music-videos" "$videos_root/_Retired/_Music-videos" "_Music-videos"
+        }
+
+        migrate_video_root ${lib.escapeShellArg cfg.paths.sharedVideosRoot}
+
+        if [[ -d ${lib.escapeShellArg vars.usersRoot} ]]; then
+          while IFS= read -r -d "" videos_root; do
+            migrate_video_root "$videos_root"
+          done < <(find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name _Videos -print0)
+        fi
+      '';
+    };
+
+    systemd.services.jellyfin-storage-layout-v1 = {
+      description = "Provision Jellyfin storage layout";
+      wantedBy = [ "multi-user.target" ];
+      wants = [ "data-pool-layout.service" "local-fs.target" "media-folder-layout-v2.service" ];
+      after = [ "data-pool-layout.service" "local-fs.target" "media-folder-layout-v2.service" ];
       before = [ "jellyfin.service" ];
       unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
       serviceConfig = {
@@ -160,8 +215,8 @@ in
     };
 
     systemd.services.jellyfin = {
-      wants = [ "jellyfin-storage-layout-v1.service" ];
-      after = [ "jellyfin-storage-layout-v1.service" ];
+      wants = [ "media-folder-layout-v2.service" "jellyfin-storage-layout-v1.service" ];
+      after = [ "media-folder-layout-v2.service" "jellyfin-storage-layout-v1.service" ];
     };
   };
 }

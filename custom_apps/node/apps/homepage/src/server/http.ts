@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
-import { enrollOfflineMusicDevice, getOfflineMusicSetup } from './offlineMusic.js';
+import { enrollOfflineMediaDevice, getOfflineMediaSetup, removeOfflineMediaDevice } from './offlineMedia.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { buildHomepageData } from './homepageData.js';
 
@@ -45,16 +45,23 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       return true;
     }
 
-    if (request.method === 'GET' && url.pathname === '/api/offline-music') {
+    if (request.method === 'GET' && (url.pathname === '/api/offline-media' || url.pathname === '/api/offline-music')) {
       const user = currentUserFromHeaders(request.headers, config.devUser);
-      sendJson(response, 200, await getOfflineMusicSetup(config, user));
+      sendJson(response, 200, await getOfflineMediaSetup(config, user));
       return true;
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/offline-music/device') {
+    if (request.method === 'POST' && (url.pathname === '/api/offline-media/devices' || url.pathname === '/api/offline-music/device')) {
       const user = currentUserFromHeaders(request.headers, config.devUser);
       const body = await readJson<{ deviceId?: string; deviceName?: string }>(request);
-      sendJson(response, 200, await enrollOfflineMusicDevice(config, user, body));
+      sendJson(response, 200, await enrollOfflineMediaDevice(config, user, body));
+      return true;
+    }
+
+    if (request.method === 'DELETE' && url.pathname.startsWith('/api/offline-media/devices/')) {
+      const user = currentUserFromHeaders(request.headers, config.devUser);
+      const deviceId = decodeURIComponent(url.pathname.slice('/api/offline-media/devices/'.length));
+      sendJson(response, 200, await removeOfflineMediaDevice(config, user, deviceId));
       return true;
     }
 

@@ -20,7 +20,7 @@
       "enabled": true,
       "category": "files",
       "description": "Browser file workspace backed by each user's restricted SFTP root.",
-      "loginNotes": "Requires user-files for browser access.",
+      "loginNotes": "Requires files-personal-users for browser access.",
       "uploadNotes": "Use Files for general uploads and app-specific media folders."
     },
     {
@@ -40,8 +40,18 @@
       "enabled": true,
       "category": "operations",
       "description": "Kopia backup management for system state and repositories.",
-      "loginNotes": "Requires backup-admins plus the native Kopia password.",
+      "loginNotes": "Requires backup-admin plus the native Kopia password.",
       "uploadNotes": "Backup repository files are managed by Kopia."
+    },
+    {
+      "id": "offline-media",
+      "name": "Offline Media",
+      "url": "/services/offline-media",
+      "enabled": true,
+      "category": "media",
+      "description": "Personal music and selected video folders synced offline to enrolled devices with Syncthing.",
+      "loginNotes": "Use Kanidm on the homepage, then enroll your Syncthing device ID.",
+      "uploadNotes": "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root."
     }
   ],
   "folderGuides": [
@@ -79,5 +89,36 @@
     "folderLabel": "NixHomeServer Kopia phone backup",
     "repositoryPath": "/mnt/backup/kopia-phone",
     "connectionAddresses": []
+  },
+  "offlineMedia": {
+    "enabled": true,
+    "connectionAddresses": ["tcp://server.internal:22000"],
+    "folders": [
+      {
+        "key": "music",
+        "label": "Music",
+        "folderId": "nixhomeserver-music-dsaw",
+        "folderLabel": "NixHomeServer Music - dsaw",
+        "serverFolderPath": "/mnt/data/users/dsaw/_Music",
+        "suggestedDevicePath": "Music/NixHomeServer"
+      },
+      {
+        "key": "youtube",
+        "label": "YouTube Videos",
+        "folderId": "nixhomeserver-youtube-videos-dsaw",
+        "folderLabel": "NixHomeServer YouTube Videos - dsaw",
+        "serverFolderPath": "/mnt/data/users/dsaw/_Videos/_YouTube",
+        "suggestedDevicePath": "Movies/NixHomeServer/YouTube"
+      },
+      {
+        "key": "other",
+        "label": "Other Videos",
+        "folderId": "nixhomeserver-other-videos-dsaw",
+        "folderLabel": "NixHomeServer Other Videos - dsaw",
+        "serverFolderPath": "/mnt/data/users/dsaw/_Videos/_Other",
+        "suggestedDevicePath": "Movies/NixHomeServer/Other"
+      }
+    ],
+    "devices": []
   }
 }

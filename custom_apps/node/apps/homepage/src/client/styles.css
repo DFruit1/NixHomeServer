@@ -725,6 +725,13 @@ code {
   margin: 16px 0;
 }
 
+.folder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
 .qr-card {
   display: grid;
   align-content: start;
@@ -889,6 +896,54 @@ textarea {
 .key-status.error {
   background: #fff4f4;
   color: #8f2525;
+}
+
+.device-list {
+  display: grid;
+  gap: 10px;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dfe5ee;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.device-row div {
+  min-width: 0;
+}
+
+.device-row strong,
+.device-row span {
+  display: block;
+}
+
+.device-row span {
+  margin-top: 2px;
+  color: #607086;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.device-row button {
+  flex: 0 0 auto;
+  border: 1px solid #cfd8e5;
+  border-radius: 6px;
+  background: #fff;
+  color: #18202a;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 9px 12px;
+}
+
+.device-row button:disabled {
+  cursor: progress;
+  opacity: 0.72;
 }
 
 @media (max-width: 760px) {

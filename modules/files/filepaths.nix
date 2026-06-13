@@ -2,7 +2,7 @@
 
 let
   managedDir = "${config.repo.files.paths.stateDir}/.nixos-managed";
-  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
 in
 {
   options.repo.files.paths.stateDir = lib.mkOption {

@@ -6,8 +6,7 @@ let
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
-    ++ vars.kanidmBackupAdminUsers
-    ++ vars.kanidmBackupStorageUsers
+    ++ vars.kanidmBackupUsers
   );
   adminMailAddresses =
     if vars.kanidmAdminMailAddresses != [ ] then
@@ -25,6 +24,11 @@ let
       inherit members;
       overwriteMembers = false;
     };
+  backupAccessGroups = {
+    ${vars.backupAccess.adminGroup} = mkManualGroup vars.kanidmBackupUsers;
+  } // lib.optionalAttrs (vars.backupAccess.storageGroup != vars.backupAccess.adminGroup) {
+    ${vars.backupAccess.storageGroup} = mkManualGroup vars.kanidmBackupUsers;
+  };
   delegatedOperatorGroups = [
     "idm_account_policy_admins"
     "idm_group_admins"
@@ -83,14 +87,12 @@ in
         "domain_admins" = mkManualGroup [ ];
       } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
         "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
-        ${vars.backupAccess.adminGroup} = mkManualGroup vars.kanidmBackupAdminUsers;
-        ${vars.backupAccess.storageGroup} = mkManualGroup vars.kanidmBackupStorageUsers;
         ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;
         ${vars.fileAccess.sftpAccessGroup} = mkManualGroup (vars.filesSftpUsers or [ ]);
         ${vars.fileAccess.sharedAccessGroup} = mkManualGroup [ ];
         ${vars.fileAccess.usbAccessGroup} = mkManualGroup [ ];
         users = mkManualGroup vars.kanidmAppUsers;
-      };
+      } // backupAccessGroups;
     };
 
     systemd.services.kanidm-identity-reconcile = {

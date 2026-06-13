@@ -7,6 +7,7 @@ let
     "/etc/ssh"
     "/etc/agenix"
     "/var/lib/acme"
+    "/var/lib/beszel-hub"
     "/var/lib/kanidm"
     "/var/lib/netbird-main"
     "/var/lib/nixos"
@@ -16,6 +17,7 @@ let
     "/var/log/journal"
     "/var/log/atop"
     "/persist/appdata/kopia-phone"
+    "/persist/appdata/offline-media"
     "/persist/appdata/offline-music"
   ];
 

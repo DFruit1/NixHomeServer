@@ -1,7 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
-import { getOfflineMusicSetup } from './offlineMusic.js';
+import { getOfflineMediaSetup } from './offlineMedia.js';
 import { getSyncthingDeviceId } from './syncthing.js';
 import type { HomepageData } from '../shared/types.js';
 
@@ -34,12 +34,16 @@ export const buildHomepageData = async (config: AppConfig, headers: IncomingHttp
     }
   }
 
-  if (body.offlineMusic?.enabled) {
+  const legacyBody = body as HomepageData & { offlineMusic?: HomepageData['offlineMedia'] };
+  body.offlineMedia = body.offlineMedia ?? legacyBody.offlineMusic;
+  delete legacyBody.offlineMusic;
+
+  if (body.offlineMedia?.enabled) {
     try {
-      body.offlineMusic = await getOfflineMusicSetup(config, body.user);
+      body.offlineMedia = await getOfflineMediaSetup(config, body.user);
     } catch (caught) {
-      body.offlineMusic = {
-        ...(body.offlineMusic as NonNullable<HomepageData['offlineMusic']>),
+      body.offlineMedia = {
+        ...(body.offlineMedia as NonNullable<HomepageData['offlineMedia']>),
         serverDeviceIdError: caught instanceof Error ? caught.message : String(caught),
       };
     }

@@ -8,9 +8,9 @@ describe('homepage auth helpers', () => {
   });
 
   it('parses comma and space separated groups', () => {
-    expect(parseGroups({ 'x-auth-request-groups': 'users, user-files app-admin' })).toEqual([
+    expect(parseGroups({ 'x-auth-request-groups': 'users, files-personal-users app-admin' })).toEqual([
       'app-admin',
-      'user-files',
+      'files-personal-users',
       'users',
     ]);
   });

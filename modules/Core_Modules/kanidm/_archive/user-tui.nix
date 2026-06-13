@@ -26,10 +26,10 @@ let
     sftpRuntime = {
       sftpAccessGroup = fileAccess.sftpAccessGroup or "files-sftp-users";
       localSftpAccessGroup = fileAccess.localSftpAccessGroup or "files-local-sftp-users";
-      webAccessGroup = fileAccess.webAccessGroup or "user-files";
+      webAccessGroup = fileAccess.webAccessGroup or "files-personal-users";
       sharedAccessGroup = fileAccess.sharedAccessGroup or "files-shared-users";
       usbAccessGroup = fileAccess.usbAccessGroup or "usb-access";
-      backupStorageAccessGroup = backupAccess.storageGroup or "admin-backups";
+      backupStorageAccessGroup = backupAccess.storageGroup or "backup-admin";
       sftpChrootBase = fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
       userSftpAuthorizedKeysDir = fileAccess.userSftpAuthorizedKeysDir or "/persist/appdata/files-sftp-authorized-keys";
       usersRoot = vars.usersRoot or "${dataRoot}/users";

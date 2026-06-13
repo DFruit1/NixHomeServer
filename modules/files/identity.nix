@@ -2,9 +2,9 @@
 
 let
   host = "files.${vars.domain}";
-  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
 in
 {
   services.kanidm.provision.systems.oauth2.filestash-web = {

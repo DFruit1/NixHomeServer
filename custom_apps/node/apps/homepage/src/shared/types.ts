@@ -48,18 +48,29 @@ export type PhoneBackupSetup = {
   connectionAddresses: string[];
 };
 
-export type OfflineMusicSetup = {
+export type OfflineMediaFolder = {
+  key: string;
+  label: string;
+  folderId: string;
+  folderLabel: string;
+  serverFolderPath: string;
+  suggestedDevicePath: string;
+};
+
+export type OfflineMediaDevice = {
+  deviceId: string;
+  deviceName: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type OfflineMediaSetup = {
   enabled: boolean;
-  folderName: string;
-  folderIdPrefix: string;
   serverDeviceId?: string;
   serverDeviceIdError?: string;
-  enrolledDeviceId?: string;
-  enrolledDeviceName?: string;
-  folderId?: string;
-  folderLabel?: string;
-  serverFolderPath?: string;
   connectionAddresses: string[];
+  folders: OfflineMediaFolder[];
+  devices: OfflineMediaDevice[];
 };
 
 export type HomepageData = {
@@ -72,7 +83,7 @@ export type HomepageData = {
   adminGuide: AdminStep[];
   kanidmGroups?: string[];
   phoneBackup?: PhoneBackupSetup;
-  offlineMusic?: OfflineMusicSetup;
+  offlineMedia?: OfflineMediaSetup;
 };
 
 export type SftpKeyResponse = {
@@ -81,13 +92,20 @@ export type SftpKeyResponse = {
   details?: string;
 };
 
-export type OfflineMusicEnrollResponse = {
+export type OfflineMediaEnrollResponse = {
   ok: boolean;
   username: string;
-  folderId: string;
-  folderLabel: string;
   serverDeviceId?: string;
-  serverFolderPath: string;
   enrolledDeviceId?: string;
   enrolledDeviceName?: string;
+  folders: OfflineMediaFolder[];
+  devices: OfflineMediaDevice[];
+};
+
+export type OfflineMediaRemoveResponse = {
+  ok: boolean;
+  username: string;
+  removedDeviceId: string;
+  folders: OfflineMediaFolder[];
+  devices: OfflineMediaDevice[];
 };

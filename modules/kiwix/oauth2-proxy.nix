@@ -17,7 +17,7 @@ in
     domain = host;
     port = kiwixOauth2ProxyPort;
     upstream = "http://${loopback}:${toString cfg.port}";
-    allowedGroups = [ "users" ];
+    allowedGroups = [ "kiwix-users" ];
     serviceDependencies = [
       "caddy.service"
       "kiwix-serve.service"

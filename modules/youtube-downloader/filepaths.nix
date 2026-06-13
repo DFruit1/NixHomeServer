@@ -53,6 +53,8 @@ in
         ] ++ userVideoWritablePaths;
       }
     ];
+    repo.storage.userRoots.videoSubdirs = [ "_YouTube" ];
+    repo.storage.sharedRoots.videoSubdirs = [ "_YouTube" ];
 
     systemd.tmpfiles.rules = [
       "d ${paths.stateRoot} 0750 youtube-downloader youtube-downloader -"

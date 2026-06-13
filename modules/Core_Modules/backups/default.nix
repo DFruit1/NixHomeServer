@@ -3,7 +3,7 @@
 let
   externalUsbMountRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   stagingRoot = "/persist/appdata/system-state-backup";
   metadataRoot = "${stagingRoot}/metadata";
@@ -43,6 +43,13 @@ let
       stateRoot = "/var/lib/unbound";
       payloadRoots = [ ];
       notes = "Resolver trust-anchor state.";
+    }
+    {
+      app = "beszel";
+      component = "hub";
+      stateRoot = "/var/lib/beszel-hub";
+      payloadRoots = [ ];
+      notes = "Monitoring hub database, SSH key, and local dashboard state.";
     }
     {
       app = "retired-uploads";

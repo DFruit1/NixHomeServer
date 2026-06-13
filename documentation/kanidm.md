@@ -68,11 +68,12 @@ If a token is shared, send it through a secure channel and treat it as an active
 ## File Access Baseline
 
 - `users` enables the identity baseline for normal day-to-day sign-in.
-- `user-files` grants browser file access through Filestash and personal file-root provisioning.
+- `files-personal-users` grants browser file access through Filestash and personal file-root provisioning.
 - `files-sftp-users` enables SFTP access on the dedicated SFTP endpoint.
 - `files-shared-users` adds `_Shared` inside each user personal root.
 - `usb-access` adds `_USB` view from the mounted external USB storage path.
-- `admin-backups` grants `_Backups` read access through the managed file structure.
+- `backup-admin` grants `_Backups` read access through the managed file structure.
+- `kiwix-users` grants access to the Kiwix offline wiki service.
 - Keep protected groups like `system_admins`, `domain_admins`, and `idm_*` from routine selection unless a hard admin procedure is being executed.
 
 ## Vaultwarden Onboarding Coordination

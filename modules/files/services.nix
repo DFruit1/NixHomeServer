@@ -13,9 +13,9 @@ let
   adminPasswordHashFile = "${managedDir}/admin-password.bcrypt";
   oauth2ClientSecretFile = "${secretRuntimeDir}/oauth2-client-secret";
   oauth2CookieSecretFile = "${secretRuntimeDir}/oauth2-cookie-secret";
-  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   webAccessGroups = [
     webAccessGroup
     usbAccessGroup

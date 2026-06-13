@@ -131,11 +131,11 @@ let
   localBridgeFileAccessGroups = lib.filter
     (group: builtins.hasAttr group vars.fileAccessPosixGids)
     (lib.unique [
-      (vars.fileAccess.webAccessGroup or "user-files")
+      (vars.fileAccess.webAccessGroup or "files-personal-users")
       (vars.fileAccess.sftpAccessGroup or "files-sftp-users")
       (vars.fileAccess.sharedAccessGroup or "files-shared-users")
       (vars.fileAccess.usbAccessGroup or "usb-access")
-      (vars.backupAccess.storageGroup or "admin-backups")
+      (vars.backupAccess.storageGroup or "backup-admin")
     ]);
   localBridgeGroupsWithWrongGid = lib.filter
     (group: (config.users.groups.${group}.gid or null) != vars.fileAccessPosixGids.${group})

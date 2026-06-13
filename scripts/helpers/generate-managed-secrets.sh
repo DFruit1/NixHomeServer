@@ -27,6 +27,9 @@ generated_secret_specs=(
   "youtubeDownloaderOauth2ProxyCookieSecret:32"
   "homepageOauth2ProxyClientSecret:32"
   "homepageOauth2ProxyCookieSecret:32"
+  "monitorOauth2ProxyClientSecret:32"
+  "monitorOauth2ProxyCookieSecret:32"
+  "beszelHubEnv:32"
   "kopiaServerPassword:32"
   "kopiaPhonePassword:32"
   "kopiaOauth2ProxyClientSecret:32"
@@ -40,8 +43,10 @@ generate_secret_value() {
   local name="$1"
   local bytes="$2"
 
-  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "youtubeDownloaderOauth2ProxyCookieSecret" || "$name" == "homepageOauth2ProxyCookieSecret" || "$name" == "kopiaOauth2ProxyCookieSecret" ]]; then
+  if [[ "$name" == "oauth2ProxyCookieSecret" || "$name" == "mailArchiveOauth2ProxyCookieSecret" || "$name" == "kiwixOauth2ProxyCookieSecret" || "$name" == "youtubeDownloaderOauth2ProxyCookieSecret" || "$name" == "homepageOauth2ProxyCookieSecret" || "$name" == "monitorOauth2ProxyCookieSecret" || "$name" == "kopiaOauth2ProxyCookieSecret" ]]; then
     openssl rand -hex 16
+  elif [[ "$name" == "beszelHubEnv" ]]; then
+    printf 'USER_PASSWORD=%s\n' "$(openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))")"
   else
     openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))"
   fi

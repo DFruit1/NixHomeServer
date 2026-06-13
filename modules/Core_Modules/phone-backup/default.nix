@@ -6,7 +6,7 @@ let
   sources = cfg.sources or { };
   syncthing = cfg.syncthing or { };
   placeholderDeviceId = "REPLACE_WITH_SYNCTHING_FORK_DEVICE_ID";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   stateDir = cfg.stateDir or "/persist/appdata/kopia-phone";
   cacheDir = "${stateDir}/cache";

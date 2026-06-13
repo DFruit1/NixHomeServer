@@ -51,6 +51,7 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [
         "jellyfin.service"
+        "media-folder-layout-v2.service"
         "jellyfin-library-bootstrap-v1.service"
         "jellyfin-library-monitor-v1.service"
         "jellyfin-storage-layout-v1.service"
@@ -58,6 +59,7 @@ in
       ];
       wants = [
         "jellyfin.service"
+        "media-folder-layout-v2.service"
         "jellyfin-library-bootstrap-v1.service"
         "jellyfin-library-monitor-v1.service"
         "jellyfin-storage-layout-v1.service"

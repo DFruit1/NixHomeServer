@@ -8,7 +8,7 @@ let
   canonicalSharedDataset = "${vars.zfsDataPool.name}/shared";
   canonicalBackupsDataset = "${vars.zfsDataPool.name}/backups";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   sharedContentDirs = map
     (name: {
@@ -18,6 +18,14 @@ let
       group = "root";
     })
     config.repo.storage.sharedRoots.contentSubdirs;
+  sharedVideoDirs = map
+    (name: {
+      path = "${vars.sharedRoot}/_Videos/${name}";
+      mode = "1770";
+      user = "root";
+      group = "root";
+    })
+    config.repo.storage.sharedRoots.videoSubdirs;
 
   mkDirCmd =
     { path
@@ -145,6 +153,12 @@ in
       default = vars.sharedContentSubdirs or [ ];
       description = "Top-level shared content directories contributed by enabled modules.";
     };
+
+    videoSubdirs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Video subdirectories to create under the shared videos directory.";
+    };
   };
 
   config = {
@@ -156,7 +170,7 @@ in
     ];
 
     repo.storage.dataPool = {
-      directories = coreContentDirs ++ sharedContentDirs;
+      directories = coreContentDirs ++ sharedContentDirs ++ sharedVideoDirs;
       datasets = coreDatasetSpecs;
     };
 

@@ -4,11 +4,11 @@ let
   cfg = config.repo.storage.userRoots;
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
-  webAccessGroup = vars.fileAccess.webAccessGroup or "user-files";
+  webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "admin-backups";
+  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   sharedAccessGid = vars.fileAccessPosixGids.${sharedAccessGroup};
   usbAccessGid = vars.fileAccessPosixGids.${usbAccessGroup};
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};

@@ -30,7 +30,7 @@ export default component$(() => {
     <ServiceDetail
       service={service}
       phoneBackup={data?.phoneBackup}
-      offlineMusic={data?.offlineMusic}
+      offlineMedia={data?.offlineMedia}
       domain={domain}
       username={data?.user.username}
       serverHost={serverHost}

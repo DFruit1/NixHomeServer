@@ -83,12 +83,12 @@ export default component$(() => {
           <AppSetupCard
             title="Syncthing-Fork"
             platform="Android"
-            url="/services/backups"
-            detail="Copies the encrypted phone-backup repository from the server to your phone."
+            url="/services/offline-media"
+            detail="Copies personal music and selected video folders from the server to your devices."
             steps={[
-              'Open the Backups service details page.',
-              'Scan the Server Device ID and Folder ID QR codes.',
-              'Accept the folder as receive-only on the phone.',
+              'Open the Offline Media service details page.',
+              'Scan the Server Device ID and save your device ID on the homepage.',
+              'Accept the offered folders as receive-only on the device.',
             ]}
           />
           <AppSetupCard

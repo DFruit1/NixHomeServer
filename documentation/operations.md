@@ -48,7 +48,7 @@ workflow for invites, break-glass local admin handling, and the standard
 credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 
 Use the backups hostname for Kopia backup management. Browser access is gated by
-Kanidm through OAuth2 Proxy and requires membership in `backup-admins`.
+Kanidm through OAuth2 Proxy and requires membership in `backup-admin`.
 After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
 from the generated `kopiaServerPassword` secret. The managed repository is a
 local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`, and
@@ -63,17 +63,17 @@ Filestash and SFTP file roots:
 - Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
 - Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB filesystems are mounted manually by an operator under that root.
-- Users in `admin-backups` also see read-only `_Backups`, backed by `/mnt/data/backups`.
+- Users in `backup-admin` also see read-only `_Backups`, backed by `/mnt/data/backups`.
 - `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
 
 Useful file-access checks:
 
 ```bash
-kanidm group get user-files
+kanidm group get files-personal-users
 kanidm group get files-sftp-users
 kanidm group get files-shared-users
 kanidm group get usb-access
-kanidm group get admin-backups
+kanidm group get backup-admin
 
 systemctl status 'files-shared-bindfs@<user>.service'
 systemctl status 'files-usb-bindfs@<user>.service'

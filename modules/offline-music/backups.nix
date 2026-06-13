@@ -1,22 +1,23 @@
 { lib, vars, ... }:
 
 let
-  cfg = vars.offlineMusic or { enable = false; };
+  legacyCfg = vars.offlineMusic or { enable = false; };
+  cfg = if builtins.hasAttr "offlineMedia" vars then vars.offlineMedia else legacyCfg;
   enabled = cfg.enable or false;
-  stateDir = cfg.stateDir or "/persist/appdata/offline-music";
+  stateDir = cfg.stateDir or "/persist/appdata/offline-media";
 in
 {
   config = lib.mkIf enabled {
     repo.backups.appStateEntries = [
       {
-        app = "offline-music";
+        app = "offline-media";
         component = "syncthing-enrollment";
         stateRoot = stateDir;
         payloadRoots = [
           vars.usersRoot
           vars.sharedRoot
         ];
-        notes = "Runtime Syncthing device enrollment state for per-user offline music folders.";
+        notes = "Runtime Syncthing device enrollment state for per-user offline media folders.";
       }
     ];
   };

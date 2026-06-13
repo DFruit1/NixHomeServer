@@ -4,7 +4,7 @@ export const serviceSymbols: Record<string, string> = {
   files: 'F',
   audiobooks: 'A',
   videos: 'V',
-  music: 'N',
+  'offline-media': 'N',
   books: 'B',
   wiki: 'W',
   emails: 'M',
@@ -32,12 +32,14 @@ export const serviceTips: Record<string, string[]> = {
     'Downloader audio belongs under _Audiobooks/_YouTube.',
   ],
   videos: [
-    'Use _Movies for films, _Shows for series, _Home for personal video, _Music-videos for music clips, and _YouTube for downloaded video.',
+    'Use _Movies for films and _Shows for series in Jellyfin.',
+    'Use _Videos/_YouTube for downloaded videos and _Videos/_Other for other videos you want available offline.',
     'Keep subtitle files beside the matching video file.',
   ],
-  music: [
+  'offline-media': [
     'Put music files in your personal _Music folder.',
-    'Use Syncthing to copy music offline to one enrolled device; the server copy remains authoritative.',
+    'Use _Videos/_YouTube and _Videos/_Other for videos you want synced to enrolled devices.',
+    'Syncthing folders are published send-only from the server; use receive-only on devices where available.',
   ],
   books: [
     'Use _Ebooks for prose, _Comics for comics, and _Manga for manga.',

@@ -21,6 +21,7 @@ let
     "passwords.${vars.domain}"
     "emails.${vars.domain}"
     "ytdownload.${vars.domain}"
+    "syncthing.${vars.domain}"
     vars.kopiaDomain
   ];
   shortAliasCaddyHosts = lib.listToAttrs (

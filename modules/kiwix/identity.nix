@@ -15,6 +15,8 @@ in
 
     users.groups.kiwix = { };
 
+    services.kanidm.provision.groups."kiwix-users".members = vars.kanidmAppUsers;
+
     users.users.kiwix = {
       isSystemUser = true;
       group = "kiwix";
@@ -29,7 +31,7 @@ in
       originLanding = "https://${host}";
       basicSecretFile = config.age.secrets.kiwixOauth2ProxyClientSecret.path;
       preferShortUsername = true;
-      scopeMaps.users = [ "openid" "profile" "email" "groups_name" ];
+      scopeMaps."kiwix-users" = [ "openid" "profile" "email" "groups_name" ];
     };
   };
 }

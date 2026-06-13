@@ -2,12 +2,17 @@ import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { AppConfig } from './config.js';
 import { getSyncthingDeviceId } from './syncthing.js';
-import type { CurrentUser, OfflineMusicEnrollResponse, OfflineMusicSetup } from '../shared/types.js';
+import type {
+  CurrentUser,
+  OfflineMediaEnrollResponse,
+  OfflineMediaRemoveResponse,
+  OfflineMediaSetup,
+} from '../shared/types.js';
 
 const DEVICE_ID_PATTERN = /^[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}$/;
 const DEVICE_NAME_PATTERN = /^[A-Za-z0-9._ -]{1,64}$/;
 
-export type OfflineMusicEnrollInput = {
+export type OfflineMediaEnrollInput = {
   deviceId?: unknown;
   deviceName?: unknown;
 };
@@ -25,7 +30,7 @@ export const normaliseSyncthingDeviceId = (raw: unknown): string => {
 
 export const normaliseSyncthingDeviceName = (raw: unknown, username: string): string => {
   if (raw === undefined || raw === null || raw === '') {
-    return `${username}-music`;
+    return `${username}-media`;
   }
   if (typeof raw !== 'string') {
     throw new Error('deviceName must be a string');
@@ -37,42 +42,61 @@ export const normaliseSyncthingDeviceName = (raw: unknown, username: string): st
   return deviceName;
 };
 
-export const getOfflineMusicSetup = async (config: AppConfig, user: CurrentUser): Promise<OfflineMusicSetup | undefined> => {
-  const base = config.homepage.offlineMusic;
+const offlineMediaConfig = (config: AppConfig): OfflineMediaSetup | undefined =>
+  config.homepage.offlineMedia ?? config.homepage.offlineMusic;
+
+export const getOfflineMediaSetup = async (config: AppConfig, user: CurrentUser): Promise<OfflineMediaSetup | undefined> => {
+  const base = offlineMediaConfig(config);
   if (!base?.enabled) {
     return base;
   }
 
-  let setup: OfflineMusicSetup = { ...base };
+  let setup: OfflineMediaSetup = { ...base, folders: base.folders ?? [], devices: base.devices ?? [] };
   if (config.syncthingDeviceIdCommand) {
     setup.serverDeviceId = await getSyncthingDeviceId(config);
   }
-  if (config.offlineMusicStatusCommand) {
+  if (config.offlineMediaStatusCommand) {
     setup = {
       ...setup,
-      ...(await runJsonHelper<Partial<OfflineMusicSetup>>(config, config.offlineMusicStatusCommand, [user.username])),
+      ...(await runJsonHelper<Partial<OfflineMediaSetup>>(config, config.offlineMediaStatusCommand, [user.username])),
     };
   }
   return setup;
 };
 
-export const enrollOfflineMusicDevice = async (
+export const enrollOfflineMediaDevice = async (
   config: AppConfig,
   user: CurrentUser,
-  input: OfflineMusicEnrollInput,
-): Promise<OfflineMusicEnrollResponse> => {
-  if (!config.homepage.offlineMusic?.enabled) {
-    throw new Error('offline music sync is not enabled');
+  input: OfflineMediaEnrollInput,
+): Promise<OfflineMediaEnrollResponse> => {
+  if (!offlineMediaConfig(config)?.enabled) {
+    throw new Error('offline media sync is not enabled');
   }
-  if (!config.offlineMusicEnrollCommand) {
-    throw new Error('offline music enrollment is not configured');
+  if (!config.offlineMediaEnrollCommand) {
+    throw new Error('offline media enrollment is not configured');
   }
 
   const payload = {
     deviceId: normaliseSyncthingDeviceId(input.deviceId),
     deviceName: normaliseSyncthingDeviceName(input.deviceName, user.username),
   };
-  return runJsonHelper<OfflineMusicEnrollResponse>(config, config.offlineMusicEnrollCommand, [user.username], payload);
+  return runJsonHelper<OfflineMediaEnrollResponse>(config, config.offlineMediaEnrollCommand, [user.username], payload);
+};
+
+export const removeOfflineMediaDevice = async (
+  config: AppConfig,
+  user: CurrentUser,
+  rawDeviceId: unknown,
+): Promise<OfflineMediaRemoveResponse> => {
+  if (!offlineMediaConfig(config)?.enabled) {
+    throw new Error('offline media sync is not enabled');
+  }
+  if (!config.offlineMediaRemoveCommand) {
+    throw new Error('offline media device removal is not configured');
+  }
+
+  const deviceId = normaliseSyncthingDeviceId(rawDeviceId);
+  return runJsonHelper<OfflineMediaRemoveResponse>(config, config.offlineMediaRemoveCommand, [user.username, deviceId]);
 };
 
 const runJsonHelper = <T>(config: AppConfig, command: string, args: string[], input?: unknown): Promise<T> =>
@@ -92,12 +116,12 @@ const runJsonHelper = <T>(config: AppConfig, command: string, args: string[], in
         try {
           resolve((output ? JSON.parse(output) : {}) as T);
         } catch (error) {
-          reject(new Error(`offline music helper returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
+          reject(new Error(`offline media helper returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
         }
         return;
       }
       const detail = Buffer.concat(stderr).toString('utf8').trim();
-      reject(new Error(detail || `offline music helper exited with status ${code}`));
+      reject(new Error(detail || `offline media helper exited with status ${code}`));
     });
 
     if (input === undefined) {
