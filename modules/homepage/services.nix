@@ -944,10 +944,10 @@ in
         wantedBy = [ "multi-user.target" ];
         wants = [
           "network-online.target"
-        ];
+        ] ++ lib.optional offlineMediaEnabledForHomepage "data-pool-layout.service";
         after = [
           "network-online.target"
-        ];
+        ] ++ lib.optional offlineMediaEnabledForHomepage "data-pool-layout.service";
         environment = {
           HOMEPAGE_HOST = listenAddress;
           HOMEPAGE_PORT = toString listenPort;
@@ -972,7 +972,10 @@ in
           ReadWritePaths = [
             sftpAuthorizedKeysDir
             offlineMediaStateDir
-          ];
+          ]
+          # The sudo helpers inherit homepage.service's mount namespace, so
+          # offline-media enrollment needs this writable despite running as root.
+          ++ lib.optional offlineMediaEnabledForHomepage vars.usersRoot;
           ReadOnlyPaths = [
             homepageConfig
           ];

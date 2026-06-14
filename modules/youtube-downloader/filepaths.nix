@@ -54,6 +54,9 @@ in
       "_Music"
       "_Audiobooks"
     ];
+    repo.storage.userRoots.rootTraverseGroups = [
+      "youtube-downloader"
+    ];
     repo.storage.userRoots.recursiveWritableGrants = [
       {
         group = "youtube-downloader";
