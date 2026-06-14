@@ -7,6 +7,7 @@ export type HomepageConfig = {
   folderGuides: FolderGuide[];
   adminGuide: AdminStep[];
   kanidmGroups?: string[];
+  kanidmGroupDescriptions?: Record<string, string>;
   offlineMedia?: OfflineMediaSetup;
   offlineMusic?: OfflineMediaSetup;
 };
@@ -40,6 +41,7 @@ const fallbackHomepage: HomepageConfig = {
   folderGuides: [],
   adminGuide: [],
   kanidmGroups: [],
+  kanidmGroupDescriptions: {},
   offlineMedia: undefined,
   offlineMusic: undefined,
 };

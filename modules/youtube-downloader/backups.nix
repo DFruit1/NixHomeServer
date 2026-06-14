@@ -15,6 +15,7 @@ in
           payloadRoots = [
             paths.sharedVideoRoot
             paths.sharedAudioRoot
+            paths.sharedAudiobooksRoot
             vars.usersRoot
           ];
           notes = "SQLite queue history, temporary state, and downloader config.";

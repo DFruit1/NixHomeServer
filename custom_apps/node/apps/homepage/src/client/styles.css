@@ -684,11 +684,30 @@ dd {
   margin: 0;
 }
 
+.group-name {
+  cursor: help;
+  border-bottom: 1px dotted #637186;
+}
+
 .admin-input-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 8px;
   margin: 0 0 12px;
+}
+
+.admin-fill-row {
+  margin: 0 0 12px;
+}
+
+.admin-fill-btn {
+  border: 0;
+  border-radius: 6px;
+  background: #245b9f;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 11px 14px;
 }
 
 .admin-input-grid label {
@@ -897,6 +916,10 @@ code {
   padding: 18px;
 }
 
+.key-form h4 {
+  margin-bottom: 14px;
+}
+
 .key-form p {
   color: #607086;
   line-height: 1.5;
@@ -925,6 +948,45 @@ textarea {
 .key-form button:disabled {
   cursor: progress;
   opacity: 0.72;
+}
+
+.offline-media-enroll-form {
+  display: grid;
+  grid-template-columns: minmax(360px, 2fr) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.offline-media-enroll-form h4,
+.offline-media-enroll-form .key-status {
+  grid-column: 1 / -1;
+}
+
+.offline-media-enroll-form label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 700;
+}
+
+.offline-media-enroll-form input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #aebbd0;
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: #18202a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.offline-media-enroll-form .offline-media-device-id-field {
+  min-width: 0;
+}
+
+.offline-media-enroll-form button {
+  min-height: 42px;
+  margin-top: 0;
+  white-space: nowrap;
 }
 
 .key-status {
@@ -1010,5 +1072,9 @@ textarea {
 
   .tabs {
     overflow-x: auto;
+  }
+
+  .offline-media-enroll-form {
+    grid-template-columns: 1fr;
   }
 }

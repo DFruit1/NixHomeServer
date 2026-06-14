@@ -112,6 +112,7 @@ in
             [[ -d "$path" ]] || continue
             setfacl -R -m "$access_spec" "$path"
             find "$path" -type d -exec setfacl -m "$default_spec" '{}' +
+            find "$path" -type f -exec setfacl -m m::rw '{}' +
           done
         }
 

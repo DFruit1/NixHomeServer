@@ -8,6 +8,7 @@ export type AppConfig = {
   ytDlpPath: string;
   sharedVideoRoot: string;
   sharedAudioRoot: string;
+  sharedAudiobooksRoot: string;
   usersRoot: string;
   concurrency: number;
   sharedWriteGroup: string;
@@ -33,7 +34,8 @@ export const loadConfig = (): AppConfig => {
     staticDir: process.env.YOUTUBE_DOWNLOADER_STATIC_DIR ?? new URL('../../client', import.meta.url).pathname,
     ytDlpPath: process.env.YOUTUBE_DOWNLOADER_YTDLP ?? 'yt-dlp',
     sharedVideoRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_VIDEO_ROOT ?? '/mnt/data/shared/_Videos/_YouTube',
-    sharedAudioRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT ?? '/mnt/data/shared/_Audiobooks/_YouTube',
+    sharedAudioRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT ?? '/mnt/data/shared/_Music/_YouTube',
+    sharedAudiobooksRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_AUDIOBOOKS_ROOT ?? '/mnt/data/shared/_Audiobooks/_YouTube',
     usersRoot: process.env.YOUTUBE_DOWNLOADER_USERS_ROOT ?? '/mnt/data/users',
     concurrency: numberFromEnv('YOUTUBE_DOWNLOADER_CONCURRENCY', 1),
     sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'files-shared-users',

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { Database } from '../db.js';
-import { JobQueue, audioChapterSpecs, chapterGateFor } from '../queue.js';
+import { JobQueue, audioChapterSpecs, buildAudioChapterFfmpegArgs, chapterGateFor } from '../queue.js';
 import type { CreateJobRequest, CurrentUser, ProbeResponse } from '../../shared/types.js';
 
 let tempDir = '';
@@ -42,6 +42,7 @@ const config = (): AppConfig => ({
   ytDlpPath: 'yt-dlp',
   sharedVideoRoot: path.join(tempDir, 'shared', 'videos'),
   sharedAudioRoot: path.join(tempDir, 'shared', 'audio'),
+  sharedAudiobooksRoot: path.join(tempDir, 'shared', 'audiobooks'),
   usersRoot: path.join(tempDir, 'users'),
   concurrency: 0,
   sharedWriteGroup: 'files-shared-users',
@@ -117,5 +118,23 @@ describe('queue alerts', () => {
       { start: 60, duration: 65 },
       { start: 125, duration: 55 },
     ]);
+  });
+
+  it('re-encodes split flac chapters so duration metadata is regenerated', () => {
+    const args = buildAudioChapterFfmpegArgs({
+      input: '/tmp/source.flac',
+      output: '/tmp/01 - Intro.flac',
+      chapter: { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
+      start: 0,
+      duration: 30,
+      audioFormat: 'flac',
+    });
+
+    expect(args).toContain('-t');
+    expect(args).toContain('30.000');
+    expect(args).toContain('flac');
+    expect(args).not.toContain('copy');
+    expect(args).toContain('-map_chapters');
+    expect(args).toContain('-1');
   });
 });

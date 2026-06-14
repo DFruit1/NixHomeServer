@@ -49,15 +49,24 @@ h1 {
   font-weight: 720;
 }
 
+h1 span {
+  color: var(--accent);
+}
+
 h2 {
   margin: 28px 0 12px;
   font-size: 18px;
 }
 
-.toolbar p,
+.current-user,
 .job p,
 .empty {
   color: #725b5b;
+}
+
+.current-user {
+  font-size: 14px;
+  font-weight: 650;
 }
 
 .download-form {

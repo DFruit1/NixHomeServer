@@ -5,7 +5,8 @@ import type { CurrentUser, CreateJobRequest, ProbeResponse } from '../../shared/
 
 const config = {
   sharedVideoRoot: '/data/shared/_Videos/_YouTube',
-  sharedAudioRoot: '/data/shared/_Audiobooks/_YouTube',
+  sharedAudioRoot: '/data/shared/_Music/_YouTube',
+  sharedAudiobooksRoot: '/data/shared/_Audiobooks/_YouTube',
   usersRoot: '/data/users',
 } as AppConfig;
 
@@ -42,22 +43,26 @@ describe('media paths', () => {
     expect(folderNameFor(source, request)).toEqual(['Original Channel', '2026', '2026-05-17 - A Useful Talk [abc123]']);
   });
 
-  it('uses personal audiobook and video roots', () => {
-    expect(mediaRootFor(config, user, request)).toBe('/data/users/dsaw/_Audiobooks/_YouTube');
+  it('uses personal music, audiobook opt-in, and video roots', () => {
+    expect(mediaRootFor(config, user, request)).toBe('/data/users/dsaw/_Music/_YouTube');
+    expect(mediaRootFor(config, user, { ...request, saveAudioToAudiobooks: true })).toBe('/data/users/dsaw/_Audiobooks/_YouTube');
     expect(mediaRootFor(config, user, { ...request, mediaType: 'video', destination: 'personal' })).toBe(
       '/data/users/dsaw/_Videos/_YouTube',
     );
   });
 
-  it('uses shared roots for shared audio and video downloads', () => {
-    expect(mediaRootFor(config, user, { ...request, destination: 'shared' })).toBe('/data/shared/_Audiobooks/_YouTube');
+  it('uses shared roots for shared audio, audiobook opt-in, and video downloads', () => {
+    expect(mediaRootFor(config, user, { ...request, destination: 'shared' })).toBe('/data/shared/_Music/_YouTube');
+    expect(mediaRootFor(config, user, { ...request, destination: 'shared', saveAudioToAudiobooks: true })).toBe(
+      '/data/shared/_Audiobooks/_YouTube',
+    );
     expect(mediaRootFor(config, user, { ...request, mediaType: 'video', destination: 'shared' })).toBe(
       '/data/shared/_Videos/_YouTube',
     );
   });
 
   it('rejects paths escaping their root', () => {
-    expect(() => assertInside('/data/users/dsaw/_Audiobooks/_YouTube/item', '/data/users')).not.toThrow();
+    expect(() => assertInside('/data/users/dsaw/_Music/_YouTube/item', '/data/users')).not.toThrow();
     expect(() => assertInside('/data/elsewhere/item', '/data/users')).toThrow(/escaped/);
   });
 });

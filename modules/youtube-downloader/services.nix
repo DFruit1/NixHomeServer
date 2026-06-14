@@ -37,6 +37,7 @@ in
           YOUTUBE_DOWNLOADER_TEMP_DIR = paths.tempDir;
           YOUTUBE_DOWNLOADER_SHARED_VIDEO_ROOT = paths.sharedVideoRoot;
           YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT = paths.sharedAudioRoot;
+          YOUTUBE_DOWNLOADER_SHARED_AUDIOBOOKS_ROOT = paths.sharedAudiobooksRoot;
           YOUTUBE_DOWNLOADER_USERS_ROOT = vars.usersRoot;
           YOUTUBE_DOWNLOADER_CONCURRENCY = "1";
           YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP = vars.fileAccess.sharedAccessGroup or "files-shared-users";
@@ -60,6 +61,7 @@ in
             paths.cacheRoot
             paths.sharedVideoRoot
             paths.sharedAudioRoot
+            paths.sharedAudiobooksRoot
             vars.usersRoot
           ];
         };

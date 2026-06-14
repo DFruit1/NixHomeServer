@@ -25,9 +25,9 @@ let
     usbAccessGroup
     backupStorageAccessGroup
   ]);
-  userContentSubdirs = lib.escapeShellArgs cfg.contentSubdirs;
-  userBooksSubdirs = lib.escapeShellArgs cfg.bookSubdirs;
-  userVideoSubdirs = lib.escapeShellArgs cfg.videoSubdirs;
+  userContentSubdirs = lib.escapeShellArgs (lib.unique cfg.contentSubdirs);
+  userBooksSubdirs = lib.escapeShellArgs (lib.unique cfg.bookSubdirs);
+  userVideoSubdirs = lib.escapeShellArgs (lib.unique cfg.videoSubdirs);
   userProtectedWritablePaths = [
     "_Files"
     "_Audiobooks"
@@ -136,7 +136,7 @@ let
         -m "d:u:''${username}:rwx" \
         '{}' +
       ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
-      ${pkgs.findutils}/bin/find "$path" -type f -exec ${pkgs.coreutils}/bin/chmod ug-x,o-rwx '{}' +
+      ${pkgs.findutils}/bin/find "$path" -type f -exec ${pkgs.coreutils}/bin/chmod u=rw,g=rw,o= '{}' +
     done
     if [[ -d "$root/_Emails" ]]; then
       ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:r-X" "$root/_Emails"
@@ -299,7 +299,7 @@ let
         '{}' +
       ${pkgs.acl}/bin/setfacl -R -m g:${lib.escapeShellArg sharedAccessGroup}:rwX ${lib.escapeShellArg vars.sharedRoot}
       ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
-      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type f -exec ${pkgs.coreutils}/bin/chmod ug-x,o-rwx '{}' +
+      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type f -exec ${pkgs.coreutils}/bin/chmod u=rw,g=rw,o= '{}' +
     }
 
     ${pkgs.kanidm_1_10}/bin/kanidm login \

@@ -38,20 +38,35 @@ in
 
     sharedAudioRoot = lib.mkOption {
       type = lib.types.str;
-      default = "${vars.sharedRoot}/_YouTubeAudio";
-      description = "Shared audio output root. Integration modules may bind this to a media app library.";
+      default = "${vars.sharedRoot}/_Music/_YouTube";
+      description = "Shared music output root.";
+    };
+
+    sharedAudiobooksRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.sharedRoot}/_Audiobooks/_YouTube";
+      description = "Shared Audiobookshelf-compatible output root for opt-in audio downloads.";
     };
   };
 
   config = {
+    repo.storage.userRoots.contentSubdirs = [
+      "_Music"
+      "_Audiobooks"
+    ];
     repo.storage.userRoots.recursiveWritableGrants = [
       {
         group = "youtube-downloader";
         relativePaths = [
+          "_Music"
           "_Audiobooks"
           "_Videos"
         ] ++ userVideoWritablePaths;
       }
+    ];
+    repo.storage.sharedRoots.contentSubdirs = [
+      "_Music"
+      "_Audiobooks"
     ];
     repo.storage.userRoots.videoSubdirs = [ "_YouTube" ];
     repo.storage.sharedRoots.videoSubdirs = [ "_YouTube" ];
@@ -63,6 +78,7 @@ in
       "d ${paths.tempDir} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.sharedVideoRoot} 1770 root root -"
       "d ${paths.sharedAudioRoot} 1770 root root -"
+      "d ${paths.sharedAudiobooksRoot} 1770 root root -"
     ];
   };
 }

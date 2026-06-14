@@ -63,6 +63,7 @@ let
       (group: !(lib.hasPrefix "idm_" group) && group != "system_admins" && group != "domain_admins")
       (builtins.attrNames (config.services.kanidm.provision.groups or { }))
   );
+  kanidmGroupDescriptions = (config.nixhomeserver or { }).kanidmGroupDescriptions or { };
 
   caddyHosts = config.services.caddy.virtualHosts;
   hostEnabled = name: builtins.hasAttr name caddyHosts;
@@ -227,6 +228,12 @@ let
       exit 1
     fi
 
+    server_device_id="$(${showSyncthingDeviceId})"
+    if [[ "$device_id" == "$server_device_id" ]]; then
+      echo "paste this device's Syncthing device ID, not the server device ID" >&2
+      exit 1
+    fi
+
     state_dir=${lib.escapeShellArg offlineMediaStateDir}
     state_file=${lib.escapeShellArg offlineMediaStateFile}
     folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
@@ -246,6 +253,25 @@ let
         echo "offline media folder is not provisioned for $username: $folder_path" >&2
         exit 1
       fi
+    done < <(${pkgs.jq}/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
+
+    grant_syncthing_read() {
+      local folder_path="$1"
+      local parent_path="$folder_path"
+
+      while [[ "$parent_path" != "$users_root/$username" && "$parent_path" != "/" ]]; do
+        parent_path="$(${pkgs.coreutils}/bin/dirname "$parent_path")"
+        ${pkgs.acl}/bin/setfacl -m g:syncthing:--x "$parent_path"
+      done
+
+      ${pkgs.acl}/bin/setfacl -R -m g:syncthing:r-X "$folder_path"
+      ${pkgs.findutils}/bin/find "$folder_path" -type d -exec ${pkgs.acl}/bin/setfacl -m d:g:syncthing:r-x '{}' +
+      install -d -m 0755 -o root -g root "$folder_path/.stfolder"
+      ${pkgs.acl}/bin/setfacl -m g:syncthing:r-x "$folder_path/.stfolder"
+    }
+
+    while IFS=$'\t' read -r relative_path; do
+      grant_syncthing_read "$users_root/$username/$relative_path"
     done < <(${pkgs.jq}/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
 
     install -d -m 0750 -o root -g root "$state_dir"
@@ -288,12 +314,20 @@ let
 
     api /rest/system/ping >/dev/null
 
+    devices_json="$(api /rest/config/devices)"
+    default_device_json="$(api /rest/config/defaults/device)"
     device_json="$(
-      api /rest/config/defaults/device \
-        | ${pkgs.jq}/bin/jq \
-          --arg deviceId "$device_id" \
-          --arg name "$device_name" \
-          '.deviceID = $deviceId | .name = $name | .addresses = ["dynamic"]'
+      ${pkgs.jq}/bin/jq -n \
+        --arg deviceId "$device_id" \
+        --arg name "$device_name" \
+        --argjson devices "$devices_json" \
+        --argjson defaultDevice "$default_device_json" \
+        '(
+          ($devices[]? | select(.deviceID == $deviceId)) // $defaultDevice
+        )
+        | .deviceID = $deviceId
+        | .name = $name
+        | .addresses = ((.addresses // []) | if length > 0 then . else ["dynamic"] end)'
     )"
     api_json POST /rest/config/devices "$device_json"
 
@@ -375,7 +409,6 @@ let
       ${pkgs.systemd}/bin/systemctl restart syncthing.service
     fi
 
-    server_device_id="$(${showSyncthingDeviceId})"
     status_json="$(${offlineMediaStatus} "$username")"
     ${pkgs.jq}/bin/jq -n \
       --arg username "$username" \
@@ -871,6 +904,7 @@ let
     sshfsHost = vars.network.hostname;
     services = serviceCards;
     kanidmGroups = kanidmGroups;
+    kanidmGroupDescriptions = kanidmGroupDescriptions;
     phoneBackup = {
       enabled = phoneBackupCfg.enable or false;
       deviceName = phoneBackupSyncthing.deviceName or "phone";
@@ -937,6 +971,7 @@ in
           ProtectHome = true;
           ReadWritePaths = [
             sftpAuthorizedKeysDir
+            offlineMediaStateDir
           ];
           ReadOnlyPaths = [
             homepageConfig

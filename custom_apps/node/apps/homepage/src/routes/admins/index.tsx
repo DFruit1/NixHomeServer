@@ -5,25 +5,32 @@ import { HomepageContext } from '../../shared/homepage-context.js';
 const isProtectedGroup = (group: string): boolean =>
   group === 'users' || group === 'system_admins' || group === 'domain_admins' || group.startsWith('idm_');
 
-const shellQuote = (value: string): string =>
-  `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\\"')}`;
+const shellSingleQuote = (value: string): string => {
+  const escaped = value.replace(/'/g, `'\\''`);
+  return `'${escaped}'`;
+};
 
 const buildUserArg = (username: string): string =>
-  username.trim() ? shellQuote(username) : '"$NEW_USER"';
+  username.trim() ? shellSingleQuote(username.trim()) : '"$NEW_USER"';
 
 const buildEmailArg = (email: string): string =>
-  email.trim() ? shellQuote(email) : '"$EMAIL"';
+  email.trim() ? shellSingleQuote(email.trim()) : '"$EMAIL"';
 
 const buildDisplayNameArg = (username: string): string => {
   const trimmed = username.trim();
-  return trimmed ? shellQuote(trimmed) : '"$DISPLAY_NAME"';
+  return trimmed ? shellSingleQuote(trimmed) : '"$DISPLAY_NAME"';
 };
 
 const buildMembershipCommands = (groups: string[], userArg: string): string[] => {
   if (groups.length === 0) {
     return [];
   }
-  const quotedGroups = groups.slice().sort().map((group) => shellQuote(group)).join(' ');
+  const quotedGroups = groups
+    .map((group) => group.trim())
+    .filter((group) => group.length > 0)
+    .sort()
+    .map((group) => shellSingleQuote(group))
+    .join(' ');
   return [`for group in ${quotedGroups}; do`, `  kanidm group add-members "$group" ${userArg}`, 'done'];
 };
 
@@ -34,8 +41,10 @@ export default component$(() => {
   const homepage = useContext(HomepageContext);
   const adminGuide = homepage.data?.adminGuide ?? [];
   const domain = homepage.data?.domain ?? 'example.test';
+  const currentUser = homepage.data?.user;
   const username = useSignal('');
   const email = useSignal('');
+  const groupDescriptions = homepage.data?.kanidmGroupDescriptions ?? {};
   const accessGroups = (homepage.data?.kanidmGroups ?? [])
     .filter((group) => !isProtectedGroup(group))
     .sort((a, b) => a.localeCompare(b));
@@ -55,6 +64,11 @@ export default component$(() => {
   const setEmail = $((event: Event) => {
     const input = event.target as HTMLInputElement;
     email.value = input.value;
+  });
+
+  const fillMe = $(() => {
+    username.value = currentUser?.username ?? '';
+    email.value = currentUser?.email ?? '';
   });
 
   const toggleGroup = $((group: string, event: Event) => {
@@ -102,6 +116,11 @@ export default component$(() => {
                 <input type="email" value={email.value} onInput$={setEmail} placeholder="alice@example.com" />
               </label>
             </div>
+            <div class="admin-fill-row">
+              <button type="button" class="admin-fill-btn" onClick$={fillMe}>
+                It's for me
+              </button>
+            </div>
             <ol class="admin-steps">
               <li>
                 <h3>Check the user exists</h3>
@@ -131,7 +150,9 @@ export default component$(() => {
                           checked={selectedGroups.value.includes(group)}
                           onChange$={(event) => toggleGroup(group, event)}
                         />
-                        <span>{group}</span>
+                        <span class="group-name" title={groupDescriptions[group] ?? 'No description available'}>
+                          {group}
+                        </span>
                       </label>
                     ))}
                   </div>

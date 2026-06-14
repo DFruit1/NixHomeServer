@@ -1,8 +1,15 @@
-{ pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
   kanidmPort = vars.networking.ports.kanidm;
+  kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
+  oauth2ClientsForConsentPrompt = lib.filterAttrs
+    (_name: client: (client.present or true) && !(client.public or false))
+    config.services.kanidm.provision.systems.oauth2;
+  disableConsentCommands = lib.concatStringsSep "\n"
+    (map (clientName: "    ${pkgs.kanidm_1_10}/bin/kanidm system oauth2 disable-consent-prompt ${lib.escapeShellArg clientName}")
+      (builtins.attrNames oauth2ClientsForConsentPrompt));
 in
 {
   services.kanidm = {
@@ -30,6 +37,29 @@ in
       "caddy.service"
       "acme-${vars.kanidmDomain}.service"
     ];
+  };
+
+  systemd.services.kanidm-disable-consent-prompt = lib.mkIf (oauth2ClientsForConsentPrompt != { }) {
+    description = "Disable Kanidm consent prompt for configured OAuth2 clients";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "kanidm.service" ];
+    wants = [ "kanidm.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      Restart = "on-failure";
+      RestartSec = "10s";
+    };
+    script = ''
+      set -euo pipefail
+
+      KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+      export KANIDM_PASSWORD
+
+      ${pkgs.kanidm_1_10}/bin/kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
+
+      ${disableConsentCommands}
+    '';
   };
 
   users.users.kanidm.extraGroups = [ "caddy" ];

@@ -33,11 +33,16 @@ export const dateParts = (source: ProbeResponse): { year?: string; date?: string
 
 export const mediaRootFor = (config: AppConfig, user: CurrentUser, request: CreateJobRequest): string => {
   if (request.destination === 'shared') {
-    return request.mediaType === 'audio' ? config.sharedAudioRoot : config.sharedVideoRoot;
+    if (request.mediaType === 'audio') {
+      return request.saveAudioToAudiobooks ? config.sharedAudiobooksRoot : config.sharedAudioRoot;
+    }
+    return config.sharedVideoRoot;
   }
-  return request.mediaType === 'audio'
-    ? path.join(config.usersRoot, user.username, '_Audiobooks', '_YouTube')
-    : path.join(config.usersRoot, user.username, '_Videos', '_YouTube');
+  if (request.mediaType === 'audio') {
+    const audioFolder = request.saveAudioToAudiobooks ? '_Audiobooks' : '_Music';
+    return path.join(config.usersRoot, user.username, audioFolder, '_YouTube');
+  }
+  return path.join(config.usersRoot, user.username, '_Videos', '_YouTube');
 };
 
 export const assertInside = (candidate: string, root: string): string => {

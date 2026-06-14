@@ -24,6 +24,7 @@ export const buildHomepageData = async (config: AppConfig, headers: IncomingHttp
   const body: HomepageData = {
     ...config.homepage,
     kanidmGroups: config.homepage.kanidmGroups ?? [],
+    kanidmGroupDescriptions: config.homepage.kanidmGroupDescriptions ?? {},
     user: currentUserFromHeaders(headers, config.devUser),
   };
   body.services = body.services.filter((service) => hasRequiredGroups(service.requiredGroups, body.user.groups));

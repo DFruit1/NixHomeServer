@@ -83,6 +83,7 @@ export type HomepageData = {
   folderGuides: FolderGuide[];
   adminGuide: AdminStep[];
   kanidmGroups?: string[];
+  kanidmGroupDescriptions?: Record<string, string>;
   phoneBackup?: PhoneBackupSetup;
   offlineMedia?: OfflineMediaSetup;
 };

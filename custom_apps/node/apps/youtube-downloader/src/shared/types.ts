@@ -45,6 +45,7 @@ export type CreateJobRequest = {
   splitChapters: boolean;
   includeChannel: boolean;
   includeDate: boolean;
+  saveAudioToAudiobooks?: boolean;
   duplicateConfirmed?: boolean;
   chaptersConfirmed?: boolean;
 };

@@ -39,6 +39,21 @@ let
     "idm_people_pii_read"
     "idm_unix_admins"
   ];
+  delegatedOperatorGroupDescriptions = lib.genAttrs delegatedOperatorGroups (group:
+    "Kanidm delegated operator group used for ${group} workflows."
+  );
+  kanidmGroupDescriptions = {
+    "domain_admins" = "Builtin domain-wide administrative group used by platform administration.";
+    "users" = "Baseline group for normal users and standard identity resolution.";
+    "app-admin" = "Grants application admin access for app surfaces that trust the app-admin group.";
+    "${vars.fileAccess.webAccessGroup}" = "Grants browser file access and personal file-root provisioning.";
+    "${vars.fileAccess.sftpAccessGroup}" = "Grants access to the dedicated SFTP endpoint.";
+    "${vars.fileAccess.sharedAccessGroup}" = "Grants access to the shared files view.";
+    "${vars.fileAccess.usbAccessGroup}" = "Grants access to the mounted USB files view.";
+    "${vars.backupAccess.adminGroup}" = "Grants backup administration access.";
+  } // delegatedOperatorGroupDescriptions // lib.optionalAttrs (vars.backupAccess.storageGroup != vars.backupAccess.adminGroup) {
+    "${vars.backupAccess.storageGroup}" = "Grants read access to encrypted backup repository files.";
+  };
   personIdentityRecords =
     (lib.genAttrs appPersonNames mkAppPerson)
     // {
@@ -72,7 +87,15 @@ let
   ];
 in
 {
+  options.nixhomeserver.kanidmGroupDescriptions = lib.mkOption {
+    type = lib.types.attrsOf lib.types.str;
+    default = {};
+    description = "Machine-readable map of Kanidm group names to descriptions.";
+  };
+
   config = {
+    nixhomeserver.kanidmGroupDescriptions = kanidmGroupDescriptions;
+
     services.kanidm.provision = {
       enable = true;
       autoRemove = false;

@@ -9,6 +9,7 @@ export default component$(() => {
   const services = data?.services.filter((service) => service.enabled) ?? [];
   const disabledServices = data?.services.filter((service) => !service.enabled) ?? [];
   const userGroups = (data?.user?.groups ?? []).slice().sort((a, b) => a.localeCompare(b));
+  const groupDescriptions = data?.kanidmGroupDescriptions ?? {};
 
   return (
     <>
@@ -45,7 +46,11 @@ export default component$(() => {
             <dl>
               {userGroups.map((group) => (
                 <div key={group}>
-                  <dt>{group}</dt>
+                  <dt>
+                    <span class="group-name" title={groupDescriptions[group] ?? 'No description available'}>
+                      {group}
+                    </span>
+                  </dt>
                 </div>
               ))}
             </dl>

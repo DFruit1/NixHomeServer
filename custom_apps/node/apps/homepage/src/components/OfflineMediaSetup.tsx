@@ -21,6 +21,11 @@ export const OfflineMediaSetupPanel = component$(
         status.value = 'Paste your Syncthing device ID before saving.';
         return;
       }
+      if (offlineMedia?.serverDeviceId && submittedDeviceId === offlineMedia.serverDeviceId) {
+        statusKind.value = 'error';
+        status.value = "Paste this device's Syncthing device ID, not the server device ID.";
+        return;
+      }
       status.value = '';
       submitting.value = true;
       try {
@@ -122,9 +127,9 @@ export const OfflineMediaSetupPanel = component$(
           ))}
         </div>
 
-        <div class="key-form compact-form">
+        <div class="key-form compact-form offline-media-enroll-form">
           <h4>Enroll Device</h4>
-          <label>
+          <label class="offline-media-device-id-field">
             Device ID
             <input
               id="offline-media-device-id"

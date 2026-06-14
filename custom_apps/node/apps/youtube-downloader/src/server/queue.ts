@@ -289,6 +289,9 @@ export const validateRequest = (request: CreateJobRequest): void => {
     if (request.audioQuality && !['best', 'high', 'medium', 'low'].includes(request.audioQuality)) {
       throw new Error('unsupported audio quality');
     }
+    if (request.saveAudioToAudiobooks != null && typeof request.saveAudioToAudiobooks !== 'boolean') {
+      throw new Error('audiobook destination flag must be a boolean');
+    }
   } else if (request.mediaType === 'video') {
     if (!request.videoContainer || !['mkv', 'mp4', 'webm'].includes(request.videoContainer)) {
       throw new Error('unsupported video container');
@@ -365,37 +368,74 @@ const splitAudioChapters = async (tempDir: string, source: ProbeResponse, audioF
   for (const spec of specs) {
     const title = sanitizeSegment(spec.chapter.title, 'Chapter');
     const output = path.join(chapterDir, `${String(spec.chapter.index).padStart(2, '0')} - ${title}.${audioFormat}`);
-    const args = [
-      '-hide_banner',
-      '-nostdin',
-      '-y',
-      '-ss',
-      formatSeconds(spec.start),
-      '-t',
-      formatSeconds(spec.duration),
-      '-i',
+    const args = buildAudioChapterFfmpegArgs({
       input,
-      '-map',
-      '0:a:0',
-      '-map_metadata',
-      '-1',
-      '-map_chapters',
-      '-1',
-      '-vn',
-      '-c:a',
-      'copy',
-      '-avoid_negative_ts',
-      'make_zero',
-      '-metadata',
-      `title=${spec.chapter.title}`,
-      '-metadata',
-      `track=${spec.chapter.index}`,
       output,
-    ];
+      chapter: spec.chapter,
+      start: spec.start,
+      duration: spec.duration,
+      audioFormat,
+    });
     const result = await runCommand('ffmpeg', args, { timeoutMs: Math.max(120000, Math.ceil(spec.duration + 60) * 1000) });
     if (result.code !== 0) {
       throw new Error(result.stderr.trim() || `ffmpeg exited with code ${result.code ?? 'unknown'} while splitting chapter ${spec.chapter.index}`);
     }
+  }
+};
+
+type AudioChapterFfmpegArgs = {
+  input: string;
+  output: string;
+  chapter: Chapter;
+  start: number;
+  duration: number;
+  audioFormat: AudioFormat;
+};
+
+export const buildAudioChapterFfmpegArgs = ({
+  input,
+  output,
+  chapter,
+  start,
+  duration,
+  audioFormat,
+}: AudioChapterFfmpegArgs): string[] => [
+  '-hide_banner',
+  '-nostdin',
+  '-y',
+  '-ss',
+  formatSeconds(start),
+  '-t',
+  formatSeconds(duration),
+  '-i',
+  input,
+  '-map',
+  '0:a:0',
+  '-map_metadata',
+  '-1',
+  '-map_chapters',
+  '-1',
+  '-vn',
+  ...audioEncoderArgs(audioFormat),
+  '-metadata',
+  `title=${chapter.title}`,
+  '-metadata',
+  `track=${chapter.index}`,
+  output,
+];
+
+const audioEncoderArgs = (audioFormat: AudioFormat): string[] => {
+  switch (audioFormat) {
+    case 'flac':
+      return ['-c:a', 'flac'];
+    case 'wav':
+      return ['-c:a', 'pcm_s16le'];
+    case 'm4a':
+      return ['-c:a', 'aac', '-b:a', '192k'];
+    case 'mp3':
+      return ['-c:a', 'libmp3lame', '-q:a', '2'];
+    case 'opus':
+      return ['-c:a', 'libopus', '-b:a', '128k'];
   }
 };
 

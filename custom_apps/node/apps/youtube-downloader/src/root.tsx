@@ -18,6 +18,7 @@ export default component$(() => {
   const splitChapters = useSignal(false);
   const includeChannel = useSignal(true);
   const includeDate = useSignal(true);
+  const saveAudioToAudiobooks = useSignal(false);
   const submitting = useSignal(false);
 
   const refresh = $(async () => {
@@ -61,6 +62,7 @@ export default component$(() => {
       splitChapters: splitChapters.value,
       includeChannel: includeChannel.value,
       includeDate: includeDate.value,
+      saveAudioToAudiobooks: mediaType.value === 'audio' ? saveAudioToAudiobooks.value : undefined,
     };
     try {
       const response = await fetch('/api/jobs', {
@@ -90,16 +92,16 @@ export default component$(() => {
     <main class="shell">
       <section class="toolbar">
         <div>
-          <h1>Downloads</h1>
-          <p>{me.value ? me.value.username : 'Loading session'}</p>
+          <h1><span>Youtube</span> Downloader</h1>
         </div>
+        <p class="current-user">{me.value ? me.value.username : 'Loading session'}</p>
       </section>
 
       <section class="download-form">
         <label class="url-field">
-          <span>URL</span>
           <input
             type="url"
+            aria-label="URL"
             value={url.value}
             onInput$={(_, target) => (url.value = target.value)}
             onBlur$={() => (url.value = normalizeDownloadUrl(url.value))}
@@ -212,6 +214,16 @@ export default component$(() => {
             <input type="checkbox" checked={includeDate.value} onChange$={(_, target) => (includeDate.value = target.checked)} />
             Release/upload date
           </label>
+          {mediaType.value === 'audio' && (
+            <label>
+              <input
+                type="checkbox"
+                checked={saveAudioToAudiobooks.value}
+                onChange$={(_, target) => (saveAudioToAudiobooks.value = target.checked)}
+              />
+              Save audio to Audiobooks
+            </label>
+          )}
         </div>
 
         {error.value && <p class="error">{error.value}</p>}
