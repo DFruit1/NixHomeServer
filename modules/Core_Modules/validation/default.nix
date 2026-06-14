@@ -143,6 +143,20 @@ let
   localBridgeGroupsMissingLocalAdmin = lib.filter
     (group: !(builtins.elem vars.localAdminUser (config.users.groups.${group}.members or [ ])))
     localBridgeFileAccessGroups;
+  persistenceDirectoryPath = entry:
+    if builtins.isString entry then
+      entry
+    else
+      entry.directory or entry.path or "";
+  persistedPathsInsidePersist = lib.filter
+    (path: path == "/persist" || lib.hasPrefix "/persist/" path)
+    (map persistenceDirectoryPath config.repo.impermanence.inventory.persistenceDirectories);
+  legacyOfflineMusicCfg = vars.offlineMusic or { };
+  offlineMediaCfg =
+    if builtins.hasAttr "offlineMedia" vars then vars.offlineMedia else legacyOfflineMusicCfg;
+  offlineMediaEnabled = offlineMediaCfg.enable or false;
+  offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
+  offlineMediaTmpfilesRule = "d ${offlineMediaStateDir} 0750 root root -";
 in
 {
   assertions = [
@@ -223,6 +237,26 @@ in
     {
       assertion = fileSystemHasOption "/persist" "subvol=/persist";
       message = "nixhomeserver: /persist Btrfs mount must retain subvol=/persist in the initrd.";
+    }
+    {
+      assertion = persistedPathsInsidePersist == [ ];
+      message = "nixhomeserver: repo.impermanence.directories must not include /persist paths because environment.persistence.\"/persist\" would remap them under /persist/persist: ${lib.concatStringsSep ", " persistedPathsInsidePersist}";
+    }
+    {
+      assertion =
+        !offlineMediaEnabled
+        || (
+          lib.hasPrefix "/persist/appdata/" offlineMediaStateDir
+          && offlineMediaStateDir != "/persist/persist"
+          && !(lib.hasPrefix "/persist/persist/" offlineMediaStateDir)
+        );
+      message = "nixhomeserver: offline media Syncthing enrollment state must live directly under /persist/appdata, not nested under /persist/persist: ${offlineMediaStateDir}";
+    }
+    {
+      assertion =
+        !offlineMediaEnabled
+        || builtins.elem offlineMediaTmpfilesRule config.systemd.tmpfiles.rules;
+      message = "nixhomeserver: offline media Syncthing enrollment state directory must be created directly by tmpfiles: ${offlineMediaTmpfilesRule}";
     }
     {
       assertion = builtins.length fileAccessGids == builtins.length uniqueFileAccessGids;

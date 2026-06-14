@@ -31,7 +31,7 @@ let
       vars.kanidmAdminMailAddresses
     else
       [ vars.kanidmAdminEmail ];
-  kavitaScanCronExpression = "*/15 * * * *";
+  kavitaScanCronExpression = "17 */2 * * *";
   kavitaLibraryWatchConfigPath = with pkgs; [
     coreutils
     perl

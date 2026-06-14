@@ -15,3 +15,5 @@
 /custom_apps/rust/_archive/kanidm-admin/
 /custom_apps/node/apps/*/node_modules/
 /custom_apps/node/apps/*/dist/
+/custom_apps/node/apps/*/test-results/
+/custom_apps/node/apps/*/playwright-report/

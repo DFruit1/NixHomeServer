@@ -1,5 +1,4 @@
 import { component$ } from '@builder.io/qwik';
-import type { SftpOs } from '../shared/ui-types.js';
 import { SftpAccessDetails } from './SftpAccessDetails.js';
 
 export const SftpAccessInstructions = component$(({ username, serverHost }: { username: string; serverHost: string }) => {

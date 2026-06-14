@@ -111,8 +111,6 @@ struct AppState {
 struct Identity {
     username: String,
     email: Option<String>,
-    #[allow(dead_code)]
-    groups: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -638,16 +636,6 @@ struct AccountStatusPayload {
     progress_warning_action: Option<String>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct RawNotmuchSummary {
-    timestamp: Option<i64>,
-    date_relative: Option<String>,
-    authors: Option<String>,
-    subject: Option<String>,
-    tags: Option<Vec<String>>,
-}
-
 #[derive(Debug, Serialize)]
 struct HealthChecks {
     database: String,
@@ -982,8 +970,6 @@ struct SenderPriorityView {
     identity: Option<SenderIdentity>,
     priority: SenderPriority,
     address_rule: Option<SenderPriority>,
-    #[allow(dead_code)]
-    domain_rule: Option<SenderPriority>,
 }
 
 impl SenderPriorityRules {
@@ -1005,7 +991,6 @@ impl SenderPriorityRules {
             identity,
             priority,
             address_rule,
-            domain_rule,
         }
     }
 }
@@ -2797,11 +2782,7 @@ fn identity_from_headers(headers: &HeaderMap) -> Result<Identity, (StatusCode, S
         ));
     }
 
-    Ok(Identity {
-        username,
-        email,
-        groups,
-    })
+    Ok(Identity { username, email })
 }
 
 fn verify_same_origin_request(headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
@@ -10657,7 +10638,6 @@ mod tests {
         Identity {
             username: "alice".to_string(),
             email: Some("alice@example.com".to_string()),
-            groups: vec!["mail-archive-users".to_string()],
         }
     }
 
@@ -10923,10 +10903,6 @@ mod tests {
         let identity = identity_from_headers(&headers).expect("identity should be accepted");
         assert_eq!(identity.username, "alice");
         assert_eq!(identity.email.as_deref(), Some("alice@example.com"));
-        assert!(identity
-            .groups
-            .iter()
-            .any(|group| group == "mail-archive-users"));
     }
 
     #[test]
@@ -11086,14 +11062,14 @@ mod tests {
 
     #[test]
     fn notmuch_summary_json_is_parsed_into_search_results() {
-        let parsed: Vec<RawNotmuchSummary> = serde_json::from_str(
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(
             r#"[{"timestamp":1713412350,"date_relative":"2d","authors":"Alice Example","subject":"Invoice ready","tags":["inbox","unread"]}]"#,
         )
         .expect("json should parse");
 
-        assert_eq!(parsed[0].authors.as_deref(), Some("Alice Example"));
-        assert_eq!(parsed[0].subject.as_deref(), Some("Invoice ready"));
-        assert_eq!(parsed[0].tags.as_ref().expect("tags").len(), 2);
+        assert_eq!(parsed[0]["authors"].as_str(), Some("Alice Example"));
+        assert_eq!(parsed[0]["subject"].as_str(), Some("Invoice ready"));
+        assert_eq!(parsed[0]["tags"].as_array().expect("tags").len(), 2);
     }
 
     #[test]
@@ -11236,7 +11212,6 @@ mod tests {
             let identity = Identity {
                 username: "alice".to_string(),
                 email: Some("alice@example.com".to_string()),
-                groups: vec!["mail-archive-users".to_string()],
             };
 
             let html = layout(
@@ -11901,7 +11876,6 @@ mod tests {
         let identity = Identity {
             username: "alice".to_string(),
             email: Some("alice@example.com".to_string()),
-            groups: vec!["mail-archive-users".to_string()],
         };
         let html_prefill = render_search(
             &identity,

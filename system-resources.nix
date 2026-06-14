@@ -84,10 +84,49 @@ let
 in
 lib.mkMerge [
   {
+    boot.kernel.sysctl = {
+      "fs.inotify.max_user_watches" = 524288;
+      "fs.inotify.max_user_instances" = 1024;
+    };
+
     systemd.services = {
       immich-machine-learning.serviceConfig = {
         MemoryMax = "6G";
         CPUQuota = "250%";
+      };
+
+      kavita.serviceConfig = {
+        CPUQuota = "150%";
+        CPUWeight = 60;
+        IOWeight = 60;
+        Nice = 5;
+      };
+
+      kavita-stale-reference-cleanup.serviceConfig = {
+        CPUQuota = "75%";
+        CPUWeight = 40;
+        IOWeight = 40;
+        Nice = 10;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+      };
+
+      audiobookshelf-stale-reference-cleanup.serviceConfig = {
+        CPUQuota = "75%";
+        CPUWeight = 40;
+        IOWeight = 40;
+        Nice = 10;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+      };
+
+      jellyfin-library-sync.serviceConfig = {
+        CPUQuota = "100%";
+        CPUWeight = 40;
+        IOWeight = 40;
+        Nice = 10;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
       };
 
       youtube-downloader.serviceConfig.CPUQuota = "200%";

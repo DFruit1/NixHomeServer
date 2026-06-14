@@ -3,25 +3,8 @@
 let
   loopback = vars.networking.loopbackIPv4;
   audiobookshelfPort = config.services.audiobookshelf.port;
-  sharedAudiobooksRoot = config.repo.audiobookshelf.paths.sharedAudiobooksRoot;
   cleanupUsers = vars.staleReferenceCleanup.users or false;
   cleanupShared = vars.staleReferenceCleanup.shared or false;
-  mkSettledWatcherScript = import ../../lib/settled-watcher.nix { inherit pkgs; };
-  watchedRoots = [
-    sharedAudiobooksRoot
-    vars.usersRoot
-  ];
-  mediaIncludeRegex = ".*\\.(m4b|m4a|mp3|flac|opus|ogg|oga|aac|wav|mp4|mka|mkv|pdf|epub|mobi|azw3|nfo|json|jpg|jpeg|png|webp)$";
-  managedPathRegex = "(${sharedAudiobooksRoot}|${vars.usersRoot}/[^/]+/_Audiobooks).*";
-  watcherScript = mkSettledWatcherScript {
-    name = "audiobookshelf-library-watch";
-    inherit watchedRoots;
-    triggerUnit = "audiobookshelf-stale-reference-cleanup.service";
-    includeRegex = mediaIncludeRegex;
-    pathRegex = managedPathRegex;
-    settleSeconds = 20;
-    pollSeconds = 5;
-  };
   audiobookshelfStaleReferenceCleanupPath = with pkgs; [
     coreutils
     curl
@@ -30,37 +13,14 @@ let
 in
 {
   config = {
-    systemd.services.audiobookshelf-library-watch = {
-      description = "Watch Audiobookshelf media roots for settled file changes";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "audiobookshelf.service"
-        "audiobookshelf-library-watch-config-v1.service"
-        "audiobookshelf-storage-layout-v1.service"
-        "data-pool-layout.service"
-      ];
-      wants = [
-        "audiobookshelf.service"
-        "audiobookshelf-library-watch-config-v1.service"
-        "audiobookshelf-storage-layout-v1.service"
-        "data-pool-layout.service"
-      ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
-      serviceConfig = {
-        ExecStart = watcherScript;
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
-    };
-
     systemd.timers.audiobookshelf-stale-reference-cleanup = {
       description = "Regularly remove stale Audiobookshelf library references";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnBootSec = "15m";
-        OnUnitActiveSec = "15m";
-        AccuracySec = "1m";
-        RandomizedDelaySec = "2m";
+        OnBootSec = "30m";
+        OnUnitActiveSec = "2h";
+        AccuracySec = "10m";
+        RandomizedDelaySec = "10m";
         Persistent = true;
         Unit = "audiobookshelf-stale-reference-cleanup.service";
       };

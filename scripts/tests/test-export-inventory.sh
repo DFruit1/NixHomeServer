@@ -17,10 +17,12 @@ jq -e '
   (.network.caddyHosts | type == "array" and length > 0)
   and (.identity.oauthClients | type == "array" and length > 0)
   and (.backups.appStateEntries | type == "array" and length > 0)
+  and (.backups.appStateEntries[] | select(.app == "offline-media" and .component == "syncthing-enrollment").stateRoot == "/persist/appdata/offline-media")
   and (.backups.phoneBackup.repositoryPath | type == "string" and length > 0)
   and (.backups.phoneBackup.stateDir | type == "string" and length > 0)
   and (.backups.phoneBackup.syncthing.folderId == "nixhomeserver-kopia-phone")
   and (.impermanence.directories | type == "array" and length > 0)
+  and (all(.impermanence.directories[]; (type == "string") and (. | startswith("/persist") | not)))
   and (.secrets.ageSecretNames | type == "array" and length > 0)
   and (.secrets.externalSecretNames | type == "array" and length > 0)
 ' <<<"$inventory_json" >/dev/null || {

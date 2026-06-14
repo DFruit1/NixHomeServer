@@ -37,10 +37,10 @@ in
       description = "Periodically rescan Jellyfin libraries for watcher misses";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnBootSec = "10m";
-        OnUnitActiveSec = "15m";
-        AccuracySec = "1m";
-        RandomizedDelaySec = "2m";
+        OnBootSec = "30m";
+        OnUnitActiveSec = "2h";
+        AccuracySec = "10m";
+        RandomizedDelaySec = "10m";
         Persistent = true;
         Unit = "jellyfin-library-sync.service";
       };

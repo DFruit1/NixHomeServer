@@ -65,10 +65,10 @@ in
       description = "Regularly run Kavita stale reference maintenance";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnBootSec = "15m";
-        OnUnitActiveSec = "15m";
-        AccuracySec = "1m";
-        RandomizedDelaySec = "2m";
+        OnBootSec = "30m";
+        OnUnitActiveSec = "2h";
+        AccuracySec = "10m";
+        RandomizedDelaySec = "10m";
         Persistent = true;
         Unit = "kavita-stale-reference-cleanup.service";
       };
