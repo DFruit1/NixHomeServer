@@ -9,6 +9,19 @@ const YOUTUBE_SHORT_HOSTS = new Set(['youtu.be', 'www.youtu.be']);
 
 const isYouTubeHost = (host: string): boolean => YOUTUBE_HOSTS.has(host) || YOUTUBE_SHORT_HOSTS.has(host);
 
+export const isYouTubeUrl = (value: string): boolean => {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return false;
+  }
+  return isYouTubeHost(parsed.hostname.toLowerCase());
+};
+
 export const normalizeDownloadUrl = (value: string): string => {
   const trimmed = value.trim();
   let parsed: URL;

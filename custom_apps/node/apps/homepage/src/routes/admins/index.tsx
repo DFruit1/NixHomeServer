@@ -81,12 +81,15 @@ export default component$(() => {
   return (
     <>
       <section class="section">
-        <details class="admin-accordion">
+        <details class="admin-accordion" open>
           <summary class="admin-accordion__summary">
-            <h2>Server Bootstrap</h2>
-            <p>Operator checklist for a new host or a routine guarded deploy.</p>
+            <h2>Server Management</h2>
+            <p>Operator checklist for an already-installed host.</p>
           </summary>
           <div class="admin-accordion__content">
+            <p>
+              Initial disk provisioning, agenix key installation, and nixos-install happen from documentation/quickstart.md before this homepage exists.
+            </p>
             <ol class="admin-steps">
               {adminGuide.map((step) => (
                 <li key={step.title}>
@@ -182,10 +185,11 @@ export default component$(() => {
       </section>
       <section class="section two-column">
         <div>
-          <h2>Daily Operations</h2>
+          <h2>Config And Deploys</h2>
           <ol class="steps">
-            <li>Use the guarded deploy helper for rebuild tests and switches.</li>
-            <li>Check failed systemd units before switching after a test deploy.</li>
+            <li>Use vars.nix for operator-facing host, network, storage, domain, and access settings.</li>
+            <li>Use configuration.nix imports to enable or remove optional app modules.</li>
+            <li>Run the guarded deploy test before switching the active system.</li>
             <li>Keep generated secrets encrypted in agenix and do not commit plaintext secret material.</li>
           </ol>
         </div>
@@ -193,8 +197,9 @@ export default component$(() => {
           <h2>User Support</h2>
           <ol class="steps">
             <li>Grant users the right Kanidm groups before asking them to open apps.</li>
+            <li>Use the generated onboarding commands above for account creation and group membership.</li>
             <li>For phone backup, configure the phone Syncthing device ID before enabling the phone-backup module.</li>
-            <li>Use the Local Backups service page to help users scan the server Syncthing details.</li>
+            <li>Use the Local Backups and Offline Media service pages after each relevant device ID is known.</li>
           </ol>
         </div>
       </section>

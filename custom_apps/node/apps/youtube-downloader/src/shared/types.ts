@@ -11,6 +11,7 @@ export type CurrentUser = {
   groups: string[];
   canWriteShared: boolean;
   destinations: Destination[];
+  fileBrowserUrlTemplate?: string;
 };
 
 export type Chapter = {
@@ -48,6 +49,7 @@ export type CreateJobRequest = {
   saveAudioToAudiobooks?: boolean;
   duplicateConfirmed?: boolean;
   chaptersConfirmed?: boolean;
+  outputFolderCollisionConfirmed?: boolean;
 };
 
 export type CreateJobResponse = {
@@ -64,7 +66,7 @@ export type JobStatus =
   | 'failed'
   | 'cancelled';
 
-export type AlertKind = 'duplicate' | 'chapters';
+export type AlertKind = 'duplicate' | 'chapters' | 'folder-collision';
 
 export type JobAlert = {
   kind: AlertKind;

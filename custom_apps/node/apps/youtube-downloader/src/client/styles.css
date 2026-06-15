@@ -216,6 +216,15 @@ fieldset button.selected:hover,
   background: white;
 }
 
+.job-clickable {
+  cursor: pointer;
+}
+
+.job-clickable:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+}
+
 .job.running,
 .job.postprocessing {
   border-left-color: var(--accent);

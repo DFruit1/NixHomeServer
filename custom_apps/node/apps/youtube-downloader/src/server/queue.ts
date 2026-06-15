@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
 import { Database } from './db.js';
 import { runCommand } from './child.js';
-import { assertInside, folderNameFor, mediaRootFor, prepareDirectory, sanitizeSegment, uniqueFolder } from './paths.js';
+import { assertInside, allocateUniqueFolder, folderNameFor, mediaRootFor, prepareDirectory, sanitizeSegment } from './paths.js';
 import { buildDownloadArgs, parseProgress, probeUrl } from './ytdlp.js';
 import { normalizeDownloadUrl } from '../shared/url.js';
 import type { AudioFormat, Chapter, CreateJobRequest, CurrentUser, Job, JobAlert, ProbeResponse } from '../shared/types.js';
@@ -30,6 +30,7 @@ const THUMBNAIL_EXTENSIONS = new Set(['.jpg', '.jpeg']);
 
 export class JobQueue {
   private readonly running = new Map<string, ChildProcess>();
+  private readonly probing = new Map<string, ChildProcess>();
   private active = 0;
 
   constructor(
@@ -85,8 +86,15 @@ export class JobQueue {
         killChildGroup(child, 'SIGKILL');
       }, 5000).unref();
     }
+    const probingChild = this.probing.get(id);
+    if (probingChild) {
+      killChildGroup(probingChild, 'SIGTERM');
+      setTimeout(() => {
+        killChildGroup(probingChild, 'SIGKILL');
+      }, 5000).unref();
+    }
     const job = await this.db.getJob(id);
-    if (job?.status === 'queued' || job?.status === 'alert') {
+    if (job?.status === 'queued' || job?.status === 'alert' || job?.status === 'probing') {
       await this.db.setStatus(id, 'cancelled', 'cancelled before starting');
     }
   }
@@ -127,6 +135,15 @@ export class JobQueue {
       throw new Error('invalid chapter confirmation action');
     }
 
+    if (job.alert.kind === 'folder-collision') {
+      if (action !== 'download-again') {
+        throw new Error('invalid folder collision confirmation action');
+      }
+      await this.db.clearAlertAndQueue(id, { ...job.request, outputFolderCollisionConfirmed: true });
+      this.pump();
+      return;
+    }
+
     throw new Error('unknown alert kind');
   }
 
@@ -160,8 +177,26 @@ export class JobQueue {
     await mkdir(tempDir, { recursive: true, mode: 0o750 });
 
     await this.db.setStatus(job.id, 'probing');
-    const source = await probeUrl(this.config, request.url);
+    let source: ProbeResponse;
+    try {
+      source = await probeUrl(this.config, request.url, (child) => {
+        this.probing.set(job.id, child);
+      });
+    } catch (error) {
+      if (await this.abortIfCancelled(job.id, tempDir)) {
+        return;
+      }
+      throw error;
+    } finally {
+      this.probing.delete(job.id);
+    }
+    if (await this.abortIfCancelled(job.id, tempDir)) {
+      return;
+    }
     await this.db.setSource(job.id, source);
+    if (await this.abortIfCancelled(job.id, tempDir)) {
+      return;
+    }
     if (!request.duplicateConfirmed) {
       const duplicate = await this.db.findCompletedDownload(request, job.id);
       if (duplicate) {
@@ -169,6 +204,9 @@ export class JobQueue {
         await this.db.setAlert(job.id, duplicateAlert(request, duplicate.id));
         return;
       }
+    }
+    if (await this.abortIfCancelled(job.id, tempDir)) {
+      return;
     }
     const chapterGate = chapterGateFor(request, source);
     if (chapterGate === 'single-file') {
@@ -181,12 +219,23 @@ export class JobQueue {
       await this.db.setAlert(job.id, chaptersAlert());
       return;
     }
+    if (await this.abortIfCancelled(job.id, tempDir)) {
+      return;
+    }
 
     const syntheticUser = { username: job.createdBy, canWriteShared: true } as CurrentUser;
     const outputRoot = mediaRootFor(this.config, syntheticUser, request);
     const safeRoot = assertInside(outputRoot, request.destination === 'shared' ? outputRoot : this.config.usersRoot);
     await prepareDirectory(safeRoot);
-    const outputFolder = await uniqueFolder(safeRoot, folderNameFor(source, request));
+    const folders = folderNameFor(source, request);
+    const outputCandidate = await allocateUniqueFolder(safeRoot, folders);
+    const baseFolder = path.join(safeRoot, ...folders);
+    if (outputCandidate.collides && !request.outputFolderCollisionConfirmed) {
+      await rm(tempDir, { recursive: true, force: true });
+      await this.db.setAlert(job.id, folderCollisionAlert(baseFolder, outputCandidate.folder));
+      return;
+    }
+    const outputFolder = outputCandidate.folder;
     assertInside(outputFolder, safeRoot);
     await this.db.setOutput(job.id, safeRoot, outputFolder);
 
@@ -220,6 +269,15 @@ export class JobQueue {
     await rm(tempDir, { recursive: true, force: true });
     await this.db.setProgress(job.id, null);
     await this.db.setStatus(job.id, 'completed');
+  }
+
+  private async abortIfCancelled(jobId: string, tempDir: string): Promise<boolean> {
+    const job = await this.db.getJob(jobId);
+    if (job?.status === 'cancelled') {
+      await rm(tempDir, { recursive: true, force: true });
+      return true;
+    }
+    return false;
   }
 
   private async runYtDlp(jobId: string, args: string[]): Promise<void> {
@@ -323,6 +381,11 @@ const duplicateAlert = (request: CreateJobRequest, duplicateJobId: string): JobA
 const chaptersAlert = (): JobAlert => ({
   kind: 'chapters',
   message: 'This item has chapters. Would you like to download it with chapters split?',
+});
+
+const folderCollisionAlert = (folder: string, alternativeFolder: string): JobAlert => ({
+  kind: 'folder-collision',
+  message: `Files for this download already exist at ${folder}. Download another copy to ${alternativeFolder}?`,
 });
 
 const killChildGroup = (child: ChildProcess, signal: NodeJS.Signals): void => {

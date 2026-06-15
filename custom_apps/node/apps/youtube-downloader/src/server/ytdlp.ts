@@ -1,4 +1,5 @@
 import type { AppConfig } from './config.js';
+import type { ChildProcess } from 'node:child_process';
 import { runCommand } from './child.js';
 import type { AudioFormat, AudioQuality, CreateJobRequest, ProbeResponse, VideoQuality } from '../shared/types.js';
 
@@ -42,10 +43,18 @@ const audioQualityValue = (quality: AudioQuality): string => {
   }
 };
 
-export const probeUrl = async (config: AppConfig, url: string): Promise<ProbeResponse> => {
+export const probeUrl = async (
+  config: AppConfig,
+  url: string,
+  onSpawn?: (child: ChildProcess) => void,
+): Promise<ProbeResponse> => {
   const result = await runCommand(config.ytDlpPath, ['--dump-single-json', '--flat-playlist', '--no-warnings', url], {
     timeoutMs: 120000,
+    onSpawn,
   });
+  if (result.signal === 'SIGTERM' || result.signal === 'SIGKILL') {
+    throw new Error('cancelled by user');
+  }
   if (result.code !== 0) {
     throw new Error(result.stderr.trim() || `yt-dlp probe exited with code ${result.code ?? 'unknown'}`);
   }
@@ -77,6 +86,7 @@ export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: str
     '--newline',
     '--no-simulate',
     '--no-overwrites',
+    '--windows-filenames',
     '--write-info-json',
     '--write-thumbnail',
     '--convert-thumbnails',

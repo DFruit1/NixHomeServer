@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 export type SpawnResult = {
   code: number | null;
@@ -10,13 +10,14 @@ export type SpawnResult = {
 export const runCommand = (
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number } = {},
+  options: { cwd?: string; timeoutMs?: number; onSpawn?: (child: ChildProcess) => void } = {},
 ): Promise<SpawnResult> =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    options.onSpawn?.(child);
     let stdout = '';
     let stderr = '';
     const timeout =

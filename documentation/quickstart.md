@@ -1,20 +1,39 @@
 # Quickstart
 
-Use this guide for bootstrap only:
-- workstation prerequisites
-- machine-specific [`vars.nix`](../vars.nix) setup
-- secrets staging
-- the initial agenix key install on a target host
-- blank-machine bootstrap up to the first deploy
+Use this guide for the first install on new hardware, before the homepage,
+SSO, or the "For Admins" page exists.
 
-This guide is intentionally the exception path. Normal day-2 operations now use
-the remote archive workflow from [Operations](./operations.md), so the desktop
-does not need local Nix for validation or deploys once the server already
-exists.
+This is the bootstrap exception path:
+- choose machine-specific settings in [`vars.nix`](../vars.nix)
+- discover target disks and network interfaces
+- create or install the agenix identity
+- stage and encrypt required secrets
+- provision blank disks
+- install NixOS
+- run the first guarded deploy
 
-## Generate And Stage Secrets
+After the first guarded deploy succeeds, use [Operations](./operations.md) and
+the homepage "For Admins" page for normal app configuration, user onboarding,
+runtime checks, and rebuilds.
 
-Before generating secrets, configure the main install in [`vars.nix`](../vars.nix).
+## Prerequisites
+
+Prepare these before touching disks:
+
+- Git access to this repo or your fork.
+- A Nix-capable admin workstation or a NixOS installer shell with network.
+- The SSH public key that should log in as `vars.identity.localAdminUser`.
+- Static LAN settings for the target: hostname, interface, IP, prefix, and gateway.
+- A domain and Cloudflare zone access for DNS-01 ACME and the Cloudflare Tunnel.
+- A Cloudflare Tunnel credentials JSON for `cfHomeCreds`.
+- A Cloudflare DNS API token for `cfAPIToken`.
+- A NetBird setup key for `netbirdSetupKey`.
+- A storage alert webhook URL for `storageAlertWebhookUrl`.
+- A MEGA password for `rcloneMegaPassword`, because the current secret manifest expects it.
+- Exact target disk IDs from `/dev/disk/by-id`, not kernel names such as `/dev/sda`.
+
+## Prepare `vars.nix`
+
 For a new one-host install, start from [`vars.example.nix`](../vars.example.nix):
 
 ```bash
@@ -22,34 +41,38 @@ cp vars.example.nix vars.nix
 $EDITOR vars.nix
 ```
 
-Run the non-destructive config readiness check before any deploy or blank-machine work:
+Set the operator-facing block first:
+
+- `identity.adminUser`: the dedicated Kanidm operator account.
+- `identity.localAdminUser`: the local Unix SSH/sudo account.
+- `identity.sshPublicKey`: the public SSH key for root and the local admin.
+- `network`: hostname, domain, LAN interface, LAN IP, prefix, gateway, and NetBird IP.
+- `system.timeZone`.
+- `system.hostId`: a stable 8-character lowercase hexadecimal value.
+- `edge.cloudflareTunnelName`.
+- `storage.systemDisk` and `storage.dataPool.mirrorPairs`.
+
+Generate a host ID if you do not already have one:
+
+```bash
+head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n'
+printf '\n'
+```
+
+Run the non-destructive readiness checks:
 
 ```bash
 nix run .#validate-config-readiness
 nix run .#show-config-summary
 ```
 
-Generate repo-managed secrets and encrypt the staged inputs with the single documented secrets entrypoint:
+Disk and interface warnings are expected when you run these checks from a
+workstation that is not the target server. Verify those values again from the
+installer before destructive disk work.
 
-```bash
-./scripts/generate-all-secrets.sh
-```
+## Discover Target Hardware
 
-Expected result:
-- encrypted secrets under `secrets/` update without leaving cleartext material outside `secrets/unencrypted/`
-- no error reports a missing staged input or invalid JSON for `cfHomeCreds`
-- `secrets/pubkeys/age.pub` matches the private key you plan to install on the target host
-
-For normal day-2 operations, you can instead sync the repo to the running
-server and execute the same entrypoint there:
-
-```bash
-ssh <admin>@<hostname> 'cd /path/to/repo && ./scripts/generate-all-secrets.sh'
-```
-
-## Blank-Machine Bootstrap
-
-Boot a recent NixOS installer ISO, get network access, then clone the repo.
+Boot a recent NixOS installer ISO, get network access, then clone the repo:
 
 ```bash
 mkdir -p /mnt/src
@@ -57,15 +80,175 @@ git clone <your-fork-or-origin-url> /mnt/src
 cd /mnt/src
 ```
 
-This repo no longer maintains destructive disk-wrapper helpers. Treat [`bootstrap/disko-system.nix`](../bootstrap/disko-system.nix) and [`bootstrap/disko-data.nix`](../bootstrap/disko-data.nix) as blank-machine bootstrap references only. If the machine is blank, provision the system SSD and data pool with those declarations or with your own equivalent process before continuing with install-time mounting. Do not use `disko` to manage an already-installed server or an in-place storage migration.
-
-Once the target filesystem layout is mounted under `/mnt`, copy the repo into the installed system, install the agenix key, and install the OS.
+Inspect disks and network interfaces from the installer:
 
 ```bash
-cp -r /mnt/src/* /mnt/etc/nixos
+lsblk -o NAME,PATH,TYPE,SIZE,MODEL,SERIAL,FSTYPE,MOUNTPOINTS
+ls -l /dev/disk/by-id/
+ip link
+```
+
+Print the repo's read-only storage planning helper:
+
+```bash
+nix run .#bootstrap-storage-plan
+```
+
+Record:
+
+- one system SSD for `storage.systemDisk`
+- pairs of data disks for `storage.dataPool.mirrorPairs`
+- the real wired LAN interface for `network.lanInterface`
+
+Stop here if any selected disk contains data you intend to keep.
+
+## Create And Stage Agenix Identity
+
+The deployed system decrypts agenix secrets with `/etc/agenix/age.key`.
+Create or copy that private key before generating secrets.
+
+For a new identity:
+
+```bash
+install -d -m 0700 /tmp/nixhomeserver-age
+age-keygen -o /tmp/nixhomeserver-age/age.key
+install -d -m 0755 secrets/pubkeys
+age-keygen -y /tmp/nixhomeserver-age/age.key > secrets/pubkeys/age.pub
+```
+
+If you already have an age identity, derive the public recipient from that key:
+
+```bash
+install -d -m 0755 secrets/pubkeys
+age-keygen -y /path/to/age.key > secrets/pubkeys/age.pub
+```
+
+Track `secrets/pubkeys/age.pub`. Do not commit the private `age.key`.
+
+## Stage And Encrypt Secrets
+
+Create the plaintext staging directory:
+
+```bash
+install -d -m 0700 secrets/unencrypted
+```
+
+Stage these files:
+
+- `secrets/unencrypted/netbirdSetupKey`: plain NetBird setup key.
+- `secrets/unencrypted/cfHomeCreds`: Cloudflare Tunnel credentials JSON with `AccountTag`, `TunnelID`, and `TunnelSecret`.
+- `secrets/unencrypted/cfAPIToken`: token environment file containing `CLOUDFLARE_DNS_API_TOKEN=...` or `CLOUDFLARE_ZONE_API_TOKEN=...`.
+- `secrets/unencrypted/storageAlertWebhookUrl`: an `http://` or `https://` webhook URL.
+- `secrets/unencrypted/rcloneMegaPassword`: plain MEGA password for the configured offsite copy target.
+
+Generate repo-managed secrets and encrypt all staged external inputs:
+
+```bash
+./scripts/generate-all-secrets.sh
+```
+
+Expected result:
+
+- encrypted `secrets/*.age` files exist
+- `secrets/pubkeys/age.pub` matches the private key you will install on the target
+- no error reports a missing staged input or invalid external secret format
+
+Track intended `secrets/*.age` files and `secrets/pubkeys/age.pub`. Keep
+`secrets/unencrypted/` and private age keys untracked.
+
+## Provision Blank Disks
+
+This section is destructive. Use it only for blank hardware or disks you are
+intentionally wiping.
+
+This repo does not maintain a destructive disk-wrapper helper. Treat
+[`bootstrap/disko-system.nix`](../bootstrap/disko-system.nix) and
+[`bootstrap/disko-data.nix`](../bootstrap/disko-data.nix) as blank-machine
+bootstrap references, or provision the same layout with your own reviewed
+process.
+
+Expected layout:
+
+- system disk partition 1: EFI filesystem mounted at `/boot`
+- system disk partition 2: Btrfs with `/`, `/nix`, and `/persist` subvolumes
+- data disks: GPT with ZFS partitions assigned to the configured mirrored pool
+- data pool: `vars.zfsDataPool.name`, normally `data`
+- data datasets: mounted under `vars.zfsDataPool.mountPoint`, normally `/mnt/data`
+
+Do not use `disko` for an already-installed server or an in-place storage
+migration. Existing-server storage maintenance belongs in
+[Restore And Recovery](./restore-and-recovery.md).
+
+After provisioning, mount the target layout under `/mnt` and verify it:
+
+```bash
+findmnt /mnt
+findmnt /mnt/boot
+findmnt /mnt/nix
+findmnt /mnt/persist
+zpool status
+```
+
+## Install NixOS
+
+Copy the complete repo into the installed system. Use `cp -a /mnt/src/.` so
+dotfiles are included:
+
+```bash
+mkdir -p /mnt/etc/nixos
+cp -a /mnt/src/. /mnt/etc/nixos/
+```
+
+Generate and review target hardware config:
+
+```bash
 nixos-generate-config --root /mnt
+$EDITOR /mnt/etc/nixos/hardware-configuration.nix
+```
+
+Install the private agenix identity:
+
+```bash
 install -d -m 0700 /mnt/etc/agenix
 install -m 0400 /path/to/agenix.key /mnt/etc/agenix/age.key
-nixos-install --flake /mnt/etc/nixos#server
+```
+
+Install the host. Replace `<vars.hostname>` with the configured hostname:
+
+```bash
+nixos-install --flake /mnt/etc/nixos#<vars.hostname>
 reboot
 ```
+
+## First Boot Verification
+
+After reboot, SSH in as `vars.localAdminUser`:
+
+```bash
+ssh <local-admin-user>@<vars.hostname>
+```
+
+Check the target:
+
+```bash
+sudo systemctl --failed --no-pager
+zpool status
+findmnt /persist
+findmnt /mnt/data
+```
+
+From the admin workstation repo, run the full first guarded test:
+
+```bash
+./scripts/deploy.sh --debug --action test
+```
+
+Only switch after the guarded test path passes:
+
+```bash
+./scripts/deploy.sh --action switch
+```
+
+At this point the host exists. Continue with [Operations](./operations.md), and
+use the homepage "For Admins" page for app configuration, user onboarding, and
+routine server management once homepage and SSO are reachable.

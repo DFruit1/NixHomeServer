@@ -80,6 +80,7 @@ export const currentUserFromHeaders = (headers: IncomingHttpHeaders, config: App
     email,
     groups,
     canWriteShared,
+    fileBrowserUrlTemplate: config.fileBrowserUrlTemplate,
     destinations: canWriteShared ? ['personal', 'shared'] : ['personal'],
   };
 };

@@ -21,8 +21,8 @@ Declarative NixOS home server optimized for reliability, security, and reproduci
 
 | Situation | Start with | Use when | Follow next |
 | --- | --- | --- | --- |
-| Blank-machine bootstrap | [Quickstart](./documentation/quickstart.md) | You are preparing a workstation, staging secrets, installing the agenix key, or installing onto a fresh machine. `disko` is in scope only here. | Continue with [Operations](./documentation/operations.md) for validation, guarded deploys, and runtime checks. |
-| Normal deploy, validation, or runtime check | [Operations](./documentation/operations.md) | The host already exists and you need the canonical validation gate, guarded deploy workflow, service health, DNS checks, storage checks, or rollback steps. | Use [Kanidm Guide](./documentation/kanidm.md) for identity work, [Vaultwarden Guide](./documentation/vaultwarden.md) for the shared password-manager workflow, or [Restore And Recovery](./documentation/restore-and-recovery.md) for mirrored-pool repair or SSD-backed state restore. |
+| Blank-machine bootstrap | [Quickstart](./documentation/quickstart.md) | You are preparing a workstation or NixOS installer before the homepage exists, staging secrets, installing the agenix key, provisioning blank disks, or installing onto fresh hardware. `disko` or equivalent destructive disk work is in scope only here. | Continue with [Operations](./documentation/operations.md) for the first guarded deploy and runtime checks. After homepage and SSO are live, use the homepage "For Admins" page for app configuration and server management tasks. |
+| Normal deploy, validation, or runtime check | [Operations](./documentation/operations.md) | The host already exists and you need the canonical validation gate, guarded deploy workflow, service health, DNS checks, storage checks, or rollback steps. | Use the homepage "For Admins" page for live app/user guidance, [Kanidm Guide](./documentation/kanidm.md) for identity work, [Vaultwarden Guide](./documentation/vaultwarden.md) for the shared password-manager workflow, or [Restore And Recovery](./documentation/restore-and-recovery.md) for mirrored-pool repair or SSD-backed state restore. |
 | Mirrored-pool repair or SSD-backed state restore | [Restore And Recovery](./documentation/restore-and-recovery.md) | You need the maintained recovery boundary for degraded mirror replacement or backup-backed app-state inspection and restore. | Use [Quickstart](./documentation/quickstart.md) only when the rebuilt host still needs bootstrap inputs or agenix key installation. |
 
 Validation gate: see [Operations](./documentation/operations.md#validation-gate) for the canonical remote day-2 validation workflow and the optional local Nix validation commands.
@@ -42,7 +42,7 @@ so a new admin can configure the main install in one place. The root
 hardware, the fixed core platform layer, and the selected application modules.
 The flake exposes one NixOS configuration named by `vars.hostname`.
 
-Useful first-run helpers:
+Useful first-run helpers to run from the checked-out repo before install or deploy:
 
 - `nix run .#validate-config-readiness`
 - `nix run .#show-config-summary`

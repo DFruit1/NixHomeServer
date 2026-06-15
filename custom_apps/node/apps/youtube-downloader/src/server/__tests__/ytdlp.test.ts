@@ -17,6 +17,7 @@ describe('yt-dlp argv generation', () => {
   it('generates flac extraction without shell interpolation', () => {
     const args = buildDownloadArgs(baseRequest, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
     expect(args).toContain('-x');
+    expect(args).toContain('--windows-filenames');
     expect(args).toContain('--audio-format');
     expect(args).toContain('flac');
     expect(args.at(-1)).toBe(baseRequest.url);

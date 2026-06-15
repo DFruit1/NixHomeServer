@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { assertInside, dateParts, folderNameFor, mediaRootFor, sanitizeSegment } from '../paths.js';
+import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { assertInside, allocateUniqueFolder, dateParts, folderNameFor, mediaRootFor, sanitizeSegment } from '../paths.js';
 import type { AppConfig } from '../config.js';
 import type { CurrentUser, CreateJobRequest, ProbeResponse } from '../../shared/types.js';
 
@@ -33,6 +36,8 @@ const request = {
 describe('media paths', () => {
   it('sanitizes unsafe path segments', () => {
     expect(sanitizeSegment('../bad/name', 'fallback')).toBe('bad name');
+    expect(sanitizeSegment('Formstate | Liquid DnB: mix? <final>*', 'fallback')).toBe('Formstate Liquid DnB mix final');
+    expect(sanitizeSegment('CON', 'fallback')).toBe('CON_');
   });
 
   it('selects effective date parts', () => {
@@ -40,7 +45,7 @@ describe('media paths', () => {
   });
 
   it('builds Jellyfin/Audiobookshelf readable folder segments', () => {
-    expect(folderNameFor(source, request)).toEqual(['Original Channel', '2026', '2026-05-17 - A Useful Talk [abc123]']);
+    expect(folderNameFor(source, request)).toEqual(['Original Channel', '2026', '2026-05-17 - A Useful Talk']);
   });
 
   it('uses personal music, audiobook opt-in, and video roots', () => {
@@ -64,5 +69,23 @@ describe('media paths', () => {
   it('rejects paths escaping their root', () => {
     expect(() => assertInside('/data/users/dsaw/_Music/_YouTube/item', '/data/users')).not.toThrow();
     expect(() => assertInside('/data/elsewhere/item', '/data/users')).toThrow(/escaped/);
+  });
+
+  it('allocates unique folders and reports collision intent', async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'youtube-downloader-path-test-'));
+    const root = path.join(tempRoot, 'out');
+    await mkdir(root, { recursive: true });
+    const segments = ['Artist', 'Song'];
+
+    const first = await allocateUniqueFolder(root, segments);
+    expect(first.collides).toBe(false);
+    expect(first.folder).toBe(path.join(root, 'Artist', 'Song'));
+
+    await mkdir(first.folder, { recursive: true });
+    const second = await allocateUniqueFolder(root, segments);
+    expect(second.collides).toBe(true);
+    expect(second.folder).toBe(`${path.join(root, 'Artist', 'Song')} (1)`);
+
+    await rm(tempRoot, { recursive: true, force: true });
   });
 });

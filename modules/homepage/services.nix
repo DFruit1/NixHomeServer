@@ -862,9 +862,29 @@ let
 
   adminGuide = [
     {
-      title = "Configure the host";
-      command = "$EDITOR vars.nix";
-      detail = "Set identity, network, DNS, storage, and access groups before bootstrap or deploy.";
+      title = "Review evaluated config";
+      command = "nix run .#show-config-summary";
+      detail = "Preview hostnames, app surfaces, access groups, OAuth clients, storage, and required secrets before changing the running server.";
+    }
+    {
+      title = "Validate broad changes";
+      command = "./scripts/deploy.sh --debug --action test";
+      detail = "Use the full gate for first deploys after significant config, app, identity, routing, or storage changes.";
+    }
+    {
+      title = "Run routine guarded deploy";
+      command = "./scripts/deploy.sh --action test";
+      detail = "Stage the repo archive and run the normal remote rebuild test path on the server.";
+    }
+    {
+      title = "Switch after a passing test";
+      command = "./scripts/deploy.sh --action switch";
+      detail = "Switch only after the guarded test path passes and failed systemd units are clear.";
+    }
+    {
+      title = "Rotate or regenerate secrets";
+      command = "./scripts/generate-all-secrets.sh";
+      detail = "Stage plaintext external inputs only under secrets/unencrypted/, encrypt them, and keep plaintext secret material out of git.";
     }
     {
       title = "Manage Kanidm entity removal explicitly";
@@ -872,29 +892,9 @@ let
       detail = "Kanidm is configured with autoremove disabled, so deleted module groups/users are kept for rescue/reprovisioning safety. Clean up stale groups/users intentionally (for example using `present = false` in provision entries) before retiring a module or host.";
     }
     {
-      title = "Validate settings";
-      command = "nix run .#validate-config-readiness && nix run .#show-config-summary";
-      detail = "Evaluate the flake and preview hostnames, OAuth clients, groups, storage, and required secrets.";
-    }
-    {
-      title = "Generate secrets";
-      command = "./scripts/generate-all-secrets.sh";
-      detail = "Generate repo-managed secrets and encrypt staged external secrets under secrets/.";
-    }
-    {
-      title = "Blank-machine install";
-      command = "nixos-install --flake /mnt/etc/nixos#server";
-      detail = "Use documentation/quickstart.md only for installer-time disk, agenix key, and first install work.";
-    }
-    {
-      title = "Guarded deploy";
-      command = "./scripts/deploy.sh --action test";
-      detail = "Stage the repo archive and run the normal remote rebuild test path on the server.";
-    }
-    {
-      title = "Switch after test";
-      command = "./scripts/deploy.sh --action switch";
-      detail = "Switch only after the guarded test path passes and failed systemd units are clear.";
+      title = "Check service health";
+      command = "sudo systemctl --failed --no-pager";
+      detail = "Inspect failed units after deploys and before user-facing troubleshooting.";
     }
   ];
 

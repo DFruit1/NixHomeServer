@@ -87,9 +87,9 @@
   ],
   "adminGuide": [
     {
-      "title": "Guarded deploy",
-      "command": "./scripts/deploy.sh --action test",
-      "detail": "Stage the repo archive and run the normal remote rebuild test path on the server."
+      "title": "Review evaluated config",
+      "command": "nix run .#show-config-summary",
+      "detail": "Preview hostnames, app surfaces, access groups, OAuth clients, storage, and required secrets before changing the running server."
     }
   ],
   "phoneBackup": {

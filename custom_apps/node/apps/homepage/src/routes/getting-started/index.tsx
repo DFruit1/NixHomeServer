@@ -1,10 +1,15 @@
-import { component$, useContext } from '@builder.io/qwik';
-import type { DocumentHead } from '@builder.io/qwik-city';
-import { AppSetupCard } from '../../components/AppSetupCard.js';
+import { component$, useContext, type JSXOutput } from '@builder.io/qwik';
+import { Link, useLocation, type DocumentHead } from '@builder.io/qwik-city';
 import { HomepageContext } from '../../shared/homepage-context.js';
+
+const stepIds = ['sign-in', 'open-services', 'upload-files', 'phone-apps', 'passwords', 'help'] as const;
+type GettingStartedStepId = (typeof stepIds)[number];
+
+const isStepId = (value: string | null): value is GettingStartedStepId => stepIds.includes(value as GettingStartedStepId);
 
 export default component$(() => {
   const homepage = useContext(HomepageContext);
+  const location = useLocation();
   const data = homepage.data;
   const domain = data?.domain ?? 'sydneybasiniot.org';
   const serviceUrl = (id: string, fallback: string) => data?.services.find((service) => service.id === id && service.enabled)?.url ?? fallback;
@@ -13,137 +18,203 @@ export default component$(() => {
   const audiobooksUrl = serviceUrl('audiobooks', `https://audiobooks.${domain}/audiobookshelf/`);
   const videosUrl = serviceUrl('videos', `https://videos.${domain}`);
   const passwordsUrl = serviceUrl('passwords', `https://passwords.${domain}`);
-  const syncthingAddresses = data?.phoneBackup?.connectionAddresses ?? [];
-  const serverHost = data?.serverLanHost ?? 'server.home.arpa';
+  const requestedStep = location.url.searchParams.get('step');
+  const activeStepId: GettingStartedStepId = isStepId(requestedStep) ? requestedStep : 'sign-in';
+  const steps = [
+    {
+      id: 'sign-in',
+      label: 'Sign in',
+      content: (
+        <>
+          <h2>Sign in</h2>
+          <ol class="steps">
+            <li>Open Services.</li>
+            <li>Choose an app.</li>
+            <li>Sign in when asked.</li>
+          </ol>
+          <div class="getting-started-actions compact">
+            <Link class="primary-link" href="/">
+              Open Services
+            </Link>
+          </div>
+          <p class="getting-started-note">If sign-in fails, ask an admin for access.</p>
+        </>
+      ),
+    },
+    {
+      id: 'open-services',
+      label: 'Open an app',
+      content: (
+        <>
+          <h2>Open an app</h2>
+          <ol class="steps">
+            <li>Use the browser first.</li>
+            <li>Install phone or TV apps only if you prefer them.</li>
+          </ol>
+          <div class="getting-started-link-list">
+            <a href={photosUrl}>Photos</a>
+            <a href={filesUrl}>Files</a>
+            <a href={audiobooksUrl}>Audiobooks</a>
+            <a href={videosUrl}>Videos</a>
+          </div>
+        </>
+      ),
+    },
+    {
+      id: 'upload-files',
+      label: 'Upload files',
+      content: (
+        <>
+          <h2>Upload files</h2>
+          <ol class="steps">
+            <li>For normal uploads, open Files.</li>
+            <li>For media folders, use the upload guide.</li>
+            <li>For large uploads, follow the SFTP setup on that page.</li>
+          </ol>
+          <div class="getting-started-actions compact">
+            <a class="primary-link" href={filesUrl}>
+              Open Files
+            </a>
+            <Link class="secondary-link" href="/uploads">
+              Upload guide
+            </Link>
+          </div>
+        </>
+      ),
+    },
+    {
+      id: 'phone-apps',
+      label: 'Set up phone apps',
+      content: (
+        <>
+          <h2>Set up phone apps</h2>
+          <ol class="steps">
+            <li>Install only the apps you use.</li>
+            <li>Paste the matching server address when the app asks.</li>
+            <li>If it does not open away from home, install NetBird.</li>
+          </ol>
+          <dl class="getting-started-addresses">
+            <div>
+              <dt>Immich</dt>
+              <dd>
+                <a href={photosUrl}>{photosUrl}</a>
+              </dd>
+            </div>
+            <div>
+              <dt>Bitwarden</dt>
+              <dd>
+                <a href={passwordsUrl}>{passwordsUrl}</a>
+              </dd>
+            </div>
+            <div>
+              <dt>Audiobookshelf</dt>
+              <dd>
+                <a href={audiobooksUrl}>{audiobooksUrl}</a>
+              </dd>
+            </div>
+            <div>
+              <dt>Jellyfin</dt>
+              <dd>
+                <a href={videosUrl}>{videosUrl}</a>
+              </dd>
+            </div>
+            <div>
+              <dt>NetBird</dt>
+              <dd>
+                <a href="https://docs.netbird.io/get-started/install/mobile">Install app</a>
+              </dd>
+            </div>
+          </dl>
+        </>
+      ),
+    },
+    {
+      id: 'passwords',
+      label: 'Save passwords',
+      content: (
+        <>
+          <h2>Save passwords</h2>
+          <ol class="steps">
+            <li>Open Passwords.</li>
+            <li>Save recovery codes.</li>
+            <li>Save app passwords there.</li>
+          </ol>
+          <div class="getting-started-actions compact">
+            <a class="primary-link" href={passwordsUrl}>
+              Open Passwords
+            </a>
+          </div>
+          <p class="getting-started-note">Keep recovery codes somewhere you can reach without your phone.</p>
+        </>
+      ),
+    },
+    {
+      id: 'help',
+      label: 'Get help',
+      content: (
+        <>
+          <h2>Get help</h2>
+          <ol class="steps">
+            <li>Tell an admin which app you opened.</li>
+            <li>Copy the error text.</li>
+            <li>Say whether you are at home or away.</li>
+          </ol>
+          <ul class="getting-started-checklist">
+            <li>App name</li>
+            <li>What you clicked</li>
+            <li>Error text</li>
+            <li>Home or away</li>
+          </ul>
+        </>
+      ),
+    },
+  ] satisfies {
+    id: GettingStartedStepId;
+    label: string;
+    content: JSXOutput;
+  }[];
+  const activeStep = steps.find((step) => step.id === activeStepId) ?? steps[0];
 
   return (
     <>
-      <section class="section two-column">
-        <div>
-          <div class="section-heading stacked">
-            <h2>Connect Your Devices</h2>
-            <p>Set up account access first, then install the phone apps that make private access and media sync work smoothly.</p>
+      <section class="getting-started-landing">
+        <div class="getting-started-intro">
+          <p class="eyebrow">Getting Started</p>
+          <h1>Start here</h1>
+          <p>Open Services. Sign in when asked. Use the links below only when you need setup help.</p>
+          <div class="getting-started-actions">
+            <Link class="primary-link" href="/">
+              Open Services
+            </Link>
+            <Link class="secondary-link" href="/getting-started?step=sign-in#guide">
+              Start guide
+            </Link>
           </div>
-          <ol class="steps">
-            <li>Open any service and sign in with Kanidm. Finish password setup and MFA before configuring phone apps.</li>
-            <li>Install NetBird on your phone for private network access away from home, then sign in or use the invite flow from the admin.</li>
-            <li>Keep the normal web addresses for day-to-day use. Use NetBird when you are away from home or when a private-only service cannot be reached directly.</li>
-            <li>Install only the app clients you actually use. Every app can also be opened in a browser from the Services page.</li>
-          </ol>
+          <p class="getting-started-note">If a page says you do not have access, ask an admin.</p>
         </div>
-        <div class="folder-card">
-          <h2>Network Addresses</h2>
-          <dl>
-            <div>
-              <dt>Homepage</dt>
-              <dd>https://homepage.{domain}</dd>
-            </div>
-            <div>
-              <dt>Home LAN Server</dt>
-              <dd>{serverHost}</dd>
-            </div>
-            {syncthingAddresses.map((address) => (
-              <div key={address}>
-                <dt>{address.includes('100.') ? 'NetBird Syncthing' : 'LAN Syncthing'}</dt>
-                <dd>{address}</dd>
-              </div>
+
+        <nav class="getting-started-links" aria-label="Most used links">
+          <a href={photosUrl}>Photos</a>
+          <a href={filesUrl}>Files</a>
+          <a href={passwordsUrl}>Passwords</a>
+          <Link href="/uploads">Uploads</Link>
+        </nav>
+      </section>
+
+      <section id="guide" class="getting-started-guide">
+        <nav class="getting-started-toc" aria-label="Getting started steps">
+          <ol>
+            {steps.map((step) => (
+              <li key={step.id}>
+                <Link href={`/getting-started?step=${step.id}#guide`} class={{ selected: activeStepId === step.id }}>
+                  <span>{step.label}</span>
+                </Link>
+              </li>
             ))}
-          </dl>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-heading">
-          <h2>Phone Apps</h2>
-          <p>Install these when you want native app behavior instead of browser access.</p>
-        </div>
-        <div class="app-setup-grid">
-          <AppSetupCard
-            title="NetBird"
-            platform="iOS / Android"
-            url="https://docs.netbird.io/get-started/install/mobile"
-            detail="Private mesh-network access for the server when you are not on the home LAN."
-            steps={[
-              'Install the NetBird mobile app.',
-              'Sign in or use the setup flow provided by the admin.',
-              'Leave NetBird connected before opening private server apps away from home.',
-            ]}
-          />
-          <AppSetupCard
-            title="Immich"
-            platform="iOS / Android"
-            url={photosUrl}
-            detail="Native photo browsing and camera-roll backup."
-            steps={[
-              `Use ${photosUrl} as the server endpoint.`,
-              'Sign in with Kanidm.',
-              'Choose the albums to back up before enabling automatic backup.',
-            ]}
-          />
-          <AppSetupCard
-            title="Syncthing-Fork"
-            platform="Android"
-            url="/services/offline-media"
-            detail="Copies personal music and selected video folders from the server to your devices."
-            steps={[
-              'Open the Offline Media service details page.',
-              'Scan the Server Device ID and save your device ID on the homepage.',
-              'Accept the offered folders as receive-only on the device.',
-            ]}
-          />
-          <AppSetupCard
-            title="Bitwarden"
-            platform="iOS / Android"
-            url={passwordsUrl}
-            detail="Mobile client for the Passwords service."
-            steps={[
-              'Install Bitwarden from the app store.',
-              `Choose self-hosted server and enter ${passwordsUrl}.`,
-              'Open the Vaultwarden signup page and create your account.',
-            ]}
-          />
-          <AppSetupCard
-            title="Audiobookshelf"
-            platform="Android / web"
-            url={audiobooksUrl}
-            detail="Native or browser listening for audiobooks and podcasts."
-            steps={[
-              `Use ${audiobooksUrl} as the server address.`,
-              'Sign in with Kanidm if prompted.',
-              'Use offline downloads only for books you want stored on the device.',
-            ]}
-          />
-          <AppSetupCard
-            title="Jellyfin"
-            platform="iOS / Android / TV"
-            url={videosUrl}
-            detail="Native clients for videos on phones, tablets, TVs, and streaming devices."
-            steps={[
-              `Use ${videosUrl} as the server address.`,
-              'Sign in with your Jellyfin account.',
-              'Use NetBird first if the app cannot reach the server from outside home.',
-            ]}
-          />
-        </div>
-      </section>
-
-      <section class="section two-column">
-        <div>
-          <h2>Files And Uploads</h2>
-          <ol class="steps">
-            <li>Use Files in the browser for normal uploads: {filesUrl}.</li>
-            <li>Use How to Upload Files when you need the exact media folder for documents, books, videos, or audiobooks.</li>
-            <li>Use direct SFTP only for large or repeated uploads after saving your public key on the upload page.</li>
           </ol>
-        </div>
-        <div>
-          <h2>Passwords And Recovery</h2>
-          <ol class="steps">
-            <li>Store app-local passwords, recovery codes, and server notes in Passwords after your account is created.</li>
-            <li>Keep Kanidm recovery codes somewhere you can still reach if the server or phone is unavailable.</li>
-            <li>Ask an admin before deleting synced backup or media folders from a phone app.</li>
-          </ol>
-        </div>
+        </nav>
+
+        <article class="getting-started-step">{activeStep.content}</article>
       </section>
     </>
   );

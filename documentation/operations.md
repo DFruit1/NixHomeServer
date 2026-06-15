@@ -7,6 +7,28 @@ documented path is to stage the repo archive over SSH and let the remote server
 perform evaluation, builds, activation, and secrets generation. Blank-machine
 bootstrap remains the installer-side exception.
 
+## After Bootstrap
+
+A first install is complete when the host accepts SSH for `vars.localAdminUser`,
+the agenix key is installed at `/etc/agenix/age.key`, the storage mounts are
+present, and a guarded test deploy passes:
+
+```bash
+./scripts/deploy.sh --debug --action test
+```
+
+After that point, do not return to installer-time disk provisioning for normal
+work. Routine changes use the guarded deploy path:
+
+```bash
+./scripts/deploy.sh --action test
+./scripts/deploy.sh --action switch
+```
+
+Once homepage and SSO are reachable, use the homepage "For Admins" page for
+live app configuration, user onboarding commands, and common server-management
+reminders.
+
 ## Common Commands
 
 - Remote validation gate: `./scripts/deploy.sh --debug --action test`

@@ -12,6 +12,7 @@ export type AppConfig = {
   usersRoot: string;
   concurrency: number;
   sharedWriteGroup: string;
+  fileBrowserUrlTemplate?: string;
 };
 
 const numberFromEnv = (name: string, fallback: number): number => {
@@ -39,5 +40,6 @@ export const loadConfig = (): AppConfig => {
     usersRoot: process.env.YOUTUBE_DOWNLOADER_USERS_ROOT ?? '/mnt/data/users',
     concurrency: numberFromEnv('YOUTUBE_DOWNLOADER_CONCURRENCY', 1),
     sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'files-shared-users',
+    fileBrowserUrlTemplate: process.env.YOUTUBE_DOWNLOADER_FILE_BROWSER_URL_TEMPLATE,
   };
 };

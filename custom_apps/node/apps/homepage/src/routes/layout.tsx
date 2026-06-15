@@ -33,7 +33,7 @@ export default component$(() => {
   const isUploads = path.startsWith('/uploads');
   const isGettingStarted = path.startsWith('/getting-started');
   const isAdmins = path.startsWith('/admins');
-  const showTitle = isUploads || isGettingStarted || isAdmins;
+  const showTitle = !(isUploads || isGettingStarted || isAdmins);
   const title = isUploads
     ? 'How to Upload Files'
     : isGettingStarted
@@ -82,6 +82,8 @@ export default component$(() => {
         <ProfileMenu
           image={profileImage.value}
           username={user?.username ?? 'Loading'}
+          userGroups={user?.groups ?? []}
+          groupDescriptions={data?.kanidmGroupDescriptions ?? {}}
           onImageChange={updateProfileImage}
           onImageClear={clearProfileImage}
         />

@@ -5,14 +5,19 @@ export const ProfileMenu = component$(
   ({
     image,
     username,
+    userGroups,
+    groupDescriptions,
     onImageChange,
     onImageClear,
   }: {
     image: string;
     username: string;
+    userGroups: string[];
+    groupDescriptions: Record<string, string>;
     onImageChange: ImageChangeHandler;
     onImageClear: ToggleHandler;
   }) => {
+    const sortedUserGroups = userGroups.slice().sort((a, b) => a.localeCompare(b));
     return (
       <details class="profile-menu">
         <summary class="profile-trigger" aria-label="Open profile menu">
@@ -25,6 +30,22 @@ export const ProfileMenu = component$(
               <h2>{username}</h2>
               <p>Homepage profile</p>
             </div>
+          </div>
+          <div class="profile-groups">
+            <h3>My Groups</h3>
+            {sortedUserGroups.length > 0 ? (
+              <ul class="profile-group-list">
+                {sortedUserGroups.map((group) => (
+                  <li key={group}>
+                    <span class="group-name" title={groupDescriptions[group] ?? 'No description available'}>
+                      {group}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>No Kanidm groups were returned for this session.</p>
+            )}
           </div>
           <label class="profile-upload">
             Profile picture

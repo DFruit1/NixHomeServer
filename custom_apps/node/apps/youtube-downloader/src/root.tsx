@@ -1,8 +1,27 @@
 import { component$, $, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { CurrentUser, Job, CreateJobRequest } from './shared/types.js';
 import { AUDIO_FORMATS, AUDIO_QUALITIES, VIDEO_CONTAINERS, VIDEO_QUALITIES } from './shared/types.js';
-import { normalizeDownloadUrl } from './shared/url.js';
+import { isYouTubeUrl, normalizeDownloadUrl } from './shared/url.js';
 import './client/styles.css';
+
+const CLIPBOARD_URL_RE = /https?:\/\/[^\s]+/g;
+const RECENT_PASTED_URL_LIMIT = 6;
+
+const trimClipboardToken = (token: string): string => token.trim().replace(/^[([{"'\`]+|[)\]}"'\`.,;:!?]+$/g, '');
+
+const extractYouTubeUrlFromClipboard = (clipboardText: string): string | undefined => {
+  const matches = clipboardText.match(CLIPBOARD_URL_RE);
+  if (!matches) {
+    return undefined;
+  }
+  for (const raw of matches) {
+    const normalized = normalizeDownloadUrl(trimClipboardToken(raw));
+    if (isYouTubeUrl(normalized)) {
+      return normalized;
+    }
+  }
+  return undefined;
+};
 
 export default component$(() => {
   const me = useSignal<CurrentUser | undefined>();
@@ -19,7 +38,9 @@ export default component$(() => {
   const includeChannel = useSignal(true);
   const includeDate = useSignal(true);
   const saveAudioToAudiobooks = useSignal(false);
+  const pasteAndQueue = useSignal(false);
   const submitting = useSignal(false);
+  const recentPastedUrls = useSignal<string[]>([]);
 
   const refresh = $(async () => {
     const [meResponse, jobsResponse] = await Promise.all([fetch('/api/me'), fetch('/api/jobs')]);
@@ -44,12 +65,47 @@ export default component$(() => {
   });
 
   const submit = $(async () => {
-    if (!url.value.trim() || submitting.value) {
+    if (submitting.value) {
       return;
     }
     error.value = '';
+    let requestedUrl = url.value.trim();
+    let usedClipboard = false;
+
+    if (!requestedUrl) {
+      if (!pasteAndQueue.value) {
+        return;
+      }
+      if (!navigator.clipboard?.readText) {
+        error.value = 'Clipboard access is not available in this browser.';
+        return;
+      }
+      try {
+        const clipboardText = await navigator.clipboard.readText();
+        const clipboardUrl = extractYouTubeUrlFromClipboard(clipboardText);
+        if (!clipboardUrl) {
+          error.value = 'Paste a YouTube URL to use the clipboard queue option.';
+          return;
+        }
+        if (recentPastedUrls.value.includes(clipboardUrl)) {
+          error.value = 'This clipboard URL was already queued from Paste & Queue.';
+          return;
+        }
+        requestedUrl = clipboardUrl;
+        usedClipboard = true;
+      } catch {
+        error.value = 'Clipboard access was denied or unavailable.';
+        return;
+      }
+    }
+
+    if (!isYouTubeUrl(requestedUrl)) {
+      error.value = 'A valid YouTube URL is required.';
+      return;
+    }
+
     submitting.value = true;
-    const normalizedUrl = normalizeDownloadUrl(url.value);
+    const normalizedUrl = normalizeDownloadUrl(requestedUrl);
     url.value = normalizedUrl;
     const request: CreateJobRequest = {
       url: normalizedUrl,
@@ -73,6 +129,9 @@ export default component$(() => {
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body.error || 'Download could not be queued');
+      }
+      if (usedClipboard) {
+        recentPastedUrls.value = [normalizedUrl, ...recentPastedUrls.value].slice(0, RECENT_PASTED_URL_LIMIT);
       }
       url.value = '';
       await refresh();
@@ -215,25 +274,36 @@ export default component$(() => {
             Release/upload date
           </label>
           {mediaType.value === 'audio' && (
-            <label>
-              <input
-                type="checkbox"
-                checked={saveAudioToAudiobooks.value}
-                onChange$={(_, target) => (saveAudioToAudiobooks.value = target.checked)}
-              />
-              Save audio to Audiobooks
-            </label>
+            <>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={saveAudioToAudiobooks.value}
+                  onChange$={(_, target) => (saveAudioToAudiobooks.value = target.checked)}
+                />
+                Save audio to Audiobooks
+              </label>
+              <label>
+                <input type="checkbox" checked={pasteAndQueue.value} onChange$={(_, target) => (pasteAndQueue.value = target.checked)} />
+                Paste & Queue button
+              </label>
+            </>
           )}
         </div>
 
         {error.value && <p class="error">{error.value}</p>}
-        <button class="primary" type="button" disabled={!url.value.trim() || submitting.value} onClick$={submit}>
+        <button
+          class="primary"
+          type="button"
+          disabled={(!url.value.trim() && !pasteAndQueue.value) || submitting.value}
+          onClick$={submit}
+        >
           {submitting.value ? 'Queueing' : 'Queue'}
         </button>
       </section>
 
-      <JobList title="Active" jobs={activeJobs} refresh={refresh} />
-      <JobList title="History" jobs={historyJobs} refresh={refresh} />
+      <JobList title="Active" jobs={activeJobs} refresh={refresh} fileBrowserUrlTemplate={me.value?.fileBrowserUrlTemplate} />
+      <JobList title="History" jobs={historyJobs} refresh={refresh} fileBrowserUrlTemplate={me.value?.fileBrowserUrlTemplate} />
     </main>
   );
 });
@@ -242,9 +312,10 @@ type JobListProps = {
   title: string;
   jobs: Job[];
   refresh: () => Promise<void>;
+  fileBrowserUrlTemplate?: string;
 };
 
-const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
+const JobList = component$<JobListProps>(({ title, jobs, refresh, fileBrowserUrlTemplate }) => {
   const action = $(async (job: Job, command: 'cancel' | 'retry' | 'delete') => {
     const response = await fetch(`/api/jobs/${job.id}${command === 'delete' ? '' : `/${command}`}`, {
       method: command === 'delete' ? 'DELETE' : 'POST',
@@ -264,6 +335,18 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
       await refresh();
     }
   });
+  const openInBrowser = $((event: Event, job: Job) => {
+    const target = buildFileBrowserUrl(job.outputFolder, fileBrowserUrlTemplate);
+    if (!target) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    window.open(target, '_blank', 'noopener,noreferrer');
+  });
+  const stopPropagation = $((event: Event) => {
+    event.stopPropagation();
+  });
 
   return (
     <section class="jobs">
@@ -273,11 +356,20 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
       ) : (
         <div class="job-stack">
           {jobs.map((job) => (
-            <article class={`job ${job.status}`} key={job.id}>
+            <article
+              class={`job ${job.status} ${job.outputFolder ? 'job-clickable' : ''}`}
+              key={job.id}
+              onClick$={(event) => {
+                if (!job.outputFolder) {
+                  return;
+                }
+                openInBrowser(event, job);
+              }}
+            >
               <div class="job-head">
                 <div>
                   <strong>{job.source?.title || job.request.url}</strong>
-                  <p>{job.outputFolder || job.request.mediaType}</p>
+                  <p>{job.outputFolder ? 'Output folder ready' : job.request.mediaType}</p>
                 </div>
                 <span class={`status-badge ${job.status}`}>{job.status}</span>
               </div>
@@ -294,40 +386,80 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
               <div class="job-actions">
                 {job.status === 'alert' && job.alert?.kind === 'duplicate' && (
                   <>
-                    <button type="button" onClick$={() => resolveAlert(job, 'download-again')}>
+                    <button type="button" onClick$={(event) => {
+                      stopPropagation(event);
+                      resolveAlert(job, 'download-again');
+                    }}>
                       Download again
                     </button>
-                    <button type="button" onClick$={() => resolveAlert(job, 'cancel')}>
+                    <button type="button" onClick$={(event) => {
+                      stopPropagation(event);
+                      resolveAlert(job, 'cancel');
+                    }}>
+                      Cancel
+                    </button>
+                  </>
+                )}
+                {job.status === 'alert' && job.alert?.kind === 'folder-collision' && (
+                  <>
+                    <button type="button" onClick$={(event) => {
+                      stopPropagation(event);
+                      resolveAlert(job, 'download-again');
+                    }}>
+                      Download another copy
+                    </button>
+                    <button type="button" onClick$={(event) => {
+                      stopPropagation(event);
+                      resolveAlert(job, 'cancel');
+                    }}>
                       Cancel
                     </button>
                   </>
                 )}
                 {job.status === 'alert' && job.alert?.kind === 'chapters' && (
                   <>
-                    <button type="button" onClick$={() => resolveAlert(job, 'split-chapters')}>
+                    <button type="button" onClick$={(event) => {
+                      stopPropagation(event);
+                      resolveAlert(job, 'split-chapters');
+                    }}>
                       Yes, split
                     </button>
-                    <button type="button" onClick$={() => resolveAlert(job, 'single-file')}>
+                    <button type="button" onClick$={(event) => {
+                      stopPropagation(event);
+                      resolveAlert(job, 'single-file');
+                    }}>
                       No, single file
                     </button>
-                    <button type="button" onClick$={() => resolveAlert(job, 'cancel')}>
+                    <button type="button" onClick$={(event) => {
+                      stopPropagation(event);
+                      resolveAlert(job, 'cancel');
+                    }}>
                       Cancel
                     </button>
                   </>
                 )}
                 {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
-                  <button type="button" onClick$={() => action(job, 'cancel')}>
+                  <button type="button" onClick$={(event) => {
+                    stopPropagation(event);
+                    action(job, 'cancel');
+                  }}>
                     Cancel
                   </button>
                 )}
                 {['failed', 'cancelled'].includes(job.status) && (
-                  <button type="button" onClick$={() => action(job, 'retry')}>
+                  <button type="button" onClick$={(event) => {
+                    stopPropagation(event);
+                    action(job, 'retry');
+                  }}>
                     Retry
                   </button>
                 )}
                 {['completed', 'failed', 'cancelled'].includes(job.status) && (
-                  <button type="button" onClick$={() => action(job, 'delete')}>
-                    Remove
+                  <button type="button" onClick$={(event) => {
+                    stopPropagation(event);
+                    action(job, 'delete');
+                  }}>
+                    Clear
                   </button>
                 )}
               </div>
@@ -341,14 +473,15 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh }) => {
 
 const activeJobRank = (job: Job): number => {
   switch (job.status) {
+    case 'alert':
+      return 0;
     case 'probing':
     case 'running':
     case 'postprocessing':
-      return 0;
-    case 'queued':
       return 1;
-    case 'alert':
+    case 'queued':
       return 2;
+    case 'alert':
     default:
       return 3;
   }
@@ -375,4 +508,20 @@ const progressLabel = (job: Job): string => {
     return job.progress?.phase === 'move' ? 'Moving files into the library' : 'Post-processing media';
   }
   return 'Starting download';
+};
+
+const buildFileBrowserUrl = (outputFolder: string | undefined, template?: string): string | undefined => {
+  if (!outputFolder) {
+    return undefined;
+  }
+  const encodedPath = encodeURIComponent(outputFolder);
+  if (!template) {
+    const hostParts = window.location.hostname.split('.');
+    const filesHost = hostParts.length > 1 ? `files.${hostParts.slice(1).join('.')}` : `files.${window.location.hostname}`;
+    return `${window.location.protocol}//${filesHost}/#/?path=${encodedPath}`;
+  }
+  if (template.includes('%path%')) {
+    return template.replaceAll('%path%', encodedPath);
+  }
+  return `${template.replace(/\/$/, '')}/#/?path=${encodedPath}`;
 };

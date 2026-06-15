@@ -3,15 +3,20 @@ import { access, mkdir } from 'node:fs/promises';
 import type { AppConfig } from './config.js';
 import type { CurrentUser, CreateJobRequest, ProbeResponse } from '../shared/types.js';
 
+const windowsReservedNames = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
 export const sanitizeSegment = (value: string | undefined, fallback: string): string => {
   const cleaned = (value ?? fallback)
-    .replace(/[\\/]/g, ' ')
+    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, ' ')
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^[.\s]+|[.\s]+$/g, '')
     .slice(0, 120);
-  return cleaned || fallback;
+  if (!cleaned) {
+    return fallback;
+  }
+  return windowsReservedNames.test(cleaned) ? `${cleaned}_` : cleaned;
 };
 
 export const dateParts = (source: ProbeResponse): { year?: string; date?: string } => {
@@ -57,10 +62,9 @@ export const assertInside = (candidate: string, root: string): string => {
 
 export const folderNameFor = (source: ProbeResponse, request: CreateJobRequest): string[] => {
   const title = sanitizeSegment(source.title, 'Unknown Title');
-  const id = sanitizeSegment(source.id, 'NOID');
   const channel = sanitizeSegment(source.channel || source.uploader, 'Unknown Channel');
   const { year, date } = dateParts(source);
-  const leaf = request.includeDate && date ? `${date} - ${title} [${id}]` : `${title} [${id}]`;
+  const leaf = request.includeDate && date ? `${date} - ${title}` : title;
   const segments: string[] = [];
   if (request.includeChannel) {
     segments.push(channel);
@@ -72,14 +76,26 @@ export const folderNameFor = (source: ProbeResponse, request: CreateJobRequest):
   return segments;
 };
 
+export type CandidateFolder = {
+  folder: string;
+  collides: boolean;
+};
+
 export const uniqueFolder = async (root: string, segments: string[]): Promise<string> => {
+  return (await allocateUniqueFolder(root, segments)).folder;
+};
+
+export const allocateUniqueFolder = async (root: string, segments: string[]): Promise<CandidateFolder> => {
   const base = path.join(root, ...segments);
-  for (let index = 1; index < 1000; index += 1) {
-    const candidate = index === 1 ? base : `${base} (${index})`;
+  for (let index = 0; index < 1000; index += 1) {
+    const candidate = index === 0 ? base : `${base} (${index})`;
     try {
       await access(candidate);
     } catch {
-      return candidate;
+      return {
+        folder: candidate,
+        collides: index > 0,
+      };
     }
   }
   throw new Error(`could not allocate unique output folder under ${root}`);
