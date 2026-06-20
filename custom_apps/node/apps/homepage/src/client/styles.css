@@ -27,21 +27,27 @@ select {
 
 .shell {
   min-height: 100vh;
-  padding: 28px;
+  padding: 0 28px 28px;
 }
 
 .topbar {
+  margin: 0 -28px 18px;
+  border-bottom: 1px solid #c8d8ec;
+  background: linear-gradient(118deg, #f8fcff 0%, #e8f4ff 34%, #f6fbff 58%, #eaf7ff 100%);
+  background-size: 220% 220%;
+  padding: 14px 28px;
+  animation: preview-gradient-shift 9s ease-in-out infinite alternate;
+}
+
+.topbar__inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin: 0 auto 24px;
+  width: 100%;
+  min-width: 0;
   max-width: 1180px;
-}
-
-.topbar.compact {
-  justify-content: flex-end;
-  margin-bottom: 12px;
+  margin: 0 auto;
 }
 
 .eyebrow {
@@ -92,6 +98,7 @@ h4 {
 
 .profile-menu {
   position: relative;
+  flex: 0 0 auto;
 }
 
 .session span {
@@ -166,37 +173,6 @@ h4 {
   gap: 12px;
 }
 
-.profile-groups {
-  border-top: 1px solid #e3eaf2;
-  padding-top: 10px;
-  display: grid;
-  gap: 8px;
-}
-
-.profile-groups p {
-  margin: 0;
-  color: #607086;
-}
-
-.profile-group-list {
-  margin: 0;
-  padding-left: 0;
-  list-style: none;
-  display: grid;
-  gap: 6px;
-}
-
-.profile-group-list li {
-  border: 1px solid #e4ecf5;
-  border-radius: 6px;
-  background: #f8fafc;
-  padding: 6px 8px;
-}
-
-.profile-group-list .group-name {
-  color: #15212f;
-}
-
 .profile-preview {
   display: grid;
   width: 52px;
@@ -262,19 +238,29 @@ h4 {
 }
 
 .tabs {
+  flex: 1 1 0;
   display: flex;
   gap: 8px;
-  margin: 0 auto 18px;
-  max-width: 1180px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
 }
 
 .tabs a {
   min-width: 88px;
   padding: 10px 14px;
-  font-weight: 700;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.tabs a.selected,
+.tabs a.selected {
+  border-color: rgba(36, 91, 159, 0.18);
+  background: #f2f9ff;
+  color: #1f2a38;
+  font-weight: 800;
+}
+
 .guide-list a.selected,
 .getting-started-toc a.selected {
   border-color: #245b9f;
@@ -1078,6 +1064,7 @@ h4 {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .topbar,
   .service-preview-bar__inner {
     animation: none;
   }
@@ -1709,13 +1696,21 @@ textarea {
 
 @media (max-width: 760px) {
   .shell {
-    padding: 18px;
+    padding: 0 18px 18px;
   }
 
-  .topbar,
   .section-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .topbar {
+    margin: 0 -18px 16px;
+    padding: 10px 18px;
+  }
+
+  .topbar__inner {
+    gap: 10px;
   }
 
   h1 {
@@ -1781,8 +1776,8 @@ textarea {
     padding-left: 0;
   }
 
-  .tabs {
-    overflow-x: auto;
+  .tabs a {
+    min-width: max-content;
   }
 
   .offline-media-enroll-form {

@@ -42,6 +42,10 @@ const baseConfig: AppConfig = {
     ],
     folderGuides: [],
     adminGuide: [],
+    kanidmGroups: ['backup-admin', 'media-automation-users'],
+    kanidmGroupDescriptions: {
+      'backup-admin': '',
+    },
   },
 };
 
@@ -62,5 +66,16 @@ describe('homepage data access filtering', () => {
     });
 
     expect(data.services.map((service) => service.id)).toEqual(['files']);
+  });
+
+  it('fills missing and empty Kanidm group descriptions', async () => {
+    const data = await buildHomepageData(baseConfig, {
+      'x-auth-request-preferred-username': 'alice',
+    });
+
+    expect(data.kanidmGroupDescriptions).toMatchObject({
+      'backup-admin': 'Grants Backup Admin access.',
+      'media-automation-users': 'Grants Media Automation Users access.',
+    });
   });
 });

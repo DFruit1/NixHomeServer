@@ -1,25 +1,48 @@
-import { component$ } from '@builder.io/qwik';
+import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { ImageChangeHandler, ToggleHandler } from '../shared/ui-types.js';
 
 export const ProfileMenu = component$(
   ({
     image,
     username,
-    userGroups,
-    groupDescriptions,
     onImageChange,
     onImageClear,
   }: {
     image: string;
     username: string;
-    userGroups: string[];
-    groupDescriptions: Record<string, string>;
     onImageChange: ImageChangeHandler;
     onImageClear: ToggleHandler;
   }) => {
-    const sortedUserGroups = userGroups.slice().sort((a, b) => a.localeCompare(b));
+    const menuRef = useSignal<HTMLDetailsElement>();
+    const closeMenu = $(() => {
+      if (menuRef.value) {
+        menuRef.value.open = false;
+      }
+    });
+
+    useVisibleTask$(({ cleanup }) => {
+      const onPointerDown = (event: PointerEvent) => {
+        const menu = menuRef.value;
+        if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {
+          menu.open = false;
+        }
+      };
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key === 'Escape' && menuRef.value?.open) {
+          menuRef.value.open = false;
+        }
+      };
+
+      document.addEventListener('pointerdown', onPointerDown);
+      document.addEventListener('keydown', onKeyDown);
+      cleanup(() => {
+        document.removeEventListener('pointerdown', onPointerDown);
+        document.removeEventListener('keydown', onKeyDown);
+      });
+    });
+
     return (
-      <details class="profile-menu">
+      <details ref={menuRef} class="profile-menu">
         <summary class="profile-trigger" aria-label="Open profile menu">
           {image ? <img src={image} alt="" /> : <span>{username.slice(0, 1).toUpperCase()}</span>}
         </summary>
@@ -30,22 +53,6 @@ export const ProfileMenu = component$(
               <h2>{username}</h2>
               <p>Homepage profile</p>
             </div>
-          </div>
-          <div class="profile-groups">
-            <h3>My Groups</h3>
-            {sortedUserGroups.length > 0 ? (
-              <ul class="profile-group-list">
-                {sortedUserGroups.map((group) => (
-                  <li key={group}>
-                    <span class="group-name" title={groupDescriptions[group] ?? 'No description available'}>
-                      {group}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p>No Kanidm groups were returned for this session.</p>
-            )}
           </div>
           <label class="profile-upload">
             Profile picture
@@ -59,7 +66,7 @@ export const ProfileMenu = component$(
           <button class="profile-action" type="button" disabled>
             Preferences
           </button>
-          <a class="profile-signout" href="/oauth2/sign_out?rd=/oauth2/start">
+          <a class="profile-signout" href="/oauth2/sign_out?rd=/oauth2/start" onClick$={closeMenu}>
             Sign out
           </a>
         </section>

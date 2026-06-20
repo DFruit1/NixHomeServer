@@ -20,11 +20,29 @@ const hasRequiredGroups = (requiredGroups: string[] | undefined, userGroups: str
   return requiredGroups.every((group) => userGroups.includes(group));
 };
 
+const describeGroup = (group: string): string => {
+  const readableName = group
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return `Grants ${readableName} access.`;
+};
+
+const fillGroupDescriptions = (groups: string[], descriptions: Record<string, string> | undefined): Record<string, string> => {
+  const filledDescriptions = { ...(descriptions ?? {}) };
+  for (const group of groups) {
+    if (!filledDescriptions[group]?.trim()) {
+      filledDescriptions[group] = describeGroup(group);
+    }
+  }
+  return filledDescriptions;
+};
+
 export const buildHomepageData = async (config: AppConfig, headers: IncomingHttpHeaders): Promise<HomepageData> => {
+  const kanidmGroups = config.homepage.kanidmGroups ?? [];
   const body: HomepageData = {
     ...config.homepage,
-    kanidmGroups: config.homepage.kanidmGroups ?? [],
-    kanidmGroupDescriptions: config.homepage.kanidmGroupDescriptions ?? {},
+    kanidmGroups,
+    kanidmGroupDescriptions: fillGroupDescriptions(kanidmGroups, config.homepage.kanidmGroupDescriptions),
     user: currentUserFromHeaders(headers, config.devUser),
   };
   body.services = body.services.filter((service) => hasRequiredGroups(service.requiredGroups, body.user.groups));

@@ -1,5 +1,5 @@
 import { $, Slot, component$, useContextProvider, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import { routeLoader$, useLocation, type DocumentHead } from '@builder.io/qwik-city';
+import { routeLoader$, type DocumentHead } from '@builder.io/qwik-city';
 import { ProfileMenu } from '../components/ProfileMenu.js';
 import { TopNav } from '../components/TopNav.js';
 import { HomepageContext, type HomepageLoad } from '../shared/homepage-context.js';
@@ -22,27 +22,10 @@ export const useHomepageData = routeLoader$(async (event): Promise<HomepageLoad>
 
 export default component$(() => {
   const homepage = useHomepageData();
-  const location = useLocation();
   const profileImage = useSignal('');
   useContextProvider(HomepageContext, homepage.value);
-  const path = location.url.pathname;
   const data = homepage.value.data;
   const user = data?.user;
-  const serviceId = path.match(/^\/services\/([^/?#]+)/)?.[1];
-  const service = serviceId ? data?.services.find((item) => item.enabled && item.id === decodeURIComponent(serviceId)) : undefined;
-  const isUploads = path.startsWith('/uploads');
-  const isGettingStarted = path.startsWith('/getting-started');
-  const isAdmins = path.startsWith('/admins');
-  const showTitle = !(isUploads || isGettingStarted || isAdmins);
-  const title = isUploads
-    ? 'How to Upload Files'
-    : isGettingStarted
-      ? 'Getting Started'
-      : isAdmins
-        ? 'For Admins'
-        : service
-          ? service.name
-          : 'Home';
 
   useVisibleTask$(() => {
     profileImage.value = window.localStorage.getItem('homepage.profileImage') ?? '';
@@ -72,26 +55,20 @@ export default component$(() => {
 
   return (
     <main class="shell">
-      <header class={{ topbar: true, compact: !showTitle }}>
-        {showTitle && (
-          <div>
-            <p class="eyebrow">Sydney Basin Services</p>
-            <h1>{title}</h1>
-          </div>
-        )}
-        <ProfileMenu
-          image={profileImage.value}
-          username={user?.username ?? 'Loading'}
-          userGroups={user?.groups ?? []}
-          groupDescriptions={data?.kanidmGroupDescriptions ?? {}}
-          onImageChange={updateProfileImage}
-          onImageClear={clearProfileImage}
-        />
+      <header class="topbar">
+        <div class="topbar__inner">
+          <TopNav />
+          <ProfileMenu
+            image={profileImage.value}
+            username={user?.username ?? 'Loading'}
+            onImageChange={updateProfileImage}
+            onImageClear={clearProfileImage}
+          />
+        </div>
       </header>
 
       {homepage.value.error && <p class="notice">{homepage.value.error}</p>}
 
-      <TopNav />
       <Slot />
     </main>
   );

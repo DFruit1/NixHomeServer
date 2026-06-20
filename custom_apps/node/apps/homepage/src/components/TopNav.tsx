@@ -7,21 +7,36 @@ export const TopNav = component$(() => {
   const isUploads = path.startsWith('/uploads');
   const isGettingStarted = path.startsWith('/getting-started');
   const isAdmins = path.startsWith('/admins');
+  const navItems = [
+    {
+      href: '/',
+      label: 'Services',
+      selected: !isUploads && !isGettingStarted && !isAdmins,
+    },
+    {
+      href: '/getting-started',
+      label: 'Getting Started',
+      selected: isGettingStarted,
+    },
+    {
+      href: '/uploads',
+      label: 'How to Upload Files',
+      selected: isUploads,
+    },
+    {
+      href: '/admins',
+      label: 'For Admins',
+      selected: isAdmins,
+    },
+  ].sort((a, b) => Number(b.selected) - Number(a.selected));
 
   return (
     <nav class="tabs" aria-label="Homepage sections">
-      <Link class={{ selected: !isUploads && !path.startsWith('/services/') && !isGettingStarted && !isAdmins }} href="/">
-        Services
-      </Link>
-      <Link class={{ selected: isGettingStarted }} href="/getting-started">
-        Getting Started
-      </Link>
-      <Link class={{ selected: isUploads }} href="/uploads">
-        How to Upload Files
-      </Link>
-      <Link class={{ selected: isAdmins }} href="/admins">
-        For Admins
-      </Link>
+      {navItems.map((item) => (
+        <Link key={item.href} class={{ selected: item.selected }} href={item.href}>
+          {item.label}
+        </Link>
+      ))}
     </nav>
   );
 });
