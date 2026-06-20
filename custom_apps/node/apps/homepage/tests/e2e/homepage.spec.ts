@@ -15,9 +15,10 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await expect(page.getByRole('heading', { name: 'Services' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'SFTP Access', exact: true })).toBeVisible();
 
-  await page.getByRole('link', { name: 'Details' }).filter({ hasText: 'Details' }).first().click();
+  await page.getByRole('link', { name: 'Photos', exact: true }).click();
   await expect(page).toHaveURL(/\/services\/photos$/);
   await page.getByRole('link', { name: 'Services' }).click();
+  await expect(page.getByRole('link', { name: 'Open', exact: true }).first()).toHaveAttribute('target', '_blank');
 
   await page.getByRole('link', { name: 'SFTP Access', exact: true }).click();
   await expect(page).toHaveURL(/\/uploads$/);
@@ -58,6 +59,9 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
 });
 
 test('top-level pages and profile menu render without full reloads', async ({ page }) => {
+  await page.setExtraHTTPHeaders({
+    'x-forwarded-groups': 'backup-admin files-personal-users',
+  });
   await page.goto('/');
 
   await page.getByRole('link', { name: 'Getting Started' }).click();
@@ -73,8 +77,23 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
 
   await page.getByRole('link', { name: 'For Admins' }).click();
   await expect(page).toHaveURL(/\/admins$/);
-  await expect(page.getByRole('heading', { name: 'Server Management' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Admin Command Center' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Daily Checks' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Deploys', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'User Onboarding' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Secrets' })).toBeVisible();
   await expect(page.getByText('Initial disk provisioning')).toBeVisible();
+  await expect(page.getByText('nix run .#show-config-summary')).toBeHidden();
+  await page.locator('summary').filter({ hasText: 'Review evaluated config' }).click();
+  await expect(page.getByText('nix run .#show-config-summary')).toBeVisible();
+  await expect(page.getByText('kanidm person create "$NEW_USER" "$DISPLAY_NAME"')).toBeHidden();
+  await page.locator('summary').filter({ hasText: 'Create the Kanidm account' }).click();
+  await expect(page.getByText('kanidm person create "$NEW_USER" "$DISPLAY_NAME"')).toBeVisible();
+  await page.getByRole('button', { name: "It's for me" }).click();
+  await page.locator('summary').filter({ hasText: 'Grant app/file/admin access' }).click();
+  await expect(page.locator('.group-picker__option.is-member').filter({ hasText: 'backup-admin' })).toBeVisible();
+  await expect(page.locator('.group-picker__option.is-member').filter({ hasText: 'files-personal-users' })).toBeVisible();
+  await expect(page.locator('.group-picker__option').filter({ hasText: 'photos-users' })).not.toHaveClass(/is-member/);
   await expect(page.getByRole('heading', { name: 'Blank-machine install' })).toHaveCount(0);
 
   await page.getByRole('link', { name: 'How to Upload Files' }).click();

@@ -163,6 +163,17 @@ rec {
       jellyfin = 8096;
       jellyfinDiscovery = 7359;
       youtubeDownloader = 8083;
+      seerr = 5055;
+      sonarr = 8989;
+      radarr = 7878;
+      prowlarr = 9696;
+      qbittorrentWeb = 8085;
+      qbittorrentTorrent = 51413;
+      oauth2ProxySeerr = 4189;
+      oauth2ProxySonarr = 4190;
+      oauth2ProxyRadarr = 4191;
+      oauth2ProxyProwlarr = 4192;
+      oauth2ProxyQbittorrent = 4193;
     };
     dnsBootstrapResolvers = [
       {

@@ -21,6 +21,11 @@ let
     "passwords.${vars.domain}"
     "emails.${vars.domain}"
     "ytdownload.${vars.domain}"
+    "requests.${vars.domain}"
+    "sonarr.${vars.domain}"
+    "radarr.${vars.domain}"
+    "prowlarr.${vars.domain}"
+    "torrents.${vars.domain}"
     "syncthing.${vars.domain}"
     vars.kopiaDomain
     vars.rcloneDomain

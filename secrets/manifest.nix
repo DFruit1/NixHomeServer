@@ -100,6 +100,46 @@
       description = "Cookie secret for the Rclone OAuth2 Proxy.";
       bytes = 32;
     };
+    seerrOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Seerr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    seerrOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Seerr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    sonarrOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Sonarr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    sonarrOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Sonarr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    radarrOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Radarr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    radarrOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Radarr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    prowlarrOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Prowlarr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    prowlarrOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Prowlarr OAuth2 Proxy.";
+      bytes = 32;
+    };
+    qbittorrentOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the qBittorrent OAuth2 Proxy.";
+      bytes = 32;
+    };
+    qbittorrentOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the qBittorrent OAuth2 Proxy.";
+      bytes = 32;
+    };
     vaultwardenAdminToken = {
       description = "Vaultwarden admin token.";
       bytes = 32;

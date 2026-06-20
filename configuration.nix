@@ -17,6 +17,11 @@
     ./modules/offline-music
     ./modules/youtube-downloader
     ./modules/paperless
+    ./modules/prowlarr
+    ./modules/qbittorrent
+    ./modules/radarr
+    ./modules/seerr
+    ./modules/sonarr
     ./modules/vaultwarden
 
     ./modules/Integrations/expose_mail_archive_emails_in_files.nix
@@ -28,5 +33,6 @@
     ./modules/Integrations/send_mail_archive_documents_to_paperless.nix
     ./modules/Integrations/wait_for_audiobookshelf_storage_before_youtube_downloader.nix
     ./modules/Integrations/wait_for_jellyfin_storage_before_youtube_downloader.nix
+    ./modules/Integrations/wire_media_automation_stack.nix
   ];
 }

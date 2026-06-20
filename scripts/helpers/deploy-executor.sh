@@ -177,3 +177,10 @@ fi
 
 echo "checking failed units"
 check_failed_units
+
+echo "checking public routes"
+if command -v curl >/dev/null 2>&1; then
+  ./scripts/check-public-routes.sh --hostname "$HOSTNAME_ARG"
+else
+  nix shell --inputs-from . nixpkgs#curl -c bash ./scripts/check-public-routes.sh --hostname "$HOSTNAME_ARG"
+fi

@@ -47,6 +47,16 @@ in
     kopiaOauth2ProxyCookieSecret = { file = secretFile "kopiaOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     rcloneOauth2ProxyClientSecret = { file = secretFile "rcloneOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     rcloneOauth2ProxyCookieSecret = { file = secretFile "rcloneOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    seerrOauth2ProxyClientSecret = { file = secretFile "seerrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    seerrOauth2ProxyCookieSecret = { file = secretFile "seerrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    sonarrOauth2ProxyClientSecret = { file = secretFile "sonarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    sonarrOauth2ProxyCookieSecret = { file = secretFile "sonarrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    radarrOauth2ProxyClientSecret = { file = secretFile "radarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    radarrOauth2ProxyCookieSecret = { file = secretFile "radarrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    prowlarrOauth2ProxyClientSecret = { file = secretFile "prowlarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    prowlarrOauth2ProxyCookieSecret = { file = secretFile "prowlarrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    qbittorrentOauth2ProxyClientSecret = { file = secretFile "qbittorrentOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    qbittorrentOauth2ProxyCookieSecret = { file = secretFile "qbittorrentOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     rcloneMegaPassword = { file = secretFile "rcloneMegaPassword"; owner = "root"; mode = "0400"; };
     vaultwardenAdminToken = { file = secretFile "vaultwardenAdminToken"; owner = "vaultwarden"; mode = "0400"; };
     serverBootstrapSudoPassword = { file = secretFile "serverBootstrapSudoPassword"; owner = "root"; mode = "0400"; };

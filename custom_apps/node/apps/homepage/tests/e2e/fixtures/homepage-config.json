@@ -2,6 +2,12 @@
   "domain": "sydneybasiniot.org",
   "serverLanHost": "server.home.arpa",
   "sshfsHost": "server",
+  "kanidmGroups": ["backup-admin", "files-personal-users", "photos-users", "users"],
+  "kanidmGroupDescriptions": {
+    "backup-admin": "Backup administration access.",
+    "files-personal-users": "Personal file browser access.",
+    "photos-users": "Photo library access."
+  },
   "services": [
     {
       "id": "photos",
@@ -90,6 +96,36 @@
       "title": "Review evaluated config",
       "command": "nix run .#show-config-summary",
       "detail": "Preview hostnames, app surfaces, access groups, OAuth clients, storage, and required secrets before changing the running server."
+    },
+    {
+      "title": "Validate broad changes",
+      "command": "./scripts/deploy.sh --debug --action test",
+      "detail": "Use the full gate for first deploys after significant config, app, identity, routing, or storage changes."
+    },
+    {
+      "title": "Run routine guarded deploy",
+      "command": "./scripts/deploy.sh --action test",
+      "detail": "Stage the repo archive and run the normal remote rebuild test path on the server."
+    },
+    {
+      "title": "Switch after a passing test",
+      "command": "./scripts/deploy.sh --action switch",
+      "detail": "Switch only after the guarded test path passes and failed systemd units are clear."
+    },
+    {
+      "title": "Rotate or regenerate secrets",
+      "command": "./scripts/generate-all-secrets.sh",
+      "detail": "Stage plaintext external inputs only under secrets/unencrypted/, encrypt them, and keep plaintext secret material out of git."
+    },
+    {
+      "title": "Manage Kanidm entity removal explicitly",
+      "command": "$EDITOR modules/Core_Modules/kanidm/provision.nix",
+      "detail": "Kanidm is configured with autoremove disabled, so deleted module groups/users are kept for rescue/reprovisioning safety."
+    },
+    {
+      "title": "Check service health",
+      "command": "sudo systemctl --failed --no-pager",
+      "detail": "Inspect failed units after deploys and before user-facing troubleshooting."
     }
   ],
   "phoneBackup": {

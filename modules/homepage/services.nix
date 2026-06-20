@@ -18,6 +18,11 @@ let
   passwordsHost = "passwords.${vars.domain}";
   emailsHost = "emails.${vars.domain}";
   downloadsHost = "ytdownload.${vars.domain}";
+  requestsHost = "requests.${vars.domain}";
+  sonarrHost = "sonarr.${vars.domain}";
+  radarrHost = "radarr.${vars.domain}";
+  prowlarrHost = "prowlarr.${vars.domain}";
+  torrentsHost = "torrents.${vars.domain}";
   backupsHost = vars.kopiaDomain;
   rcloneHost = vars.rcloneDomain;
   monitorHost = vars.monitorDomain;
@@ -79,6 +84,11 @@ let
   vaultwardenEnabled = hostEnabled passwordsHost;
   mailArchiveEnabled = hostEnabled emailsHost;
   youtubeDownloaderEnabled = hostEnabled downloadsHost;
+  seerrEnabled = hostEnabled requestsHost;
+  sonarrEnabled = hostEnabled sonarrHost;
+  radarrEnabled = hostEnabled radarrHost;
+  prowlarrEnabled = hostEnabled prowlarrHost;
+  qbittorrentEnabled = hostEnabled torrentsHost;
   kopiaEnabled = hostEnabled backupsHost;
   rcloneEnabled = hostEnabled rcloneHost;
   monitorEnabled = hostEnabled monitorHost;
@@ -633,6 +643,66 @@ let
       projectUrl = "https://jellyfin.org";
       logoUrl = "https://cdn.simpleicons.org/jellyfin";
       uploadNotes = "Place movies under _Videos/_Movies and series under _Videos/_Shows.";
+    }
+    {
+      id = "requests";
+      name = "Requests";
+      url = "https://${requestsHost}";
+      enabled = seerrEnabled;
+      category = "media";
+      description = "Jellyfin-oriented movie and show request manager.";
+      loginNotes = "Requires media-automation-users through Kanidm.";
+      projectUrl = "https://github.com/Fallenbagel/jellyseerr";
+      logoUrl = "https://cdn.simpleicons.org/jellyfin";
+      uploadNotes = "Approved requests are handed to Sonarr and Radarr.";
+    }
+    {
+      id = "sonarr";
+      name = "Sonarr";
+      url = "https://${sonarrHost}";
+      enabled = sonarrEnabled;
+      category = "media";
+      description = "TV show monitoring and legal download automation.";
+      loginNotes = "Requires media-automation-users through Kanidm.";
+      projectUrl = "https://sonarr.tv";
+      logoUrl = "https://cdn.simpleicons.org/sonarr";
+      uploadNotes = "Imported shows land in shared _Videos/_Shows.";
+    }
+    {
+      id = "radarr";
+      name = "Radarr";
+      url = "https://${radarrHost}";
+      enabled = radarrEnabled;
+      category = "media";
+      description = "Movie monitoring and legal download automation.";
+      loginNotes = "Requires media-automation-users through Kanidm.";
+      projectUrl = "https://radarr.video";
+      logoUrl = "https://cdn.simpleicons.org/radarr";
+      uploadNotes = "Imported movies land in shared _Videos/_Movies.";
+    }
+    {
+      id = "prowlarr";
+      name = "Prowlarr";
+      url = "https://${prowlarrHost}";
+      enabled = prowlarrEnabled;
+      category = "media";
+      description = "Indexer manager for Sonarr and Radarr.";
+      loginNotes = "Requires media-automation-users through Kanidm.";
+      projectUrl = "https://prowlarr.com";
+      logoUrl = "https://cdn.simpleicons.org/prowlarr";
+      uploadNotes = "Add only legal indexers and sources.";
+    }
+    {
+      id = "torrents";
+      name = "Torrents";
+      url = "https://${torrentsHost}";
+      enabled = qbittorrentEnabled;
+      category = "media";
+      description = "qBittorrent download client for legally sourced media.";
+      loginNotes = "Requires media-automation-users through Kanidm.";
+      projectUrl = "https://www.qbittorrent.org";
+      logoUrl = "https://cdn.simpleicons.org/qbittorrent";
+      uploadNotes = "Completed downloads are staged under shared _Downloads.";
     }
     {
       id = "offline-media";

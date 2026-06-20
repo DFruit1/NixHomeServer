@@ -15,15 +15,6 @@ export const ServiceTile = component$(({ service }: { service: ServiceCard }) =>
       void nav(detailUrl);
     });
 
-    const openApp = $((event: Event) => {
-      if (!appUrl.startsWith('/')) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      void nav(appUrl);
-    });
-
     const openDetailFromKeyboard = $((event: KeyboardEvent) => {
       if (event.key !== 'Enter' && event.key !== ' ') {
         return;
@@ -46,20 +37,10 @@ export const ServiceTile = component$(({ service }: { service: ServiceCard }) =>
               {service.name}
             </Link>
           </h3>
-          <p>{service.description}</p>
         </div>
         <div class="tile-actions">
-          <Link
-            class="open-link"
-            href={detailUrl}
-            onClick$={(event) => {
-              event.stopPropagation();
-            }}
-          >
-            Details
-          </Link>
-          <a class="open-link app-link" href={appUrl} onClick$={(event) => (appUrl.startsWith('/') ? openApp(event) : event.stopPropagation())}>
-            Open app
+          <a class="open-link app-link" href={appUrl} target="_blank" rel="noreferrer" onClick$={(event) => event.stopPropagation()}>
+            Open
           </a>
         </div>
       </article>
