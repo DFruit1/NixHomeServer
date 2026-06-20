@@ -574,12 +574,35 @@ in
         if [[ "$seerr_initialized" != "true" ]]; then
           echo "Initializing Seerr with Jellyfin"
           rm -f "$cookie_file"
-          jq -n \
-            --arg username "$jellyfin_bootstrap_user" \
-            --arg password "$jellyfin_bootstrap_password" \
-            --arg hostname "$jellyfin_url" \
-            --arg email "$jellyfin_bootstrap_email" \
-            '{username: $username, password: $password, hostname: $hostname, email: $email}' \
+          if [[ "$(jq -r '.jellyfin.ip // ""' /var/lib/seerr/settings.json 2>/dev/null || true)" == "" ]]; then
+            seerr_auth_payload="$(
+              jq -n \
+                --arg username "$jellyfin_bootstrap_user" \
+                --arg password "$jellyfin_bootstrap_password" \
+                --arg hostname "${loopback}" \
+                --argjson port ${toString ports.jellyfin} \
+                --arg email "$jellyfin_bootstrap_email" \
+                '{
+                  username: $username,
+                  password: $password,
+                  hostname: $hostname,
+                  port: $port,
+                  useSsl: false,
+                  urlBase: "",
+                  email: $email,
+                  serverType: 2
+                }'
+            )"
+          else
+            seerr_auth_payload="$(
+              jq -n \
+                --arg username "$jellyfin_bootstrap_user" \
+                --arg password "$jellyfin_bootstrap_password" \
+                --arg email "$jellyfin_bootstrap_email" \
+                '{username: $username, password: $password, email: $email}'
+            )"
+          fi
+          printf '%s' "$seerr_auth_payload" \
             | curl \
                 --silent \
                 --show-error \
@@ -606,7 +629,7 @@ in
           enable_ids="$(
             jq -r \
               --argjson desired "$desired_libraries_json" \
-              '[.[] | select($desired | index(.name) != null) | .id] as $matched
+              '[.[] | select(.name as $name | $desired | index($name) != null) | .id] as $matched
               | (if ($matched | length) > 0 then $matched else [.[] | .id] end)
               | join(",")' \
               <<<"$seerr_libraries"
@@ -685,13 +708,12 @@ in
           )"
 
           if [[ -n "$existing_id" ]]; then
-            jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
-              | seerr_api \
-                  -X PUT \
-                  -H "Content-Type: application/json" \
-                  --data-binary @- \
-                  "$seerr_url/api/v1/settings/$kind/$existing_id" \
-                  >/dev/null
+            seerr_api \
+              -X PUT \
+              -H "Content-Type: application/json" \
+              --data-binary "$payload" \
+              "$seerr_url/api/v1/settings/$kind/$existing_id" \
+              >/dev/null
           else
             seerr_api \
               -X POST \

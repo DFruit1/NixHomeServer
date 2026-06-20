@@ -946,9 +946,64 @@ let
       detail = "Preview hostnames, app surfaces, access groups, OAuth clients, storage, and required secrets before changing the running server.";
     }
     {
+      title = "Validate config readiness";
+      command = "nix run .#validate-config-readiness";
+      detail = "Check evaluated settings, required secret files, SSH reachability, and common bootstrap/deploy preconditions without changing the server.";
+    }
+    {
+      title = "Export operations inventory";
+      command = "nix run .#export-inventory -- --format text";
+      detail = "Print the evaluated runtime inventory for hostnames, identity, storage, backups, impermanence, secrets, and systemd units.";
+    }
+    {
+      title = "Check git worktree";
+      command = "git status --short";
+      detail = "Confirm what local changes will be staged into the guarded deploy archive.";
+    }
+    {
+      title = "Check service health";
+      command = "sudo systemctl --failed --no-pager";
+      detail = "Inspect failed units after deploys and before user-facing troubleshooting.";
+    }
+    {
+      title = "List scheduled timers";
+      command = "systemctl list-timers --all --no-pager";
+      detail = "Review backup, sync, reconciliation, scrub, and maintenance schedules.";
+    }
+    {
+      title = "Review current boot warnings";
+      command = "journalctl -b -p warning..alert --no-pager";
+      detail = "Scan warnings and errors from the current boot before blaming an individual app.";
+    }
+    {
+      title = "Show resource snapshot";
+      command = "systemctl status --no-pager";
+      detail = "Get a quick view of system state, queued jobs, and degraded status from systemd.";
+    }
+    {
       title = "Validate broad changes";
       command = "./scripts/deploy.sh --debug --action test";
       detail = "Use the full gate for first deploys after significant config, app, identity, routing, or storage changes.";
+    }
+    {
+      title = "Run lean repo validation";
+      command = "./scripts/validate-repo.sh";
+      detail = "Run the fast repository policy and script tests before routine edits are deployed.";
+    }
+    {
+      title = "Run full repo validation";
+      command = "./scripts/validate-repo.sh --full";
+      detail = "Run flake evaluation, repository policy tests, and buildable check derivations before broad or risky changes.";
+    }
+    {
+      title = "Evaluate flake without building";
+      command = "nix flake check --no-build";
+      detail = "Catch evaluation errors and option assertion failures without building packages or switching the host.";
+    }
+    {
+      title = "Dry-run deploy target resolution";
+      command = "DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test";
+      detail = "Print the target host, build host, flake host, and rebuild command that the guarded deploy helper will use.";
     }
     {
       title = "Run routine guarded deploy";
@@ -956,14 +1011,104 @@ let
       detail = "Stage the repo archive and run the normal remote rebuild test path on the server.";
     }
     {
+      title = "Run guarded deploy with local build";
+      command = "./scripts/deploy.sh --build-locally --action test";
+      detail = "Build on the admin workstation and test-activate the target over SSH when the server should not perform the build.";
+    }
+    {
       title = "Switch after a passing test";
       command = "./scripts/deploy.sh --action switch";
       detail = "Switch only after the guarded test path passes and failed systemd units are clear.";
     }
     {
-      title = "Rotate or regenerate secrets";
-      command = "./scripts/generate-all-secrets.sh";
-      detail = "Stage plaintext external inputs only under secrets/unencrypted/, encrypt them, and keep plaintext secret material out of git.";
+      title = "Show generations for rollback";
+      command = "sudo nix-env --list-generations --profile /nix/var/nix/profiles/system";
+      detail = "List bootable system generations before choosing a rollback target.";
+    }
+    {
+      title = "Rollback current generation";
+      command = "sudo nixos-rebuild switch --rollback";
+      detail = "Roll back the active system profile when a switched generation needs to be backed out immediately.";
+    }
+    {
+      title = "Check app service status";
+      command = "systemctl status APP.service --no-pager";
+      detail = "Replace APP.service with a specific app unit such as immich-server.service, paperless-web.service, jellyfin.service, or filestash.service.";
+    }
+    {
+      title = "Follow app logs";
+      command = "journalctl -fu APP.service";
+      detail = "Follow one service while reproducing an app problem.";
+    }
+    {
+      title = "Restart a single app service";
+      command = "sudo systemctl restart APP.service";
+      detail = "Restart only the affected service after checking logs and configuration.";
+    }
+    {
+      title = "Restart homepage";
+      command = "sudo systemctl restart homepage.service";
+      detail = "Restart the portal after changing homepage configuration or its generated JSON.";
+    }
+    {
+      title = "Check OAuth proxy logs";
+      command = "journalctl -u '*oauth2-proxy.service' -b --no-pager";
+      detail = "Inspect SSO proxy failures across protected app surfaces.";
+    }
+    {
+      title = "Re-run storage layout services";
+      command = "systemctl list-units '*storage-layout-v1.service' --all --no-legend | awk '{print $1}' | xargs -r sudo systemctl start";
+      detail = "Re-apply app storage layout units after creating or repairing content directories.";
+    }
+    {
+      title = "Re-run Immich OIDC reconcile";
+      command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
+      detail = "Force Immich user/admin reconciliation from Kanidm group and claim state.";
+    }
+    {
+      title = "Re-run Paperless OIDC reconcile";
+      command = "sudo systemctl start paperless-oidc-reconcile.service";
+      detail = "Force Paperless account reconciliation from Kanidm after access or email changes.";
+    }
+    {
+      title = "Re-run Jellyfin library sync";
+      command = "sudo systemctl start jellyfin-library-sync.service";
+      detail = "Refresh Jellyfin libraries after media folder changes.";
+    }
+    {
+      title = "Re-run Kiwix library sync";
+      command = "sudo systemctl start kiwix-library-sync.service";
+      detail = "Publish newly uploaded or repaired ZIM files into the Kiwix web library.";
+    }
+    {
+      title = "Check Kanidm health";
+      command = "systemctl status kanidm.service --no-pager";
+      detail = "Check the identity provider before debugging app sign-in failures.";
+    }
+    {
+      title = "List Kanidm people";
+      command = "kanidm person list";
+      detail = "Review known people before adding accounts or removing stale access.";
+    }
+    {
+      title = "List Kanidm groups";
+      command = "kanidm group list";
+      detail = "Review available groups before granting app, file, backup, or admin access.";
+    }
+    {
+      title = "Inspect Kanidm group";
+      command = "kanidm group get app-admin";
+      detail = "Inspect membership and attributes for a specific access group.";
+    }
+    {
+      title = "Remove user from access group";
+      command = "kanidm group remove-members app-admin USERNAME";
+      detail = "Remove access intentionally when offboarding or reducing privileges.";
+    }
+    {
+      title = "Restart identity reconciliation";
+      command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
+      detail = "Reconcile Kanidm provisioning, POSIX file groups, and per-user file roots after identity changes.";
     }
     {
       title = "Manage Kanidm entity removal explicitly";
@@ -971,9 +1116,169 @@ let
       detail = "Kanidm is configured with autoremove disabled, so deleted module groups/users are kept for rescue/reprovisioning safety. Clean up stale groups/users intentionally (for example using `present = false` in provision entries) before retiring a module or host.";
     }
     {
-      title = "Check service health";
-      command = "sudo systemctl --failed --no-pager";
-      detail = "Inspect failed units after deploys and before user-facing troubleshooting.";
+      title = "Show mounted filesystems";
+      command = "df -hT";
+      detail = "Check free space and filesystem types for mounted roots, content pools, and backup paths.";
+    }
+    {
+      title = "Show disk layout";
+      command = "lsblk -f";
+      detail = "Review block devices, filesystems, labels, and mountpoints before storage work.";
+    }
+    {
+      title = "Discover monitored storage devices";
+      command = "./scripts/discover-storage-devices.sh --format text";
+      detail = "List disks that storage monitoring and SMART checks see for this host.";
+    }
+    {
+      title = "Check ZFS pool status";
+      command = "zpool status -v ${vars.zfsDataPool.name}";
+      detail = "Inspect data pool health, mirror state, scrub history, and device errors.";
+    }
+    {
+      title = "Start ZFS scrub";
+      command = "sudo zpool scrub ${vars.zfsDataPool.name}";
+      detail = "Start a scrub for the mirrored data pool and monitor progress with zpool status.";
+    }
+    {
+      title = "Show Btrfs filesystem usage";
+      command = "sudo btrfs filesystem usage /persist";
+      detail = "Check system SSD usage and allocation for persistent state.";
+    }
+    {
+      title = "Check Btrfs scrub status";
+      command = "sudo btrfs scrub status /persist";
+      detail = "Review the latest scrub result for persistent state on the system SSD.";
+    }
+    {
+      title = "Run SMART short sweep";
+      command = "sudo ./scripts/run-storage-smart-sweep.sh --kind short";
+      detail = "Start short SMART self-tests for monitored storage devices.";
+    }
+    {
+      title = "Inspect a disk with SMART";
+      command = "sudo smartctl -a /dev/disk/by-id/REPLACE_DISK_ID";
+      detail = "Read detailed SMART attributes and error history for one disk.";
+    }
+    {
+      title = "Check storage monitor logs";
+      command = "journalctl -u 'storage-smart-*' -u smartd.service -b --no-pager";
+      detail = "Inspect SMART sweep and smartd output from the current boot.";
+    }
+    {
+      title = "Check backup timers";
+      command = "systemctl list-timers 'kopia*' 'rclone*' --all --no-pager";
+      detail = "Verify Kopia snapshots, phone backups, and offsite sync timers are scheduled.";
+    }
+    {
+      title = "Check Kopia services";
+      command = "systemctl status kopia.service kopia-auth-proxy.service kopia-oauth2-proxy.service --no-pager";
+      detail = "Inspect the local Kopia server, native auth proxy, and SSO proxy together.";
+    }
+    {
+      title = "Run persist snapshot now";
+      command = "sudo systemctl start kopia-persist-snapshot.service";
+      detail = "Trigger an immediate snapshot of persisted system and app state.";
+    }
+    {
+      title = "Inspect persist snapshot logs";
+      command = "journalctl -u kopia-persist-snapshot.service -n 100 --no-pager";
+      detail = "Review the most recent persist snapshot run.";
+    }
+    {
+      title = "Run phone backup snapshot now";
+      command = "sudo systemctl start kopia-phone-snapshot.service";
+      detail = "Trigger the phone backup snapshot chain when phone backup is enabled.";
+    }
+    {
+      title = "Run offsite Kopia sync now";
+      command = "sudo systemctl start rclone-mega-kopia-sync.service";
+      detail = "Start the rclone sync that mirrors the Kopia repository offsite.";
+    }
+    {
+      title = "Inspect offsite sync logs";
+      command = "journalctl -u rclone-mega-kopia-sync.service -n 100 --no-pager";
+      detail = "Review the most recent offsite backup sync run.";
+    }
+    {
+      title = "Check backup repository size";
+      command = "sudo du -sh ${vars.backupRoot}";
+      detail = "Check on-disk backup repository size before storage or retention work.";
+    }
+    {
+      title = "Check Caddy status";
+      command = "systemctl status caddy.service --no-pager";
+      detail = "Check the edge reverse proxy before debugging app reachability.";
+    }
+    {
+      title = "Validate Caddy config";
+      command = "nix run --inputs-from . nixpkgs#caddy -- validate --config /etc/caddy/caddy_config --adapter caddyfile";
+      detail = "Validate the running Caddy config file before reloads or route debugging.";
+    }
+    {
+      title = "Reload Caddy";
+      command = "sudo systemctl reload caddy.service";
+      detail = "Reload routes and certificates without a full service restart.";
+    }
+    {
+      title = "Inspect Caddy logs";
+      command = "journalctl -u caddy.service -b --no-pager";
+      detail = "Review reverse proxy, TLS, and upstream errors from the current boot.";
+    }
+    {
+      title = "Check Unbound status";
+      command = "systemctl status unbound.service --no-pager";
+      detail = "Check private DNS health before debugging split-horizon or NetBird-only routes.";
+    }
+    {
+      title = "Query private DNS";
+      command = "dig @${vars.networking.loopbackIPv4} homepage.${vars.domain}";
+      detail = "Confirm the local resolver returns a private service record.";
+    }
+    {
+      title = "Check Cloudflare tunnel status";
+      command = "systemctl status 'cloudflared-tunnel-${vars.cloudflareTunnelName}.service' --no-pager";
+      detail = "Inspect the Cloudflare tunnel unit for public ingress failures.";
+    }
+    {
+      title = "Inspect Cloudflare tunnel logs";
+      command = "journalctl -u 'cloudflared-tunnel-${vars.cloudflareTunnelName}.service' -b --no-pager";
+      detail = "Review tunnel registration, connection, and ingress errors.";
+    }
+    {
+      title = "Check NetBird status";
+      command = "netbird-main status";
+      detail = "Confirm the server is connected to the NetBird network and has expected peers/routes.";
+    }
+    {
+      title = "Inspect firewall rules";
+      command = "sudo nft list ruleset";
+      detail = "Inspect active firewall rules when a reachable service is blocked.";
+    }
+    {
+      title = "Rotate or regenerate secrets";
+      command = "./scripts/generate-all-secrets.sh";
+      detail = "Stage plaintext external inputs only under secrets/unencrypted/, encrypt them, and keep plaintext secret material out of git.";
+    }
+    {
+      title = "List encrypted secrets";
+      command = "find secrets -maxdepth 1 -name '*.age' -printf '%f\\n' | sort";
+      detail = "Review encrypted secret files tracked in the repository without exposing plaintext.";
+    }
+    {
+      title = "List expected external secrets";
+      command = "nix eval --json --impure --expr 'builtins.attrNames ((import ./secrets/manifest.nix).externalSecrets)'";
+      detail = "Print the secret names that must be supplied from external/staged material.";
+    }
+    {
+      title = "Edit staged external secret";
+      command = "$EDITOR secrets/unencrypted/SECRET_NAME";
+      detail = "Create or update one staged plaintext external secret immediately before encryption.";
+    }
+    {
+      title = "Encrypt staged external secrets";
+      command = "./scripts/helpers/encrypt-staged-external-secrets.sh";
+      detail = "Encrypt staged external secret files into agenix files and remove plaintext staging material.";
     }
   ];
 

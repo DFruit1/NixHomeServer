@@ -3,7 +3,7 @@ import type { DocumentHead } from '@builder.io/qwik-city';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminStep } from '../../shared/types.js';
 
-type AdminCategoryId = 'daily' | 'deploys' | 'identity' | 'secrets';
+type AdminCategoryId = 'daily' | 'deploys' | 'apps' | 'identity' | 'storage' | 'backups' | 'network' | 'secrets';
 type AdminIntentId = 'add-user' | 'manage-user' | 'manage-secrets';
 
 type AdminStepMeta = {
@@ -23,9 +23,29 @@ const adminCategories: { id: AdminCategoryId; title: string; description: string
     description: 'Validation, test builds, switch step.',
   },
   {
+    id: 'apps',
+    title: 'Apps & Services',
+    description: 'Service status, logs, and app reconciliation.',
+  },
+  {
     id: 'identity',
     title: 'Access & Identity Maintenance',
     description: 'Identity cleanup and access lifecycle.',
+  },
+  {
+    id: 'storage',
+    title: 'Storage',
+    description: 'Disk, filesystem, pool, and SMART checks.',
+  },
+  {
+    id: 'backups',
+    title: 'Backups',
+    description: 'Snapshot, repository, and offsite sync operations.',
+  },
+  {
+    id: 'network',
+    title: 'Network & Edge',
+    description: 'Caddy, DNS, Cloudflare tunnel, and NetBird checks.',
   },
   {
     id: 'secrets',
@@ -36,12 +56,73 @@ const adminCategories: { id: AdminCategoryId; title: string; description: string
 
 const adminStepMeta: Record<string, AdminStepMeta> = {
   'Review evaluated config': { category: 'daily' },
+  'Validate config readiness': { category: 'daily' },
+  'Export operations inventory': { category: 'daily' },
+  'Check git worktree': { category: 'daily' },
   'Check service health': { category: 'daily' },
+  'List scheduled timers': { category: 'daily' },
+  'Review current boot warnings': { category: 'daily' },
+  'Show resource snapshot': { category: 'daily' },
   'Validate broad changes': { category: 'deploys' },
+  'Run lean repo validation': { category: 'deploys' },
+  'Run full repo validation': { category: 'deploys' },
+  'Evaluate flake without building': { category: 'deploys' },
+  'Dry-run deploy target resolution': { category: 'deploys' },
   'Run routine guarded deploy': { category: 'deploys' },
+  'Run guarded deploy with local build': { category: 'deploys' },
   'Switch after a passing test': { category: 'deploys' },
+  'Show generations for rollback': { category: 'deploys' },
+  'Rollback current generation': { category: 'deploys' },
+  'Check app service status': { category: 'apps' },
+  'Follow app logs': { category: 'apps' },
+  'Restart a single app service': { category: 'apps' },
+  'Restart homepage': { category: 'apps' },
+  'Check OAuth proxy logs': { category: 'apps' },
+  'Re-run storage layout services': { category: 'apps' },
+  'Re-run Immich OIDC reconcile': { category: 'apps' },
+  'Re-run Paperless OIDC reconcile': { category: 'apps' },
+  'Re-run Jellyfin library sync': { category: 'apps' },
+  'Re-run Kiwix library sync': { category: 'apps' },
+  'Check Kanidm health': { category: 'identity' },
+  'List Kanidm people': { category: 'identity', intents: ['manage-user'] },
+  'List Kanidm groups': { category: 'identity' },
+  'Inspect Kanidm group': { category: 'identity', intents: ['manage-user'] },
+  'Remove user from access group': { category: 'identity', intents: ['manage-user'] },
+  'Restart identity reconciliation': { category: 'identity' },
   'Manage Kanidm entity removal explicitly': { category: 'identity', intents: ['manage-user'] },
+  'Show mounted filesystems': { category: 'storage' },
+  'Show disk layout': { category: 'storage' },
+  'Discover monitored storage devices': { category: 'storage' },
+  'Check ZFS pool status': { category: 'storage' },
+  'Start ZFS scrub': { category: 'storage' },
+  'Show Btrfs filesystem usage': { category: 'storage' },
+  'Check Btrfs scrub status': { category: 'storage' },
+  'Run SMART short sweep': { category: 'storage' },
+  'Inspect a disk with SMART': { category: 'storage' },
+  'Check storage monitor logs': { category: 'storage' },
+  'Check backup timers': { category: 'backups' },
+  'Check Kopia services': { category: 'backups' },
+  'Run persist snapshot now': { category: 'backups' },
+  'Inspect persist snapshot logs': { category: 'backups' },
+  'Run phone backup snapshot now': { category: 'backups' },
+  'Run offsite Kopia sync now': { category: 'backups' },
+  'Inspect offsite sync logs': { category: 'backups' },
+  'Check backup repository size': { category: 'backups' },
+  'Check Caddy status': { category: 'network' },
+  'Validate Caddy config': { category: 'network' },
+  'Reload Caddy': { category: 'network' },
+  'Inspect Caddy logs': { category: 'network' },
+  'Check Unbound status': { category: 'network' },
+  'Query private DNS': { category: 'network' },
+  'Check Cloudflare tunnel status': { category: 'network' },
+  'Inspect Cloudflare tunnel logs': { category: 'network' },
+  'Check NetBird status': { category: 'network' },
+  'Inspect firewall rules': { category: 'network' },
   'Rotate or regenerate secrets': { category: 'secrets', intents: ['manage-secrets'] },
+  'List encrypted secrets': { category: 'secrets', intents: ['manage-secrets'] },
+  'List expected external secrets': { category: 'secrets', intents: ['manage-secrets'] },
+  'Edit staged external secret': { category: 'secrets', intents: ['manage-secrets'] },
+  'Encrypt staged external secrets': { category: 'secrets', intents: ['manage-secrets'] },
 };
 
 const fallbackStepMeta: AdminStepMeta = { category: 'daily' };
