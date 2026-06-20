@@ -112,10 +112,16 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByRole('heading', { name: 'Secrets' })).toBeVisible();
   await expect(page.getByText('Quickstart covers disk setup')).toBeVisible();
   await expect(page.getByText('nix run .#show-config-summary')).toBeHidden();
+  await page.locator('summary').filter({ hasText: 'Daily Checks' }).click();
   await page.locator('summary').filter({ hasText: 'Review evaluated config' }).click();
   await expect(page.getByText('nix run .#show-config-summary')).toBeVisible();
   await expect(page.getByText('kanidm person create "$NEW_USER" "$DISPLAY_NAME"')).toBeHidden();
   await page.getByRole('button', { name: 'Add New User' }).click();
+  await expect(page.getByRole('heading', { name: 'What do you need to do?' })).toBeHidden();
+  await expect(page.getByText('Quickstart covers disk setup')).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Daily Checks' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Deploys', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Secrets' })).toHaveCount(0);
   await expect(page.getByText('kanidm person create "$NEW_USER" "$DISPLAY_NAME"')).toBeVisible();
   await page.getByRole('button', { name: "It's for me" }).click();
   const assignedGroups = page.locator('.group-picker-section').filter({ has: page.getByRole('heading', { name: 'Already assigned' }) });

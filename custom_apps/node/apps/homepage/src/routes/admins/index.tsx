@@ -181,6 +181,9 @@ const adminIntents: { id: AdminIntentId; label: string }[] = [
 const isIntentOpen = (activeIntent: AdminIntentId | '', intents: AdminIntentId[] = []): boolean =>
   activeIntent !== '' && intents.includes(activeIntent);
 
+const shouldShowForIntent = (activeIntent: AdminIntentId | '', intents: AdminIntentId[] = []): boolean =>
+  activeIntent === '' || intents.includes(activeIntent);
+
 const AdminCommand = component$(({ command }: { command: string }) => {
   const copied = useSignal(false);
 
@@ -260,10 +263,19 @@ export default component$(() => {
 
   const membershipCommand = formatCommandBlock(buildMembershipCommands(selectedGroups.value, userArg));
   const adminSections = groupedAdminSteps(adminGuide);
+  const visibleAdminSections = adminSections
+    .map((section) => ({
+      ...section,
+      steps: selectedIntent.value
+        ? section.steps.filter((step) => shouldShowForIntent(selectedIntent.value, metaForStep(step).intents))
+        : section.steps,
+    }))
+    .filter((section) => section.steps.length > 0);
   const typedUsername = username.value.trim();
   const typedUserGroups = currentUser && typedUsername === currentUser.username ? currentUser.groups : [];
   const unassignedAccessGroups = accessGroups.filter((group) => !typedUserGroups.includes(group));
   const assignedAccessGroups = accessGroups.filter((group) => typedUserGroups.includes(group));
+  const showUserManagement = selectedIntent.value === '' || ['add-user', 'manage-user', 'manage-secrets'].includes(selectedIntent.value);
 
   const setUsername = $((event: Event) => {
     const input = event.target as HTMLInputElement;
@@ -303,8 +315,8 @@ export default component$(() => {
   return (
     <>
       <section class="section">
-        <div class="admin-intent-hero">
-          <h2>What do you need to do?</h2>
+        <div class={{ 'admin-intent-hero': true, 'is-compact': selectedIntent.value !== '' }}>
+          <h2 aria-hidden={selectedIntent.value !== ''}>What do you need to do?</h2>
           <div class="admin-intent-actions" role="group" aria-label="Common admin tasks">
             {adminIntents.map((intent) => (
               <button
@@ -318,136 +330,162 @@ export default component$(() => {
               </button>
             ))}
           </div>
-          <p class="admin-page-note">Quickstart covers disk setup, agenix keys, and nixos-install before homepage exists.</p>
+          <p class="admin-page-note" aria-hidden={selectedIntent.value !== ''}>
+            Quickstart covers disk setup, agenix keys, and nixos-install before homepage exists.
+          </p>
         </div>
-        <div class="admin-command-layout">
-          {adminSections.map((section) => (
-            <section class="admin-command-section" key={section.id}>
-              <div class="admin-command-section__heading">
-                <h3>{section.title}</h3>
-                <p>{section.description}</p>
+        {visibleAdminSections.length > 0 && (
+          <div class="admin-command-layout">
+            {visibleAdminSections.map((section) => (
+              <details class="admin-command-category" open={selectedIntent.value !== ''} key={section.id}>
+                <summary class="admin-command-category__summary">
+                  <span class="admin-command-category__heading">
+                    <h3>{section.title}</h3>
+                    <p>{section.description}</p>
+                  </span>
+                </summary>
+                <div class="admin-task-list">
+                  {section.steps.map((step) => (
+                    <AdminTask
+                      title={step.title}
+                      description={step.detail}
+                      activeIntent={selectedIntent.value}
+                      intents={metaForStep(step).intents}
+                      key={step.title}
+                    >
+                      {step.command && <AdminCommand command={step.command} />}
+                    </AdminTask>
+                  ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        )}
+      </section>
+      {showUserManagement && (
+        <section class="section">
+          <details class="admin-command-category admin-command-category--primary" open={selectedIntent.value !== ''}>
+            <summary class="admin-command-category__summary">
+              <span class="admin-command-category__heading">
+                <h2>User Management</h2>
+              </span>
+            </summary>
+            <div class="admin-command-category__content">
+              <div class="admin-input-grid">
+                <label>
+                  Username
+                  <input type="text" value={username.value} onInput$={setUsername} placeholder="alice" />
+                </label>
+                <label>
+                  Email
+                  <input type="email" value={email.value} onInput$={setEmail} placeholder="alice@example.com" />
+                </label>
+              </div>
+              <div class="admin-fill-row">
+                <button type="button" class="admin-fill-btn" onClick$={fillMe}>
+                  It's for me
+                </button>
               </div>
               <div class="admin-task-list">
-                {section.steps.map((step) => (
+                {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-user']) && (
                   <AdminTask
-                    title={step.title}
-                    description={step.detail}
+                    title="Check user exists"
+                    description="Use before reruns. Confirms identity visibility."
                     activeIntent={selectedIntent.value}
-                    intents={metaForStep(step).intents}
-                    key={step.title}
+                    intents={['add-user', 'manage-user']}
                   >
-                    {step.command && <AdminCommand command={step.command} />}
+                    <AdminCommand command={`kanidm person get ${userArg}`} />
                   </AdminTask>
-                ))}
+                )}
+                {shouldShowForIntent(selectedIntent.value, ['add-user']) && (
+                  <AdminTask
+                    title="Create Kanidm account"
+                    description="Create account. Set primary email."
+                    activeIntent={selectedIntent.value}
+                    intents={['add-user']}
+                  >
+                    <AdminCommand command={`kanidm person create ${userArg} ${displayNameArg}`} />
+                    <AdminCommand command={`kanidm person update ${userArg} --mail ${emailArg}`} />
+                  </AdminTask>
+                )}
+                {shouldShowForIntent(selectedIntent.value, ['add-user']) && (
+                  <AdminTask
+                    title="Grant baseline access"
+                    description="Enable Kanidm sign-in and normal user lookup."
+                    activeIntent={selectedIntent.value}
+                    intents={['add-user']}
+                  >
+                    <AdminCommand command={`kanidm group add-members users ${userArg}`} />
+                  </AdminTask>
+                )}
+                {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-user']) && (
+                  <AdminTask
+                    title="Grant app/file/admin access"
+                    description="Select groups. Copy generated command."
+                    activeIntent={selectedIntent.value}
+                    intents={['add-user', 'manage-user']}
+                  >
+                    {accessGroups.length > 0 ? (
+                      <>
+                        <div class="group-picker-section">
+                          <h4>Unassigned</h4>
+                          {unassignedAccessGroups.length > 0 ? (
+                            <div class="group-picker">{unassignedAccessGroups.map((group) => renderGroupOption(group))}</div>
+                          ) : (
+                            <p>No unassigned groups for selected user.</p>
+                          )}
+                        </div>
+                        <div class="group-picker-section">
+                          <h4>Already assigned</h4>
+                          {assignedAccessGroups.length > 0 ? (
+                            <div class="group-picker">{assignedAccessGroups.map((group) => renderGroupOption(group))}</div>
+                          ) : (
+                            <p>No assigned groups for selected user.</p>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p>No non-protected groups are currently exposed from the configured Kanidm catalog.</p>
+                    )}
+                    <AdminCommand command={membershipCommand} />
+                  </AdminTask>
+                )}
+                {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-secrets']) && (
+                  <AdminTask
+                    title="Vaultwarden signup"
+                    description="User registers from browser on LAN or NetBird."
+                    activeIntent={selectedIntent.value}
+                    intents={['add-user', 'manage-secrets']}
+                  >
+                    <p>Have them open this URL and register with the same email used in Kanidm:</p>
+                    <AdminCommand command={`https://passwords.${domain}/#/signup`} />
+                  </AdminTask>
+                )}
+                {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-user', 'manage-secrets']) && (
+                  <AdminTask
+                    title="Create first sign-in link"
+                    description="Generate short-lived Kanidm reset link. Share securely."
+                    activeIntent={selectedIntent.value}
+                    intents={['add-user', 'manage-user', 'manage-secrets']}
+                  >
+                    <AdminCommand command={`kanidm person credential create-reset-token ${userArg} 3600`} />
+                  </AdminTask>
+                )}
+                {shouldShowForIntent(selectedIntent.value, ['add-user']) && (
+                  <AdminTask
+                    title="Hand off first sign-in"
+                    description="Ask user to set password and MFA, open apps, save recovery details."
+                    activeIntent={selectedIntent.value}
+                    intents={['add-user']}
+                  >
+                    <p>Confirm user can sign in, open granted apps, and save recovery details.</p>
+                  </AdminTask>
+                )}
               </div>
-            </section>
-          ))}
-        </div>
-      </section>
-      <section class="section">
-        <div class="section-heading stacked">
-          <div>
-            <h2>User Management</h2>
-          </div>
-        </div>
-        <div class="admin-input-grid">
-          <label>
-            Username
-            <input type="text" value={username.value} onInput$={setUsername} placeholder="alice" />
-          </label>
-          <label>
-            Email
-            <input type="email" value={email.value} onInput$={setEmail} placeholder="alice@example.com" />
-          </label>
-        </div>
-        <div class="admin-fill-row">
-          <button type="button" class="admin-fill-btn" onClick$={fillMe}>
-            It's for me
-          </button>
-        </div>
-        <div class="admin-task-list">
-          <AdminTask
-            title="Check user exists"
-            description="Use before reruns. Confirms identity visibility."
-            activeIntent={selectedIntent.value}
-            intents={['add-user', 'manage-user']}
-          >
-            <AdminCommand command={`kanidm person get ${userArg}`} />
-          </AdminTask>
-          <AdminTask
-            title="Create Kanidm account"
-            description="Create account. Set primary email."
-            activeIntent={selectedIntent.value}
-            intents={['add-user']}
-          >
-            <AdminCommand command={`kanidm person create ${userArg} ${displayNameArg}`} />
-            <AdminCommand command={`kanidm person update ${userArg} --mail ${emailArg}`} />
-          </AdminTask>
-          <AdminTask
-            title="Grant baseline access"
-            description="Enable Kanidm sign-in and normal user lookup."
-            activeIntent={selectedIntent.value}
-            intents={['add-user']}
-          >
-            <AdminCommand command={`kanidm group add-members users ${userArg}`} />
-          </AdminTask>
-          <AdminTask
-            title="Grant app/file/admin access"
-            description="Select groups. Copy generated command."
-            activeIntent={selectedIntent.value}
-            intents={['add-user', 'manage-user']}
-          >
-            {accessGroups.length > 0 ? (
-              <>
-                <div class="group-picker-section">
-                  <h4>Unassigned</h4>
-                  {unassignedAccessGroups.length > 0 ? (
-                    <div class="group-picker">{unassignedAccessGroups.map((group) => renderGroupOption(group))}</div>
-                  ) : (
-                    <p>No unassigned groups for selected user.</p>
-                  )}
-                </div>
-                <div class="group-picker-section">
-                  <h4>Already assigned</h4>
-                  {assignedAccessGroups.length > 0 ? (
-                    <div class="group-picker">{assignedAccessGroups.map((group) => renderGroupOption(group))}</div>
-                  ) : (
-                    <p>No assigned groups for selected user.</p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <p>No non-protected groups are currently exposed from the configured Kanidm catalog.</p>
-            )}
-            <AdminCommand command={membershipCommand} />
-          </AdminTask>
-          <AdminTask
-            title="Vaultwarden signup"
-            description="User registers from browser on LAN or NetBird."
-            activeIntent={selectedIntent.value}
-            intents={['add-user', 'manage-secrets']}
-          >
-            <p>Have them open this URL and register with the same email used in Kanidm:</p>
-            <AdminCommand command={`https://passwords.${domain}/#/signup`} />
-          </AdminTask>
-          <AdminTask
-            title="Create first sign-in link"
-            description="Generate short-lived Kanidm reset link. Share securely."
-            activeIntent={selectedIntent.value}
-            intents={['add-user', 'manage-user', 'manage-secrets']}
-          >
-            <AdminCommand command={`kanidm person credential create-reset-token ${userArg} 3600`} />
-          </AdminTask>
-          <AdminTask
-            title="Hand off first sign-in"
-            description="Ask user to set password and MFA, open apps, save recovery details."
-            activeIntent={selectedIntent.value}
-            intents={['add-user']}
-          >
-            <p>Confirm user can sign in, open granted apps, and save recovery details.</p>
-          </AdminTask>
-        </div>
-      </section>
+            </div>
+          </details>
+        </section>
+      )}
       <section class="section two-column">
         <div>
           <h2>Config And Deploys</h2>
