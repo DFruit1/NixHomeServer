@@ -39,7 +39,10 @@ export default component$(() => {
           <div class="service-preview-bar__inner">
             <ServiceLogo service={selectedService} large />
             <div class="service-preview-bar__copy">
-              <h2>{selectedService.name}</h2>
+              <h2>
+                {selectedService.name}
+                {selectedService.appName && <span> ({selectedService.appName})</span>}
+              </h2>
               <p>{selectedService.description}</p>
             </div>
             <div class="service-preview-bar__actions">

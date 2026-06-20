@@ -28,6 +28,11 @@ in
             bindaddress = loopback;
           };
           log.analyticsEnabled = false;
+          auth = {
+            enabled = true;
+            method = "External";
+            required = "Enabled";
+          };
         };
       };
 

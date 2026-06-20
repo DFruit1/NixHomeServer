@@ -583,7 +583,8 @@ let
       description = "Photo and video library with private login and public share-link support.";
       loginNotes = "Use Kanidm. Public shares use https://${sharePhotosHost}.";
       projectUrl = "https://immich.app";
-      logoUrl = "https://cdn.simpleicons.org/immich";
+      logoUrl = "https://raw.githubusercontent.com/immich-app/immich/main/design/immich-logo.svg";
+      appName = "immich";
       uploadNotes = "Upload through Immich web or the mobile app.";
     }
     {
@@ -596,6 +597,7 @@ let
       loginNotes = "Use Kanidm; first login creates the local account.";
       projectUrl = "https://docs.paperless-ngx.com";
       logoUrl = "https://cdn.simpleicons.org/paperlessngx";
+      appName = "paperless-ngx";
       uploadNotes = "Upload PDFs and image documents through Paperless or the consume inbox.";
     }
     {
@@ -608,6 +610,7 @@ let
       loginNotes = "Requires files-personal-users for browser access.";
       projectUrl = "https://www.filestash.app";
       logoUrl = "https://raw.githubusercontent.com/mickael-kerjean/filestash/master/public/assets/logo/favicon.svg";
+      appName = "filestash";
       uploadNotes = "Use Files for general uploads and app-specific media folders.";
     }
     {
@@ -620,6 +623,7 @@ let
       loginNotes = "Use Kanidm; app-admin grants app admin when combined with access.";
       projectUrl = "https://www.audiobookshelf.org";
       logoUrl = "https://cdn.simpleicons.org/audiobookshelf";
+      appName = "audiobookshelf";
       uploadNotes = "Place audiobook folders under _Audiobooks.";
     }
     {
@@ -632,6 +636,7 @@ let
       loginNotes = "Jellyfin uses local sign-in; Kanidm groups drive managed account policy.";
       projectUrl = "https://jellyfin.org";
       logoUrl = "https://cdn.simpleicons.org/jellyfin";
+      appName = "jellyfin";
       uploadNotes = "Place movies under _Videos/_Movies and series under _Videos/_Shows.";
     }
     {
@@ -643,7 +648,8 @@ let
       description = "Jellyfin-oriented movie and show request manager.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://github.com/Fallenbagel/jellyseerr";
-      logoUrl = "https://cdn.simpleicons.org/jellyfin";
+      logoUrl = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/jellyseerr.svg";
+      appName = "seerr";
       uploadNotes = "Approved requests are handed to Sonarr and Radarr.";
     }
     {
@@ -656,6 +662,7 @@ let
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://sonarr.tv";
       logoUrl = "https://cdn.simpleicons.org/sonarr";
+      appName = "sonarr";
       uploadNotes = "Imported shows land in shared _Videos/_Shows.";
     }
     {
@@ -668,6 +675,7 @@ let
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://radarr.video";
       logoUrl = "https://cdn.simpleicons.org/radarr";
+      appName = "radarr";
       uploadNotes = "Imported movies land in shared _Videos/_Movies.";
     }
     {
@@ -680,6 +688,7 @@ let
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://prowlarr.com";
       logoUrl = "https://cdn.simpleicons.org/prowlarr";
+      appName = "prowlarr";
       uploadNotes = "Add only legal indexers and sources.";
     }
     {
@@ -692,6 +701,7 @@ let
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://www.qbittorrent.org";
       logoUrl = "https://cdn.simpleicons.org/qbittorrent";
+      appName = "qbittorrent";
       uploadNotes = "Completed downloads are staged under shared _Downloads.";
     }
     {
@@ -704,6 +714,7 @@ let
       loginNotes = "Use Kanidm on the homepage, then enroll your Syncthing device ID.";
       projectUrl = "https://syncthing.net";
       logoUrl = "https://cdn.simpleicons.org/syncthing";
+      appName = "syncthing";
       uploadNotes = "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root.";
     }
     {
@@ -716,6 +727,7 @@ let
       loginNotes = "Use Kanidm; first login provisions the local account.";
       projectUrl = "https://www.kavitareader.com";
       logoUrl = "https://raw.githubusercontent.com/Kareadita/Kavita/develop/UI/Web/src/assets/images/logo.svg";
+      appName = "kavita";
       uploadNotes = "Place books under _Books/_Ebooks, _Comics, or _Manga.";
     }
     {
@@ -728,6 +740,7 @@ let
       loginNotes = "Use Kanidm with kiwix-users membership.";
       projectUrl = "https://kiwix.org";
       logoUrl = "https://cdn.simpleicons.org/kiwix";
+      appName = "kiwix";
       uploadNotes = "Operators upload .zim files to the configured Kiwix library root.";
     }
     {
@@ -738,6 +751,7 @@ let
       category = "knowledge";
       description = "Private mail search, attachment export, and Paperless handoff.";
       loginNotes = "Requires mail-archive-users.";
+      appName = "mail archive";
       uploadNotes = "Synced mail appears as visible .eml mirrors under _Emails.";
     }
     {
@@ -750,6 +764,7 @@ let
       loginNotes = "Requires downloads-users.";
       projectUrl = "https://github.com/yt-dlp/yt-dlp";
       logoUrl = "https://cdn.simpleicons.org/youtube";
+      appName = "yt-dlp";
       uploadNotes = "Downloads land in personal or shared media folders.";
     }
     {
@@ -762,6 +777,7 @@ let
       loginNotes = "Vaultwarden is self-service: open the signup page on first visit and register with your local account email.";
       projectUrl = "https://github.com/dani-garcia/vaultwarden";
       logoUrl = "https://cdn.simpleicons.org/vaultwarden";
+      appName = "vaultwarden";
       uploadNotes = "Store Kanidm credentials, recovery codes, and app-local passwords here.";
     }
     {
@@ -774,6 +790,7 @@ let
       loginNotes = "Requires backup-admin plus the native Kopia password.";
       projectUrl = "https://kopia.io";
       logoUrl = "https://raw.githubusercontent.com/kopia/kopia/master/icons/kopia.svg";
+      appName = "kopia";
       uploadNotes = "Backup repository files are managed by Kopia.";
       requiredGroups = [ vars.backupAccess.adminGroup ];
     }
@@ -787,6 +804,7 @@ let
       loginNotes = "Requires backup-admin through Kanidm.";
       projectUrl = "https://rclone.org";
       logoUrl = "https://cdn.simpleicons.org/rclone";
+      appName = "rclone";
       uploadNotes = "MEGA sync is scheduled by rclone-mega-kopia-sync.timer.";
       requiredGroups = [ vars.backupAccess.adminGroup ];
     }
@@ -800,6 +818,7 @@ let
       loginNotes = "Requires app-admin through Kanidm, then the native Beszel admin login.";
       projectUrl = "https://beszel.dev";
       logoUrl = "https://raw.githubusercontent.com/henrygd/beszel/main/site/static/favicon.svg";
+      appName = "beszel";
       uploadNotes = "Monitoring state is managed by Beszel.";
     }
   ];

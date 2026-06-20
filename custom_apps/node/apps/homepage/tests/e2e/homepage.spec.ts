@@ -1,6 +1,14 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const validPublicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDECtGBZcPahwDCtWiMgn24qGdqMOJhPpHoPpKsHAF laptop';
+
+const expectNoHorizontalOverflow = async (page: Page) => {
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth),
+    )
+    .toBeLessThanOrEqual(1);
+};
 
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => {
@@ -28,6 +36,7 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await page.getByRole('link', { name: 'How to Upload Files' }).click();
   await expect(page).toHaveURL(/\/uploads$/);
   await expect(page.getByRole('heading', { name: 'SSHFS Mount Setup' })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 
   const setup = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SSHFS Mount Setup' }) });
   await expect(setup.locator('pre.windows code').first()).toBeVisible();

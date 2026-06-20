@@ -16,6 +16,7 @@ export type ServiceCard = {
   loginNotes: string;
   projectUrl?: string;
   logoUrl?: string;
+  appName?: string;
   uploadNotes?: string;
   requiredGroups?: string[];
 };
