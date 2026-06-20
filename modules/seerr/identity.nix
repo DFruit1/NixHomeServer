@@ -6,6 +6,12 @@ let
 in
 {
   config = lib.mkIf cfg.enable {
+    users.users.seerr = {
+      group = "seerr";
+      isSystemUser = true;
+    };
+    users.groups.seerr = { };
+
     services.kanidm.provision = {
       groups."media-automation-users".members = vars.kanidmAppUsers;
 

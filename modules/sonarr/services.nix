@@ -31,6 +31,12 @@ in
         };
       };
 
+      systemd.tmpfiles.rules = [
+        "d /var/lib/sonarr 0750 sonarr sonarr - -"
+        "d /var/lib/sonarr/.config 0750 sonarr sonarr - -"
+        "d /var/lib/sonarr/.config/NzbDrone 0750 sonarr sonarr - -"
+      ];
+
       systemd.services.sonarr = {
         wants = [ "media-automation-storage-layout-v1.service" ];
         after = [ "media-automation-storage-layout-v1.service" ];

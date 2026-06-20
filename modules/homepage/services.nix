@@ -611,16 +611,6 @@ let
       uploadNotes = "Use Files for general uploads and app-specific media folders.";
     }
     {
-      id = "sftp";
-      name = "SFTP Access";
-      url = "/uploads";
-      enabled = filesEnabled;
-      category = "files";
-      description = "Private SSHFS/SFTP endpoint for large uploads and automated folder sync.";
-      loginNotes = "Use uploaded SSHFS public key authentication and port 2222 on ${serverLanHost}.";
-      uploadNotes = "Upload your public key once, then mount the server with SSHFS.";
-    }
-    {
       id = "audiobooks";
       name = "Audiobooks";
       url = "https://${audiobooksHost}/audiobookshelf/";
@@ -796,7 +786,7 @@ let
       description = "Rclone Web GUI for inspecting declarative offsite copies of the encrypted Kopia repository.";
       loginNotes = "Requires backup-admin through Kanidm.";
       projectUrl = "https://rclone.org";
-      logoUrl = "https://rclone.org/img/logo_on_light__horizontal_color.svg";
+      logoUrl = "https://cdn.simpleicons.org/rclone";
       uploadNotes = "MEGA sync is scheduled by rclone-mega-kopia-sync.timer.";
       requiredGroups = [ vars.backupAccess.adminGroup ];
     }

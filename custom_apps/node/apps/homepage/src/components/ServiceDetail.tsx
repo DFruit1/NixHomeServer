@@ -36,7 +36,7 @@ export const ServiceDetail = component$(
           <div>
             <h2>{service.name}</h2>
             {service.projectUrl && (
-              <a class="project-link" href={service.projectUrl}>
+              <a class="project-link" href={service.projectUrl} target="_blank" rel="noreferrer">
                 Project homepage
               </a>
             )}
@@ -48,8 +48,8 @@ export const ServiceDetail = component$(
             {service.id === 'sftp' ? 'Open app' : 'Open app'}
           </a>
           {service.projectUrl && (
-            <a class="secondary-link" href={service.projectUrl}>
-              About project
+            <a class="secondary-link" href={service.projectUrl} target="_blank" rel="noreferrer">
+              Project Homepage
             </a>
           )}
         </div>

@@ -6,7 +6,8 @@
   "kanidmGroupDescriptions": {
     "backup-admin": "Backup administration access.",
     "files-personal-users": "Personal file browser access.",
-    "photos-users": "Photo library access."
+    "photos-users": "Photo library access.",
+    "users": "Baseline user access."
   },
   "services": [
     {
@@ -17,6 +18,7 @@
       "category": "media",
       "description": "Photo and video library with private login and public share-link support.",
       "loginNotes": "Use Kanidm.",
+      "projectUrl": "https://immich.app",
       "uploadNotes": "Upload through Immich web or the mobile app."
     },
     {
@@ -30,14 +32,14 @@
       "uploadNotes": "Use Files for general uploads and app-specific media folders."
     },
     {
-      "id": "sftp",
-      "name": "SFTP Access",
-      "url": "/uploads",
-      "enabled": true,
-      "category": "files",
-      "description": "Private SSHFS/SFTP endpoint for large uploads and automated folder sync.",
-      "loginNotes": "Use uploaded SSHFS public key authentication and port 2222 on server.home.arpa.",
-      "uploadNotes": "Upload your public key once, then mount the server with SSHFS."
+      "id": "passwords",
+      "name": "Passwords",
+      "url": "https://passwords.sydneybasiniot.org",
+      "enabled": false,
+      "category": "identity",
+      "description": "Shared password manager for server and account credentials.",
+      "loginNotes": "Register with your local account email on first visit.",
+      "uploadNotes": "Store Kanidm credentials, recovery codes, and app-local passwords here."
     },
     {
       "id": "backups",

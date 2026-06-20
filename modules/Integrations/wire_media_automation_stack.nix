@@ -12,6 +12,10 @@ let
   qbitPaths = config.repo.qbittorrent.paths;
   moviesRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/_Movies";
   showsRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/_Shows";
+  mediaAutomationTraversalDirs = [
+    vars.sharedRoot
+    config.repo.jellyfin.paths.sharedVideosRoot
+  ];
   automationPath = with pkgs; [
     acl
     coreutils
@@ -51,7 +55,13 @@ in
       before = [
         "sonarr.service"
         "radarr.service"
+        "prowlarr.service"
+        "seerr.service"
         "qbittorrent.service"
+        "media-automation-bootstrap-qbittorrent.service"
+        "media-automation-bootstrap-sonarr.service"
+        "media-automation-bootstrap-radarr.service"
+        "media-automation-bootstrap-prowlarr.service"
       ];
       unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
       serviceConfig = {
@@ -63,6 +73,9 @@ in
         set -euo pipefail
 
         install -d -m 1770 -o root -g media-automation ${lib.escapeShellArg "${vars.sharedRoot}/_Downloads"}
+        for path in ${lib.escapeShellArgs mediaAutomationTraversalDirs}; do
+          setfacl -m g:media-automation:--x "$path"
+        done
         for path in ${lib.escapeShellArgs [
           qbitPaths.downloadRoot
           qbitPaths.incompleteDir
@@ -130,11 +143,13 @@ in
       wants = [
         "sonarr.service"
         "qbittorrent.service"
+        "media-automation-storage-layout-v1.service"
         "media-automation-bootstrap-qbittorrent.service"
       ];
       after = [
         "sonarr.service"
         "qbittorrent.service"
+        "media-automation-storage-layout-v1.service"
         "media-automation-bootstrap-qbittorrent.service"
       ];
       path = automationPath;
@@ -152,6 +167,7 @@ in
           [[ -f "$config_xml" ]] && grep -q '<ApiKey>' "$config_xml" && break
           sleep 1
         done
+        [[ -f "$config_xml" ]] || exit 0
         api_key="$(sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$config_xml" | head -n1)"
         [[ -n "$api_key" ]] || exit 0
 
@@ -165,6 +181,7 @@ in
           fi
           sleep 1
         done
+        api "$base_url/api/v3/system/status" >/dev/null || exit 0
 
         if ! api "$base_url/api/v3/rootfolder" | jq -e --arg path "$root_path" '.[] | select(.path == $path)' >/dev/null; then
           jq -n --arg path "$root_path" '{path: $path}' \
@@ -218,11 +235,13 @@ in
       wants = [
         "radarr.service"
         "qbittorrent.service"
+        "media-automation-storage-layout-v1.service"
         "media-automation-bootstrap-qbittorrent.service"
       ];
       after = [
         "radarr.service"
         "qbittorrent.service"
+        "media-automation-storage-layout-v1.service"
         "media-automation-bootstrap-qbittorrent.service"
       ];
       path = automationPath;
@@ -240,6 +259,7 @@ in
           [[ -f "$config_xml" ]] && grep -q '<ApiKey>' "$config_xml" && break
           sleep 1
         done
+        [[ -f "$config_xml" ]] || exit 0
         api_key="$(sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$config_xml" | head -n1)"
         [[ -n "$api_key" ]] || exit 0
 
@@ -253,6 +273,7 @@ in
           fi
           sleep 1
         done
+        api "$base_url/api/v3/system/status" >/dev/null || exit 0
 
         if ! api "$base_url/api/v3/rootfolder" | jq -e --arg path "$root_path" '.[] | select(.path == $path)' >/dev/null; then
           jq -n --arg path "$root_path" '{path: $path}' \
@@ -307,11 +328,13 @@ in
         "prowlarr.service"
         "sonarr.service"
         "radarr.service"
+        "media-automation-storage-layout-v1.service"
       ];
       after = [
         "prowlarr.service"
         "sonarr.service"
         "radarr.service"
+        "media-automation-storage-layout-v1.service"
       ];
       path = automationPath;
       serviceConfig.Type = "oneshot";
@@ -324,6 +347,7 @@ in
         prowlarr_url="http://${loopback}:${toString ports.prowlarr}"
 
         read_api_key() {
+          [[ -f "$1" ]] || return 0
           sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$1" | head -n1
         }
 
@@ -351,6 +375,7 @@ in
           fi
           sleep 1
         done
+        papi "$prowlarr_url/api/v1/system/status" >/dev/null || exit 0
 
         upsert_app() {
           local name="$1"

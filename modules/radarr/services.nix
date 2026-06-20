@@ -31,6 +31,12 @@ in
         };
       };
 
+      systemd.tmpfiles.rules = [
+        "d /var/lib/radarr 0750 radarr radarr - -"
+        "d /var/lib/radarr/.config 0750 radarr radarr - -"
+        "d /var/lib/radarr/.config/Radarr 0750 radarr radarr - -"
+      ];
+
       systemd.services.radarr = {
         wants = [ "media-automation-storage-layout-v1.service" ];
         after = [ "media-automation-storage-layout-v1.service" ];

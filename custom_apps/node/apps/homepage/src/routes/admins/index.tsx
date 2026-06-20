@@ -4,46 +4,47 @@ import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminStep } from '../../shared/types.js';
 
 type AdminCategoryId = 'daily' | 'deploys' | 'identity' | 'secrets';
+type AdminIntentId = 'add-user' | 'manage-user' | 'manage-secrets';
 
 type AdminStepMeta = {
   category: AdminCategoryId;
-  badge: string;
+  intents?: AdminIntentId[];
 };
 
 const adminCategories: { id: AdminCategoryId; title: string; description: string }[] = [
   {
     id: 'daily',
     title: 'Daily Checks',
-    description: 'Read-only checks for config state and service health.',
+    description: 'Read-only config and health checks.',
   },
   {
     id: 'deploys',
     title: 'Deploys',
-    description: 'Validation, test builds, and the explicit system switch step.',
+    description: 'Validation, test builds, switch step.',
   },
   {
     id: 'identity',
     title: 'Access & Identity Maintenance',
-    description: 'Lower-frequency identity cleanup and access lifecycle work.',
+    description: 'Identity cleanup and access lifecycle.',
   },
   {
     id: 'secrets',
     title: 'Secrets',
-    description: 'Sensitive credential generation and rotation tasks.',
+    description: 'Credential generation and rotation.',
   },
 ];
 
 const adminStepMeta: Record<string, AdminStepMeta> = {
-  'Review evaluated config': { category: 'daily', badge: 'Read-only' },
-  'Check service health': { category: 'daily', badge: 'Read-only' },
-  'Validate broad changes': { category: 'deploys', badge: 'Full gate' },
-  'Run routine guarded deploy': { category: 'deploys', badge: 'Deploy test' },
-  'Switch after a passing test': { category: 'deploys', badge: 'Switches system' },
-  'Manage Kanidm entity removal explicitly': { category: 'identity', badge: 'Identity' },
-  'Rotate or regenerate secrets': { category: 'secrets', badge: 'Sensitive' },
+  'Review evaluated config': { category: 'daily' },
+  'Check service health': { category: 'daily' },
+  'Validate broad changes': { category: 'deploys' },
+  'Run routine guarded deploy': { category: 'deploys' },
+  'Switch after a passing test': { category: 'deploys' },
+  'Manage Kanidm entity removal explicitly': { category: 'identity', intents: ['manage-user'] },
+  'Rotate or regenerate secrets': { category: 'secrets', intents: ['manage-secrets'] },
 };
 
-const fallbackStepMeta: AdminStepMeta = { category: 'daily', badge: 'Admin task' };
+const fallbackStepMeta: AdminStepMeta = { category: 'daily' };
 
 const metaForStep = (step: AdminStep): AdminStepMeta => adminStepMeta[step.title] ?? fallbackStepMeta;
 
@@ -90,25 +91,68 @@ const buildMembershipCommands = (groups: string[], userArg: string): string[] =>
 const formatCommandBlock = (commands: string[]): string =>
   commands.length ? commands.join('\n') : '# Select one or more access groups above, then copy generated commands.';
 
+const adminIntents: { id: AdminIntentId; label: string }[] = [
+  { id: 'add-user', label: 'Add New User' },
+  { id: 'manage-user', label: 'Manage Existing User' },
+  { id: 'manage-secrets', label: 'Manage Secrets / Passwords' },
+];
+
+const isIntentOpen = (activeIntent: AdminIntentId | '', intents: AdminIntentId[] = []): boolean =>
+  activeIntent !== '' && intents.includes(activeIntent);
+
+const AdminCommand = component$(({ command }: { command: string }) => {
+  const copied = useSignal(false);
+
+  const copyCommand = $(async () => {
+    if (!navigator.clipboard?.writeText) {
+      return;
+    }
+    await navigator.clipboard.writeText(command);
+    copied.value = true;
+    window.setTimeout(() => {
+      copied.value = false;
+    }, 1600);
+  });
+
+  return (
+    <div class="admin-code-card">
+      <code>{command}</code>
+      <button type="button" class="admin-code-card__copy" aria-label={copied.value ? 'Copied command' : 'Copy command'} onClick$={copyCommand}>
+        {copied.value ? (
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        ) : (
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <rect x="9" y="9" width="10" height="10" rx="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
+});
+
 const AdminTask = component$(
-  ({ title, description, badges = [] }: { title: string; description: string; badges?: string[] }) => (
-    <details class="admin-task">
+  ({
+    title,
+    description,
+    activeIntent,
+    intents = [],
+  }: {
+    title: string;
+    description: string;
+    activeIntent: AdminIntentId | '';
+    intents?: AdminIntentId[];
+  }) => (
+    <details class="admin-task" open={isIntentOpen(activeIntent, intents)}>
       <summary class="admin-task__summary">
         <span class="admin-task__main">
           <span class="admin-task__title">{title}</span>
-          <span class="admin-task__description">{description}</span>
         </span>
-        {badges.length > 0 && (
-          <span class="admin-task__badges">
-            {badges.map((badge) => (
-              <span class="admin-task__badge" key={badge}>
-                {badge}
-              </span>
-            ))}
-          </span>
-        )}
       </summary>
       <div class="admin-task__content">
+        <p>{description}</p>
         <Slot />
       </div>
     </details>
@@ -122,6 +166,7 @@ export default component$(() => {
   const currentUser = homepage.data?.user;
   const username = useSignal('');
   const email = useSignal('');
+  const selectedIntent = useSignal<AdminIntentId | ''>('');
   const groupDescriptions = homepage.data?.kanidmGroupDescriptions ?? {};
   const accessGroups = (homepage.data?.kanidmGroups ?? [])
     .filter((group) => !isProtectedGroup(group))
@@ -136,6 +181,8 @@ export default component$(() => {
   const adminSections = groupedAdminSteps(adminGuide);
   const typedUsername = username.value.trim();
   const typedUserGroups = currentUser && typedUsername === currentUser.username ? currentUser.groups : [];
+  const unassignedAccessGroups = accessGroups.filter((group) => !typedUserGroups.includes(group));
+  const assignedAccessGroups = accessGroups.filter((group) => typedUserGroups.includes(group));
 
   const setUsername = $((event: Event) => {
     const input = event.target as HTMLInputElement;
@@ -159,17 +206,38 @@ export default component$(() => {
       : selectedGroups.value.filter((current) => current !== group);
   });
 
+  const selectIntent = $((intent: AdminIntentId) => {
+    selectedIntent.value = selectedIntent.value === intent ? '' : intent;
+  });
+
+  const renderGroupOption = (group: string) => (
+    <label key={group} class="group-picker__option">
+      <input type="checkbox" checked={selectedGroups.value.includes(group)} onChange$={(event) => toggleGroup(group, event)} />
+      <span class="group-name" title={groupDescriptions[group] ?? 'No description available'}>
+        {group}
+      </span>
+    </label>
+  );
+
   return (
     <>
       <section class="section">
-        <div class="section-heading stacked">
-          <div>
-            <h2>Admin Command Center</h2>
-            <p>Operator tasks grouped by intent. Expand only the task you need.</p>
+        <div class="admin-intent-hero">
+          <h2>What do you need to do?</h2>
+          <div class="admin-intent-actions" role="group" aria-label="Common admin tasks">
+            {adminIntents.map((intent) => (
+              <button
+                type="button"
+                class={{ selected: selectedIntent.value === intent.id }}
+                aria-pressed={selectedIntent.value === intent.id}
+                onClick$={() => selectIntent(intent.id)}
+                key={intent.id}
+              >
+                {intent.label}
+              </button>
+            ))}
           </div>
-          <p class="admin-page-note">
-            Initial disk provisioning, agenix key installation, and nixos-install happen from documentation/quickstart.md before this homepage exists.
-          </p>
+          <p class="admin-page-note">Quickstart covers disk setup, agenix keys, and nixos-install before homepage exists.</p>
         </div>
         <div class="admin-command-layout">
           {adminSections.map((section) => (
@@ -180,8 +248,14 @@ export default component$(() => {
               </div>
               <div class="admin-task-list">
                 {section.steps.map((step) => (
-                  <AdminTask title={step.title} description={step.detail} badges={[metaForStep(step).badge]} key={step.title}>
-                    {step.command && <code>{step.command}</code>}
+                  <AdminTask
+                    title={step.title}
+                    description={step.detail}
+                    activeIntent={selectedIntent.value}
+                    intents={metaForStep(step).intents}
+                    key={step.title}
+                  >
+                    {step.command && <AdminCommand command={step.command} />}
                   </AdminTask>
                 ))}
               </div>
@@ -192,8 +266,7 @@ export default component$(() => {
       <section class="section">
         <div class="section-heading stacked">
           <div>
-            <h2>User Onboarding</h2>
-            <p>Create identity first, grant only the access groups needed, then hand off first-sign-in and app setup.</p>
+            <h2>User Management</h2>
           </div>
         </div>
         <div class="admin-input-grid">
@@ -213,77 +286,84 @@ export default component$(() => {
         </div>
         <div class="admin-task-list">
           <AdminTask
-            title="Check the user exists"
-            description="Use this if re-running steps or after creation to confirm identity visibility."
-            badges={['Identity']}
+            title="Check user exists"
+            description="Use before reruns. Confirms identity visibility."
+            activeIntent={selectedIntent.value}
+            intents={['add-user', 'manage-user']}
           >
-            <code>{`kanidm person get ${userArg}`}</code>
+            <AdminCommand command={`kanidm person get ${userArg}`} />
           </AdminTask>
           <AdminTask
-            title="Create the Kanidm account"
-            description="Create the account record and set the primary email."
-            badges={['Identity']}
+            title="Create Kanidm account"
+            description="Create account. Set primary email."
+            activeIntent={selectedIntent.value}
+            intents={['add-user']}
           >
-            <code>{`kanidm person create ${userArg} ${displayNameArg}`}</code>
-            <code>{`kanidm person update ${userArg} --mail ${emailArg}`}</code>
+            <AdminCommand command={`kanidm person create ${userArg} ${displayNameArg}`} />
+            <AdminCommand command={`kanidm person update ${userArg} --mail ${emailArg}`} />
           </AdminTask>
           <AdminTask
             title="Grant baseline access"
-            description="Baseline identity membership enables Kanidm sign-in and normal user resolution."
-            badges={['Required']}
+            description="Enable Kanidm sign-in and normal user lookup."
+            activeIntent={selectedIntent.value}
+            intents={['add-user']}
           >
-            <code>{`kanidm group add-members users ${userArg}`}</code>
+            <AdminCommand command={`kanidm group add-members users ${userArg}`} />
           </AdminTask>
           <AdminTask
             title="Grant app/file/admin access"
-            description="Pick one or more non-protected groups and run the generated command."
-            badges={['Access groups']}
+            description="Select groups. Copy generated command."
+            activeIntent={selectedIntent.value}
+            intents={['add-user', 'manage-user']}
           >
             {accessGroups.length > 0 ? (
-              <div class="group-picker">
-                {accessGroups.map((group) => {
-                  const isAlreadyMember = typedUserGroups.includes(group);
-                  return (
-                    <label key={group} class={`group-picker__option${isAlreadyMember ? ' is-member' : ''}`}>
-                      <input
-                        type="checkbox"
-                        checked={selectedGroups.value.includes(group)}
-                        onChange$={(event) => toggleGroup(group, event)}
-                      />
-                      <span class="group-name" title={groupDescriptions[group] ?? 'No description available'}>
-                        {group}
-                      </span>
-                      {isAlreadyMember && <span class="group-status">Already assigned</span>}
-                    </label>
-                  );
-                })}
-              </div>
+              <>
+                <div class="group-picker-section">
+                  <h4>Unassigned</h4>
+                  {unassignedAccessGroups.length > 0 ? (
+                    <div class="group-picker">{unassignedAccessGroups.map((group) => renderGroupOption(group))}</div>
+                  ) : (
+                    <p>No unassigned groups for selected user.</p>
+                  )}
+                </div>
+                <div class="group-picker-section">
+                  <h4>Already assigned</h4>
+                  {assignedAccessGroups.length > 0 ? (
+                    <div class="group-picker">{assignedAccessGroups.map((group) => renderGroupOption(group))}</div>
+                  ) : (
+                    <p>No assigned groups for selected user.</p>
+                  )}
+                </div>
+              </>
             ) : (
               <p>No non-protected groups are currently exposed from the configured Kanidm catalog.</p>
             )}
-            <code>{membershipCommand}</code>
+            <AdminCommand command={membershipCommand} />
           </AdminTask>
           <AdminTask
-            title="Signup for Vaultwarden"
-            description="Users can register their own Vaultwarden account from the browser when trusted on LAN/NetBird."
-            badges={['User action']}
+            title="Vaultwarden signup"
+            description="User registers from browser on LAN or NetBird."
+            activeIntent={selectedIntent.value}
+            intents={['add-user', 'manage-secrets']}
           >
             <p>Have them open this URL and register with the same email used in Kanidm:</p>
-            <code>{`https://passwords.${domain}/#/signup`}</code>
+            <AdminCommand command={`https://passwords.${domain}/#/signup`} />
           </AdminTask>
           <AdminTask
-            title="Create the first sign-in link"
-            description="Generate a short-lived Kanidm reset link and share only through a secure channel."
-            badges={['Sensitive']}
+            title="Create first sign-in link"
+            description="Generate short-lived Kanidm reset link. Share securely."
+            activeIntent={selectedIntent.value}
+            intents={['add-user', 'manage-user', 'manage-secrets']}
           >
-            <code>{`kanidm person credential create-reset-token ${userArg} 3600`}</code>
+            <AdminCommand command={`kanidm person credential create-reset-token ${userArg} 3600`} />
           </AdminTask>
           <AdminTask
             title="Hand off first sign-in"
-            description="Ask the person to complete Kanidm password and MFA setup, open each granted app once, and save recovery details securely."
-            badges={['User action']}
+            description="Ask user to set password and MFA, open apps, save recovery details."
+            activeIntent={selectedIntent.value}
+            intents={['add-user']}
           >
-            <p>Confirm the user can sign in, open granted apps, and store recovery details somewhere durable.</p>
+            <p>Confirm user can sign in, open granted apps, and save recovery details.</p>
           </AdminTask>
         </div>
       </section>
@@ -291,19 +371,19 @@ export default component$(() => {
         <div>
           <h2>Config And Deploys</h2>
           <ol class="steps">
-            <li>Use vars.nix for operator-facing host, network, storage, domain, and access settings.</li>
-            <li>Use configuration.nix imports to enable or remove optional app modules.</li>
-            <li>Run the guarded deploy test before switching the active system.</li>
-            <li>Keep generated secrets encrypted in agenix and do not commit plaintext secret material.</li>
+            <li>Use vars.nix for host, network, storage, domain, and access.</li>
+            <li>Use configuration.nix imports to enable or remove optional apps.</li>
+            <li>Run guarded deploy test before switch.</li>
+            <li>Keep generated secrets in agenix. Never commit plaintext.</li>
           </ol>
         </div>
         <div>
           <h2>User Support</h2>
           <ol class="steps">
-            <li>Grant users the right Kanidm groups before asking them to open apps.</li>
-            <li>Use the generated onboarding commands above for account creation and group membership.</li>
-            <li>For phone backup, configure the phone Syncthing device ID before enabling the phone-backup module.</li>
-            <li>Use the Local Backups and Offline Media service pages after each relevant device ID is known.</li>
+            <li>Grant Kanidm groups before app access.</li>
+            <li>Use commands above for account and group membership.</li>
+            <li>Set phone Syncthing device ID before enabling phone backup.</li>
+            <li>Use service pages after device IDs are known.</li>
           </ol>
         </div>
       </section>

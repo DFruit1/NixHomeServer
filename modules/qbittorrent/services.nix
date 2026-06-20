@@ -39,6 +39,12 @@ in
         };
       };
 
+      systemd.tmpfiles.rules = [
+        "d ${paths.profileDir} 0750 qbittorrent qbittorrent - -"
+        "d ${paths.profileDir}/qBittorrent 0750 qbittorrent qbittorrent - -"
+        "d ${paths.profileDir}/qBittorrent/config 0750 qbittorrent qbittorrent - -"
+      ];
+
       systemd.services.qbittorrent = {
         wants = [ "media-automation-storage-layout-v1.service" ];
         after = [ "media-automation-storage-layout-v1.service" ];

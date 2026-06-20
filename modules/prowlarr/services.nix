@@ -30,6 +30,16 @@ in
           log.analyticsEnabled = false;
         };
       };
+
+      systemd.tmpfiles.rules = [
+        "d /var/lib/prowlarr 0750 prowlarr prowlarr - -"
+      ];
+
+      systemd.services.prowlarr.serviceConfig = {
+        DynamicUser = lib.mkForce false;
+        User = "prowlarr";
+        Group = "prowlarr";
+      };
     }
 
     (oauth2Proxy.mkSidecarService {

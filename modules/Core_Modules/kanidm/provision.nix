@@ -46,6 +46,15 @@ let
     "domain_admins" = "Builtin domain-wide administrative group used by platform administration.";
     "users" = "Baseline group for normal users and standard identity resolution.";
     "app-admin" = "Grants application admin access for app surfaces that trust the app-admin group.";
+    "audiobookshelf-users" = "Grants Audiobookshelf sign-in.";
+    "downloads-users" = "Grants YouTube Downloader access.";
+    "immich-users" = "Grants Immich photo library access.";
+    "jellyfin-users" = "Grants Jellyfin managed account access.";
+    "kavita-users" = "Grants Kavita books and comics access.";
+    "kiwix-users" = "Grants Kiwix offline wiki access.";
+    "mail-archive-users" = "Grants private mail archive access.";
+    "media-automation-users" = "Grants Sonarr, Radarr, Prowlarr, qBittorrent, and request-manager access.";
+    "paperless-users" = "Grants Paperless document archive access.";
     "${vars.fileAccess.webAccessGroup}" = "Grants browser file access and personal file-root provisioning.";
     "${vars.fileAccess.sftpAccessGroup}" = "Grants access to the dedicated SFTP endpoint.";
     "${vars.fileAccess.sharedAccessGroup}" = "Grants access to the shared files view.";

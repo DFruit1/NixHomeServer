@@ -21,10 +21,19 @@ in
         openFirewall = false;
       };
 
+      systemd.tmpfiles.rules = [
+        "d /var/lib/seerr 0750 seerr seerr - -"
+      ];
+
       systemd.services.seerr = {
         wants = [ "network-online.target" ];
         after = [ "network-online.target" ];
-        serviceConfig.StateDirectory = lib.mkForce "seerr";
+        serviceConfig = {
+          DynamicUser = lib.mkForce false;
+          User = "seerr";
+          Group = "seerr";
+          StateDirectory = lib.mkForce "seerr";
+        };
       };
     }
 
