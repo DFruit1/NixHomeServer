@@ -512,8 +512,8 @@ in
           sleep 1
         done
         curl --silent --show-error --fail --max-time 5 "$seerr_url/api/v1/settings/public" >/dev/null || {
-          echo "Seerr HTTP endpoint is not ready; skipping bootstrap" >&2
-          exit 0
+          echo "Seerr HTTP endpoint is not ready; retrying bootstrap after restart." >&2
+          exit 1
         }
 
         for _ in $(seq 1 120); do
@@ -521,8 +521,8 @@ in
           sleep 1
         done
         [[ -s "$jellyfin_api_key_file" ]] || {
-          echo "Jellyfin bootstrap API key is not available; skipping Seerr bootstrap" >&2
-          exit 0
+          echo "Jellyfin bootstrap API key is not available; retrying bootstrap after restart." >&2
+          exit 1
         }
         jellyfin_api_key="$(< "$jellyfin_api_key_file")"
 

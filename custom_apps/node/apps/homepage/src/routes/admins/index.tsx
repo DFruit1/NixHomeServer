@@ -16,27 +16,27 @@ const adminCategories: { id: AdminCategoryId; title: string; description: string
   {
     id: 'server',
     title: 'Server Management',
-    description: 'Daily checks, readiness, and secret operations.',
+    description: 'Read-only checks, readiness gates, and secret staging commands.',
   },
   {
     id: 'apps',
     title: 'Configure Apps & Services',
-    description: 'Validation, test builds, service status, logs, and app reconciliation.',
+    description: 'Repo validation, guarded deploys, service logs, restarts, and app reconciliation.',
   },
   {
     id: 'identity',
     title: 'Users & Logins',
-    description: 'Accounts, groups, sign-in links, and access lifecycle.',
+    description: 'Kanidm accounts, groups, reset links, and access lifecycle.',
   },
   {
     id: 'storageBackups',
     title: 'Storage & Backups',
-    description: 'Disk, filesystem, pool, snapshot, and offsite sync operations.',
+    description: 'Disk health, filesystems, ZFS pool checks, Kopia snapshots, and offsite sync.',
   },
   {
     id: 'network',
     title: 'Network & Edge',
-    description: 'Caddy, DNS, Cloudflare tunnel, and NetBird checks.',
+    description: 'Caddy routing, private DNS, Cloudflare tunnel, NetBird, and firewall checks.',
   },
 ];
 
@@ -267,38 +267,38 @@ export default component$(() => {
   const activeIntent: AdminIntentId | '' = isAdminIntent(selectedMode.value) ? selectedMode.value : '';
   const searchIsActive = selectedMode.value === 'other';
   const userTaskSearchMatches = {
-    checkUser: matchesSearch(searchQuery.value, ['Check user exists', 'Use before reruns. Confirms identity visibility.', `kanidm person get ${userArg}`]),
+    checkUser: matchesSearch(searchQuery.value, ['Check user exists', 'Use before creating or resetting an account. Confirms Kanidm can see the person record.', `kanidm person get ${userArg}`]),
     createAccount: matchesSearch(searchQuery.value, [
       'Create Kanidm account',
-      'Create account. Set primary email.',
+      'Create the Kanidm person record, then attach the primary email used by apps and password-manager signup.',
       `kanidm person create ${userArg} ${displayNameArg}`,
       `kanidm person update ${userArg} --mail ${emailArg}`,
     ]),
     grantBaseline: matchesSearch(searchQuery.value, [
       'Grant baseline access',
-      'Enable Kanidm sign-in and normal user lookup.',
+      'Add the baseline users group required for ordinary sign-in and user lookup.',
       `kanidm group add-members users ${userArg}`,
     ]),
     grantAccess: matchesSearch(searchQuery.value, [
       'Grant app/file/admin access',
-      'Select groups. Copy generated command.',
+      'Select app, file, backup, or admin groups. The generated loop grants the chosen access to one user.',
       membershipCommand,
       accessGroups.join(' '),
     ]),
     vaultwardenSignup: matchesSearch(searchQuery.value, [
       'Vaultwarden signup',
-      'User registers from browser on LAN or NetBird.',
+      'Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm.',
       `https://passwords.${domain}/#/signup`,
     ]),
     signInLink: matchesSearch(searchQuery.value, [
       'Create first sign-in link',
-      'Generate short-lived Kanidm reset link. Share securely.',
+      'Generate a one-hour Kanidm credential reset link for first sign-in or account recovery. Share it out-of-band.',
       `kanidm person credential create-reset-token ${userArg} 3600`,
     ]),
     handoff: matchesSearch(searchQuery.value, [
       'Hand off first sign-in',
-      'Ask user to set password and MFA, open apps, save recovery details.',
-      'Confirm user can sign in, open granted apps, and save recovery details.',
+      'Ask the user to set password and MFA, open granted apps, and save recovery details before considering onboarding complete.',
+      'Confirm the user can sign in, open granted apps, set MFA, and save recovery details before closing the onboarding task.',
     ]),
   };
   const hasMatchingUserTasks = Object.values(userTaskSearchMatches).some(Boolean);
@@ -462,7 +462,7 @@ export default component$(() => {
                       {showCheckUser && (
                         <AdminTask
                           title="Check user exists"
-                          description="Use before reruns. Confirms identity visibility."
+                          description="Use before creating or resetting an account. Confirms Kanidm can see the person record."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -474,7 +474,7 @@ export default component$(() => {
                       {showCreateAccount && (
                         <AdminTask
                           title="Create Kanidm account"
-                          description="Create account. Set primary email."
+                          description="Create the Kanidm person record, then attach the primary email used by apps and password-manager signup."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -487,7 +487,7 @@ export default component$(() => {
                       {showGrantBaseline && (
                         <AdminTask
                           title="Grant baseline access"
-                          description="Enable Kanidm sign-in and normal user lookup."
+                          description="Add the baseline users group required for ordinary sign-in and user lookup."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -499,7 +499,7 @@ export default component$(() => {
                       {showGrantAccess && (
                         <AdminTask
                           title="Grant app/file/admin access"
-                          description="Select groups. Copy generated command."
+                          description="Select app, file, backup, or admin groups. The generated loop grants the chosen access to one user."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -533,7 +533,7 @@ export default component$(() => {
                       {showVaultwardenSignup && (
                         <AdminTask
                           title="Vaultwarden signup"
-                          description="User registers from browser on LAN or NetBird."
+                          description="Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -546,7 +546,7 @@ export default component$(() => {
                       {showSignInLink && (
                         <AdminTask
                           title="Create first sign-in link"
-                          description="Generate short-lived Kanidm reset link. Share securely."
+                          description="Generate a one-hour Kanidm credential reset link for first sign-in or account recovery. Share it out-of-band."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -558,13 +558,13 @@ export default component$(() => {
                       {showHandoff && (
                         <AdminTask
                           title="Hand off first sign-in"
-                          description="Ask user to set password and MFA, open apps, save recovery details."
+                          description="Ask the user to set password and MFA, open granted apps, and save recovery details before considering onboarding complete."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
-                          <p>Confirm user can sign in, open granted apps, and save recovery details.</p>
+                          <p>Confirm the user can sign in, open granted apps, set MFA, and save recovery details before closing the onboarding task.</p>
                         </AdminTask>
                       )}
                     </div>

@@ -97,42 +97,42 @@
     {
       "title": "Review evaluated config",
       "command": "nix run .#show-config-summary",
-      "detail": "Preview hostnames, app surfaces, access groups, OAuth clients, storage, and required secrets before changing the running server."
+      "detail": "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets."
     },
     {
       "title": "Validate broad changes",
       "command": "./scripts/deploy.sh --debug --action test",
-      "detail": "Use the full gate for first deploys after significant config, app, identity, routing, or storage changes."
+      "detail": "Run the broad debug gate and remote test activation after significant config, app, identity, routing, or storage changes."
     },
     {
       "title": "Run routine guarded deploy",
       "command": "./scripts/deploy.sh --action test",
-      "detail": "Stage the repo archive and run the normal remote rebuild test path on the server."
+      "detail": "Stage the repo archive on the server and run the normal remote nixos-rebuild test path. It does not switch the active generation."
     },
     {
       "title": "Switch after a passing test",
       "command": "./scripts/deploy.sh --action switch",
-      "detail": "Switch only after the guarded test path passes and failed systemd units are clear."
+      "detail": "Make the tested generation persistent. Run this only after the test path passes and failed units are understood."
     },
     {
       "title": "Rotate or regenerate secrets",
       "command": "./scripts/generate-all-secrets.sh",
-      "detail": "Stage plaintext external inputs only under secrets/unencrypted/, encrypt them, and keep plaintext secret material out of git."
+      "detail": "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit it."
     },
     {
       "title": "Manage Kanidm entity removal explicitly",
       "command": "$EDITOR modules/Core_Modules/kanidm/provision.nix",
-      "detail": "Kanidm is configured with autoremove disabled, so deleted module groups/users are kept for rescue/reprovisioning safety."
+      "detail": "Kanidm autoremove is disabled, so deleted module groups/users are kept for rescue safety. Mark stale provision entries intentionally before retiring a module or host."
     },
     {
       "title": "Check backup timers",
       "command": "systemctl list-timers '*kopia*' --no-pager",
-      "detail": "Confirm scheduled local and offsite backup jobs are present before troubleshooting backup freshness."
+      "detail": "Verify Kopia snapshots, phone backups, and offsite sync timers are scheduled and see their next run times."
     },
     {
       "title": "Check service health",
       "command": "sudo systemctl --failed --no-pager",
-      "detail": "Inspect failed units after deploys and before user-facing troubleshooting."
+      "detail": "List failed units after deploys or incidents. Follow up with status and logs for each named unit."
     }
   ],
   "phoneBackup": {

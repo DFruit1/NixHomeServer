@@ -205,7 +205,7 @@ export default component$(() => {
       content: (
         <>
           <h2>Sign in</h2>
-          <p>Start by confirming you can reach the identity system directly. Keep this guide open while Kanidm opens in a separate tab.</p>
+          <p>Start by confirming Kanidm works for your account outside any individual app. Keep this guide open while Kanidm opens in a separate tab.</p>
           <ul class="setup-list">{['signed-in'].map(renderSetupItem)}</ul>
           <ol class="steps">
             <li>Open Kanidm and sign in as {username}.</li>
@@ -216,7 +216,7 @@ export default component$(() => {
               Open Kanidm
             </a>
           </div>
-          <p class="getting-started-note">If Kanidm asks for a reset or credential update, complete that flow before setting up the apps.</p>
+          <p class="getting-started-note">If Kanidm asks for a reset or credential update, finish it first. App sign-in depends on this account being healthy.</p>
         </>
       ),
     },
@@ -227,22 +227,22 @@ export default component$(() => {
       content: (
         <>
           <h2>Secure your account</h2>
-          <p>Confirm the credentials attached to your Kanidm account before relying on the rest of the server. This avoids getting halfway through app setup with a weak or incomplete login.</p>
+          <p>Confirm the credentials attached to your Kanidm account before relying on the rest of the server. This is the recovery point if an app session expires or a device is replaced.</p>
           <ul class="setup-list">{['kanidm-direct-signin', 'kanidm-security'].map(renderSetupItem)}</ul>
           <ol class="steps">
             <li>
               Open <a href={kanidmUrl} target="_blank" rel="noreferrer">Kanidm</a> and sign in directly as {username}.
             </li>
             <li>Open the credentials or account security area.</li>
-            <li>Confirm your password works, your TOTP code works, at least one passkey is listed, and recovery options are available.</li>
-            <li>If anything is missing, add it now before moving on.</li>
+            <li>Confirm your password works, your TOTP code works, at least one passkey is listed, and recovery options are available somewhere you can reach later.</li>
+            <li>If anything is missing or only stored on one device, add another method before moving on.</li>
           </ol>
           <div class="getting-started-actions compact">
             <a class="primary-link" href={kanidmUrl} target="_blank" rel="noreferrer">
               Open Kanidm
             </a>
           </div>
-          <p class="getting-started-note">If you cannot get back in, ask the server admin for a new Kanidm credential reset link.</p>
+          <p class="getting-started-note">If you cannot get back in, ask the server admin for a new short-lived Kanidm credential reset link.</p>
         </>
       ),
     },
@@ -253,14 +253,14 @@ export default component$(() => {
       content: (
         <>
           <h2>Save passwords and recovery details</h2>
-          <p>Save the account details you just verified before opening more apps. Vaultwarden is the preferred server password manager when it is enabled for your account.</p>
+          <p>Save the account details you just verified before opening more apps. Vaultwarden is the preferred shared password manager when it is enabled for your account.</p>
           <ul class="setup-list">{['password-vault', 'passwords-saved'].map(renderSetupItem)}</ul>
           <ol class="steps">
             <li>
-              Open <a href={passwordsUrl} target="_blank" rel="noreferrer">Passwords</a>. If this is your first visit, create a Vaultwarden account using the email address associated with your server account.
+              Open <a href={passwordsUrl} target="_blank" rel="noreferrer">Passwords</a>. If this is your first visit, create a Vaultwarden account using the same email address as your Kanidm account.
             </li>
             <li>Create one login item named Kanidm - {username}.</li>
-            <li>Save the Kanidm username, password, {kanidmUrl}, TOTP seed, passkey notes, and recovery codes in that item.</li>
+            <li>Save the Kanidm username, password, sign-in URL ({kanidmUrl}), TOTP seed, passkey notes, and recovery codes in that item.</li>
             <li>Install the Vaultwarden or Bitwarden browser extension or mobile app if you want it to store passkeys.</li>
             <li>Repeat this pattern later for any app that asks for its own local password.</li>
           </ol>
@@ -283,7 +283,7 @@ export default component$(() => {
       content: (
         <>
           <h2>Open services</h2>
-          <p>Use the Services page as the source of truth. Open the apps you expect to use from there, and let each app finish any first-run login or profile setup.</p>
+          <p>Use the Services page as the source of truth for what your account can access. Open the apps you expect to use from there, and let each app finish any first-run login or profile setup.</p>
           <ul class="setup-list">{['services-visible', 'services-opened'].map(renderSetupItem)}</ul>
           <p class="getting-started-note">
             {enabledServices.length > 0
@@ -293,8 +293,9 @@ export default component$(() => {
           <ol class="steps">
             <li>Open Services and click each active card you plan to use.</li>
             <li>If an app asks to approve Kanidm access, approve it.</li>
-            <li>If an app shows its own first-run screen, finish that setup and save any local password in your password manager.</li>
-            <li>Use each service detail page only when you need app-specific upload, login, or first-run notes.</li>
+            <li>If an app shows its own first-run screen, finish that setup and save any local password or recovery details in your password manager.</li>
+            <li>If an expected app is missing, ask an admin to check your access groups before troubleshooting the app itself.</li>
+            <li>Use each service detail page when you need app-specific upload, login, or first-run notes.</li>
           </ol>
           <div class="getting-started-actions compact">
             <Link class="primary-link" href="/">
@@ -311,21 +312,21 @@ export default component$(() => {
       content: (
         <>
           <h2>Set up files and uploads</h2>
-          <p>Use Files for browser uploads. Use SSHFS only if you want a desktop folder or larger repeated uploads.</p>
+          <p>Use Files for one-off browser uploads. Use SSHFS when you want a mounted desktop folder or larger repeated uploads.</p>
           <ul class="setup-list">{['files-service', 'file-upload'].map(renderSetupItem)}</ul>
           <OptionalStatusText status={filesStatus} enabledText="Files is enabled for this account." />
           <ol class="steps">
             <li>
               Open <a href={filesUrl} target="_blank" rel="noreferrer">Files</a> and confirm you can create a test folder.
             </li>
-            <li>Open the upload guide and choose the content type you are uploading so files land in the right app folder.</li>
+            <li>Open the upload guide and choose the content type you are uploading so files land in the app folder that watches them.</li>
             <li>Optional: for desktop uploads, generate an SSH key on your computer and paste the public key into the upload guide.</li>
           </ol>
           <p class="getting-started-note">Linux or macOS SSH key command:</p>
           <CommandSnippet command={sftpKeygenCommands.linux} />
           <p class="getting-started-note">Windows PowerShell SSH key command:</p>
           <CommandSnippet command={sftpKeygenCommands.windows} />
-          <p class="getting-started-note">After saving the public key, the mount target is {username}@{serverHost}:/ on port 2222. The upload guide gives copyable mount commands for Windows, macOS, and Linux.</p>
+          <p class="getting-started-note">After saving the public key, the mount target is {username}@{serverHost}:/ on port 2222. The upload guide fills in copyable mount commands for Windows, macOS, and Linux.</p>
           {filesStatus === 'verified' ? (
             <div class="getting-started-actions compact">
               <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">
@@ -348,7 +349,7 @@ export default component$(() => {
       content: (
         <>
           <h2>Set up photos and phone backup</h2>
-          <p>This step is optional. If you use the photo library, set up Immich from both the web app and your phone before assuming camera backup is working.</p>
+          <p>This step is optional. If you use the photo library, set up Immich from both the web app and your phone before relying on camera backup.</p>
           <ul class="setup-list">{['photos-service', 'photos-mobile'].map(renderSetupItem)}</ul>
           <OptionalStatusText status={photosStatus} enabledText="Photos is enabled for this account." />
           <ol class="steps">
@@ -358,6 +359,7 @@ export default component$(() => {
             <li>Install the Immich mobile app from your phone app store.</li>
             <li>Use {photosUrl} as the server endpoint in the mobile app.</li>
             <li>Sign in with Kanidm, choose the camera albums to back up, and leave the app open until the first backup starts.</li>
+            <li>Allow photo and background permissions on the phone so later backups can continue without the browser.</li>
             <li>Confirm a new phone photo appears in the Photos web app.</li>
           </ol>
           {photosStatus === 'verified' ? (
@@ -382,10 +384,10 @@ export default component$(() => {
       content: (
         <>
           <h2>Review setup</h2>
-          <p>Use this final pass to confirm the account is usable without turning the guide into another service directory.</p>
+          <p>Use this final pass to confirm the account is usable and that recovery details are saved before you close the guide.</p>
           <ul class="setup-list">{['signed-in', 'kanidm-security', 'passwords-saved', 'services-opened', 'file-upload', 'photos-mobile', 'setup-reviewed'].map(renderSetupItem)}</ul>
           <ol class="steps">
-            <li>Use Services for app-specific detail pages when you need login, upload, or first-run notes.</li>
+            <li>Use Services for app-specific detail pages when you need login, upload, import, or first-run notes.</li>
             <li>Use the upload guide before moving files into Documents, Books, Videos, Audiobooks, Downloads, Mail Archive, or Offline Media folders.</li>
             <li>Save any local app password in your password manager before closing that app.</li>
           </ol>

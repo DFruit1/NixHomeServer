@@ -94,25 +94,38 @@ const sendJson = (response: ServerResponse, status: number, value: unknown): voi
   response.end(JSON.stringify(value));
 };
 
-const serveStatic = async (config: AppConfig, response: ServerResponse, rawPath: string): Promise<void> => {
+export const tryServeStaticAsset = async (config: AppConfig, response: ServerResponse, rawPath: string): Promise<boolean> => {
   const requested = rawPath === '/' ? '/index.html' : rawPath;
   const candidate = path.resolve(config.staticDir, `.${decodeURIComponent(requested)}`);
   const root = path.resolve(config.staticDir);
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
-    throw new Error('static path not found');
+    return false;
   }
   try {
     const file = await stat(candidate);
     if (!file.isFile()) {
-      throw new Error('static path not found');
+      return false;
     }
     response.statusCode = 200;
     response.setHeader('content-type', CONTENT_TYPES[path.extname(candidate)] ?? 'application/octet-stream');
     createReadStream(candidate).pipe(response);
+    return true;
   } catch {
+    return false;
+  }
+};
+
+const serveStatic = async (config: AppConfig, response: ServerResponse, rawPath: string): Promise<void> => {
+  if (await tryServeStaticAsset(config, response, rawPath)) {
+    return;
+  }
+
+  try {
     const index = await readFile(path.join(config.staticDir, 'index.html'));
     response.statusCode = 200;
     response.setHeader('content-type', 'text/html; charset=utf-8');
     response.end(index);
+  } catch {
+    throw new Error('static path not found');
   }
 };

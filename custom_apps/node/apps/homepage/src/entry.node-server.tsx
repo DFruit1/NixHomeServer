@@ -3,7 +3,7 @@ import { createQwikCity } from '@builder.io/qwik-city/middleware/node';
 import qwikCityPlan from '@qwik-city-plan';
 import render from './entry.ssr';
 import { loadConfig } from './server/config.js';
-import { handleApiRequest } from './server/http.js';
+import { handleApiRequest, tryServeStaticAsset } from './server/http.js';
 
 const config = loadConfig();
 
@@ -26,31 +26,34 @@ const fail = (response: ServerResponse, error: unknown): void => {
 };
 
 const server = createServer((request, response) => {
-  void handleApiRequest(config, request, response)
-    .then((handled) => {
-      if (handled) {
+  void (async () => {
+    if (await handleApiRequest(config, request, response)) {
+      return;
+    }
+
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    if (await tryServeStaticAsset(config, response, url.pathname)) {
+      return;
+    }
+
+    staticFile(request, response, (staticError) => {
+      if (staticError) {
+        fail(response, staticError);
         return;
       }
-
-      staticFile(request, response, (staticError) => {
-        if (staticError) {
-          fail(response, staticError);
+      router(request, response, (routerError) => {
+        if (routerError) {
+          fail(response, routerError);
           return;
         }
-        router(request, response, (routerError) => {
-          if (routerError) {
-            fail(response, routerError);
-            return;
+        notFound(request, response, (notFoundError) => {
+          if (notFoundError) {
+            fail(response, notFoundError);
           }
-          notFound(request, response, (notFoundError) => {
-            if (notFoundError) {
-              fail(response, notFoundError);
-            }
-          });
         });
       });
-    })
-    .catch((error) => fail(response, error));
+    });
+  })().catch((error) => fail(response, error));
 });
 
 server.listen(config.port, config.host, () => {

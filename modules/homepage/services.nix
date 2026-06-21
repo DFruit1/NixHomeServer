@@ -944,52 +944,52 @@ let
     {
       title = "Review evaluated config";
       command = "nix run .#show-config-summary";
-      detail = "Preview hostnames, app surfaces, access groups, OAuth clients, storage, and required secrets before changing the running server.";
+      detail = "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets.";
     }
     {
       title = "Validate config readiness";
       command = "nix run .#validate-config-readiness";
-      detail = "Check evaluated settings, required secret files, SSH reachability, and common bootstrap/deploy preconditions without changing the server.";
+      detail = "Preflight evaluated settings, required secret files, SSH reachability, and bootstrap/deploy prerequisites without changing the server.";
     }
     {
       title = "Export operations inventory";
       command = "nix run .#export-inventory -- --format text";
-      detail = "Print the evaluated runtime inventory for hostnames, identity, storage, backups, impermanence, secrets, and systemd units.";
+      detail = "Print the evaluated inventory for hostnames, identity, storage, backups, impermanence, secrets, and systemd units. Use this for audits or handoff notes.";
     }
     {
       title = "Check git worktree";
       command = "git status --short";
-      detail = "Confirm what local changes will be staged into the guarded deploy archive.";
+      detail = "Confirm modified, staged, and untracked files before the guarded deploy packages the repo archive.";
     }
     {
       title = "Check service health";
       command = "sudo systemctl --failed --no-pager";
-      detail = "Inspect failed units after deploys and before user-facing troubleshooting.";
+      detail = "List failed units after deploys or incidents. Follow up with status and logs for each named unit.";
     }
     {
       title = "List scheduled timers";
       command = "systemctl list-timers --all --no-pager";
-      detail = "Review backup, sync, reconciliation, scrub, and maintenance schedules.";
+      detail = "Review backup, sync, reconciliation, scrub, and maintenance timers, including missed or inactive schedules.";
     }
     {
       title = "Review current boot warnings";
       command = "journalctl -b -p warning..alert --no-pager";
-      detail = "Scan warnings and errors from the current boot before blaming an individual app.";
+      detail = "Scan current-boot warnings and errors to spot host-level failures before narrowing to one app.";
     }
     {
       title = "Show resource snapshot";
       command = "systemctl status --no-pager";
-      detail = "Get a quick view of system state, queued jobs, and degraded status from systemd.";
+      detail = "Get a quick systemd snapshot showing degraded state, queued jobs, failed units, and resource summary.";
     }
     {
       title = "Validate broad changes";
       command = "./scripts/deploy.sh --debug --action test";
-      detail = "Use the full gate for first deploys after significant config, app, identity, routing, or storage changes.";
+      detail = "Run the broad debug gate and remote test activation after significant config, app, identity, routing, or storage changes.";
     }
     {
       title = "Run lean repo validation";
       command = "./scripts/validate-repo.sh";
-      detail = "Run the fast repository policy and script tests before routine edits are deployed.";
+      detail = "Run fast repository policy and script tests before routine edits. This avoids Nix builds unless extra flags are used.";
     }
     {
       title = "Run full repo validation";
@@ -999,97 +999,97 @@ let
     {
       title = "Evaluate flake without building";
       command = "nix flake check --no-build";
-      detail = "Catch evaluation errors and option assertion failures without building packages or switching the host.";
+      detail = "Catch flake evaluation errors, missing imports, and option assertion failures without building packages or switching the host.";
     }
     {
       title = "Dry-run deploy target resolution";
       command = "DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test";
-      detail = "Print the target host, build host, flake host, and rebuild command that the guarded deploy helper will use.";
+      detail = "Print the target host, build host, flake host, action, debug mode, and rebuild command the guarded deploy helper would use.";
     }
     {
       title = "Run routine guarded deploy";
       command = "./scripts/deploy.sh --action test";
-      detail = "Stage the repo archive and run the normal remote rebuild test path on the server.";
+      detail = "Stage the repo archive on the server and run the normal remote nixos-rebuild test path. It does not switch the active generation.";
     }
     {
       title = "Run guarded deploy with local build";
       command = "./scripts/deploy.sh --build-locally --action test";
-      detail = "Build on the admin workstation and test-activate the target over SSH when the server should not perform the build.";
+      detail = "Build on the admin workstation and test-activate over SSH when the server should not spend CPU or disk on the build.";
     }
     {
       title = "Switch after a passing test";
       command = "./scripts/deploy.sh --action switch";
-      detail = "Switch only after the guarded test path passes and failed systemd units are clear.";
+      detail = "Make the tested generation persistent. Run this only after the test path passes and failed units are understood.";
     }
     {
       title = "Show generations for rollback";
       command = "sudo nix-env --list-generations --profile /nix/var/nix/profiles/system";
-      detail = "List bootable system generations before choosing a rollback target.";
+      detail = "List bootable system generations and timestamps before choosing a rollback or comparing recent switches.";
     }
     {
       title = "Rollback current generation";
       command = "sudo nixos-rebuild switch --rollback";
-      detail = "Roll back the active system profile when a switched generation needs to be backed out immediately.";
+      detail = "Roll back the active system profile to the previous generation when a switch needs to be backed out immediately.";
     }
     {
       title = "Check app service status";
       command = "systemctl status APP.service --no-pager";
-      detail = "Replace APP.service with a specific app unit such as immich-server.service, paperless-web.service, jellyfin.service, or filestash.service.";
+      detail = "Replace APP.service with the real unit, such as immich-server.service, paperless-web.service, jellyfin.service, or filestash.service.";
     }
     {
       title = "Follow app logs";
       command = "journalctl -fu APP.service";
-      detail = "Follow one service while reproducing an app problem.";
+      detail = "Stream one unit's logs while reproducing an app problem. Stop with Ctrl-C.";
     }
     {
       title = "Restart a single app service";
       command = "sudo systemctl restart APP.service";
-      detail = "Restart only the affected service after checking logs and configuration.";
+      detail = "Restart only the affected unit after checking logs and config. Prefer this over broad host restarts.";
     }
     {
       title = "Restart homepage";
       command = "sudo systemctl restart homepage.service";
-      detail = "Restart the portal after changing homepage configuration or its generated JSON.";
+      detail = "Restart the portal after changing homepage code, generated JSON, or helper command wiring.";
     }
     {
       title = "Check OAuth proxy logs";
       command = "journalctl -u '*oauth2-proxy.service' -b --no-pager";
-      detail = "Inspect SSO proxy failures across protected app surfaces.";
+      detail = "Inspect SSO proxy failures across protected app surfaces, including bad upstreams, cookie issues, and denied groups.";
     }
     {
       title = "Re-run storage layout services";
       command = "systemctl list-units '*storage-layout-v1.service' --all --no-legend | awk '{print $1}' | xargs -r sudo systemctl start";
-      detail = "Re-apply app storage layout units after creating or repairing content directories.";
+      detail = "Re-apply all app storage layout units after creating, restoring, or repairing content directories.";
     }
     {
       title = "Re-run Immich OIDC reconcile";
       command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
-      detail = "Force Immich user/admin reconciliation from Kanidm group and claim state.";
+      detail = "Force Immich user and admin reconciliation from current Kanidm group and claim state.";
     }
     {
       title = "Re-run Paperless OIDC reconcile";
       command = "sudo systemctl start paperless-oidc-reconcile.service";
-      detail = "Force Paperless account reconciliation from Kanidm after access or email changes.";
+      detail = "Force Paperless account reconciliation from Kanidm after access, username, or email changes.";
     }
     {
       title = "Re-run Jellyfin library sync";
       command = "sudo systemctl start jellyfin-library-sync.service";
-      detail = "Refresh Jellyfin libraries after media folder changes.";
+      detail = "Refresh Jellyfin libraries after media folders are created, repaired, or populated.";
     }
     {
       title = "Re-run Kiwix library sync";
       command = "sudo systemctl start kiwix-library-sync.service";
-      detail = "Publish newly uploaded or repaired ZIM files into the Kiwix web library.";
+      detail = "Publish newly uploaded or repaired ZIM files into the Kiwix web library catalog.";
     }
     {
       title = "Check Kanidm health";
       command = "systemctl status kanidm.service --no-pager";
-      detail = "Check the identity provider before debugging app sign-in failures.";
+      detail = "Check the identity provider before debugging app sign-in, OAuth, or group-claim failures.";
     }
     {
       title = "List Kanidm people";
       command = "kanidm person list";
-      detail = "Review known people before adding accounts or removing stale access.";
+      detail = "Review known people before creating accounts, granting access, or removing stale access.";
     }
     {
       title = "List Kanidm groups";
@@ -1099,187 +1099,187 @@ let
     {
       title = "Inspect Kanidm group";
       command = "kanidm group get app-admin";
-      detail = "Inspect membership and attributes for a specific access group.";
+      detail = "Inspect membership and attributes for a specific group. Replace app-admin with the group you are checking.";
     }
     {
       title = "Remove user from access group";
       command = "kanidm group remove-members app-admin USERNAME";
-      detail = "Remove access intentionally when offboarding or reducing privileges.";
+      detail = "Remove a user from one access group when offboarding or reducing privileges. Replace both app-admin and USERNAME first.";
     }
     {
       title = "Restart identity reconciliation";
       command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
-      detail = "Reconcile Kanidm provisioning, POSIX file groups, and per-user file roots after identity changes.";
+      detail = "Reconcile Kanidm provisioning, POSIX file groups, and per-user file roots after account or group changes.";
     }
     {
       title = "Manage Kanidm entity removal explicitly";
       command = "$EDITOR modules/Core_Modules/kanidm/provision.nix";
-      detail = "Kanidm is configured with autoremove disabled, so deleted module groups/users are kept for rescue/reprovisioning safety. Clean up stale groups/users intentionally (for example using `present = false` in provision entries) before retiring a module or host.";
+      detail = "Kanidm autoremove is disabled, so deleted module groups/users are kept for rescue safety. Mark stale provision entries intentionally, for example with `present = false`, before retiring a module or host.";
     }
     {
       title = "Show mounted filesystems";
       command = "df -hT";
-      detail = "Check free space and filesystem types for mounted roots, content pools, and backup paths.";
+      detail = "Check free space and filesystem types for mounted roots, content pools, persistent state, and backup paths.";
     }
     {
       title = "Show disk layout";
       command = "lsblk -f";
-      detail = "Review block devices, filesystems, labels, and mountpoints before storage work.";
+      detail = "Review block devices, filesystems, labels, UUIDs, and mountpoints before storage or recovery work.";
     }
     {
       title = "Discover monitored storage devices";
       command = "./scripts/discover-storage-devices.sh --format text";
-      detail = "List disks that storage monitoring and SMART checks see for this host.";
+      detail = "List disks detected by storage monitoring and SMART checks, including stable by-id paths to use in config.";
     }
     {
       title = "Check ZFS pool status";
       command = "zpool status -v ${vars.zfsDataPool.name}";
-      detail = "Inspect data pool health, mirror state, scrub history, and device errors.";
+      detail = "Inspect data pool health, mirror state, scrub history, checksums, and device errors.";
     }
     {
       title = "Start ZFS scrub";
       command = "sudo zpool scrub ${vars.zfsDataPool.name}";
-      detail = "Start a scrub for the mirrored data pool and monitor progress with zpool status.";
+      detail = "Start a scrub for the mirrored data pool. Monitor progress and any repaired errors with zpool status.";
     }
     {
       title = "Show Btrfs filesystem usage";
       command = "sudo btrfs filesystem usage /persist";
-      detail = "Check system SSD usage and allocation for persistent state.";
+      detail = "Check Btrfs allocation and data/metadata usage for persistent state on the system SSD.";
     }
     {
       title = "Check Btrfs scrub status";
       command = "sudo btrfs scrub status /persist";
-      detail = "Review the latest scrub result for persistent state on the system SSD.";
+      detail = "Review the latest Btrfs scrub result for persistent state on the system SSD.";
     }
     {
       title = "Run SMART short sweep";
       command = "sudo ./scripts/run-storage-smart-sweep.sh --kind short";
-      detail = "Start short SMART self-tests for monitored storage devices.";
+      detail = "Start short SMART self-tests for monitored storage devices. Check storage monitor logs after the tests complete.";
     }
     {
       title = "Inspect a disk with SMART";
       command = "sudo smartctl -a /dev/disk/by-id/REPLACE_DISK_ID";
-      detail = "Read detailed SMART attributes and error history for one disk.";
+      detail = "Read SMART attributes, self-test history, and error logs for one disk. Use a stable /dev/disk/by-id path.";
     }
     {
       title = "Check storage monitor logs";
       command = "journalctl -u 'storage-smart-*' -u smartd.service -b --no-pager";
-      detail = "Inspect SMART sweep and smartd output from the current boot.";
+      detail = "Inspect SMART sweep and smartd output from the current boot, including failed self-tests and alert messages.";
     }
     {
       title = "Check backup timers";
       command = "systemctl list-timers 'kopia*' 'rclone*' --all --no-pager";
-      detail = "Verify Kopia snapshots, phone backups, and offsite sync timers are scheduled.";
+      detail = "Verify Kopia snapshots, phone backups, and offsite sync timers are scheduled and see their next run times.";
     }
     {
       title = "Check Kopia services";
       command = "systemctl status kopia.service kopia-auth-proxy.service kopia-oauth2-proxy.service --no-pager";
-      detail = "Inspect the local Kopia server, native auth proxy, and SSO proxy together.";
+      detail = "Inspect the local Kopia server, native auth proxy, and SSO proxy together when backup UI or auth is failing.";
     }
     {
       title = "Run persist snapshot now";
       command = "sudo systemctl start kopia-persist-snapshot.service";
-      detail = "Trigger an immediate snapshot of persisted system and app state.";
+      detail = "Trigger an immediate snapshot of persisted system and app state. Check logs before assuming it completed.";
     }
     {
       title = "Inspect persist snapshot logs";
       command = "journalctl -u kopia-persist-snapshot.service -n 100 --no-pager";
-      detail = "Review the most recent persist snapshot run.";
+      detail = "Review the most recent persist snapshot run, including Kopia errors and excluded paths.";
     }
     {
       title = "Run phone backup snapshot now";
       command = "sudo systemctl start kopia-phone-snapshot.service";
-      detail = "Trigger the phone backup snapshot chain when phone backup is enabled.";
+      detail = "Trigger the phone backup snapshot chain when phone backup is enabled and the Syncthing folder is up to date.";
     }
     {
       title = "Run offsite Kopia sync now";
       command = "sudo systemctl start rclone-mega-kopia-sync.service";
-      detail = "Start the rclone sync that mirrors the Kopia repository offsite.";
+      detail = "Start the rclone job that mirrors the Kopia repository offsite. Use after a successful local snapshot when freshness matters.";
     }
     {
       title = "Inspect offsite sync logs";
       command = "journalctl -u rclone-mega-kopia-sync.service -n 100 --no-pager";
-      detail = "Review the most recent offsite backup sync run.";
+      detail = "Review the most recent offsite backup sync run, including transfer failures and destination errors.";
     }
     {
       title = "Check backup repository size";
       command = "sudo du -sh ${vars.backupRoot}";
-      detail = "Check on-disk backup repository size before storage or retention work.";
+      detail = "Check on-disk backup repository size before storage, retention, or offsite sync troubleshooting.";
     }
     {
       title = "Check Caddy status";
       command = "systemctl status caddy.service --no-pager";
-      detail = "Check the edge reverse proxy before debugging app reachability.";
+      detail = "Check the edge reverse proxy before debugging public or private app reachability.";
     }
     {
       title = "Validate Caddy config";
       command = "nix run --inputs-from . nixpkgs#caddy -- validate --config /etc/caddy/caddy_config --adapter caddyfile";
-      detail = "Validate the running Caddy config file before reloads or route debugging.";
+      detail = "Validate the running Caddy config file before reloads, route changes, or TLS debugging.";
     }
     {
       title = "Reload Caddy";
       command = "sudo systemctl reload caddy.service";
-      detail = "Reload routes and certificates without a full service restart.";
+      detail = "Reload routes and certificates without a full service restart. Use after config changes have validated.";
     }
     {
       title = "Inspect Caddy logs";
       command = "journalctl -u caddy.service -b --no-pager";
-      detail = "Review reverse proxy, TLS, and upstream errors from the current boot.";
+      detail = "Review reverse proxy, TLS, ACME, and upstream errors from the current boot.";
     }
     {
       title = "Check Unbound status";
       command = "systemctl status unbound.service --no-pager";
-      detail = "Check private DNS health before debugging split-horizon or NetBird-only routes.";
+      detail = "Check private DNS health before debugging split-horizon records or NetBird-only routes.";
     }
     {
       title = "Query private DNS";
       command = "dig @${vars.networking.loopbackIPv4} homepage.${vars.domain}";
-      detail = "Confirm the local resolver returns a private service record.";
+      detail = "Confirm the local resolver returns the private homepage record from the server's loopback resolver.";
     }
     {
       title = "Check Cloudflare tunnel status";
       command = "systemctl status 'cloudflared-tunnel-${vars.cloudflareTunnelName}.service' --no-pager";
-      detail = "Inspect the Cloudflare tunnel unit for public ingress failures.";
+      detail = "Inspect the Cloudflare tunnel unit when public hostnames fail but local services still work.";
     }
     {
       title = "Inspect Cloudflare tunnel logs";
       command = "journalctl -u 'cloudflared-tunnel-${vars.cloudflareTunnelName}.service' -b --no-pager";
-      detail = "Review tunnel registration, connection, and ingress errors.";
+      detail = "Review tunnel registration, connection, DNS, and ingress errors from the current boot.";
     }
     {
       title = "Check NetBird status";
       command = "netbird-main status";
-      detail = "Confirm the server is connected to the NetBird network and has expected peers/routes.";
+      detail = "Confirm the server is connected to NetBird and advertises or receives the expected peers and routes.";
     }
     {
       title = "Inspect firewall rules";
       command = "sudo nft list ruleset";
-      detail = "Inspect active firewall rules when a reachable service is blocked.";
+      detail = "Inspect active nftables rules when DNS resolves and the service runs, but traffic is still blocked.";
     }
     {
       title = "Rotate or regenerate secrets";
       command = "./scripts/generate-all-secrets.sh";
-      detail = "Stage plaintext external inputs only under secrets/unencrypted/, encrypt them, and keep plaintext secret material out of git.";
+      detail = "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit it.";
     }
     {
       title = "List encrypted secrets";
       command = "find secrets -maxdepth 1 -name '*.age' -printf '%f\\n' | sort";
-      detail = "Review encrypted secret files tracked in the repository without exposing plaintext.";
+      detail = "Review encrypted age files tracked in the repository without exposing plaintext secret values.";
     }
     {
       title = "List expected external secrets";
       command = "nix eval --json --impure --expr 'builtins.attrNames ((import ./secrets/manifest.nix).externalSecrets)'";
-      detail = "Print the secret names that must be supplied from external/staged material.";
+      detail = "Print external secret names that must be supplied from staged material rather than generated automatically.";
     }
     {
       title = "Edit staged external secret";
       command = "$EDITOR secrets/unencrypted/SECRET_NAME";
-      detail = "Create or update one staged plaintext external secret immediately before encryption.";
+      detail = "Create or update one staged plaintext external secret immediately before encryption. Replace SECRET_NAME with a manifest entry.";
     }
     {
       title = "Encrypt staged external secrets";
       command = "./scripts/helpers/encrypt-staged-external-secrets.sh";
-      detail = "Encrypt staged external secret files into agenix files and remove plaintext staging material.";
+      detail = "Encrypt staged external secret files into agenix files and remove the plaintext staging material.";
     }
   ];
 
@@ -1337,6 +1337,7 @@ in
           HOMEPAGE_HOST = listenAddress;
           HOMEPAGE_PORT = toString listenPort;
           HOMEPAGE_CONFIG_FILE = homepageConfig;
+          HOMEPAGE_STATIC_DIR = "${appPackages.homepage}/share/homepage/client";
           HOMEPAGE_SFTP_KEY_INSTALL_COMMAND = installSftpKey;
           HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND = showSyncthingDeviceId;
           HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND = offlineMediaStatus;

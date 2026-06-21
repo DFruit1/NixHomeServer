@@ -13,7 +13,8 @@ in
     users.groups.seerr = { };
 
     services.kanidm.provision = {
-      groups."media-automation-users".members = vars.kanidmAppUsers;
+      groups."media-automation-users".members = lib.unique (vars.kanidmAppUsers ++ vars.seerrRequestManagers);
+      groups.${vars.seerrRequestManagerGroup}.members = vars.seerrRequestManagers;
 
       systems.oauth2.seerr-web = {
         displayName = "Requests";

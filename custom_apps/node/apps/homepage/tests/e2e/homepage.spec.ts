@@ -20,7 +20,7 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await page.goto('/');
 
   await expect(page.getByRole('navigation', { name: 'Homepage sections' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Services' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Services' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'SFTP Access', exact: true })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Photos service information' }).click();
@@ -195,5 +195,5 @@ test('shared top navigation works on all top-level pages and unknown service rou
   await expect(page.getByRole('heading', { name: 'Service Not Found' })).toBeVisible();
   await page.getByRole('link', { name: 'Back to services' }).click();
   await expect(page).toHaveURL('/');
-  await expect(page.getByRole('heading', { name: 'Services' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Services' })).toBeVisible();
 });

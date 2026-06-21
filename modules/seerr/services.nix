@@ -28,6 +28,11 @@ in
       systemd.services.seerr = {
         wants = [ "network-online.target" ];
         after = [ "network-online.target" ];
+        environment = {
+          # TMDB's CloudFront edge can take longer than Node's default
+          # autoselection attempt timeout from this network.
+          NODE_OPTIONS = "--network-family-autoselection-attempt-timeout=1000";
+        };
         serviceConfig = {
           DynamicUser = lib.mkForce false;
           User = "seerr";

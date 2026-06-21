@@ -7,6 +7,7 @@ let
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
     ++ vars.kanidmBackupUsers
+    ++ (vars.seerrRequestManagers or [ ])
     ++ (vars.fileAccess.usbUsers or [ ])
   );
   adminMailAddresses =
@@ -55,6 +56,7 @@ let
     "mail-archive-users" = "Grants private mail archive access.";
     "media-automation-users" = "Grants Sonarr, Radarr, Prowlarr, qBittorrent, and request-manager access.";
     "paperless-users" = "Grants Paperless document archive access.";
+    "${vars.seerrRequestManagerGroup}" = "Grants Seerr request approval and rejection permissions.";
     "${vars.fileAccess.webAccessGroup}" = "Grants browser file access and personal file-root provisioning.";
     "${vars.fileAccess.sftpAccessGroup}" = "Grants access to the dedicated SFTP endpoint.";
     "${vars.fileAccess.sharedAccessGroup}" = "Grants access to the shared files view.";
@@ -120,6 +122,7 @@ in
         "domain_admins" = mkManualGroup [ ];
       } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
         "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
+        ${vars.seerrRequestManagerGroup} = mkManualGroup vars.seerrRequestManagers;
         ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;
         ${vars.fileAccess.sftpAccessGroup} = mkManualGroup (vars.filesSftpUsers or [ ]);
         ${vars.fileAccess.sharedAccessGroup} = mkManualGroup [ ];

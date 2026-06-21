@@ -87,6 +87,11 @@ rec {
     storageMountName = "_Backups";
   };
 
+  seerrAccess = {
+    requestManagerGroup = "seerr-request-managers"; # Grants Seerr request approval and rejection permissions.
+    requestManagers = [ identity.adminUser ];
+  };
+
   phoneBackup = {
     enable = false; # Set true after replacing the Syncthing device ID below.
     maxRepositoryBytes = 75 * 1024 * 1024 * 1024;
@@ -208,6 +213,8 @@ rec {
   kanidmAppUserEmails = identity.appUserEmails or { };
   kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
   kanidmAdminEmail = identity.adminEmail;
+  seerrRequestManagerGroup = seerrAccess.requestManagerGroup;
+  seerrRequestManagers = seerrAccess.requestManagers;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
 

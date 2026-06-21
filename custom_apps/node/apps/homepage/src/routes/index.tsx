@@ -43,10 +43,7 @@ export default component$(() => {
 
   return (
     <>
-      <section class={{ section: true, 'service-page': true, 'has-selection': Boolean(selectedService) }}>
-        <div class="section-heading">
-          <h2>Services</h2>
-        </div>
+      <section class={{ section: true, 'service-page': true, 'has-selection': Boolean(selectedService) }} aria-label="Services">
         <div class="service-grid">
           {servicesToShow.map((service) => (
             <ServiceTile
