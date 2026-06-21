@@ -675,6 +675,16 @@ h4 {
   text-align: center;
 }
 
+.admin-explanation-note,
+.admin-search-empty {
+  max-width: 700px;
+  margin: 0 auto;
+  color: #44546a;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: center;
+}
+
 .admin-intent-hero {
   display: grid;
   justify-items: center;
@@ -751,6 +761,55 @@ h4 {
   background: #245b9f;
   color: #fff;
   outline: none;
+}
+
+.admin-search {
+  display: grid;
+  gap: 6px;
+  width: min(620px, 100%);
+  color: #44546a;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.admin-search input {
+  width: 100%;
+  border: 1px solid #b9c8da;
+  border-radius: 6px;
+  background: #fff;
+  color: #15212f;
+  padding: 10px 12px;
+}
+
+.admin-help-toggle {
+  border: 2px solid #245b9f;
+  border-radius: 6px;
+  background: #fff;
+  color: #245b9f;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 10px 14px;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    background 160ms ease;
+}
+
+.admin-help-toggle:hover,
+.admin-help-toggle:focus-visible {
+  background: #f2f9ff;
+  outline: none;
+}
+
+.admin-help-toggle.is-active {
+  border-color: #166045;
+  color: #166045;
+}
+
+.admin-help-toggle.is-active:hover,
+.admin-help-toggle.is-active:focus-visible {
+  background: #e9f2ee;
 }
 
 .admin-command-layout {

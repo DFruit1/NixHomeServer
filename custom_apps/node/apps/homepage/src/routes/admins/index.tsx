@@ -3,8 +3,9 @@ import type { DocumentHead } from '@builder.io/qwik-city';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminStep } from '../../shared/types.js';
 
-type AdminCategoryId = 'server' | 'deploys' | 'apps' | 'identity' | 'storageBackups' | 'network';
+type AdminCategoryId = 'server' | 'apps' | 'identity' | 'storageBackups' | 'network';
 type AdminIntentId = 'add-user' | 'manage-user' | 'manage-secrets';
+type AdminModeId = AdminIntentId | 'other';
 
 type AdminStepMeta = {
   category: AdminCategoryId;
@@ -18,14 +19,9 @@ const adminCategories: { id: AdminCategoryId; title: string; description: string
     description: 'Daily checks, readiness, and secret operations.',
   },
   {
-    id: 'deploys',
-    title: 'Deploys',
-    description: 'Validation, test builds, switch step.',
-  },
-  {
     id: 'apps',
-    title: 'Apps & Services',
-    description: 'Service status, logs, and app reconciliation.',
+    title: 'Configure Apps & Services',
+    description: 'Validation, test builds, service status, logs, and app reconciliation.',
   },
   {
     id: 'identity',
@@ -53,16 +49,16 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'List scheduled timers': { category: 'server' },
   'Review current boot warnings': { category: 'server' },
   'Show resource snapshot': { category: 'server' },
-  'Validate broad changes': { category: 'deploys' },
-  'Run lean repo validation': { category: 'deploys' },
-  'Run full repo validation': { category: 'deploys' },
-  'Evaluate flake without building': { category: 'deploys' },
-  'Dry-run deploy target resolution': { category: 'deploys' },
-  'Run routine guarded deploy': { category: 'deploys' },
-  'Run guarded deploy with local build': { category: 'deploys' },
-  'Switch after a passing test': { category: 'deploys' },
-  'Show generations for rollback': { category: 'deploys' },
-  'Rollback current generation': { category: 'deploys' },
+  'Validate broad changes': { category: 'apps' },
+  'Run lean repo validation': { category: 'apps' },
+  'Run full repo validation': { category: 'apps' },
+  'Evaluate flake without building': { category: 'apps' },
+  'Dry-run deploy target resolution': { category: 'apps' },
+  'Run routine guarded deploy': { category: 'apps' },
+  'Run guarded deploy with local build': { category: 'apps' },
+  'Switch after a passing test': { category: 'apps' },
+  'Show generations for rollback': { category: 'apps' },
+  'Rollback current generation': { category: 'apps' },
   'Check app service status': { category: 'apps' },
   'Follow app logs': { category: 'apps' },
   'Restart a single app service': { category: 'apps' },
@@ -162,17 +158,26 @@ const buildMembershipCommands = (groups: string[], userArg: string): string[] =>
 const formatCommandBlock = (commands: string[]): string =>
   commands.length ? commands.join('\n') : '# Select one or more access groups above, then copy generated commands.';
 
-const adminIntents: { id: AdminIntentId; label: string }[] = [
+const adminIntents: { id: AdminModeId; label: string }[] = [
   { id: 'add-user', label: 'Add New User' },
   { id: 'manage-user', label: 'Manage Existing User' },
   { id: 'manage-secrets', label: 'Manage Secrets / Passwords' },
+  { id: 'other', label: 'Other' },
 ];
+
+const isAdminIntent = (mode: AdminModeId | ''): mode is AdminIntentId =>
+  mode === 'add-user' || mode === 'manage-user' || mode === 'manage-secrets';
 
 const isIntentOpen = (activeIntent: AdminIntentId | '', intents: AdminIntentId[] = []): boolean =>
   activeIntent !== '' && intents.includes(activeIntent);
 
 const shouldShowForIntent = (activeIntent: AdminIntentId | '', intents: AdminIntentId[] = []): boolean =>
   activeIntent === '' || intents.includes(activeIntent);
+
+const matchesSearch = (query: string, values: (string | undefined)[]): boolean => {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  return normalizedQuery.length > 0 && values.some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
+};
 
 const AdminCommand = component$(({ command }: { command: string }) => {
   const copied = useSignal(false);
@@ -212,21 +217,25 @@ const AdminTask = component$(
     title,
     description,
     activeIntent,
+    showDescription,
+    forceOpen = false,
     intents = [],
   }: {
     title: string;
     description: string;
     activeIntent: AdminIntentId | '';
+    showDescription: boolean;
+    forceOpen?: boolean;
     intents?: AdminIntentId[];
   }) => (
-    <details class="admin-task" open={isIntentOpen(activeIntent, intents)}>
+    <details class="admin-task" open={forceOpen || isIntentOpen(activeIntent, intents)}>
       <summary class="admin-task__summary">
         <span class="admin-task__main">
           <span class="admin-task__title">{title}</span>
         </span>
       </summary>
       <div class="admin-task__content">
-        <p>{description}</p>
+        {showDescription && <p>{description}</p>}
         <Slot />
       </div>
     </details>
@@ -240,7 +249,9 @@ export default component$(() => {
   const currentUser = homepage.data?.user;
   const username = useSignal('');
   const email = useSignal('');
-  const selectedIntent = useSignal<AdminIntentId | ''>('');
+  const selectedMode = useSignal<AdminModeId | ''>('');
+  const searchQuery = useSignal('');
+  const showExplanations = useSignal(false);
   const groupDescriptions = homepage.data?.kanidmGroupDescriptions ?? {};
   const accessGroups = (homepage.data?.kanidmGroups ?? [])
     .filter((group) => !isProtectedGroup(group))
@@ -253,12 +264,63 @@ export default component$(() => {
 
   const membershipCommand = formatCommandBlock(buildMembershipCommands(selectedGroups.value, userArg));
   const adminSections = groupedAdminSteps(adminGuide);
-  const showUserManagement = selectedIntent.value === '' || ['add-user', 'manage-user', 'manage-secrets'].includes(selectedIntent.value);
+  const activeIntent: AdminIntentId | '' = isAdminIntent(selectedMode.value) ? selectedMode.value : '';
+  const searchIsActive = selectedMode.value === 'other';
+  const userTaskSearchMatches = {
+    checkUser: matchesSearch(searchQuery.value, ['Check user exists', 'Use before reruns. Confirms identity visibility.', `kanidm person get ${userArg}`]),
+    createAccount: matchesSearch(searchQuery.value, [
+      'Create Kanidm account',
+      'Create account. Set primary email.',
+      `kanidm person create ${userArg} ${displayNameArg}`,
+      `kanidm person update ${userArg} --mail ${emailArg}`,
+    ]),
+    grantBaseline: matchesSearch(searchQuery.value, [
+      'Grant baseline access',
+      'Enable Kanidm sign-in and normal user lookup.',
+      `kanidm group add-members users ${userArg}`,
+    ]),
+    grantAccess: matchesSearch(searchQuery.value, [
+      'Grant app/file/admin access',
+      'Select groups. Copy generated command.',
+      membershipCommand,
+      accessGroups.join(' '),
+    ]),
+    vaultwardenSignup: matchesSearch(searchQuery.value, [
+      'Vaultwarden signup',
+      'User registers from browser on LAN or NetBird.',
+      `https://passwords.${domain}/#/signup`,
+    ]),
+    signInLink: matchesSearch(searchQuery.value, [
+      'Create first sign-in link',
+      'Generate short-lived Kanidm reset link. Share securely.',
+      `kanidm person credential create-reset-token ${userArg} 3600`,
+    ]),
+    handoff: matchesSearch(searchQuery.value, [
+      'Hand off first sign-in',
+      'Ask user to set password and MFA, open apps, save recovery details.',
+      'Confirm user can sign in, open granted apps, and save recovery details.',
+    ]),
+  };
+  const hasMatchingUserTasks = Object.values(userTaskSearchMatches).some(Boolean);
+  const showUserManagement = searchIsActive
+    ? hasMatchingUserTasks
+    : activeIntent === '' || ['add-user', 'manage-user', 'manage-secrets'].includes(activeIntent);
+  const showCheckUser = searchIsActive ? userTaskSearchMatches.checkUser : shouldShowForIntent(activeIntent, ['add-user', 'manage-user']);
+  const showCreateAccount = searchIsActive ? userTaskSearchMatches.createAccount : shouldShowForIntent(activeIntent, ['add-user']);
+  const showGrantBaseline = searchIsActive ? userTaskSearchMatches.grantBaseline : shouldShowForIntent(activeIntent, ['add-user']);
+  const showGrantAccess = searchIsActive ? userTaskSearchMatches.grantAccess : shouldShowForIntent(activeIntent, ['add-user', 'manage-user']);
+  const showVaultwardenSignup = searchIsActive ? userTaskSearchMatches.vaultwardenSignup : shouldShowForIntent(activeIntent, ['add-user', 'manage-secrets']);
+  const showSignInLink = searchIsActive
+    ? userTaskSearchMatches.signInLink
+    : shouldShowForIntent(activeIntent, ['add-user', 'manage-user', 'manage-secrets']);
+  const showHandoff = searchIsActive ? userTaskSearchMatches.handoff : shouldShowForIntent(activeIntent, ['add-user']);
   const visibleAdminSections = adminSections
     .map((section) => ({
       ...section,
-      steps: selectedIntent.value
-        ? section.steps.filter((step) => shouldShowForIntent(selectedIntent.value, metaForStep(step).intents))
+      steps: searchIsActive
+        ? section.steps.filter((step) => matchesSearch(searchQuery.value, [step.title, step.detail, step.command]))
+        : activeIntent
+          ? section.steps.filter((step) => shouldShowForIntent(activeIntent, metaForStep(step).intents))
         : section.steps,
     }))
     .filter((section) => section.steps.length > 0 || (section.id === 'identity' && showUserManagement));
@@ -289,8 +351,20 @@ export default component$(() => {
       : selectedGroups.value.filter((current) => current !== group);
   });
 
-  const selectIntent = $((intent: AdminIntentId) => {
-    selectedIntent.value = selectedIntent.value === intent ? '' : intent;
+  const selectMode = $((mode: AdminModeId) => {
+    selectedMode.value = selectedMode.value === mode ? '' : mode;
+    if (mode !== 'other') {
+      searchQuery.value = '';
+    }
+  });
+
+  const setSearchQuery = $((event: Event) => {
+    const input = event.target as HTMLInputElement;
+    searchQuery.value = input.value;
+  });
+
+  const toggleExplanations = $(() => {
+    showExplanations.value = !showExplanations.value;
   });
 
   const renderGroupOption = (group: string) => (
@@ -305,33 +379,49 @@ export default component$(() => {
   return (
     <>
       <section class="section">
-        <div class={{ 'admin-intent-hero': true, 'is-compact': selectedIntent.value !== '' }}>
-          <h2 aria-hidden={selectedIntent.value !== ''}>What do you need to do?</h2>
+        <div class={{ 'admin-intent-hero': true, 'is-compact': activeIntent !== '' }}>
+          <h2 aria-hidden={activeIntent !== ''}>What do you need to do?</h2>
           <div class="admin-intent-actions" role="group" aria-label="Common admin tasks">
             {adminIntents.map((intent) => (
               <button
                 type="button"
-                class={{ selected: selectedIntent.value === intent.id }}
-                aria-pressed={selectedIntent.value === intent.id}
-                onClick$={() => selectIntent(intent.id)}
+                class={{ selected: selectedMode.value === intent.id }}
+                aria-pressed={selectedMode.value === intent.id}
+                onClick$={() => selectMode(intent.id)}
                 key={intent.id}
               >
                 {intent.label}
               </button>
             ))}
           </div>
-          <p class="admin-page-note" aria-hidden={selectedIntent.value !== ''}>
-            Quickstart covers disk setup, agenix keys, and nixos-install before homepage exists.
-          </p>
+          {searchIsActive && (
+            <label class="admin-search">
+              <span>Search commands</span>
+              <input type="search" value={searchQuery.value} onInput$={setSearchQuery} placeholder="Try service, secrets, user, storage..." />
+            </label>
+          )}
+          <button
+            type="button"
+            class={{ 'admin-help-toggle': true, 'is-active': showExplanations.value }}
+            aria-pressed={showExplanations.value}
+            onClick$={toggleExplanations}
+          >
+            {showExplanations.value ? "Okay, I'm good now. :)" : 'What the heck is all this? :('}
+          </button>
+          {showExplanations.value && (
+            <p class="admin-explanation-note">
+              Fear not, additional explanations now shown to help you out! To hide these explanations, just click the button again.
+            </p>
+          )}
         </div>
         {visibleAdminSections.length > 0 && (
           <div class="admin-command-layout">
             {visibleAdminSections.map((section) => (
-              <details class="admin-command-category" open={selectedIntent.value !== ''} key={section.id}>
+              <details class="admin-command-category" open={activeIntent !== '' || searchIsActive} key={section.id}>
                 <summary class="admin-command-category__summary">
                   <span class="admin-command-category__heading">
                     <h3>{section.title}</h3>
-                    <p>{section.description}</p>
+                    {showExplanations.value && <p>{section.description}</p>}
                   </span>
                 </summary>
                 {section.steps.length > 0 && (
@@ -340,7 +430,9 @@ export default component$(() => {
                       <AdminTask
                         title={step.title}
                         description={step.detail}
-                        activeIntent={selectedIntent.value}
+                        activeIntent={activeIntent}
+                        showDescription={showExplanations.value}
+                        forceOpen={searchIsActive}
                         intents={metaForStep(step).intents}
                         key={step.title}
                       >
@@ -367,42 +459,50 @@ export default component$(() => {
                       </button>
                     </div>
                     <div class="admin-task-list">
-                      {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-user']) && (
+                      {showCheckUser && (
                         <AdminTask
                           title="Check user exists"
                           description="Use before reruns. Confirms identity visibility."
-                          activeIntent={selectedIntent.value}
+                          activeIntent={activeIntent}
+                          showDescription={showExplanations.value}
+                          forceOpen={searchIsActive}
                           intents={['add-user', 'manage-user']}
                         >
                           <AdminCommand command={`kanidm person get ${userArg}`} />
                         </AdminTask>
                       )}
-                      {shouldShowForIntent(selectedIntent.value, ['add-user']) && (
+                      {showCreateAccount && (
                         <AdminTask
                           title="Create Kanidm account"
                           description="Create account. Set primary email."
-                          activeIntent={selectedIntent.value}
+                          activeIntent={activeIntent}
+                          showDescription={showExplanations.value}
+                          forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
                           <AdminCommand command={`kanidm person create ${userArg} ${displayNameArg}`} />
                           <AdminCommand command={`kanidm person update ${userArg} --mail ${emailArg}`} />
                         </AdminTask>
                       )}
-                      {shouldShowForIntent(selectedIntent.value, ['add-user']) && (
+                      {showGrantBaseline && (
                         <AdminTask
                           title="Grant baseline access"
                           description="Enable Kanidm sign-in and normal user lookup."
-                          activeIntent={selectedIntent.value}
+                          activeIntent={activeIntent}
+                          showDescription={showExplanations.value}
+                          forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
                           <AdminCommand command={`kanidm group add-members users ${userArg}`} />
                         </AdminTask>
                       )}
-                      {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-user']) && (
+                      {showGrantAccess && (
                         <AdminTask
                           title="Grant app/file/admin access"
                           description="Select groups. Copy generated command."
-                          activeIntent={selectedIntent.value}
+                          activeIntent={activeIntent}
+                          showDescription={showExplanations.value}
+                          forceOpen={searchIsActive}
                           intents={['add-user', 'manage-user']}
                         >
                           {accessGroups.length > 0 ? (
@@ -430,32 +530,38 @@ export default component$(() => {
                           <AdminCommand command={membershipCommand} />
                         </AdminTask>
                       )}
-                      {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-secrets']) && (
+                      {showVaultwardenSignup && (
                         <AdminTask
                           title="Vaultwarden signup"
                           description="User registers from browser on LAN or NetBird."
-                          activeIntent={selectedIntent.value}
+                          activeIntent={activeIntent}
+                          showDescription={showExplanations.value}
+                          forceOpen={searchIsActive}
                           intents={['add-user', 'manage-secrets']}
                         >
                           <p>Have them open this URL and register with the same email used in Kanidm:</p>
                           <AdminCommand command={`https://passwords.${domain}/#/signup`} />
                         </AdminTask>
                       )}
-                      {shouldShowForIntent(selectedIntent.value, ['add-user', 'manage-user', 'manage-secrets']) && (
+                      {showSignInLink && (
                         <AdminTask
                           title="Create first sign-in link"
                           description="Generate short-lived Kanidm reset link. Share securely."
-                          activeIntent={selectedIntent.value}
+                          activeIntent={activeIntent}
+                          showDescription={showExplanations.value}
+                          forceOpen={searchIsActive}
                           intents={['add-user', 'manage-user', 'manage-secrets']}
                         >
                           <AdminCommand command={`kanidm person credential create-reset-token ${userArg} 3600`} />
                         </AdminTask>
                       )}
-                      {shouldShowForIntent(selectedIntent.value, ['add-user']) && (
+                      {showHandoff && (
                         <AdminTask
                           title="Hand off first sign-in"
                           description="Ask user to set password and MFA, open apps, save recovery details."
-                          activeIntent={selectedIntent.value}
+                          activeIntent={activeIntent}
+                          showDescription={showExplanations.value}
+                          forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
                           <p>Confirm user can sign in, open granted apps, and save recovery details.</p>
@@ -468,6 +574,7 @@ export default component$(() => {
             ))}
           </div>
         )}
+        {searchIsActive && searchQuery.value.trim() !== '' && visibleAdminSections.length === 0 && <p class="admin-search-empty">No matching commands.</p>}
       </section>
     </>
   );
