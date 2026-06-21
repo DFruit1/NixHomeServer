@@ -1,4 +1,4 @@
-{ config, lib, oauth2Proxy, vars, ... }:
+{ config, lib, oauth2Proxy, pkgs, vars, ... }:
 
 let
   cfg = config.repo.radarr;
@@ -30,8 +30,8 @@ in
           log.analyticsEnabled = false;
           auth = {
             enabled = true;
-            method = "External";
-            required = "Enabled";
+            method = "Forms";
+            required = "DisabledForLocalAddresses";
           };
         };
       };
@@ -45,6 +45,15 @@ in
       systemd.services.radarr = {
         wants = [ "media-automation-storage-layout-v1.service" ];
         after = [ "media-automation-storage-layout-v1.service" ];
+        preStart = ''
+          config_xml=/var/lib/radarr/.config/Radarr/config.xml
+          if [[ -f "$config_xml" ]]; then
+            ${pkgs.xmlstarlet}/bin/xmlstarlet ed -L \
+              -u '/Config/AuthenticationMethod' -v 'Forms' \
+              -u '/Config/AuthenticationRequired' -v 'DisabledForLocalAddresses' \
+              "$config_xml"
+          fi
+        '';
         serviceConfig = {
           PrivateUsers = lib.mkForce false;
           SupplementaryGroups = [ "media-automation" ];

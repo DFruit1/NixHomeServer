@@ -140,6 +140,28 @@ in
 
         create_category movies ${lib.escapeShellArg qbitPaths.moviesDir}
         create_category tv ${lib.escapeShellArg qbitPaths.tvDir}
+
+        remove_empty_legacy_category() {
+          local name="$1"
+          local torrent_count
+
+          torrent_count="$(
+            curl --silent --show-error --fail --get \
+              --data-urlencode "category=$name" \
+              "$qbit_url/api/v2/torrents/info" \
+              | jq 'length'
+          )"
+
+          if [[ "$torrent_count" == "0" ]]; then
+            curl --silent --show-error --fail \
+              -X POST \
+              --data-urlencode "categories=$name" \
+              "$qbit_url/api/v2/torrents/removeCategories" >/dev/null || true
+          fi
+        }
+
+        remove_empty_legacy_category radarr
+        remove_empty_legacy_category tv-sonarr
       '';
     };
 

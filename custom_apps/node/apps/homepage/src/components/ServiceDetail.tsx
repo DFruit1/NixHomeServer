@@ -44,7 +44,7 @@ export const ServiceDetail = component$(
         </div>
         <p>{service.description}</p>
         <div class="detail-actions">
-          <a class="primary-link" href={service.url}>
+          <a class="primary-link" href={service.url} target="_blank" rel="noreferrer">
             {service.id === 'sftp' ? 'Open app' : 'Open app'}
           </a>
           {service.projectUrl && (

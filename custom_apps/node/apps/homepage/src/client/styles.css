@@ -173,11 +173,25 @@ h4 {
   gap: 12px;
 }
 
+.profile-picture-control {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+}
+
+.profile-picture-edit {
+  position: relative;
+  display: block;
+  width: 52px;
+  height: 52px;
+  cursor: pointer;
+}
+
 .profile-preview {
   display: grid;
   width: 52px;
   height: 52px;
-  flex: 0 0 auto;
   place-items: center;
   overflow: hidden;
   border: 1px solid #d6dde8;
@@ -185,6 +199,70 @@ h4 {
   background: #eef4f8;
   color: #245b9f;
   font-weight: 900;
+}
+
+.profile-picture-edit input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.profile-picture-edit__overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.profile-picture-edit:hover .profile-picture-edit__overlay,
+.profile-picture-edit:focus-within .profile-picture-edit__overlay {
+  opacity: 1;
+}
+
+.profile-picture-edit__overlay svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.profile-picture-clear {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid rgba(31, 42, 56, 0.18);
+  border-radius: 999px;
+  background: #fff;
+  color: #1f2a38;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 0;
+}
+
+.profile-picture-clear:hover,
+.profile-picture-clear:focus-visible {
+  border-color: rgba(143, 37, 37, 0.36);
+  color: #8f2525;
+  outline: none;
 }
 
 .profile-summary h2 {
@@ -198,8 +276,6 @@ h4 {
   font-size: 13px;
 }
 
-.profile-upload,
-.profile-action,
 .profile-signout {
   border: 1px solid #d6dde8;
   border-radius: 6px;
@@ -209,19 +285,6 @@ h4 {
   padding: 10px 12px;
   text-align: left;
   text-decoration: none;
-}
-
-.profile-upload {
-  display: grid;
-  gap: 8px;
-  font-weight: 800;
-}
-
-.profile-upload input {
-  width: 100%;
-  color: #607086;
-  font-size: 13px;
-  font-weight: 500;
 }
 
 .profile-preferences {
@@ -252,11 +315,6 @@ h4 {
   width: 18px;
   height: 18px;
   accent-color: #245b9f;
-}
-
-.profile-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .profile-signout {
@@ -401,28 +459,6 @@ h4 {
   line-height: 1.5;
 }
 
-.getting-started-links,
-.getting-started-link-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.getting-started-link-list {
-  margin-top: 18px;
-  padding-left: 0;
-  list-style: none;
-}
-
-.getting-started-links a,
-.getting-started-link-list a {
-  border-bottom: 2px solid #c7d7eb;
-  color: #245b9f;
-  font-weight: 800;
-  padding-bottom: 3px;
-  text-decoration: none;
-}
-
 .getting-started-guide {
   display: grid;
   grid-template-columns: minmax(210px, 0.34fr) minmax(0, 1fr);
@@ -489,8 +525,7 @@ h4 {
   margin-top: 8px;
 }
 
-.setup-list,
-.app-status-list {
+.setup-list {
   display: grid;
   gap: 8px;
   max-width: 680px;
@@ -499,8 +534,7 @@ h4 {
   list-style: none;
 }
 
-.setup-item,
-.app-status-list li {
+.setup-item {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
@@ -511,8 +545,7 @@ h4 {
   padding: 10px 12px;
 }
 
-.setup-item.pending,
-.app-status-list li.unavailable {
+.setup-item.pending {
   opacity: 0.72;
 }
 
@@ -559,26 +592,10 @@ h4 {
   font-weight: 800;
 }
 
-.manual-check input,
-.unused-toggle input {
+.manual-check input {
   width: 18px;
   height: 18px;
   accent-color: #245b9f;
-}
-
-.unused-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 18px;
-  color: #334155;
-  font-weight: 800;
-}
-
-.app-status-list small {
-  color: #607086;
-  font-weight: 800;
-  white-space: nowrap;
 }
 
 .getting-started-addresses {
@@ -1122,6 +1139,11 @@ h4 {
   object-fit: contain;
 }
 
+.app-symbol--photos img {
+  max-width: 66px;
+  max-height: 66px;
+}
+
 .app-symbol.large {
   position: static;
   width: 54px;
@@ -1134,6 +1156,11 @@ h4 {
 .app-symbol.large img {
   max-width: 38px;
   max-height: 38px;
+}
+
+.app-symbol--photos.large img {
+  max-width: 42px;
+  max-height: 42px;
 }
 
 .state.off {
@@ -1181,7 +1208,9 @@ h4 {
 .app-link {
   border: 1px solid rgba(75, 89, 108, 0.28);
   border-radius: 8px;
+  background: #fff;
   color: #4b596c;
+  cursor: pointer;
   font-size: 13px;
   font-weight: 500;
   opacity: 0.26;

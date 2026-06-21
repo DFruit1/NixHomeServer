@@ -84,20 +84,28 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   await expect(page.getByText('Signed in as dsaw')).toBeVisible();
   await expect(page.getByLabel('Verified').first()).toBeVisible();
-  await page.getByLabel('Confirmed Kanidm password, TOTP, and passkey work').check();
-  await expect(page.getByLabel('Confirmed Kanidm password, TOTP, and passkey work')).toBeChecked();
+  await expect(page.getByRole('link', { name: 'Open Kanidm' })).toHaveAttribute('target', '_blank');
+
+  await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Secure account' }).click();
+  await expect(page).toHaveURL(/\/getting-started\?step=secure-account#guide$/);
+  await expect(page.getByRole('heading', { name: 'Secure your account' })).toBeVisible();
+  await page.getByLabel('Confirmed direct Kanidm sign-in works').check();
+  await page.getByLabel('Confirmed password, TOTP, passkey, and recovery options').check();
+  await expect(page.getByLabel('Confirmed direct Kanidm sign-in works')).toBeChecked();
+  await expect(page.getByLabel('Confirmed password, TOTP, passkey, and recovery options')).toBeChecked();
 
   await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Open services' }).click();
   await expect(page).toHaveURL(/\/getting-started\?step=services#guide$/);
   await expect(page.getByRole('heading', { name: 'Open services' })).toBeVisible();
-  await expect(page.getByText('Local Backups')).toBeVisible();
+  await expect(page.getByText('5 services available to this account.')).toBeVisible();
+  await expect(page.getByText('Local Backups')).toHaveCount(0);
   await expect(page.getByText('Not enabled')).toHaveCount(0);
-  await page.getByLabel('Show inactive apps in this step').check();
-  await expect(page.getByText('Not enabled').first()).toBeVisible();
+  await expect(page.getByLabel('Show inactive apps in this step')).toHaveCount(0);
 
   await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Set up files' }).click();
   await expect(page).toHaveURL(/\/getting-started\?step=files#guide$/);
   await expect(page.getByRole('heading', { name: 'Set up files' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open Files' })).toHaveAttribute('target', '_blank');
 
   await page.getByRole('link', { name: 'For Admins' }).click();
   await expect(page).toHaveURL(/\/admins$/);
@@ -126,7 +134,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByText('Fear not, additional explanations now shown to help you out!')).toHaveCount(0);
   await expect(page.getByText('Daily checks, readiness, and secret operations.')).toHaveCount(0);
   await page.getByRole('button', { name: 'Other' }).click();
-  await page.getByLabel('Search commands').fill('secrets');
+  await page.getByLabel('Search commands').fill('regenerate');
   await expect(page.getByText('Rotate or regenerate secrets')).toBeVisible();
   await expect(page.getByText('Review evaluated config')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Configure Apps & Services' })).toHaveCount(0);
@@ -159,7 +167,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
 
   await page.locator('summary.profile-trigger').click();
   await expect(page.getByRole('heading', { name: 'dsaw' })).toBeVisible();
-  await expect(page.getByLabel('Show unused apps')).toBeChecked();
+  await expect(page.getByLabel('Show unused apps')).not.toBeChecked();
   await expect(page.getByRole('link', { name: 'Sign out' })).toBeVisible();
 });
 

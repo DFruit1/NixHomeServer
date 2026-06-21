@@ -648,7 +648,7 @@ let
       description = "Jellyfin-oriented movie and show request manager.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://github.com/Fallenbagel/jellyseerr";
-      logoUrl = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/jellyseerr.svg";
+      logoUrl = "/logos/seerr.svg";
       appName = "seerr";
       uploadNotes = "Approved requests are handed to Sonarr and Radarr.";
     }
@@ -687,7 +687,7 @@ let
       description = "Indexer manager for Sonarr and Radarr.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://prowlarr.com";
-      logoUrl = "https://cdn.simpleicons.org/prowlarr";
+      logoUrl = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/prowlarr.svg";
       appName = "prowlarr";
       uploadNotes = "Add only legal indexers and sources.";
     }
@@ -751,7 +751,8 @@ let
       category = "knowledge";
       description = "Private mail search, attachment export, and Paperless handoff.";
       loginNotes = "Requires mail-archive-users.";
-      appName = "mail archive";
+      logoUrl = "/logos/mail-archive.svg";
+      appName = "custom app with notmuch / maildir";
       uploadNotes = "Synced mail appears as visible .eml mirrors under _Emails.";
     }
     {
@@ -764,7 +765,7 @@ let
       loginNotes = "Requires downloads-users.";
       projectUrl = "https://github.com/yt-dlp/yt-dlp";
       logoUrl = "https://cdn.simpleicons.org/youtube";
-      appName = "yt-dlp";
+      appName = "custom app with yt-dlp";
       uploadNotes = "Downloads land in personal or shared media folders.";
     }
     {
@@ -817,7 +818,7 @@ let
       description = "Beszel monitoring dashboard for host resources, app units, storage, and disk health.";
       loginNotes = "Requires app-admin through Kanidm, then the native Beszel admin login.";
       projectUrl = "https://beszel.dev";
-      logoUrl = "https://raw.githubusercontent.com/henrygd/beszel/main/site/static/favicon.svg";
+      logoUrl = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/beszel.svg";
       appName = "beszel";
       uploadNotes = "Monitoring state is managed by Beszel.";
     }

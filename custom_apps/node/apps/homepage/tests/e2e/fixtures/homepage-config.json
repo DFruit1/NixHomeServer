@@ -125,6 +125,11 @@
       "detail": "Kanidm is configured with autoremove disabled, so deleted module groups/users are kept for rescue/reprovisioning safety."
     },
     {
+      "title": "Check backup timers",
+      "command": "systemctl list-timers '*kopia*' --no-pager",
+      "detail": "Confirm scheduled local and offsite backup jobs are present before troubleshooting backup freshness."
+    },
+    {
       "title": "Check service health",
       "command": "sudo systemctl --failed --no-pager",
       "detail": "Inspect failed units after deploys and before user-facing troubleshooting."

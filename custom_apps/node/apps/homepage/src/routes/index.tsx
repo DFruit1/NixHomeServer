@@ -8,6 +8,7 @@ export default component$(() => {
   const homepage = useContext(HomepageContext);
   const data = homepage.data;
   const showUnusedApps = useSignal(false);
+  const clickServiceCardsToOpen = useSignal(false);
   const allServices = data?.services ?? [];
   const services = data?.services.filter((service) => service.enabled) ?? [];
   const disabledServices = data?.services.filter((service) => !service.enabled) ?? [];
@@ -17,14 +18,23 @@ export default component$(() => {
 
   useVisibleTask$(({ cleanup }) => {
     showUnusedApps.value = window.localStorage.getItem('homepage.showUnusedApps') === 'true';
+    clickServiceCardsToOpen.value = window.localStorage.getItem('homepage.clickServiceCardsToOpen') === 'true';
 
-    const onPreferenceChange = (event: Event) => {
+    const onShowUnusedAppsChange = (event: Event) => {
       const detail = (event as CustomEvent<{ show?: boolean }>).detail;
       showUnusedApps.value = Boolean(detail?.show);
     };
+    const onClickServiceCardsChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ open?: boolean }>).detail;
+      clickServiceCardsToOpen.value = Boolean(detail?.open);
+    };
 
-    document.addEventListener('homepage-show-unused-apps-change', onPreferenceChange);
-    cleanup(() => document.removeEventListener('homepage-show-unused-apps-change', onPreferenceChange));
+    document.addEventListener('homepage-show-unused-apps-change', onShowUnusedAppsChange);
+    document.addEventListener('homepage-click-service-cards-change', onClickServiceCardsChange);
+    cleanup(() => {
+      document.removeEventListener('homepage-show-unused-apps-change', onShowUnusedAppsChange);
+      document.removeEventListener('homepage-click-service-cards-change', onClickServiceCardsChange);
+    });
   });
 
   const selectService = $((serviceId: string) => {
@@ -39,7 +49,13 @@ export default component$(() => {
         </div>
         <div class="service-grid">
           {servicesToShow.map((service) => (
-            <ServiceTile key={service.id} service={service} selected={selectedServiceId.value === service.id} onSelect={selectService} />
+            <ServiceTile
+              key={service.id}
+              service={service}
+              selected={selectedServiceId.value === service.id}
+              clickCardToOpen={clickServiceCardsToOpen.value}
+              onSelect={selectService}
+            />
           ))}
         </div>
         {!showUnusedApps.value && disabledServices.length > 0 && (

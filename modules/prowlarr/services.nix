@@ -1,4 +1,4 @@
-{ config, lib, oauth2Proxy, vars, ... }:
+{ config, lib, oauth2Proxy, pkgs, vars, ... }:
 
 let
   cfg = config.repo.prowlarr;
@@ -30,8 +30,8 @@ in
           log.analyticsEnabled = false;
           auth = {
             enabled = true;
-            method = "External";
-            required = "Enabled";
+            method = "Forms";
+            required = "DisabledForLocalAddresses";
           };
         };
       };
@@ -40,10 +40,21 @@ in
         "d /var/lib/prowlarr 0750 prowlarr prowlarr - -"
       ];
 
-      systemd.services.prowlarr.serviceConfig = {
-        DynamicUser = lib.mkForce false;
-        User = "prowlarr";
-        Group = "prowlarr";
+      systemd.services.prowlarr = {
+        preStart = ''
+          config_xml=/var/lib/prowlarr/config.xml
+          if [[ -f "$config_xml" ]]; then
+            ${pkgs.xmlstarlet}/bin/xmlstarlet ed -L \
+              -u '/Config/AuthenticationMethod' -v 'Forms' \
+              -u '/Config/AuthenticationRequired' -v 'DisabledForLocalAddresses' \
+              "$config_xml"
+          fi
+        '';
+        serviceConfig = {
+          DynamicUser = lib.mkForce false;
+          User = "prowlarr";
+          Group = "prowlarr";
+        };
       };
     }
 
