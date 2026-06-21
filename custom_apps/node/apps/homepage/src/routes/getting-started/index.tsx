@@ -205,11 +205,11 @@ export default component$(() => {
       content: (
         <>
           <h2>Sign in</h2>
-          <p>Start by confirming Kanidm works for your account outside any individual app. Keep this guide open while Kanidm opens in a separate tab.</p>
+          <p>Start by confirming Kanidm works for your account outside any individual app. This verifies the account before app-specific SSO, permissions, or first-run setup gets involved.</p>
           <ul class="setup-list">{['signed-in'].map(renderSetupItem)}</ul>
           <ol class="steps">
             <li>Open Kanidm and sign in as {username}.</li>
-            <li>Return to this guide after the Kanidm page loads successfully.</li>
+            <li>Return to this guide after the Kanidm page loads successfully and shows your account.</li>
           </ol>
           <div class="getting-started-actions compact">
             <a class="primary-link" href={kanidmUrl} target="_blank" rel="noreferrer">
@@ -227,14 +227,14 @@ export default component$(() => {
       content: (
         <>
           <h2>Secure your account</h2>
-          <p>Confirm the credentials attached to your Kanidm account before relying on the rest of the server. This is the recovery point if an app session expires or a device is replaced.</p>
+          <p>Confirm the credentials attached to your Kanidm account before relying on the rest of the server. This is the recovery point if an app session expires, a phone is replaced, or a browser profile is lost.</p>
           <ul class="setup-list">{['kanidm-direct-signin', 'kanidm-security'].map(renderSetupItem)}</ul>
           <ol class="steps">
             <li>
               Open <a href={kanidmUrl} target="_blank" rel="noreferrer">Kanidm</a> and sign in directly as {username}.
             </li>
             <li>Open the credentials or account security area.</li>
-            <li>Confirm your password works, your TOTP code works, at least one passkey is listed, and recovery options are available somewhere you can reach later.</li>
+            <li>Confirm your password works, your TOTP code works, at least one passkey is listed, and recovery details are stored somewhere you can reach without this server.</li>
             <li>If anything is missing or only stored on one device, add another method before moving on.</li>
           </ol>
           <div class="getting-started-actions compact">
@@ -261,6 +261,7 @@ export default component$(() => {
             </li>
             <li>Create one login item named Kanidm - {username}.</li>
             <li>Save the Kanidm username, password, sign-in URL ({kanidmUrl}), TOTP seed, passkey notes, and recovery codes in that item.</li>
+            <li>Choose and store the Vaultwarden master password carefully; it protects the vault separately from Kanidm sign-in.</li>
             <li>Install the Vaultwarden or Bitwarden browser extension or mobile app if you want it to store passkeys.</li>
             <li>Repeat this pattern later for any app that asks for its own local password.</li>
           </ol>
@@ -295,6 +296,7 @@ export default component$(() => {
             <li>If an app asks to approve Kanidm access, approve it.</li>
             <li>If an app shows its own first-run screen, finish that setup and save any local password or recovery details in your password manager.</li>
             <li>If an expected app is missing, ask an admin to check your access groups before troubleshooting the app itself.</li>
+            <li>If a visible app loops back to sign-in or shows forbidden, report the app name and the account you used.</li>
             <li>Use each service detail page when you need app-specific upload, login, or first-run notes.</li>
           </ol>
           <div class="getting-started-actions compact">
@@ -319,6 +321,7 @@ export default component$(() => {
             <li>
               Open <a href={filesUrl} target="_blank" rel="noreferrer">Files</a> and confirm you can create a test folder.
             </li>
+            <li>Delete the test folder after the check so later uploads are easier to scan.</li>
             <li>Open the upload guide and choose the content type you are uploading so files land in the app folder that watches them.</li>
             <li>Optional: for desktop uploads, generate an SSH key on your computer and paste the public key into the upload guide.</li>
           </ol>
@@ -359,7 +362,7 @@ export default component$(() => {
             <li>Install the Immich mobile app from your phone app store.</li>
             <li>Use {photosUrl} as the server endpoint in the mobile app.</li>
             <li>Sign in with Kanidm, choose the camera albums to back up, and leave the app open until the first backup starts.</li>
-            <li>Allow photo and background permissions on the phone so later backups can continue without the browser.</li>
+            <li>Allow photo and background permissions on the phone, and disable battery restrictions for Immich if your phone pauses backups.</li>
             <li>Confirm a new phone photo appears in the Photos web app.</li>
           </ol>
           {photosStatus === 'verified' ? (
@@ -390,6 +393,7 @@ export default component$(() => {
             <li>Use Services for app-specific detail pages when you need login, upload, import, or first-run notes.</li>
             <li>Use the upload guide before moving files into Documents, Books, Videos, Audiobooks, Downloads, Mail Archive, or Offline Media folders.</li>
             <li>Save any local app password in your password manager before closing that app.</li>
+            <li>Bookmark the homepage after setup; it stays the easiest way to find enabled services and account-specific guidance.</li>
           </ol>
           <div class="getting-started-actions compact">
             <Link class="primary-link" href="/">

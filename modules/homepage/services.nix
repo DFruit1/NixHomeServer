@@ -944,12 +944,12 @@ let
     {
       title = "Review evaluated config";
       command = "nix run .#show-config-summary";
-      detail = "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets.";
+      detail = "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets. Start here before changing config.";
     }
     {
       title = "Validate config readiness";
       command = "nix run .#validate-config-readiness";
-      detail = "Preflight evaluated settings, required secret files, SSH reachability, and bootstrap/deploy prerequisites without changing the server.";
+      detail = "Preflight evaluated settings, required secret files, SSH reachability, and bootstrap/deploy prerequisites. It reports blockers without changing the server.";
     }
     {
       title = "Export operations inventory";
@@ -959,7 +959,7 @@ let
     {
       title = "Check git worktree";
       command = "git status --short";
-      detail = "Confirm modified, staged, and untracked files before the guarded deploy packages the repo archive.";
+      detail = "Confirm modified, staged, and untracked files before the guarded deploy packages the repo archive. New Nix files must be tracked to reach the server.";
     }
     {
       title = "Check service health";
@@ -984,7 +984,7 @@ let
     {
       title = "Validate broad changes";
       command = "./scripts/deploy.sh --debug --action test";
-      detail = "Run the broad debug gate and remote test activation after significant config, app, identity, routing, or storage changes.";
+      detail = "Run the broad validation gate and remote test activation after significant config, app, identity, routing, or storage changes.";
     }
     {
       title = "Run lean repo validation";
@@ -1019,7 +1019,7 @@ let
     {
       title = "Switch after a passing test";
       command = "./scripts/deploy.sh --action switch";
-      detail = "Make the tested generation persistent. Run this only after the test path passes and failed units are understood.";
+      detail = "Make the tested generation persistent using the guarded deploy helper. Run this only after the test path passes and failed units are understood.";
     }
     {
       title = "Show generations for rollback";
@@ -1029,7 +1029,7 @@ let
     {
       title = "Rollback current generation";
       command = "sudo nixos-rebuild switch --rollback";
-      detail = "Roll back the active system profile to the previous generation when a switch needs to be backed out immediately.";
+      detail = "Roll back the active system profile to the previous generation when a switch needs to be backed out immediately. Follow with failed-unit and route checks.";
     }
     {
       title = "Check app service status";
@@ -1049,7 +1049,7 @@ let
     {
       title = "Restart homepage";
       command = "sudo systemctl restart homepage.service";
-      detail = "Restart the portal after changing homepage code, generated JSON, or helper command wiring.";
+      detail = "Restart the portal after changing homepage code, generated JSON, or helper command wiring when a full deploy is not being run.";
     }
     {
       title = "Check OAuth proxy logs";
@@ -1059,17 +1059,17 @@ let
     {
       title = "Re-run storage layout services";
       command = "systemctl list-units '*storage-layout-v1.service' --all --no-legend | awk '{print $1}' | xargs -r sudo systemctl start";
-      detail = "Re-apply all app storage layout units after creating, restoring, or repairing content directories.";
+      detail = "Re-apply all app storage layout units after creating, restoring, or repairing content directories. This fixes expected owners, modes, and ACLs.";
     }
     {
       title = "Re-run Immich OIDC reconcile";
       command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
-      detail = "Force Immich user and admin reconciliation from current Kanidm group and claim state.";
+      detail = "Force Immich user and admin reconciliation from current Kanidm group and claim state after access or admin-group changes.";
     }
     {
       title = "Re-run Paperless OIDC reconcile";
       command = "sudo systemctl start paperless-oidc-reconcile.service";
-      detail = "Force Paperless account reconciliation from Kanidm after access, username, or email changes.";
+      detail = "Force Paperless account reconciliation from Kanidm after access, username, or email changes when the web UI has not caught up.";
     }
     {
       title = "Re-run Jellyfin library sync";
@@ -1099,7 +1099,7 @@ let
     {
       title = "Inspect Kanidm group";
       command = "kanidm group get app-admin";
-      detail = "Inspect membership and attributes for a specific group. Replace app-admin with the group you are checking.";
+      detail = "Inspect membership and attributes for a specific group. Replace app-admin with the app, file, backup, or admin group you are checking.";
     }
     {
       title = "Remove user from access group";
@@ -1109,7 +1109,7 @@ let
     {
       title = "Restart identity reconciliation";
       command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
-      detail = "Reconcile Kanidm provisioning, POSIX file groups, and per-user file roots after account or group changes.";
+      detail = "Reconcile Kanidm provisioning, POSIX file groups, and per-user file roots after account or group changes, especially before testing file access.";
     }
     {
       title = "Manage Kanidm entity removal explicitly";
@@ -1139,7 +1139,7 @@ let
     {
       title = "Start ZFS scrub";
       command = "sudo zpool scrub ${vars.zfsDataPool.name}";
-      detail = "Start a scrub for the mirrored data pool. Monitor progress and any repaired errors with zpool status.";
+      detail = "Start a scrub for the mirrored data pool. Monitor progress and any repaired errors with the ZFS pool status command.";
     }
     {
       title = "Show Btrfs filesystem usage";
@@ -1189,7 +1189,7 @@ let
     {
       title = "Run phone backup snapshot now";
       command = "sudo systemctl start kopia-phone-snapshot.service";
-      detail = "Trigger the phone backup snapshot chain when phone backup is enabled and the Syncthing folder is up to date.";
+      detail = "Trigger the phone backup snapshot chain when phone backup is enabled and Syncthing has already received the latest files.";
     }
     {
       title = "Run offsite Kopia sync now";
@@ -1214,7 +1214,7 @@ let
     {
       title = "Validate Caddy config";
       command = "nix run --inputs-from . nixpkgs#caddy -- validate --config /etc/caddy/caddy_config --adapter caddyfile";
-      detail = "Validate the running Caddy config file before reloads, route changes, or TLS debugging.";
+      detail = "Validate the running Caddy config file before reloads, route changes, or TLS debugging. A valid Nix build can still produce a bad runtime route.";
     }
     {
       title = "Reload Caddy";
@@ -1234,7 +1234,7 @@ let
     {
       title = "Query private DNS";
       command = "dig @${vars.networking.loopbackIPv4} homepage.${vars.domain}";
-      detail = "Confirm the local resolver returns the private homepage record from the server's loopback resolver.";
+      detail = "Confirm the server's loopback resolver returns the private homepage record before debugging clients or NetBird routes.";
     }
     {
       title = "Check Cloudflare tunnel status";
@@ -1259,7 +1259,7 @@ let
     {
       title = "Rotate or regenerate secrets";
       command = "./scripts/generate-all-secrets.sh";
-      detail = "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit it.";
+      detail = "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit that directory.";
     }
     {
       title = "List encrypted secrets";

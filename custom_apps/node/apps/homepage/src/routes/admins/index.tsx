@@ -270,34 +270,34 @@ export default component$(() => {
     checkUser: matchesSearch(searchQuery.value, ['Check user exists', 'Use before creating or resetting an account. Confirms Kanidm can see the person record.', `kanidm person get ${userArg}`]),
     createAccount: matchesSearch(searchQuery.value, [
       'Create Kanidm account',
-      'Create the Kanidm person record, then attach the primary email used by apps and password-manager signup.',
+      'Create the Kanidm person record and attach the primary email used by apps. Credentials are issued separately with the reset-link command.',
       `kanidm person create ${userArg} ${displayNameArg}`,
       `kanidm person update ${userArg} --mail ${emailArg}`,
     ]),
     grantBaseline: matchesSearch(searchQuery.value, [
       'Grant baseline access',
-      'Add the baseline users group required for ordinary sign-in and user lookup.',
+      'Add the baseline users group required for normal Kanidm sign-in and app user lookup.',
       `kanidm group add-members users ${userArg}`,
     ]),
     grantAccess: matchesSearch(searchQuery.value, [
       'Grant app/file/admin access',
-      'Select app, file, backup, or admin groups. The generated loop grants the chosen access to one user.',
+      'Select app, file, backup, or admin groups. The generated loop grants access; reconciliation may be needed before every app sees it.',
       membershipCommand,
       accessGroups.join(' '),
     ]),
     vaultwardenSignup: matchesSearch(searchQuery.value, [
       'Vaultwarden signup',
-      'Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm.',
+      'Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm. This creates a separate vault master password.',
       `https://passwords.${domain}/#/signup`,
     ]),
     signInLink: matchesSearch(searchQuery.value, [
       'Create first sign-in link',
-      'Generate a one-hour Kanidm credential reset link for first sign-in or account recovery. Share it out-of-band.',
+      'Generate a Kanidm credential reset link that expires after 3600 seconds. Share it out-of-band for first sign-in or recovery.',
       `kanidm person credential create-reset-token ${userArg} 3600`,
     ]),
     handoff: matchesSearch(searchQuery.value, [
       'Hand off first sign-in',
-      'Ask the user to set password and MFA, open granted apps, and save recovery details before considering onboarding complete.',
+      'Ask the user to set password and MFA, open granted apps, save recovery details, and confirm expected services are visible.',
       'Confirm the user can sign in, open granted apps, set MFA, and save recovery details before closing the onboarding task.',
     ]),
   };
@@ -474,7 +474,7 @@ export default component$(() => {
                       {showCreateAccount && (
                         <AdminTask
                           title="Create Kanidm account"
-                          description="Create the Kanidm person record, then attach the primary email used by apps and password-manager signup."
+                          description="Create the Kanidm person record and attach the primary email used by apps. Credentials are issued separately with the reset-link command."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -487,7 +487,7 @@ export default component$(() => {
                       {showGrantBaseline && (
                         <AdminTask
                           title="Grant baseline access"
-                          description="Add the baseline users group required for ordinary sign-in and user lookup."
+                          description="Add the baseline users group required for normal Kanidm sign-in and app user lookup."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -499,7 +499,7 @@ export default component$(() => {
                       {showGrantAccess && (
                         <AdminTask
                           title="Grant app/file/admin access"
-                          description="Select app, file, backup, or admin groups. The generated loop grants the chosen access to one user."
+                          description="Select app, file, backup, or admin groups. The generated loop grants access; reconciliation may be needed before every app sees it."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -533,7 +533,7 @@ export default component$(() => {
                       {showVaultwardenSignup && (
                         <AdminTask
                           title="Vaultwarden signup"
-                          description="Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm."
+                          description="Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm. This creates a separate vault master password."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -546,7 +546,7 @@ export default component$(() => {
                       {showSignInLink && (
                         <AdminTask
                           title="Create first sign-in link"
-                          description="Generate a one-hour Kanidm credential reset link for first sign-in or account recovery. Share it out-of-band."
+                          description="Generate a Kanidm credential reset link that expires after 3600 seconds. Share it out-of-band for first sign-in or recovery."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
@@ -558,13 +558,13 @@ export default component$(() => {
                       {showHandoff && (
                         <AdminTask
                           title="Hand off first sign-in"
-                          description="Ask the user to set password and MFA, open granted apps, and save recovery details before considering onboarding complete."
+                          description="Ask the user to set password and MFA, open granted apps, save recovery details, and confirm expected services are visible."
                           activeIntent={activeIntent}
                           showDescription={showExplanations.value}
                           forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
-                          <p>Confirm the user can sign in, open granted apps, set MFA, and save recovery details before closing the onboarding task.</p>
+                          <p>Confirm the user can sign in, open granted apps, set MFA, save recovery details, and see the expected homepage service cards.</p>
                         </AdminTask>
                       )}
                     </div>

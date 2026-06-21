@@ -97,12 +97,12 @@
     {
       "title": "Review evaluated config",
       "command": "nix run .#show-config-summary",
-      "detail": "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets."
+      "detail": "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets. Start here before changing config."
     },
     {
       "title": "Validate broad changes",
       "command": "./scripts/deploy.sh --debug --action test",
-      "detail": "Run the broad debug gate and remote test activation after significant config, app, identity, routing, or storage changes."
+      "detail": "Run the broad validation gate and remote test activation after significant config, app, identity, routing, or storage changes."
     },
     {
       "title": "Run routine guarded deploy",
@@ -112,12 +112,12 @@
     {
       "title": "Switch after a passing test",
       "command": "./scripts/deploy.sh --action switch",
-      "detail": "Make the tested generation persistent. Run this only after the test path passes and failed units are understood."
+      "detail": "Make the tested generation persistent using the guarded deploy helper. Run this only after the test path passes and failed units are understood."
     },
     {
       "title": "Rotate or regenerate secrets",
       "command": "./scripts/generate-all-secrets.sh",
-      "detail": "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit it."
+      "detail": "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit that directory."
     },
     {
       "title": "Manage Kanidm entity removal explicitly",
