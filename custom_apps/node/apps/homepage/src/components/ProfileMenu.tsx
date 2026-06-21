@@ -14,6 +14,7 @@ export const ProfileMenu = component$(
     onImageClear: ToggleHandler;
   }) => {
     const menuRef = useSignal<HTMLDetailsElement>();
+    const showUnusedApps = useSignal(false);
     const closeMenu = $(() => {
       if (menuRef.value) {
         menuRef.value.open = false;
@@ -21,6 +22,8 @@ export const ProfileMenu = component$(
     });
 
     useVisibleTask$(({ cleanup }) => {
+      showUnusedApps.value = window.localStorage.getItem('homepage.showUnusedApps') === 'true';
+
       const onPointerDown = (event: PointerEvent) => {
         const menu = menuRef.value;
         if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {
@@ -39,6 +42,12 @@ export const ProfileMenu = component$(
         document.removeEventListener('pointerdown', onPointerDown);
         document.removeEventListener('keydown', onKeyDown);
       });
+    });
+
+    const updateShowUnusedApps = $((_event: Event, target: HTMLInputElement) => {
+      showUnusedApps.value = target.checked;
+      window.localStorage.setItem('homepage.showUnusedApps', String(target.checked));
+      document.dispatchEvent(new CustomEvent('homepage-show-unused-apps-change', { detail: { show: target.checked } }));
     });
 
     return (
@@ -63,9 +72,13 @@ export const ProfileMenu = component$(
               Remove picture
             </button>
           )}
-          <button class="profile-action" type="button" disabled>
-            Preferences
-          </button>
+          <section class="profile-preferences" aria-label="Preferences">
+            <h3>Preferences</h3>
+            <label>
+              <input type="checkbox" checked={showUnusedApps.value} onChange$={updateShowUnusedApps} />
+              <span>Show unused apps</span>
+            </label>
+          </section>
           <a class="profile-signout" href="/oauth2/sign_out?rd=/oauth2/start" onClick$={closeMenu}>
             Sign out
           </a>

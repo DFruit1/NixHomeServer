@@ -5,8 +5,12 @@ import { ServiceLogo } from './ServiceLogo.js';
 
 export const ServiceTile = component$(({ service, selected, onSelect }: { service: ServiceCard; selected?: boolean; onSelect: ServiceSelectHandler }) => {
     const appUrl = service.url;
+    const inactive = !service.enabled;
 
     const selectService = $((event: Event) => {
+      if (inactive) {
+        return;
+      }
       if ((event.target as HTMLElement).closest('a')) {
         return;
       }
@@ -14,6 +18,9 @@ export const ServiceTile = component$(({ service, selected, onSelect }: { servic
     });
 
     const selectServiceFromKeyboard = $((event: KeyboardEvent) => {
+      if (inactive) {
+        return;
+      }
       if (event.key !== 'Enter' && event.key !== ' ') {
         return;
       }
@@ -23,11 +30,13 @@ export const ServiceTile = component$(({ service, selected, onSelect }: { servic
 
     return (
       <article
-        class={{ 'service-tile': true, selected }}
+        class={{ 'service-tile': true, selected, inactive }}
         role="button"
         tabIndex={0}
-        aria-label={`${service.name} service information`}
+        aria-label={inactive ? `${service.name} is not active` : `${service.name} service information`}
+        aria-disabled={inactive ? 'true' : undefined}
         aria-pressed={selected ? 'true' : 'false'}
+        data-tooltip={inactive ? 'Not active, must be enabled by server admin' : undefined}
         onClick$={selectService}
         onKeyDown$={selectServiceFromKeyboard}
       >
@@ -36,9 +45,13 @@ export const ServiceTile = component$(({ service, selected, onSelect }: { servic
           <h3>{service.name}</h3>
         </div>
         <div class="tile-actions">
-          <a class="open-link app-link" href={appUrl} target="_blank" rel="noreferrer" onClick$={(event) => event.stopPropagation()}>
-            Open
-          </a>
+          {inactive ? (
+            <span class="app-link inactive-label">Not active</span>
+          ) : (
+            <a class="open-link app-link" href={appUrl} target="_blank" rel="noreferrer" onClick$={(event) => event.stopPropagation()}>
+              Open
+            </a>
+          )}
         </div>
       </article>
     );

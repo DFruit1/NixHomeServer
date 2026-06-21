@@ -84,15 +84,15 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   await expect(page.getByText('Signed in as dsaw')).toBeVisible();
   await expect(page.getByLabel('Verified').first()).toBeVisible();
-  await page.getByLabel('Changed the temporary Kanidm password').check();
-  await expect(page.getByLabel('Changed the temporary Kanidm password')).toBeChecked();
+  await page.getByLabel('Confirmed Kanidm password, TOTP, and passkey work').check();
+  await expect(page.getByLabel('Confirmed Kanidm password, TOTP, and passkey work')).toBeChecked();
 
   await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Open services' }).click();
   await expect(page).toHaveURL(/\/getting-started\?step=services#guide$/);
   await expect(page.getByRole('heading', { name: 'Open services' })).toBeVisible();
   await expect(page.getByText('Local Backups')).toBeVisible();
   await expect(page.getByText('Not enabled')).toHaveCount(0);
-  await page.getByLabel('Show unused apps').check();
+  await page.getByLabel('Show inactive apps in this step').check();
   await expect(page.getByText('Not enabled').first()).toBeVisible();
 
   await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Set up files' }).click();
@@ -105,23 +105,28 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByRole('button', { name: 'Add New User' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Manage Existing User' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Manage Secrets / Passwords' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Daily Checks' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Server Management' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Deploys', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'User Management' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Users & Logins' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Storage & Backups' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'User Management' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'User Onboarding' })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Secrets' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Secrets' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Config And Deploys' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'User Support' })).toHaveCount(0);
   await expect(page.getByText('Quickstart covers disk setup')).toBeVisible();
   await expect(page.getByText('nix run .#show-config-summary')).toBeHidden();
-  await page.locator('summary').filter({ hasText: 'Daily Checks' }).click();
+  await page.locator('summary').filter({ hasText: 'Server Management' }).click();
   await page.locator('summary').filter({ hasText: 'Review evaluated config' }).click();
   await expect(page.getByText('nix run .#show-config-summary')).toBeVisible();
   await expect(page.getByText('kanidm person create "$NEW_USER" "$DISPLAY_NAME"')).toBeHidden();
   await page.getByRole('button', { name: 'Add New User' }).click();
   await expect(page.getByRole('heading', { name: 'What do you need to do?' })).toBeHidden();
   await expect(page.getByText('Quickstart covers disk setup')).toBeHidden();
-  await expect(page.getByRole('heading', { name: 'Daily Checks' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Server Management' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Deploys', exact: true })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Secrets' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Users & Logins' })).toBeVisible();
   await expect(page.getByText('kanidm person create "$NEW_USER" "$DISPLAY_NAME"')).toBeVisible();
   await page.getByRole('button', { name: "It's for me" }).click();
   const assignedGroups = page.locator('.group-picker-section').filter({ has: page.getByRole('heading', { name: 'Already assigned' }) });
@@ -139,6 +144,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
 
   await page.locator('summary.profile-trigger').click();
   await expect(page.getByRole('heading', { name: 'dsaw' })).toBeVisible();
+  await expect(page.getByLabel('Show unused apps')).toBeChecked();
   await expect(page.getByRole('link', { name: 'Sign out' })).toBeVisible();
 });
 

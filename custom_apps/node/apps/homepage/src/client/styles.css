@@ -224,6 +224,36 @@ h4 {
   font-weight: 500;
 }
 
+.profile-preferences {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d6dde8;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 10px 12px;
+}
+
+.profile-preferences h3 {
+  margin: 0;
+  color: #1f2a38;
+  font-size: 13px;
+}
+
+.profile-preferences label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.profile-preferences input {
+  width: 18px;
+  height: 18px;
+  accent-color: #245b9f;
+}
+
 .profile-action:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -380,6 +410,8 @@ h4 {
 
 .getting-started-link-list {
   margin-top: 18px;
+  padding-left: 0;
+  list-style: none;
 }
 
 .getting-started-links a,
@@ -450,6 +482,11 @@ h4 {
 
 .getting-started-step .steps {
   max-width: 620px;
+}
+
+.getting-started-step .command-snippet {
+  max-width: 680px;
+  margin-top: 8px;
 }
 
 .setup-list,
@@ -947,6 +984,46 @@ h4 {
   box-shadow: 0 8px 24px rgba(31, 42, 56, 0.08);
 }
 
+.service-tile.inactive {
+  background: #f8fafc;
+  cursor: default;
+  opacity: 0.52;
+}
+
+.service-tile.inactive:hover,
+.service-tile.inactive:focus-visible {
+  border-color: #dfe5ee;
+  box-shadow: none;
+}
+
+.service-tile.inactive::after {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 12px;
+  z-index: 5;
+  max-width: min(260px, calc(100vw - 48px));
+  border-radius: 6px;
+  background: #1f2a38;
+  color: #fff;
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  opacity: 0;
+  padding: 8px 10px;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.service-tile.inactive:hover::after,
+.service-tile.inactive:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .service-tile:hover .app-link,
 .service-tile:focus-within .app-link,
 .service-tile:focus-visible .app-link,
@@ -1061,6 +1138,11 @@ h4 {
   background: #f8fafc;
   border-color: rgba(36, 91, 159, 0.36);
   opacity: 1;
+}
+
+.inactive-label {
+  display: inline-flex;
+  color: #607086;
 }
 
 .service-detail {
