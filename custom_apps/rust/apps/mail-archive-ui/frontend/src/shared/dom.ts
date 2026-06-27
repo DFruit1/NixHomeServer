@@ -301,15 +301,33 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
     doc.querySelector<HTMLFormElement>("#attachment-download-form"),
     doc.querySelector<HTMLFormElement>("#attachment-paperless-form"),
   ].filter((form): form is HTMLFormElement => Boolean(form));
+  const selectPage = doc.querySelector<HTMLElement>("[data-select-page]");
   const selectedKeys = new Set<string>();
   let selectionAnchor: number | null = null;
 
   const syncSelectedInputs = (): void => {
     const selectedCount = selectedKeys.size;
+    const selectableKeys = attachmentRows
+      .map((row) => row.dataset.attachmentKey)
+      .filter((key): key is string => Boolean(key));
+    const allVisibleSelected =
+      selectableKeys.length > 0 &&
+      selectableKeys.every((key) => selectedKeys.has(key));
     setText(
       doc.querySelector("[data-selected-count]"),
       `${selectedCount} selected`,
     );
+    if (selectPage) {
+      selectPage.textContent = allVisibleSelected
+        ? "Deselect all"
+        : "Select page";
+      selectPage.setAttribute(
+        "title",
+        allVisibleSelected
+          ? "Deselect visible attachments"
+          : "Select visible attachments",
+      );
+    }
     doc
       .querySelectorAll<HTMLButtonElement>("[data-bulk-action]")
       .forEach((button) => {
@@ -411,21 +429,28 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
     });
   });
 
-  const selectPage = doc.querySelector<HTMLElement>("[data-select-page]");
   if (selectPage) {
     const onSelectPage = (): void => {
-      selectedKeys.clear();
-      attachmentRows.forEach((row) => {
-        if (row.dataset.attachmentKey) {
-          selectedKeys.add(row.dataset.attachmentKey);
-        }
-      });
-      selectionAnchor = attachmentRows.length > 0 ? 0 : null;
+      const selectableKeys = attachmentRows
+        .map((row) => row.dataset.attachmentKey)
+        .filter((key): key is string => Boolean(key));
+      const allVisibleSelected =
+        selectableKeys.length > 0 &&
+        selectableKeys.every((key) => selectedKeys.has(key));
+      if (allVisibleSelected) {
+        selectableKeys.forEach((key) => selectedKeys.delete(key));
+        selectionAnchor = null;
+      } else {
+        selectableKeys.forEach((key) => selectedKeys.add(key));
+        selectionAnchor = attachmentRows.length > 0 ? 0 : null;
+      }
       syncSelectedInputs();
     };
     selectPage.addEventListener("click", onSelectPage);
     cleanups.push(() => selectPage.removeEventListener("click", onSelectPage));
   }
+
+  setupAttachmentDialogs(doc, cleanups);
 
   const paperlessForms = Array.from(
     doc.querySelectorAll<HTMLFormElement>("form[data-paperless-form]"),
@@ -472,6 +497,95 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
 
   syncSelectedInputs();
   return () => cleanups.forEach((cleanup) => cleanup());
+};
+
+const setupAttachmentDialogs = (doc: Document, cleanups: Cleanup[]): void => {
+  doc.querySelectorAll<HTMLElement>("[data-open-dialog]").forEach((button) => {
+    const onClick = (): void => {
+      const id = button.dataset.openDialog;
+      const dialog = id
+        ? (doc.getElementById(id) as HTMLDialogElement | null)
+        : null;
+      if (!dialog) {
+        return;
+      }
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      } else {
+        dialog.setAttribute("open", "");
+      }
+    };
+    button.addEventListener("click", onClick);
+    cleanups.push(() => button.removeEventListener("click", onClick));
+  });
+
+  doc.querySelectorAll<HTMLDialogElement>("dialog").forEach((dialog) => {
+    const closeDialog = (): void => {
+      if (typeof dialog.close === "function") {
+        dialog.close();
+      } else {
+        dialog.removeAttribute("open");
+      }
+    };
+    dialog
+      .querySelectorAll<HTMLElement>("[data-close-dialog]")
+      .forEach((button) => {
+        button.addEventListener("click", closeDialog);
+        cleanups.push(() => button.removeEventListener("click", closeDialog));
+      });
+    const onClick = (event: MouseEvent): void => {
+      if (event.target === dialog) {
+        closeDialog();
+      }
+    };
+    dialog.addEventListener("click", onClick);
+    cleanups.push(() => dialog.removeEventListener("click", onClick));
+  });
+
+  doc
+    .querySelectorAll<HTMLFormElement>("form[data-copy-filters-from]")
+    .forEach((form) => {
+      const onSubmit = (event: SubmitEvent): void => {
+        const sourceId = form.dataset.copyFiltersFrom;
+        const source = sourceId
+          ? (doc.getElementById(sourceId) as HTMLFormElement | null)
+          : null;
+        const target = form.querySelector<HTMLElement>(
+          "[data-copied-filter-fields]",
+        );
+        if (source && target) {
+          target.replaceChildren();
+          new FormData(source).forEach((value, key) => {
+            if (typeof value !== "string" || key === "page") {
+              return;
+            }
+            const input = doc.createElement("input");
+            input.type = "hidden";
+            input.name = key;
+            input.value = value;
+            target.appendChild(input);
+          });
+        }
+
+        const presetName = form
+          .querySelector<HTMLInputElement>('input[name="preset_name"]')
+          ?.value.trim();
+        const autoExportNames = (form.dataset.autoExportPresetNames || "")
+          .split("\t")
+          .filter(Boolean);
+        if (
+          presetName &&
+          autoExportNames.includes(presetName) &&
+          !window.confirm(
+            "This preset has an auto-export to Paperless. Changing the preset filters will also change that auto-export job. Continue?",
+          )
+        ) {
+          event.preventDefault();
+        }
+      };
+      form.addEventListener("submit", onSubmit);
+      cleanups.push(() => form.removeEventListener("submit", onSubmit));
+    });
 };
 
 type ActionPayload = {

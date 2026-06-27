@@ -49,6 +49,8 @@ generated_secret_specs=(
   "vaultwardenAdminToken:32"
   "kavitaClientSecret:32"
   "kavitaTokenKey:64"
+  "groundwaterAppMqttPassword:32"
+  "groundwaterLoggerMqttPassword:32"
 )
 
 generate_secret_value() {

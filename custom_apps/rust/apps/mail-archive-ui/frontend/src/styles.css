@@ -856,7 +856,7 @@ form {
 
 .primary-search-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: end;
   gap: 0.5rem;
 }
@@ -870,6 +870,125 @@ form {
   border-radius: 999px;
   padding-inline: 1.15rem;
   font-size: 1.08rem;
+}
+
+.preset-dialog-button {
+  min-height: 2.65rem;
+  white-space: nowrap;
+}
+
+.current-preset-label {
+  color: rgba(29, 31, 28, 0.66);
+  font-size: 0.86rem;
+}
+
+.attachment-filter-layout {
+  display: grid;
+  grid-template-columns: minmax(20rem, 30rem) minmax(0, 1fr);
+  align-items: start;
+  gap: 1rem;
+}
+
+.basic-filter-column,
+.stacked-filter-dialog {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.filter-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.42fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  color: rgba(29, 31, 28, 0.8);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.filter-control {
+  min-width: 0;
+  font-weight: 400;
+}
+
+.filter-control input,
+.filter-control select,
+.preset-save-form input,
+.auto-export-form input {
+  min-height: 2.1rem;
+  padding: 0.38rem 0.56rem;
+  font-size: 0.88rem;
+  font-weight: 400;
+}
+
+.date-range-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.45rem;
+}
+
+.advanced-filter-link {
+  justify-self: start;
+  margin-top: 0.15rem;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  padding: 0.25rem 0;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.app-dialog {
+  width: min(44rem, calc(100vw - 2rem));
+  max-height: min(42rem, calc(100vh - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: inherit;
+  padding: 0;
+  box-shadow: 0 24px 80px rgba(20, 22, 19, 0.22);
+}
+
+.app-dialog::backdrop {
+  background: rgba(19, 28, 22, 0.42);
+}
+
+.dialog-shell {
+  display: grid;
+  gap: 0;
+  max-height: inherit;
+}
+
+.dialog-heading,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog-heading h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+.dialog-body {
+  display: grid;
+  gap: 0.8rem;
+  overflow: auto;
+  padding: 1rem;
+}
+
+.preset-dialog {
+  width: min(52rem, calc(100vw - 2rem));
 }
 
 .filter-accordion-row,
@@ -1027,39 +1146,68 @@ form {
 }
 
 .preset-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
+  display: grid;
+  gap: 0.65rem;
 }
 
-.preset-chip {
-  display: inline-grid;
-  grid-template-columns: minmax(0, auto) auto;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.22rem;
+.preset-card {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem;
   border: 1px solid rgba(12, 92, 80, 0.14);
   border-radius: 6px;
   background: #fff;
 }
 
-.preset-chip .button-link {
+.preset-card-current {
+  border-color: rgba(12, 92, 80, 0.42);
+}
+
+.preset-card-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.preset-card .button-link {
+  justify-content: start;
   min-height: 2rem;
   padding: 0.35rem 0.65rem;
 }
 
-.preset-chip .icon-button {
+.preset-card .icon-button {
   min-width: 2rem;
   min-height: 2rem;
 }
 
-.task-chip {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+.preset-auto-export {
+  border-top: 1px solid rgba(29, 31, 28, 0.08);
+  padding-top: 0.4rem;
 }
 
-.task-chip .meta,
-.task-summary {
-  grid-column: 1 / -1;
+.preset-auto-export summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.auto-export-form,
+.auto-export-actions {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.auto-export-actions {
+  grid-template-columns: repeat(2, max-content);
+  align-items: center;
+}
+
+.task-summary,
+.unlinked-auto-exports {
+  margin-top: 0.45rem;
 }
 
 .preset-empty {
@@ -1408,9 +1556,24 @@ code {
     grid-template-columns: minmax(0, 1fr) auto auto;
   }
 
+  .preset-dialog-button {
+    grid-column: 1 / -1;
+    justify-self: start;
+    min-height: 2.35rem;
+  }
+
   .filter-accordion-row,
   .attachment-management-row {
     grid-template-columns: 1fr;
+  }
+
+  .attachment-filter-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-row {
+    grid-template-columns: 1fr;
+    gap: 0.3rem;
   }
 
   .filter-grid {
@@ -1427,6 +1590,12 @@ code {
   .preset-save-form,
   .paperless-tasks .preset-save-form {
     grid-template-columns: 1fr;
+  }
+
+  .preset-card-main,
+  .auto-export-actions {
+    grid-template-columns: 1fr;
+    justify-items: start;
   }
 
   .attachment-toolbar,

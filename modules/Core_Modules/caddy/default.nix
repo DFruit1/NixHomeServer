@@ -30,6 +30,8 @@ let
     vars.rcloneDomain
   ] ++ lib.optionals (config.repo.seerr.enable or false) [
     "requests.${vars.domain}"
+  ] ++ lib.optionals (config.repo.groundwaterLogger.enable or false) [
+    "groundwater.${vars.domain}"
   ];
   shortAliasCaddyHosts = lib.listToAttrs (
     map

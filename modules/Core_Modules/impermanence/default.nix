@@ -24,6 +24,8 @@ let
     "/var/cache/immich"
     "/var/lib/audiobookshelf"
     "/var/lib/filestash"
+    "/var/lib/groundwater-logger"
+    "/var/lib/groundwater-mosquitto"
     "/var/lib/immich"
     "/var/lib/immich-public-proxy"
     "/var/lib/jellyfin"

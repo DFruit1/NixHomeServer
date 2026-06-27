@@ -59,6 +59,8 @@ in
     qbittorrentOauth2ProxyCookieSecret = { file = secretFile "qbittorrentOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     rcloneMegaPassword = { file = secretFile "rcloneMegaPassword"; owner = "root"; mode = "0400"; };
     vaultwardenAdminToken = { file = secretFile "vaultwardenAdminToken"; owner = "vaultwarden"; mode = "0400"; };
+    groundwaterAppMqttPassword = { file = secretFile "groundwaterAppMqttPassword"; owner = "groundwater-logger"; group = "groundwater-logger"; mode = "0400"; };
+    groundwaterLoggerMqttPassword = { file = secretFile "groundwaterLoggerMqttPassword"; owner = "root"; mode = "0400"; };
     serverBootstrapSudoPassword = { file = secretFile "serverBootstrapSudoPassword"; owner = "root"; mode = "0400"; };
     storageAlertWebhookUrl = { file = secretFile "storageAlertWebhookUrl"; owner = "root"; mode = "0400"; };
   };

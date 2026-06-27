@@ -6415,6 +6415,17 @@ fn save_attachment_filter_preset_for_user(
             params![username, name, query, now],
         )
         .map_err(|error| format!("failed to save attachment filter preset: {error}"))?;
+    connection
+        .execute(
+            r#"
+            UPDATE attachment_paperless_tasks
+            SET query = ?3,
+                updated_at = ?4
+            WHERE username = ?1 AND name = ?2
+            "#,
+            params![username, name, query, now],
+        )
+        .map_err(|error| format!("failed to update linked Paperless task: {error}"))?;
 
     connection
         .query_row(
@@ -6441,8 +6452,21 @@ fn delete_attachment_filter_preset_for_user(
     username: &str,
     preset_id: i64,
 ) -> Result<(), String> {
-    let connection = open_db(config)?;
-    let deleted = connection
+    let mut connection = open_db(config)?;
+    let preset_name = connection
+        .query_row(
+            "SELECT name FROM attachment_filter_presets WHERE username = ?1 AND id = ?2 LIMIT 1",
+            params![username, preset_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed to load attachment filter preset: {error}"))?
+        .ok_or_else(|| "Attachment filter preset was not found.".to_string())?;
+
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to begin preset delete transaction: {error}"))?;
+    let deleted = transaction
         .execute(
             "DELETE FROM attachment_filter_presets WHERE username = ?1 AND id = ?2",
             params![username, preset_id],
@@ -6451,6 +6475,15 @@ fn delete_attachment_filter_preset_for_user(
     if deleted == 0 {
         return Err("Attachment filter preset was not found.".to_string());
     }
+    transaction
+        .execute(
+            "DELETE FROM attachment_paperless_tasks WHERE username = ?1 AND name = ?2",
+            params![username, preset_name],
+        )
+        .map_err(|error| format!("failed to delete linked Paperless task: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit preset delete: {error}"))?;
     Ok(())
 }
 
@@ -9867,124 +9900,31 @@ fn render_attachments_page(
 
     let return_to = attachment_return_to(&data.state);
     let filter_hiddens = render_attachment_filter_hiddens(data, &return_to);
-    let preset_panel = render_attachment_presets(data, &return_to, &filter_hiddens);
-    let task_panel = render_attachment_paperless_tasks(data, &return_to, &filter_hiddens);
+    let preset_dialog = render_attachment_preset_dialog(data, &return_to);
+    let advanced_dialog = render_attachment_advanced_dialog(data);
+    let current_preset_label = current_attachment_preset_name(data)
+        .map(|name| format!("Preset: {name}"))
+        .unwrap_or_else(|| "Preset: Custom filters".to_string());
     let show_download_all = data.state.result_count > data.items.len();
     writeln!(
         &mut body,
         "<section class=\"panel search-panel\">
-          <form method=\"get\" action=\"/attachments\" class=\"search-form\">
+          <form id=\"attachment-search-form\" method=\"get\" action=\"/attachments\" class=\"search-form\">
             <div class=\"primary-search-row\">
               <label class=\"primary-search-field\">Search attachments
                 <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
               </label>
+              <button class=\"secondary preset-dialog-button\" type=\"button\" data-open-dialog=\"attachment-presets-dialog\">Filter Presets...</button>
               <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search attachments\" aria-label=\"Search attachments\">⌕</button>
               <a class=\"button-link secondary icon-button\" href=\"/attachments?q=\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
             </div>
-            <div class=\"filter-accordion-row\">
-              <details class=\"filter-accordion\">
-                <summary>Basic filters</summary>
-                <div class=\"filter-groups\">
-                  <section class=\"filter-group\">
-                    <h2>Scope</h2>
-                    <div class=\"filter-grid\">
-                      <label class=\"field-wide\">Mailbox
-                      <select name=\"account_id\">
-                        <option value=\"\">All mailboxes</option>
-                        {}
-                      </select>
-                      </label>
-                      <label>Sender importance
-                      <select name=\"priority\">{}</select>
-                      </label>
-                      <label class=\"field-short\">Extension
-                        <select name=\"extension\">{}</select>
-                      </label>
-                    </div>
-                  </section>
-                  <section class=\"filter-group\">
-                    <h2>Sender</h2>
-                    <div class=\"filter-grid\">
-                      <label class=\"field-wide\">Sender address
-                        <input name=\"sender_address\" value=\"{}\">
-                      </label>
-                      <label>Sender name
-                        <input name=\"sender_name\" value=\"{}\">
-                      </label>
-                      <label>Sender domain
-                        <input name=\"sender_domain\" value=\"{}\">
-                      </label>
-                    </div>
-                  </section>
-                  <section class=\"filter-group\">
-                    <h2>Message</h2>
-                    <div class=\"filter-grid\">
-                      <label class=\"field-wide\">Subject
-                        <input name=\"subject\" value=\"{}\">
-                      </label>
-                      <label class=\"field-wide\">Body text
-                        <input name=\"body_text\" value=\"{}\">
-                      </label>
-                      <label>Date from
-                        <input type=\"date\" name=\"date_from\" value=\"{}\">
-                      </label>
-                      <label>Date to
-                        <input type=\"date\" name=\"date_to\" value=\"{}\">
-                      </label>
-                    </div>
-                  </section>
-                </div>
-              </details>
-              <details class=\"filter-accordion\">
-                <summary>Advanced</summary>
-                <div class=\"filter-groups\">
-                  <section class=\"filter-group\">
-                    <h2>Attachment</h2>
-                    <div class=\"filter-grid\">
-                      <label class=\"field-wide\">Attachment name
-                        <input name=\"attachment_name\" value=\"{}\">
-                      </label>
-                      <label class=\"field-short\">Custom extension
-                        <input name=\"extension_custom\" value=\"{}\" placeholder=\"xlsx\">
-                      </label>
-                    </div>
-                  </section>
-                  <section class=\"filter-group\">
-                    <h2>Limits</h2>
-                    <div class=\"filter-grid\">
-                      <label class=\"field-short\">Min size
-                        <input name=\"min_size\" value=\"{}\" inputmode=\"numeric\">
-                      </label>
-                      <label class=\"field-short\">Max size
-                        <input name=\"max_size\" value=\"{}\" inputmode=\"numeric\">
-                      </label>
-                    </div>
-                  </section>
-                  <section class=\"filter-group\">
-                    <h2>Output</h2>
-                    <div class=\"filter-grid\">
-                      <label class=\"checkbox-field\">Include message body files
-                      <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
-                      </label>
-                      <label class=\"checkbox-field\">Inline images
-                      <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
-                      </label>
-                      <label class=\"checkbox-field\">Show technical file type
-                      <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
-                      </label>
-                      <label class=\"field-wide\">ZIP subfolder
-                        <input name=\"download_subfolder\" value=\"{}\">
-                      </label>
-                    </div>
-                  </section>
-                </div>
-              </details>
+            <div class=\"current-preset-label\">{}</div>
+            <div class=\"attachment-filter-layout\">
+              {}
             </div>
+            {}
           </form>
-          <div class=\"attachment-management-row\">
-            {}
-            {}
-          </div>
+          {}
           <div class=\"attachment-toolbar\">
             <div class=\"toolbar-selection\">
               <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
@@ -10010,30 +9950,10 @@ fn render_attachments_page(
           </div>
         </section>",
         escape_html(&data.filters.message.q),
-        render_account_options(&data.accounts, data.selected_account_id),
-        render_sender_priority_filter_options(data.state.priority_filter),
-        render_common_attachment_extension_options(&data.filters.extension),
-        escape_html(&data.filters.message.sender_address),
-        escape_html(&data.filters.message.sender_name),
-        escape_html(&data.filters.message.sender_domain),
-        escape_html(&data.filters.message.subject),
-        escape_html(&data.filters.message.body_text),
-        escape_html(&data.filters.message.date_from),
-        escape_html(&data.filters.message.date_to),
-        escape_html(&data.filters.attachment_name),
-        escape_html(custom_attachment_extension_value(&data.filters.extension)),
-        escape_html(&data.filters.min_size),
-        escape_html(&data.filters.max_size),
-        if data.include_inline { "checked" } else { "" },
-        if data.include_inline_images {
-            "checked"
-        } else {
-            ""
-        },
-        if data.show_mime_details { "checked" } else { "" },
-        escape_html(&data.download_subfolder),
-        preset_panel,
-        task_panel,
+        escape_html(&current_preset_label),
+        render_attachment_basic_filters(data),
+        advanced_dialog,
+        preset_dialog,
         filter_hiddens,
         if show_download_all {
             "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
@@ -10088,26 +10008,213 @@ fn render_attachments_page(
     layout("Attachments", Some(identity), "attachments", &body)
 }
 
-fn render_attachment_presets(
-    data: &AttachmentPageData,
-    return_to: &str,
-    filter_hiddens: &str,
-) -> String {
+fn render_attachment_basic_filters(data: &AttachmentPageData) -> String {
+    format!(
+        "<section class=\"basic-filter-column\" aria-label=\"Basic attachment filters\">
+          {}
+          {}
+          {}
+          {}
+          {}
+          {}
+          {}
+          {}
+          {}
+          <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-advanced-dialog\">Advanced filters</button>
+        </section>",
+        render_filter_row(
+            "Mailbox",
+            &format!(
+                "<select name=\"account_id\"><option value=\"\">All mailboxes</option>{}</select>",
+                render_account_options(&data.accounts, data.selected_account_id)
+            )
+        ),
+        render_filter_row(
+            "Sender importance",
+            &format!(
+                "<select name=\"priority\">{}</select>",
+                render_sender_priority_filter_options(data.state.priority_filter)
+            )
+        ),
+        render_filter_row(
+            "Extension",
+            &format!(
+                "<select name=\"extension\">{}</select>",
+                render_common_attachment_extension_options(&data.filters.extension)
+            )
+        ),
+        render_filter_row(
+            "Sender address",
+            &format!(
+                "<input name=\"sender_address\" value=\"{}\">",
+                escape_html(&data.filters.message.sender_address)
+            )
+        ),
+        render_filter_row(
+            "Sender name",
+            &format!(
+                "<input name=\"sender_name\" value=\"{}\">",
+                escape_html(&data.filters.message.sender_name)
+            )
+        ),
+        render_filter_row(
+            "Sender domain",
+            &format!(
+                "<input name=\"sender_domain\" value=\"{}\">",
+                escape_html(&data.filters.message.sender_domain)
+            )
+        ),
+        render_filter_row(
+            "Subject",
+            &format!(
+                "<input name=\"subject\" value=\"{}\">",
+                escape_html(&data.filters.message.subject)
+            )
+        ),
+        render_filter_row(
+            "Body text",
+            &format!(
+                "<input name=\"body_text\" value=\"{}\">",
+                escape_html(&data.filters.message.body_text)
+            )
+        ),
+        render_filter_row(
+            "Date range",
+            &format!(
+                "<div class=\"date-range-fields\"><input type=\"date\" name=\"date_from\" value=\"{}\" aria-label=\"Date from\"><input type=\"date\" name=\"date_to\" value=\"{}\" aria-label=\"Date to\"></div>",
+                escape_html(&data.filters.message.date_from),
+                escape_html(&data.filters.message.date_to)
+            )
+        ),
+    )
+}
+
+fn render_attachment_advanced_dialog(data: &AttachmentPageData) -> String {
+    format!(
+        "<dialog id=\"attachment-advanced-dialog\" class=\"app-dialog filter-dialog\">
+          <div class=\"dialog-shell\">
+            <div class=\"dialog-heading\">
+              <h2>Advanced filters</h2>
+              <button class=\"icon-button\" type=\"button\" data-close-dialog title=\"Close advanced filters\" aria-label=\"Close advanced filters\">×</button>
+            </div>
+            <div class=\"dialog-body stacked-filter-dialog\">
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+            </div>
+            <div class=\"dialog-actions\">
+              <button class=\"secondary\" type=\"button\" data-close-dialog>Done</button>
+            </div>
+          </div>
+        </dialog>",
+        render_filter_row(
+            "Attachment name",
+            &format!(
+                "<input name=\"attachment_name\" value=\"{}\">",
+                escape_html(&data.filters.attachment_name)
+            )
+        ),
+        render_filter_row(
+            "Custom extension",
+            &format!(
+                "<input name=\"extension_custom\" value=\"{}\" placeholder=\"xlsx\">",
+                escape_html(custom_attachment_extension_value(&data.filters.extension))
+            )
+        ),
+        render_filter_row(
+            "Min size",
+            &format!(
+                "<input name=\"min_size\" value=\"{}\" inputmode=\"numeric\">",
+                escape_html(&data.filters.min_size)
+            )
+        ),
+        render_filter_row(
+            "Max size",
+            &format!(
+                "<input name=\"max_size\" value=\"{}\" inputmode=\"numeric\">",
+                escape_html(&data.filters.max_size)
+            )
+        ),
+        render_filter_row(
+            "Include body files",
+            &format!(
+                "<input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>",
+                if data.include_inline { "checked" } else { "" }
+            )
+        ),
+        render_filter_row(
+            "Inline images",
+            &format!(
+                "<input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>",
+                if data.include_inline_images { "checked" } else { "" }
+            )
+        ),
+        render_filter_row(
+            "Technical file type",
+            &format!(
+                "<input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>",
+                if data.show_mime_details { "checked" } else { "" }
+            )
+        ),
+        render_filter_row(
+            "ZIP subfolder",
+            &format!(
+                "<input name=\"download_subfolder\" value=\"{}\">",
+                escape_html(&data.download_subfolder)
+            )
+        ),
+    )
+}
+
+fn render_filter_row(label: &str, control: &str) -> String {
+    format!(
+        "<label class=\"filter-row\"><span>{}</span><span class=\"filter-control\">{}</span></label>",
+        escape_html(label),
+        control
+    )
+}
+
+fn current_attachment_preset_name(data: &AttachmentPageData) -> Option<&str> {
+    data.presets
+        .iter()
+        .find(|preset| preset.query == data.state.base_query)
+        .map(|preset| preset.name.as_str())
+}
+
+fn render_attachment_preset_dialog(data: &AttachmentPageData, return_to: &str) -> String {
     let mut html = String::new();
-    html.push_str(
-        "<details class=\"attachment-presets\" aria-label=\"Attachment filter presets\"><summary>Saved presets</summary>",
-    );
-    html.push_str(
-        "<form method=\"post\" action=\"/attachments/presets\" class=\"preset-save-form\">
-          <label>Preset name
-            <input name=\"preset_name\" maxlength=\"80\">
-          </label>",
-    );
-    html.push_str(filter_hiddens);
-    html.push_str(
-        "<button class=\"secondary\" type=\"submit\">Save preset</button>
-        </form>",
-    );
+    let auto_export_names = data
+        .paperless_tasks
+        .iter()
+        .map(|task| task.name.as_str())
+        .collect::<Vec<_>>()
+        .join("\t");
+    writeln!(
+        &mut html,
+        "<dialog id=\"attachment-presets-dialog\" class=\"app-dialog preset-dialog\">
+          <div class=\"dialog-shell\">
+            <div class=\"dialog-heading\">
+              <h2>Filter Presets</h2>
+              <button class=\"icon-button\" type=\"button\" data-close-dialog title=\"Close filter presets\" aria-label=\"Close filter presets\">×</button>
+            </div>
+            <div class=\"dialog-body\">
+              <form method=\"post\" action=\"/attachments/presets\" class=\"preset-save-form\" data-copy-filters-from=\"attachment-search-form\" data-auto-export-preset-names=\"{}\">
+                <label>Preset name
+                  <input name=\"preset_name\" maxlength=\"80\">
+                </label>
+                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                <span data-copied-filter-fields></span>
+                <button class=\"secondary\" type=\"submit\">Save current settings</button>
+              </form>",
+        escape_html(&auto_export_names),
+        escape_html(return_to),
+    )
+    .ok();
 
     if data.presets.is_empty() {
         html.push_str("<p class=\"meta preset-empty\">No saved attachment presets</p>");
@@ -10119,120 +10226,203 @@ fn render_attachment_presets(
             } else {
                 format!("/attachments?{}", preset.query)
             };
+            let current_class = if preset.query == data.state.base_query {
+                " preset-card-current"
+            } else {
+                ""
+            };
+            let current_badge = if preset.query == data.state.base_query {
+                "<span class=\"badge\">Current</span>"
+            } else {
+                ""
+            };
             writeln!(
                 &mut html,
-                "<div class=\"preset-chip\">
-                  <a class=\"button-link secondary\" href=\"{}\">{}</a>
-                  <form method=\"post\" action=\"/attachments/presets/delete\" class=\"icon-form\">
-                    <input type=\"hidden\" name=\"preset_id\" value=\"{}\">
-                    <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-                    <button class=\"secondary icon-button\" type=\"submit\" title=\"Delete preset\" aria-label=\"Delete preset\">×</button>
-                  </form>
-                </div>",
+                "<article class=\"preset-card{}\">
+                  <div class=\"preset-card-main\">
+                    <a class=\"button-link secondary\" href=\"{}\">{}</a>
+                    {}
+                    <form method=\"post\" action=\"/attachments/presets/delete\" class=\"icon-form\">
+                      <input type=\"hidden\" name=\"preset_id\" value=\"{}\">
+                      <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                      <button class=\"secondary icon-button\" type=\"submit\" title=\"Delete preset\" aria-label=\"Delete preset\">×</button>
+                    </form>
+                  </div>
+                  {}
+                </article>",
+                current_class,
                 escape_html(&href),
                 escape_html(&preset.name),
+                current_badge,
                 preset.id,
                 escape_html(return_to),
+                render_preset_auto_export(data, preset, return_to),
             )
             .ok();
         }
         html.push_str("</div>");
+    }
+    html.push_str(&render_unlinked_paperless_tasks(data, return_to));
+    html.push_str(
+        "</div>
+            <div class=\"dialog-actions\">
+              <button class=\"secondary\" type=\"button\" data-close-dialog>Close</button>
+            </div>
+          </div>
+        </dialog>",
+    );
+    html
+}
+
+fn render_preset_auto_export(
+    data: &AttachmentPageData,
+    preset: &AttachmentFilterPreset,
+    return_to: &str,
+) -> String {
+    let mut html = String::new();
+    let task = data
+        .paperless_tasks
+        .iter()
+        .find(|task| task.name == preset.name);
+    let schedule_time = task
+        .map(|task| task.schedule_time.as_str())
+        .unwrap_or("06:30");
+    writeln!(
+        &mut html,
+        "<details class=\"preset-auto-export\">
+          <summary>Auto-export to Paperless</summary>
+          <form method=\"post\" action=\"/attachments/paperless-tasks\" class=\"auto-export-form\">
+            <input type=\"hidden\" name=\"task_name\" value=\"{}\">
+            <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+            {}
+            {}
+            <label class=\"filter-row\"><span>Run daily at</span><span class=\"filter-control\"><input type=\"time\" name=\"schedule_time\" value=\"{}\" required></span></label>
+            <button class=\"secondary\" type=\"submit\">{}</button>
+          </form>",
+        escape_html(&preset.name),
+        escape_html(return_to),
+        render_query_hidden_inputs(&preset.query),
+        if let Some(task) = task {
+            format!(
+                "<p class=\"meta\">{} · {}</p>",
+                if task.enabled { "Enabled" } else { "Paused" },
+                escape_html(&paperless_task_run_label(task))
+            )
+        } else {
+            "<p class=\"meta\">No auto-export configured for this preset.</p>".to_string()
+        },
+        escape_html(schedule_time),
+        if task.is_some() {
+            "Update auto-export"
+        } else {
+            "Enable auto-export"
+        },
+    )
+    .ok();
+    if let Some(task) = task {
+        writeln!(
+            &mut html,
+            "<div class=\"auto-export-actions\">
+              <form method=\"post\" action=\"/attachments/paperless-tasks/toggle\" class=\"icon-form\">
+                <input type=\"hidden\" name=\"task_id\" value=\"{}\">
+                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                {}
+                <button class=\"secondary\" type=\"submit\">{}</button>
+              </form>
+              <form method=\"post\" action=\"/attachments/paperless-tasks/delete\" class=\"icon-form\">
+                <input type=\"hidden\" name=\"task_id\" value=\"{}\">
+                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                <button class=\"secondary\" type=\"submit\">Remove auto-export</button>
+              </form>
+            </div>",
+            task.id,
+            escape_html(return_to),
+            if task.enabled {
+                ""
+            } else {
+                "<input type=\"hidden\" name=\"enabled\" value=\"1\">"
+            },
+            if task.enabled { "Pause" } else { "Enable" },
+            task.id,
+            escape_html(return_to),
+        )
+        .ok();
+        if let Some(summary) = task.last_summary.as_deref() {
+            writeln!(
+                &mut html,
+                "<p class=\"meta task-summary\">{}</p>",
+                escape_html(summary)
+            )
+            .ok();
+        }
     }
     html.push_str("</details>");
     html
 }
 
-fn render_attachment_paperless_tasks(
-    data: &AttachmentPageData,
-    return_to: &str,
-    filter_hiddens: &str,
-) -> String {
-    let mut html = String::new();
-    html.push_str(
-        "<details class=\"attachment-presets paperless-tasks\" aria-label=\"Daily Paperless tasks\"><summary>Daily Paperless tasks</summary>",
-    );
-    html.push_str(
-        "<form method=\"post\" action=\"/attachments/paperless-tasks\" class=\"preset-save-form\">
-          <label>Task name
-            <input name=\"task_name\" maxlength=\"80\" placeholder=\"Invoices to Paperless\">
-          </label>
-          <label>Run daily at
-            <input type=\"time\" name=\"schedule_time\" value=\"06:30\" required>
-          </label>",
-    );
-    html.push_str(filter_hiddens);
-    html.push_str(
-        "<button class=\"secondary\" type=\"submit\">Save task</button>
-        </form>",
-    );
-
-    if data.paperless_tasks.is_empty() {
-        html.push_str("<p class=\"meta preset-empty\">No daily Paperless tasks</p>");
-    } else {
-        html.push_str("<div class=\"preset-list task-list\">");
-        for task in &data.paperless_tasks {
-            let href = if task.query.trim().is_empty() {
-                "/attachments".to_string()
-            } else {
-                format!("/attachments?{}", task.query)
-            };
-            let state_label = if task.enabled { "Enabled" } else { "Paused" };
-            let run_label = task
-                .last_run_at
-                .as_deref()
-                .map(|last_run_at| format!("Last run: {last_run_at}"))
-                .or_else(|| {
-                    task.last_run_date
-                        .as_deref()
-                        .map(|last_run_date| format!("Last run: {last_run_date}"))
-                })
-                .unwrap_or_else(|| "Not run yet".to_string());
-            writeln!(
-                &mut html,
-                "<div class=\"preset-chip task-chip\">
-                  <a class=\"button-link secondary\" href=\"{}\">{} · {}</a>
-                  <span class=\"meta\">{} · {}</span>
-                  <form method=\"post\" action=\"/attachments/paperless-tasks/toggle\" class=\"icon-form\">
-                    <input type=\"hidden\" name=\"task_id\" value=\"{}\">
-                    <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-                    {}
-                    <button class=\"secondary\" type=\"submit\">{}</button>
-                  </form>
-                  <form method=\"post\" action=\"/attachments/paperless-tasks/delete\" class=\"icon-form\">
-                    <input type=\"hidden\" name=\"task_id\" value=\"{}\">
-                    <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-                    <button class=\"secondary icon-button\" type=\"submit\" title=\"Delete task\" aria-label=\"Delete task\">×</button>
-                  </form>
-                </div>",
-                escape_html(&href),
-                escape_html(&task.name),
-                escape_html(&task.schedule_time),
-                state_label,
-                escape_html(&run_label),
-                task.id,
-                escape_html(return_to),
-                if task.enabled {
-                    ""
-                } else {
-                    "<input type=\"hidden\" name=\"enabled\" value=\"1\">"
-                },
-                if task.enabled { "Pause" } else { "Enable" },
-                task.id,
-                escape_html(return_to),
-            )
-            .ok();
-            if let Some(summary) = task.last_summary.as_deref() {
-                writeln!(
-                    &mut html,
-                    "<p class=\"meta task-summary\">{}</p>",
-                    escape_html(summary)
-                )
-                .ok();
-            }
-        }
-        html.push_str("</div>");
+fn render_unlinked_paperless_tasks(data: &AttachmentPageData, return_to: &str) -> String {
+    let preset_names = data
+        .presets
+        .iter()
+        .map(|preset| preset.name.as_str())
+        .collect::<HashSet<_>>();
+    let unlinked = data
+        .paperless_tasks
+        .iter()
+        .filter(|task| !preset_names.contains(task.name.as_str()))
+        .collect::<Vec<_>>();
+    if unlinked.is_empty() {
+        return String::new();
     }
-    html.push_str("</details>");
+    let mut html =
+        String::from("<section class=\"unlinked-auto-exports\"><h3>Unlinked auto-exports</h3>");
+    for task in unlinked {
+        writeln!(
+            &mut html,
+            "<div class=\"preset-card orphan-task\">
+              <span>{}</span>
+              <span class=\"meta\">{} · {}</span>
+              <form method=\"post\" action=\"/attachments/paperless-tasks/delete\" class=\"icon-form\">
+                <input type=\"hidden\" name=\"task_id\" value=\"{}\">
+                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                <button class=\"secondary\" type=\"submit\">Remove</button>
+              </form>
+            </div>",
+            escape_html(&task.name),
+            if task.enabled { "Enabled" } else { "Paused" },
+            escape_html(&paperless_task_run_label(task)),
+            task.id,
+            escape_html(return_to),
+        )
+        .ok();
+    }
+    html.push_str("</section>");
+    html
+}
+
+fn paperless_task_run_label(task: &AttachmentPaperlessTask) -> String {
+    task.last_run_at
+        .as_deref()
+        .map(|last_run_at| format!("Last run: {last_run_at}"))
+        .or_else(|| {
+            task.last_run_date
+                .as_deref()
+                .map(|last_run_date| format!("Last run: {last_run_date}"))
+        })
+        .unwrap_or_else(|| "Not run yet".to_string())
+}
+
+fn render_query_hidden_inputs(query: &str) -> String {
+    let mut html = String::new();
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        writeln!(
+            &mut html,
+            "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+            escape_html(key.as_ref()),
+            escape_html(value.as_ref()),
+        )
+        .ok();
+    }
     html
 }
 
@@ -13811,8 +14001,12 @@ mod tests {
             assert!(!html.contains("<span>Tags</span>"));
             assert!(html.contains("Sender importance"));
             assert!(html.contains("name=\"priority\""));
-            assert!(html.contains("<summary>Basic filters</summary>"));
-            assert!(html.contains("<summary>Advanced</summary>"));
+            assert!(html.contains("basic-filter-column"));
+            assert!(html.contains("Filter Presets..."));
+            assert!(html.contains("Preset: Custom filters"));
+            assert!(html.contains("id=\"attachment-advanced-dialog\""));
+            assert!(html.contains("data-open-dialog=\"attachment-advanced-dialog\""));
+            assert!(!html.contains("<summary>Basic filters</summary>"));
             assert!(html.contains("<select name=\"extension\">"));
             assert!(html.contains("<option value=\"pdf\""));
             assert!(html.contains("name=\"extension_custom\""));
@@ -13820,7 +14014,7 @@ mod tests {
             assert!(!html.contains("name=\"mime_type\""));
             assert!(!html.contains("name=\"min_attachments\""));
             assert!(!html.contains("name=\"max_attachments\""));
-            assert!(!html.contains("Technical file type"));
+            assert!(html.contains("Technical file type"));
             assert!(!html.contains("Min attachments"));
             assert!(!html.contains("Max attachments"));
             assert!(!html.contains("<span>Source</span>"));
@@ -13867,7 +14061,70 @@ mod tests {
         let html = render_attachments_page(&sample_identity(), &page, None, None);
         assert!(html.contains("Invoices"));
         assert!(html.contains("/attachments/presets/delete"));
+        assert!(html.contains("Auto-export to Paperless"));
         assert!(html.contains("q=rent+review"));
+    }
+
+    #[test]
+    fn attachment_preset_updates_and_delete_cascade_to_auto_export_task() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let mut config = test_config(&tempdir);
+        configure_test_paperless_handoff(&mut config, &tempdir);
+        prepare_test_layout(&config);
+
+        save_attachment_filter_preset_for_user(
+            &config,
+            "alice",
+            &AttachmentPresetSaveForm {
+                preset_name: "Invoices".to_string(),
+                q: Some("old filter".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("save preset");
+        let task = save_attachment_paperless_task_for_user(
+            &config,
+            "alice",
+            &AttachmentPaperlessTaskSaveForm {
+                task_name: "Invoices".to_string(),
+                schedule_time: "06:30".to_string(),
+                q: Some("old filter".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("save task");
+
+        let preset = save_attachment_filter_preset_for_user(
+            &config,
+            "alice",
+            &AttachmentPresetSaveForm {
+                preset_name: "Invoices".to_string(),
+                q: Some("new filter".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("update preset");
+        let updated_task_query = open_db(&config)
+            .expect("db")
+            .query_row(
+                "SELECT query FROM attachment_paperless_tasks WHERE id = ?1",
+                params![task.id],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("task query");
+        assert!(updated_task_query.contains("q=new+filter"));
+
+        delete_attachment_filter_preset_for_user(&config, "alice", preset.id)
+            .expect("delete preset");
+        let task_count = open_db(&config)
+            .expect("db")
+            .query_row(
+                "SELECT COUNT(*) FROM attachment_paperless_tasks WHERE username = ?1 AND name = ?2",
+                params!["alice", "Invoices"],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("task count");
+        assert_eq!(task_count, 0);
     }
 
     #[test]

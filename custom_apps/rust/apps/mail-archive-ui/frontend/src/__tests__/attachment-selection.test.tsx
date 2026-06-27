@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { setupAttachmentSelection, submitPaperlessForm } from "../shared/dom";
 
 const setup = () => {
@@ -50,9 +50,11 @@ describe("attachment selection island helpers", () => {
     cleanup();
   });
 
-  it("selects every visible row with select page", () => {
+  it("toggles every visible row with select page", () => {
     const cleanup = setup();
-    document.querySelector<HTMLElement>("[data-select-page]")?.click();
+    const selectPage =
+      document.querySelector<HTMLElement>("[data-select-page]");
+    selectPage?.click();
 
     expect(
       Array.from(
@@ -61,7 +63,70 @@ describe("attachment selection island helpers", () => {
         ),
       ).map((input) => input.value),
     ).toEqual(["first", "second"]);
+    expect(selectPage?.textContent).toBe("Deselect all");
+
+    selectPage?.click();
+    expect(
+      document.querySelectorAll(
+        '#attachment-download-form input[name="attachment_keys"]',
+      ),
+    ).toHaveLength(0);
+    expect(selectPage?.textContent).toBe("Select page");
     cleanup();
+  });
+
+  it("opens filter dialogs, copies current filters, and warns before changing auto-export presets", () => {
+    document.body.innerHTML = `
+      <form id="attachment-search-form">
+        <input name="q" value="rent review">
+        <select name="priority"><option value="high" selected>High</option></select>
+        <input type="checkbox" name="include_inline" value="1" checked>
+      </form>
+      <button type="button" data-open-dialog="attachment-presets-dialog">Filter Presets...</button>
+      <dialog id="attachment-presets-dialog">
+        <form method="post" data-copy-filters-from="attachment-search-form" data-auto-export-preset-names="Invoices">
+          <input name="preset_name" value="Invoices">
+          <span data-copied-filter-fields></span>
+          <button type="submit">Save</button>
+        </form>
+        <button type="button" data-close-dialog>Close</button>
+      </dialog>
+    `;
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const cleanup = setupAttachmentSelection(document);
+
+    document.querySelector<HTMLElement>("[data-open-dialog]")?.click();
+    expect(
+      document
+        .querySelector<HTMLDialogElement>("#attachment-presets-dialog")
+        ?.hasAttribute("open"),
+    ).toBe(true);
+
+    const form = document.querySelector<HTMLFormElement>(
+      "form[data-copy-filters-from]",
+    )!;
+    const event = new SubmitEvent("submit", {
+      bubbles: true,
+      cancelable: true,
+    });
+    form.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(
+      Array.from(
+        form.querySelectorAll<HTMLInputElement>(
+          "[data-copied-filter-fields] input",
+        ),
+      ).map((input) => [input.name, input.value]),
+    ).toEqual([
+      ["q", "rent review"],
+      ["priority", "high"],
+      ["include_inline", "1"],
+    ]);
+
+    cleanup();
+    confirm.mockRestore();
   });
 
   it("ignores clicks on interactive children", () => {

@@ -152,6 +152,14 @@
       description = "Token key for Kavita.";
       bytes = 64;
     };
+    groundwaterAppMqttPassword = {
+      description = "MQTT password for the groundwater logger web app bridge.";
+      bytes = 32;
+    };
+    groundwaterLoggerMqttPassword = {
+      description = "MQTT password for the groundwater data logger device and test clients.";
+      bytes = 32;
+    };
   };
 
   externalSecrets = {

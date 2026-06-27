@@ -157,6 +157,8 @@ rec {
       beszelAgent = 45876;
       kopia = 51515;
       rcloneRc = 5572;
+      groundwaterLogger = 8091;
+      groundwaterMqtt = 1883;
       homepage = 8084;
       paperless = 8000;
       audiobookshelf = 13378;

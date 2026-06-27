@@ -8,6 +8,7 @@
 
     ./modules/audiobookshelf
     ./modules/files
+    ./modules/groundwater-logger
     ./modules/homepage
     ./modules/immich
     ./modules/jellyfin

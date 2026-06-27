@@ -68,6 +68,17 @@ let
   paperlessUserPermissionsSql = lib.concatStringsSep ", " (
     map (codename: "'${codename}'") paperlessUserPermissionCodenames
   );
+  sqlString = value: "'${lib.replaceStrings [ "'" ] [ "''" ] value}'";
+  sqlUserRows =
+    values:
+    if values == [ ] then
+      "SELECT NULL AS username WHERE 0"
+    else
+      "VALUES ${lib.concatMapStringsSep ", " (value: "(${sqlString value})") values}";
+  paperlessAdminUserRowsSql = sqlUserRows vars.kanidmAppAdminUsers;
+  paperlessNonAdminUserRowsSql = sqlUserRows (
+    lib.subtractLists vars.kanidmAppAdminUsers (vars.kanidmAppUsers or [ ])
+  );
   paperlessRuntimeServices = [
     "paperless-consumer"
     "paperless-scheduler"
@@ -157,12 +168,30 @@ in
               SELECT 1 FROM auth_group WHERE name = 'paperless-users'
             );
 
+            INSERT INTO auth_group (name)
+            SELECT 'app-admin'
+            WHERE NOT EXISTS (
+              SELECT 1 FROM auth_group WHERE name = 'app-admin'
+            );
+
             INSERT INTO auth_group_permissions (group_id, permission_id)
             SELECT g.id, p.id
             FROM auth_group AS g
             JOIN auth_permission AS p
               ON p.codename IN (${paperlessUserPermissionsSql})
             WHERE g.name = 'paperless-users'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM auth_group_permissions AS gp
+                WHERE gp.group_id = g.id
+                  AND gp.permission_id = p.id
+              );
+
+            INSERT INTO auth_group_permissions (group_id, permission_id)
+            SELECT g.id, p.id
+            FROM auth_group AS g
+            CROSS JOIN auth_permission AS p
+            WHERE g.name = 'app-admin'
               AND NOT EXISTS (
                 SELECT 1
                 FROM auth_group_permissions AS gp
@@ -187,6 +216,57 @@ in
                 WHERE existing.user_id = u.id
                   AND existing.group_id = target.id
               );
+
+            WITH configured_app_admins(username) AS (
+              ${paperlessAdminUserRowsSql}
+            )
+            INSERT INTO auth_user_groups (user_id, group_id)
+            SELECT u.id, target.id
+            FROM configured_app_admins AS configured
+            JOIN auth_user AS u
+              ON u.username = configured.username
+            JOIN auth_group AS target
+              ON target.name = 'app-admin'
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM auth_user_groups AS existing
+              WHERE existing.user_id = u.id
+                AND existing.group_id = target.id
+            );
+
+            WITH configured_app_admins(username) AS (
+              ${paperlessAdminUserRowsSql}
+            )
+            UPDATE auth_user
+               SET is_superuser = 1,
+                   is_staff = 1
+             WHERE username IN (
+               SELECT username FROM configured_app_admins
+             );
+
+            WITH configured_non_admins(username) AS (
+              ${paperlessNonAdminUserRowsSql}
+            )
+            DELETE FROM auth_user_groups
+             WHERE group_id = (
+               SELECT id FROM auth_group WHERE name = 'app-admin'
+             )
+               AND user_id IN (
+                 SELECT u.id
+                 FROM auth_user AS u
+                 JOIN configured_non_admins AS configured
+                   ON configured.username = u.username
+               );
+
+            WITH configured_non_admins(username) AS (
+              ${paperlessNonAdminUserRowsSql}
+            )
+            UPDATE auth_user
+               SET is_superuser = 0,
+                   is_staff = 0
+             WHERE username IN (
+               SELECT username FROM configured_non_admins
+             );
             COMMIT;
             SQL
               then

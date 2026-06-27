@@ -654,7 +654,7 @@ let
     }
     {
       id = "sonarr";
-      name = "Sonarr";
+      name = "TV Show Downloads";
       url = "https://${sonarrHost}";
       enabled = sonarrEnabled;
       category = "media";
@@ -667,7 +667,7 @@ let
     }
     {
       id = "radarr";
-      name = "Radarr";
+      name = "Movie Downloads";
       url = "https://${radarrHost}";
       enabled = radarrEnabled;
       category = "media";
@@ -757,7 +757,7 @@ let
     }
     {
       id = "downloads";
-      name = "Downloads";
+      name = "Youtube Downloads";
       url = "https://${downloadsHost}";
       enabled = youtubeDownloaderEnabled;
       category = "media";

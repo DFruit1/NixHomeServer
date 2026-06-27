@@ -97,6 +97,7 @@ let
   inventoryJsonFile = pkgs.writeText "nixhomeserver-inventory.json" inventoryJson;
 in
 {
+  groundwater-logger = nodeApps.groundwater-logger;
   homepage = nodeApps.homepage;
   youtube-downloader = nodeApps.youtube-downloader;
 
