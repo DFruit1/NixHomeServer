@@ -55,6 +55,7 @@ in
           ReadWritePaths = [
             paths.profileDir
             paths.downloadRoot
+            paths.prowlarrDir
           ];
         };
       };

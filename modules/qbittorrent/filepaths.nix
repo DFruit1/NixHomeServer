@@ -37,5 +37,11 @@
       default = "${config.repo.qbittorrent.paths.completeDir}/tv";
       description = "Completed TV downloads category directory.";
     };
+
+    prowlarrDir = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.sharedRoot}/_Downloads/prowlarr";
+      description = "Completed direct Prowlarr downloads category directory.";
+    };
   };
 }

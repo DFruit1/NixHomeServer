@@ -6,6 +6,7 @@ let
   group = "mail-archive-ui";
   defaultTags = [ "new" ];
   mailArchiveSyncTimer = "*-*-* 06,18:15:00";
+  mailArchivePaperlessTaskTimer = "*-*-* *:0/5:00";
   mailArchiveUiPort = vars.networking.ports.mailArchiveUi;
   mailArchiveStoreRoot = vars.usersRoot;
   dataDirDefault = "/persist/appdata/mail-archive-ui";
@@ -243,6 +244,70 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnCalendar = mailArchiveSyncTimer;
+        Persistent = true;
+      };
+    };
+
+    systemd.services.mail-archive-paperless-tasks = lib.mkIf (cfg.paperlessConsumeRoot != null) {
+      description = "Run scheduled Mail Archive attachment handoffs to Paperless";
+      wants = [
+        "mail-archive-ui.service"
+        "local-fs.target"
+      ];
+      after = [
+        "mail-archive-ui.service"
+        "local-fs.target"
+      ];
+      unitConfig = {
+        ConditionPathIsMountPoint = vars.dataRoot;
+        RequiresMountsFor = [
+          cfg.storeRoot
+          cfg.dataDir
+          cfg.accountStateRoot
+          cfg.runtimeDir
+          cfg.lockDir
+          cfg.paperlessConsumeRoot
+        ]
+        ++ lib.optional
+          (cfg.paperlessHandoffStagingRoot != null)
+          cfg.paperlessHandoffStagingRoot;
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        User = user;
+        Group = group;
+        WorkingDirectory = cfg.dataDir;
+        ExecStart = "${cfg.package}/bin/mail-archive-ui paperless-tasks-due";
+        Environment = mailArchiveUiEnvironmentEntries;
+        UMask = "0077";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        ReadWritePaths = [
+          cfg.dataDir
+          cfg.storeRoot
+          cfg.accountStateRoot
+          cfg.runtimeDir
+          cfg.lockDir
+          cfg.paperlessConsumeRoot
+        ]
+        ++ lib.optional
+          (cfg.paperlessHandoffStagingRoot != null)
+          cfg.paperlessHandoffStagingRoot;
+      };
+      path = mailArchiveUiPath;
+    };
+
+    systemd.timers.mail-archive-paperless-tasks = lib.mkIf (cfg.paperlessConsumeRoot != null) {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = mailArchivePaperlessTaskTimer;
         Persistent = true;
       };
     };

@@ -68,6 +68,7 @@ in
         "media-automation-bootstrap-sonarr.service"
         "media-automation-bootstrap-radarr.service"
         "media-automation-bootstrap-prowlarr.service"
+        "media-automation-bootstrap-prowlarr-qbittorrent.service"
       ];
       unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
       serviceConfig = {
@@ -88,6 +89,7 @@ in
           qbitPaths.completeDir
           qbitPaths.moviesDir
           qbitPaths.tvDir
+          qbitPaths.prowlarrDir
           moviesRoot
           showsRoot
         ]}; do
@@ -140,6 +142,7 @@ in
 
         create_category movies ${lib.escapeShellArg qbitPaths.moviesDir}
         create_category tv ${lib.escapeShellArg qbitPaths.tvDir}
+        create_category prowlarr ${lib.escapeShellArg qbitPaths.prowlarrDir}
 
         remove_empty_legacy_category() {
           local name="$1"
@@ -162,6 +165,92 @@ in
 
         remove_empty_legacy_category radarr
         remove_empty_legacy_category tv-sonarr
+      '';
+    };
+
+    systemd.services.media-automation-bootstrap-prowlarr-qbittorrent = lib.mkIf (config.repo.prowlarr.enable && config.repo.qbittorrent.enable) {
+      description = "Bootstrap Prowlarr direct qBittorrent download client";
+      wantedBy = [ "multi-user.target" ];
+      wants = [
+        "prowlarr.service"
+        "qbittorrent.service"
+        "media-automation-storage-layout-v1.service"
+        "media-automation-bootstrap-qbittorrent.service"
+      ];
+      after = [
+        "prowlarr.service"
+        "qbittorrent.service"
+        "media-automation-storage-layout-v1.service"
+        "media-automation-bootstrap-qbittorrent.service"
+      ];
+      path = automationPath;
+      serviceConfig.Type = "oneshot";
+      script = ''
+        set -euo pipefail
+
+        prowlarr_config=/var/lib/prowlarr/config.xml
+        prowlarr_url="http://${loopback}:${toString ports.prowlarr}"
+        qbit_host=${lib.escapeShellArg loopback}
+        qbit_port=${toString ports.qbittorrentWeb}
+
+        for _ in $(seq 1 120); do
+          [[ -f "$prowlarr_config" ]] && grep -q '<ApiKey>' "$prowlarr_config" && break
+          sleep 1
+        done
+        [[ -f "$prowlarr_config" ]] || exit 0
+        prowlarr_key="$(sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$prowlarr_config" | head -n1)"
+        [[ -n "$prowlarr_key" ]] || exit 0
+
+        papi() {
+          curl --silent --show-error --fail -H "X-Api-Key: $prowlarr_key" "$@"
+        }
+
+        for _ in $(seq 1 60); do
+          if papi "$prowlarr_url/api/v1/system/status" >/dev/null; then
+            break
+          fi
+          sleep 1
+        done
+        papi "$prowlarr_url/api/v1/system/status" >/dev/null || exit 0
+
+        existing_id="$(papi "$prowlarr_url/api/v1/downloadclient" | jq -r '.[] | select(.name == "qBittorrent") | .id' | head -n1)"
+        payload="$(
+          papi "$prowlarr_url/api/v1/downloadclient/schema" \
+            | jq -c \
+              --arg host "$qbit_host" \
+              --arg port "$qbit_port" \
+              '
+              map(select(.implementation == "QBittorrent"))[0]
+              | .name = "qBittorrent"
+              | .enable = true
+              | if has("protocol") then .protocol = "torrent" else . end
+              | if has("priority") then .priority = 1 else . end
+              | .fields = (.fields | map(
+                  if .name == "host" then .value = $host
+                  elif .name == "port" then .value = ($port | tonumber)
+                  elif .name == "useSsl" then .value = false
+                  elif .name == "urlBase" then .value = ""
+                  elif .name == "apiKey" then .value = ""
+                  elif .name == "username" then .value = ""
+                  elif .name == "password" then .value = ""
+                  elif .name == "category" then .value = "prowlarr"
+                  elif .name == "priority" then .value = 0
+                  elif .name == "initialState" then .value = 0
+                  elif .name == "sequentialOrder" then .value = false
+                  elif .name == "firstAndLast" then .value = false
+                  elif .name == "contentLayout" then .value = 0
+                  else .
+                  end
+                ))'
+        )"
+
+        [[ -n "$payload" && "$payload" != "null" ]] || exit 0
+        if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
+          jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
+            | papi -X PUT -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/downloadclient/$existing_id" >/dev/null
+        else
+          papi -X POST -H 'Content-Type: application/json' --data-binary "$payload" "$prowlarr_url/api/v1/downloadclient" >/dev/null
+        fi
       '';
     };
 

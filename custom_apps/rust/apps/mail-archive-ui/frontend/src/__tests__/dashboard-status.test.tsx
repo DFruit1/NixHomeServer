@@ -17,7 +17,7 @@ const payload = (
       status_class: "error",
       status_label: "sync failed",
       index_label: "Index behind",
-      last_activity: "now",
+      last_activity: "Synced 37 minutes ago",
       archived_message_count: 10,
       indexed_message_count: 8,
       pending_index_count: 2,
@@ -57,6 +57,11 @@ describe("dashboard status island helpers", () => {
         <p data-overlap-note></p>
         <p data-last-activity></p>
         <span data-progress-bar></span>
+        <span data-health-light="mailbox"></span>
+        <span data-health-light="index"></span>
+        <span data-health-light="storage"></span>
+        <span data-health-light="paperless"></span>
+        <span data-health-light="sync"></span>
         <div class="hidden" data-sync-diagnostic>
           <p data-diagnostic-summary></p>
           <p data-diagnostic-meta></p>
@@ -90,6 +95,15 @@ describe("dashboard status island helpers", () => {
       (document.querySelector("[data-progress-bar]") as HTMLElement).style
         .width,
     ).toBe("80%");
+    expect(document.querySelector("[data-last-activity]")?.textContent).toBe(
+      "Synced 37 minutes ago",
+    );
+    expect(
+      document.querySelector('[data-health-light="mailbox"]')?.className,
+    ).toBe("health-light error");
+    expect(
+      document.querySelector('[data-health-light="index"]')?.className,
+    ).toBe("health-light warning pulse-slow");
   });
 
   it("shows diagnostic and progress warning blocks when payload includes them", () => {
@@ -105,6 +119,7 @@ describe("dashboard status island helpers", () => {
         <p data-overlap-note></p>
         <p data-last-activity></p>
         <span data-progress-bar></span>
+        <span data-health-light="storage"></span>
         <div class="hidden" data-sync-diagnostic>
           <p data-diagnostic-summary></p>
           <p data-diagnostic-meta></p>

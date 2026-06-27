@@ -36,6 +36,93 @@ const setOptionalText = (
   }
 };
 
+const healthState = (
+  account: AccountStatus,
+  key: string,
+): { className: string; title: string } => {
+  if (key === "mailbox") {
+    if (account.status_class === "error") {
+      return { className: "error", title: "Mailbox connection failed" };
+    }
+    if (account.status_label === "syncing") {
+      return {
+        className: "active pulse-fast",
+        title: "Mailbox connection syncing",
+      };
+    }
+    if (account.status_class === "idle") {
+      return { className: "idle", title: "Mailbox connection idle" };
+    }
+    return { className: "ok", title: "Mailbox connection healthy" };
+  }
+
+  if (key === "index") {
+    if (
+      account.diagnostic_phase === "index" ||
+      account.diagnostic_phase === "reconcile"
+    ) {
+      return {
+        className: "warning pulse-slow",
+        title: "Search index needs attention",
+      };
+    }
+    if (account.pending_index_count > 0) {
+      return {
+        className: "warning pulse-slow",
+        title: "Search index is catching up",
+      };
+    }
+    if (account.index_label !== "Indexed") {
+      return { className: "idle", title: "Search index has not been built" };
+    }
+    return { className: "ok", title: "Search index healthy" };
+  }
+
+  if (key === "storage") {
+    if (account.progress_warning || account.diagnostic_phase === "metrics") {
+      return {
+        className: "warning pulse-slow",
+        title: "Archive storage needs attention",
+      };
+    }
+    return { className: "ok", title: "Archive storage healthy" };
+  }
+
+  if (key === "paperless") {
+    if (account.progress_warning_detail?.toLowerCase().includes("paperless")) {
+      return {
+        className: "warning pulse-slow",
+        title: "Paperless handoff needs attention",
+      };
+    }
+    return { className: "ok", title: "Paperless handoff ready" };
+  }
+
+  if (key === "sync" && account.status_label === "syncing") {
+    return { className: "active pulse-fast", title: "Sync is running" };
+  }
+  if (key === "sync" && account.status_class === "error") {
+    return { className: "error", title: "Last sync failed" };
+  }
+  return { className: "ok", title: "Automatic sync is scheduled" };
+};
+
+const updateHealthLights = (card: Element, account: AccountStatus): void => {
+  card
+    .querySelectorAll<HTMLElement>("[data-health-light]")
+    .forEach((element) => {
+      const key = element.dataset.healthLight;
+      if (!key) {
+        return;
+      }
+      const state = healthState(account, key);
+      element.className = `health-light ${state.className}`;
+      element.title = state.title;
+      const label = key.charAt(0).toUpperCase() + key.slice(1);
+      element.setAttribute("aria-label", `${label}: ${state.title}`);
+    });
+};
+
 export const showToast = (
   doc: Document,
   message: string,
@@ -126,10 +213,8 @@ export const applyAccountStatus = (
   );
   setText(card.querySelector("[data-progress-note]"), account.progress_note);
   setOptionalText(card, "[data-overlap-note]", account.overlap_note);
-  setText(
-    card.querySelector("[data-last-activity]"),
-    `Last update ${account.last_activity}`,
-  );
+  setText(card.querySelector("[data-last-activity]"), account.last_activity);
+  updateHealthLights(card, account);
 
   const progressBar = card.querySelector<HTMLElement>("[data-progress-bar]");
   if (progressBar) {

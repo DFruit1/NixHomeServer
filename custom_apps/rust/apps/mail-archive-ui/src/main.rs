@@ -14,7 +14,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
 };
-use chrono::{DateTime, Local, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveTime, Timelike, Utc};
 #[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,
@@ -52,6 +52,7 @@ const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 const DEFAULT_LOCK_DIR: &str = ".";
 const ATTACHMENTS_PER_PAGE: usize = 100;
 const MAX_ZIP_ATTACHMENTS: usize = 500;
+const MAX_PAPERLESS_TASK_ATTACHMENTS: usize = 2_000;
 const MAX_ZIP_BYTES: u64 = 1024 * 1024 * 1024;
 const RUNTIME_EXPORT_MAX_AGE_SECONDS: i64 = 6 * 60 * 60;
 const PAPERLESS_HANDOFF_STAGING_MAX_AGE_SECONDS: i64 = 6 * 60 * 60;
@@ -441,6 +442,7 @@ struct AttachmentListParams {
     date_to: Option<String>,
     has_attachments: Option<String>,
     extension: Option<String>,
+    extension_custom: Option<String>,
     attachment_name: Option<String>,
     mime_type: Option<String>,
     min_size: Option<String>,
@@ -527,9 +529,51 @@ struct AttachmentPresetSaveForm {
     return_to: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct AttachmentPaperlessTaskSaveForm {
+    task_name: String,
+    schedule_time: String,
+    q: Option<String>,
+    account_id: Option<String>,
+    priority: Option<String>,
+    sender_address: Option<String>,
+    sender_name: Option<String>,
+    sender_domain: Option<String>,
+    subject: Option<String>,
+    body_text: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    has_attachments: Option<String>,
+    extension: Option<String>,
+    attachment_name: Option<String>,
+    mime_type: Option<String>,
+    min_size: Option<String>,
+    max_size: Option<String>,
+    min_attachments: Option<String>,
+    max_attachments: Option<String>,
+    include_inline: Option<String>,
+    include_inline_images: Option<String>,
+    show_mime_details: Option<String>,
+    download_subfolder: Option<String>,
+    return_to: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct AttachmentPresetDeleteForm {
     preset_id: i64,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentPaperlessTaskDeleteForm {
+    task_id: i64,
+    return_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentPaperlessTaskToggleForm {
+    task_id: i64,
+    enabled: Option<String>,
     return_to: Option<String>,
 }
 
@@ -1011,6 +1055,7 @@ struct AttachmentPageData {
     accounts: Vec<AccountRecord>,
     selected_account_id: Option<i64>,
     presets: Vec<AttachmentFilterPreset>,
+    paperless_tasks: Vec<AttachmentPaperlessTask>,
     filters: AttachmentSearchFilters,
     include_inline: bool,
     include_inline_images: bool,
@@ -1037,6 +1082,19 @@ struct AttachmentFilterPreset {
     query: String,
 }
 
+#[derive(Debug, Clone)]
+struct AttachmentPaperlessTask {
+    id: i64,
+    username: String,
+    name: String,
+    query: String,
+    schedule_time: String,
+    enabled: bool,
+    last_run_date: Option<String>,
+    last_run_at: Option<String>,
+    last_summary: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
     let config = load_config();
@@ -1049,6 +1107,13 @@ async fn main() {
     if let Some(mode) = args.get(1).map(String::as_str) {
         if mode == "sync-due" {
             let had_errors = sync_due(&config).expect("mail archive sync-due failed");
+            if had_errors {
+                std::process::exit(1);
+            }
+            return;
+        } else if mode == "paperless-tasks-due" {
+            let had_errors =
+                run_due_paperless_tasks(&config).expect("mail archive Paperless tasks failed");
             if had_errors {
                 std::process::exit(1);
             }
@@ -1112,6 +1177,18 @@ fn router(state: AppState) -> Router {
         .route(
             "/attachments/presets/delete",
             post(delete_attachment_filter_preset),
+        )
+        .route(
+            "/attachments/paperless-tasks",
+            post(save_attachment_paperless_task),
+        )
+        .route(
+            "/attachments/paperless-tasks/delete",
+            post(delete_attachment_paperless_task),
+        )
+        .route(
+            "/attachments/paperless-tasks/toggle",
+            post(toggle_attachment_paperless_task),
         )
         .route("/attachments/refresh", post(refresh_attachments))
         .route(
@@ -1764,6 +1841,134 @@ async fn delete_attachment_filter_preset(
     }
 }
 
+async fn save_attachment_paperless_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AttachmentPaperlessTaskSaveForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let return_to = form.return_to.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        save_attachment_paperless_task_for_user(&config, &username, &form)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(task)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            Some(&format!("Saved Paperless task {}", task.name)),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some("Paperless task save failed"),
+        )),
+    }
+}
+
+async fn delete_attachment_paperless_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AttachmentPaperlessTaskDeleteForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let return_to = form.return_to.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        delete_attachment_paperless_task_for_user(&config, &username, form.task_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            Some("Paperless task deleted"),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some("Paperless task delete failed"),
+        )),
+    }
+}
+
+async fn toggle_attachment_paperless_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<AttachmentPaperlessTaskToggleForm>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    if let Err((status, message)) = verify_same_origin_request(&headers) {
+        return auth_error(status, &message);
+    }
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let enabled = form.enabled.as_deref() == Some("1");
+    let return_to = form.return_to.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        set_attachment_paperless_task_enabled(&config, &username, form.task_id, enabled)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            Some(if enabled {
+                "Paperless task enabled"
+            } else {
+                "Paperless task paused"
+            }),
+            None,
+        )),
+        Ok(Err(error)) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some(&error),
+        )),
+        Err(_) => redirect_response(&attachments_redirect_location(
+            return_to.as_deref(),
+            None,
+            Some("Paperless task update failed"),
+        )),
+    }
+}
+
 async fn upsert_sender_priority(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2138,7 +2343,7 @@ async fn send_attachments_paperless(
     .await;
 
     match result {
-        Ok(Ok(summary)) if summary.sent > 0 => {
+        Ok(Ok(summary)) if summary.successful() > 0 => {
             let failure_message = if summary.failures.is_empty() {
                 None
             } else {
@@ -2607,6 +2812,24 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_attachment_filter_presets_user
             ON attachment_filter_presets (username, name);
+
+            CREATE TABLE IF NOT EXISTS attachment_paperless_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                name TEXT NOT NULL,
+                query TEXT NOT NULL,
+                schedule_time TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run_date TEXT,
+                last_run_at TEXT,
+                last_summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (username, name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_paperless_tasks_due
+            ON attachment_paperless_tasks (enabled, schedule_time, last_run_date);
 
             CREATE TABLE IF NOT EXISTS attachment_paperless_handoffs (
                 username TEXT NOT NULL,
@@ -3575,6 +3798,96 @@ fn sync_due(config: &AppConfig) -> Result<bool, String> {
                 error.detail
             );
             had_errors = true;
+        }
+    }
+
+    Ok(had_errors)
+}
+
+fn due_paperless_tasks(config: &AppConfig) -> Result<Vec<AttachmentPaperlessTask>, String> {
+    let now = Local::now();
+    let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
+    let current_time = now.format("%H:%M").to_string();
+    let connection = open_db(config)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, username, name, query, schedule_time, enabled, last_run_date, last_run_at, last_summary
+            FROM attachment_paperless_tasks
+            WHERE enabled = 1
+              AND schedule_time <= ?1
+              AND (last_run_date IS NULL OR last_run_date != ?2)
+            ORDER BY schedule_time, lower(name), name
+            "#,
+        )
+        .map_err(|error| format!("failed to prepare Paperless task query: {error}"))?;
+    let rows = statement
+        .query_map(params![current_time, today], map_attachment_paperless_task)
+        .map_err(|error| format!("failed to query Paperless tasks: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode Paperless tasks: {error}"))
+}
+
+fn record_paperless_task_run(
+    config: &AppConfig,
+    task_id: i64,
+    run_date: &str,
+    summary: &str,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            UPDATE attachment_paperless_tasks
+            SET last_run_date = ?2,
+                last_run_at = ?3,
+                last_summary = ?4,
+                updated_at = ?3
+            WHERE id = ?1
+            "#,
+            params![task_id, run_date, now, summary],
+        )
+        .map_err(|error| format!("failed to record Paperless task run: {error}"))?;
+    Ok(())
+}
+
+fn paperless_task_summary(summary: &PaperlessHandoffSummary) -> String {
+    if summary.successful() > 0 {
+        summary.flash_message()
+    } else if !summary.failures.is_empty() {
+        summary.failure_message()
+    } else {
+        "No new matching attachments".to_string()
+    }
+}
+
+fn run_due_paperless_tasks(config: &AppConfig) -> Result<bool, String> {
+    let run_date = Local::now().format("%Y-%m-%d").to_string();
+    let tasks = due_paperless_tasks(config)?;
+    let mut had_errors = false;
+
+    for task in tasks {
+        let result = send_attachment_filter_to_paperless(config, &task.username, &task.query);
+        let summary = match result {
+            Ok(summary) => paperless_task_summary(&summary),
+            Err(error) => {
+                had_errors = true;
+                format!("Failed: {error}")
+            }
+        };
+        if let Err(error) = record_paperless_task_run(config, task.id, &run_date, &summary) {
+            eprintln!(
+                "mail-archive-ui Paperless task state update failed task_id={} detail={}",
+                task.id, error
+            );
+            had_errors = true;
+        }
+        if summary.starts_with("Failed:") {
+            eprintln!(
+                "mail-archive-ui Paperless task failed task_id={} name={} detail={}",
+                task.id, task.name, summary
+            );
         }
     }
 
@@ -5571,22 +5884,26 @@ fn message_filters_from_attachment_params(params: &AttachmentListParams) -> Mess
         body_text: optional_trimmed(params.body_text.as_ref()),
         date_from: optional_trimmed(params.date_from.as_ref()),
         date_to: optional_trimmed(params.date_to.as_ref()),
-        has_attachments: parse_query_bool(params.has_attachments.as_deref())
-            .ok()
-            .flatten(),
+        has_attachments: None,
     }
 }
 
 fn attachment_filters_from_params(params: &AttachmentListParams) -> AttachmentSearchFilters {
+    let custom_extension = optional_trimmed(params.extension_custom.as_ref()).to_ascii_lowercase();
+    let extension = if custom_extension.is_empty() {
+        optional_trimmed(params.extension.as_ref()).to_ascii_lowercase()
+    } else {
+        custom_extension
+    };
     AttachmentSearchFilters {
         message: message_filters_from_attachment_params(params),
-        extension: optional_trimmed(params.extension.as_ref()).to_ascii_lowercase(),
+        extension,
         attachment_name: optional_trimmed(params.attachment_name.as_ref()),
-        mime_type: optional_trimmed(params.mime_type.as_ref()).to_ascii_lowercase(),
+        mime_type: String::new(),
         min_size: optional_trimmed(params.min_size.as_ref()),
         max_size: optional_trimmed(params.max_size.as_ref()),
-        min_attachments: optional_trimmed(params.min_attachments.as_ref()),
-        max_attachments: optional_trimmed(params.max_attachments.as_ref()),
+        min_attachments: String::new(),
+        max_attachments: String::new(),
     }
 }
 
@@ -5606,6 +5923,7 @@ fn attachment_params_from_preset_form(
         date_to: form.date_to.clone(),
         has_attachments: form.has_attachments.clone(),
         extension: form.extension.clone(),
+        extension_custom: None,
         attachment_name: form.attachment_name.clone(),
         mime_type: form.mime_type.clone(),
         min_size: form.min_size.clone(),
@@ -5620,6 +5938,73 @@ fn attachment_params_from_preset_form(
         flash: None,
         error: None,
     })
+}
+
+fn attachment_params_from_paperless_task_form(
+    form: &AttachmentPaperlessTaskSaveForm,
+) -> Result<AttachmentListParams, String> {
+    Ok(AttachmentListParams {
+        q: form.q.clone(),
+        account_id: parse_optional_query_i64(form.account_id.as_deref())?,
+        priority: form.priority.clone(),
+        sender_address: form.sender_address.clone(),
+        sender_name: form.sender_name.clone(),
+        sender_domain: form.sender_domain.clone(),
+        subject: form.subject.clone(),
+        body_text: form.body_text.clone(),
+        date_from: form.date_from.clone(),
+        date_to: form.date_to.clone(),
+        has_attachments: form.has_attachments.clone(),
+        extension: form.extension.clone(),
+        extension_custom: None,
+        attachment_name: form.attachment_name.clone(),
+        mime_type: form.mime_type.clone(),
+        min_size: form.min_size.clone(),
+        max_size: form.max_size.clone(),
+        min_attachments: form.min_attachments.clone(),
+        max_attachments: form.max_attachments.clone(),
+        include_inline: form.include_inline.clone(),
+        include_inline_images: form.include_inline_images.clone(),
+        show_mime_details: form.show_mime_details.clone(),
+        download_subfolder: form.download_subfolder.clone(),
+        page: None,
+        flash: None,
+        error: None,
+    })
+}
+
+fn attachment_params_from_query(query: &str) -> Result<AttachmentListParams, String> {
+    let mut params = AttachmentListParams::default();
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        let value = value.into_owned();
+        match key.as_ref() {
+            "q" => params.q = Some(value),
+            "account_id" => params.account_id = parse_optional_query_i64(Some(&value))?,
+            "priority" => params.priority = Some(value),
+            "sender_address" => params.sender_address = Some(value),
+            "sender_name" => params.sender_name = Some(value),
+            "sender_domain" => params.sender_domain = Some(value),
+            "subject" => params.subject = Some(value),
+            "body_text" => params.body_text = Some(value),
+            "date_from" => params.date_from = Some(value),
+            "date_to" => params.date_to = Some(value),
+            "has_attachments" => params.has_attachments = Some(value),
+            "extension" => params.extension = Some(value),
+            "extension_custom" => params.extension_custom = Some(value),
+            "attachment_name" => params.attachment_name = Some(value),
+            "mime_type" => params.mime_type = Some(value),
+            "min_size" => params.min_size = Some(value),
+            "max_size" => params.max_size = Some(value),
+            "min_attachments" => params.min_attachments = Some(value),
+            "max_attachments" => params.max_attachments = Some(value),
+            "include_inline" => params.include_inline = Some(value),
+            "include_inline_images" => params.include_inline_images = Some(value),
+            "show_mime_details" => params.show_mime_details = Some(value),
+            "download_subfolder" => params.download_subfolder = Some(value),
+            _ => {}
+        }
+    }
+    Ok(params)
 }
 
 fn parse_message_search_filters(
@@ -5887,6 +6272,30 @@ fn attachment_preset_query_from_form(form: &AttachmentPresetSaveForm) -> Result<
     }))
 }
 
+fn attachment_paperless_task_query_from_form(
+    form: &AttachmentPaperlessTaskSaveForm,
+) -> Result<String, String> {
+    let params = attachment_params_from_paperless_task_form(form)?;
+    let filters = attachment_filters_from_params(&params);
+    let parsed_filters = parse_attachment_search_filters(filters)?;
+    let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
+    let include_inline = query_bool_is_true(params.include_inline.as_deref());
+    let include_inline_images = query_bool_is_true(params.include_inline_images.as_deref());
+    let show_mime_details = query_bool_is_true(params.show_mime_details.as_deref());
+    let download_subfolder =
+        normalize_download_subfolder(params.download_subfolder.as_deref().unwrap_or_default())?;
+
+    Ok(build_attachment_base_query(AttachmentBaseQuery {
+        filters: &parsed_filters.raw,
+        selected_account_id: params.account_id,
+        priority_filter,
+        include_inline,
+        include_inline_images,
+        show_mime_details,
+        download_subfolder: &download_subfolder,
+    }))
+}
+
 fn append_message_filter_query_pairs(
     pairs: &mut Vec<(&'static str, String)>,
     filters: &MessageSearchFilters,
@@ -5917,11 +6326,8 @@ fn append_attachment_filter_query_pairs(
     for (key, value) in [
         ("extension", filters.extension.trim()),
         ("attachment_name", filters.attachment_name.trim()),
-        ("mime_type", filters.mime_type.trim()),
         ("min_size", filters.min_size.trim()),
         ("max_size", filters.max_size.trim()),
-        ("min_attachments", filters.min_attachments.trim()),
-        ("max_attachments", filters.max_attachments.trim()),
     ] {
         if !value.is_empty() {
             pairs.push((key, value.to_string()));
@@ -6048,6 +6454,142 @@ fn delete_attachment_filter_preset_for_user(
     Ok(())
 }
 
+fn normalize_daily_schedule_time(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let time = NaiveTime::parse_from_str(trimmed, "%H:%M")
+        .map_err(|_| "Schedule time must use HH:MM format.".to_string())?;
+    Ok(time.format("%H:%M").to_string())
+}
+
+fn map_attachment_paperless_task(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AttachmentPaperlessTask> {
+    Ok(AttachmentPaperlessTask {
+        id: row.get(0)?,
+        username: row.get(1)?,
+        name: row.get(2)?,
+        query: row.get(3)?,
+        schedule_time: row.get(4)?,
+        enabled: row.get::<_, i64>(5)? != 0,
+        last_run_date: row.get(6)?,
+        last_run_at: row.get(7)?,
+        last_summary: row.get(8)?,
+    })
+}
+
+fn list_attachment_paperless_tasks(
+    config: &AppConfig,
+    username: &str,
+) -> Result<Vec<AttachmentPaperlessTask>, String> {
+    let connection = open_db(config)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT id, username, name, query, schedule_time, enabled, last_run_date, last_run_at, last_summary
+            FROM attachment_paperless_tasks
+            WHERE username = ?1
+            ORDER BY schedule_time, lower(name), name
+            "#,
+        )
+        .map_err(|error| format!("failed to load Paperless tasks: {error}"))?;
+    let rows = statement
+        .query_map(params![username], map_attachment_paperless_task)
+        .map_err(|error| format!("failed to read Paperless tasks: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode Paperless tasks: {error}"))
+}
+
+fn save_attachment_paperless_task_for_user(
+    config: &AppConfig,
+    username: &str,
+    form: &AttachmentPaperlessTaskSaveForm,
+) -> Result<AttachmentPaperlessTask, String> {
+    if config.paperless_consume_root.is_none() {
+        return Err("Paperless handoff is not configured.".to_string());
+    }
+    let name = normalize_attachment_preset_name(&form.task_name)?;
+    let schedule_time = normalize_daily_schedule_time(&form.schedule_time)?;
+    let query = attachment_paperless_task_query_from_form(form)?;
+    if query.trim().is_empty() {
+        return Err(
+            "Add at least one attachment filter before saving a Paperless task.".to_string(),
+        );
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let connection = open_db(config)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO attachment_paperless_tasks (
+                username, name, query, schedule_time, enabled, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)
+            ON CONFLICT(username, name) DO UPDATE SET
+                query = excluded.query,
+                schedule_time = excluded.schedule_time,
+                enabled = 1,
+                updated_at = excluded.updated_at
+            "#,
+            params![username, name, query, schedule_time, now],
+        )
+        .map_err(|error| format!("failed to save Paperless task: {error}"))?;
+
+    connection
+        .query_row(
+            r#"
+            SELECT id, username, name, query, schedule_time, enabled, last_run_date, last_run_at, last_summary
+            FROM attachment_paperless_tasks
+            WHERE username = ?1 AND name = ?2
+            LIMIT 1
+            "#,
+            params![username, name],
+            map_attachment_paperless_task,
+        )
+        .map_err(|error| format!("failed to reload Paperless task: {error}"))
+}
+
+fn delete_attachment_paperless_task_for_user(
+    config: &AppConfig,
+    username: &str,
+    task_id: i64,
+) -> Result<(), String> {
+    let connection = open_db(config)?;
+    let deleted = connection
+        .execute(
+            "DELETE FROM attachment_paperless_tasks WHERE username = ?1 AND id = ?2",
+            params![username, task_id],
+        )
+        .map_err(|error| format!("failed to delete Paperless task: {error}"))?;
+    if deleted == 0 {
+        return Err("Paperless task was not found.".to_string());
+    }
+    Ok(())
+}
+
+fn set_attachment_paperless_task_enabled(
+    config: &AppConfig,
+    username: &str,
+    task_id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let connection = open_db(config)?;
+    let updated = connection
+        .execute(
+            r#"
+            UPDATE attachment_paperless_tasks
+            SET enabled = ?3, updated_at = ?4
+            WHERE username = ?1 AND id = ?2
+            "#,
+            params![username, task_id, if enabled { 1 } else { 0 }, now],
+        )
+        .map_err(|error| format!("failed to update Paperless task: {error}"))?;
+    if updated == 0 {
+        return Err("Paperless task was not found.".to_string());
+    }
+    Ok(())
+}
+
 fn load_attachment_page_data(
     config: &AppConfig,
     username: &str,
@@ -6055,6 +6597,7 @@ fn load_attachment_page_data(
 ) -> Result<AttachmentPageData, String> {
     let accounts = list_accounts_for_user(config, username)?;
     let presets = list_attachment_filter_presets(config, username)?;
+    let paperless_tasks = list_attachment_paperless_tasks(config, username)?;
     let selected_account_id = normalize_selected_account_id(&accounts, params.account_id);
     let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
     let raw_filters = attachment_filters_from_params(params);
@@ -6150,7 +6693,6 @@ fn load_attachment_page_data(
             }
             item.paperless_sent_at = load_attachment_paperless_handoff(
                 &connection,
-                config,
                 username,
                 &item.attachment.attachment_key,
             )?;
@@ -6201,6 +6743,7 @@ fn load_attachment_page_data(
         accounts,
         selected_account_id,
         presets,
+        paperless_tasks,
         filters: filters.raw,
         include_inline,
         include_inline_images,
@@ -6244,6 +6787,7 @@ fn download_attachment_keys_for_form(
                 date_to: form.date_to.clone(),
                 has_attachments: form.has_attachments.clone(),
                 extension: form.extension.clone(),
+                extension_custom: None,
                 attachment_name: form.attachment_name.clone(),
                 mime_type: form.mime_type.clone(),
                 min_size: form.min_size.clone(),
@@ -6295,6 +6839,83 @@ fn download_attachment_keys_for_form(
     }
 
     Ok(keys)
+}
+
+fn attachment_keys_for_params(
+    config: &AppConfig,
+    username: &str,
+    params: &AttachmentListParams,
+    max_keys: usize,
+) -> Result<Vec<String>, String> {
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
+    let mut page = 1;
+
+    loop {
+        let mut page_params = params.clone();
+        page_params.page = Some(page.to_string());
+        page_params.flash = None;
+        page_params.error = None;
+        let data = load_attachment_page_data(config, username, &page_params)?;
+        for item in data.items {
+            if seen.insert(item.attachment.attachment_key.clone()) {
+                keys.push(item.attachment.attachment_key);
+            }
+            if keys.len() > max_keys {
+                return Err(format!(
+                    "Too many attachments matched. Narrow the filters to {} files or fewer.",
+                    max_keys
+                ));
+            }
+        }
+        if !data.state.has_next_page {
+            break;
+        }
+        page += 1;
+    }
+
+    Ok(keys)
+}
+
+fn attachment_key_is_new_for_paperless(
+    connection: &Connection,
+    username: &str,
+    attachment_key: &str,
+) -> Result<bool, String> {
+    load_attachment_paperless_handoff(connection, username, attachment_key)
+        .map(|sent| sent.is_none())
+}
+
+fn send_attachment_filter_to_paperless(
+    config: &AppConfig,
+    username: &str,
+    query: &str,
+) -> Result<PaperlessHandoffSummary, String> {
+    let params = attachment_params_from_query(query)?;
+    let keys =
+        attachment_keys_for_params(config, username, &params, MAX_PAPERLESS_TASK_ATTACHMENTS)?;
+    if keys.is_empty() {
+        return Ok(PaperlessHandoffSummary {
+            skipped: 0,
+            ..Default::default()
+        });
+    }
+
+    let connection = open_db(config)?;
+    let mut new_keys = Vec::new();
+    for key in keys {
+        if attachment_key_is_new_for_paperless(&connection, username, &key)? {
+            new_keys.push(key);
+        }
+    }
+    if new_keys.is_empty() {
+        return Ok(PaperlessHandoffSummary {
+            skipped: 0,
+            ..Default::default()
+        });
+    }
+
+    send_attachments_to_paperless(config, username, &new_keys)
 }
 
 fn parse_attachment_download_form_body(body: &[u8]) -> AttachmentDownloadForm {
@@ -6453,48 +7074,44 @@ fn build_attachments_zip(
 
 fn load_attachment_paperless_handoff(
     connection: &Connection,
-    config: &AppConfig,
     username: &str,
     attachment_key: &str,
 ) -> Result<Option<String>, String> {
-    let row = connection
+    connection
         .query_row(
-            "SELECT sent_at, consume_filename FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2 LIMIT 1",
+            "SELECT sent_at FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2 LIMIT 1",
             params![username, attachment_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed to query Paperless handoff state: {error}"))
+}
+
+fn load_attachment_paperless_handoff_by_sha(
+    connection: &Connection,
+    username: &str,
+    attachment_sha256: &str,
+) -> Result<Option<(String, String)>, String> {
+    connection
+        .query_row(
+            r#"
+            SELECT consume_filename, sent_at
+            FROM attachment_paperless_handoffs
+            WHERE username = ?1 AND attachment_sha256 = ?2
+            ORDER BY sent_at DESC
+            LIMIT 1
+            "#,
+            params![username, attachment_sha256],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
-        .map_err(|error| format!("failed to query Paperless handoff state: {error}"))?;
-    let (sent_at, consume_filename) = match row {
-        Some(row) => row,
-        None => return Ok(None),
-    };
-    let consume_root = match config.paperless_consume_root.as_deref() {
-        Some(value) => value,
-        None => return Ok(Some(sent_at)),
-    };
-    let consume_root = PathBuf::from(consume_root);
-    if !consume_root.is_dir() {
-        return Ok(Some(sent_at));
-    }
-    if !consume_root.join(&consume_filename).is_file() {
-        if let Err(error) = connection.execute(
-            "DELETE FROM attachment_paperless_handoffs WHERE username = ?1 AND attachment_key = ?2",
-            params![username, attachment_key],
-        ) {
-            eprintln!(
-                "failed to clear stale Paperless handoff for user {} attachment {}: {error}",
-                username, attachment_key
-            );
-        }
-        return Ok(None);
-    }
-    Ok(Some(sent_at))
+        .map_err(|error| format!("failed to query Paperless handoff by hash: {error}"))
 }
 
 #[derive(Debug, Default)]
 struct PaperlessHandoffSummary {
     sent: usize,
+    already_uploaded: usize,
     skipped: usize,
     sent_attachment_keys: Vec<String>,
     failures: Vec<PaperlessHandoffFailure>,
@@ -6508,8 +7125,25 @@ struct PaperlessHandoffFailure {
 }
 
 impl PaperlessHandoffSummary {
+    fn successful(&self) -> usize {
+        self.sent + self.already_uploaded
+    }
+
     fn flash_message(&self) -> String {
-        let base = format!("{} sent to Paperless", pluralize_attachments(self.sent));
+        let base = if self.sent > 0 && self.already_uploaded > 0 {
+            format!(
+                "{} sent to Paperless; {} already uploaded",
+                pluralize_attachments(self.sent),
+                pluralize_attachments(self.already_uploaded)
+            )
+        } else if self.sent > 0 {
+            format!("{} sent to Paperless", pluralize_attachments(self.sent))
+        } else {
+            format!(
+                "{} already uploaded to Paperless",
+                pluralize_attachments(self.already_uploaded)
+            )
+        };
         if self.failures.is_empty() {
             base
         } else {
@@ -6614,6 +7248,7 @@ fn send_attachments_to_paperless(
     cleanup_old_paperless_handoff_staging(&handoff_staging_root)?;
 
     let mut seen = HashSet::new();
+    let mut reserved_consume_filenames = HashSet::new();
     let mut summary = PaperlessHandoffSummary::default();
     for key in attachment_keys {
         let key = key.trim();
@@ -6622,7 +7257,7 @@ fn send_attachments_to_paperless(
         }
 
         let connection = open_db(config)?;
-        if load_attachment_paperless_handoff(&connection, config, username, key)?.is_some() {
+        if load_attachment_paperless_handoff(&connection, username, key)?.is_some() {
             summary.skipped += 1;
             continue;
         }
@@ -6638,7 +7273,35 @@ fn send_attachments_to_paperless(
                 continue;
             }
         };
-        let consume_filename = paperless_consume_filename(&attachment.original_filename);
+        let preferred_consume_filename = paperless_consume_filename(&attachment.original_filename);
+        if let Some((consume_filename, sent_at)) = load_attachment_paperless_handoff_by_sha(
+            &connection,
+            username,
+            &attachment.attachment_sha256,
+        )? {
+            if let Err(error) = record_attachment_paperless_handoff(
+                config,
+                username,
+                &attachment,
+                &consume_filename,
+                &sent_at,
+            ) {
+                summary.failures.push(PaperlessHandoffFailure {
+                    attachment_key: key.to_string(),
+                    filename: consume_filename,
+                    error,
+                });
+                continue;
+            }
+            summary.already_uploaded += 1;
+            summary.sent_attachment_keys.push(key.to_string());
+            continue;
+        }
+        let consume_filename = reserve_available_paperless_consume_filename(
+            &consume_root,
+            &preferred_consume_filename,
+            &mut reserved_consume_filenames,
+        );
         let (_dir, attachment_path) =
             match resolve_attachment_payload(config, &account, &message, &attachment) {
                 Ok(payload) => payload,
@@ -6651,6 +7314,30 @@ fn send_attachments_to_paperless(
                     continue;
                 }
             };
+        if let Some(consume_filename) = find_matching_paperless_consume_file(
+            &consume_root,
+            &preferred_consume_filename,
+            &attachment.attachment_sha256,
+        )? {
+            let sent_at = Utc::now().to_rfc3339();
+            if let Err(error) = record_attachment_paperless_handoff(
+                config,
+                username,
+                &attachment,
+                &consume_filename,
+                &sent_at,
+            ) {
+                summary.failures.push(PaperlessHandoffFailure {
+                    attachment_key: key.to_string(),
+                    filename: consume_filename,
+                    error,
+                });
+                continue;
+            }
+            summary.already_uploaded += 1;
+            summary.sent_attachment_keys.push(key.to_string());
+            continue;
+        }
         let sent_at = Utc::now().to_rfc3339();
         let final_path = consume_root.join(&consume_filename);
         if let Err(error) =
@@ -6681,7 +7368,7 @@ fn send_attachments_to_paperless(
         summary.sent_attachment_keys.push(key.to_string());
     }
 
-    if summary.sent == 0 && summary.failures.is_empty() {
+    if summary.successful() == 0 && summary.failures.is_empty() {
         return Err("Select at least one attachment that has not already been sent.".to_string());
     }
 
@@ -6689,7 +7376,86 @@ fn send_attachments_to_paperless(
 }
 
 fn paperless_consume_filename(original_filename: &str) -> String {
-    filename_component(original_filename, "attachment")
+    filename_component(
+        strip_mail_archive_generated_prefix(original_filename),
+        "attachment",
+    )
+}
+
+fn reserve_available_paperless_consume_filename(
+    consume_root: &FsPath,
+    preferred_filename: &str,
+    reserved: &mut HashSet<String>,
+) -> String {
+    let preferred = filename_component(preferred_filename, "attachment");
+    for suffix in std::iter::once(0).chain(2..1000) {
+        let candidate = paperless_consume_filename_with_suffix(&preferred, suffix);
+        if reserved.contains(&candidate) || consume_root.join(&candidate).exists() {
+            continue;
+        }
+        reserved.insert(candidate.clone());
+        return candidate;
+    }
+
+    let fallback = paperless_consume_filename_with_suffix(&preferred, 1000 + reserved.len());
+    reserved.insert(fallback.clone());
+    fallback
+}
+
+fn find_matching_paperless_consume_file(
+    consume_root: &FsPath,
+    preferred_filename: &str,
+    attachment_sha256: &str,
+) -> Result<Option<String>, String> {
+    let preferred = filename_component(preferred_filename, "attachment");
+    for suffix in std::iter::once(0).chain(2..1000) {
+        let candidate = paperless_consume_filename_with_suffix(&preferred, suffix);
+        let candidate_path = consume_root.join(&candidate);
+        if !candidate_path.is_file() {
+            continue;
+        }
+        let candidate_sha256 = sha256_file(&candidate_path)?;
+        if candidate_sha256 == attachment_sha256 {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+fn paperless_consume_filename_with_suffix(filename: &str, suffix: usize) -> String {
+    if suffix == 0 {
+        return filename.to_string();
+    }
+
+    if let Some((stem, extension)) = filename.rsplit_once('.') {
+        if !stem.is_empty() && !extension.is_empty() {
+            return format!("{stem} ({suffix}).{extension}");
+        }
+    }
+    format!("{filename} ({suffix})")
+}
+
+fn strip_mail_archive_generated_prefix(filename: &str) -> &str {
+    let Some(rest) = filename.strip_prefix("mail-archive-") else {
+        return filename;
+    };
+    let mut parts = rest.splitn(4, '-');
+    let date = parts.next().unwrap_or_default();
+    let time = parts.next().unwrap_or_default();
+    let token = parts.next().unwrap_or_default();
+    let original = parts.next().unwrap_or_default();
+    if date.len() == 8
+        && date.chars().all(|character| character.is_ascii_digit())
+        && time.len() == 6
+        && time.chars().all(|character| character.is_ascii_digit())
+        && token.len() >= 8
+        && token.chars().all(|character| character.is_ascii_hexdigit())
+        && !original.trim().is_empty()
+    {
+        original
+    } else {
+        filename
+    }
 }
 
 fn copy_attachment_to_paperless(
@@ -7891,7 +8657,7 @@ fn rebuild_message_catalog_and_visible_mailboxes(
             &empty,
             account.last_sync_finished_at.as_deref(),
             "stale",
-            Some("Use Update now or Repair search to rebuild dashboard counts."),
+            Some("Use Sync Now or Repair search to rebuild dashboard counts."),
         )?;
         return Ok(empty);
     }
@@ -8456,7 +9222,7 @@ fn account_progress_note(
     } else if index_state == IndexState::Indexed {
         "Search index is caught up with the archived messages.".to_string()
     } else {
-        "Use Update now or Repair search to prepare saved mail for search.".to_string()
+        "Use Sync Now or Repair search to prepare saved mail for search.".to_string()
     }
 }
 
@@ -8528,7 +9294,7 @@ fn diagnostic_recommended_action(
 ) -> Option<String> {
     match diagnostic.phase {
         Some(SyncPhase::Download | SyncPhase::Preflight) => {
-            Some("Check the mailbox credentials, then use Update now again.".to_string())
+            Some("Check the mailbox credentials, then use Sync Now again.".to_string())
         }
         Some(SyncPhase::Index | SyncPhase::Reconcile) if counts.pending_index_count > 0 => {
             Some("Use Repair search to catch search up with saved messages.".to_string())
@@ -8540,7 +9306,7 @@ fn diagnostic_recommended_action(
             Some("Check that the archive is available, then refresh the dashboard.".to_string())
         }
         None => Some(
-            "Open troubleshooting details if needed, then retry Update now or Repair search."
+            "Open troubleshooting details if needed, then retry Sync Now or Repair search."
                 .to_string(),
         ),
     }
@@ -8599,13 +9365,56 @@ fn provider_label(provider: &str) -> &str {
     }
 }
 
+fn provider_icon_label(provider: &str) -> &'static str {
+    match provider {
+        "gmail" => "M",
+        _ => "✉",
+    }
+}
+
+fn provider_icon_class(provider: &str) -> &'static str {
+    match provider {
+        "gmail" => "gmail",
+        _ => "imap",
+    }
+}
+
 fn last_activity_label(account: &AccountRecord) -> String {
-    account
+    let Some(value) = account
         .last_sync_finished_at
         .as_deref()
         .or(account.last_sync_started_at.as_deref())
-        .unwrap_or("Never")
-        .to_string()
+    else {
+        return "Never synced".to_string();
+    };
+
+    let Ok(synced_at) = DateTime::parse_from_rfc3339(value) else {
+        return "Synced recently".to_string();
+    };
+    let elapsed = Utc::now().signed_duration_since(synced_at.with_timezone(&Utc));
+    let elapsed_seconds = elapsed.num_seconds().max(0);
+
+    if elapsed_seconds < 60 {
+        "Synced <1 minute ago".to_string()
+    } else if elapsed_seconds < 60 * 60 {
+        let minutes = elapsed_seconds / 60;
+        format!(
+            "Synced {minutes} {} ago",
+            if minutes == 1 { "minute" } else { "minutes" }
+        )
+    } else if elapsed_seconds < 24 * 60 * 60 {
+        let hours = elapsed_seconds / (60 * 60);
+        format!(
+            "Synced {hours} {} ago",
+            if hours == 1 { "hour" } else { "hours" }
+        )
+    } else {
+        let days = elapsed_seconds / (24 * 60 * 60);
+        format!(
+            "Synced {days} {} ago",
+            if days == 1 { "day" } else { "days" }
+        )
+    }
 }
 
 fn render_dashboard(
@@ -8618,53 +9427,37 @@ fn render_dashboard(
     body.push_str(&render_toasts(flash, error));
 
     body.push_str(
-        "<section class=\"hero\">
-          <p class=\"eyebrow\">Mail Archive</p>
-          <h1>Search saved mail and file important attachments.</h1>
-          <p class=\"lede\">Find old messages, download attachments, and send documents to Paperless without opening a full mail client.</p>
-          <div class=\"nav\">
+        "<section class=\"hero dashboard-hero\">
+          <h1>Mail Archive</h1>
+          <p class=\"lede\">Search saved messages and find documents in attachments.</p>
+          <div class=\"nav hero-actions\">
             <a href=\"/search\">Search mail</a>
-            <a class=\"secondary\" href=\"/attachments\">Find attachments</a>
-            <a class=\"secondary\" href=\"/accounts/new\">Add mailbox</a>
+            <a class=\"secondary\" href=\"/attachments\">Search attachments</a>
           </div>
         </section>",
     );
 
-    body.push_str("<section class=\"panel stack\"><div class=\"section-head\"><h2>Mailboxes</h2><p class=\"meta\">Update mailbox archives and check whether saved mail is ready to search.</p></div>");
+    body.push_str("<details class=\"section stack dashboard-maintenance\"><summary>Mailbox status and maintenance</summary>");
     body.push_str(
         "<div id=\"dashboard-status-island\" data-mail-archive-island=\"dashboard-status\"></div>",
     );
-    body.push_str(&render_dashboard_totals(accounts));
     if accounts.is_empty() {
         body.push_str(
             "<div class=\"empty-state\"><p class=\"meta\">No mailbox is configured yet. Start with Gmail or a generic IMAP account.</p><a class=\"button-link\" href=\"/accounts/new\">Add mailbox</a></div>",
         );
     } else {
-        body.push_str("<div class=\"card-grid\" data-dashboard-status-root>");
+        body.push_str("<div class=\"mailbox-list\" data-dashboard-status-root>");
         for view in accounts {
             body.push_str(&render_account_card(view));
         }
         body.push_str("</div>");
+        body.push_str(
+            "<div class=\"action-row\"><a class=\"button-link secondary\" href=\"/accounts/new\">Add mailbox</a></div>",
+        );
     }
-    body.push_str("</section>");
+    body.push_str("</details>");
 
     layout("Mail Archive", Some(identity), "dashboard", &body)
-}
-
-fn render_dashboard_totals(accounts: &[DashboardAccountView]) -> String {
-    let totals = dashboard_totals(accounts.iter().map(|view| view.status.clone()).collect());
-    format!(
-        "<div class=\"dashboard-summary\" data-dashboard-summary>
-          <div class=\"summary-metric\"><span class=\"metric-label\">Archived</span><strong data-summary-field=\"archived\">{}</strong></div>
-          <div class=\"summary-metric\"><span class=\"metric-label\">Indexed</span><strong data-summary-field=\"indexed\">{}</strong></div>
-          <div class=\"summary-metric\"><span class=\"metric-label\">Pending index</span><strong data-summary-field=\"pending\">{}</strong></div>
-          <div class=\"summary-metric\"><span class=\"metric-label\">Coverage</span><strong data-summary-field=\"coverage\">{}%</strong></div>
-        </div>",
-        totals.archived_message_count,
-        totals.indexed_message_count,
-        totals.pending_index_count,
-        totals.index_coverage_percent,
-    )
 }
 
 fn render_toasts(flash: Option<&str>, error: Option<&str>) -> String {
@@ -8755,6 +9548,96 @@ fn render_progress_warning_notice(status: &AccountStatusPayload) -> String {
     )
 }
 
+fn render_health_light(key: &str, label: &str, class_name: &str, title: &str) -> String {
+    let aria_label = format!("{label}: {title}");
+    format!(
+        "<span class=\"health-light {}\" data-health-light=\"{}\" aria-label=\"{}\" title=\"{}\"></span>",
+        escape_html(class_name),
+        escape_html(key),
+        escape_html(&aria_label),
+        escape_html(title),
+    )
+}
+
+fn health_light_state(
+    key: &str,
+    account: &AccountRecord,
+    status: &AccountStatusPayload,
+) -> (&'static str, &'static str) {
+    match key {
+        "mailbox" => {
+            if status.status_class == "error" {
+                ("error", "Mailbox connection failed")
+            } else if status.status_label == "syncing" {
+                ("active pulse-fast", "Mailbox connection syncing")
+            } else if status.status_class == "idle" {
+                ("idle", "Mailbox connection idle")
+            } else {
+                ("ok", "Mailbox connection healthy")
+            }
+        }
+        "index" => {
+            if status
+                .diagnostic_phase
+                .as_deref()
+                .is_some_and(|phase| matches!(phase, "index" | "reconcile"))
+            {
+                ("warning pulse-slow", "Search index needs attention")
+            } else if status.pending_index_count > 0 {
+                ("warning pulse-slow", "Search index is catching up")
+            } else if status.index_label != "Indexed" {
+                ("idle", "Search index has not been built")
+            } else {
+                ("ok", "Search index healthy")
+            }
+        }
+        "storage" => {
+            if status.progress_warning.is_some()
+                || status.diagnostic_phase.as_deref() == Some("metrics")
+            {
+                ("warning pulse-slow", "Archive storage needs attention")
+            } else {
+                ("ok", "Archive storage healthy")
+            }
+        }
+        "paperless" => {
+            if status
+                .progress_warning_detail
+                .as_deref()
+                .is_some_and(|detail| detail.to_ascii_lowercase().contains("paperless"))
+            {
+                ("warning pulse-slow", "Paperless handoff needs attention")
+            } else {
+                ("ok", "Paperless handoff ready")
+            }
+        }
+        "sync" if account.last_sync_status.as_deref() == Some("running") => {
+            ("active pulse-fast", "Sync is running")
+        }
+        "sync" if account.sync_enabled => ("ok", "Automatic sync is scheduled"),
+        "sync" => ("idle", "Automatic sync is off"),
+        _ => ("idle", "Status unavailable"),
+    }
+}
+
+fn render_health_lights(account: &AccountRecord, status: &AccountStatusPayload) -> String {
+    let items = [
+        ("mailbox", "Mailbox"),
+        ("index", "Index"),
+        ("storage", "Storage"),
+        ("paperless", "Paperless"),
+        ("sync", "Sync"),
+    ];
+    let mut body = String::new();
+    body.push_str("<div class=\"health-lights\" aria-label=\"Mailbox health indicators\">");
+    for (key, label) in items {
+        let (class_name, title) = health_light_state(key, account, status);
+        body.push_str(&render_health_light(key, label, class_name, title));
+    }
+    body.push_str("</div>");
+    body
+}
+
 fn render_account_card(view: &DashboardAccountView) -> String {
     let account = &view.account;
     let status = &view.status;
@@ -8767,65 +9650,50 @@ fn render_account_card(view: &DashboardAccountView) -> String {
 
     writeln!(
         &mut body,
-        "<article class=\"account-card stack\" data-account-card data-account-id=\"{}\">
+        "<article class=\"account-card\" data-account-card data-account-id=\"{}\">
           <div class=\"card-header\">
-            <div>
-              <p class=\"eyebrow\">Mailbox</p>
+            <div class=\"mailbox-title\">
+              <span class=\"provider-icon {}\" aria-hidden=\"true\">{}</span>
+              <div>
               <h2>{}</h2>
-              <p class=\"meta\" data-last-activity>Last update {}</p>
+                <p class=\"meta\" data-last-activity>{}</p>
+              </div>
             </div>
-            <span class=\"status {}\" data-status-badge>{}</span>
-          </div>
-          <div class=\"card-meta\">
-            <span class=\"pill\">{}</span>
-            <span class=\"pill\" data-index-pill>{}</span>
-          </div>
-          <div class=\"progress-cluster\">
-            <div class=\"progress-metrics\">
-              <div class=\"summary-metric\"><span class=\"metric-label\">Saved mail</span><strong data-progress-field=\"archived\">{}</strong></div>
-              <div class=\"summary-metric\"><span class=\"metric-label\">Search ready</span><strong data-progress-field=\"indexed\">{}</strong></div>
-              <div class=\"summary-metric\"><span class=\"metric-label\">Catching up</span><strong data-progress-field=\"pending\">{}</strong></div>
-            </div>
-            <div class=\"progress-bar\" aria-label=\"Index coverage\"><span data-progress-bar style=\"width: {}%\"></span></div>
-            <p class=\"meta\" data-progress-note>{}</p>
-            <p class=\"meta{}\" data-overlap-note>{}</p>
+            {}
           </div>
           <div class=\"action-row\">
-            <form method=\"post\" action=\"/accounts/{}/sync\" data-dashboard-action><button type=\"submit\">Update now</button></form>
-            <a class=\"button-link secondary\" href=\"/search?account_id={}\">Search</a>
-            <a class=\"button-link secondary\" href=\"/attachments?account_id={}\">Attachments</a>
-            <a class=\"button-link secondary\" href=\"/accounts/{}/edit\">Edit</a>
+            <form method=\"post\" action=\"/accounts/{}/sync\" data-dashboard-action><button type=\"submit\">Sync Now</button></form>
           </div>
           <details class=\"account-settings\">
-            <summary>Mailbox settings</summary>
-            <div class=\"hint\">Provider: {} · Automatic updates: {}</div>
-            <div class=\"action-row\">
-              <form method=\"post\" action=\"/accounts/{}/reindex\" data-dashboard-action><button class=\"secondary\" type=\"submit\">Repair search</button></form>
-              <form method=\"post\" action=\"/accounts/{}/toggle-sync\" data-dashboard-action><button class=\"secondary\" type=\"submit\">{}</button></form>
+            <summary>Details and maintenance</summary>
+            <div class=\"progress-metrics\">
+              <div class=\"summary-metric\"><span class=\"metric-label\">Saved mail</span><strong data-progress-field=\"archived\">{}</strong></div>
+              <div class=\"summary-metric\"><span class=\"metric-label\">Catching up</span><strong data-progress-field=\"pending\">{}</strong></div>
             </div>
+            <div class=\"hint\">Provider: {} · Automatic updates: {}</div>
+            <details class=\"edit-mailbox-menu\">
+              <summary>Edit mailbox</summary>
+              <div class=\"action-row maintenance-actions\">
+                <a class=\"button-link secondary\" href=\"/accounts/{}/edit\">Connection settings</a>
+                <form method=\"post\" action=\"/accounts/{}/reindex\" data-dashboard-action><button class=\"secondary\" type=\"submit\">Repair search</button></form>
+                <form method=\"post\" action=\"/accounts/{}/toggle-sync\" data-dashboard-action><button class=\"secondary\" type=\"submit\">{}</button></form>
+              </div>
+            </details>
           </details>
           {}
           {}",
         account.id,
+        escape_html(provider_icon_class(&account.provider_kind)),
+        escape_html(provider_icon_label(&account.provider_kind)),
         escape_html(&account.display_name),
         escape_html(&status.last_activity),
-        escape_html(&status.status_class),
-        escape_html(&status.status_label),
-        escape_html(schedule_label),
-        escape_html(&status.index_label),
+        render_health_lights(account, status),
+        account.id,
         status.archived_message_count,
-        status.indexed_message_count,
         status.pending_index_count,
-        status.index_coverage_percent,
-        escape_html(&status.progress_note),
-        hidden_class(status.overlap_note.is_some()),
-        escape_html(status.overlap_note.as_deref().unwrap_or("")),
-        account.id,
-        account.id,
-        account.id,
-        account.id,
         escape_html(provider_label(&account.provider_kind)),
         escape_html(schedule_label),
+        account.id,
         account.id,
         account.id,
         if account.sync_enabled {
@@ -8944,7 +9812,6 @@ fn render_account_form(
           </details>
           <div class=\"actions\">
             <button type=\"submit\">{}</button>
-            <a class=\"button-link secondary\" href=\"/\">Cancel</a>
           </div>
           <ul class=\"muted-list\">
             <li>Gmail usually needs an app password.</li>
@@ -8991,14 +9858,17 @@ fn render_attachments_page(
 
     body.push_str(
         "<section class=\"page-heading\">
-          <span class=\"page-heading-icon\" aria-hidden=\"true\">&#128206;</span>
-          <h1>Attachments</h1>
+          <div>
+            <p class=\"eyebrow\">Attachments</p>
+            <h1>Find files in saved mail.</h1>
+          </div>
         </section>",
     );
 
     let return_to = attachment_return_to(&data.state);
     let filter_hiddens = render_attachment_filter_hiddens(data, &return_to);
     let preset_panel = render_attachment_presets(data, &return_to, &filter_hiddens);
+    let task_panel = render_attachment_paperless_tasks(data, &return_to, &filter_hiddens);
     let show_download_all = data.state.result_count > data.items.len();
     writeln!(
         &mut body,
@@ -9009,143 +9879,140 @@ fn render_attachments_page(
                 <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
               </label>
               <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search attachments\" aria-label=\"Search attachments\">⌕</button>
-            </div>
-            <details class=\"filter-accordion\">
-              <summary>Filter attachments</summary>
-              <div class=\"filter-groups\">
-                <section class=\"filter-group\">
-                  <h2>Scope</h2>
-                  <div class=\"filter-grid\">
-                    <label class=\"field-wide\">Mailbox
-                    <select name=\"account_id\">
-                      <option value=\"\">All mailboxes</option>
-                      {}
-                    </select>
-                    </label>
-                    <label>Sender importance
-                    <select name=\"priority\">{}</select>
-                    </label>
-                    <label class=\"field-short\">Extension
-                      <input name=\"extension\" value=\"{}\">
-                    </label>
-                  </div>
-                </section>
-                <section class=\"filter-group\">
-                  <h2>Sender</h2>
-                  <div class=\"filter-grid\">
-                    <label class=\"field-wide\">Sender address
-                      <input name=\"sender_address\" value=\"{}\">
-                    </label>
-                    <label>Sender name
-                      <input name=\"sender_name\" value=\"{}\">
-                    </label>
-                    <label>Sender domain
-                      <input name=\"sender_domain\" value=\"{}\">
-                    </label>
-                  </div>
-                </section>
-                <section class=\"filter-group\">
-                  <h2>Message</h2>
-                  <div class=\"filter-grid\">
-                    <label class=\"field-wide\">Subject
-                      <input name=\"subject\" value=\"{}\">
-                    </label>
-                    <label class=\"field-wide\">Body text
-                      <input name=\"body_text\" value=\"{}\">
-                    </label>
-                    <label>Date from
-                      <input type=\"date\" name=\"date_from\" value=\"{}\">
-                    </label>
-                    <label>Date to
-                      <input type=\"date\" name=\"date_to\" value=\"{}\">
-                    </label>
-                  </div>
-                </section>
-              </div>
-            </details>
-            <details class=\"filter-accordion\">
-              <summary>More filters</summary>
-              <div class=\"filter-groups\">
-                <section class=\"filter-group\">
-                  <h2>Attachment</h2>
-                  <div class=\"filter-grid\">
-                    <label>Has attachments
-                    <select name=\"has_attachments\">{}</select>
-                    </label>
-                    <label class=\"field-wide\">Attachment name
-                      <input name=\"attachment_name\" value=\"{}\">
-                    </label>
-                    <label class=\"field-wide\">Technical file type
-                      <input name=\"mime_type\" value=\"{}\">
-                    </label>
-                  </div>
-                </section>
-                <section class=\"filter-group\">
-                  <h2>Limits</h2>
-                  <div class=\"filter-grid\">
-                    <label class=\"field-short\">Min size
-                      <input name=\"min_size\" value=\"{}\" inputmode=\"numeric\">
-                    </label>
-                    <label class=\"field-short\">Max size
-                      <input name=\"max_size\" value=\"{}\" inputmode=\"numeric\">
-                    </label>
-                    <label class=\"field-short\">Min attachments
-                      <input name=\"min_attachments\" value=\"{}\" inputmode=\"numeric\">
-                    </label>
-                    <label class=\"field-short\">Max attachments
-                      <input name=\"max_attachments\" value=\"{}\" inputmode=\"numeric\">
-                    </label>
-                  </div>
-                </section>
-                <section class=\"filter-group\">
-                  <h2>Output</h2>
-                  <div class=\"filter-grid\">
-                    <label class=\"checkbox-field\">Include message body files
-                    <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
-                    </label>
-                    <label class=\"checkbox-field\">Inline images
-                    <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
-                    </label>
-                    <label class=\"checkbox-field\">Show technical file type
-                    <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
-                    </label>
-                    <label class=\"field-wide\">ZIP subfolder
-                      <input name=\"download_subfolder\" value=\"{}\">
-                    </label>
-                  </div>
-                </section>
-              </div>
-            </details>
-            <div class=\"action-row\">
               <a class=\"button-link secondary icon-button\" href=\"/attachments?q=\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
-              <a class=\"button-link secondary icon-button\" href=\"/search\" title=\"Back to search\" aria-label=\"Back to search\">↩</a>
+            </div>
+            <div class=\"filter-accordion-row\">
+              <details class=\"filter-accordion\">
+                <summary>Basic filters</summary>
+                <div class=\"filter-groups\">
+                  <section class=\"filter-group\">
+                    <h2>Scope</h2>
+                    <div class=\"filter-grid\">
+                      <label class=\"field-wide\">Mailbox
+                      <select name=\"account_id\">
+                        <option value=\"\">All mailboxes</option>
+                        {}
+                      </select>
+                      </label>
+                      <label>Sender importance
+                      <select name=\"priority\">{}</select>
+                      </label>
+                      <label class=\"field-short\">Extension
+                        <select name=\"extension\">{}</select>
+                      </label>
+                    </div>
+                  </section>
+                  <section class=\"filter-group\">
+                    <h2>Sender</h2>
+                    <div class=\"filter-grid\">
+                      <label class=\"field-wide\">Sender address
+                        <input name=\"sender_address\" value=\"{}\">
+                      </label>
+                      <label>Sender name
+                        <input name=\"sender_name\" value=\"{}\">
+                      </label>
+                      <label>Sender domain
+                        <input name=\"sender_domain\" value=\"{}\">
+                      </label>
+                    </div>
+                  </section>
+                  <section class=\"filter-group\">
+                    <h2>Message</h2>
+                    <div class=\"filter-grid\">
+                      <label class=\"field-wide\">Subject
+                        <input name=\"subject\" value=\"{}\">
+                      </label>
+                      <label class=\"field-wide\">Body text
+                        <input name=\"body_text\" value=\"{}\">
+                      </label>
+                      <label>Date from
+                        <input type=\"date\" name=\"date_from\" value=\"{}\">
+                      </label>
+                      <label>Date to
+                        <input type=\"date\" name=\"date_to\" value=\"{}\">
+                      </label>
+                    </div>
+                  </section>
+                </div>
+              </details>
+              <details class=\"filter-accordion\">
+                <summary>Advanced</summary>
+                <div class=\"filter-groups\">
+                  <section class=\"filter-group\">
+                    <h2>Attachment</h2>
+                    <div class=\"filter-grid\">
+                      <label class=\"field-wide\">Attachment name
+                        <input name=\"attachment_name\" value=\"{}\">
+                      </label>
+                      <label class=\"field-short\">Custom extension
+                        <input name=\"extension_custom\" value=\"{}\" placeholder=\"xlsx\">
+                      </label>
+                    </div>
+                  </section>
+                  <section class=\"filter-group\">
+                    <h2>Limits</h2>
+                    <div class=\"filter-grid\">
+                      <label class=\"field-short\">Min size
+                        <input name=\"min_size\" value=\"{}\" inputmode=\"numeric\">
+                      </label>
+                      <label class=\"field-short\">Max size
+                        <input name=\"max_size\" value=\"{}\" inputmode=\"numeric\">
+                      </label>
+                    </div>
+                  </section>
+                  <section class=\"filter-group\">
+                    <h2>Output</h2>
+                    <div class=\"filter-grid\">
+                      <label class=\"checkbox-field\">Include message body files
+                      <input type=\"checkbox\" name=\"include_inline\" value=\"1\" {}>
+                      </label>
+                      <label class=\"checkbox-field\">Inline images
+                      <input type=\"checkbox\" name=\"include_inline_images\" value=\"1\" {}>
+                      </label>
+                      <label class=\"checkbox-field\">Show technical file type
+                      <input type=\"checkbox\" name=\"show_mime_details\" value=\"1\" {}>
+                      </label>
+                      <label class=\"field-wide\">ZIP subfolder
+                        <input name=\"download_subfolder\" value=\"{}\">
+                      </label>
+                    </div>
+                  </section>
+                </div>
+              </details>
             </div>
           </form>
-          {}
+          <div class=\"attachment-management-row\">
+            {}
+            {}
+          </div>
           <div class=\"attachment-toolbar\">
-            <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
-            <span class=\"selection-count\" data-selected-count>0 selected</span>
-            <button class=\"secondary\" type=\"button\" data-select-page title=\"Select visible attachments\">Select page</button>
-            <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
-              {}
-              <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\" data-bulk-action>↓</button>
-              {}
-            </form>
-            <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
-              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button data-bulk-action>&#8594;</button>
-            </form>
-            <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\" data-refresh-attachments-form>
-              <input type=\"hidden\" name=\"account_id\" value=\"{}\">
-              <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-              <button class=\"secondary icon-button\" type=\"submit\" title=\"Refresh attachment list\" aria-label=\"Refresh attachment list\">↻</button>
-            </form>
+            <div class=\"toolbar-selection\">
+              <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
+              <span class=\"selection-count\" data-selected-count>0 selected</span>
+              <button class=\"secondary\" type=\"button\" data-select-page title=\"Select visible attachments\">Select page</button>
+            </div>
+            <div class=\"toolbar-actions\">
+              <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
+                {}
+                <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\" data-bulk-action>↓</button>
+                {}
+              </form>
+              <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
+                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button data-bulk-action>&#8594;</button>
+              </form>
+              <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\" data-refresh-attachments-form>
+                <input type=\"hidden\" name=\"account_id\" value=\"{}\">
+                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                <button class=\"secondary icon-button\" type=\"submit\" title=\"Refresh attachment list\" aria-label=\"Refresh attachment list\">↻</button>
+              </form>
+            </div>
           </div>
         </section>",
         escape_html(&data.filters.message.q),
         render_account_options(&data.accounts, data.selected_account_id),
         render_sender_priority_filter_options(data.state.priority_filter),
-        escape_html(&data.filters.extension),
+        render_common_attachment_extension_options(&data.filters.extension),
         escape_html(&data.filters.message.sender_address),
         escape_html(&data.filters.message.sender_name),
         escape_html(&data.filters.message.sender_domain),
@@ -9153,13 +10020,10 @@ fn render_attachments_page(
         escape_html(&data.filters.message.body_text),
         escape_html(&data.filters.message.date_from),
         escape_html(&data.filters.message.date_to),
-        render_optional_bool_options(data.filters.message.has_attachments),
         escape_html(&data.filters.attachment_name),
-        escape_html(&data.filters.mime_type),
+        escape_html(custom_attachment_extension_value(&data.filters.extension)),
         escape_html(&data.filters.min_size),
         escape_html(&data.filters.max_size),
-        escape_html(&data.filters.min_attachments),
-        escape_html(&data.filters.max_attachments),
         if data.include_inline { "checked" } else { "" },
         if data.include_inline_images {
             "checked"
@@ -9169,6 +10033,7 @@ fn render_attachments_page(
         if data.show_mime_details { "checked" } else { "" },
         escape_html(&data.download_subfolder),
         preset_panel,
+        task_panel,
         filter_hiddens,
         if show_download_all {
             "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
@@ -9185,21 +10050,15 @@ fn render_attachments_page(
 
     writeln!(
         &mut body,
-        "<section class=\"panel result-summary\"><strong>{}</strong><span class=\"meta\"> attachments matching the current view</span></section>",
+        "<section class=\"result-summary\"><strong>{}</strong><span class=\"meta\"> attachments matching the current view</span></section>",
         pluralize_results(data.state.result_count),
     )
     .ok();
 
-    body.push_str(
-        "<section class=\"notice\">
-          <p class=\"notice-title\">Download files or send documents to Paperless.</p>
-        </section>",
-    );
-
     if let Some(message) = data.state.empty_message.as_deref() {
         writeln!(
             &mut body,
-            "<section class=\"panel empty-state\"><p class=\"meta\">{}</p></section>",
+            "<section class=\"empty-state\"><p class=\"meta\">{}</p></section>",
             escape_html(message)
         )
         .ok();
@@ -9236,7 +10095,7 @@ fn render_attachment_presets(
 ) -> String {
     let mut html = String::new();
     html.push_str(
-        "<section class=\"attachment-presets\" aria-label=\"Attachment filter presets\">",
+        "<details class=\"attachment-presets\" aria-label=\"Attachment filter presets\"><summary>Saved presets</summary>",
     );
     html.push_str(
         "<form method=\"post\" action=\"/attachments/presets\" class=\"preset-save-form\">
@@ -9279,7 +10138,141 @@ fn render_attachment_presets(
         }
         html.push_str("</div>");
     }
-    html.push_str("</section>");
+    html.push_str("</details>");
+    html
+}
+
+fn render_attachment_paperless_tasks(
+    data: &AttachmentPageData,
+    return_to: &str,
+    filter_hiddens: &str,
+) -> String {
+    let mut html = String::new();
+    html.push_str(
+        "<details class=\"attachment-presets paperless-tasks\" aria-label=\"Daily Paperless tasks\"><summary>Daily Paperless tasks</summary>",
+    );
+    html.push_str(
+        "<form method=\"post\" action=\"/attachments/paperless-tasks\" class=\"preset-save-form\">
+          <label>Task name
+            <input name=\"task_name\" maxlength=\"80\" placeholder=\"Invoices to Paperless\">
+          </label>
+          <label>Run daily at
+            <input type=\"time\" name=\"schedule_time\" value=\"06:30\" required>
+          </label>",
+    );
+    html.push_str(filter_hiddens);
+    html.push_str(
+        "<button class=\"secondary\" type=\"submit\">Save task</button>
+        </form>",
+    );
+
+    if data.paperless_tasks.is_empty() {
+        html.push_str("<p class=\"meta preset-empty\">No daily Paperless tasks</p>");
+    } else {
+        html.push_str("<div class=\"preset-list task-list\">");
+        for task in &data.paperless_tasks {
+            let href = if task.query.trim().is_empty() {
+                "/attachments".to_string()
+            } else {
+                format!("/attachments?{}", task.query)
+            };
+            let state_label = if task.enabled { "Enabled" } else { "Paused" };
+            let run_label = task
+                .last_run_at
+                .as_deref()
+                .map(|last_run_at| format!("Last run: {last_run_at}"))
+                .or_else(|| {
+                    task.last_run_date
+                        .as_deref()
+                        .map(|last_run_date| format!("Last run: {last_run_date}"))
+                })
+                .unwrap_or_else(|| "Not run yet".to_string());
+            writeln!(
+                &mut html,
+                "<div class=\"preset-chip task-chip\">
+                  <a class=\"button-link secondary\" href=\"{}\">{} · {}</a>
+                  <span class=\"meta\">{} · {}</span>
+                  <form method=\"post\" action=\"/attachments/paperless-tasks/toggle\" class=\"icon-form\">
+                    <input type=\"hidden\" name=\"task_id\" value=\"{}\">
+                    <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                    {}
+                    <button class=\"secondary\" type=\"submit\">{}</button>
+                  </form>
+                  <form method=\"post\" action=\"/attachments/paperless-tasks/delete\" class=\"icon-form\">
+                    <input type=\"hidden\" name=\"task_id\" value=\"{}\">
+                    <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+                    <button class=\"secondary icon-button\" type=\"submit\" title=\"Delete task\" aria-label=\"Delete task\">×</button>
+                  </form>
+                </div>",
+                escape_html(&href),
+                escape_html(&task.name),
+                escape_html(&task.schedule_time),
+                state_label,
+                escape_html(&run_label),
+                task.id,
+                escape_html(return_to),
+                if task.enabled {
+                    ""
+                } else {
+                    "<input type=\"hidden\" name=\"enabled\" value=\"1\">"
+                },
+                if task.enabled { "Pause" } else { "Enable" },
+                task.id,
+                escape_html(return_to),
+            )
+            .ok();
+            if let Some(summary) = task.last_summary.as_deref() {
+                writeln!(
+                    &mut html,
+                    "<p class=\"meta task-summary\">{}</p>",
+                    escape_html(summary)
+                )
+                .ok();
+            }
+        }
+        html.push_str("</div>");
+    }
+    html.push_str("</details>");
+    html
+}
+
+fn common_attachment_extensions() -> &'static [&'static str] {
+    &[
+        "pdf", "doc", "docx", "xls", "xlsx", "csv", "txt", "rtf", "odt", "jpg", "jpeg", "png",
+        "zip",
+    ]
+}
+
+fn is_common_attachment_extension(extension: &str) -> bool {
+    common_attachment_extensions()
+        .iter()
+        .any(|candidate| *candidate == extension)
+}
+
+fn custom_attachment_extension_value(extension: &str) -> &str {
+    if is_common_attachment_extension(extension) {
+        ""
+    } else {
+        extension
+    }
+}
+
+fn render_common_attachment_extension_options(selected_extension: &str) -> String {
+    let mut html = String::from("<option value=\"\">Any extension</option>");
+    for extension in common_attachment_extensions() {
+        writeln!(
+            &mut html,
+            "<option value=\"{}\" {}>{}</option>",
+            escape_html(extension),
+            if *extension == selected_extension {
+                "selected"
+            } else {
+                ""
+            },
+            escape_html(extension),
+        )
+        .ok();
+    }
     html
 }
 
@@ -9359,11 +10352,8 @@ fn append_hidden_fields_for_attachment_filters(
     for (key, value) in [
         ("extension", filters.extension.trim()),
         ("attachment_name", filters.attachment_name.trim()),
-        ("mime_type", filters.mime_type.trim()),
         ("min_size", filters.min_size.trim()),
         ("max_size", filters.max_size.trim()),
-        ("min_attachments", filters.min_attachments.trim()),
-        ("max_attachments", filters.max_attachments.trim()),
     ] {
         if !value.is_empty() {
             fields.push(format!(
@@ -9559,8 +10549,10 @@ fn render_search(
 
     body.push_str(
         "<section class=\"page-heading\">
-          <span class=\"page-heading-icon\" aria-hidden=\"true\">&#9993;</span>
-          <h1>Search mail</h1>
+          <div>
+            <p class=\"eyebrow\">Mail</p>
+            <h1>Search saved messages.</h1>
+          </div>
         </section>",
     );
 
@@ -9575,7 +10567,7 @@ fn render_search(
               <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search mail\" aria-label=\"Search mail\">⌕</button>
             </div>
             <details class=\"filter-accordion\">
-              <summary>Filter results</summary>
+              <summary>Filters</summary>
               <div class=\"filter-grid\">
                 <label class=\"field-wide\">Mailbox
                   <select name=\"account_id\">
@@ -9614,7 +10606,6 @@ fn render_search(
             </details>
             <div class=\"action-row\">
               <a class=\"button-link secondary icon-button\" href=\"/search?q=\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
-              <a class=\"button-link secondary icon-button\" href=\"/\" title=\"Back to dashboard\" aria-label=\"Back to dashboard\">↩</a>
             </div>
           </form>
         </section>",
@@ -9635,7 +10626,7 @@ fn render_search(
     if state.submitted {
         writeln!(
             &mut body,
-            "<section class=\"panel result-summary\"><strong>{}</strong><span class=\"meta\"> matching messages across indexed mailboxes</span></section>",
+            "<section class=\"result-summary\"><strong>{}</strong><span class=\"meta\"> matching messages across indexed mailboxes</span></section>",
             pluralize_results(state.result_count),
         )
         .ok();
@@ -9644,7 +10635,7 @@ fn render_search(
     if let Some(message) = state.empty_message.as_deref() {
         writeln!(
             &mut body,
-            "<section class=\"panel empty-state\"><p class=\"meta\">{}</p></section>",
+            "<section class=\"empty-state\"><p class=\"meta\">{}</p></section>",
             escape_html(message)
         )
         .ok();
@@ -9985,6 +10976,18 @@ fn vite_asset_tags(origin: &str) -> String {
 
 fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str) -> String {
     let frontend_tags = render_frontend_tags();
+    let top_nav = if active_nav == "dashboard" {
+        String::new()
+    } else {
+        format!(
+            r#"<nav class="top-nav" aria-label="Main navigation">
+          <a class="{}" href="/search">Mail</a>
+          <a class="{}" href="/attachments">Attachments</a>
+        </nav>"#,
+            nav_active_class(active_nav == "search"),
+            nav_active_class(active_nav == "attachments"),
+        )
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -10001,20 +11004,10 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
           <span class="brand-icon" aria-hidden="true"><span class="brand-envelope"></span></span>
           <span>Mail Archive</span>
         </a>
-        <nav class="top-nav" aria-label="Main navigation">
-          <a class="{}" href="/search">Mail</a>
-          <a class="{}" href="/attachments">Attachments</a>
-          <a class="{}" href="/accounts/new">Add mailbox</a>
-        </nav>
+        {}
       </header>
       {}
       <footer class="page-footer">
-        <nav class="footer-nav">
-          <a class="{}" href="/">Dashboard</a>
-          <a class="{}" href="/accounts/new">Add mailbox</a>
-          <a class="{}" href="/search">Search</a>
-          <a class="{}" href="/attachments">Attachments</a>
-        </nav>
         <p class="meta footer-meta">{}</p>
       </footer>
     </main>
@@ -10023,14 +11016,8 @@ fn layout(title: &str, identity: Option<&Identity>, active_nav: &str, body: &str
 </html>"#,
         escape_html(title),
         frontend_tags,
-        nav_active_class(active_nav == "search"),
-        nav_active_class(active_nav == "attachments"),
-        nav_active_class(active_nav == "accounts"),
+        top_nav,
         body,
-        nav_active_class(active_nav == "dashboard"),
-        nav_active_class(active_nav == "accounts"),
-        nav_active_class(active_nav == "search"),
-        nav_active_class(active_nav == "attachments"),
         escape_html(&identity_summary(identity)),
     )
 }
@@ -10626,7 +11613,7 @@ mod tests {
                     .to_string(),
             ),
             recommended_action: Some(
-                "Check the mailbox credentials, then use Update now again.".to_string(),
+                "Check the mailbox credentials, then use Sync Now again.".to_string(),
             ),
             progress_warning: None,
             progress_warning_detail: None,
@@ -11302,16 +12289,21 @@ mod tests {
         assert!(html.contains("Mailbox download failed before new mail could be indexed."));
         assert!(html.contains("Troubleshooting details"));
         assert!(html.contains("Check the mailbox credentials"));
-        assert!(html.contains("physical message files representing 6668 logical messages"));
+        assert!(html.contains("Sync Now"));
+        assert!(html.contains("data-health-light=\"mailbox\""));
+        assert!(!html.contains("physical message files representing 6668 logical messages"));
+        assert!(!html.contains("Search index is caught up with the archived messages."));
+        assert!(!html.contains("Search ready"));
     }
 
     #[test]
     fn dashboard_keeps_large_hero_panel() {
         let html = render_dashboard(&sample_identity(), &[], None, None);
 
-        assert!(html.contains("class=\"hero\""));
+        assert!(html.contains("class=\"hero dashboard-hero\""));
         assert!(html.contains("Mail Archive"));
-        assert!(html.contains("Search saved mail and file important attachments."));
+        assert!(html.contains("Search saved messages and find documents in attachments."));
+        assert!(html.contains("Search attachments"));
     }
 
     #[test]
@@ -12819,6 +13811,18 @@ mod tests {
             assert!(!html.contains("<span>Tags</span>"));
             assert!(html.contains("Sender importance"));
             assert!(html.contains("name=\"priority\""));
+            assert!(html.contains("<summary>Basic filters</summary>"));
+            assert!(html.contains("<summary>Advanced</summary>"));
+            assert!(html.contains("<select name=\"extension\">"));
+            assert!(html.contains("<option value=\"pdf\""));
+            assert!(html.contains("name=\"extension_custom\""));
+            assert!(!html.contains("name=\"has_attachments\""));
+            assert!(!html.contains("name=\"mime_type\""));
+            assert!(!html.contains("name=\"min_attachments\""));
+            assert!(!html.contains("name=\"max_attachments\""));
+            assert!(!html.contains("Technical file type"));
+            assert!(!html.contains("Min attachments"));
+            assert!(!html.contains("Max attachments"));
             assert!(!html.contains("<span>Source</span>"));
             assert!(html.contains("Source: "));
             assert!(!html.contains("Search and download archived mail attachments."));
@@ -12864,6 +13868,68 @@ mod tests {
         assert!(html.contains("Invoices"));
         assert!(html.contains("/attachments/presets/delete"));
         assert!(html.contains("q=rent+review"));
+    }
+
+    #[test]
+    fn paperless_consume_filename_removes_generated_mail_archive_prefix() {
+        assert_eq!(
+            paperless_consume_filename(
+                "mail-archive-20260517-121917-40f5e5d32565ade4-Statement #95 - OWN02063 .pdf"
+            ),
+            "Statement #95 - OWN02063 .pdf"
+        );
+        assert_eq!(
+            paperless_consume_filename("Statement #95 - OWN02063 .pdf"),
+            "Statement #95 - OWN02063 .pdf"
+        );
+    }
+
+    #[test]
+    fn daily_paperless_task_sends_matching_attachments() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-task",
+                "Message-ID: <paperless-task@example.com>\nFrom: Docs <docs@example.com>\nSubject: Paperless invoice\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let task = save_attachment_paperless_task_for_user(
+                &config,
+                "alice",
+                &AttachmentPaperlessTaskSaveForm {
+                    task_name: "Invoices".to_string(),
+                    schedule_time: "00:00".to_string(),
+                    subject: Some("invoice".to_string()),
+                    extension: Some("pdf".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("save task");
+            assert!(task.enabled);
+            assert_eq!(task.schedule_time, "00:00");
+
+            let had_errors = run_due_paperless_tasks(&config).expect("run tasks");
+            assert!(!had_errors);
+
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            assert!(consume_root.join("invoice.pdf").is_file());
+            let tasks = list_attachment_paperless_tasks(&config, "alice").expect("tasks");
+            assert_eq!(tasks.len(), 1);
+            assert!(tasks[0].last_run_date.is_some());
+            assert_eq!(
+                tasks[0].last_summary.as_deref(),
+                Some("1 attachment sent to Paperless")
+            );
+        });
     }
 
     #[test]
@@ -12961,7 +14027,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_paperless_handoff_records_are_cleared_and_allows_resend() {
+    fn consumed_paperless_handoff_records_remain_marked_sent() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
             let mut config = test_config(&tempdir);
@@ -12973,7 +14039,7 @@ mod tests {
             write_maildir_message(
                 &account_paths,
                 "Inbox/cur/msg-1",
-                "Message-ID: <stale-paperless@example.com>\nFrom: Docs <docs@example.com>\nSubject: Stale Paperless\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+                "Message-ID: <consumed-paperless@example.com>\nFrom: Docs <docs@example.com>\nSubject: Consumed Paperless\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
             );
             run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
                 .expect("sync");
@@ -12982,7 +14048,7 @@ mod tests {
                 &config,
                 "alice",
                 &AttachmentListParams {
-                    subject: Some("Stale Paperless".to_string()),
+                    subject: Some("Consumed Paperless".to_string()),
                     ..Default::default()
                 },
             )
@@ -13001,7 +14067,7 @@ mod tests {
                         &key,
                         page.items[0].attachment.attachment_sha256,
                         page.items[0].attachment.original_filename,
-                        "missing-stale.pdf",
+                        "invoice.pdf",
                         Utc::now().to_rfc3339(),
                     ],
                 )
@@ -13011,12 +14077,12 @@ mod tests {
                 &config,
                 "alice",
                 &AttachmentListParams {
-                    subject: Some("Stale Paperless".to_string()),
+                    subject: Some("Consumed Paperless".to_string()),
                     ..Default::default()
                 },
             )
             .expect("reloaded page");
-            assert!(reloaded.items[0].paperless_sent_at.is_none());
+            assert!(reloaded.items[0].paperless_sent_at.is_some());
 
             let remaining = connection
                 .query_row(
@@ -13025,18 +14091,131 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .expect("handoff row check");
-            assert_eq!(remaining, 0);
+            assert_eq!(remaining, 1);
 
-            let summary =
-                send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&key))
-                    .expect("resend");
-            assert_eq!(summary.sent, 1);
-            assert!(summary.sent_attachment_keys.contains(&key));
+            assert!(send_attachments_to_paperless(&config, "alice", &[key]).is_err());
         });
     }
 
     #[test]
-    fn bulk_paperless_handoff_continues_after_publish_failure() {
+    fn paperless_handoff_records_same_hash_attachments_as_already_uploaded() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <already-paperless-1@example.com>\nSubject: Existing Paperless One\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-2",
+                "Message-ID: <already-paperless-2@example.com>\nSubject: Existing Paperless Two\nDate: Fri, 19 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Existing Paperless".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            assert_eq!(page.items.len(), 2);
+            let first_key = page.items[0].attachment.attachment_key.clone();
+            let second_key = page.items[1].attachment.attachment_key.clone();
+
+            let first_summary =
+                send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&first_key))
+                    .expect("first send");
+            assert_eq!(first_summary.sent, 1);
+
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            fs::remove_file(consume_root.join("invoice.pdf")).expect("simulate paperless consume");
+
+            let second_summary =
+                send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&second_key))
+                    .expect("same hash already uploaded");
+            assert_eq!(second_summary.sent, 0);
+            assert_eq!(second_summary.already_uploaded, 1);
+            assert!(second_summary.sent_attachment_keys.contains(&second_key));
+            assert!(!consume_root.join("invoice.pdf").exists());
+            let handoff_count = open_db(&config)
+                .expect("db")
+                .query_row(
+                    "SELECT COUNT(*) FROM attachment_paperless_handoffs",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("handoff count");
+            assert_eq!(handoff_count, 2);
+        });
+    }
+
+    #[test]
+    fn paperless_handoff_records_matching_pending_consume_file_as_already_uploaded() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <pending-paperless@example.com>\nSubject: Pending Paperless\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Pending Paperless".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            assert_eq!(page.items.len(), 1);
+            let key = page.items[0].attachment.attachment_key.clone();
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            fs::create_dir_all(&consume_root).expect("consume root");
+            fs::write(consume_root.join("invoice.pdf"), b"pdf payload\n").expect("pending invoice");
+
+            let summary =
+                send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&key))
+                    .expect("pending already uploaded");
+            assert_eq!(summary.sent, 0);
+            assert_eq!(summary.already_uploaded, 1);
+            assert!(summary.sent_attachment_keys.contains(&key));
+            assert_eq!(
+                fs::read(consume_root.join("invoice.pdf")).expect("invoice"),
+                b"pdf payload\n"
+            );
+            assert_eq!(
+                fs::read_dir(&consume_root)
+                    .expect("consume dir")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("consume files")
+                    .len(),
+                1
+            );
+        });
+    }
+
+    #[test]
+    fn bulk_paperless_handoff_uses_suffix_when_consume_name_exists() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
             let mut config = test_config(&tempdir);
@@ -13074,13 +14253,10 @@ mod tests {
 
             let summary = send_attachments_to_paperless(&config, "alice", &keys).expect("send");
 
-            assert_eq!(summary.sent, 1);
-            assert_eq!(summary.failures.len(), 1);
-            assert_eq!(summary.failures[0].filename, "invoice.pdf");
-            assert!(summary.failures[0]
-                .error
-                .contains("already exists after waiting"));
+            assert_eq!(summary.sent, 2);
+            assert!(summary.failures.is_empty());
             assert!(consume_root.join("archive.zip").is_file());
+            assert!(consume_root.join("invoice (2).pdf").is_file());
             assert_eq!(
                 fs::read(consume_root.join("invoice.pdf")).expect("invoice"),
                 b"existing"
@@ -13089,7 +14265,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_paperless_filenames_do_not_overwrite_existing_consume_file() {
+    fn duplicate_paperless_filenames_get_readable_suffixes() {
         with_stubbed_path(&mail_export_stub_commands(), |_| {
             let tempdir = TempDir::new().expect("tempdir");
             let mut config = test_config(&tempdir);
@@ -13129,19 +14305,19 @@ mod tests {
 
             let summary = send_attachments_to_paperless(&config, "alice", &keys).expect("send");
 
-            assert_eq!(summary.sent, 1);
-            assert_eq!(summary.failures.len(), 1);
-            assert_eq!(summary.failures[0].filename, "invoice.pdf");
+            assert_eq!(summary.sent, 2);
+            assert!(summary.failures.is_empty());
             let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
             let consume_files = fs::read_dir(&consume_root)
                 .expect("consume dir")
                 .collect::<Result<Vec<_>, _>>()
                 .expect("consume files");
-            assert_eq!(consume_files.len(), 1);
-            assert_eq!(
-                consume_files[0].file_name().to_string_lossy(),
-                "invoice.pdf"
-            );
+            let mut consume_filenames = consume_files
+                .iter()
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            consume_filenames.sort();
+            assert_eq!(consume_filenames, vec!["invoice (2).pdf", "invoice.pdf"]);
         });
     }
 

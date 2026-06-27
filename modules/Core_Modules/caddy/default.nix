@@ -1,4 +1,4 @@
-{ lib, vars, ... }:
+{ config, lib, vars, ... }:
 
 let
   loopback = vars.networking.loopbackIPv4;
@@ -21,7 +21,6 @@ let
     "passwords.${vars.domain}"
     "emails.${vars.domain}"
     "ytdownload.${vars.domain}"
-    "requests.${vars.domain}"
     "sonarr.${vars.domain}"
     "radarr.${vars.domain}"
     "prowlarr.${vars.domain}"
@@ -29,6 +28,8 @@ let
     "syncthing.${vars.domain}"
     vars.kopiaDomain
     vars.rcloneDomain
+  ] ++ lib.optionals (config.repo.seerr.enable or false) [
+    "requests.${vars.domain}"
   ];
   shortAliasCaddyHosts = lib.listToAttrs (
     map
