@@ -17,18 +17,18 @@ let
   ];
   subscribeTopicsCsv = lib.concatStringsSep "," subscribeTopics;
   appAcl = [
-    "topic readwrite azman1/feeds/#"
-    "topic readwrite testtopic/9"
-    "topic readwrite requesttesta"
-    "topic readwrite cmd/#"
-    "topic readwrite cfg/#"
+    "readwrite azman1/feeds/#"
+    "readwrite testtopic/9"
+    "readwrite requesttesta"
+    "readwrite cmd/#"
+    "readwrite cfg/#"
   ];
   loggerAcl = [
-    "topic readwrite azman1/feeds/#"
-    "topic readwrite testtopic/9"
-    "topic read requesttesta"
-    "topic read cmd/#"
-    "topic read cfg/#"
+    "readwrite azman1/feeds/#"
+    "readwrite testtopic/9"
+    "read requesttesta"
+    "read cmd/#"
+    "read cfg/#"
   ];
   listenerUsers = {
     groundwater-app = {
