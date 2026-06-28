@@ -22,6 +22,8 @@ type RawProbe = {
   _type?: string;
 };
 
+const VIDEO_FORMAT_SORT = '+vcodec:avc,+acodec:m4a,res,fps,br';
+
 const videoSelector = (quality: VideoQuality): string => {
   if (quality === 'best') {
     return 'bestvideo+bestaudio/best';
@@ -92,10 +94,13 @@ export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: str
     '--convert-thumbnails',
     'jpg',
     '--embed-metadata',
-    '--embed-thumbnail',
     '-o',
     outputTemplate,
   ];
+
+  if (request.mediaType !== 'audio' || request.embedAudioCoverArt !== false) {
+    args.push('--embed-thumbnail');
+  }
 
   if (request.splitChapters && request.mediaType === 'video') {
     args.push('--split-chapters', '-o', `chapter:${chapterTemplate}`);
@@ -110,6 +115,8 @@ export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: str
     args.push(
       '-f',
       videoSelector(request.videoQuality ?? 'best'),
+      '--format-sort',
+      VIDEO_FORMAT_SORT,
       '--merge-output-format',
       request.videoContainer ?? 'mkv',
     );

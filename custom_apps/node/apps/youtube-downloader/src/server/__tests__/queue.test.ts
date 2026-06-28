@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { Database } from '../db.js';
-import { JobQueue, audioChapterSpecs, buildAudioChapterFfmpegArgs, chapterGateFor } from '../queue.js';
+import { JobQueue, audioChapterSpecs, buildAudioChapterFfmpegArgs, chapterGateFor, normalizeCreateJobRequest } from '../queue.js';
 import type { CreateJobRequest, CurrentUser, ProbeResponse } from '../../shared/types.js';
 
 let tempDir = '';
@@ -102,6 +102,26 @@ describe('queue alerts', () => {
     ).toBe('download');
   });
 
+  it('defaults new requests to split chapters and embedded audio cover art', () => {
+    expect(normalizeCreateJobRequest({ ...request, splitChapters: undefined as unknown as boolean })).toMatchObject({
+      splitChapters: true,
+      embedAudioCoverArt: true,
+    });
+    expect(
+      normalizeCreateJobRequest({
+        ...request,
+        mediaType: 'video',
+        audioFormat: undefined,
+        videoContainer: 'mkv',
+        videoQuality: '1080p',
+        splitChapters: undefined as unknown as boolean,
+      }),
+    ).toMatchObject({
+      splitChapters: true,
+      embedAudioCoverArt: undefined,
+    });
+  });
+
   it('derives audio chapter durations from explicit and adjacent chapter boundaries', () => {
     expect(
       audioChapterSpecs({
@@ -136,5 +156,38 @@ describe('queue alerts', () => {
     expect(args).not.toContain('copy');
     expect(args).toContain('-map_chapters');
     expect(args).toContain('-1');
+  });
+
+  it('embeds cover art into supported split audio chapter formats when a cover is available', () => {
+    const args = buildAudioChapterFfmpegArgs({
+      input: '/tmp/source.mp3',
+      output: '/tmp/01 - Intro.mp3',
+      chapter: { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
+      start: 0,
+      duration: 30,
+      audioFormat: 'mp3',
+      coverPath: '/tmp/cover.jpg',
+    });
+
+    expect(args).toContain('/tmp/cover.jpg');
+    expect(args).toContain('1:v:0');
+    expect(args).toContain('attached_pic');
+    expect(args).not.toContain('-vn');
+  });
+
+  it('omits cover art mapping for unsupported split audio chapter formats', () => {
+    const args = buildAudioChapterFfmpegArgs({
+      input: '/tmp/source.opus',
+      output: '/tmp/01 - Intro.opus',
+      chapter: { index: 1, title: 'Intro', startTime: 0, endTime: 30 },
+      start: 0,
+      duration: 30,
+      audioFormat: 'opus',
+      coverPath: '/tmp/cover.jpg',
+    });
+
+    expect(args).not.toContain('/tmp/cover.jpg');
+    expect(args).not.toContain('1:v:0');
+    expect(args).toContain('-vn');
   });
 });

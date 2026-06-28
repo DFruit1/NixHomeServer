@@ -44,6 +44,7 @@ export type CreateJobRequest = {
   videoContainer?: VideoContainer;
   videoQuality?: VideoQuality;
   splitChapters: boolean;
+  embedAudioCoverArt?: boolean;
   includeChannel: boolean;
   includeDate: boolean;
   saveAudioToAudiobooks?: boolean;

@@ -19,8 +19,12 @@ let
     fi
 
     if [[ -e "$mount_path" ]] && ! ${pkgs.util-linux}/bin/mountpoint -q "$mount_path"; then
-      echo "Archive mount target exists and is not a mountpoint: $mount_path" >&2
-      exit 1
+      if [[ -d "$mount_path" ]] && [[ -z "$(${pkgs.findutils}/bin/find "$mount_path" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        ${pkgs.coreutils}/bin/rmdir "$mount_path"
+      else
+        echo "Archive mount target exists and is not an empty directory or mountpoint: $mount_path" >&2
+        exit 1
+      fi
     fi
 
     ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "${cfg.indexRoot}"
@@ -170,8 +174,12 @@ let
         current_signature="$(archive_signature "$archive_path")"
 
         if [[ -e "$mount_path" ]] && ! ${pkgs.util-linux}/bin/mountpoint -q "$mount_path"; then
-          echo "Skipping archive because mount target exists and is not a mountpoint: $mount_path" >&2
-          continue
+          if [[ -d "$mount_path" ]] && [[ -z "$(${pkgs.findutils}/bin/find "$mount_path" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+            ${pkgs.coreutils}/bin/rmdir "$mount_path"
+          else
+            echo "Skipping archive because mount target exists and is not an empty directory or mountpoint: $mount_path" >&2
+            continue
+          fi
         fi
 
         if ${pkgs.util-linux}/bin/mountpoint -q "$mount_path"; then

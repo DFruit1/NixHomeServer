@@ -45,10 +45,10 @@ export class JobQueue {
   }
 
   async enqueue(user: CurrentUser, request: CreateJobRequest): Promise<string> {
-    const normalizedRequest = {
+    const normalizedRequest = normalizeCreateJobRequest({
       ...request,
       url: normalizeDownloadUrl(request.url),
-    };
+    });
     validateRequest(normalizedRequest);
     if (normalizedRequest.destination === 'shared' && !user.canWriteShared) {
       throw new Error('shared downloads require shared file access');
@@ -259,7 +259,7 @@ export class JobQueue {
     await this.db.setStatus(job.id, 'postprocessing');
     if (request.splitChapters && request.mediaType === 'audio') {
       await this.db.setProgress(job.id, { phase: 'postprocess' });
-      await splitAudioChapters(tempDir, source, request.audioFormat ?? 'flac');
+      await splitAudioChapters(tempDir, source, request.audioFormat ?? 'flac', request.embedAudioCoverArt !== false);
     }
     await this.db.setProgress(job.id, { phase: 'move' });
     const sourceDir = request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
@@ -340,6 +340,9 @@ export const validateRequest = (request: CreateJobRequest): void => {
   if (request.destination !== 'personal' && request.destination !== 'shared') {
     throw new Error('destination must be personal or shared');
   }
+  if (typeof request.splitChapters !== 'boolean') {
+    throw new Error('split chapters flag must be a boolean');
+  }
   if (request.mediaType === 'audio') {
     if (!request.audioFormat || !['flac', 'm4a', 'mp3', 'opus', 'wav'].includes(request.audioFormat)) {
       throw new Error('unsupported audio format');
@@ -349,6 +352,9 @@ export const validateRequest = (request: CreateJobRequest): void => {
     }
     if (request.saveAudioToAudiobooks != null && typeof request.saveAudioToAudiobooks !== 'boolean') {
       throw new Error('audiobook destination flag must be a boolean');
+    }
+    if (request.embedAudioCoverArt != null && typeof request.embedAudioCoverArt !== 'boolean') {
+      throw new Error('audio cover art flag must be a boolean');
     }
   } else if (request.mediaType === 'video') {
     if (!request.videoContainer || !['mkv', 'mp4', 'webm'].includes(request.videoContainer)) {
@@ -361,6 +367,12 @@ export const validateRequest = (request: CreateJobRequest): void => {
     throw new Error('media type must be audio or video');
   }
 };
+
+export const normalizeCreateJobRequest = (request: CreateJobRequest): CreateJobRequest => ({
+  ...request,
+  splitChapters: request.splitChapters ?? true,
+  embedAudioCoverArt: request.mediaType === 'audio' ? (request.embedAudioCoverArt ?? true) : undefined,
+});
 
 export const chapterGateFor = (request: CreateJobRequest, source: ProbeResponse): 'download' | 'single-file' | 'alert' => {
   if (request.splitChapters && source.chapters.length === 0) {
@@ -420,12 +432,17 @@ type AudioChapterSpec = {
   duration: number;
 };
 
-const splitAudioChapters = async (tempDir: string, source: ProbeResponse, audioFormat: AudioFormat): Promise<void> => {
+const splitAudioChapters = async (
+  tempDir: string,
+  source: ProbeResponse,
+  audioFormat: AudioFormat,
+  embedCoverArt: boolean,
+): Promise<void> => {
   const input = await findDownloadedMedia(tempDir);
   const chapterDir = path.join(tempDir, 'chapters');
   await rm(chapterDir, { recursive: true, force: true });
   await mkdir(chapterDir, { recursive: true, mode: 0o750 });
-  await copyFirstThumbnail(tempDir, chapterDir);
+  const coverPath = embedCoverArt ? await copyFirstThumbnail(tempDir, chapterDir) : undefined;
 
   const specs = audioChapterSpecs(source);
   for (const spec of specs) {
@@ -438,8 +455,24 @@ const splitAudioChapters = async (tempDir: string, source: ProbeResponse, audioF
       start: spec.start,
       duration: spec.duration,
       audioFormat,
+      coverPath,
     });
-    const result = await runCommand('ffmpeg', args, { timeoutMs: Math.max(120000, Math.ceil(spec.duration + 60) * 1000) });
+    const timeoutMs = Math.max(120000, Math.ceil(spec.duration + 60) * 1000);
+    let result = await runCommand('ffmpeg', args, { timeoutMs });
+    if (result.code !== 0 && coverPath) {
+      result = await runCommand(
+        'ffmpeg',
+        buildAudioChapterFfmpegArgs({
+          input,
+          output,
+          chapter: spec.chapter,
+          start: spec.start,
+          duration: spec.duration,
+          audioFormat,
+        }),
+        { timeoutMs },
+      );
+    }
     if (result.code !== 0) {
       throw new Error(result.stderr.trim() || `ffmpeg exited with code ${result.code ?? 'unknown'} while splitting chapter ${spec.chapter.index}`);
     }
@@ -453,6 +486,7 @@ type AudioChapterFfmpegArgs = {
   start: number;
   duration: number;
   audioFormat: AudioFormat;
+  coverPath?: string;
 };
 
 export const buildAudioChapterFfmpegArgs = ({
@@ -462,30 +496,38 @@ export const buildAudioChapterFfmpegArgs = ({
   start,
   duration,
   audioFormat,
-}: AudioChapterFfmpegArgs): string[] => [
-  '-hide_banner',
-  '-nostdin',
-  '-y',
-  '-ss',
-  formatSeconds(start),
-  '-t',
-  formatSeconds(duration),
-  '-i',
-  input,
-  '-map',
-  '0:a:0',
-  '-map_metadata',
-  '-1',
-  '-map_chapters',
-  '-1',
-  '-vn',
-  ...audioEncoderArgs(audioFormat),
-  '-metadata',
-  `title=${chapter.title}`,
-  '-metadata',
-  `track=${chapter.index}`,
-  output,
-];
+  coverPath,
+}: AudioChapterFfmpegArgs): string[] => {
+  const embedCover = coverPath != null && audioFormatSupportsEmbeddedCover(audioFormat);
+  return [
+    '-hide_banner',
+    '-nostdin',
+    '-y',
+    '-ss',
+    formatSeconds(start),
+    '-t',
+    formatSeconds(duration),
+    '-i',
+    input,
+    ...(embedCover ? ['-i', coverPath] : []),
+    '-map',
+    '0:a:0',
+    ...(embedCover ? ['-map', '1:v:0'] : []),
+    '-map_metadata',
+    '-1',
+    '-map_chapters',
+    '-1',
+    ...audioEncoderArgs(audioFormat),
+    ...(embedCover ? ['-c:v', 'mjpeg', '-disposition:v', 'attached_pic'] : ['-vn']),
+    '-metadata',
+    `title=${chapter.title}`,
+    '-metadata',
+    `track=${chapter.index}`,
+    output,
+  ];
+};
+
+const audioFormatSupportsEmbeddedCover = (audioFormat: AudioFormat): boolean => ['flac', 'm4a', 'mp3'].includes(audioFormat);
 
 const audioEncoderArgs = (audioFormat: AudioFormat): string[] => {
   switch (audioFormat) {
@@ -514,16 +556,18 @@ const findDownloadedMedia = async (tempDir: string): Promise<string> => {
   return mediaFiles[0];
 };
 
-const copyFirstThumbnail = async (tempDir: string, chapterDir: string): Promise<void> => {
+const copyFirstThumbnail = async (tempDir: string, chapterDir: string): Promise<string | undefined> => {
   const entries = await collectFiles(tempDir);
   const thumbnail = entries.find((entry) => THUMBNAIL_EXTENSIONS.has(path.extname(entry).toLowerCase()));
   if (!thumbnail) {
-    return;
+    return undefined;
   }
-  await cp(thumbnail, path.join(chapterDir, 'cover.jpg'), {
+  const coverPath = path.join(chapterDir, 'cover.jpg');
+  await cp(thumbnail, coverPath, {
     force: false,
     errorOnExist: true,
   });
+  return coverPath;
 };
 
 export const audioChapterSpecs = (source: ProbeResponse): AudioChapterSpec[] =>

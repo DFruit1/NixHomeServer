@@ -34,7 +34,8 @@ export default component$(() => {
   const audioQuality = useSignal<'best' | 'high' | 'medium' | 'low'>('best');
   const videoContainer = useSignal<'mkv' | 'mp4' | 'webm'>('mkv');
   const videoQuality = useSignal<'best' | '2160p' | '1440p' | '1080p' | '720p' | '480p'>('1080p');
-  const splitChapters = useSignal(false);
+  const splitChapters = useSignal(true);
+  const embedAudioCoverArt = useSignal(true);
   const includeChannel = useSignal(true);
   const includeDate = useSignal(true);
   const saveAudioToAudiobooks = useSignal(false);
@@ -116,6 +117,7 @@ export default component$(() => {
       videoContainer: mediaType.value === 'video' ? videoContainer.value : undefined,
       videoQuality: mediaType.value === 'video' ? videoQuality.value : undefined,
       splitChapters: splitChapters.value,
+      embedAudioCoverArt: mediaType.value === 'audio' ? embedAudioCoverArt.value : undefined,
       includeChannel: includeChannel.value,
       includeDate: includeDate.value,
       saveAudioToAudiobooks: mediaType.value === 'audio' ? saveAudioToAudiobooks.value : undefined,
@@ -278,17 +280,25 @@ export default component$(() => {
               <label>
                 <input
                   type="checkbox"
+                  checked={embedAudioCoverArt.value}
+                  onChange$={(_, target) => (embedAudioCoverArt.value = target.checked)}
+                />
+                Embed cover art
+              </label>
+              <label>
+                <input
+                  type="checkbox"
                   checked={saveAudioToAudiobooks.value}
                   onChange$={(_, target) => (saveAudioToAudiobooks.value = target.checked)}
                 />
                 Save audio to Audiobooks
               </label>
-              <label>
-                <input type="checkbox" checked={pasteAndQueue.value} onChange$={(_, target) => (pasteAndQueue.value = target.checked)} />
-                Paste & Queue button
-              </label>
             </>
           )}
+          <label>
+            <input type="checkbox" checked={pasteAndQueue.value} onChange$={(_, target) => (pasteAndQueue.value = target.checked)} />
+            Paste & Queue button
+          </label>
         </div>
 
         {error.value && <p class="error">{error.value}</p>}

@@ -20,7 +20,14 @@ describe('yt-dlp argv generation', () => {
     expect(args).toContain('--windows-filenames');
     expect(args).toContain('--audio-format');
     expect(args).toContain('flac');
+    expect(args).toContain('--embed-thumbnail');
     expect(args.at(-1)).toBe(baseRequest.url);
+  });
+
+  it('can disable embedded cover art for audio extraction', () => {
+    const args = buildDownloadArgs({ ...baseRequest, embedAudioCoverArt: false }, '/tmp/out.%(ext)s', '/tmp/ch/%(section_title)s.%(ext)s');
+    expect(args).not.toContain('--embed-thumbnail');
+    expect(args).toContain('--write-thumbnail');
   });
 
   it('downloads one converted source file for audio chapter splitting', () => {
@@ -62,6 +69,8 @@ describe('yt-dlp argv generation', () => {
       '/tmp/ch/%(section_title)s.%(ext)s',
     );
     expect(args).toContain('bestvideo[height<=1080]+bestaudio/best[height<=1080]/best');
+    expect(args).toContain('--format-sort');
+    expect(args).toContain('+vcodec:avc,+acodec:m4a,res,fps,br');
     expect(args).toContain('--merge-output-format');
   });
 
