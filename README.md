@@ -17,6 +17,25 @@ cloud accounts. It can replace or reduce dependence on services like Dropbox,
 Google Photos, iCloud Photos, Netflix-style media libraries, document storage,
 and hosted password managers.
 
+What you get out of this repository:
+
+- `homepage`: a single private dashboard for server status and your most-used app links.
+- `kanidm`: a private identity and login provider so one account system protects your apps.
+- `immich`: photos and videos with private albums, person/group tools, and backup sync.
+- `paperless`: document capture, OCR, and searchable filing for receipts, PDFs, and paperwork.
+- `filestash`: web and SFTP file browser to work from browsers and remote devices.
+- `jellyfin`: media server for home streaming to phones, TVs, and web players.
+- `audiobookshelf`: organized audiobooks and podcast listening.
+- `kavita`: ebook and comic library organization and reading.
+- `kiwix`: local offline knowledge/reference collections.
+- `vaultwarden`: private password manager replacement for hosted vaults.
+- `mail-archive-ui`: searchable mailbox archive with attachments and document handoff.
+- `sonarr`, `radarr`, `prowlarr`, `qbittorrent`: optional media automation stack for tracking and downloading.
+- `seerr`: optional media request portal for your household.
+- `youtube-downloader`: optional queue for downloading public audio/video for offline use.
+- `offline-music`: optional home offline media sync workflows (typically built on folders and Syncthing).
+- `groundwater-logger`: optional environmental telemetry and logging package.
+
 It is not a magic appliance. You will still need:
 
 - A physical machine that stays on at home.
@@ -401,6 +420,40 @@ Application selection is controlled by explicit imports in
 can be removed from the import list, and cross-service bindings should be kept
 as explicit imports from [`modules/Integrations`](./modules/Integrations/README.md).
 
+## Core Modules: Why They Are the Foundation
+
+Core modules are the services that make every optional app usable and manageable.
+Treat this layer as non-negotiable; app modules are written to run on top of it.
+
+Core modules included by default are:
+
+- `age`: centralized secret materialization for non-secret storage in Nix and encrypted secret files at deploy-time.
+- `backups`: shared backup policy and lifecycle for stateful services.
+- `base-system`: baseline OS settings, kernel/service defaults, and host-level behavior.
+- `caddy`: the web entrypoint that routes hostnames to app endpoints.
+- `cloudflared`: outbound-only tunnel path so private services can be reached without public port exposure.
+- `data-disks`: mirrored pool layout and resilient data-device handling.
+- `impermanence`: controlled persistence for `/persist`, `/var` state, and application data expectations across rebuilds.
+- `kanidm`: identity, groups, and SSO provider so one account model secures services.
+- `kopia`: scheduled and operational backup orchestration hooks.
+- `monitoring`: health visibility and health-driven troubleshooting surface.
+- `netbird`: private overlay network for remote access with predictable identity-aware routing.
+- `oauth2-proxy`: central OIDC-to-HTTP auth gateway used by apps that do not do native OIDC.
+- `phone-backup`: first-class mobile backup entrypoint wiring.
+- `rclone`: backup destination sync paths and automation.
+- `storage`: mount points and shared storage policy contract for apps.
+- `storage-monitoring`: disk health checks and alert triggers that protect data before failures.
+- `syncthing`: optional peer-to-peer sync for personal and offline media workflows.
+- `unbound`: DNS for private hostnames and internal name routing rules.
+- `validation`: pre- and post-merge checks to prevent bad config from reaching runtime.
+
+If one of these is removed, the dependent pieces usually fail in non-obvious ways:
+no authentication, broken name resolution, no web ingress, missing persistence, or
+no protected remote access.
+
+This helps explain the bootstrap shape: first set the platform base (network,
+identity, DNS, storage, secrets), then enable application modules for features.
+
 ## Stage 6: Create The Secret Key
 
 Secrets are values that should not be readable in Git: passwords, API tokens,
@@ -644,38 +697,38 @@ Use this as a map, then revisit the setup steps in order:
 
 ```mermaid
 flowchart LR
-    A[Browser opens a hostname like photos.example.com] --> B{DNS lookup for that hostname}
-    B --> C{Name is private home hostname?}
-    C -->|Yes| D[Home router sends DNS to server Unbound]
-    C -->|No| E{Name is public internet hostname?}
-    E -->|Yes| F[Cloudflare DNS + Tunnel]
-    E -->|No| G[Name may need manual fix in browser]
-    D --> H{Request path}
-    H -->|Home device| I[Private traffic on LAN to server LAN IP]
-    H -->|Remote trusted device| J[NetBird path to server NetBird IP]
-    I --> K[Caddy on server]
+    A["Browser opens a hostname such as photos.example.com"] --> B{"DNS lookup for that hostname"}
+    B --> C{"Is this a private home hostname?"}
+    C -->|Yes| D["Home router sends DNS to server Unbound"]
+    C -->|No| E{"Is this a public internet hostname?"}
+    E -->|Yes| F["Cloudflare DNS and Tunnel"]
+    E -->|No| G["Name may need manual fix in browser"]
+    D --> H{"Request path"}
+    H -->|Home device| I["Private traffic on LAN to server LAN IP"]
+    H -->|Remote trusted device| J["NetBird path to server NetBird IP"]
+    I --> K["Caddy on server"]
     J --> K
-    F --> L[Cloudflare edge]
-    L --> M[cloudflared tunnel connector]
+    F --> L["Cloudflare edge"]
+    L --> M["cloudflared tunnel connector"]
     M --> K
-    K --> N[Application service]
-    N --> O[Persistent app data in /persist and /mnt/data]
-    N --> P[Internet response]
-    G --> Q[DNS / hostname correction]
+    K --> N["Application service"]
+    N --> O["Persistent app data in /persist and /mnt/data"]
+    N --> P["Internet response"]
+    G --> Q["DNS and hostname correction"]
 ```
 
 ```mermaid
 flowchart TD
-    A[Home LAN device with NetBird] --> B[DNS query goes to NetBird nameservice]
-    C[Remote device with NetBird] --> B
-    B --> D[Private hostname resolves to server NetBird IP]
-    D --> E[Caddy]
-    E --> F[Private app service]
-    G[Home LAN device without NetBird] --> H[Router uses normal public DNS]
-    H --> I{Is hostname mapped publicly?}
-    I -->|Yes| J[Cloudflare DNS + Tunnel path]
-    I -->|No| K[Use direct LAN IP or install NetBird]
-    J --> L[cloudflared]
+    A["Home LAN device with NetBird"] --> B["DNS query goes to NetBird nameservice"]
+    C["Remote device with NetBird"] --> B
+    B --> D["Private hostname resolves to server NetBird IP"]
+    D --> E["Caddy"]
+    E --> F["Private app service"]
+    G["Home LAN device without NetBird"] --> H["Router uses normal public DNS"]
+    H --> I{"Is hostname mapped publicly?"}
+    I -->|Yes| J["Cloudflare DNS and Tunnel path"]
+    I -->|No| K["Use direct LAN IP or install NetBird"]
+    J --> L["cloudflared"]
     L --> E
 ```
 
@@ -689,21 +742,53 @@ In plain terms:
 
 ```mermaid
 flowchart TD
-    A[Private request reaches Caddy] --> B{App requires login?}
-    B -->|No| C[App serves directly]
-    B -->|Yes| D[OAuth2 Proxy / IdP-aware proxy path]
-    D --> E[Kanidm (identity provider)]
-    E --> F{Credentials + policy check}
-    F -->|Allowed| G[Kanidm returns identity claim]
-    F -->|Denied| H[Access denied]
-    G --> I[OAuth2 Proxy returns signed session]
+    A["Private request reaches Caddy"] --> B{"App requires login?"}
+    B -->|No| C["App serves directly"]
+    B -->|Yes| D["OAuth2 Proxy and IdP-aware proxy path"]
+    D --> E["Kanidm identity provider"]
+    E --> F["Credentials and policy check"]
+    F -->|Allowed| G["Kanidm returns identity claim"]
+    F -->|Denied| H["Access denied"]
+    G --> I["OAuth2 Proxy returns signed session"]
     I --> C
-    C --> J[App accepts user]
+    C --> J["App accepts user"]
 ```
 
 This is why bootstrap asks for network mode, DNS settings, Cloudflare credentials,
 NetBird enrollment, identity admin details, and disk layout up front. Those values
 decide how each request reaches the right app and who is allowed through.
+
+## Native OIDC vs OAuth2 Proxy
+
+You asked how authentication is handled in this repo because it affects where you
+trust identity and where you expose each app.
+
+In this setup:
+
+- Native OIDC means the app talks directly to Kanidm as an OIDC client.
+- OAuth2 Proxy means a separate service performs OIDC login and then forwards
+  the trusted request to the app.
+
+Why the repo uses both:
+
+- Some apps have good native OIDC support and cleaner direct integration.
+- Some apps only expose weak or inconsistent OIDC options, so the proxy is used to
+  keep access policy consistent.
+- A single proxy pattern also lets the team enforce login boundaries and headers
+  in one place for apps that are mostly "just web apps."
+
+Decision guide for this repo:
+
+- If an app has a reliable native OIDC configuration and good group/role
+  mapping, it can connect directly to Kanidm.
+- If an app has weak OIDC support or requires complex headers/cookies/legacy login
+  behavior, it is wrapped with `oauth2-proxy`.
+- The result is intentional: security is still central in Kanidm either way, while
+  implementation is practical for each app.
+
+For users: both methods still use one identity provider and one set of user accounts.
+The visible difference is who performs the login handshake: the app, or a trusted
+proxy service placed in front of it.
 
 ## Day-2 Operations
 
