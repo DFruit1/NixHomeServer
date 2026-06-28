@@ -24,6 +24,7 @@ let
     jq
   ];
   paperlessPermissionsBootstrapPath = with pkgs; [
+    coreutils
     sqlite
   ];
   paperlessUserDocumentPermissionCodenames = [

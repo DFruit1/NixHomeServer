@@ -27,6 +27,11 @@ let
         path = Path(os.environ["PATCH_TARGET"])
         text = path.read_text()
 
+        text = text.replace(
+            "from django.contrib.auth.models import Group\nfrom django.contrib.auth.models import User\n",
+            "from django.contrib.auth.models import Group\nfrom django.contrib.auth.models import Permission\nfrom django.contrib.auth.models import User\n",
+        )
+
         old = """    def save_user(self, request, sociallogin, form=None):
                 \"\"\"
                 Save the user instance. Default groups are assigned to the user, if
@@ -46,9 +51,7 @@ let
                 return user
         """
 
-        new = """    def _get_social_group_names(self, sociallogin):
-                claim_name = getattr(settings, \"SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM\", \"groups\")
-                group_values = sociallogin.account.extra_data.get(claim_name, [])
+        new = """    def _coerce_social_group_names(self, group_values):
                 if isinstance(group_values, str):
                     return {group_values}
                 if isinstance(group_values, (list, tuple, set)):
@@ -59,15 +62,48 @@ let
                     }
                 return set()
 
+            def _get_social_group_names(self, sociallogin):
+                extra_data = sociallogin.account.extra_data or {}
+                claim_names = {
+                    getattr(settings, \"SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM\", \"groups\"),
+                    \"groups\",
+                    \"groups_name\",
+                }
+                group_names = set()
+                for claim_name in claim_names:
+                    group_names.update(
+                        self._coerce_social_group_names(extra_data.get(claim_name, [])),
+                    )
+
+                userinfo = extra_data.get(\"userinfo\", {})
+                if isinstance(userinfo, dict):
+                    for claim_name in claim_names:
+                        group_names.update(
+                            self._coerce_social_group_names(userinfo.get(claim_name, [])),
+                        )
+                return group_names
+
+            def _ensure_paperless_admin_group(self):
+                group, _ = Group.objects.get_or_create(name=\"app-admin\")
+                group.permissions.set(Permission.objects.all())
+                return group
+
             def _apply_kanidm_admin_role(self, user, sociallogin):
                 if sociallogin.account.provider != \"kanidm\":
                     return
                 is_admin = \"app-admin\" in self._get_social_group_names(sociallogin)
                 logger.debug(
-                    f\"Reconciling Paperless social admin flags for `{user}`: {is_admin}\",
+                    f\"Reconciling Paperless social admin role for `{user}`: {is_admin}\",
                 )
                 user.is_superuser = is_admin
                 user.is_staff = is_admin
+                if user.pk:
+                    if is_admin:
+                        user.groups.add(self._ensure_paperless_admin_group())
+                    else:
+                        admin_group = Group.objects.filter(name=\"app-admin\").first()
+                        if admin_group is not None:
+                            user.groups.remove(admin_group)
 
             def pre_social_login(self, request, sociallogin):
                 self._apply_kanidm_admin_role(sociallogin.user, sociallogin)
@@ -100,6 +136,8 @@ let
                     )
                     user.groups.add(*groups)
                     user.save()
+                self._apply_kanidm_admin_role(user, sociallogin)
+                user.save(update_fields=[\"is_superuser\", \"is_staff\"])
                 handle_social_account_updated(None, request, sociallogin)
                 return user
         """

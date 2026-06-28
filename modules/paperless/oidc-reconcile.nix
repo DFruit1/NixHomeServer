@@ -160,6 +160,145 @@ SQL
           esac
           reconcile_user "$username" "$mail"
         done
+
+        sqlite3 "$paperless_db" <<'SQL'
+.timeout 5000
+BEGIN;
+INSERT INTO auth_group (name)
+SELECT 'app-admin'
+WHERE NOT EXISTS (
+  SELECT 1 FROM auth_group WHERE name = 'app-admin'
+);
+
+INSERT INTO auth_group_permissions (group_id, permission_id)
+SELECT g.id, p.id
+FROM auth_group AS g
+CROSS JOIN auth_permission AS p
+WHERE g.name = 'app-admin'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM auth_group_permissions AS gp
+    WHERE gp.group_id = g.id
+      AND gp.permission_id = p.id
+  );
+
+DROP TABLE IF EXISTS paperless_oidc_group_subjects;
+CREATE TEMP TABLE paperless_oidc_group_subjects (
+  user_id INTEGER PRIMARY KEY
+);
+
+WITH social_accounts AS (
+  SELECT
+    user_id,
+    CASE WHEN json_valid(extra_data) THEN extra_data ELSE '{}' END AS extra_data
+  FROM socialaccount_socialaccount
+  WHERE provider = 'kanidm'
+)
+INSERT OR IGNORE INTO paperless_oidc_group_subjects (user_id)
+SELECT user_id
+FROM social_accounts
+WHERE json_type(extra_data, '$.groups') IS NOT NULL
+   OR json_type(extra_data, '$.groups_name') IS NOT NULL
+   OR json_type(extra_data, '$.userinfo.groups') IS NOT NULL
+   OR json_type(extra_data, '$.userinfo.groups_name') IS NOT NULL;
+
+DROP TABLE IF EXISTS paperless_oidc_app_admins;
+CREATE TEMP TABLE paperless_oidc_app_admins (
+  user_id INTEGER PRIMARY KEY
+);
+
+WITH social_accounts AS (
+  SELECT
+    user_id,
+    CASE WHEN json_valid(extra_data) THEN extra_data ELSE '{}' END AS extra_data
+  FROM socialaccount_socialaccount
+  WHERE provider = 'kanidm'
+),
+social_groups AS (
+  SELECT user_id, value AS group_name
+  FROM social_accounts,
+       json_each(CASE WHEN json_type(extra_data, '$.groups') = 'array' THEN json_extract(extra_data, '$.groups') ELSE '[]' END)
+  UNION
+  SELECT user_id, value AS group_name
+  FROM social_accounts,
+       json_each(CASE WHEN json_type(extra_data, '$.groups_name') = 'array' THEN json_extract(extra_data, '$.groups_name') ELSE '[]' END)
+  UNION
+  SELECT user_id, value AS group_name
+  FROM social_accounts,
+       json_each(CASE WHEN json_type(extra_data, '$.userinfo.groups') = 'array' THEN json_extract(extra_data, '$.userinfo.groups') ELSE '[]' END)
+  UNION
+  SELECT user_id, value AS group_name
+  FROM social_accounts,
+       json_each(CASE WHEN json_type(extra_data, '$.userinfo.groups_name') = 'array' THEN json_extract(extra_data, '$.userinfo.groups_name') ELSE '[]' END)
+  UNION
+  SELECT user_id, json_extract(extra_data, '$.groups') AS group_name
+  FROM social_accounts
+  WHERE json_type(extra_data, '$.groups') = 'text'
+  UNION
+  SELECT user_id, json_extract(extra_data, '$.groups_name') AS group_name
+  FROM social_accounts
+  WHERE json_type(extra_data, '$.groups_name') = 'text'
+  UNION
+  SELECT user_id, json_extract(extra_data, '$.userinfo.groups') AS group_name
+  FROM social_accounts
+  WHERE json_type(extra_data, '$.userinfo.groups') = 'text'
+  UNION
+  SELECT user_id, json_extract(extra_data, '$.userinfo.groups_name') AS group_name
+  FROM social_accounts
+  WHERE json_type(extra_data, '$.userinfo.groups_name') = 'text'
+)
+INSERT OR IGNORE INTO paperless_oidc_app_admins (user_id)
+SELECT user_id
+FROM social_groups
+WHERE group_name = 'app-admin';
+
+INSERT INTO auth_user_groups (user_id, group_id)
+SELECT admins.user_id, groups.id
+FROM paperless_oidc_app_admins AS admins
+JOIN auth_group AS groups
+  ON groups.name = 'app-admin'
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM auth_user_groups AS existing
+  WHERE existing.user_id = admins.user_id
+    AND existing.group_id = groups.id
+);
+
+UPDATE auth_user
+   SET is_superuser = 1,
+       is_staff = 1
+ WHERE id IN (
+   SELECT user_id FROM paperless_oidc_app_admins
+ );
+
+DELETE FROM auth_user_groups
+ WHERE group_id = (
+   SELECT id FROM auth_group WHERE name = 'app-admin'
+ )
+   AND user_id IN (
+     SELECT subjects.user_id
+     FROM paperless_oidc_group_subjects AS subjects
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM paperless_oidc_app_admins AS admins
+       WHERE admins.user_id = subjects.user_id
+     )
+   );
+
+UPDATE auth_user
+   SET is_superuser = 0,
+       is_staff = 0
+ WHERE id IN (
+   SELECT subjects.user_id
+   FROM paperless_oidc_group_subjects AS subjects
+   WHERE NOT EXISTS (
+     SELECT 1
+     FROM paperless_oidc_app_admins AS admins
+     WHERE admins.user_id = subjects.user_id
+   )
+ );
+COMMIT;
+SQL
       '';
     };
 
