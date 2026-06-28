@@ -4,23 +4,8 @@ NixHomeServer is a reproducible NixOS home-server configuration for people who
 want to run more of their digital life at home: photos, files, documents,
 passwords, media, backups, and private app access.
 
-The first install is the only time this repository expects destructive disk
-work. After the server exists, routine administration moves to
-[`documentation/operations.md`](./documentation/operations.md), the server
-homepage "For Admins" page, and the other guides under
-[`documentation/`](./documentation).
+What apps do you get?
 
-## Stage 1: Decide If This Is The Right Project
-
-This project is for someone who wants a private home server rather than a set of
-cloud accounts. It can replace or reduce dependence on services like Dropbox,
-Google Photos, iCloud Photos, Netflix-style media libraries, document storage,
-and hosted password managers.
-
-What you get out of this repository:
-
-- `homepage`: a single private dashboard for server status and your most-used app links.
-- `kanidm`: a private identity and login provider so one account system protects your apps.
 - `immich`: photos and videos with private albums, person/group tools, and backup sync.
 - `paperless`: document capture, OCR, and searchable filing for receipts, PDFs, and paperwork.
 - `filestash`: web and SFTP file browser to work from browsers and remote devices.
@@ -31,27 +16,9 @@ What you get out of this repository:
 - `vaultwarden`: private password manager replacement for hosted vaults.
 - `mail-archive-ui`: searchable mailbox archive with attachments and document handoff.
 - `sonarr`, `radarr`, `prowlarr`, `qbittorrent`: optional media automation stack for tracking and downloading.
-- `seerr`: optional media request portal for your household.
 - `youtube-downloader`: optional queue for downloading public audio/video for offline use.
 - `offline-music`: optional home offline media sync workflows (typically built on folders and Syncthing).
 - `groundwater-logger`: optional environmental telemetry and logging package.
-
-It is not a magic appliance. You will still need:
-
-- A physical machine that stays on at home.
-- Disks for the operating system and data.
-- A home network that can reliably reach the server.
-- A domain name if you want friendly app names and public sharing.
-- A few external accounts for routing, certificates, remote access, alerts, or
-  offsite backup.
-- Enough patience to treat the first install like setting up household
-  infrastructure, not like installing a phone app.
-
-The repository gives you the repeatable plan. NixOS builds the operating system
-from this repo. The deploy helper tests changes before making them permanent.
-Secrets are encrypted before they are committed. Storage is split between a
-system SSD and a mirrored data pool so rebuilds and repairs are easier to reason
-about.
 
 ## Stage 2: Check The Hardware First
 
@@ -63,15 +30,15 @@ Intel or AMD PC that can boot NixOS with UEFI. Avoid ARM boards, locked-down
 consumer NAS appliances, and machines where replacing the operating system is a
 project by itself.
 
-The practical target is:
+What you will need:
 
-- 16 GB RAM minimum.
-- 32 GB RAM comfortable for Immich, Paperless OCR, Jellyfin, and several apps.
-- 64 GB RAM if you expect heavy photo libraries, many users, or more app
-  experiments.
+- 8 GB RAM minimum (16GB ideal).
 - Wired Ethernet.
+- At least three SATA ports free on the motherboard*
 - One SSD for the operating system.
 - Two or more internal data disks for the mirrored ZFS pool.
+
+*If your PC motherboard only has two SATA ports, you can either use an NVME (if the motherboard has a slot for it) or buy a sata splitter.
 
 The model names below are examples to help you search. Manufacturers change
 configurations under the same product family, so confirm the exact CPU, RAM,
@@ -128,8 +95,7 @@ Tiny mini PC:
 ### System SSD
 
 The system SSD is where NixOS, the Nix store, and persistent system state live.
-This disk will be wiped during bootstrap. The important persistent path is
-`/persist`.
+This disk will be wiped during bootstrap.
 
 Buy based on the slot your machine has:
 
@@ -296,6 +262,118 @@ the real server during the installer stage. Do not guess it from your laptop.
 
 ## Stage 4: Gather External Accounts And Secrets
 
+Before you start editing `vars.nix`, create the required external accounts in a practical order. The order matters because each step depends on the previous one.
+
+```mermaid
+flowchart LR
+  A["Create/confirm domain source"] --> B["Cloudflare account + domain DNS setup"]
+  B --> C["Cloudflare API token + Tunnel credentials"]
+  C --> D["NetBird account + default network"]
+  D --> E["MEGA account (offsite backup target)"]
+  E --> F["SSH admin key + local admin plan"]
+  F --> G["vars.nix + secret files"]
+  G --> H["bootstrap"]
+```
+
+### Step 1: Set the ownership model and account plan
+
+Pick one person as the server bootstrap operator.
+
+1. Confirm where the domain will be managed:
+   - If you already own a domain, decide whether to move DNS to Cloudflare.
+   - If you need a new domain, buy it first before the bootstrap session.
+2. Decide which email/MFA method you will use across Cloudflare, NetBird, and
+   MEGA. Use one password manager from today forward; the bootstrap depends on you being able to recover these accounts.
+3. Decide the names you want now:
+   - `identity.adminUser` (SSO admin account label, not a shell user yet)
+   - `identity.localAdminUser` (server SSH admin Unix user)
+   - `network.hostname` and your chosen base domain
+
+### Step 2: Register or confirm a domain
+
+You can use any registrar. The only hard requirement is that DNS for the domain
+can be managed by Cloudflare for tunnel DNS and certificate automation.
+
+If buying a new domain:
+
+1. Register a new domain on your chosen registrar.
+2. Add it to Cloudflare as a new site.
+3. At your registrar, update nameservers to the values Cloudflare gives you.
+4. Wait for DNS propagation before continuing.
+
+If you already own a domain:
+
+1. Verify you can edit DNS records for that domain.
+2. Point the domain to Cloudflare nameservers (or add Cloudflare as a DNS provider
+   in a supported integration mode).
+3. Verify Cloudflare shows the domain as active in the dashboard.
+
+### Step 3: Create Cloudflare account details
+
+The repo uses Cloudflare in two ways:
+
+- HTTPS certificate automation (DNS challenge).
+- Public traffic for selected hostnames through Cloudflare Tunnel.
+
+In the Cloudflare dashboard:
+
+1. Open the domain/site and confirm it is active.
+2. Create an API token for DNS writes only (least privilege):
+   - Zone read is typically required.
+   - DNS edit is typically required for certificate automation and host checks.
+3. Create a Cloudflare Tunnel:
+   - In Cloudflare Zero Trust, add a tunnel and download the `cfHomeCreds` JSON
+     file from the generated connector.
+   - Give the tunnel a stable name (you will store this exact string in
+     `edge.cloudflareTunnelName`).
+   - Do not publish token text anywhere else.
+
+You will need these values later:
+
+- `cfHomeCreds`: JSON credentials content from the tunnel connector.
+- `cfAPIToken`: API token for DNS automation.
+
+### Step 4: Set up NetBird
+
+1. Create or sign in to NetBird.
+2. Create the self-hosted network profile.
+3. Generate one setup key for the server:
+   - Keep TTL as needed for bootstrap.
+4. Generate at least one setup key for admin devices (you can rotate later).
+5. Record:
+   - Your NetBird network CIDR.
+   - The server private NetBird IP to use in `network.netbirdIp`.
+   - The setup key in `secrets/unencrypted/netbirdSetupKey`.
+
+### Step 5: Prepare MEGA for backup destination
+
+MEGA is used as an optional offsite target via `rclone`.
+
+1. Create a MEGA account.
+2. Enable MFA if available.
+3. Confirm your quota and choose folder names for backups.
+4. Create a strong MEGA password and store it safely while staging
+   `rcloneMegaPassword`.
+
+Do this even if you only enable offsite backups later; the repo’s current secret
+manifest expects the value during bootstrap.
+
+### Step 6: Prepare deployment administrator credentials
+
+Before writing `vars.nix`, gather these local operator credentials:
+
+1. `identity.adminUser`: logical admin name for the future Kanidm super-user.
+2. `identity.localAdminUser`: Linux user for SSH and initial system administration.
+3. SSH public key:
+   - If needed, create one:
+
+   ```bash
+   ssh-keygen -t ed25519 -C "nixhomeserver-admin"
+   cat ~/.ssh/id_ed25519.pub
+   ```
+
+   The command output from `cat` is what goes in `identity.sshPublicKey`.
+
 Now gather the values that cannot be invented by the repo.
 
 You need Git access to this repository or to your fork. Git is where the server
@@ -306,18 +384,10 @@ You need a domain name if you want friendly service names and public sharing.
 The repo derives app hostnames from `vars.nix`, such as photos, files, identity,
 monitoring, and backups hostnames under your domain.
 
-You need Cloudflare access for that domain. This repo uses Cloudflare for two
-separate jobs:
+Cloudflare has two roles in this repository:
 
-- DNS-01 certificate validation: the server proves it controls the domain so it
-  can get HTTPS certificates.
-- Cloudflare Tunnel: selected public traffic can reach the server without
-  opening direct inbound router ports.
-
-You need these Cloudflare values:
-
-- `cfHomeCreds`: Cloudflare Tunnel credentials JSON.
-- `cfAPIToken`: Cloudflare DNS API token for certificate automation.
+- DNS-01 certificate validation so HTTPS can be issued automatically.
+- Cloudflare Tunnel for controlled public ingress without exposed inbound ports.
 
 You need a NetBird setup key:
 
@@ -739,6 +809,75 @@ In plain terms:
 3. Public requests are routed through Cloudflare Tunnel so you avoid exposing inbound ports.
 4. Caddy routes the request to the matching app.
 5. The app uses local disks for data.
+
+## NetBird, Cloudflare Tunnel, and MEGA in This Stack
+
+### NetBird
+
+NetBird creates a private encrypted overlay for your own devices. Think of it as a private
+virtual network that exists only for users you add, with strict routing rules.
+It is used because it gives you fast, private remote access without opening inbound
+services to the internet.
+
+```mermaid
+flowchart LR
+    A["Device at Home (trusted)"] --> B["Server LAN"]
+    C["Device Away (trusted)"] --> D["NetBird Client"]
+    D --> E["NetBird Control Plane"]
+    E --> F["Server NetBird Agent"]
+    F --> G["Caddy on Server"]
+    B --> G
+    G --> H["Private App"]
+    C -->|No inbound port needed| H
+```
+
+In this guide, NetBird does one key job:
+
+- Remote and trusted devices still reach private apps as if they were on a direct secure network.
+- The server and clients keep normal LAN behavior at home.
+- You can avoid broad firewall exposure for internal access patterns.
+
+### Cloudflare Tunnel
+
+Cloudflare Tunnel is used for public entry points when you want safe internet access
+to one or more app hostnames without requesting a public IP on your home internet
+connection. The connector runs outbound from the server, then Cloudflare forwards
+allowed traffic to it over an encrypted control channel.
+
+```mermaid
+flowchart LR
+    A["Remote Browser"] --> B["Public DNS for app.example.com"]
+    B --> C["Cloudflare Edge"]
+    D["Server Connector: cloudflared"] --> E["Tunnel route map"]
+    C -->|Allowed public hostnames only| D
+    D --> F["Caddy"]
+    F --> G["App Service"]
+```
+
+In practical terms:
+
+- You can use one or two public hostnames without opening inbound ports on your router.
+- Traffic is limited to hostnames configured in the tunnel config.
+- This keeps the public boundary smaller than a traditional port-forward design.
+
+### MEGA + rclone
+
+MEGA is used as an offsite backup destination and simple, low-friction secondary store.
+In this repo, it is consumed via `rclone` for backup workflows.
+
+```mermaid
+flowchart TD
+    A["App data under /mnt/data"] --> B["Backup jobs on server"]
+    B --> C["rclone task"]
+    C --> D["MEGA remote"]
+    D --> E["Optional restore path"]
+```
+
+Why it is useful:
+
+- Keeps an extra copy of important data outside the home server.
+- Supports an easy offsite strategy for backups that complements local ZFS redundancy.
+- Provides a free quota baseline (about 20 GB), useful for smaller/critical sets or secondary copies.
 
 ```mermaid
 flowchart TD
