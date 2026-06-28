@@ -2,10 +2,7 @@
 
 let
   cfg = config.repo.files.archives;
-  mkSettledWatcherScript = import ../../lib/settled-watcher.nix { inherit pkgs; };
   supportedExtensionsJson = builtins.toJSON cfg.supportedExtensions;
-  archivePathRegex =
-    "(${lib.escapeRegex vars.sharedRoot}|${lib.escapeRegex vars.usersRoot}/[^/]+)/${lib.escapeRegex cfg.directoryName}(/.*)?";
 
   mountArchiveScript = pkgs.writeShellScript "files-archive-ratarmount-mount" ''
     set -euo pipefail
@@ -205,19 +202,122 @@ let
     reconcile_desired_mounts
   '';
 
-  watcherScript = mkSettledWatcherScript {
-    name = "files-archives-watch";
-    watchedRoots = [
-      vars.sharedRoot
-      vars.usersRoot
-    ];
-    triggerUnit = "files-archives-sync.service";
-    includeRegex = ".*";
-    pathRegex = archivePathRegex;
-    settleSeconds = cfg.settleSeconds;
-    pollSeconds = cfg.pollSeconds;
-    events = "CLOSE_WRITE,CREATE,MOVED_TO,MOVED_FROM,DELETE,DELETE_SELF,ATTRIB";
-  };
+  watcherScript = pkgs.writeShellScript "files-archives-watch" ''
+    set -euo pipefail
+
+    archive_dir=${builtins.toJSON cfg.directoryName}
+    users_root=${builtins.toJSON vars.usersRoot}
+    shared_root=${builtins.toJSON vars.sharedRoot}
+    trigger_unit=files-archives-sync.service
+    settle_seconds=${toString cfg.settleSeconds}
+    poll_seconds=${toString cfg.pollSeconds}
+    events=CLOSE_WRITE,CREATE,MOVED_TO,MOVED_FROM,DELETE,DELETE_SELF,ATTRIB
+
+    declare -a watch_roots=()
+    watcher_pid=""
+
+    cleanup_watcher() {
+      if [[ -n "$watcher_pid" ]]; then
+        kill "$watcher_pid" 2>/dev/null || true
+        wait "$watcher_pid" 2>/dev/null || true
+      fi
+      watcher_pid=""
+    }
+
+    trap cleanup_watcher EXIT
+
+    collect_watch_roots() {
+      watch_roots=()
+
+      if [[ -d "$shared_root/$archive_dir" ]]; then
+        watch_roots+=("$shared_root/$archive_dir")
+      fi
+
+      if [[ -d "$users_root" ]]; then
+        while IFS= read -r -d "" root; do
+          watch_roots+=("$root")
+        done < <(
+          ${pkgs.findutils}/bin/find "$users_root" \
+            -mindepth 2 \
+            -maxdepth 2 \
+            -type d \
+            -name "$archive_dir" \
+            -print0 \
+            | ${pkgs.coreutils}/bin/sort -z
+        )
+      fi
+    }
+
+    watch_roots_key() {
+      printf '%s\0' "''${watch_roots[@]}" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f1
+    }
+
+    trigger_sync() {
+      if ${pkgs.systemd}/bin/systemctl is-active --quiet "$trigger_unit"; then
+        return 1
+      fi
+
+      echo "starting $trigger_unit after settled archive changes"
+      ${pkgs.systemd}/bin/systemctl start "$trigger_unit"
+    }
+
+    while true; do
+      collect_watch_roots
+      if (( ''${#watch_roots[@]} == 0 )); then
+        sleep "$poll_seconds"
+        continue
+      fi
+
+      roots_key="$(watch_roots_key)"
+      coproc WATCHER {
+        exec ${pkgs.inotify-tools}/bin/inotifywait \
+          --monitor \
+          --quiet \
+          --recursive \
+          --format '%w%f|%e' \
+          --event "$events" \
+          "''${watch_roots[@]}"
+      }
+      watcher_pid="$WATCHER_PID"
+
+      dirty=0
+      last_change=0
+
+      while true; do
+        if IFS= read -r -t "$poll_seconds" event <&''${WATCHER[0]}; then
+          dirty=1
+          last_change="$(${pkgs.coreutils}/bin/date +%s)"
+          continue
+        fi
+
+        if ! kill -0 "$watcher_pid" 2>/dev/null; then
+          wait "$watcher_pid" || true
+          watcher_pid=""
+          echo "archive inotify watcher exited; refreshing watch roots" >&2
+          break
+        fi
+
+        collect_watch_roots
+        if [[ "$(watch_roots_key)" != "$roots_key" ]]; then
+          cleanup_watcher
+          break
+        fi
+
+        if (( dirty == 0 )); then
+          continue
+        fi
+
+        now="$(${pkgs.coreutils}/bin/date +%s)"
+        if (( now - last_change < settle_seconds )); then
+          continue
+        fi
+
+        if trigger_sync; then
+          dirty=0
+        fi
+      done
+    done
+  '';
 in
 {
   options.repo.files.archives = {
