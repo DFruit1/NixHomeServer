@@ -301,7 +301,7 @@ let
       port = toString filesSftpPort;
       username = "{{ .sftp_user }}";
       password = "{{ .sftp_private_key }}";
-      path = "/files";
+      path = "/";
     };
   };
   sftpBackendConnections = [
@@ -310,7 +310,7 @@ let
       label = "Files";
       hostname = loopback;
       port = toString filesSftpPort;
-      path = "/files";
+      path = "/";
     }
   ];
 in

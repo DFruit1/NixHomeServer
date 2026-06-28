@@ -2,55 +2,21 @@
 
 let
   cfg = config.repo.files.archives;
-  supportedExtensionsJson = builtins.toJSON cfg.supportedExtensions;
-
-  mountArchiveScript = pkgs.writeShellScript "files-archive-ratarmount-mount" ''
-    set -euo pipefail
-
-    escaped_instance="$1"
-    archive_path="$(${pkgs.systemd}/bin/systemd-escape --unescape --path "$escaped_instance")"
-    mount_path="''${archive_path}${cfg.mountSuffix}"
-    archive_hash="$(printf '%s' "$archive_path" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f1)"
-    index_file="${cfg.indexRoot}/''${archive_hash}.index.sqlite"
-
-    if [[ ! -f "$archive_path" ]]; then
-      echo "Archive source does not exist: $archive_path" >&2
-      exit 1
-    fi
-
-    if [[ -e "$mount_path" ]] && ! ${pkgs.util-linux}/bin/mountpoint -q "$mount_path"; then
-      if [[ -d "$mount_path" ]] && [[ -z "$(${pkgs.findutils}/bin/find "$mount_path" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-        ${pkgs.coreutils}/bin/rmdir "$mount_path"
-      else
-        echo "Archive mount target exists and is not an empty directory or mountpoint: $mount_path" >&2
-        exit 1
-      fi
-    fi
-
-    ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "${cfg.indexRoot}"
-    ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$mount_path"
-
-    exec ${pkgs.ratarmount}/bin/ratarmount \
-      --index-file "$index_file" \
-      --verify-mtime \
-      -o allow_other,ro \
-      -f \
-      "$archive_path" \
-      "$mount_path"
-  '';
+  archiveViewPolicy = "extract-strip-single-root-v1";
 
   syncArchivesScript = pkgs.writeShellScript "files-archives-sync" ''
     set -euo pipefail
 
     archive_dir=${builtins.toJSON cfg.directoryName}
     mount_suffix=${builtins.toJSON cfg.mountSuffix}
+    archive_view_policy=${builtins.toJSON archiveViewPolicy}
     users_root=${builtins.toJSON vars.usersRoot}
     shared_root=${builtins.toJSON vars.sharedRoot}
-    index_root=${builtins.toJSON cfg.indexRoot}
-    supported_extensions_json=${builtins.toJSON supportedExtensionsJson}
+    state_root=${builtins.toJSON cfg.indexRoot}
+    supported_extensions_json=${lib.escapeShellArg (builtins.toJSON cfg.supportedExtensions)}
 
-    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g root "$index_root"
-    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g root "$index_root/state"
+    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g root "$state_root"
+    ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g root "$state_root/state"
 
     mapfile -t supported_extensions < <(
       ${pkgs.jq}/bin/jq -r '.[]' <<<"$supported_extensions_json"
@@ -59,16 +25,17 @@ let
     declare -A desired_archives=()
 
     archive_hash() {
-      printf '%s' "$1" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f1
+      printf '%s' "$archive_view_policy:$1" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f1
     }
 
     archive_signature() {
+      printf '%s ' "$archive_view_policy"
       ${pkgs.coreutils}/bin/stat -c '%s %Y' "$1"
     }
 
     state_file_for_archive() {
       local archive_path="$1"
-      printf '%s/state/%s.signature\n' "$index_root" "$(archive_hash "$archive_path")"
+      printf '%s/state/%s.signature\n' "$state_root" "$(archive_hash "$archive_path")"
     }
 
     unit_for_archive() {
@@ -126,27 +93,28 @@ let
       done < <(archive_roots)
     }
 
-    cleanup_stale_mounts() {
+    cleanup_stale_views() {
       local root
-      local mount_path
+      local view_path
       local archive_path
       local unit
 
       while IFS= read -r -d "" root; do
-        while IFS= read -r -d "" mount_path; do
-          archive_path="''${mount_path%$mount_suffix}"
+        while IFS= read -r -d "" view_path; do
+          archive_path="''${view_path%$mount_suffix}"
           if [[ -e "$archive_path" ]]; then
             continue
           fi
 
           unit="$(unit_for_archive "$archive_path")"
-          if ${pkgs.util-linux}/bin/mountpoint -q "$mount_path"; then
-            echo "Stopping stale archive mount $mount_path"
+          if ${pkgs.util-linux}/bin/mountpoint -q "$view_path"; then
+            echo "Stopping stale archive mount $view_path"
             ${pkgs.systemd}/bin/systemctl stop "$unit" || true
+            ${pkgs.fuse3}/bin/fusermount3 -uz "$view_path" 2>/dev/null || ${pkgs.util-linux}/bin/umount -l "$view_path" 2>/dev/null || true
           fi
 
-          if [[ -d "$mount_path" ]]; then
-            ${pkgs.coreutils}/bin/rmdir "$mount_path" 2>/dev/null || true
+          if [[ -d "$view_path" ]]; then
+            ${pkgs.coreutils}/bin/rmdir "$view_path" 2>/dev/null || true
           fi
           ${pkgs.coreutils}/bin/rm -f "$(state_file_for_archive "$archive_path")"
         done < <(
@@ -159,55 +127,113 @@ let
       done < <(archive_roots)
     }
 
-    reconcile_desired_mounts() {
+    archive_view_root_name() {
+      local archive_path="$1"
+      local archive_name
+      local archive_name_lower
+      local root_name
+      local extension
+
+      archive_name="$(${pkgs.coreutils}/bin/basename "$archive_path")"
+      archive_name_lower="''${archive_name,,}"
+      root_name="$archive_name"
+
+      for extension in ".tar.zst" ".tar.zstd" ".tzst" ".tar.gz" ".tgz" ".tar.xz" ".txz" ".tar.bz2" ".tbz2" ".tar" ".zip" ".7z" ".rar"; do
+        if [[ "$archive_name_lower" == *"$extension" ]]; then
+          root_name="''${archive_name:0:$((''${#archive_name} - ''${#extension}))}"
+          break
+        fi
+      done
+
+      printf '%s\n' "$root_name"
+    }
+
+    extract_archive_view() {
+      local archive_path="$1"
+      local view_path="$2"
+      local state_file="$3"
+      local current_signature="$4"
+      local tmp_path
+      local old_path
+      local top_root
+      local strip_args=()
+
+      tmp_path="$view_path.extracting.$$"
+      old_path="$view_path.previous.$$"
+
+      cleanup_extract() {
+        ${pkgs.coreutils}/bin/rm -rf "$tmp_path"
+      }
+      trap cleanup_extract RETURN
+
+      ${pkgs.coreutils}/bin/rm -rf "$tmp_path" "$old_path"
+      ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$tmp_path"
+
+      top_root="$(archive_view_root_name "$archive_path")"
+      strip_args=(--strip-components 1)
+      echo "Extracting archive view $archive_path to $view_path, stripping first path component; expected top-level $top_root"
+
+      ${pkgs.libarchive}/bin/bsdtar \
+        --extract \
+        --file "$archive_path" \
+        --directory "$tmp_path" \
+        --no-same-owner \
+        --no-same-permissions \
+        "''${strip_args[@]}"
+
+      ${pkgs.coreutils}/bin/chmod -R a+rX,go-w "$tmp_path"
+
+      if ${pkgs.util-linux}/bin/mountpoint -q "$view_path"; then
+        ${pkgs.fuse3}/bin/fusermount3 -uz "$view_path" 2>/dev/null || ${pkgs.util-linux}/bin/umount -l "$view_path" 2>/dev/null || true
+      fi
+
+      if [[ -e "$view_path" ]]; then
+        ${pkgs.coreutils}/bin/mv "$view_path" "$old_path"
+      fi
+      ${pkgs.coreutils}/bin/mv "$tmp_path" "$view_path"
+      ${pkgs.coreutils}/bin/install -d -m 0750 -o root -g root "$(${pkgs.coreutils}/bin/dirname "$state_file")"
+      printf '%s\n' "$current_signature" > "$state_file.tmp"
+      ${pkgs.coreutils}/bin/mv "$state_file.tmp" "$state_file"
+      ${pkgs.coreutils}/bin/rm -rf "$old_path"
+
+      trap - RETURN
+    }
+
+    reconcile_desired_views() {
       local archive_path
-      local mount_path
-      local unit
+      local view_path
       local state_file
       local current_signature
       local previous_signature
 
       for archive_path in "''${!desired_archives[@]}"; do
-        mount_path="''${archive_path}''${mount_suffix}"
-        unit="$(unit_for_archive "$archive_path")"
+        view_path="''${archive_path}''${mount_suffix}"
         state_file="$(state_file_for_archive "$archive_path")"
         current_signature="$(archive_signature "$archive_path")"
-
-        if [[ -e "$mount_path" ]] && ! ${pkgs.util-linux}/bin/mountpoint -q "$mount_path"; then
-          if [[ -d "$mount_path" ]] && [[ -z "$(${pkgs.findutils}/bin/find "$mount_path" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-            ${pkgs.coreutils}/bin/rmdir "$mount_path"
-          else
-            echo "Skipping archive because mount target exists and is not an empty directory or mountpoint: $mount_path" >&2
-            continue
-          fi
+        previous_signature=""
+        if [[ -f "$state_file" ]]; then
+          previous_signature="$(< "$state_file")"
         fi
 
-        if ${pkgs.util-linux}/bin/mountpoint -q "$mount_path"; then
-          previous_signature=""
-          if [[ -f "$state_file" ]]; then
-            previous_signature="$(< "$state_file")"
-          fi
-
-          if [[ "$previous_signature" != "$current_signature" ]]; then
-            echo "Restarting archive mount after source changed: $archive_path"
-            if ${pkgs.systemd}/bin/systemctl restart "$unit"; then
-              printf '%s\n' "$current_signature" > "$state_file"
-            fi
-          fi
+        if [[ -d "$view_path" ]] && ! ${pkgs.util-linux}/bin/mountpoint -q "$view_path" && [[ "$previous_signature" == "$current_signature" ]]; then
           continue
         fi
 
-        ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$mount_path"
-        echo "Starting archive mount $archive_path at $mount_path"
-        if ${pkgs.systemd}/bin/systemctl start "$unit"; then
-          printf '%s\n' "$current_signature" > "$state_file"
+        if ${pkgs.util-linux}/bin/mountpoint -q "$view_path"; then
+          echo "Replacing FUSE archive mount with extracted view: $view_path"
+        elif [[ -e "$view_path" ]]; then
+          echo "Refreshing extracted archive view: $view_path"
+        else
+          echo "Creating extracted archive view: $view_path"
         fi
+
+        extract_archive_view "$archive_path" "$view_path" "$state_file" "$current_signature"
       done
     }
 
     scan_desired_archives
-    cleanup_stale_mounts
-    reconcile_desired_mounts
+    cleanup_stale_views
+    reconcile_desired_views
   '';
 
   watcherScript = pkgs.writeShellScript "files-archives-watch" ''
@@ -332,19 +358,19 @@ in
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to enable ratarmount archive browsing for the Files service.";
+      description = "Whether to enable browsable archive views for the Files service.";
     };
 
     directoryName = lib.mkOption {
       type = lib.types.str;
       default = "_Archives";
-      description = "Directory under each fileshare root where archive files are mounted as browsable views.";
+      description = "Directory under each fileshare root where archive files are exposed as browsable views.";
     };
 
     mountSuffix = lib.mkOption {
       type = lib.types.str;
       default = ".contents";
-      description = "Suffix appended to an archive filename for its read-only mount directory.";
+      description = "Suffix appended to an archive filename for its extracted read-only view directory.";
     };
 
     supportedExtensions = lib.mkOption {
@@ -363,13 +389,13 @@ in
         ".7z"
         ".rar"
       ];
-      description = "Case-insensitive archive extensions that should receive ratarmount views.";
+      description = "Case-insensitive archive extensions that should receive extracted views.";
     };
 
     indexRoot = lib.mkOption {
       type = lib.types.str;
       default = "${config.repo.files.paths.stateDir}/ratarmount-indexes";
-      description = "Persistent root for ratarmount indexes and archive mount source state.";
+      description = "Persistent root for archive view source state.";
     };
 
     settleSeconds = lib.mkOption {
@@ -387,7 +413,7 @@ in
 
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [
-      pkgs.ratarmount
+      pkgs.libarchive
     ];
 
     systemd.tmpfiles.rules = [
@@ -396,8 +422,8 @@ in
     ];
 
     systemd.services.files-archives-sync = {
-      description = "Reconcile ratarmount views for Files archive directories";
-      wantedBy = [ "multi-user.target" ];
+      description = "Reconcile extracted views for Files archive directories";
+      restartIfChanged = false;
       wants = [
         "data-pool-layout.service"
         "fileshare-user-root-sync.service"
@@ -414,7 +440,7 @@ in
         pkgs.findutils
         pkgs.fuse3
         pkgs.jq
-        pkgs.ratarmount
+        pkgs.libarchive
         pkgs.systemd
         pkgs.util-linux
       ];
@@ -423,17 +449,24 @@ in
       '';
     };
 
+    systemd.timers.files-archives-sync = {
+      description = "Schedule archive view reconciliation after boot";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnActiveSec = "5min";
+        Unit = "files-archives-sync.service";
+      };
+    };
+
     systemd.services.files-archives-watch = {
-      description = "Watch Files archive directories and debounce ratarmount reconciliation";
+      description = "Watch Files archive directories and debounce archive view reconciliation";
       wantedBy = [ "multi-user.target" ];
       wants = [
         "data-pool-layout.service"
-        "files-archives-sync.service"
         "fileshare-user-root-sync.service"
       ];
       after = [
         "data-pool-layout.service"
-        "files-archives-sync.service"
         "fileshare-user-root-sync.service"
       ];
       serviceConfig = {
@@ -441,27 +474,6 @@ in
         ExecStart = "${watcherScript}";
         Restart = "always";
         RestartSec = "5s";
-      };
-    };
-
-    systemd.services."files-archive-ratarmount@" = {
-      description = "Mount Files archive %I as a read-only directory";
-      requires = [ "data-pool-layout.service" ];
-      after = [ "data-pool-layout.service" ];
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${mountArchiveScript} %i";
-        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u %f${cfg.mountSuffix}";
-        Restart = "on-failure";
-        RestartSec = "5s";
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ReadWritePaths = [
-          vars.usersRoot
-          vars.sharedRoot
-          cfg.indexRoot
-        ];
       };
     };
   };

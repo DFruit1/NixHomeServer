@@ -16,7 +16,6 @@ let
   usbMountName = vars.fileAccess.usbMountName or "_USB";
   backupStorageMountName = vars.backupAccess.storageMountName or "_Backups";
   sftpChrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
-  sftpUserMountName = "files";
   externalUsbMountRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
   memberGroups = lib.unique (cfg.memberGroups ++ [
@@ -378,7 +377,6 @@ let
 
       if [[ -n "''${sftp_members[$username]:-}" ]]; then
         install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpChrootBase}/"$username"
-        install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpChrootBase}/"$username"/${lib.escapeShellArg sftpUserMountName}
         ${pkgs.systemd}/bin/systemctl start "$(service_instance files-sftp-user-root@.service "$username")"
       fi
     done <<<"$members_json"
@@ -618,12 +616,24 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStartPre = [
-          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${sftpChrootBase}/%i"
-          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${sftpChrootBase}/%i/${sftpUserMountName}"
-        ];
-        ExecStart = "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%i ${sftpChrootBase}/%i/${sftpUserMountName}";
-        ExecStop = "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%i/${sftpUserMountName}";
+        ExecStartPre = "${pkgs.writeShellScript "prepare-files-sftp-user-root" ''
+          set -euo pipefail
+          chroot=${lib.escapeShellArg sftpChrootBase}/%i
+          old_mount="$chroot/files"
+
+          ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$chroot"
+
+          if ${pkgs.util-linux}/bin/mountpoint -q "$old_mount"; then
+            ${pkgs.util-linux}/bin/umount -l "$old_mount"
+          fi
+          ${pkgs.coreutils}/bin/rmdir "$old_mount" 2>/dev/null || true
+
+          if ${pkgs.util-linux}/bin/mountpoint -q "$chroot"; then
+            ${pkgs.util-linux}/bin/umount -l "$chroot"
+          fi
+        ''}";
+        ExecStart = "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%i ${sftpChrootBase}/%i";
+        ExecStop = "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%i";
       };
     };
   };

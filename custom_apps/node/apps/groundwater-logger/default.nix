@@ -58,6 +58,8 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     mkdir -p "$out/lib/groundwater-logger" "$out/share/groundwater-logger" "$out/bin"
     cp -R dist/server "$out/lib/groundwater-logger/server"
     cp -R dist/client "$out/share/groundwater-logger/client"
+    pnpm prune --prod
+    cp -R node_modules "$out/lib/groundwater-logger/node_modules"
 
     makeWrapper ${nodejs}/bin/node "$out/bin/groundwater-logger" \
       --add-flags "$out/lib/groundwater-logger/server/entry.node-server.js" \
