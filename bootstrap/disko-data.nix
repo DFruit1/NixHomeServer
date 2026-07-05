@@ -40,7 +40,7 @@ let
     };
 
 in
-{
+lib.mkIf vars.enableZfsDataPool {
   disko.devices = {
     disk = builtins.listToAttrs (lib.imap0 mkDataDisk dataDiskIds);
 

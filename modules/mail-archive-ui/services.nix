@@ -35,6 +35,7 @@ let
     commonEnvironmentEntries
     ++ lib.optional (cfg.paperlessConsumeRoot != null) "MAIL_ARCHIVE_UI_PAPERLESS_CONSUME_ROOT=${cfg.paperlessConsumeRoot}"
     ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) "MAIL_ARCHIVE_UI_PAPERLESS_HANDOFF_STAGING_ROOT=${cfg.paperlessHandoffStagingRoot}"
+    ++ lib.optional (cfg.paperlessDatabasePath != null) "MAIL_ARCHIVE_UI_PAPERLESS_DATABASE_PATH=${cfg.paperlessDatabasePath}"
     ++ lib.optional (cfg.visibleMirrorReadGroup != null) "MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP=${cfg.visibleMirrorReadGroup}"
     ++ lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
   mailArchiveUiPath = with pkgs; [
@@ -129,6 +130,12 @@ in
       default = null;
       description = "Optional staging directory used to finish attachment copies before publishing them to the Paperless consume directory.";
     };
+
+    paperlessDatabasePath = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Optional read-only Paperless SQLite database path used to avoid handing off documents Paperless already has.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -141,17 +148,21 @@ in
     systemd.services.mail-archive-ui = {
       description = "Mail archive UI";
       wantedBy = [ "multi-user.target" ];
-      unitConfig = {
-        ConditionPathIsMountPoint = vars.dataRoot;
-        RequiresMountsFor = [
-          cfg.storeRoot
-          cfg.dataDir
-          cfg.accountStateRoot
-          cfg.runtimeDir
-          cfg.lockDir
-        ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
-        ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
-      };
+      unitConfig = lib.mkMerge [
+        (lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        })
+        {
+          RequiresMountsFor = [
+            cfg.storeRoot
+            cfg.dataDir
+            cfg.accountStateRoot
+            cfg.runtimeDir
+            cfg.lockDir
+          ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
+          ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
+        }
+      ];
       wants = [
         "data-pool-layout.service"
         "local-fs.target"
@@ -194,6 +205,7 @@ in
           cfg.lockDir
         ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
         ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
+        ReadOnlyPaths = lib.optional (cfg.paperlessDatabasePath != null) cfg.paperlessDatabasePath;
       };
     };
 
@@ -211,7 +223,9 @@ in
         "network-online.target"
         "unbound.service"
       ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        ConditionPathIsMountPoint = vars.dataRoot;
+      };
       serviceConfig = {
         Type = "oneshot";
         User = user;
@@ -258,20 +272,24 @@ in
         "mail-archive-ui.service"
         "local-fs.target"
       ];
-      unitConfig = {
-        ConditionPathIsMountPoint = vars.dataRoot;
-        RequiresMountsFor = [
-          cfg.storeRoot
-          cfg.dataDir
-          cfg.accountStateRoot
-          cfg.runtimeDir
-          cfg.lockDir
-          cfg.paperlessConsumeRoot
-        ]
-        ++ lib.optional
-          (cfg.paperlessHandoffStagingRoot != null)
-          cfg.paperlessHandoffStagingRoot;
-      };
+      unitConfig = lib.mkMerge [
+        (lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        })
+        {
+          RequiresMountsFor = [
+            cfg.storeRoot
+            cfg.dataDir
+            cfg.accountStateRoot
+            cfg.runtimeDir
+            cfg.lockDir
+            cfg.paperlessConsumeRoot
+          ]
+          ++ lib.optional
+            (cfg.paperlessHandoffStagingRoot != null)
+            cfg.paperlessHandoffStagingRoot;
+        }
+      ];
       serviceConfig = {
         Type = "oneshot";
         User = user;
@@ -300,6 +318,7 @@ in
         ++ lib.optional
           (cfg.paperlessHandoffStagingRoot != null)
           cfg.paperlessHandoffStagingRoot;
+        ReadOnlyPaths = lib.optional (cfg.paperlessDatabasePath != null) cfg.paperlessDatabasePath;
       };
       path = mailArchiveUiPath;
     };

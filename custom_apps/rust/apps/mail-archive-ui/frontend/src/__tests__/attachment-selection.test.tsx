@@ -3,28 +3,43 @@ import { setupAttachmentSelection, submitPaperlessForm } from "../shared/dom";
 
 const setup = () => {
   document.body.innerHTML = `
-    <button data-select-page type="button">Select page</button>
-    <span data-selected-count></span>
+    <span data-selected-count data-total-results="2"></span>
     <form id="attachment-download-form"><button data-bulk-action type="submit">Download</button></form>
     <form id="attachment-paperless-form" action="/attachments/send-paperless" data-paperless-form><button data-bulk-action type="submit">Send selected</button></form>
     <article data-attachment-row data-attachment-key="first" tabindex="0">
+      <div class="attachment-context" hidden>Context</div>
       <form action="/attachments/send-paperless" data-paperless-form>
         <input type="hidden" name="attachment_keys" value="first">
         <button type="submit">Send</button>
       </form>
     </article>
-    <article data-attachment-row data-attachment-key="second" tabindex="0"><button type="button">Inner</button></article>
+    <article data-attachment-row data-attachment-key="second" tabindex="0"><div class="attachment-context" hidden>Context</div><button type="button">Inner</button></article>
   `;
   return setupAttachmentSelection(document);
 };
 
 describe("attachment selection island helpers", () => {
-  it("toggles row selection and syncs hidden bulk form inputs", () => {
+  it("opens context on plain click and syncs selected rows on modifier click", () => {
     const cleanup = setup();
-    document
-      .querySelector<HTMLElement>('[data-attachment-key="first"]')
-      ?.click();
+    const row = document.querySelector<HTMLElement>(
+      '[data-attachment-key="first"]',
+    );
+    row?.click();
 
+    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    expect(row?.querySelector<HTMLElement>(".attachment-context")?.hidden).toBe(
+      false,
+    );
+    expect(
+      document
+        .querySelector('[data-attachment-key="first"]')
+        ?.getAttribute("aria-selected"),
+    ).toBe("false");
+
+    row?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, ctrlKey: true }),
+    );
+    expect(row?.getAttribute("aria-selected")).toBe("true");
     expect(
       document
         .querySelector('[data-attachment-key="first"]')
@@ -45,16 +60,16 @@ describe("attachment selection island helpers", () => {
       ).map((input) => input.value),
     ).toEqual(["first"]);
     expect(document.querySelector("[data-selected-count]")?.textContent).toBe(
-      "1 selected",
+      "1/2 results selected",
     );
     cleanup();
   });
 
-  it("toggles every visible row with select page", () => {
+  it("toggles every visible row with ctrl+a", () => {
     const cleanup = setup();
-    const selectPage =
-      document.querySelector<HTMLElement>("[data-select-page]");
-    selectPage?.click();
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }),
+    );
 
     expect(
       Array.from(
@@ -63,15 +78,21 @@ describe("attachment selection island helpers", () => {
         ),
       ).map((input) => input.value),
     ).toEqual(["first", "second"]);
-    expect(selectPage?.textContent).toBe("Deselect all");
+    expect(document.querySelector("[data-selected-count]")?.textContent).toBe(
+      "2/2 results selected",
+    );
 
-    selectPage?.click();
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true }),
+    );
     expect(
       document.querySelectorAll(
         '#attachment-download-form input[name="attachment_keys"]',
       ),
     ).toHaveLength(0);
-    expect(selectPage?.textContent).toBe("Select page");
+    expect(document.querySelector("[data-selected-count]")?.textContent).toBe(
+      "0/2 results selected",
+    );
     cleanup();
   });
 
@@ -150,12 +171,20 @@ describe("attachment selection island helpers", () => {
 
   it("supports keyboard activation", () => {
     const cleanup = setup();
-    document
-      .querySelector<HTMLElement>('[data-attachment-key="second"]')
-      ?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-      );
+    const row = document.querySelector<HTMLElement>(
+      '[data-attachment-key="second"]',
+    );
+    row?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
 
+    expect(row?.getAttribute("aria-expanded")).toBe("true");
+    expect(row?.querySelector<HTMLElement>(".attachment-context")?.hidden).toBe(
+      false,
+    );
+    row?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: " ", bubbles: true }),
+    );
     expect(
       document
         .querySelector('[data-attachment-key="second"]')

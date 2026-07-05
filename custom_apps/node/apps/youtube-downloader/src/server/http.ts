@@ -13,9 +13,13 @@ import type { CreateJobRequest } from '../shared/types.js';
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
 };
 
 export type ServerContext = {
@@ -77,6 +81,19 @@ const handleApi = async (
     return;
   }
 
+  if (request.method === 'DELETE' && url.pathname === '/api/jobs') {
+    await db.clearHistory();
+    sendJson(response, 204, {});
+    return;
+  }
+
+  const jobFileMatch = /^\/api\/jobs\/([^/]+)\/files\/(\d+)$/.exec(url.pathname);
+  if (request.method === 'GET' && jobFileMatch) {
+    const [, jobId, rawIndex] = jobFileMatch;
+    await serveJobFile(db, response, jobId, Number(rawIndex));
+    return;
+  }
+
   const jobMatch = /^\/api\/jobs\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname);
   if (jobMatch) {
     const [, jobId, action] = jobMatch;
@@ -119,6 +136,33 @@ const handleApi = async (
   }
 
   throw new Error('api route not found');
+};
+
+const serveJobFile = async (db: Database, response: ServerResponse, jobId: string, fileIndex: number): Promise<void> => {
+  if (!Number.isInteger(fileIndex) || fileIndex < 0) {
+    throw new Error('job file not found');
+  }
+  const job = await db.getJob(jobId);
+  const relativePath = job?.files[fileIndex];
+  if (!job?.outputFolder || !relativePath || !/\.(?:jpe?g|png|webp)$/i.test(relativePath)) {
+    throw new Error('job file not found');
+  }
+
+  const root = path.resolve(job.outputFolder);
+  const candidate = path.resolve(root, relativePath);
+  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
+    throw new Error('job file not found');
+  }
+
+  const file = await stat(candidate);
+  if (!file.isFile()) {
+    throw new Error('job file not found');
+  }
+
+  response.statusCode = 200;
+  response.setHeader('content-type', CONTENT_TYPES[path.extname(candidate).toLowerCase()] ?? 'application/octet-stream');
+  response.setHeader('cache-control', 'private, max-age=3600');
+  createReadStream(candidate).pipe(response);
 };
 
 const readJson = async <T>(request: IncomingMessage): Promise<T> => {

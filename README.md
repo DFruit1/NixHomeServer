@@ -25,18 +25,21 @@ What apps do you get?
 Do this before creating accounts or editing config. If the hardware plan is
 wrong, every later step becomes harder.
 
-This repo currently builds an `x86_64-linux` NixOS system. Buy or reuse a normal
-Intel or AMD PC that can boot NixOS with UEFI. Avoid ARM boards, locked-down
-consumer NAS appliances, and machines where replacing the operating system is a
-project by itself.
+This repo supports `x86_64-linux` and `aarch64-linux` NixOS systems that boot
+with UEFI. The current server profile remains an x86_64 ZFS-mirror home server,
+while the portable profile is intended for simple repurposed laptops, mini PCs,
+and ARM devices with one disk. Avoid locked-down consumer NAS appliances and
+machines where replacing the operating system is a project by itself.
 
 What you will need:
 
 - 8 GB RAM minimum (16GB ideal).
 - Wired Ethernet.
-- At least three SATA ports free on the motherboard*
-- One SSD for the operating system.
-- Two or more internal data disks for the mirrored ZFS pool.
+- One SSD or internal disk you are willing to erase.
+- For `storage.profile = "zfs-mirror"`: at least three usable disk attachment
+  points, one for the operating system and two or more for the mirrored ZFS pool.
+- For `storage.profile = "single-disk-ext4"`: one disk is enough; system state
+  and app data both live on that disk.
 
 *If your PC motherboard only has two SATA ports, you can either use an NVME (if the motherboard has a slot for it) or buy a sata splitter.
 
@@ -156,12 +159,12 @@ accidental deletion, fire, theft, or bad configuration.
 
 Before proceeding, make sure you have:
 
-- x86_64 Intel or AMD target server with UEFI boot.
+- x86_64 or aarch64 target server with UEFI boot.
 - Keyboard/monitor or another console method for the first installer boot.
 - Wired network connection.
-- One SSD you are willing to erase for the system.
-- Two or more data disks you are willing to erase for the ZFS mirror.
-- Internal bays or a deliberate storage plan for those data disks.
+- One SSD or internal disk you are willing to erase for the system.
+- For `zfs-mirror`, two or more data disks you are willing to erase for the ZFS mirror.
+- For `single-disk-ext4`, no separate data disks are required.
 - A separate backup of anything currently on those disks.
 
 Do not continue with bootstrap if any selected disk contains data you still need
@@ -283,7 +286,11 @@ Pick one person as the server bootstrap operator.
    - If you already own a domain, decide whether to move DNS to Cloudflare.
    - If you need a new domain, buy it first before the bootstrap session.
 2. Decide which email/MFA method you will use across Cloudflare, NetBird, and
-   MEGA. Use one password manager from today forward; the bootstrap depends on you being able to recover these accounts.
+   MEGA.
+   - Use a second secure email provider (for example Tuta, Proton, or Fastmail) as
+     a recovery and admin-contact address, separate from your primary mailbox.
+   - Use one password manager from today forward; the bootstrap depends on you being
+     able to recover these accounts.
 3. Decide the names you want now:
    - `identity.adminUser` (SSO admin account label, not a shell user yet)
    - `identity.localAdminUser` (server SSH admin Unix user)
@@ -512,10 +519,14 @@ Core modules included by default are:
 - `phone-backup`: first-class mobile backup entrypoint wiring.
 - `rclone`: backup destination sync paths and automation.
 - `storage`: mount points and shared storage policy contract for apps.
-- `storage-monitoring`: disk health checks and alert triggers that protect data before failures.
+- `storage-monitoring`: scheduled SMART short/long self-test sweeps for physical disks.
 - `syncthing`: optional peer-to-peer sync for personal and offline media workflows.
 - `unbound`: DNS for private hostnames and internal name routing rules.
 - `validation`: pre- and post-merge checks to prevent bad config from reaching runtime.
+
+`storage-monitoring` is not replaced by Beszel.
+It remains useful because it schedules explicit SMART health tests in the background,
+while Beszel provides service and resource observability dashboards.
 
 If one of these is removed, the dependent pieces usually fail in non-obvious ways:
 no authentication, broken name resolution, no web ingress, missing persistence, or
@@ -633,10 +644,12 @@ Stop if any selected disk contains data you intend to keep.
 
 This stage wipes disks. Read it twice before running any destructive disk tool.
 
-The layout has two roles:
+The selected `storage.profile` controls the destructive layout:
 
-- System SSD: UEFI boot plus Btrfs subvolumes for `/`, `/nix`, and `/persist`.
-- Data disks: mirrored ZFS pool mounted under `/mnt/data`.
+- `zfs-mirror`: system SSD with UEFI boot plus Btrfs subvolumes for `/`, `/nix`,
+  and `/persist`; data disks form a mirrored ZFS pool mounted under `/mnt/data`.
+- `single-disk-ext4`: one disk with UEFI boot plus a single ext4 root filesystem;
+  `/persist` and `/mnt/data` are normal directories on that disk.
 
 The layout references are:
 
@@ -709,17 +722,22 @@ Check the basics on the server:
 
 ```bash
 sudo systemctl --failed --no-pager
-zpool status
 findmnt /persist
-findmnt /mnt/data
+test -d /mnt/data
 ```
 
 These checks answer:
 
 - Are any system services already failed?
-- Is the ZFS data pool healthy?
-- Is persistent system state mounted?
-- Is the data pool mounted where apps expect it?
+- Is persistent system state available?
+- Is the data root present where apps expect it?
+
+For `zfs-mirror`, also check:
+
+```bash
+zpool status
+findmnt /mnt/data
+```
 
 From your admin workstation repo, run the full guarded test deploy:
 

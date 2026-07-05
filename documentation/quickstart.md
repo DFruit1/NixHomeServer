@@ -97,7 +97,8 @@ nix run .#bootstrap-storage-plan
 Record:
 
 - one system SSD for `storage.systemDisk`
-- pairs of data disks for `storage.dataPool.mirrorPairs`
+- for `storage.profile = "zfs-mirror"`, pairs of data disks for `storage.dataPool.mirrorPairs`
+- for `storage.profile = "single-disk-ext4"`, no separate data disks
 - the real wired LAN interface for `network.lanInterface`
 
 Stop here if any selected disk contains data you intend to keep.
@@ -167,13 +168,19 @@ This repo does not maintain a destructive disk-wrapper helper. Treat
 bootstrap references, or provision the same layout with your own reviewed
 process.
 
-Expected layout:
+Expected layout for `storage.profile = "zfs-mirror"`:
 
 - system disk partition 1: EFI filesystem mounted at `/boot`
 - system disk partition 2: Btrfs with `/`, `/nix`, and `/persist` subvolumes
 - data disks: GPT with ZFS partitions assigned to the configured mirrored pool
 - data pool: `vars.zfsDataPool.name`, normally `data`
 - data datasets: mounted under `vars.zfsDataPool.mountPoint`, normally `/mnt/data`
+
+Expected layout for `storage.profile = "single-disk-ext4"`:
+
+- system disk partition 1: EFI filesystem mounted at `/boot`
+- system disk partition 2: ext4 mounted at `/`
+- `/persist` and `/mnt/data`: regular directories on the root filesystem
 
 Do not use `disko` for an already-installed server or an in-place storage
 migration. Existing-server storage maintenance belongs in
@@ -232,10 +239,11 @@ Check the target:
 
 ```bash
 sudo systemctl --failed --no-pager
-zpool status
 findmnt /persist
-findmnt /mnt/data
+test -d /mnt/data
 ```
+
+For the ZFS mirror profile, also run `zpool status` and `findmnt /mnt/data`.
 
 From the admin workstation repo, run the full first guarded test:
 

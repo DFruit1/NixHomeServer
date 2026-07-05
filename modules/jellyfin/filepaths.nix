@@ -104,7 +104,9 @@ in
         "jellyfin-library-bootstrap-v1.service"
         "youtube-downloader.service"
       ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        ConditionPathIsMountPoint = vars.dataRoot;
+      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -167,7 +169,9 @@ in
       wants = [ "data-pool-layout.service" "local-fs.target" "media-folder-layout-v2.service" ];
       after = [ "data-pool-layout.service" "local-fs.target" "media-folder-layout-v2.service" ];
       before = [ "jellyfin.service" ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        ConditionPathIsMountPoint = vars.dataRoot;
+      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

@@ -80,6 +80,7 @@ echo "  OAuth clients: $(jq '.identity.oauthClients | length' <<<"$inventory_jso
 echo
 
 echo "Storage"
+echo "  profile: $(jq -r '.storage.profile' <<<"$inventory_json")"
 echo "  data root: $(jq -r '.storage.dataRoot' <<<"$inventory_json")"
 echo "  users root: $(jq -r '.storage.usersRoot' <<<"$inventory_json")"
 echo "  shared root: $(jq -r '.storage.sharedRoot' <<<"$inventory_json")"

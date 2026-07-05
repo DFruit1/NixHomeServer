@@ -53,6 +53,8 @@ let
       oauthClients = builtins.attrNames hostConfig.services.kanidm.provision.systems.oauth2;
     };
     storage = {
+      profile = hostSettings.storageProfile;
+      dataRootIsMountPoint = hostSettings.dataRootIsMountPoint;
       dataRoot = hostSettings.dataRoot;
       usersRoot = hostSettings.usersRoot;
       sharedRoot = hostSettings.sharedRoot;

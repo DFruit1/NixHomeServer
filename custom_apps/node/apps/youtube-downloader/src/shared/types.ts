@@ -12,6 +12,14 @@ export type CurrentUser = {
   canWriteShared: boolean;
   destinations: Destination[];
   fileBrowserUrlTemplate?: string;
+  fileBrowserPathRoots?: {
+    usersRoot: string;
+    sharedMountName: string;
+    sharedRoots: {
+      serverRoot: string;
+      browserPath: string;
+    }[];
+  };
 };
 
 export type Chapter = {

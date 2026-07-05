@@ -87,10 +87,11 @@ jq -r '.[] | "  - " + .' <<<"$groups_json"
 echo
 
 echo "Storage"
+echo "  profile:     $(jq -r '.storageProfile' <<<"$settings_json")"
 echo "  system disk: $(jq -r '.mainDisk' <<<"$settings_json")"
 echo "  data root:   $(jq -r '.dataRoot' <<<"$settings_json")"
 echo "  data disks:"
-jq -r '.zfsDataPoolDiskIds[] | "    - " + .' <<<"$settings_json"
+jq -r 'if .storageProfile == "zfs-mirror" then (.zfsDataPoolDiskIds[] | "    - " + .) else "    - none (single-disk-ext4)" end' <<<"$settings_json"
 echo "  user roots:"
 jq -r '.[] | "    - " + .' <<<"$user_content_subdirs_json"
 echo "  shared roots:"

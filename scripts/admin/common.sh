@@ -105,6 +105,8 @@ inventory_json_for_host() {
         oauthClients = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
       };
       storage = {
+        profile = settings.storageProfile;
+        dataRootIsMountPoint = settings.dataRootIsMountPoint;
         dataRoot = settings.dataRoot;
         usersRoot = settings.usersRoot;
         sharedRoot = settings.sharedRoot;

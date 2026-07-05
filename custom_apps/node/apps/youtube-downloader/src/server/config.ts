@@ -10,9 +10,11 @@ export type AppConfig = {
   sharedAudioRoot: string;
   sharedAudiobooksRoot: string;
   usersRoot: string;
+  sharedRoot: string;
   concurrency: number;
   sharedWriteGroup: string;
   fileBrowserUrlTemplate?: string;
+  fileBrowserSharedMountName: string;
 };
 
 const numberFromEnv = (name: string, fallback: number): number => {
@@ -38,8 +40,10 @@ export const loadConfig = (): AppConfig => {
     sharedAudioRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_AUDIO_ROOT ?? '/mnt/data/shared/_Music/_YouTube',
     sharedAudiobooksRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_AUDIOBOOKS_ROOT ?? '/mnt/data/shared/_Audiobooks/_YouTube',
     usersRoot: process.env.YOUTUBE_DOWNLOADER_USERS_ROOT ?? '/mnt/data/users',
+    sharedRoot: process.env.YOUTUBE_DOWNLOADER_SHARED_ROOT ?? '/mnt/data/shared',
     concurrency: numberFromEnv('YOUTUBE_DOWNLOADER_CONCURRENCY', 1),
     sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'files-shared-users',
     fileBrowserUrlTemplate: process.env.YOUTUBE_DOWNLOADER_FILE_BROWSER_URL_TEMPLATE,
+    fileBrowserSharedMountName: process.env.YOUTUBE_DOWNLOADER_FILE_BROWSER_SHARED_MOUNT_NAME ?? '_Shared',
   };
 };

@@ -16,7 +16,6 @@ let
     "/var/lib/systemd/timers"
     "/var/lib/unbound"
     "/var/log/journal"
-    "/var/log/atop"
   ];
 
   appPersistenceDirectories = [
@@ -165,8 +164,10 @@ in
     repo.impermanence.directories = corePersistenceDirectories ++ appPersistenceDirectories;
     repo.impermanence.files = corePersistenceFiles;
 
-    fileSystems."/persist".neededForBoot = true;
-    fileSystems."/nix".neededForBoot = true;
+    fileSystems = lib.mkIf (vars.storageProfile == "zfs-mirror") {
+      "/persist".neededForBoot = true;
+      "/nix".neededForBoot = true;
+    };
 
     systemd.services.persist-nesting-migration = {
       description = "Migrate accidental /persist/persist contents up one level";

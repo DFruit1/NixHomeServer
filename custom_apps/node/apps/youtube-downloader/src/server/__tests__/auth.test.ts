@@ -4,6 +4,12 @@ import type { AppConfig } from '../config.js';
 
 const config = {
   sharedWriteGroup: 'files-shared-users',
+  usersRoot: '/mnt/data/users',
+  sharedRoot: '/mnt/data/shared',
+  sharedAudioRoot: '/mnt/data/shared/_Music/_YouTube',
+  sharedVideoRoot: '/mnt/data/shared/_Videos/_YouTube',
+  sharedAudiobooksRoot: '/mnt/data/shared/_Audiobooks/_YouTube',
+  fileBrowserSharedMountName: '_Shared',
 } as AppConfig;
 
 describe('auth headers', () => {
@@ -31,5 +37,23 @@ describe('auth headers', () => {
     );
     expect(user.canWriteShared).toBe(true);
     expect(user.destinations).toEqual(['personal', 'shared']);
+    expect(user.fileBrowserPathRoots).toEqual({
+      usersRoot: '/mnt/data/users',
+      sharedMountName: '_Shared',
+      sharedRoots: [
+        {
+          serverRoot: '/mnt/data/shared/_Music/_YouTube',
+          browserPath: '_Shared/_Music/_YouTube',
+        },
+        {
+          serverRoot: '/mnt/data/shared/_Videos/_YouTube',
+          browserPath: '_Shared/_Videos/_YouTube',
+        },
+        {
+          serverRoot: '/mnt/data/shared/_Audiobooks/_YouTube',
+          browserPath: '_Shared/_Audiobooks/_YouTube',
+        },
+      ],
+    });
   });
 });

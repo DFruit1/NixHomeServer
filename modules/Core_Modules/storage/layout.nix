@@ -113,6 +113,60 @@ let
 
   zfsContentLayoutScript = builtins.concatStringsSep "\n" (map mkDirCmd cfg.directories);
   zfsDatasetLayoutScript = builtins.concatStringsSep "\n" (map mkDatasetEnsure cfg.datasets);
+  directoryLayoutScript = ''
+    set -euo pipefail
+    ${zfsContentLayoutScript}
+  '';
+  zfsLayoutScript = ''
+    set -euo pipefail
+    ZFS_FORCE=""
+
+    for option in $(cat /proc/cmdline); do
+      case "$option" in
+        zfs_force|zfs_force=1|zfs_force=y)
+          ZFS_FORCE="-f"
+          ;;
+      esac
+    done
+
+    if ! ${zpoolBin} list '${vars.zfsDataPool.name}' >/dev/null 2>&1; then
+      # shellcheck disable=SC2086
+      ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE '${vars.zfsDataPool.name}'
+    fi
+
+    ensure_dataset() {
+      local dataset="$1"
+      local mountpoint="$2"
+
+      if ! ${zfsBin} list -H -o name "$dataset" >/dev/null 2>&1; then
+        ${zfsBin} create -o mountpoint="$mountpoint" "$dataset"
+      else
+        set_zfs_property "$dataset" canmount on
+        set_zfs_property "$dataset" mountpoint "$mountpoint"
+        ${zfsBin} mount "$dataset" >/dev/null 2>&1 || true
+      fi
+    }
+
+    set_zfs_property() {
+      local dataset="$1"
+      local property="$2"
+      local value="$3"
+      local current
+
+      current="$(${zfsBin} get -H -o value "$property" "$dataset")"
+      if [[ "$current" != "$value" ]]; then
+        ${zfsBin} set "$property=$value" "$dataset"
+      fi
+    }
+
+    set_zfs_property '${vars.zfsDataPool.name}' canmount on
+    set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
+    ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
+    ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
+
+    ${zfsDatasetLayoutScript}
+    ${zfsContentLayoutScript}
+  '';
 
   datasetNames = map (spec: spec.dataset) cfg.datasets;
 in
@@ -171,10 +225,11 @@ in
 
     repo.storage.dataPool = {
       directories = coreContentDirs ++ sharedContentDirs ++ sharedVideoDirs;
-      datasets = coreDatasetSpecs;
+      datasets = lib.mkIf vars.enableZfsDataPool coreDatasetSpecs;
     };
 
     systemd.tmpfiles.rules = [
+      "d /persist 0755 root root -"
       "d /persist/appdata 0755 root root -"
     ];
 
@@ -189,56 +244,7 @@ in
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      script = ''
-          set -euo pipefail
-          ZFS_FORCE=""
-
-          for option in $(cat /proc/cmdline); do
-            case "$option" in
-              zfs_force|zfs_force=1|zfs_force=y)
-                ZFS_FORCE="-f"
-                ;;
-            esac
-          done
-
-          if ! ${zpoolBin} list '${vars.zfsDataPool.name}' >/dev/null 2>&1; then
-            # shellcheck disable=SC2086
-            ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE '${vars.zfsDataPool.name}'
-          fi
-
-          ensure_dataset() {
-            local dataset="$1"
-            local mountpoint="$2"
-
-          if ! ${zfsBin} list -H -o name "$dataset" >/dev/null 2>&1; then
-            ${zfsBin} create -o mountpoint="$mountpoint" "$dataset"
-          else
-            set_zfs_property "$dataset" canmount on
-            set_zfs_property "$dataset" mountpoint "$mountpoint"
-            ${zfsBin} mount "$dataset" >/dev/null 2>&1 || true
-          fi
-        }
-
-        set_zfs_property() {
-          local dataset="$1"
-          local property="$2"
-          local value="$3"
-          local current
-
-          current="$(${zfsBin} get -H -o value "$property" "$dataset")"
-          if [[ "$current" != "$value" ]]; then
-            ${zfsBin} set "$property=$value" "$dataset"
-          fi
-        }
-
-        set_zfs_property '${vars.zfsDataPool.name}' canmount on
-        set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
-        ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
-        ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
-
-        ${zfsDatasetLayoutScript}
-        ${zfsContentLayoutScript}
-      '';
+      script = if vars.enableZfsDataPool then zfsLayoutScript else directoryLayoutScript;
     };
   };
 }

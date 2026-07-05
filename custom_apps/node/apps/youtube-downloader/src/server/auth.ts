@@ -81,6 +81,39 @@ export const currentUserFromHeaders = (headers: IncomingHttpHeaders, config: App
     groups,
     canWriteShared,
     fileBrowserUrlTemplate: config.fileBrowserUrlTemplate,
+    fileBrowserPathRoots: {
+      usersRoot: config.usersRoot,
+      sharedMountName: config.fileBrowserSharedMountName,
+      sharedRoots: [
+        {
+          serverRoot: config.sharedAudioRoot,
+          browserPath: joinBrowserPath(config.fileBrowserSharedMountName, relativePath(config.sharedRoot, config.sharedAudioRoot)),
+        },
+        {
+          serverRoot: config.sharedVideoRoot,
+          browserPath: joinBrowserPath(config.fileBrowserSharedMountName, relativePath(config.sharedRoot, config.sharedVideoRoot)),
+        },
+        {
+          serverRoot: config.sharedAudiobooksRoot,
+          browserPath: joinBrowserPath(config.fileBrowserSharedMountName, relativePath(config.sharedRoot, config.sharedAudiobooksRoot)),
+        },
+      ],
+    },
     destinations: canWriteShared ? ['personal', 'shared'] : ['personal'],
   };
 };
+
+const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, '');
+
+const pathWithoutTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
+
+const relativePath = (root: string, child: string): string => {
+  const cleanRoot = pathWithoutTrailingSlash(root);
+  const cleanChild = pathWithoutTrailingSlash(child);
+  if (cleanChild === cleanRoot) {
+    return '';
+  }
+  return cleanChild.startsWith(`${cleanRoot}/`) ? cleanChild.slice(cleanRoot.length + 1) : trimSlashes(cleanChild);
+};
+
+const joinBrowserPath = (...parts: string[]): string => parts.map(trimSlashes).filter(Boolean).join('/');

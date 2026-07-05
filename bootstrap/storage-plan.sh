@@ -60,30 +60,61 @@ fi
 
 echo
 echo "Current settings"
+echo "  platform:    $(jq -r '.hostPlatform' <<<"$settings_json")"
+echo "  storage:     $(jq -r '.storageProfile' <<<"$settings_json")"
 echo "  system disk: $(jq -r '.mainDisk' <<<"$settings_json")"
-echo "  data pool:   $(jq -r '.zfsDataPool.name' <<<"$settings_json") at $(jq -r '.zfsDataPool.mountPoint' <<<"$settings_json")"
-echo "  data disks:"
-jq -r '.zfsDataPoolDiskIds[] | "    - " + .' <<<"$settings_json"
+if [[ "$(jq -r '.storageProfile' <<<"$settings_json")" == "zfs-mirror" ]]; then
+  echo "  data pool:   $(jq -r '.zfsDataPool.name' <<<"$settings_json") at $(jq -r '.zfsDataPool.mountPoint' <<<"$settings_json")"
+  echo "  data disks:"
+  jq -r '.zfsDataPoolDiskIds[] | "    - " + .' <<<"$settings_json"
+else
+  echo "  data pool:   none"
+  echo "  data disks:  none"
+fi
 
 echo
-cat <<'EOF'
-vars.nix storage snippet template:
+if [[ "$(jq -r '.storageProfile' <<<"$settings_json")" == "single-disk-ext4" ]]; then
+  cat <<'EOF'
+vars.nix single-disk storage snippet template:
 
-  mainDisk = "<system-disk-by-id-basename>";
-  zfsDataPool = {
-    name = "data";
-    mountPoint = "/mnt/data";
-    mirrorPairs = [
-      [
-        "<first-data-disk-by-id-basename>"
-        "<second-data-disk-by-id-basename>"
-      ]
-    ];
-    datasets = [
-      "users"
-      "shared"
-    ];
+  system = {
+    hostPlatform = "aarch64-linux"; # or "x86_64-linux"
+    hardwareProfile = "generic-uefi";
+    timeZone = "Etc/UTC";
+    hostId = "<stable-8-hex-character-host-id>";
   };
 
+  storage = {
+    profile = "single-disk-ext4";
+    systemDisk = "<system-disk-by-id-basename>";
+  };
+EOF
+else
+  cat <<'EOF'
+vars.nix ZFS mirror storage snippet template:
+
+  storage = {
+    profile = "zfs-mirror";
+    systemDisk = "<system-disk-by-id-basename>";
+    dataPool = {
+      name = "data";
+      mountPoint = "/mnt/data";
+      mirrorPairs = [
+        [
+          "<first-data-disk-by-id-basename>"
+          "<second-data-disk-by-id-basename>"
+        ]
+      ];
+      datasets = [
+        "users"
+        "shared"
+        "backups"
+      ];
+    };
+  };
+EOF
+fi
+
+cat <<'EOF'
 This command is read-only. Use disko only for blank-machine bootstrap.
 EOF

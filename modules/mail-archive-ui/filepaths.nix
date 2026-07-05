@@ -56,7 +56,9 @@ in
       wants = [ "data-pool-layout.service" "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [ "mail-archive-ui.service" ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        ConditionPathIsMountPoint = vars.dataRoot;
+      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

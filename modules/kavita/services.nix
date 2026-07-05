@@ -86,7 +86,9 @@ in
         "kavita-storage-layout-v1.service"
         "data-pool-layout.service"
       ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        ConditionPathIsMountPoint = vars.dataRoot;
+      };
       path = kavitaStaleReferenceCleanupPath;
       script = ''
         set -euo pipefail

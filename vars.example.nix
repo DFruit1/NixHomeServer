@@ -30,6 +30,8 @@ rec {
   };
 
   system = {
+    hostPlatform = "x86_64-linux"; # Nix target platform. Supported values: "x86_64-linux" and "aarch64-linux".
+    hardwareProfile = "generic-uefi"; # Use "existing-server" only for this repo's current checked-in hardware config.
     timeZone = "Etc/UTC"; # IANA time zone for timers, logs, and local maintenance windows.
     hostId = "00000000"; # Replace with a stable 8-character hexadecimal host ID for real deployments.
   };
@@ -49,6 +51,7 @@ rec {
   };
 
   storage = {
+    profile = "zfs-mirror"; # Use "single-disk-ext4" for a simple one-disk install.
     systemDisk = "CHANGE_ME_SYSTEM_DISK_BY_ID"; # System SSD /dev/disk/by-id basename.
     dataPool = {
       name = "data";
@@ -200,6 +203,8 @@ rec {
 
   hostname = network.hostname;
   domain = network.domain;
+  hostPlatform = system.hostPlatform or "x86_64-linux";
+  hardwareProfile = system.hardwareProfile or "generic-uefi";
   timeZone = system.timeZone;
   hostId = system.hostId;
   kanidmAdminUser = identity.adminUser;
@@ -262,8 +267,20 @@ rec {
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
   filesSessionExpirationHours = 8; # Files web UI browser session lifetime in hours.
 
+  storageProfile = storage.profile or "zfs-mirror";
+  enableZfsDataPool = storageProfile == "zfs-mirror";
+  dataRootIsMountPoint = enableZfsDataPool;
   mainDisk = storage.systemDisk;
-  zfsDataPool = storage.dataPool;
+  zfsDataPool = storage.dataPool or {
+    name = "data";
+    mountPoint = "/mnt/data";
+    mirrorPairs = [ ];
+    datasets = [
+      "users"
+      "shared"
+      "backups"
+    ];
+  };
 
   cloudflareTunnelName = edge.cloudflareTunnelName;
   binaryCaches = advanced.binaryCaches;

@@ -157,9 +157,24 @@ let
   offlineMediaEnabled = offlineMediaCfg.enable or false;
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaTmpfilesRule = "d ${offlineMediaStateDir} 0750 root root -";
+  supportedHostPlatforms = [ "x86_64-linux" "aarch64-linux" ];
+  supportedHardwareProfiles = [ "existing-server" "generic-uefi" ];
+  supportedStorageProfiles = [ "zfs-mirror" "single-disk-ext4" ];
 in
 {
   assertions = [
+    {
+      assertion = builtins.elem vars.hostPlatform supportedHostPlatforms;
+      message = "nixhomeserver: system.hostPlatform must be one of: ${lib.concatStringsSep ", " supportedHostPlatforms}.";
+    }
+    {
+      assertion = builtins.elem vars.hardwareProfile supportedHardwareProfiles;
+      message = "nixhomeserver: system.hardwareProfile must be one of: ${lib.concatStringsSep ", " supportedHardwareProfiles}.";
+    }
+    {
+      assertion = builtins.elem vars.storageProfile supportedStorageProfiles;
+      message = "nixhomeserver: storage.profile must be one of: ${lib.concatStringsSep ", " supportedStorageProfiles}.";
+    }
     {
       assertion = allowPlaceholders || vars.domain != "example.test";
       message = "nixhomeserver: replace the example domain before using this host for install/deploy.";
@@ -177,7 +192,7 @@ in
       message = "nixhomeserver: replace mainDisk with a /dev/disk/by-id basename.";
     }
     {
-      assertion = allowPlaceholders || !(lib.any containsChangeMe vars.zfsDataPoolDiskIds);
+      assertion = allowPlaceholders || !vars.enableZfsDataPool || !(lib.any containsChangeMe vars.zfsDataPoolDiskIds);
       message = "nixhomeserver: replace all ZFS data-pool disk placeholders.";
     }
     {
@@ -226,16 +241,18 @@ in
     }
     {
       assertion =
+        vars.storageProfile != "zfs-mirror"
+        ||
         fileSystemHasOption "/" "subvol=/"
         || fileSystemHasOption "/" "subvol=${config.repo.impermanence.rootSubvolume}";
       message = "nixhomeserver: root Btrfs mount must retain its subvol option in the initrd.";
     }
     {
-      assertion = fileSystemHasOption "/nix" "subvol=/nix";
+      assertion = vars.storageProfile != "zfs-mirror" || fileSystemHasOption "/nix" "subvol=/nix";
       message = "nixhomeserver: /nix Btrfs mount must retain subvol=/nix in the initrd.";
     }
     {
-      assertion = fileSystemHasOption "/persist" "subvol=/persist";
+      assertion = vars.storageProfile != "zfs-mirror" || fileSystemHasOption "/persist" "subvol=/persist";
       message = "nixhomeserver: /persist Btrfs mount must retain subvol=/persist in the initrd.";
     }
     {

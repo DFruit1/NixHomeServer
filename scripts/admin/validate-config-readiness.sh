@@ -63,8 +63,38 @@ lan_iface="$(jq -r '.netIface' <<<"$settings_json")"
 lan_ip="$(jq -r '.serverLanIP' <<<"$settings_json")"
 dns_mode="$(jq -r '.dnsMode' <<<"$settings_json")"
 main_disk="$(jq -r '.mainDisk' <<<"$settings_json")"
+host_platform="$(jq -r '.hostPlatform' <<<"$settings_json")"
+hardware_profile="$(jq -r '.hardwareProfile' <<<"$settings_json")"
+storage_profile="$(jq -r '.storageProfile' <<<"$settings_json")"
 cloudflare_tunnel="$(jq -r '.cloudflareTunnelName' <<<"$settings_json")"
 host_id="$(jq -r '.hostId' <<<"$settings_json")"
+
+case "$host_platform" in
+  x86_64-linux|aarch64-linux)
+    ready "vars.nix -> system.hostPlatform is ${host_platform}"
+    ;;
+  *)
+    block "vars.nix -> system.hostPlatform must be x86_64-linux or aarch64-linux, got ${host_platform}"
+    ;;
+esac
+
+case "$hardware_profile" in
+  existing-server|generic-uefi)
+    ready "vars.nix -> system.hardwareProfile is ${hardware_profile}"
+    ;;
+  *)
+    block "vars.nix -> system.hardwareProfile must be existing-server or generic-uefi, got ${hardware_profile}"
+    ;;
+esac
+
+case "$storage_profile" in
+  zfs-mirror|single-disk-ext4)
+    ready "vars.nix -> storage.profile is ${storage_profile}"
+    ;;
+  *)
+    block "vars.nix -> storage.profile must be zfs-mirror or single-disk-ext4, got ${storage_profile}"
+    ;;
+esac
 
 case "$domain" in
   example.test|example.*|*CHANGE_ME*)
@@ -132,16 +162,20 @@ else
   warn "vars.nix -> storage.systemDisk /dev/disk/by-id/${main_disk} is not present locally; verify it from the installer or target host"
 fi
 
-while IFS= read -r disk_id; do
-  [[ -n "$disk_id" ]] || continue
-  if [[ "$disk_id" == *CHANGE_ME* ]]; then
-    block "vars.nix -> storage.dataPool.mirrorPairs contains a placeholder: ${disk_id}"
-  elif [[ -e "/dev/disk/by-id/${disk_id}" ]]; then
-    ready "vars.nix -> storage.dataPool disk exists locally: /dev/disk/by-id/${disk_id}"
-  else
-    warn "vars.nix -> storage.dataPool disk /dev/disk/by-id/${disk_id} is not present locally; verify it from the installer or target host"
-  fi
-done < <(jq -r '.zfsDataPoolDiskIds[]' <<<"$settings_json")
+if [[ "$storage_profile" == "zfs-mirror" ]]; then
+  while IFS= read -r disk_id; do
+    [[ -n "$disk_id" ]] || continue
+    if [[ "$disk_id" == *CHANGE_ME* ]]; then
+      block "vars.nix -> storage.dataPool.mirrorPairs contains a placeholder: ${disk_id}"
+    elif [[ -e "/dev/disk/by-id/${disk_id}" ]]; then
+      ready "vars.nix -> storage.dataPool disk exists locally: /dev/disk/by-id/${disk_id}"
+    else
+      warn "vars.nix -> storage.dataPool disk /dev/disk/by-id/${disk_id} is not present locally; verify it from the installer or target host"
+    fi
+  done < <(jq -r '.zfsDataPoolDiskIds[]' <<<"$settings_json")
+else
+  ready "storage.profile single-disk-ext4 does not require ZFS data disks"
+fi
 
 port_duplicates="$(jq -r '.networking.ports | to_entries | map(select(.key | endswith("Container") | not)) | group_by(.value)[] | select(length > 1) | map(.key + "=" + (.value|tostring)) | join(", ")' <<<"$settings_json")"
 if [[ -n "$port_duplicates" ]]; then

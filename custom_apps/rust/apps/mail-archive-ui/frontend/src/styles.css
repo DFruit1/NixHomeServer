@@ -319,6 +319,30 @@ a {
   min-width: 0;
 }
 
+.attachment-context {
+  display: grid;
+  gap: 0.16rem;
+  margin-top: 0.45rem;
+  padding: 0.45rem 0.6rem;
+  border-left: 3px solid rgba(15, 107, 92, 0.26);
+  background: #f6fbf7;
+}
+
+.attachment-context[hidden] {
+  display: none;
+}
+
+.attachment-row-context-open {
+  background: #fbfdfb;
+}
+
+.attachment-context-preview {
+  margin: 0.25rem 0 0;
+  color: rgba(29, 31, 28, 0.78);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
 .sender-cell strong {
   font-weight: 700;
 }
@@ -379,8 +403,17 @@ button.icon-button,
 }
 
 .search-submit {
-  font-size: 1.28rem;
-  font-weight: 700;
+  min-width: 7.4rem;
+  min-height: 2.75rem;
+  border-color: rgba(15, 107, 92, 0.88);
+  background: #0f6b5c;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 850;
+}
+
+.search-submit:hover {
+  background: #0a584d;
 }
 
 .paperless-send-button {
@@ -399,7 +432,9 @@ button.icon-button,
   align-items: center;
   flex-wrap: wrap;
   gap: 0.75rem;
-  justify-content: space-between;
+  justify-content: flex-start;
+  max-width: 21rem;
+  padding-top: 0.25rem;
 }
 
 .toolbar-selection,
@@ -856,9 +891,9 @@ form {
 
 .primary-search-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
-  gap: 0.5rem;
+  gap: 0.65rem;
 }
 
 .primary-search-field {
@@ -873,7 +908,6 @@ form {
 }
 
 .preset-dialog-button {
-  min-height: 2.65rem;
   white-space: nowrap;
 }
 
@@ -884,24 +918,65 @@ form {
 
 .attachment-filter-layout {
   display: grid;
-  grid-template-columns: minmax(20rem, 30rem) minmax(0, 1fr);
+  grid-template-columns: minmax(16rem, 21rem) minmax(0, 1fr);
   align-items: start;
-  gap: 1rem;
+  gap: 1.35rem;
+}
+
+.attachment-control-column {
+  display: grid;
+  gap: 1.25rem;
+  padding: 0.3rem 0.9rem 0.3rem 0;
+}
+
+.control-group {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.control-kicker {
+  color: rgba(29, 31, 28, 0.56);
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.control-field {
+  gap: 0.45rem;
+  font-size: 0.96rem;
+}
+
+.attachment-control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.attachment-control-actions .button-link,
+.attachment-control-actions button {
+  min-height: 2.4rem;
 }
 
 .basic-filter-column,
 .stacked-filter-dialog {
   display: grid;
-  gap: 0.48rem;
+  gap: 0.38rem;
+}
+
+.basic-filter-column {
+  width: 100%;
+  max-width: 44rem;
+  justify-self: end;
 }
 
 .filter-row {
   display: grid;
-  grid-template-columns: minmax(8rem, 0.42fr) minmax(0, 1fr);
+  grid-template-columns: minmax(10rem, 0.44fr) minmax(0, 0.86fr);
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.55rem;
   color: rgba(29, 31, 28, 0.8);
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   font-weight: 800;
 }
 
@@ -914,9 +989,9 @@ form {
 .filter-control select,
 .preset-save-form input,
 .auto-export-form input {
-  min-height: 2.1rem;
-  padding: 0.38rem 0.56rem;
-  font-size: 0.88rem;
+  min-height: 2rem;
+  padding: 0.34rem 0.52rem;
+  font-size: 0.86rem;
   font-weight: 400;
 }
 
@@ -936,6 +1011,17 @@ form {
   font-weight: 800;
   text-decoration: underline;
   text-underline-offset: 0.18em;
+}
+
+.attachment-filter-link-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.attachment-filter-link-row .advanced-filter-link {
+  margin-top: 0;
 }
 
 .app-dialog {
@@ -1553,11 +1639,10 @@ code {
   }
 
   .primary-search-row {
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: 1fr;
   }
 
   .preset-dialog-button {
-    grid-column: 1 / -1;
     justify-self: start;
     min-height: 2.35rem;
   }
@@ -1569,6 +1654,10 @@ code {
 
   .attachment-filter-layout {
     grid-template-columns: 1fr;
+  }
+
+  .attachment-control-column {
+    padding-right: 0;
   }
 
   .filter-row {
@@ -1602,6 +1691,10 @@ code {
   .toolbar-selection,
   .toolbar-actions {
     align-items: stretch;
+  }
+
+  .attachment-toolbar {
+    max-width: none;
   }
 
   .toolbar-selection,

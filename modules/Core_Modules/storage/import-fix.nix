@@ -6,7 +6,7 @@ let
   poolName = vars.zfsDataPool.name;
   poolImportArgs = "-d /dev/disk/by-id";
 in
-{
+lib.mkIf vars.enableZfsDataPool {
   systemd.services.zfs-import-data.script = lib.mkForce ''
     set -e
 

@@ -28,15 +28,23 @@ let
   extraBinaryCacheUrls = map (cache: cache.url) vars.binaryCaches;
   extraBinaryCachePublicKeys = map (cache: cache.publicKey) vars.binaryCaches;
   localAdminUser = vars.localAdminUser;
+  isX86 = builtins.elem pkgs.stdenv.hostPlatform.system [
+    "i686-linux"
+    "x86_64-linux"
+  ];
 in
 {
   system.stateVersion = "25.05";
 
-  boot.initrd.supportedFilesystems = [ "btrfs" "vfat" "zfs" ];
-  boot.kernelModules = [ "jitterentropy_rng" "zfs" ];
-  boot.initrd.kernelModules = [ "jitterentropy_rng" "zfs" ];
+  boot.initrd.supportedFilesystems = [ "btrfs" "vfat" ]
+    ++ lib.optional vars.enableZfsDataPool "zfs";
+  boot.kernelModules = [ "jitterentropy_rng" ]
+    ++ lib.optional vars.enableZfsDataPool "zfs";
+  boot.initrd.kernelModules = [ "jitterentropy_rng" ]
+    ++ lib.optional vars.enableZfsDataPool "zfs";
   boot.initrd.availableKernelModules = [ "nvme" "ahci" "xhci_pci" "usb_storage" "sd_mod" ];
-  boot.supportedFilesystems = [ "btrfs" "vfat" "zfs" ];
+  boot.supportedFilesystems = [ "btrfs" "vfat" "ext4" ]
+    ++ lib.optional vars.enableZfsDataPool "zfs";
 
   networking = {
     hostName = vars.hostname;
@@ -81,8 +89,8 @@ in
   boot.loader.systemd-boot.enable = lib.mkForce false;
   boot.loader.efi.canTouchEfiVariables = false;
 
-  hardware.cpu.intel.updateMicrocode = true;
-  hardware.cpu.amd.updateMicrocode = true;
+  hardware.cpu.intel.updateMicrocode = isX86;
+  hardware.cpu.amd.updateMicrocode = isX86;
 
   networking.firewall.allowedTCPPorts = [ 22 ];
 
@@ -104,8 +112,6 @@ in
       vars.serverSSHPubKey
     ];
   };
-
-  programs.atop.enable = true;
 
   security.sudo.extraRules = [
     {

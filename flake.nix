@@ -15,33 +15,59 @@
 
   outputs = inputs@{ self, nixpkgs, crane, ... }:
     let
-      system = "x86_64-linux";
       lib = nixpkgs.lib;
-      pkgs = nixpkgs.legacyPackages.${system};
       vars = import ./vars.nix { inherit lib; };
-      packageData = import ./flake/packages.nix {
-        inherit lib pkgs crane;
-      };
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
+      forAllSystems = lib.genAttrs supportedSystems;
+      mkPackageData = system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        import ./flake/packages.nix {
+          inherit lib pkgs crane;
+        };
+      hostSystem = vars.hostPlatform or "x86_64-linux";
+      hostPkgs = nixpkgs.legacyPackages.${hostSystem};
+      hostPackageData = mkPackageData hostSystem;
       host = import ./flake/system.nix {
-        inherit inputs lib pkgs vars system;
-        appPackages = packageData.appPackages;
+        inherit inputs lib vars;
+        pkgs = hostPkgs;
+        system = hostSystem;
+        appPackages = hostPackageData.appPackages;
       };
     in
     {
       nixosConfigurations = host.nixosConfigurations;
       lib.nixhomeserverSettings = host.nixhomeserverSettings;
-      formatter.${system} = pkgs.nixpkgs-fmt;
-      checks.${system} = import ./flake/checks.nix {
-        inherit self lib pkgs;
-        inherit (host) nixosConfigurations nixhomeserverSettings;
-        inherit (packageData) rustApps nodeApps;
-      };
-      devShells.${system} = import ./flake/dev-shells.nix {
-        inherit pkgs;
-        inherit (packageData) rustLib;
-      };
-      apps.${system} = import ./flake/apps.nix {
-        inherit pkgs;
-      };
+      formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
+      checks = forAllSystems
+        (system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+            packageData = mkPackageData system;
+          in
+          import ./flake/checks.nix {
+            inherit self lib pkgs;
+            inherit (host) nixosConfigurations nixhomeserverSettings;
+            inherit (packageData) rustApps nodeApps;
+          });
+      devShells = forAllSystems
+        (system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+            packageData = mkPackageData system;
+          in
+          import ./flake/dev-shells.nix {
+            inherit pkgs;
+            inherit (packageData) rustLib;
+          });
+      apps = forAllSystems
+        (system:
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+          in
+          import ./flake/apps.nix {
+            inherit pkgs;
+          });
     };
 }

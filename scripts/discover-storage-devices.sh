@@ -58,7 +58,7 @@ case "$format" in
     ;;
 esac
 
-need jq "$lsblk_bin" "$smartctl_bin" "$zpool_bin" "$readlink_bin"
+need jq "$lsblk_bin" "$smartctl_bin" "$readlink_bin"
 
 declare -A smartctl_args_by_device=()
 declare -a smartctl_scan_devices=()
@@ -79,6 +79,7 @@ load_discovery_config_json() {
   fi
 
   nix_json '{
+    storageProfile = vars.storageProfile;
     systemDisk = {
       diskId = vars.mainDisk;
       device = "/dev/disk/by-id/${vars.mainDisk}";
@@ -275,8 +276,15 @@ append_unique_disk_json() {
 }
 
 config_json="$(load_discovery_config_json)"
+storage_profile="$(jq -r '.storageProfile // "zfs-mirror"' <<<"$config_json")"
 system_disk_id="$(jq -r '.systemDisk.diskId // empty' <<<"$config_json")"
 data_pool_name="$(jq -r '.dataPool.name // empty' <<<"$config_json")"
+
+if [[ "$storage_profile" == "zfs-mirror" ]]; then
+  need "$zpool_bin"
+else
+  data_pool_name=""
+fi
 
 smartctl_scan_load
 

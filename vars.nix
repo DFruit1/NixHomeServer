@@ -32,6 +32,8 @@ rec {
   };
 
   system = {
+    hostPlatform = "x86_64-linux"; # Nix target platform. Supported values: "x86_64-linux" and "aarch64-linux".
+    hardwareProfile = "existing-server"; # Hardware module profile. Use "generic-uefi" for portable UEFI PCs.
     timeZone = "Australia/Sydney"; # IANA time zone for timers, logs, and local maintenance windows.
     hostId = "84e8c12a"; # Stable 8-character hexadecimal host ID required by ZFS.
   };
@@ -51,6 +53,7 @@ rec {
   };
 
   storage = {
+    profile = "zfs-mirror"; # Storage layout. Use "single-disk-ext4" for a simple one-disk install.
     systemDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # System SSD /dev/disk/by-id basename.
     dataPool = {
       name = "data";
@@ -205,6 +208,8 @@ rec {
 
   hostname = network.hostname;
   domain = network.domain;
+  hostPlatform = system.hostPlatform or "x86_64-linux";
+  hardwareProfile = system.hardwareProfile or "existing-server";
   timeZone = system.timeZone;
   hostId = system.hostId;
   kanidmAdminUser = identity.adminUser;
@@ -267,8 +272,20 @@ rec {
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
   filesSessionExpirationHours = 8; # Files web UI browser session lifetime in hours.
 
+  storageProfile = storage.profile or "zfs-mirror";
+  enableZfsDataPool = storageProfile == "zfs-mirror";
+  dataRootIsMountPoint = enableZfsDataPool;
   mainDisk = storage.systemDisk;
-  zfsDataPool = storage.dataPool;
+  zfsDataPool = storage.dataPool or {
+    name = "data";
+    mountPoint = "/mnt/data";
+    mirrorPairs = [ ];
+    datasets = [
+      "users"
+      "shared"
+      "backups"
+    ];
+  };
 
   cloudflareTunnelName = edge.cloudflareTunnelName;
   binaryCaches = advanced.binaryCaches;

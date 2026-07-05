@@ -35,6 +35,10 @@ let
 
   usbCfg = power.usbAutoSuspend;
   kernelPackages = config.boot.kernelPackages;
+  isX86 = builtins.elem pkgs.stdenv.hostPlatform.system [
+    "i686-linux"
+    "x86_64-linux"
+  ];
   nightlySuspend = power.nightlySuspend;
 
   usbDenyRule = device:
@@ -79,8 +83,8 @@ let
     ])
     ++ [
       kernelPackages.cpupower
-      kernelPackages.turbostat
-    ];
+    ]
+    ++ lib.optional isX86 kernelPackages.turbostat;
 in
 lib.mkMerge [
   {

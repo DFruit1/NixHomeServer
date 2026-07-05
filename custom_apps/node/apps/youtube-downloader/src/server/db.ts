@@ -297,6 +297,10 @@ export class Database {
     await this.exec(`delete from jobs where id = ${sqlValue(id)} and status in ('completed', 'failed', 'cancelled');`);
   }
 
+  async clearHistory(): Promise<void> {
+    await this.exec(`delete from jobs where status in ('completed', 'failed', 'cancelled');`);
+  }
+
   private async rowToJob(row: JobRow): Promise<Job> {
     const files = await this.query<{ path: string }>(`
       select path

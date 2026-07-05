@@ -38,7 +38,9 @@ in
         "audiobookshelf-storage-layout-v1.service"
         "data-pool-layout.service"
       ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        ConditionPathIsMountPoint = vars.dataRoot;
+      };
       path = audiobookshelfStaleReferenceCleanupPath;
       script = ''
         set -euo pipefail

@@ -2,7 +2,6 @@
 
 {
   imports = [
-    ./hardware-configuration.nix
     ./system-resources.nix
     ./modules/Core_Modules
 

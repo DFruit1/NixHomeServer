@@ -13,7 +13,7 @@ let
     "noatime"
   ];
 in
-{
+lib.mkIf (vars.storageProfile == "zfs-mirror") {
   fileSystems."/" = {
     device = lib.mkDefault "${systemDisk}-part2";
     fsType = lib.mkDefault "btrfs";

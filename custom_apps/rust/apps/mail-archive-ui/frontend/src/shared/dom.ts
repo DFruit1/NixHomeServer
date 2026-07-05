@@ -301,33 +301,40 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
     doc.querySelector<HTMLFormElement>("#attachment-download-form"),
     doc.querySelector<HTMLFormElement>("#attachment-paperless-form"),
   ].filter((form): form is HTMLFormElement => Boolean(form));
-  const selectPage = doc.querySelector<HTMLElement>("[data-select-page]");
+  const selectedCountElement = doc.querySelector<HTMLElement>(
+    "[data-selected-count]",
+  );
   const selectedKeys = new Set<string>();
   let selectionAnchor: number | null = null;
 
-  const syncSelectedInputs = (): void => {
-    const selectedCount = selectedKeys.size;
-    const selectableKeys = attachmentRows
+  const selectableKeys = (): string[] =>
+    attachmentRows
       .map((row) => row.dataset.attachmentKey)
       .filter((key): key is string => Boolean(key));
+
+  const toggleAllVisible = (): void => {
+    const keys = selectableKeys();
     const allVisibleSelected =
-      selectableKeys.length > 0 &&
-      selectableKeys.every((key) => selectedKeys.has(key));
-    setText(
-      doc.querySelector("[data-selected-count]"),
-      `${selectedCount} selected`,
-    );
-    if (selectPage) {
-      selectPage.textContent = allVisibleSelected
-        ? "Deselect all"
-        : "Select page";
-      selectPage.setAttribute(
-        "title",
-        allVisibleSelected
-          ? "Deselect visible attachments"
-          : "Select visible attachments",
-      );
+      keys.length > 0 && keys.every((key) => selectedKeys.has(key));
+    if (allVisibleSelected) {
+      keys.forEach((key) => selectedKeys.delete(key));
+      selectionAnchor = null;
+    } else {
+      keys.forEach((key) => selectedKeys.add(key));
+      selectionAnchor = attachmentRows.length > 0 ? 0 : null;
     }
+    syncSelectedInputs();
+  };
+
+  const syncSelectedInputs = (): void => {
+    const selectedCount = selectedKeys.size;
+    const totalResults =
+      selectedCountElement?.dataset.totalResults ||
+      String(selectableKeys().length);
+    setText(
+      selectedCountElement,
+      `${selectedCount}/${totalResults} results selected`,
+    );
     doc
       .querySelectorAll<HTMLButtonElement>("[data-bulk-action]")
       .forEach((button) => {
@@ -395,8 +402,20 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
     syncSelectedInputs();
   };
 
+  const toggleContext = (row: HTMLElement): void => {
+    const context = row.querySelector<HTMLElement>(".attachment-context");
+    if (!context) {
+      return;
+    }
+    const isOpen = !context.hidden;
+    context.hidden = isOpen;
+    row.classList.toggle("attachment-row-context-open", !isOpen);
+    row.setAttribute("aria-expanded", isOpen ? "false" : "true");
+  };
+
   const cleanups: Cleanup[] = [];
   attachmentRows.forEach((row) => {
+    row.setAttribute("aria-expanded", "false");
     const onMouseDown = (event: MouseEvent): void => {
       if ((event.target as Element).closest(interactiveSelector)) {
         return;
@@ -409,14 +428,22 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
       if ((event.target as Element).closest(interactiveSelector)) {
         return;
       }
-      selectRow(row, event);
-    };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (![" ", "Enter"].includes(event.key)) {
+      if (event.shiftKey || event.ctrlKey || event.metaKey) {
+        selectRow(row, event);
         return;
       }
-      event.preventDefault();
-      selectRow(row, event);
+      toggleContext(row);
+    };
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        toggleContext(row);
+        return;
+      }
+      if (event.key === " ") {
+        event.preventDefault();
+        selectRow(row, event);
+      }
     };
 
     row.addEventListener("mousedown", onMouseDown);
@@ -429,26 +456,22 @@ export const setupAttachmentSelection = (doc: Document): Cleanup => {
     });
   });
 
-  if (selectPage) {
-    const onSelectPage = (): void => {
-      const selectableKeys = attachmentRows
-        .map((row) => row.dataset.attachmentKey)
-        .filter((key): key is string => Boolean(key));
-      const allVisibleSelected =
-        selectableKeys.length > 0 &&
-        selectableKeys.every((key) => selectedKeys.has(key));
-      if (allVisibleSelected) {
-        selectableKeys.forEach((key) => selectedKeys.delete(key));
-        selectionAnchor = null;
-      } else {
-        selectableKeys.forEach((key) => selectedKeys.add(key));
-        selectionAnchor = attachmentRows.length > 0 ? 0 : null;
-      }
-      syncSelectedInputs();
-    };
-    selectPage.addEventListener("click", onSelectPage);
-    cleanups.push(() => selectPage.removeEventListener("click", onSelectPage));
-  }
+  const onSelectAllShortcut = (event: KeyboardEvent): void => {
+    if (event.key.toLowerCase() !== "a" || (!event.ctrlKey && !event.metaKey)) {
+      return;
+    }
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest("input, textarea, select, [contenteditable='true']")
+    ) {
+      return;
+    }
+    event.preventDefault();
+    toggleAllVisible();
+  };
+  doc.addEventListener("keydown", onSelectAllShortcut);
+  cleanups.push(() => doc.removeEventListener("keydown", onSelectAllShortcut));
 
   setupAttachmentDialogs(doc, cleanups);
 

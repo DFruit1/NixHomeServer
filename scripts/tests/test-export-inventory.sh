@@ -15,6 +15,8 @@ require_json_equal "$(jq -r '.host' <<<"$inventory_json")" "$(jq -r '.settings.h
 
 jq -e '
   (.network.caddyHosts | type == "array" and length > 0)
+  and (.storage.profile == "zfs-mirror")
+  and (.storage.dataRootIsMountPoint == true)
   and (.identity.oauthClients | type == "array" and length > 0)
   and (.backups.appStateEntries | type == "array" and length > 0)
   and (.backups.appStateEntries[] | select(.app == "offline-media" and .component == "syncthing-enrollment").stateRoot == "/persist/appdata/offline-media")

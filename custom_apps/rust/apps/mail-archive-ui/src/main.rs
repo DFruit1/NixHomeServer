@@ -21,8 +21,9 @@ use landlock::{
     RulesetCreatedAttr, RulesetStatus, ABI,
 };
 use mailparse::{DispositionType, MailAddr, MailHeaderMap};
+use md5::Md5;
 use rand::{rngs::OsRng, RngCore};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{
     de::{self, Deserializer},
     Deserialize, Serialize,
@@ -92,6 +93,7 @@ struct AppConfig {
     lock_dir: Arc<str>,
     paperless_consume_root: Option<Arc<str>>,
     paperless_handoff_staging_root: Option<Arc<str>>,
+    paperless_database_path: Option<Arc<str>>,
     visible_mirror_read_group: Option<Arc<str>>,
     default_tags: Arc<[String]>,
     frontend_dist_dir: Arc<str>,
@@ -203,6 +205,9 @@ struct AttachmentListItem {
     account_name: String,
     sender_priority: SenderPriorityView,
     paperless_sent_at: Option<String>,
+    message_preview: Option<String>,
+    message_preview_truncated: bool,
+    message_cc: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -210,6 +215,13 @@ struct ExtractedAttachment {
     path: PathBuf,
     original_filename: String,
     is_inline_image: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MessageContextPreview {
+    body: Option<String>,
+    truncated: bool,
+    cc: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -867,7 +879,6 @@ struct AttachmentSearchFilters {
 #[derive(Clone, Debug, Default)]
 struct ParsedAttachmentSearchFilters {
     raw: AttachmentSearchFilters,
-    message: ParsedMessageSearchFilters,
     min_size_bytes: Option<i64>,
     max_size_bytes: Option<i64>,
     min_attachment_count: Option<usize>,
@@ -1194,6 +1205,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/attachments/{attachment_key}/download/browser",
             post(download_attachment_browser),
+        )
+        .route(
+            "/attachments/{attachment_key}/message/browser",
+            get(download_attachment_message_browser),
         )
         .route("/attachments/download", post(download_attachments_zip))
         .route(
@@ -2282,6 +2297,54 @@ async fn download_attachment_browser(
     attachment_download_response(&payload.0, &payload.1, payload.2)
 }
 
+async fn download_attachment_message_browser(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(attachment_key): Path<String>,
+) -> Response {
+    let identity = match identity_from_headers(&headers) {
+        Ok(identity) => identity,
+        Err((status, message)) => return auth_error(status, &message),
+    };
+
+    let config = state.config.clone();
+    let username = identity.username.clone();
+    let payload = match tokio::task::spawn_blocking(move || {
+        let (account, message, _attachment) =
+            load_attachment_for_user(&config, &username, &attachment_key)?;
+        let account_paths = ensure_account_paths(&config, &account)?;
+        let message_path = account_paths.maildir.join(&message.message_relpath);
+        let bytes = fs::read(&message_path).map_err(|error| {
+            format!(
+                "failed to read source message {}: {error}",
+                message_path.display()
+            )
+        })?;
+        let filename = format!(
+            "{} - {}.eml",
+            safe_filename(&format_timestamp_date_label(message.timestamp)),
+            safe_filename(&decode_display_header_value(&message.subject))
+        );
+        Ok::<_, String>((filename, bytes))
+    })
+    .await
+    {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(error)) => {
+            return server_error_page("Email download failed", &error, Some(&identity))
+        }
+        Err(_) => {
+            return server_error_page(
+                "Email download failed",
+                "Email download task failed",
+                Some(&identity),
+            )
+        }
+    };
+
+    attachment_download_response(&payload.0, "message/rfc822", payload.1)
+}
+
 async fn download_attachments_zip(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2521,6 +2584,11 @@ fn load_config() -> AppConfig {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(Arc::<str>::from);
+    let paperless_database_path = env::var("MAIL_ARCHIVE_UI_PAPERLESS_DATABASE_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(Arc::<str>::from);
     let visible_mirror_read_group = env::var("MAIL_ARCHIVE_UI_VISIBLE_MIRROR_READ_GROUP")
         .ok()
         .map(|value| value.trim().to_string())
@@ -2551,6 +2619,7 @@ fn load_config() -> AppConfig {
         lock_dir: Arc::<str>::from(lock_dir),
         paperless_consume_root,
         paperless_handoff_staging_root,
+        paperless_database_path,
         visible_mirror_read_group,
         default_tags: Arc::from(default_tags),
         frontend_dist_dir: Arc::<str>::from(frontend_dist_dir),
@@ -2627,6 +2696,7 @@ fn landlock_roots(config: &AppConfig) -> (Vec<PathBuf>, Vec<PathBuf>) {
         Some(PathBuf::from("/dev/null")),
         Some(PathBuf::from("/dev/random")),
         Some(PathBuf::from("/dev/urandom")),
+        config.paperless_database_path.as_deref().map(PathBuf::from),
     ]);
     let read_write_roots = dedupe_paths([
         Some(PathBuf::from(config.data_dir.as_ref())),
@@ -4778,8 +4848,224 @@ fn decoded_header_value(message_bytes: &[u8], target_name: &str) -> Option<Strin
     mailparse::parse_mail(message_bytes)
         .ok()
         .and_then(|message| message.headers.get_first_value(target_name))
-        .map(|value| value.trim().to_string())
+        .map(|value| decode_display_header_value(value.trim()))
         .filter(|value| !value.is_empty())
+}
+
+fn decode_display_header_value(raw: &str) -> String {
+    if !raw.contains("=?") {
+        return raw.to_string();
+    }
+    decode_rfc2047_words(raw).unwrap_or_else(|| raw.to_string())
+}
+
+fn decode_rfc2047_words(raw: &str) -> Option<String> {
+    let mut output = String::new();
+    let mut index = 0;
+    let bytes = raw.as_bytes();
+    let mut decoded_any = false;
+    while index < raw.len() {
+        if bytes.get(index) == Some(&b'=') && bytes.get(index + 1) == Some(&b'?') {
+            let rest = &raw[index + 2..];
+            let Some(charset_end) = rest.find('?') else {
+                output.push_str(&raw[index..]);
+                break;
+            };
+            let charset = &rest[..charset_end];
+            let rest = &rest[charset_end + 1..];
+            let Some(encoding_end) = rest.find('?') else {
+                output.push_str(&raw[index..]);
+                break;
+            };
+            let encoding = &rest[..encoding_end];
+            let rest = &rest[encoding_end + 1..];
+            let Some(encoded_end) = rest.find("?=") else {
+                output.push_str(&raw[index..]);
+                break;
+            };
+            let encoded = &rest[..encoded_end];
+            if let Some(decoded) = decode_rfc2047_word(charset, encoding, encoded) {
+                if output.ends_with(' ') && raw[..index].trim_end().ends_with("?=") {
+                    output.pop();
+                }
+                output.push_str(&decoded);
+                decoded_any = true;
+                index += 2 + charset_end + 1 + encoding_end + 1 + encoded_end + 2;
+                continue;
+            }
+        }
+        let character = raw[index..].chars().next()?;
+        output.push(character);
+        index += character.len_utf8();
+    }
+    decoded_any.then(|| output.trim().to_string())
+}
+
+fn decode_rfc2047_word(charset: &str, encoding: &str, encoded: &str) -> Option<String> {
+    let bytes = match encoding.to_ascii_uppercase().as_str() {
+        "Q" => decode_rfc2047_q(encoded)?,
+        "B" => BASE64.decode(encoded.as_bytes()).ok()?,
+        _ => return None,
+    };
+    Some(decode_header_bytes(charset, &bytes))
+}
+
+fn decode_rfc2047_q(encoded: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut iter = encoded.as_bytes().iter().copied();
+    while let Some(byte) = iter.next() {
+        match byte {
+            b'_' => bytes.push(b' '),
+            b'=' => {
+                let high = iter.next()?;
+                let low = iter.next()?;
+                let hex = [high, low];
+                let value = u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?;
+                bytes.push(value);
+            }
+            value => bytes.push(value),
+        }
+    }
+    Some(bytes)
+}
+
+fn decode_header_bytes(charset: &str, bytes: &[u8]) -> String {
+    match charset.to_ascii_lowercase().as_str() {
+        "utf-8" | "utf8" | "us-ascii" => String::from_utf8_lossy(bytes).to_string(),
+        "windows-1252" | "cp1252" => decode_windows_1252(bytes),
+        "iso-8859-1" | "latin1" | "latin-1" => bytes.iter().map(|byte| *byte as char).collect(),
+        _ => String::from_utf8_lossy(bytes).to_string(),
+    }
+}
+
+fn decode_windows_1252(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| match byte {
+            0x80 => '\u{20ac}',
+            0x82 => '\u{201a}',
+            0x83 => '\u{0192}',
+            0x84 => '\u{201e}',
+            0x85 => '\u{2026}',
+            0x86 => '\u{2020}',
+            0x87 => '\u{2021}',
+            0x88 => '\u{02c6}',
+            0x89 => '\u{2030}',
+            0x8a => '\u{0160}',
+            0x8b => '\u{2039}',
+            0x8c => '\u{0152}',
+            0x8e => '\u{017d}',
+            0x91 => '\u{2018}',
+            0x92 => '\u{2019}',
+            0x93 => '\u{201c}',
+            0x94 => '\u{201d}',
+            0x95 => '\u{2022}',
+            0x96 => '\u{2013}',
+            0x97 => '\u{2014}',
+            0x98 => '\u{02dc}',
+            0x99 => '\u{2122}',
+            0x9a => '\u{0161}',
+            0x9b => '\u{203a}',
+            0x9c => '\u{0153}',
+            0x9e => '\u{017e}',
+            0x9f => '\u{0178}',
+            value => *value as char,
+        })
+        .collect()
+}
+
+fn read_message_context_preview(
+    message_path: &FsPath,
+    limit: usize,
+) -> Result<MessageContextPreview, String> {
+    let bytes = fs::read(message_path)
+        .map_err(|error| format!("failed to read {}: {error}", message_path.display()))?;
+    let parsed = mailparse::parse_mail(&bytes).map_err(|error| {
+        format!(
+            "failed to parse MIME message {}: {error}",
+            message_path.display()
+        )
+    })?;
+    let cc = decoded_header_value(&bytes, "cc");
+    let mut html_fallback = None;
+    let mut html_truncated = false;
+
+    for part in parsed.parts() {
+        if !part.subparts.is_empty() {
+            continue;
+        }
+        if matches!(
+            part.get_content_disposition().disposition,
+            DispositionType::Attachment
+        ) {
+            continue;
+        }
+        if part.ctype.mimetype.eq_ignore_ascii_case("text/plain") {
+            let body = part.get_body().map_err(|error| {
+                format!(
+                    "failed to decode text body from {}: {error}",
+                    message_path.display()
+                )
+            })?;
+            if let Some((preview, truncated)) = compact_text_preview(&body, limit) {
+                return Ok(MessageContextPreview {
+                    body: Some(preview),
+                    truncated,
+                    cc,
+                });
+            }
+        } else if html_fallback.is_none() && part.ctype.mimetype.eq_ignore_ascii_case("text/html") {
+            let body = part.get_body().map_err(|error| {
+                format!(
+                    "failed to decode HTML body from {}: {error}",
+                    message_path.display()
+                )
+            })?;
+            if let Some((preview, truncated)) = compact_text_preview(&strip_html_tags(&body), limit)
+            {
+                html_fallback = Some(preview);
+                html_truncated = truncated;
+            }
+        }
+    }
+
+    Ok(MessageContextPreview {
+        body: html_fallback,
+        truncated: html_truncated,
+        cc,
+    })
+}
+
+fn compact_text_preview(raw: &str, limit: usize) -> Option<(String, bool)> {
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return None;
+    }
+    let truncated = compact.chars().count() > limit;
+    let preview = compact
+        .chars()
+        .take(limit)
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    Some((preview, truncated))
+}
+
+fn strip_html_tags(raw: &str) -> String {
+    let mut text = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    for character in raw.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(character),
+            _ => {}
+        }
+    }
+    text
 }
 
 fn sender_identity_from_header(raw_sender: &str) -> Option<SenderIdentity> {
@@ -4945,6 +5231,23 @@ fn sha256_file(path: &FsPath) -> Result<String, String> {
     let mut file = fs::File::open(path)
         .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
     let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn md5_file(path: &FsPath) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    let mut hasher = Md5::new();
     let mut buffer = [0_u8; 8192];
     loop {
         let read = file
@@ -5888,6 +6191,12 @@ fn message_filters_from_attachment_params(params: &AttachmentListParams) -> Mess
     }
 }
 
+fn message_filters_without_general_query(filters: &MessageSearchFilters) -> MessageSearchFilters {
+    let mut structured = filters.clone();
+    structured.q.clear();
+    structured
+}
+
 fn attachment_filters_from_params(params: &AttachmentListParams) -> AttachmentSearchFilters {
     let custom_extension = optional_trimmed(params.extension_custom.as_ref()).to_ascii_lowercase();
     let extension = if custom_extension.is_empty() {
@@ -6047,7 +6356,7 @@ fn parse_message_search_filters(
 fn parse_attachment_search_filters(
     filters: AttachmentSearchFilters,
 ) -> Result<ParsedAttachmentSearchFilters, String> {
-    let message = parse_message_search_filters(filters.message.clone())?;
+    parse_message_search_filters(filters.message.clone())?;
     let min_size_bytes = parse_optional_nonnegative_i64(Some(&filters.min_size), "minimum size")?;
     let max_size_bytes = parse_optional_nonnegative_i64(Some(&filters.max_size), "maximum size")?;
     if let (Some(min), Some(max)) = (min_size_bytes, max_size_bytes) {
@@ -6070,7 +6379,6 @@ fn parse_attachment_search_filters(
 
     Ok(ParsedAttachmentSearchFilters {
         raw: filters,
-        message,
         min_size_bytes,
         max_size_bytes,
         min_attachment_count,
@@ -6213,6 +6521,33 @@ fn attachment_matches_filters(
         }
     }
     true
+}
+
+fn attachment_general_query_matches(
+    item: &AttachmentListItem,
+    query: &str,
+    message_body_match: bool,
+) -> bool {
+    if message_body_match {
+        return true;
+    }
+    let needle = query.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    let subject = decode_display_header_value(&item.message.subject);
+    let sender = decode_display_header_value(&item.message.from);
+    [
+        item.attachment.original_filename.as_str(),
+        item.attachment.safe_filename.as_str(),
+        item.attachment.extension.as_str(),
+        item.attachment.mime_type.as_str(),
+        item.account_name.as_str(),
+        subject.as_str(),
+        sender.as_str(),
+    ]
+    .iter()
+    .any(|value| value.to_ascii_lowercase().contains(&needle))
 }
 
 fn build_attachment_base_query(state: AttachmentBaseQuery<'_>) -> String {
@@ -6635,6 +6970,17 @@ fn load_attachment_page_data(
     let priority_filter = SenderPriorityFilter::from_query(params.priority.as_deref());
     let raw_filters = attachment_filters_from_params(params);
     let filters = parse_attachment_search_filters(raw_filters)?;
+    let general_query = filters.raw.message.q.trim().to_string();
+    let structured_message_filters =
+        parse_message_search_filters(message_filters_without_general_query(&filters.raw.message))?;
+    let general_query_filters = if general_query.is_empty() {
+        None
+    } else {
+        Some(parse_message_search_filters(MessageSearchFilters {
+            q: general_query.clone(),
+            ..Default::default()
+        })?)
+    };
     let include_inline = query_bool_is_true(params.include_inline.as_deref());
     let include_inline_images = query_bool_is_true(params.include_inline_images.as_deref());
     let show_mime_details = query_bool_is_true(params.show_mime_details.as_deref());
@@ -6645,6 +6991,7 @@ fn load_attachment_page_data(
     let priority_rules = load_sender_priority_rules(config, username)?;
     let mut items = Vec::new();
     let mut query_relpaths_by_account = HashMap::<i64, HashSet<String>>::new();
+    let mut general_query_relpaths_by_account = HashMap::<i64, HashSet<String>>::new();
 
     for account in accounts
         .iter()
@@ -6655,10 +7002,10 @@ fn load_attachment_page_data(
             continue;
         }
 
-        if message_filters_have_terms(&filters.raw.message) {
+        if message_filters_have_terms(&structured_message_filters.raw) {
             let relpaths = list_notmuch_message_files(
                 &account_paths,
-                &notmuch_query_for_filters(&filters.message),
+                &notmuch_query_for_filters(&structured_message_filters),
             )?
             .into_iter()
             .map(|path| {
@@ -6667,6 +7014,19 @@ fn load_attachment_page_data(
             })
             .collect::<Result<HashSet<_>, _>>()?;
             query_relpaths_by_account.insert(account.id, relpaths);
+        }
+        if let Some(general_query_filters) = general_query_filters.as_ref() {
+            let relpaths = list_notmuch_message_files(
+                &account_paths,
+                &notmuch_query_for_filters(general_query_filters),
+            )?
+            .into_iter()
+            .map(|path| {
+                message_relative_path(&account_paths, &path)
+                    .map(|relative| relative.to_string_lossy().to_string())
+            })
+            .collect::<Result<HashSet<_>, _>>()?;
+            general_query_relpaths_by_account.insert(account.id, relpaths);
         }
 
         let catalog_rows = load_attachment_catalog_rows_for_account(&connection, account.id)?;
@@ -6678,7 +7038,7 @@ fn load_attachment_page_data(
         }
 
         for (message, attachment) in catalog_rows {
-            if message_filters_have_terms(&filters.raw.message)
+            if message_filters_have_terms(&structured_message_filters.raw)
                 && !query_relpaths_by_account
                     .get(&account.id)
                     .is_some_and(|relpaths| relpaths.contains(&message.message_relpath))
@@ -6703,6 +7063,9 @@ fn load_attachment_page_data(
                 message,
                 sender_priority,
                 paperless_sent_at: None,
+                message_preview: None,
+                message_preview_truncated: false,
+                message_cc: None,
             };
             if !message_matches_filters(
                 &LiveMessageRecord {
@@ -6712,10 +7075,18 @@ fn load_attachment_page_data(
                     from: item.message.from.clone(),
                     timestamp: item.message.timestamp,
                 },
-                &filters.message,
+                &structured_message_filters,
                 Some(item.message.has_attachments),
             ) {
                 continue;
+            }
+            if !general_query.is_empty() {
+                let message_body_match = general_query_relpaths_by_account
+                    .get(&account.id)
+                    .is_some_and(|relpaths| relpaths.contains(&item.message.message_relpath));
+                if !attachment_general_query_matches(&item, &general_query, message_body_match) {
+                    continue;
+                }
             }
             let attachment_count = attachment_counts
                 .get(&item.message.message_key)
@@ -6749,11 +7120,29 @@ fn load_attachment_page_data(
     let total_count = items.len();
     let start = (page - 1).saturating_mul(ATTACHMENTS_PER_PAGE);
     let end = usize::min(start + ATTACHMENTS_PER_PAGE, total_count);
-    let page_items = if start >= total_count {
+    let mut page_items = if start >= total_count {
         Vec::new()
     } else {
         items[start..end].to_vec()
     };
+    let accounts_by_id = accounts
+        .iter()
+        .map(|account| (account.id, account))
+        .collect::<HashMap<_, _>>();
+    for item in &mut page_items {
+        let Some(account) = accounts_by_id.get(&item.message.account_id) else {
+            continue;
+        };
+        let Ok(account_paths) = ensure_account_paths(config, account) else {
+            continue;
+        };
+        let message_path = account_paths.maildir.join(&item.message.message_relpath);
+        if let Ok(context) = read_message_context_preview(&message_path, 760) {
+            item.message_preview = context.body;
+            item.message_preview_truncated = context.truncated;
+            item.message_cc = context.cc;
+        }
+    }
     let base_query = build_attachment_base_query(AttachmentBaseQuery {
         filters: &filters.raw,
         selected_account_id,
@@ -7141,6 +7530,43 @@ fn load_attachment_paperless_handoff_by_sha(
         .map_err(|error| format!("failed to query Paperless handoff by hash: {error}"))
 }
 
+#[derive(Debug)]
+struct PaperlessDocumentMatch {
+    id: i64,
+}
+
+fn load_paperless_document_by_checksum(
+    config: &AppConfig,
+    checksum: &str,
+) -> Result<Option<PaperlessDocumentMatch>, String> {
+    let Some(database_path) = config.paperless_database_path.as_deref() else {
+        return Ok(None);
+    };
+    let uri = format!("file:{database_path}?mode=ro&immutable=1");
+    let connection = Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("failed to open Paperless database: {error}"))?;
+    connection
+        .query_row(
+            r#"
+            SELECT id
+            FROM documents_document
+            WHERE deleted_at IS NULL
+              AND (checksum = ?1 OR archive_checksum = ?1)
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+            params![checksum],
+            |row| Ok(PaperlessDocumentMatch { id: row.get(0)? }),
+        )
+        .optional()
+        .map_err(|error| format!("failed to query Paperless document checksum: {error}"))
+}
+
 #[derive(Debug, Default)]
 struct PaperlessHandoffSummary {
     sent: usize,
@@ -7330,28 +7756,21 @@ fn send_attachments_to_paperless(
             summary.sent_attachment_keys.push(key.to_string());
             continue;
         }
-        let consume_filename = reserve_available_paperless_consume_filename(
-            &consume_root,
-            &preferred_consume_filename,
-            &mut reserved_consume_filenames,
-        );
         let (_dir, attachment_path) =
             match resolve_attachment_payload(config, &account, &message, &attachment) {
                 Ok(payload) => payload,
                 Err(error) => {
                     summary.failures.push(PaperlessHandoffFailure {
                         attachment_key: key.to_string(),
-                        filename: consume_filename,
+                        filename: preferred_consume_filename.clone(),
                         error,
                     });
                     continue;
                 }
             };
-        if let Some(consume_filename) = find_matching_paperless_consume_file(
-            &consume_root,
-            &preferred_consume_filename,
-            &attachment.attachment_sha256,
-        )? {
+        if let Some(consume_filename) =
+            find_matching_paperless_consume_file(&consume_root, &attachment.attachment_sha256)?
+        {
             let sent_at = Utc::now().to_rfc3339();
             if let Err(error) = record_attachment_paperless_handoff(
                 config,
@@ -7371,6 +7790,43 @@ fn send_attachments_to_paperless(
             summary.sent_attachment_keys.push(key.to_string());
             continue;
         }
+        match md5_file(&attachment_path)
+            .and_then(|checksum| load_paperless_document_by_checksum(config, &checksum))
+        {
+            Ok(Some(document)) => {
+                let consume_filename = format!("paperless-document-{}", document.id);
+                let sent_at = Utc::now().to_rfc3339();
+                if let Err(error) = record_attachment_paperless_handoff(
+                    config,
+                    username,
+                    &attachment,
+                    &consume_filename,
+                    &sent_at,
+                ) {
+                    summary.failures.push(PaperlessHandoffFailure {
+                        attachment_key: key.to_string(),
+                        filename: consume_filename,
+                        error,
+                    });
+                    continue;
+                }
+                summary.already_uploaded += 1;
+                summary.sent_attachment_keys.push(key.to_string());
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!(
+                    "mail-archive-ui Paperless duplicate checksum check skipped attachment_key={} detail={}",
+                    key, error
+                );
+            }
+        }
+        let consume_filename = reserve_available_paperless_consume_filename(
+            &consume_root,
+            &preferred_consume_filename,
+            &mut reserved_consume_filenames,
+        );
         let sent_at = Utc::now().to_rfc3339();
         let final_path = consume_root.join(&consume_filename);
         if let Err(error) =
@@ -7437,19 +7893,38 @@ fn reserve_available_paperless_consume_filename(
 
 fn find_matching_paperless_consume_file(
     consume_root: &FsPath,
-    preferred_filename: &str,
     attachment_sha256: &str,
 ) -> Result<Option<String>, String> {
-    let preferred = filename_component(preferred_filename, "attachment");
-    for suffix in std::iter::once(0).chain(2..1000) {
-        let candidate = paperless_consume_filename_with_suffix(&preferred, suffix);
-        let candidate_path = consume_root.join(&candidate);
-        if !candidate_path.is_file() {
+    let entries = match fs::read_dir(consume_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read Paperless consume directory {}: {error}",
+                consume_root.display()
+            ))
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to read Paperless consume directory {}: {error}",
+                consume_root.display()
+            )
+        })?;
+        let metadata = entry.metadata().map_err(|error| {
+            format!(
+                "failed to inspect Paperless consume file {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if !metadata.is_file() {
             continue;
         }
+        let candidate_path = entry.path();
         let candidate_sha256 = sha256_file(&candidate_path)?;
         if candidate_sha256 == attachment_sha256 {
-            return Ok(Some(candidate));
+            return Ok(Some(entry.file_name().to_string_lossy().to_string()));
         }
     }
     Ok(None)
@@ -9889,22 +10364,10 @@ fn render_attachments_page(
     let mut body = String::new();
     body.push_str(&render_toasts(flash, error));
 
-    body.push_str(
-        "<section class=\"page-heading\">
-          <div>
-            <p class=\"eyebrow\">Attachments</p>
-            <h1>Find files in saved mail.</h1>
-          </div>
-        </section>",
-    );
-
     let return_to = attachment_return_to(&data.state);
     let filter_hiddens = render_attachment_filter_hiddens(data, &return_to);
     let preset_dialog = render_attachment_preset_dialog(data, &return_to);
     let advanced_dialog = render_attachment_advanced_dialog(data);
-    let current_preset_label = current_attachment_preset_name(data)
-        .map(|name| format!("Preset: {name}"))
-        .unwrap_or_else(|| "Preset: Custom filters".to_string());
     let show_download_all = data.state.result_count > data.items.len();
     writeln!(
         &mut body,
@@ -9914,12 +10377,15 @@ fn render_attachments_page(
               <label class=\"primary-search-field\">Search attachments
                 <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
               </label>
-              <button class=\"secondary preset-dialog-button\" type=\"button\" data-open-dialog=\"attachment-presets-dialog\">Filter Presets...</button>
-              <button class=\"icon-button search-submit\" type=\"submit\" title=\"Search attachments\" aria-label=\"Search attachments\">⌕</button>
-              <a class=\"button-link secondary icon-button\" href=\"/attachments?q=\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
+              <button class=\"search-submit\" type=\"submit\">Search</button>
             </div>
-            <div class=\"current-preset-label\">{}</div>
             <div class=\"attachment-filter-layout\">
+              <section class=\"attachment-control-column\" aria-label=\"Attachment search controls\">
+                <div class=\"control-group\">
+                  <span class=\"control-kicker\">Mailbox</span>
+                  <select class=\"control-field\" name=\"account_id\" aria-label=\"Mailbox\"><option value=\"\">All mailboxes</option>{}</select>
+                </div>
+              </section>
               {}
             </div>
             {}
@@ -9928,8 +10394,7 @@ fn render_attachments_page(
           <div class=\"attachment-toolbar\">
             <div class=\"toolbar-selection\">
               <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
-              <span class=\"selection-count\" data-selected-count>0 selected</span>
-              <button class=\"secondary\" type=\"button\" data-select-page title=\"Select visible attachments\">Select page</button>
+              <span class=\"selection-count\" data-selected-count data-total-results=\"{}\">0/{} results selected</span>
             </div>
             <div class=\"toolbar-actions\">
               <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
@@ -9941,19 +10406,16 @@ fn render_attachments_page(
                 <input type=\"hidden\" name=\"return_to\" value=\"{}\">
                 <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button data-bulk-action>&#8594;</button>
               </form>
-              <form method=\"post\" action=\"/attachments/refresh\" class=\"icon-form\" data-refresh-attachments-form>
-                <input type=\"hidden\" name=\"account_id\" value=\"{}\">
-                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-                <button class=\"secondary icon-button\" type=\"submit\" title=\"Refresh attachment list\" aria-label=\"Refresh attachment list\">↻</button>
-              </form>
             </div>
           </div>
         </section>",
         escape_html(&data.filters.message.q),
-        escape_html(&current_preset_label),
+        render_account_options(&data.accounts, data.selected_account_id),
         render_attachment_basic_filters(data),
         advanced_dialog,
         preset_dialog,
+        data.state.result_count,
+        data.state.result_count,
         filter_hiddens,
         if show_download_all {
             "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
@@ -9961,17 +10423,6 @@ fn render_attachments_page(
             ""
         },
         escape_html(&return_to),
-        data.selected_account_id
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        escape_html(&return_to),
-    )
-    .ok();
-
-    writeln!(
-        &mut body,
-        "<section class=\"result-summary\"><strong>{}</strong><span class=\"meta\"> attachments matching the current view</span></section>",
-        pluralize_results(data.state.result_count),
     )
     .ok();
 
@@ -10014,28 +10465,12 @@ fn render_attachment_basic_filters(data: &AttachmentPageData) -> String {
           {}
           {}
           {}
-          {}
-          {}
-          {}
-          {}
-          {}
-          {}
-          <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-advanced-dialog\">Advanced filters</button>
+          <div class=\"attachment-filter-link-row\">
+            <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-advanced-dialog\">Advanced filters</button>
+            <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-presets-dialog\">Filter presets</button>
+            <a class=\"advanced-filter-link\" href=\"/attachments?q=\">Reset filters</a>
+          </div>
         </section>",
-        render_filter_row(
-            "Mailbox",
-            &format!(
-                "<select name=\"account_id\"><option value=\"\">All mailboxes</option>{}</select>",
-                render_account_options(&data.accounts, data.selected_account_id)
-            )
-        ),
-        render_filter_row(
-            "Sender importance",
-            &format!(
-                "<select name=\"priority\">{}</select>",
-                render_sender_priority_filter_options(data.state.priority_filter)
-            )
-        ),
         render_filter_row(
             "Extension",
             &format!(
@@ -10048,6 +10483,52 @@ fn render_attachment_basic_filters(data: &AttachmentPageData) -> String {
             &format!(
                 "<input name=\"sender_address\" value=\"{}\">",
                 escape_html(&data.filters.message.sender_address)
+            )
+        ),
+        render_filter_row(
+            "Date range",
+            &format!(
+                "<div class=\"date-range-fields\"><input type=\"date\" name=\"date_from\" value=\"{}\" aria-label=\"Date from\"><input type=\"date\" name=\"date_to\" value=\"{}\" aria-label=\"Date to\"></div>",
+                escape_html(&data.filters.message.date_from),
+                escape_html(&data.filters.message.date_to)
+            )
+        ),
+    )
+}
+
+fn render_attachment_advanced_dialog(data: &AttachmentPageData) -> String {
+    format!(
+        "<dialog id=\"attachment-advanced-dialog\" class=\"app-dialog filter-dialog\">
+          <div class=\"dialog-shell\">
+            <div class=\"dialog-heading\">
+              <h2>Advanced filters</h2>
+              <button class=\"icon-button\" type=\"button\" data-close-dialog title=\"Close advanced filters\" aria-label=\"Close advanced filters\">×</button>
+            </div>
+          <div class=\"dialog-body stacked-filter-dialog\">
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+              {}
+            </div>
+            <div class=\"dialog-actions\">
+              <button class=\"secondary\" type=\"button\" data-close-dialog>Done</button>
+            </div>
+          </div>
+        </dialog>",
+        render_filter_row(
+            "Sender importance",
+            &format!(
+                "<select name=\"priority\">{}</select>",
+                render_sender_priority_filter_options(data.state.priority_filter)
             )
         ),
         render_filter_row(
@@ -10078,40 +10559,6 @@ fn render_attachment_basic_filters(data: &AttachmentPageData) -> String {
                 escape_html(&data.filters.message.body_text)
             )
         ),
-        render_filter_row(
-            "Date range",
-            &format!(
-                "<div class=\"date-range-fields\"><input type=\"date\" name=\"date_from\" value=\"{}\" aria-label=\"Date from\"><input type=\"date\" name=\"date_to\" value=\"{}\" aria-label=\"Date to\"></div>",
-                escape_html(&data.filters.message.date_from),
-                escape_html(&data.filters.message.date_to)
-            )
-        ),
-    )
-}
-
-fn render_attachment_advanced_dialog(data: &AttachmentPageData) -> String {
-    format!(
-        "<dialog id=\"attachment-advanced-dialog\" class=\"app-dialog filter-dialog\">
-          <div class=\"dialog-shell\">
-            <div class=\"dialog-heading\">
-              <h2>Advanced filters</h2>
-              <button class=\"icon-button\" type=\"button\" data-close-dialog title=\"Close advanced filters\" aria-label=\"Close advanced filters\">×</button>
-            </div>
-            <div class=\"dialog-body stacked-filter-dialog\">
-              {}
-              {}
-              {}
-              {}
-              {}
-              {}
-              {}
-              {}
-            </div>
-            <div class=\"dialog-actions\">
-              <button class=\"secondary\" type=\"button\" data-close-dialog>Done</button>
-            </div>
-          </div>
-        </dialog>",
         render_filter_row(
             "Attachment name",
             &format!(
@@ -10177,13 +10624,6 @@ fn render_filter_row(label: &str, control: &str) -> String {
         escape_html(label),
         control
     )
-}
-
-fn current_attachment_preset_name(data: &AttachmentPageData) -> Option<&str> {
-    data.presets
-        .iter()
-        .find(|preset| preset.query == data.state.base_query)
-        .map(|preset| preset.name.as_str())
 }
 
 fn render_attachment_preset_dialog(data: &AttachmentPageData, return_to: &str) -> String {
@@ -10580,6 +11020,15 @@ fn attachment_column_date_label(timestamp: i64) -> String {
     format_timestamp_date_label(timestamp)
 }
 
+fn attachment_display_filename(filename: &str) -> String {
+    FsPath::new(filename)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| filename.to_string())
+}
+
 fn render_attachment_item(
     item: &AttachmentListItem,
     return_to: &str,
@@ -10589,6 +11038,37 @@ fn render_attachment_item(
     let date_label = attachment_column_date_label(item.message.timestamp);
     let date_tooltip = format_timestamp_tooltip_label(item.message.timestamp);
     let source = format!("{} · {}", item.account_name, item.message.message_relpath);
+    let display_subject = decode_display_header_value(&item.message.subject);
+    let display_from = decode_display_header_value(&item.message.from);
+    let context_title = format!("Email from {} on {}", display_from, date_tooltip);
+    let display_filename = attachment_display_filename(&item.attachment.original_filename);
+    let original_email_href = format!(
+        "/attachments/{}/message/browser",
+        url_encode_component(&item.attachment.attachment_key)
+    );
+    let preview = item
+        .message_preview
+        .as_deref()
+        .unwrap_or("Message preview unavailable.");
+    let cc_line = item
+        .message_cc
+        .as_deref()
+        .map(|cc| {
+            format!(
+                "<span class=\"meta truncate\" title=\"{}\">Cc: {}</span>",
+                escape_html(cc),
+                escape_html(cc)
+            )
+        })
+        .unwrap_or_default();
+    let more_link = if item.message_preview_truncated {
+        format!(
+            " <a href=\"{}\" title=\"Open original email\">...More</a>",
+            escape_html(&original_email_href)
+        )
+    } else {
+        String::new()
+    };
     let type_label = if show_mime_details {
         detailed_attachment_type_label(&item.attachment)
     } else {
@@ -10626,6 +11106,12 @@ fn render_attachment_item(
           <div class=\"attachment-main\">
             <strong class=\"truncate\" title=\"{}\">{}</strong>
             <span class=\"meta truncate\" title=\"{}\">{} · {} · {} · {}</span>
+            <div class=\"attachment-context\" hidden>
+              <strong class=\"truncate\" title=\"{}\">{}</strong>
+              <span class=\"meta truncate\" title=\"{}\">From: {}</span>
+              {}
+              <p class=\"attachment-context-preview\">{}{}</p>
+            </div>
           </div>
           <span class=\"badge truncate\" title=\"{}\">{}</span>
           <div class=\"row-actions\">{}{}</div>
@@ -10638,12 +11124,19 @@ fn render_attachment_item(
             "{} · Source: {}",
             item.attachment.original_filename, source
         )),
-        escape_html(&item.attachment.original_filename),
-        escape_html(&format!("{} · Source: {}", item.message.subject, source)),
-        escape_html(&item.message.subject),
+        escape_html(&display_filename),
+        escape_html(&format!("{} · Source: {}", display_subject, source)),
+        escape_html(&display_subject),
         escape_html(&item.account_name),
-        escape_html(&item.message.from),
+        escape_html(&display_from),
         escape_html(&format_file_size(item.attachment.size_bytes)),
+        escape_html(&display_subject),
+        escape_html(&display_subject),
+        escape_html(&context_title),
+        escape_html(&display_from),
+        cc_line,
+        escape_html(preview),
+        more_link,
         escape_html(&type_label),
         escape_html(&type_label),
         download_action,
@@ -11700,6 +12193,7 @@ mod tests {
             lock_dir: Arc::<str>::from(lock_dir.to_string_lossy().to_string()),
             paperless_consume_root: None,
             paperless_handoff_staging_root: None,
+            paperless_database_path: None,
             visible_mirror_read_group: None,
             default_tags: Arc::from(vec!["new".to_string()]),
             frontend_dist_dir: Arc::<str>::from(
@@ -11976,6 +12470,26 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
         ));
+    }
+
+    fn configure_test_paperless_database(config: &mut AppConfig, tempdir: &TempDir) -> PathBuf {
+        let db_path = tempdir.path().join("paperless.sqlite3");
+        config.paperless_database_path = Some(Arc::from(db_path.to_string_lossy().to_string()));
+        let connection = Connection::open(&db_path).expect("paperless db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE documents_document (
+                    id INTEGER PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    checksum TEXT NOT NULL,
+                    archive_checksum TEXT,
+                    deleted_at TEXT
+                );
+                "#,
+            )
+            .expect("paperless schema");
+        db_path
     }
 
     fn mail_export_stub_commands() -> [(&'static str, &'static str); 4] {
@@ -13223,6 +13737,66 @@ mod tests {
     }
 
     #[test]
+    fn windows_1252_encoded_subject_decodes_spaces_and_punctuation() {
+        let decoded =
+            decode_display_header_value("=?Windows-1252?Q?Strata_Plan_79638_=96_Inspection?=");
+
+        assert_eq!(decoded, "Strata Plan 79638 – Inspection");
+    }
+
+    #[test]
+    fn attachment_general_query_matches_attachment_and_message_fields() {
+        let item = AttachmentListItem {
+            attachment: AttachmentRecord {
+                attachment_key: "key".to_string(),
+                account_id: 1,
+                message_key: "message".to_string(),
+                attachment_index: 0,
+                attachment_sha256: "sha".to_string(),
+                original_filename: "Annual Inspection notice.pdf".to_string(),
+                safe_filename: "Annual Inspection notice.pdf".to_string(),
+                extension: "pdf".to_string(),
+                mime_type: "application/pdf".to_string(),
+                size_bytes: 128,
+                is_inline_artifact: false,
+                blob_relpath: None,
+                source_message_sha256: None,
+                last_verified_at: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+                last_seen_at: String::new(),
+            },
+            message: AttachmentMessageRecord {
+                account_id: 1,
+                message_key: "message".to_string(),
+                message_relpath: "Inbox/message.eml".to_string(),
+                message_mtime: 0,
+                message_size: 0,
+                subject: "Strata plan".to_string(),
+                from: "Starr Partners <fire@example.com>".to_string(),
+                timestamp: 0,
+                last_scanned_at: String::new(),
+                has_attachments: true,
+            },
+            account_name: "Personal Gmail".to_string(),
+            sender_priority: SenderPriorityView {
+                identity: None,
+                priority: SenderPriority::Normal,
+                address_rule: None,
+            },
+            paperless_sent_at: None,
+            message_preview: None,
+            message_preview_truncated: false,
+            message_cc: None,
+        };
+
+        assert!(attachment_general_query_matches(&item, "inspection", false));
+        assert!(attachment_general_query_matches(&item, "starr", false));
+        assert!(attachment_general_query_matches(&item, "body-only", true));
+        assert!(!attachment_general_query_matches(&item, "council", false));
+    }
+
+    #[test]
     fn malformed_headers_fall_back_without_panicking() {
         let tempdir = TempDir::new().expect("tempdir");
         let message_path = tempdir.path().join("message.eml");
@@ -13994,7 +14568,7 @@ mod tests {
             assert!(html.contains("data-attachment-row"));
             assert!(html.contains("data-attachment-key"));
             assert!(html.contains("priority-select-normal"));
-            assert!(html.contains("page-heading"));
+            assert!(!html.contains("Find files in saved mail."));
             assert!(html.contains("attachment-list-header"));
             assert!(html.contains("<span>Date</span>"));
             assert!(!html.contains("<span>Select</span>"));
@@ -14002,8 +14576,16 @@ mod tests {
             assert!(html.contains("Sender importance"));
             assert!(html.contains("name=\"priority\""));
             assert!(html.contains("basic-filter-column"));
-            assert!(html.contains("Filter Presets..."));
-            assert!(html.contains("Preset: Custom filters"));
+            assert!(html.contains("attachment-control-column"));
+            assert!(!html.contains("Selected mailbox"));
+            assert!(html.contains("Filter presets"));
+            assert!(html.contains("Reset filters"));
+            assert!(!html.contains("Select page"));
+            assert!(!html.contains("Refresh attachment list"));
+            assert!(html.contains("results selected"));
+            assert!(!html.contains("attachments matching the current view"));
+            assert!(html.contains("class=\"attachment-context\" hidden"));
+            assert!(!html.contains(">Email context<"));
             assert!(html.contains("id=\"attachment-advanced-dialog\""));
             assert!(html.contains("data-open-dialog=\"attachment-advanced-dialog\""));
             assert!(!html.contains("<summary>Basic filters</summary>"));
@@ -14468,6 +15050,113 @@ mod tests {
                     .len(),
                 1
             );
+        });
+    }
+
+    #[test]
+    fn paperless_handoff_detects_matching_pending_consume_file_with_different_name() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <pending-renamed-paperless@example.com>\nSubject: Pending Renamed Paperless\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Pending Renamed Paperless".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            let key = page.items[0].attachment.attachment_key.clone();
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            fs::create_dir_all(&consume_root).expect("consume root");
+            fs::write(consume_root.join("renamed-upload.pdf"), b"pdf payload\n")
+                .expect("pending invoice");
+
+            let summary =
+                send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&key))
+                    .expect("pending already uploaded");
+            assert_eq!(summary.sent, 0);
+            assert_eq!(summary.already_uploaded, 1);
+            assert!(summary.sent_attachment_keys.contains(&key));
+            assert!(consume_root.join("renamed-upload.pdf").is_file());
+            assert!(!consume_root.join("invoice.pdf").exists());
+        });
+    }
+
+    #[test]
+    fn paperless_handoff_detects_existing_paperless_document_checksum() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            let paperless_db = configure_test_paperless_database(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-1",
+                "Message-ID: <existing-paperless-db@example.com>\nSubject: Existing Paperless DB\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let page = load_attachment_page_data(
+                &config,
+                "alice",
+                &AttachmentListParams {
+                    subject: Some("Existing Paperless DB".to_string()),
+                    ..Default::default()
+                },
+            )
+            .expect("page");
+            let key = page.items[0].attachment.attachment_key.clone();
+            let (_account, _message, attachment) =
+                load_attachment_for_user(&config, "alice", &key).expect("attachment");
+            let blob_path = account_paths
+                .hidden_sync_root
+                .join(attachment.blob_relpath.as_deref().expect("blob"));
+            let checksum = md5_file(&blob_path).expect("md5");
+            Connection::open(&paperless_db)
+                .expect("paperless db")
+                .execute(
+                    "INSERT INTO documents_document (id, title, checksum, archive_checksum, deleted_at) VALUES (?1, ?2, ?3, NULL, NULL)",
+                    params![42_i64, "Existing Paperless DB", checksum],
+                )
+                .expect("paperless document");
+
+            let summary =
+                send_attachments_to_paperless(&config, "alice", std::slice::from_ref(&key))
+                    .expect("paperless checksum already uploaded");
+            assert_eq!(summary.sent, 0);
+            assert_eq!(summary.already_uploaded, 1);
+            assert!(summary.sent_attachment_keys.contains(&key));
+            let consume_root = PathBuf::from(config.paperless_consume_root.as_deref().unwrap());
+            assert!(!consume_root.join("invoice.pdf").exists());
+            let recorded_consume_filename = open_db(&config)
+                .expect("db")
+                .query_row(
+                    "SELECT consume_filename FROM attachment_paperless_handoffs WHERE attachment_key = ?1",
+                    params![key],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("handoff filename");
+            assert_eq!(recorded_consume_filename, "paperless-document-42");
         });
     }
 

@@ -70,7 +70,9 @@ in
         "media-automation-bootstrap-prowlarr.service"
         "media-automation-bootstrap-prowlarr-qbittorrent.service"
       ];
-      unitConfig.ConditionPathIsMountPoint = vars.dataRoot;
+      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        ConditionPathIsMountPoint = vars.dataRoot;
+      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

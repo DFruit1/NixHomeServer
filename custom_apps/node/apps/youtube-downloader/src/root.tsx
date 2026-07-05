@@ -26,6 +26,7 @@ const extractYouTubeUrlFromClipboard = (clipboardText: string): string | undefin
 export default component$(() => {
   const me = useSignal<CurrentUser | undefined>();
   const jobs = useSignal<Job[]>([]);
+  const profileImage = useSignal('');
   const error = useSignal('');
   const url = useSignal('');
   const mediaType = useSignal<'audio' | 'video'>('audio');
@@ -42,6 +43,7 @@ export default component$(() => {
   const pasteAndQueue = useSignal(false);
   const submitting = useSignal(false);
   const recentPastedUrls = useSignal<string[]>([]);
+  const pasteQueueButtonRef = useSignal<HTMLButtonElement>();
 
   const refresh = $(async () => {
     const [meResponse, jobsResponse] = await Promise.all([fetch('/api/me'), fetch('/api/jobs')]);
@@ -56,27 +58,20 @@ export default component$(() => {
   });
 
   useVisibleTask$(({ cleanup }) => {
+    profileImage.value = window.localStorage.getItem('homepage.profileImage') ?? '';
     refresh().catch((caught) => {
       error.value = caught instanceof Error ? caught.message : String(caught);
     });
     const timer = window.setInterval(() => {
       refresh().catch(() => undefined);
     }, 2500);
-    cleanup(() => window.clearInterval(timer));
-  });
-
-  const submit = $(async () => {
-    if (submitting.value) {
-      return;
-    }
-    error.value = '';
-    let requestedUrl = url.value.trim();
-    let usedClipboard = false;
-
-    if (!requestedUrl) {
-      if (!pasteAndQueue.value) {
+    const pasteQueueButton = pasteQueueButtonRef.value;
+    const onPasteQueueClick = async (event: MouseEvent) => {
+      event.preventDefault();
+      if (submitting.value) {
         return;
       }
+      error.value = '';
       if (!navigator.clipboard?.readText) {
         error.value = 'Clipboard access is not available in this browser.';
         return;
@@ -88,16 +83,57 @@ export default component$(() => {
           error.value = 'Paste a YouTube URL to use the clipboard queue option.';
           return;
         }
-        if (recentPastedUrls.value.includes(clipboardUrl)) {
-          error.value = 'This clipboard URL was already queued from Paste & Queue.';
-          return;
-        }
-        requestedUrl = clipboardUrl;
-        usedClipboard = true;
+        await submit(clipboardUrl);
       } catch {
         error.value = 'Clipboard access was denied or unavailable.';
+      }
+    };
+    pasteQueueButton?.addEventListener('click', onPasteQueueClick);
+    cleanup(() => {
+      window.clearInterval(timer);
+      pasteQueueButton?.removeEventListener('click', onPasteQueueClick);
+    });
+  });
+
+  const updateProfileImage = $(async (_event: Event, target: HTMLInputElement) => {
+    const file = target.files?.[0];
+    if (!file || !file.type.startsWith('image/') || file.size > 2 * 1024 * 1024) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      if (typeof reader.result !== 'string') {
         return;
       }
+      profileImage.value = reader.result;
+      window.localStorage.setItem('homepage.profileImage', reader.result);
+    });
+    reader.readAsDataURL(file);
+  });
+
+  const clearProfileImage = $(() => {
+    profileImage.value = '';
+    window.localStorage.removeItem('homepage.profileImage');
+  });
+
+  const clearHistory = $(async () => {
+    const response = await fetch('/api/jobs', { method: 'DELETE' });
+    if (response.ok) {
+      await refresh();
+    }
+  });
+
+  const submit = $(async (clipboardUrl?: string) => {
+    if (submitting.value) {
+      return;
+    }
+    error.value = '';
+    const requestedUrl = (clipboardUrl ?? url.value).trim();
+    const usedClipboard = clipboardUrl != null;
+
+    if (!requestedUrl) {
+      return;
     }
 
     if (!isYouTubeUrl(requestedUrl)) {
@@ -107,6 +143,11 @@ export default component$(() => {
 
     submitting.value = true;
     const normalizedUrl = normalizeDownloadUrl(requestedUrl);
+    if (usedClipboard && recentPastedUrls.value.includes(normalizedUrl)) {
+      error.value = 'This clipboard URL was already queued from Paste & Queue.';
+      submitting.value = false;
+      return;
+    }
     url.value = normalizedUrl;
     const request: CreateJobRequest = {
       url: normalizedUrl,
@@ -155,7 +196,13 @@ export default component$(() => {
         <div>
           <h1><span>Youtube</span> Downloader</h1>
         </div>
-        <p class="current-user">{me.value ? me.value.username : 'Loading session'}</p>
+        <ProfileMenu
+          image={profileImage.value}
+          username={me.value?.username ?? 'Loading'}
+          onImageChange={updateProfileImage}
+          onImageClear={clearProfileImage}
+          onClearHistory={clearHistory}
+        />
       </section>
 
       <section class="download-form">
@@ -173,22 +220,26 @@ export default component$(() => {
         <div class="control-grid">
           <fieldset>
             <legend>Type</legend>
-            <button
-              type="button"
-              class={{ selected: mediaType.value === 'audio' }}
-              aria-pressed={mediaType.value === 'audio'}
-              onClick$={() => (mediaType.value = 'audio')}
-            >
-              Audio
-            </button>
-            <button
-              type="button"
-              class={{ selected: mediaType.value === 'video' }}
-              aria-pressed={mediaType.value === 'video'}
-              onClick$={() => (mediaType.value = 'video')}
-            >
-              Video
-            </button>
+            <label class="segment-option">
+              <input
+                type="radio"
+                name="media-type"
+                value="audio"
+                checked={mediaType.value === 'audio'}
+                onChange$={() => (mediaType.value = 'audio')}
+              />
+              <span>Audio</span>
+            </label>
+            <label class="segment-option">
+              <input
+                type="radio"
+                name="media-type"
+                value="video"
+                checked={mediaType.value === 'video'}
+                onChange$={() => (mediaType.value = 'video')}
+              />
+              <span>Video</span>
+            </label>
           </fieldset>
 
           <fieldset>
@@ -213,8 +264,7 @@ export default component$(() => {
             )}
           </fieldset>
 
-          {mediaType.value === 'audio' ? (
-            <>
+          <div class="format-controls" hidden={mediaType.value !== 'audio'}>
               <label>
                 <span>Format</span>
                 <select value={audioFormat.value} onChange$={(_, target) => (audioFormat.value = target.value as typeof audioFormat.value)}>
@@ -235,9 +285,8 @@ export default component$(() => {
                   ))}
                 </select>
               </label>
-            </>
-          ) : (
-            <>
+          </div>
+          <div class="format-controls" hidden={mediaType.value !== 'video'}>
               <label>
                 <span>Container</span>
                 <select value={videoContainer.value} onChange$={(_, target) => (videoContainer.value = target.value as typeof videoContainer.value)}>
@@ -258,8 +307,7 @@ export default component$(() => {
                   ))}
                 </select>
               </label>
-            </>
-          )}
+          </div>
         </div>
 
         <div class="toggles">
@@ -275,8 +323,7 @@ export default component$(() => {
             <input type="checkbox" checked={includeDate.value} onChange$={(_, target) => (includeDate.value = target.checked)} />
             Release/upload date
           </label>
-          {mediaType.value === 'audio' && (
-            <>
+          <div class="audio-only-toggles" hidden={mediaType.value !== 'audio'}>
               <label>
                 <input
                   type="checkbox"
@@ -293,8 +340,7 @@ export default component$(() => {
                 />
                 Save audio to Audiobooks
               </label>
-            </>
-          )}
+          </div>
           <label>
             <input type="checkbox" checked={pasteAndQueue.value} onChange$={(_, target) => (pasteAndQueue.value = target.checked)} />
             Paste & Queue button
@@ -302,19 +348,111 @@ export default component$(() => {
         </div>
 
         {error.value && <p class="error">{error.value}</p>}
-        <button
-          class="primary"
-          type="button"
-          disabled={(!url.value.trim() && !pasteAndQueue.value) || submitting.value}
-          onClick$={submit}
-        >
-          {submitting.value ? 'Queueing' : 'Queue'}
-        </button>
+        <div class="submit-actions">
+          <button
+            class="primary"
+            type="button"
+            disabled={!url.value.trim() || submitting.value}
+            onClick$={() => submit()}
+          >
+            {submitting.value ? 'Queueing' : 'Queue'}
+          </button>
+          <button
+            ref={pasteQueueButtonRef}
+            class="primary secondary"
+            type="button"
+            hidden={!pasteAndQueue.value}
+            disabled={submitting.value}
+          >
+            {submitting.value ? 'Queueing' : 'Paste & Queue'}
+          </button>
+        </div>
       </section>
 
-      <JobList title="Active" jobs={activeJobs} refresh={refresh} fileBrowserUrlTemplate={me.value?.fileBrowserUrlTemplate} />
-      <JobList title="History" jobs={historyJobs} refresh={refresh} fileBrowserUrlTemplate={me.value?.fileBrowserUrlTemplate} />
+      <JobList title="Active" jobs={activeJobs} refresh={refresh} currentUser={me.value} />
+      <JobList title="History" jobs={historyJobs} refresh={refresh} currentUser={me.value} />
     </main>
+  );
+});
+
+type ProfileMenuProps = {
+  image: string;
+  username: string;
+  onImageChange: (_event: Event, target: HTMLInputElement) => Promise<void>;
+  onImageClear: () => void;
+  onClearHistory: () => Promise<void>;
+};
+
+const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChange, onImageClear, onClearHistory }) => {
+  const menuRef = useSignal<HTMLDetailsElement>();
+  const closeMenu = $(() => {
+    if (menuRef.value) {
+      menuRef.value.open = false;
+    }
+  });
+  const clearAndClose = $(async () => {
+    await onClearHistory();
+    closeMenu();
+  });
+
+  useVisibleTask$(({ cleanup }) => {
+    const onPointerDown = (event: PointerEvent) => {
+      const menu = menuRef.value;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) {
+        menu.open = false;
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && menuRef.value?.open) {
+        menuRef.value.open = false;
+      }
+    };
+
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    cleanup(() => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    });
+  });
+
+  return (
+    <details ref={menuRef} class="profile-menu">
+      <summary class="profile-trigger" aria-label="Open profile menu">
+        {image ? <img src={image} alt="" /> : <span>{username.slice(0, 1).toUpperCase()}</span>}
+      </summary>
+      <section class="profile-popover" aria-label="Profile menu">
+        <div class="profile-summary">
+          <div class="profile-picture-control">
+            <label class="profile-picture-edit" aria-label="Edit profile picture">
+              <span class="profile-preview">{image ? <img src={image} alt="" /> : <span>{username.slice(0, 1).toUpperCase()}</span>}</span>
+              <span class="profile-picture-edit__overlay" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M12 20h9" />
+                  <path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z" />
+                </svg>
+              </span>
+              <input type="file" accept="image/*" onChange$={onImageChange} />
+            </label>
+            {image && (
+              <button class="profile-picture-clear" type="button" aria-label="Remove profile picture" onClick$={onImageClear}>
+                X
+              </button>
+            )}
+          </div>
+          <div>
+            <h2>{username}</h2>
+            <p>Youtube Downloader</p>
+          </div>
+        </div>
+        <button class="profile-action" type="button" onClick$={clearAndClose}>
+          Clear history
+        </button>
+        <a class="profile-signout" href="/oauth2/sign_out?rd=/oauth2/start" onClick$={closeMenu}>
+          Log out
+        </a>
+      </section>
+    </details>
   );
 });
 
@@ -322,10 +460,10 @@ type JobListProps = {
   title: string;
   jobs: Job[];
   refresh: () => Promise<void>;
-  fileBrowserUrlTemplate?: string;
+  currentUser?: CurrentUser;
 };
 
-const JobList = component$<JobListProps>(({ title, jobs, refresh, fileBrowserUrlTemplate }) => {
+const JobList = component$<JobListProps>(({ title, jobs, refresh, currentUser }) => {
   const action = $(async (job: Job, command: 'cancel' | 'retry' | 'delete') => {
     const response = await fetch(`/api/jobs/${job.id}${command === 'delete' ? '' : `/${command}`}`, {
       method: command === 'delete' ? 'DELETE' : 'POST',
@@ -346,7 +484,7 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh, fileBrowserUrl
     }
   });
   const openInBrowser = $((event: Event, job: Job) => {
-    const target = buildFileBrowserUrl(job.outputFolder, fileBrowserUrlTemplate);
+    const target = buildFileBrowserUrl(job.outputFolder, currentUser);
     if (!target) {
       return;
     }
@@ -357,6 +495,7 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh, fileBrowserUrl
   const stopPropagation = $((event: Event) => {
     event.stopPropagation();
   });
+  const isHistory = title === 'History';
 
   return (
     <section class="jobs">
@@ -366,118 +505,195 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh, fileBrowserUrl
       ) : (
         <div class="job-stack">
           {jobs.map((job) => (
-            <article
-              class={`job ${job.status} ${job.outputFolder ? 'job-clickable' : ''}`}
+            <JobCard
               key={job.id}
-              onClick$={(event) => {
-                if (!job.outputFolder) {
-                  return;
-                }
-                openInBrowser(event, job);
-              }}
-            >
-              <div class="job-head">
-                <div>
-                  <strong>{job.source?.title || job.request.url}</strong>
-                  <p>{job.outputFolder ? 'Output folder ready' : job.request.mediaType}</p>
-                </div>
-                <span class={`status-badge ${job.status}`}>{job.status}</span>
-              </div>
-              {job.status === 'alert' && <p class="alert-message">{job.alert?.message || job.error || 'Confirmation is required before this download can continue.'}</p>}
-              {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
-                <div class="progress-block">
-                  <div class={{ progress: true, indeterminate: job.progress?.percent == null }}>
-                    <div style={{ width: `${Math.max(0, Math.min(100, job.progress?.percent ?? 0))}%` }} />
-                  </div>
-                  <p class="progress-label">{progressLabel(job)}</p>
-                </div>
-              )}
-              {job.error && <p class="error">{job.error}</p>}
-              <div class="job-actions">
-                {job.status === 'alert' && job.alert?.kind === 'duplicate' && (
-                  <>
-                    <button type="button" onClick$={(event) => {
-                      stopPropagation(event);
-                      resolveAlert(job, 'download-again');
-                    }}>
-                      Download again
-                    </button>
-                    <button type="button" onClick$={(event) => {
-                      stopPropagation(event);
-                      resolveAlert(job, 'cancel');
-                    }}>
-                      Cancel
-                    </button>
-                  </>
-                )}
-                {job.status === 'alert' && job.alert?.kind === 'folder-collision' && (
-                  <>
-                    <button type="button" onClick$={(event) => {
-                      stopPropagation(event);
-                      resolveAlert(job, 'download-again');
-                    }}>
-                      Download another copy
-                    </button>
-                    <button type="button" onClick$={(event) => {
-                      stopPropagation(event);
-                      resolveAlert(job, 'cancel');
-                    }}>
-                      Cancel
-                    </button>
-                  </>
-                )}
-                {job.status === 'alert' && job.alert?.kind === 'chapters' && (
-                  <>
-                    <button type="button" onClick$={(event) => {
-                      stopPropagation(event);
-                      resolveAlert(job, 'split-chapters');
-                    }}>
-                      Yes, split
-                    </button>
-                    <button type="button" onClick$={(event) => {
-                      stopPropagation(event);
-                      resolveAlert(job, 'single-file');
-                    }}>
-                      No, single file
-                    </button>
-                    <button type="button" onClick$={(event) => {
-                      stopPropagation(event);
-                      resolveAlert(job, 'cancel');
-                    }}>
-                      Cancel
-                    </button>
-                  </>
-                )}
-                {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
-                  <button type="button" onClick$={(event) => {
-                    stopPropagation(event);
-                    action(job, 'cancel');
-                  }}>
-                    Cancel
-                  </button>
-                )}
-                {['failed', 'cancelled'].includes(job.status) && (
-                  <button type="button" onClick$={(event) => {
-                    stopPropagation(event);
-                    action(job, 'retry');
-                  }}>
-                    Retry
-                  </button>
-                )}
-                {['completed', 'failed', 'cancelled'].includes(job.status) && (
-                  <button type="button" onClick$={(event) => {
-                    stopPropagation(event);
-                    action(job, 'delete');
-                  }}>
-                    Clear
-                  </button>
-                )}
-              </div>
-            </article>
+              job={job}
+              canSwipeClear={isHistory && ['completed', 'failed', 'cancelled'].includes(job.status)}
+              action={action}
+              resolveAlert={resolveAlert}
+              openInBrowser={openInBrowser}
+              stopPropagation={stopPropagation}
+            />
           ))}
         </div>
       )}
     </section>
+  );
+});
+
+type JobCardProps = {
+  job: Job;
+  canSwipeClear: boolean;
+  action: (job: Job, command: 'cancel' | 'retry' | 'delete') => Promise<void>;
+  resolveAlert: (job: Job, command: 'download-again' | 'split-chapters' | 'single-file' | 'cancel') => Promise<void>;
+  openInBrowser: (event: Event, job: Job) => void;
+  stopPropagation: (event: Event) => void;
+};
+
+const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveAlert, openInBrowser, stopPropagation }) => {
+  const dragStartX = useSignal<number | undefined>();
+  const dragOffset = useSignal(0);
+  const isDragging = useSignal(false);
+  const suppressClick = useSignal(false);
+  const swiped = useSignal(false);
+  const coverIndex = coverFileIndex(job);
+  const coverUrl = coverIndex == null ? undefined : `/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`;
+
+  const endDrag = $(async () => {
+    if (!isDragging.value) {
+      return;
+    }
+    const shouldClear = dragOffset.value > 110;
+    isDragging.value = false;
+    dragStartX.value = undefined;
+    if (shouldClear) {
+      swiped.value = true;
+      dragOffset.value = 360;
+      await action(job, 'delete');
+      return;
+    }
+    dragOffset.value = 0;
+  });
+
+  return (
+    <article
+      class={{
+        job: true,
+        [job.status]: true,
+        'job-clickable': Boolean(job.outputFolder),
+        'job-swipeable': canSwipeClear,
+        dragging: isDragging.value,
+      }}
+      style={{ transform: dragOffset.value > 0 ? `translateX(${dragOffset.value}px)` : undefined }}
+      onPointerDown$={(event, target) => {
+        if (!canSwipeClear || event.button !== 0 || (event.target instanceof Element && event.target.closest('button,a,input,select'))) {
+          return;
+        }
+        dragStartX.value = event.clientX;
+        dragOffset.value = 0;
+        isDragging.value = true;
+        suppressClick.value = false;
+        swiped.value = false;
+        target.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove$={(event) => {
+        if (dragStartX.value == null) {
+          return;
+        }
+        dragOffset.value = Math.max(0, Math.min(380, event.clientX - dragStartX.value));
+        if (dragOffset.value > 8) {
+          suppressClick.value = true;
+        }
+      }}
+      onPointerUp$={endDrag}
+      onPointerCancel$={endDrag}
+      onClick$={(event) => {
+        if (swiped.value || suppressClick.value) {
+          event.preventDefault();
+          event.stopPropagation();
+          swiped.value = false;
+          suppressClick.value = false;
+          return;
+        }
+        if (!job.outputFolder) {
+          return;
+        }
+        openInBrowser(event, job);
+      }}
+    >
+      {coverUrl && <div class="job-art" style={{ backgroundImage: `url("${coverUrl}")` }} aria-hidden="true" />}
+      <div class="job-content">
+        <div class="job-head">
+          <div>
+            <strong>{job.source?.title || job.request.url}</strong>
+            {!job.outputFolder && <p>{job.request.mediaType}</p>}
+          </div>
+          <span class={`status-badge ${job.status}`}>{job.status}</span>
+        </div>
+        {job.status === 'alert' && <p class="alert-message">{job.alert?.message || job.error || 'Confirmation is required before this download can continue.'}</p>}
+        {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
+          <div class="progress-block">
+            <div class={{ progress: true, indeterminate: job.progress?.percent == null }}>
+              <div style={{ width: `${Math.max(0, Math.min(100, job.progress?.percent ?? 0))}%` }} />
+            </div>
+            <p class="progress-label">{progressLabel(job)}</p>
+          </div>
+        )}
+        {job.error && <p class="error">{job.error}</p>}
+        <div class="job-actions">
+          {job.status === 'alert' && job.alert?.kind === 'duplicate' && (
+            <>
+              <button type="button" onClick$={(event) => {
+                stopPropagation(event);
+                resolveAlert(job, 'download-again');
+              }}>
+                Download again
+              </button>
+              <button type="button" onClick$={(event) => {
+                stopPropagation(event);
+                resolveAlert(job, 'cancel');
+              }}>
+                Cancel
+              </button>
+            </>
+          )}
+          {job.status === 'alert' && job.alert?.kind === 'folder-collision' && (
+            <>
+              <button type="button" onClick$={(event) => {
+                stopPropagation(event);
+                resolveAlert(job, 'download-again');
+              }}>
+                Download another copy
+              </button>
+              <button type="button" onClick$={(event) => {
+                stopPropagation(event);
+                resolveAlert(job, 'cancel');
+              }}>
+                Cancel
+              </button>
+            </>
+          )}
+          {job.status === 'alert' && job.alert?.kind === 'chapters' && (
+            <>
+              <button type="button" onClick$={(event) => {
+                stopPropagation(event);
+                resolveAlert(job, 'split-chapters');
+              }}>
+                Yes, split
+              </button>
+              <button type="button" onClick$={(event) => {
+                stopPropagation(event);
+                resolveAlert(job, 'single-file');
+              }}>
+                No, single file
+              </button>
+              <button type="button" onClick$={(event) => {
+                stopPropagation(event);
+                resolveAlert(job, 'cancel');
+              }}>
+                Cancel
+              </button>
+            </>
+          )}
+          {['queued', 'probing', 'running', 'postprocessing'].includes(job.status) && (
+            <button type="button" onClick$={(event) => {
+              stopPropagation(event);
+              action(job, 'cancel');
+            }}>
+              Cancel
+            </button>
+          )}
+          {['failed', 'cancelled'].includes(job.status) && (
+            <button type="button" onClick$={(event) => {
+              stopPropagation(event);
+              action(job, 'retry');
+            }}>
+              Retry
+            </button>
+          )}
+        </div>
+      </div>
+    </article>
   );
 });
 
@@ -491,7 +707,6 @@ const activeJobRank = (job: Job): number => {
       return 1;
     case 'queued':
       return 2;
-    case 'alert':
     default:
       return 3;
   }
@@ -520,18 +735,75 @@ const progressLabel = (job: Job): string => {
   return 'Starting download';
 };
 
-const buildFileBrowserUrl = (outputFolder: string | undefined, template?: string): string | undefined => {
+const coverFileIndex = (job: Job): number | undefined => {
+  const index = job.files.findIndex((file) => /\.(?:jpe?g|png|webp)$/i.test(file));
+  return index >= 0 ? index : undefined;
+};
+
+export const buildFileBrowserUrl = (
+  outputFolder: string | undefined,
+  currentUser: CurrentUser | undefined,
+  location: Pick<Location, 'hostname' | 'protocol'> = window.location,
+): string | undefined => {
   if (!outputFolder) {
     return undefined;
   }
-  const encodedPath = encodeURIComponent(outputFolder);
-  if (!template) {
-    const hostParts = window.location.hostname.split('.');
-    const filesHost = hostParts.length > 1 ? `files.${hostParts.slice(1).join('.')}` : `files.${window.location.hostname}`;
-    return `${window.location.protocol}//${filesHost}/#/?path=${encodedPath}`;
+  const browserPath = fileBrowserPathFor(outputFolder, currentUser);
+  const encodedBrowserPath = browserPath ? encodePathSegments(browserPath) : undefined;
+  const template = currentUser?.fileBrowserUrlTemplate;
+  if (template && encodedBrowserPath) {
+    if (template.includes('%path%')) {
+      return template.replaceAll('%path%', encodedBrowserPath);
+    }
+    return `${template.replace(/\/$/, '')}/files/${encodedBrowserPath}/`;
   }
-  if (template.includes('%path%')) {
-    return template.replaceAll('%path%', encodedPath);
+  if (template) {
+    return `${template.replace(/\/$/, '')}/#/?path=${encodeURIComponent(outputFolder)}`;
   }
-  return `${template.replace(/\/$/, '')}/#/?path=${encodedPath}`;
+
+  const hostParts = location.hostname.split('.');
+  const filesHost = hostParts.length > 1 ? `files.${hostParts.slice(1).join('.')}` : `files.${location.hostname}`;
+  if (encodedBrowserPath) {
+    return `${location.protocol}//${filesHost}/files/${encodedBrowserPath}/`;
+  }
+  return `${location.protocol}//${filesHost}/#/?path=${encodeURIComponent(outputFolder)}`;
 };
+
+const pathWithoutTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
+
+const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, '');
+
+const pathRelativeTo = (root: string, path: string): string | undefined => {
+  const cleanRoot = pathWithoutTrailingSlash(root);
+  const cleanPath = pathWithoutTrailingSlash(path);
+  if (cleanPath === cleanRoot) {
+    return '';
+  }
+  return cleanPath.startsWith(`${cleanRoot}/`) ? cleanPath.slice(cleanRoot.length + 1) : undefined;
+};
+
+const joinBrowserPath = (...parts: string[]): string => parts.map(trimSlashes).filter(Boolean).join('/');
+
+const fileBrowserPathFor = (outputFolder: string, currentUser?: CurrentUser): string | undefined => {
+  const roots = currentUser?.fileBrowserPathRoots;
+  if (!currentUser || !roots) {
+    return undefined;
+  }
+
+  const personalRelative = pathRelativeTo(`${roots.usersRoot}/${currentUser.username}`, outputFolder);
+  if (personalRelative != null) {
+    return personalRelative;
+  }
+
+  const sharedRoots = [...roots.sharedRoots].sort((left, right) => right.serverRoot.length - left.serverRoot.length);
+  for (const root of sharedRoots) {
+    const sharedRelative = pathRelativeTo(root.serverRoot, outputFolder);
+    if (sharedRelative != null) {
+      return joinBrowserPath(root.browserPath, sharedRelative);
+    }
+  }
+
+  return undefined;
+};
+
+const encodePathSegments = (path: string): string => path.split('/').map(encodeURIComponent).join('/');
