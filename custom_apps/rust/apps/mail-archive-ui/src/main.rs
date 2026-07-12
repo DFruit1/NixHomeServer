@@ -10874,9 +10874,7 @@ fn common_attachment_extensions() -> &'static [&'static str] {
 }
 
 fn is_common_attachment_extension(extension: &str) -> bool {
-    common_attachment_extensions()
-        .iter()
-        .any(|candidate| *candidate == extension)
+    common_attachment_extensions().contains(&extension)
 }
 
 fn custom_attachment_extension_value(extension: &str) -> &str {

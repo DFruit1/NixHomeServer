@@ -44,7 +44,7 @@ in
   disko.devices = {
     disk = {
       ##############################################################
-      #  System SSD  (Btrfs)                                       #
+      #  System disk                                                #
       ##############################################################
       system = {
         device = "/dev/disk/by-id/${vars.mainDisk}";

@@ -239,6 +239,7 @@ in
             ExecStartPre = execStartPre;
             ExecStart = "${pkgs.oauth2-proxy}/bin/oauth2-proxy ${lib.concatStringsSep " " (map lib.escapeShellArg proxyArgs)}";
             Restart = "on-failure";
+            RestartSec = "10s";
             NoNewPrivileges = true;
             PrivateTmp = true;
             ProtectSystem = "strict";

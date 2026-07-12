@@ -48,7 +48,9 @@ Set the operator-facing block first:
 - `identity.sshPublicKey`: the public SSH key for root and the local admin.
 - `network`: hostname, domain, LAN interface, LAN IP, prefix, gateway, and NetBird IP.
 - `system.timeZone`.
-- `system.hostId`: a stable 8-character lowercase hexadecimal value.
+- `system.hostId`: a stable 8-character lowercase hexadecimal value. It is
+  required for `zfs-mirror`; `single-disk-ext4` may keep `00000000`, but setting
+  a real value keeps later ZFS migration straightforward.
 - `edge.cloudflareTunnelName`.
 - `storage.systemDisk` and `storage.dataPool.mirrorPairs`.
 
@@ -138,7 +140,10 @@ Stage these files:
 
 - `secrets/unencrypted/netbirdSetupKey`: plain NetBird setup key.
 - `secrets/unencrypted/cfHomeCreds`: Cloudflare Tunnel credentials JSON with `AccountTag`, `TunnelID`, and `TunnelSecret`.
-- `secrets/unencrypted/cfAPIToken`: token environment file containing `CLOUDFLARE_DNS_API_TOKEN=...` or `CLOUDFLARE_ZONE_API_TOKEN=...`.
+- `secrets/unencrypted/cfAPIToken`: plain Cloudflare API token. Legacy staging
+  input containing `CLOUDFLARE_DNS_API_TOKEN=...` or
+  `CLOUDFLARE_ZONE_API_TOKEN=...` is accepted and normalized to the raw token
+  required by ACME's `CF_DNS_API_TOKEN_FILE` credential.
 - `secrets/unencrypted/storageAlertWebhookUrl`: an `http://` or `https://` webhook URL.
 - `secrets/unencrypted/rcloneMegaPassword`: plain MEGA password for the configured offsite copy target.
 
@@ -188,12 +193,24 @@ migration. Existing-server storage maintenance belongs in
 
 After provisioning, mount the target layout under `/mnt` and verify it:
 
+For `storage.profile = "zfs-mirror"`:
+
 ```bash
 findmnt /mnt
 findmnt /mnt/boot
 findmnt /mnt/nix
 findmnt /mnt/persist
 zpool status
+```
+
+For `storage.profile = "single-disk-ext4"`:
+
+```bash
+findmnt /mnt
+findmnt /mnt/boot
+df -hT /mnt
+test -d /mnt/persist
+test -d /mnt/nix
 ```
 
 ## Install NixOS
@@ -239,11 +256,14 @@ Check the target:
 
 ```bash
 sudo systemctl --failed --no-pager
-findmnt /persist
 test -d /mnt/data
 ```
 
-For the ZFS mirror profile, also run `zpool status` and `findmnt /mnt/data`.
+For the ZFS mirror profile, also run `zpool status`, `findmnt /persist`, and
+`findmnt /mnt/data`.
+
+For the single-disk ext4 profile, also run `df -hT /`, `test -d /persist`,
+and `test -d /mnt/data`.
 
 From the admin workstation repo, run the full first guarded test:
 

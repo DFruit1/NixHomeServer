@@ -22,10 +22,7 @@ let
       secretNames;
 in
 {
-  config.assertions = mkSecretAssertions [
-    "rcloneOauth2ProxyClientSecret"
-    "rcloneOauth2ProxyCookieSecret"
-  ] ++ mkSecretAssertions (
+  config.assertions = mkSecretAssertions (
     if megaEnabled then [ "rcloneMegaPassword" ] else [ ]
   );
 }

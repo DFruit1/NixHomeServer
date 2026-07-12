@@ -38,18 +38,6 @@ export type AdminStep = {
   detail: string;
 };
 
-export type PhoneBackupSetup = {
-  enabled: boolean;
-  deviceName: string;
-  configuredPhoneDeviceId?: string;
-  serverDeviceId?: string;
-  serverDeviceIdError?: string;
-  folderId: string;
-  folderLabel: string;
-  repositoryPath: string;
-  connectionAddresses: string[];
-};
-
 export type OfflineMediaFolder = {
   key: string;
   label: string;
@@ -85,7 +73,6 @@ export type HomepageData = {
   adminGuide: AdminStep[];
   kanidmGroups?: string[];
   kanidmGroupDescriptions?: Record<string, string>;
-  phoneBackup?: PhoneBackupSetup;
   offlineMedia?: OfflineMediaSetup;
 };
 

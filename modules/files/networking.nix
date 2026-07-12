@@ -6,6 +6,7 @@ let
 in
 {
   services.caddy.virtualHosts.${host} = {
+    logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
       @download_html_svg path *.html *.svg
@@ -21,7 +22,6 @@ in
         header_up -X-Forwarded-Groups
         header_up -X-Forwarded-Preferred-Username
         header_up X-Forwarded-Proto https
-        header_up X-Forwarded-Host {host}
       }
     '';
   };

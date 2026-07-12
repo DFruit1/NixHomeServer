@@ -153,6 +153,10 @@ in
         assertion = !cfg.enableRootRollback || cfg.enablePersistence;
         message = "repo.impermanence.enableRootRollback requires repo.impermanence.enablePersistence.";
       }
+      {
+        assertion = !cfg.enableRootRollback || vars.storageProfile == "zfs-mirror";
+        message = "repo.impermanence.enableRootRollback requires the zfs-mirror storage profile because it rolls back a Btrfs root subvolume.";
+      }
     ];
 
     repo.impermanence.inventory = {
@@ -176,7 +180,6 @@ in
       before = [
         "kopia.service"
         "kopia-persist-snapshot.service"
-        "kopia-phone-snapshot.service"
         "homepage.service"
         "mail-archive-ui.service"
         "fileshare-user-root-sync.service"

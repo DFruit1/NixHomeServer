@@ -29,16 +29,6 @@ const baseConfig: AppConfig = {
         loginNotes: 'Requires backup-admin.',
         requiredGroups: ['backup-admin'],
       },
-      {
-        id: 'offsite-backups',
-        name: 'Offsite Backups',
-        url: 'https://rclone.example.test',
-        enabled: true,
-        category: 'operations',
-        description: 'Rclone',
-        loginNotes: 'Requires backup-admin.',
-        requiredGroups: ['backup-admin'],
-      },
     ],
     folderGuides: [],
     adminGuide: [],
@@ -56,7 +46,7 @@ describe('homepage data access filtering', () => {
       'x-auth-request-groups': 'users backup-admin',
     });
 
-    expect(data.services.map((service) => service.id)).toEqual(['files', 'backups', 'offsite-backups']);
+    expect(data.services.map((service) => service.id)).toEqual(['files', 'backups']);
   });
 
   it('hides backup services from non-backup admins', async () => {

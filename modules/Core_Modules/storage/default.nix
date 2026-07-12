@@ -15,4 +15,15 @@
     enable = true;
     pools = [ vars.zfsDataPool.name ];
   };
+
+  services.zfs.trim.enable = lib.mkForce false;
+
+  services.zfs.autoSnapshot = lib.mkIf vars.enableZfsDataPool {
+    enable = true;
+    frequent = 0;
+    hourly = 24;
+    daily = 7;
+    weekly = 4;
+    monthly = 0;
+  };
 }

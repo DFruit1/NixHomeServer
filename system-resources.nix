@@ -13,12 +13,15 @@ let
     };
     skipIfSshSessions = true;
     skipIfOtherUserSessions = true;
-    blockerUnits = [
-      "zfs-scrub.service"
-      "btrfs-scrub--.service"
-      "storage-smart-long.service"
-      "storage-smart-short.service"
-    ];
+    blockerUnits =
+      [
+        "storage-smart-long.service"
+        "storage-smart-short.service"
+      ]
+      ++ lib.optionals vars.enableZfsDataPool [
+        "zfs-scrub.service"
+        "btrfs-scrub--.service"
+      ];
     wakeOnLan = {
       enable = true;
       interface = vars.network.lanInterface;
@@ -88,6 +91,24 @@ let
 in
 lib.mkMerge [
   {
+    zramSwap = {
+      enable = true;
+      memoryPercent = 25;
+      algorithm = "zstd";
+      priority = 5;
+    };
+
+    boot.extraModprobeConfig = lib.optionalString vars.enableZfsDataPool ''
+      options zfs zfs_arc_min=536870912 zfs_arc_max=4294967296
+    '';
+
+    services.journald.extraConfig = ''
+      SystemMaxUse=512M
+      RuntimeMaxUse=128M
+      SystemKeepFree=2G
+      MaxRetentionSec=30day
+    '';
+
     boot.kernel.sysctl = {
       "fs.inotify.max_user_watches" = 524288;
       "fs.inotify.max_user_instances" = 1024;
@@ -95,11 +116,14 @@ lib.mkMerge [
 
     systemd.services = {
       immich-machine-learning.serviceConfig = {
+        MemoryHigh = "4G";
         MemoryMax = "6G";
         CPUQuota = "250%";
       };
 
       kavita.serviceConfig = {
+        MemoryHigh = "750M";
+        MemoryMax = "1G";
         CPUQuota = "150%";
         CPUWeight = 60;
         IOWeight = 60;
@@ -134,6 +158,20 @@ lib.mkMerge [
       };
 
       youtube-downloader.serviceConfig.CPUQuota = "200%";
+
+      jellyfin.serviceConfig = {
+        MemoryHigh = "1G";
+        MemoryMax = "2G";
+      };
+
+      immich-server.serviceConfig = {
+        MemoryHigh = "1500M";
+        MemoryMax = "2500M";
+      };
+
+      sonarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
+      radarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
+      prowlarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
     };
   }
 

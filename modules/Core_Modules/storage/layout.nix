@@ -73,6 +73,7 @@ let
         acltype = "posixacl";
         xattr = "sa";
         recordsize = "1M";
+        "com.sun:auto-snapshot" = "true";
       };
     }
     {
@@ -84,6 +85,7 @@ let
         acltype = "posixacl";
         xattr = "sa";
         recordsize = "1M";
+        "com.sun:auto-snapshot" = "true";
       };
     }
     {
@@ -95,6 +97,8 @@ let
         acltype = "posixacl";
         xattr = "sa";
         recordsize = "1M";
+        primarycache = "metadata";
+        "com.sun:auto-snapshot" = "false";
       };
     }
   ];
@@ -111,11 +115,11 @@ let
       ${propertyCommands}
     '';
 
-  zfsContentLayoutScript = builtins.concatStringsSep "\n" (map mkDirCmd cfg.directories);
-  zfsDatasetLayoutScript = builtins.concatStringsSep "\n" (map mkDatasetEnsure cfg.datasets);
+  directoryCommands = builtins.concatStringsSep "\n" (map mkDirCmd cfg.directories);
+  zfsDatasetCommands = builtins.concatStringsSep "\n" (map mkDatasetEnsure cfg.datasets);
   directoryLayoutScript = ''
     set -euo pipefail
-    ${zfsContentLayoutScript}
+    ${directoryCommands}
   '';
   zfsLayoutScript = ''
     set -euo pipefail
@@ -161,11 +165,15 @@ let
 
     set_zfs_property '${vars.zfsDataPool.name}' canmount on
     set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
+    set_zfs_property '${vars.zfsDataPool.name}' 'com.sun:auto-snapshot' true
     ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
     ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
 
-    ${zfsDatasetLayoutScript}
-    ${zfsContentLayoutScript}
+    ${zfsDatasetCommands}
+    if ${zfsBin} list -H -o name '${vars.zfsDataPool.name}/upload-staging' >/dev/null 2>&1; then
+      set_zfs_property '${vars.zfsDataPool.name}/upload-staging' 'com.sun:auto-snapshot' false
+    fi
+    ${directoryCommands}
   '';
 
   datasetNames = map (spec: spec.dataset) cfg.datasets;

@@ -9,7 +9,6 @@ export type HomepageConfig = {
   kanidmGroups?: string[];
   kanidmGroupDescriptions?: Record<string, string>;
   offlineMedia?: OfflineMediaSetup;
-  offlineMusic?: OfflineMediaSetup;
 };
 
 export type AppConfig = {
@@ -43,7 +42,6 @@ const fallbackHomepage: HomepageConfig = {
   kanidmGroups: [],
   kanidmGroupDescriptions: {},
   offlineMedia: undefined,
-  offlineMusic: undefined,
 };
 
 export const loadHomepageConfig = (path: string | undefined): HomepageConfig => {

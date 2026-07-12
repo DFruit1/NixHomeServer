@@ -238,6 +238,14 @@ in
         PrivateTmp = true;
         ProtectSystem = "strict";
         ProtectHome = true;
+        Nice = 10;
+        CPUWeight = 20;
+        IOWeight = 20;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+        MemoryHigh = "512M";
+        MemoryMax = "1G";
+        TimeoutStartSec = "2h";
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"

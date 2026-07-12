@@ -351,7 +351,7 @@ export default component$(() => {
       status: stepStatus(['photos-service', 'photos-mobile']),
       content: (
         <>
-          <h2>Set up photos and phone backup</h2>
+          <h2>Set up photos</h2>
           <p>This step is optional. If you use the photo library, set up Immich from both the web app and your phone before relying on camera backup.</p>
           <ul class="setup-list">{['photos-service', 'photos-mobile'].map(renderSetupItem)}</ul>
           <OptionalStatusText status={photosStatus} enabledText="Photos is enabled for this account." />

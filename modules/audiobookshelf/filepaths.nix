@@ -51,20 +51,7 @@ in
         install -d -m 1770 -o root -g root ${sharedAudiobooksRoot}/_YouTube
         setfacl -m g:audiobookshelf-media:r-X ${vars.sharedRoot}
 
-        apply_recursive_acl() {
-          local access_spec="$1"
-          local default_spec="$2"
-          shift
-          shift
-
-          for path in "$@"; do
-            [[ -d "$path" ]] || continue
-            setfacl -R -m "$access_spec" "$path"
-            find "$path" -type d -exec setfacl -m "$default_spec" '{}' +
-          done
-        }
-
-        apply_recursive_acl "g:audiobookshelf-media:rwX" "d:g:audiobookshelf-media:rwx" ${sharedAudiobooksRoot}
+        setfacl -m g:audiobookshelf-media:rwx,d:g:audiobookshelf-media:rwx ${sharedAudiobooksRoot} ${sharedAudiobooksRoot}/_YouTube
       '';
     };
 

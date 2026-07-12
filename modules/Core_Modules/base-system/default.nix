@@ -36,7 +36,7 @@ in
 {
   system.stateVersion = "25.05";
 
-  boot.initrd.supportedFilesystems = [ "btrfs" "vfat" ]
+  boot.initrd.supportedFilesystems = [ "btrfs" "ext4" "vfat" ]
     ++ lib.optional vars.enableZfsDataPool "zfs";
   boot.kernelModules = [ "jitterentropy_rng" ]
     ++ lib.optional vars.enableZfsDataPool "zfs";
@@ -143,10 +143,77 @@ in
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       ] ++ extraBinaryCachePublicKeys;
       trusted-users = [ "root" localAdminUser ];
-      auto-optimise-store = true;
+      auto-optimise-store = false;
       builders-use-substitutes = true;
     };
   };
 
-  nix.gc.automatic = true;
+  nix.gc.automatic = false;
+  nix.optimise.automatic = false;
+
+  services.journald.extraConfig = ''
+    SystemMaxUse=256M
+    MaxRetentionSec=14day
+    SystemKeepFree=2G
+  '';
+
+  systemd.services.nixhomeserver-nix-gc = {
+    description = "Low-priority weekly Nix garbage collection";
+    path = [ pkgs.nix pkgs.util-linux ];
+    serviceConfig = {
+      Type = "oneshot";
+      Nice = 15;
+      CPUWeight = 10;
+      IOWeight = 10;
+      IOSchedulingClass = "best-effort";
+      IOSchedulingPriority = 7;
+      MemoryHigh = "1G";
+      MemoryMax = "2G";
+    };
+    script = ''
+      set -euo pipefail
+      exec 9>/run/lock/nixhomeserver-maintenance.lock
+      flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
+      exec nix-collect-garbage --delete-older-than 30d
+    '';
+  };
+
+  systemd.timers.nixhomeserver-nix-gc = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "Sun *-*-* 05:30:00";
+      Persistent = true;
+      RandomizedDelaySec = "45m";
+    };
+  };
+
+  systemd.services.nixhomeserver-nix-optimise = {
+    description = "Low-priority weekly Nix store optimisation";
+    path = [ pkgs.nix pkgs.util-linux ];
+    serviceConfig = {
+      Type = "oneshot";
+      Nice = 15;
+      CPUWeight = 10;
+      IOWeight = 10;
+      IOSchedulingClass = "best-effort";
+      IOSchedulingPriority = 7;
+      MemoryHigh = "1G";
+      MemoryMax = "2G";
+    };
+    script = ''
+      set -euo pipefail
+      exec 9>/run/lock/nixhomeserver-maintenance.lock
+      flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
+      exec nix store optimise
+    '';
+  };
+
+  systemd.timers.nixhomeserver-nix-optimise = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnCalendar = "Sun *-*-* 07:00:00";
+      Persistent = true;
+      RandomizedDelaySec = "45m";
+    };
+  };
 }

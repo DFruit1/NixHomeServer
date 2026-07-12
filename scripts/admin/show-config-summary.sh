@@ -82,6 +82,12 @@ echo "Kanidm OAuth clients"
 jq -r '.[] | "  - " + .' <<<"$oauth_clients_json"
 echo
 
+echo "Authentication gateway"
+echo "  mode: $(jq -r '.identity.authGateway.mode' <<<"$preview_json")"
+echo "  host: $(jq -r '.identity.authGateway.domain' <<<"$preview_json")"
+echo "  protected apps: $(jq '.identity.authGateway.protectedApps | length' <<<"$preview_json")"
+echo
+
 echo "Kanidm groups"
 jq -r '.[] | "  - " + .' <<<"$groups_json"
 echo
@@ -89,6 +95,8 @@ echo
 echo "Storage"
 echo "  profile:     $(jq -r '.storageProfile' <<<"$settings_json")"
 echo "  system disk: $(jq -r '.mainDisk' <<<"$settings_json")"
+echo "  root fs:     $(jq -r '.storage.rootFsType // "unknown"' <<<"$preview_json")"
+echo "  uses ZFS:    $(jq -r '.storage.requiresZfs // false' <<<"$preview_json")"
 echo "  data root:   $(jq -r '.dataRoot' <<<"$settings_json")"
 echo "  data disks:"
 jq -r 'if .storageProfile == "zfs-mirror" then (.zfsDataPoolDiskIds[] | "    - " + .) else "    - none (single-disk-ext4)" end' <<<"$settings_json"
@@ -96,6 +104,8 @@ echo "  user roots:"
 jq -r '.[] | "    - " + .' <<<"$user_content_subdirs_json"
 echo "  shared roots:"
 jq -r '.[] | "    - " + .' <<<"$shared_content_subdirs_json"
+echo "  ZFS snapshots: $(jq -c '.storage.zfsSnapshotPolicy' <<<"$preview_json")"
+echo "  Kopia roots: $(jq -r '.backups.snapshotRoots | join(", ")' <<<"$preview_json")"
 echo
 
 echo "Required external secrets"

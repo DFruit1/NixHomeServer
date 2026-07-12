@@ -18,7 +18,7 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "30m";
-        OnUnitActiveSec = "2h";
+        OnUnitActiveSec = "24h";
         AccuracySec = "10m";
         RandomizedDelaySec = "10m";
         Persistent = true;

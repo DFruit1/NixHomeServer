@@ -1,24 +1,19 @@
 import { component$ } from '@builder.io/qwik';
-import type { OfflineMediaSetup, PhoneBackupSetup, ServiceCard } from '../shared/types.js';
+import type { OfflineMediaSetup, ServiceCard } from '../shared/types.js';
 import { serviceTips } from '../shared/ui-constants.js';
 import { ServiceLogo } from './ServiceLogo.js';
-import { BackupSetup } from './BackupSetup.js';
 import { OfflineMediaSetupPanel } from './OfflineMediaSetup.js';
 import { SftpAccessInstructions } from './SftpAccessInstructions.js';
 
 export const ServiceDetail = component$(
   ({
     service,
-    phoneBackup,
     offlineMedia,
-    domain,
     username,
     serverHost,
   }: {
     service: ServiceCard;
-    phoneBackup?: PhoneBackupSetup;
     offlineMedia?: OfflineMediaSetup;
-    domain: string;
     username?: string;
     serverHost: string;
   }) => {
@@ -83,7 +78,6 @@ export const ServiceDetail = component$(
             ))}
           </ol>
         </section>
-        {service.id === 'backups' && <BackupSetup phoneBackup={phoneBackup} domain={domain} />}
         {service.id === 'offline-media' && <OfflineMediaSetupPanel offlineMedia={offlineMedia} username={username} />}
         {service.id === 'sftp' && <SftpAccessInstructions username={displayUsername} serverHost={serverHost} />}
       </article>

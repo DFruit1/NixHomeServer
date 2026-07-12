@@ -94,6 +94,7 @@ let
     set -euo pipefail
 
     username="$1"
+    repair_recursive="''${2:-false}"
     root="${vars.usersRoot}/$username"
 
     install -d -m 0750 -o root -g root "$root"
@@ -124,28 +125,30 @@ let
 
     ${perUserDirectoryScript}
 
-    user_owned_paths=(
-      ${userProtectedWritablePathArgs}
-    )
-    for path in "''${user_owned_paths[@]}"; do
-      [[ -d "$path" ]] || continue
-      chown root:root "$path"
-      chmod 1770 "$path"
-      ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:rwX" "$path"
-      ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl \
-        -m "d:u:''${username}:rwx" \
-        '{}' +
-      ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
-      ${pkgs.findutils}/bin/find "$path" -type f -exec ${pkgs.coreutils}/bin/chmod u=rw,g=rw,o= '{}' +
-    done
-    if [[ -d "$root/_Emails" ]]; then
-      ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:r-X" "$root/_Emails"
-      ${pkgs.findutils}/bin/find "$root/_Emails" -type d -exec ${pkgs.acl}/bin/setfacl -m "d:u:''${username}:r-x" '{}' +
-      if [[ -d "$root/_Emails/.internal-sync" ]]; then
-        ${pkgs.findutils}/bin/find "$root/_Emails/.internal-sync" -type d -exec ${pkgs.acl}/bin/setfacl \
-          -m "u:''${username}:---" \
-          -m "d:u:''${username}:---" \
+    if [[ "$repair_recursive" == true ]]; then
+      user_owned_paths=(
+        ${userProtectedWritablePathArgs}
+      )
+      for path in "''${user_owned_paths[@]}"; do
+        [[ -d "$path" ]] || continue
+        chown root:root "$path"
+        chmod 1770 "$path"
+        ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:rwX" "$path"
+        ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl \
+          -m "d:u:''${username}:rwx" \
           '{}' +
+        ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
+        ${pkgs.findutils}/bin/find "$path" -type f -exec ${pkgs.coreutils}/bin/chmod u=rw,g=rw,o= '{}' +
+      done
+      if [[ -d "$root/_Emails" ]]; then
+        ${pkgs.acl}/bin/setfacl -R -m "u:''${username}:r-X" "$root/_Emails"
+        ${pkgs.findutils}/bin/find "$root/_Emails" -type d -exec ${pkgs.acl}/bin/setfacl -m "d:u:''${username}:r-x" '{}' +
+        if [[ -d "$root/_Emails/.internal-sync" ]]; then
+          ${pkgs.findutils}/bin/find "$root/_Emails/.internal-sync" -type d -exec ${pkgs.acl}/bin/setfacl \
+            -m "u:''${username}:---" \
+            -m "d:u:''${username}:---" \
+            '{}' +
+        fi
       fi
     fi
 
@@ -208,13 +211,17 @@ let
       done
     }
 
-    ${recursiveWritableGrantScript}
-    ${recursiveReadonlyGrantScript}
-    ${recursiveDirectoryNoAccessGrantScript}
+    if [[ "$repair_recursive" == true ]]; then
+      ${recursiveWritableGrantScript}
+      ${recursiveReadonlyGrantScript}
+      ${recursiveDirectoryNoAccessGrantScript}
+    fi
   '';
 
   syncFileshareUserRoots = pkgs.writeShellScript "sync-fileshare-user-roots" ''
     set -euo pipefail
+
+    repair_recursive="''${FILES_ACL_REPAIR:-false}"
 
     export HOME="$(mktemp -d)"
     trap 'rm -rf "$HOME"' EXIT
@@ -293,13 +300,15 @@ let
         -m d:m::rwx \
         -m d:g:${lib.escapeShellArg sharedAccessGroup}:rwx \
         ${lib.escapeShellArg vars.sharedRoot}
-      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.acl}/bin/setfacl \
-        -m g:${lib.escapeShellArg sharedAccessGroup}:rwx \
-        -m d:g:${lib.escapeShellArg sharedAccessGroup}:rwx \
-        '{}' +
-      ${pkgs.acl}/bin/setfacl -R -m g:${lib.escapeShellArg sharedAccessGroup}:rwX ${lib.escapeShellArg vars.sharedRoot}
-      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
-      ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type f -exec ${pkgs.coreutils}/bin/chmod u=rw,g=rw,o= '{}' +
+      if [[ "$repair_recursive" == true ]]; then
+        ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.acl}/bin/setfacl \
+          -m g:${lib.escapeShellArg sharedAccessGroup}:rwx \
+          -m d:g:${lib.escapeShellArg sharedAccessGroup}:rwx \
+          '{}' +
+        ${pkgs.acl}/bin/setfacl -R -m g:${lib.escapeShellArg sharedAccessGroup}:rwX ${lib.escapeShellArg vars.sharedRoot}
+        ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
+        ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type f -exec ${pkgs.coreutils}/bin/chmod u=rw,g=rw,o= '{}' +
+      fi
     }
 
     ${pkgs.kanidm_1_10}/bin/kanidm login \
@@ -358,7 +367,7 @@ let
       [[ -n "$username" ]] || continue
       ensure_posix_account "$username"
       wait_for_unix_user "$username"
-      ${prepareUserRoot} "$username"
+      ${prepareUserRoot} "$username" "$repair_recursive"
 
       if [[ -n "''${shared_members[$username]:-}" ]]; then
         ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg sharedMountName}
@@ -423,6 +432,12 @@ let
 in
 {
   options.repo.storage.userRoots = {
+    aclPolicyVersion = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 1;
+      description = "Version of the recursive fileshare ACL policy applied by the migration service.";
+    };
+
     contentSubdirs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = vars.userContentSubdirs or [ ];
@@ -540,6 +555,47 @@ in
       path = fileshareUserRootSyncPath;
       script = ''
         ${syncFileshareUserRoots}
+      '';
+    };
+
+    systemd.services.fileshare-acl-migrate = {
+      description = "Apply versioned recursive fileshare ACL policy";
+      wants = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
+      after = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        Nice = 15;
+        CPUWeight = 10;
+        IOWeight = 10;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+      };
+      path = fileshareUserRootSyncPath;
+      script = ''
+        set -euo pipefail
+        marker=/persist/appdata/.nixos-managed/fileshare-acl-policy-v${toString cfg.aclPolicyVersion}
+        [[ -e "$marker" ]] && exit 0
+        FILES_ACL_REPAIR=true ${syncFileshareUserRoots}
+        install -D -m 0600 /dev/null "$marker"
+      '';
+    };
+
+    systemd.services.fileshare-acl-repair = {
+      description = "Explicitly repair recursive fileshare ACLs";
+      wants = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
+      after = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        Nice = 15;
+        CPUWeight = 10;
+        IOWeight = 10;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+      };
+      path = fileshareUserRootSyncPath;
+      script = ''
+        set -euo pipefail
+        FILES_ACL_REPAIR=true ${syncFileshareUserRoots}
       '';
     };
 

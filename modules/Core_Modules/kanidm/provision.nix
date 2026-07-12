@@ -100,7 +100,7 @@ in
 {
   options.nixhomeserver.kanidmGroupDescriptions = lib.mkOption {
     type = lib.types.attrsOf lib.types.str;
-    default = {};
+    default = { };
     description = "Machine-readable map of Kanidm group names to descriptions.";
   };
 
@@ -129,6 +129,27 @@ in
         ${vars.fileAccess.usbAccessGroup} = mkManualGroup (vars.fileAccess.usbUsers or [ ]);
         users = mkManualGroup vars.kanidmAppUsers;
       } // backupAccessGroups;
+
+      systems.oauth2.auth-gateway-web = {
+        displayName = "NixHomeServer";
+        imageFile = ./assets/portal.svg;
+        originUrl = "https://${config.repo.authGateway.domain}/oauth2/callback";
+        originLanding = "https://homepage.${vars.domain}";
+        basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;
+        preferShortUsername = true;
+        scopeMaps = lib.genAttrs [
+          "users"
+          "app-admin"
+          "downloads-users"
+          "kiwix-users"
+          "mail-archive-users"
+          "media-automation-users"
+          vars.fileAccess.webAccessGroup
+          vars.fileAccess.usbAccessGroup
+          vars.backupAccess.adminGroup
+          vars.backupAccess.storageGroup
+        ] (_: [ "openid" "profile" "email" "groups_name" ]);
+      };
     };
 
     systemd.services.kanidm-identity-reconcile = {

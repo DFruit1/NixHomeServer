@@ -1,7 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { runCommand } from './child.js';
+import { DatabaseSync } from 'node:sqlite';
 import type { Direction, MessageFilters, MqttMessage } from '../shared/types.js';
 
 const sqlValue = (value: string | number | null | undefined): string => {
@@ -32,33 +31,25 @@ type MessageRow = {
 };
 
 export class Database {
+  private connection?: DatabaseSync;
+
   constructor(private readonly databasePath: string) {}
 
-  async exec(sql: string): Promise<void> {
-    await mkdir(path.dirname(this.databasePath), { recursive: true });
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'groundwater-logger-sql-'));
-    const sqlPath = path.join(tempDir, 'query.sql');
-    try {
-      await writeFile(sqlPath, `pragma foreign_keys = on;\npragma busy_timeout = 5000;\n${sql}\n`);
-      const result = await runCommand('sqlite3', [this.databasePath, `.read ${sqlPath}`], { timeoutMs: 30000 });
-      if (result.code !== 0) {
-        throw new Error(result.stderr.trim() || `sqlite3 exited with code ${result.code ?? 'unknown'}`);
-      }
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
+  private getConnection(): DatabaseSync {
+    if (!this.connection) {
+      mkdirSync(path.dirname(this.databasePath), { recursive: true });
+      this.connection = new DatabaseSync(this.databasePath);
+      this.connection.exec('pragma foreign_keys = on; pragma busy_timeout = 5000; pragma journal_mode = wal;');
     }
+    return this.connection;
+  }
+
+  async exec(sql: string): Promise<void> {
+    this.getConnection().exec(sql);
   }
 
   async query<T>(sql: string): Promise<T[]> {
-    await mkdir(path.dirname(this.databasePath), { recursive: true });
-    const result = await runCommand('sqlite3', ['-json', this.databasePath, `pragma foreign_keys = on; ${sql}`], {
-      timeoutMs: 30000,
-    });
-    if (result.code !== 0) {
-      throw new Error(result.stderr.trim() || `sqlite3 exited with code ${result.code ?? 'unknown'}`);
-    }
-    const text = result.stdout.trim();
-    return text ? (JSON.parse(text) as T[]) : [];
+    return this.getConnection().prepare(sql).all() as unknown as T[];
   }
 
   async migrate(): Promise<void> {

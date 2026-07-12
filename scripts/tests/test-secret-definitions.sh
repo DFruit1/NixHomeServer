@@ -3,6 +3,7 @@
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
+source "$TESTS_REPO_ROOT/scripts/helpers/secrets-common.sh"
 
 cd "$TESTS_REPO_ROOT"
 
@@ -17,6 +18,32 @@ cleanup() {
   rm -rf "$archive_cache_probe_dir"
 }
 trap cleanup EXIT
+
+cf_token_value="test_cloudflare_token_value_1234567890"
+cf_token_raw="${tmpdir}/cf-token-raw"
+cf_token_env="${tmpdir}/cf-token-env"
+cf_token_normalized="${tmpdir}/cf-token-normalized"
+
+printf '%s\n' "$cf_token_value" >"$cf_token_raw"
+printf 'CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n' \
+  "$cf_token_value" "$cf_token_value" >"$cf_token_env"
+
+for token_source in "$cf_token_raw" "$cf_token_env"; do
+  if ! validate_cf_api_token "$token_source"; then
+    echo "❌ Cloudflare API token staging format should be accepted: $token_source"
+    exit 1
+  fi
+
+  normalize_cf_api_token "$token_source" "$cf_token_normalized"
+  if [[ "$(<"$cf_token_normalized")" != "$cf_token_value" ]]; then
+    echo "❌ Cloudflare API token normalization changed the token value."
+    exit 1
+  fi
+  if [[ "$(wc -l <"$cf_token_normalized")" -ne 0 ]] || rg -q '=' "$cf_token_normalized"; then
+    echo "❌ Cloudflare API token must be encrypted as one raw value for CF_DNS_API_TOKEN_FILE."
+    exit 1
+  fi
+done
 
 definitions_file="${tmpdir}/definitions.txt"
 references_file="${tmpdir}/references.txt"

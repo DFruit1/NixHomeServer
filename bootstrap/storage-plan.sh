@@ -81,7 +81,7 @@ vars.nix single-disk storage snippet template:
     hostPlatform = "aarch64-linux"; # or "x86_64-linux"
     hardwareProfile = "generic-uefi";
     timeZone = "Etc/UTC";
-    hostId = "<stable-8-hex-character-host-id>";
+    hostId = "00000000"; # Non-placeholder stable 8-hex value is required when using zfs-mirror.
   };
 
   storage = {

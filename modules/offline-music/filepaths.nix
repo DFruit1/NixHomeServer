@@ -1,8 +1,7 @@
 { lib, vars, ... }:
 
 let
-  legacyCfg = vars.offlineMusic or { };
-  cfg = if builtins.hasAttr "offlineMedia" vars then vars.offlineMedia else legacyCfg;
+  cfg = vars.offlineMedia;
   enabled = cfg.enable or false;
   folderName = cfg.musicFolderName or cfg.folderName or "_Music";
   folderSpecs = cfg.folders or [

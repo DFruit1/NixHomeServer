@@ -54,6 +54,8 @@ let
     };
     storage = {
       profile = hostSettings.storageProfile;
+      rootFsType = hostConfig.fileSystems."/".fsType;
+      requiresZfs = hostSettings.enableZfsDataPool;
       dataRootIsMountPoint = hostSettings.dataRootIsMountPoint;
       dataRoot = hostSettings.dataRoot;
       usersRoot = hostSettings.usersRoot;
@@ -69,20 +71,6 @@ let
         criticalPaths
         pathInventories
         sqliteDumps;
-      phoneBackup = {
-        inherit (hostSettings.phoneBackup)
-          enable
-          maxRepositoryBytes
-          minimumSuccessfulSnapshots
-          repositoryPath
-          stateDir;
-        syncthing = {
-          inherit (hostSettings.phoneBackup.syncthing)
-            deviceName
-            folderId;
-        };
-        sources = hostSettings.phoneBackup.sources;
-      };
     };
     impermanence = {
       directories = hostConfig.repo.impermanence.inventory.persistenceDirectories;

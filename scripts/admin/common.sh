@@ -103,9 +103,15 @@ inventory_json_for_host() {
       identity = {
         kanidmGroups = builtins.attrNames cfg.services.kanidm.provision.groups;
         oauthClients = builtins.attrNames cfg.services.kanidm.provision.systems.oauth2;
+        authGateway = {
+          inherit (cfg.repo.authGateway) enable mode domain port;
+          protectedApps = cfg.repo.authGateway.protectedApps;
+        };
       };
       storage = {
         profile = settings.storageProfile;
+        rootFsType = cfg.fileSystems.\"/\".fsType;
+        requiresZfs = settings.enableZfsDataPool;
         dataRootIsMountPoint = settings.dataRootIsMountPoint;
         dataRoot = settings.dataRoot;
         usersRoot = settings.usersRoot;
@@ -114,27 +120,20 @@ inventory_json_for_host() {
         dataPool = settings.zfsDataPool;
         userContentSubdirs = cfg.repo.storage.userRoots.contentSubdirs;
         sharedContentSubdirs = cfg.repo.storage.sharedRoots.contentSubdirs;
+        zfsSnapshotPolicy = {
+          enabled = cfg.services.zfs.autoSnapshot.enable or false;
+          inherit (cfg.services.zfs.autoSnapshot) frequent hourly daily weekly monthly;
+        };
       };
       backups = {
         inherit (cfg.repo.backups)
           appStateEntries
           criticalPaths
+          snapshotRoots
+          repositoryPath
+          successfulStagingRoot
           pathInventories
           sqliteDumps;
-        phoneBackup = {
-          inherit (settings.phoneBackup)
-            enable
-            maxRepositoryBytes
-            minimumSuccessfulSnapshots
-            repositoryPath
-            stateDir;
-          syncthing = {
-            inherit (settings.phoneBackup.syncthing)
-              deviceName
-              folderId;
-          };
-          sources = settings.phoneBackup.sources;
-        };
       };
       impermanence = {
         directories = cfg.repo.impermanence.inventory.persistenceDirectories;

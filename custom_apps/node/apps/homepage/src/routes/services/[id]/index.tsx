@@ -9,7 +9,6 @@ export default component$(() => {
   const data = homepage.data;
   const serviceId = location.params.id ? decodeURIComponent(location.params.id) : '';
   const service = data?.services.find((item) => item.enabled && item.id === serviceId);
-  const domain = data?.domain ?? 'sydneybasiniot.org';
   const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
 
   if (!service) {
@@ -29,9 +28,7 @@ export default component$(() => {
   return (
     <ServiceDetail
       service={service}
-      phoneBackup={data?.phoneBackup}
       offlineMedia={data?.offlineMedia}
-      domain={domain}
       username={data?.user.username}
       serverHost={serverHost}
     />

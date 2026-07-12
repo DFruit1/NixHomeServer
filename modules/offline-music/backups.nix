@@ -1,8 +1,7 @@
 { lib, vars, ... }:
 
 let
-  legacyCfg = vars.offlineMusic or { enable = false; };
-  cfg = if builtins.hasAttr "offlineMedia" vars then vars.offlineMedia else legacyCfg;
+  cfg = vars.offlineMedia;
   enabled = cfg.enable or false;
   stateDir = cfg.stateDir or "/persist/appdata/offline-media";
 in

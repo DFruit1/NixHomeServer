@@ -95,11 +95,13 @@ resolve_public_route_urls() {
       lib = flake.inputs.nixpkgs.lib;
       vars = import ${repo_root}/vars.nix { inherit lib; };
       cfg = (builtins.getAttr ${hostname_nix} flake.nixosConfigurations).config;
+      tunnel = cfg.services.cloudflared.tunnels.\${vars.cloudflareTunnelName};
       domainSuffix = \".\${vars.domain}\";
       publicHost = host:
-        !(lib.hasPrefix \"http://\" host)
+        host != \"default\"
+        && !(lib.hasPrefix \"http://\" host)
         && (host == vars.domain || lib.hasSuffix domainSuffix host);
-      hosts = builtins.filter publicHost (builtins.attrNames cfg.services.caddy.virtualHosts);
+      hosts = builtins.filter publicHost (builtins.attrNames tunnel.ingress);
     in
       builtins.concatStringsSep \"\n\" (map (host: \"https://\${host}\") hosts)
   "

@@ -6,12 +6,12 @@ let
 in
 {
   services.caddy.virtualHosts.${host} = {
+    logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
       handle {
         reverse_proxy http://${loopback}:${toString vars.networking.ports.oauth2ProxyDownloads} {
           header_up X-Forwarded-Proto https
-          header_up X-Forwarded-Host {host}
         }
       }
     '';

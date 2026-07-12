@@ -90,7 +90,6 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'Check Kopia services': { category: 'storageBackups' },
   'Run persist snapshot now': { category: 'storageBackups' },
   'Inspect persist snapshot logs': { category: 'storageBackups' },
-  'Run phone backup snapshot now': { category: 'storageBackups' },
   'Run offsite Kopia sync now': { category: 'storageBackups' },
   'Inspect offsite sync logs': { category: 'storageBackups' },
   'Check backup repository size': { category: 'storageBackups' },

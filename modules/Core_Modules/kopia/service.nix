@@ -13,6 +13,18 @@ let
   uiPreferencesFile = "${stateDir}/ui-preferences.json";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
   repositoryPath = "${backupRoot}/kopia";
+  snapshotSuccessMarker = "${backupRoot}/.kopia-last-snapshot-success.json";
+  maintenanceLock = config.repo.backups.maintenanceLock;
+  snapshotRoots = config.repo.backups.snapshotRoots;
+  snapshotCommands = lib.concatMapStringsSep "\n"
+    (root: ''
+      kopia snapshot create \
+        --no-progress \
+        --description=${lib.escapeShellArg "${root} automatic snapshot"} \
+        --tags=${lib.escapeShellArg "source:${lib.removePrefix "/" (lib.replaceStrings [ "/" ] [ "-" ] root)}"} \
+        ${lib.escapeShellArg root}
+    '')
+    snapshotRoots;
   backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   credentials = {
@@ -24,6 +36,7 @@ let
     findutils
     jq
     kopia
+    util-linux
   ];
   kopiaAuthProxyCaddyfile = pkgs.writeText "kopia-auth-proxy.Caddyfile" ''
     {
@@ -45,7 +58,7 @@ in
       systemd.tmpfiles.rules = [
         "d ${stateDir} 0700 root root -"
         "d ${cacheDir} 0700 root root -"
-        "d ${logDir} 0700 root root -"
+        "d ${logDir} 0700 root root 14d"
         "d ${backupRoot} 0750 root ${toString backupStorageAccessGid} -"
       ];
 
@@ -112,10 +125,32 @@ in
             fi
           fi
 
-          chown -R root:${lib.escapeShellArg (toString backupStorageAccessGid)} ${lib.escapeShellArg backupRoot}
+          chown root:${lib.escapeShellArg (toString backupStorageAccessGid)} ${lib.escapeShellArg backupRoot} ${lib.escapeShellArg repositoryPath}
           chmod 0750 ${lib.escapeShellArg backupRoot} ${lib.escapeShellArg repositoryPath}
-          setfacl -R -m g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-X ${lib.escapeShellArg backupRoot}
-          find ${lib.escapeShellArg backupRoot} -type d -exec setfacl -m d:g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-x '{}' +
+          setfacl -m g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-x,d:g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-x ${lib.escapeShellArg backupRoot} ${lib.escapeShellArg repositoryPath}
+
+          kopia policy set --global \
+            --keep-latest=7 \
+            --keep-hourly=0 \
+            --keep-daily=14 \
+            --keep-weekly=4 \
+            --keep-monthly=2 \
+            --keep-annual=0 \
+            --ignore-cache-dirs=true \
+            --add-ignore='appdata/kopia/cache' \
+            --add-ignore='appdata/kopia/logs' \
+            --add-ignore='appdata/system-state-backup' \
+            --add-ignore='backups/pool-migration' \
+            --add-ignore='backups/restic' \
+            --add-ignore='home/*/.cache' \
+            --add-ignore='var/cache' \
+            --add-ignore='var/lib/immich-public-proxy' \
+            --add-ignore='var/lib/jellyfin/log' \
+            --add-ignore='var/lib/kavita/config/logs' \
+            --add-ignore='var/lib/metube' \
+            --add-ignore='var/lib/paperless/log' \
+            --add-ignore='var/lib/seerr/logs' \
+            --add-ignore='var/log'
         '';
       };
 
@@ -169,15 +204,20 @@ in
       };
 
       systemd.services.kopia-persist-snapshot = {
-        description = "Create an encrypted Kopia snapshot of /persist";
+        description = "Prepare data and create encrypted Kopia snapshots";
+        requires = [ "backup-prepare.service" ];
         wants = [ "kopia-repository-bootstrap.service" ];
-        after = [ "kopia-repository-bootstrap.service" ];
+        after = [ "backup-prepare.service" "kopia-repository-bootstrap.service" ];
         path = commonPath;
         serviceConfig = {
           Type = "oneshot";
           LoadCredential = [
             "${credentials.serverPassword}:${config.age.secrets.kopiaServerPassword.path}"
           ];
+          MemoryHigh = "1G";
+          MemoryMax = "2G";
+          CPUWeight = 20;
+          IOWeight = 20;
           Nice = 10;
           IOSchedulingClass = "best-effort";
           IOSchedulingPriority = 7;
@@ -191,15 +231,54 @@ in
           export KOPIA_CONFIG_PATH=${lib.escapeShellArg configFile}
           export KOPIA_CACHE_DIRECTORY=${lib.escapeShellArg cacheDir}
 
-          kopia snapshot create \
-            --no-progress \
-            --description="/persist automatic snapshot" \
-            --tags=source:persist \
-            /persist
-
-          setfacl -R -m g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-X ${lib.escapeShellArg backupRoot}
-          find ${lib.escapeShellArg backupRoot} -type d -exec setfacl -m d:g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-x '{}' +
+          exec 9>${lib.escapeShellArg maintenanceLock}
+          flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
+          manifest=${lib.escapeShellArg config.repo.backups.successfulStagingRoot}/metadata/manifest.json
+          [[ -s "$manifest" ]] || { echo "Backup preparation manifest is missing" >&2; exit 1; }
+          ${snapshotCommands}
+          printf '{"completedAt":"%s"}\n' "$(date --utc --iso-8601=seconds)" \
+            > ${lib.escapeShellArg snapshotSuccessMarker}
+          chown root:${lib.escapeShellArg (toString backupStorageAccessGid)} ${lib.escapeShellArg snapshotSuccessMarker}
+          chmod 0640 ${lib.escapeShellArg snapshotSuccessMarker}
         '';
+      };
+
+      systemd.services.kopia-full-maintenance = {
+        description = "Run weekly full Kopia repository maintenance";
+        wants = [ "kopia-repository-bootstrap.service" ];
+        after = [ "kopia-repository-bootstrap.service" ];
+        path = commonPath;
+        serviceConfig = {
+          Type = "oneshot";
+          LoadCredential = [ "${credentials.serverPassword}:${config.age.secrets.kopiaServerPassword.path}" ];
+          MemoryHigh = "1G";
+          MemoryMax = "2G";
+          Nice = 15;
+          CPUWeight = 10;
+          IOWeight = 10;
+          IOSchedulingClass = "best-effort";
+          IOSchedulingPriority = 7;
+        };
+        script = ''
+          set -euo pipefail
+          export KOPIA_CHECK_FOR_UPDATES=false
+          export KOPIA_PASSWORD="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
+          export KOPIA_CONFIG_PATH=${lib.escapeShellArg configFile}
+          export KOPIA_CACHE_DIRECTORY=${lib.escapeShellArg cacheDir}
+          exec 9>${lib.escapeShellArg maintenanceLock}
+          flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
+          exec kopia maintenance run --full --no-progress
+        '';
+      };
+
+      systemd.timers.kopia-full-maintenance = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnCalendar = "Sun *-*-* 01:00:00";
+          Persistent = true;
+          RandomizedDelaySec = "1h";
+          Unit = "kopia-full-maintenance.service";
+        };
       };
 
       systemd.timers.kopia-persist-snapshot = {

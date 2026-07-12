@@ -20,6 +20,7 @@ let
 in
 {
   config = {
+    hardware.graphics.enable = true;
     services.jellyfin = {
       enable = true;
       dataDir = dataDir;
@@ -30,7 +31,7 @@ in
     systemd.services.jellyfin = {
       after = [ "data-pool-layout.service" ];
       wants = [ "data-pool-layout.service" ];
-      serviceConfig.SupplementaryGroups = [ "jellyfin-media" ];
+      serviceConfig.SupplementaryGroups = [ "jellyfin-media" "video" "render" ];
     };
 
     systemd.timers.jellyfin-library-sync = {
@@ -38,7 +39,7 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "30m";
-        OnUnitActiveSec = "2h";
+        OnUnitActiveSec = "24h";
         AccuracySec = "10m";
         RandomizedDelaySec = "10m";
         Persistent = true;

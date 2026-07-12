@@ -8,6 +8,7 @@ let
 in
 {
   services.caddy.virtualHosts.${host} = {
+    logFormat = null;
     useACMEHost = vars.domain;
     extraConfig = ''
       reverse_proxy http://${loopback}:${toString ports.jellyfin} {

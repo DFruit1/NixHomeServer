@@ -73,7 +73,7 @@ let
           psql \
             "dbname=${immichDbName} host=/run/postgresql user=${immichDbUser}" \
             -At \
-            -c "select email from users where char_length(\"oauthId\") > 0 and \"isAdmin\" = true order by email;"
+            -c "select email from \"user\" where \"deletedAt\" is null and char_length(\"oauthId\") > 0 and \"isAdmin\" = true order by email;"
       )
 
       run_immich_admin() {
@@ -115,6 +115,29 @@ let
 in
 {
   config = {
+    systemd.services.immich-refresh-collation = {
+      description = "Guarded Immich PostgreSQL collation refresh";
+      after = [ "postgresql.service" "backup-prepare.service" ];
+      requires = [ "postgresql.service" "backup-prepare.service" ];
+      path = [ pkgs.coreutils pkgs.postgresql pkgs.systemd pkgs.util-linux ];
+      serviceConfig = {
+        Type = "oneshot";
+        TimeoutStartSec = "2h";
+      };
+      script = ''
+        set -euo pipefail
+        units=(immich-machine-learning.service immich-server.service)
+        restart_immich() { systemctl start "''${units[@]}"; }
+        trap restart_immich EXIT
+        systemctl stop "''${units[@]}"
+        runuser -u ${config.services.immich.user} -- \
+          psql "dbname=${config.services.immich.database.name} host=/run/postgresql user=${config.services.immich.database.user}" \
+          --set ON_ERROR_STOP=1 \
+          --command 'REINDEX DATABASE "${config.services.immich.database.name}";' \
+          --command 'ALTER DATABASE "${config.services.immich.database.name}" REFRESH COLLATION VERSION;'
+      '';
+    };
+
     systemd.services.immich-admin-reconcile = {
       description = "Reconcile Immich admin users from Kanidm group membership";
       wantedBy = [ "multi-user.target" ];
@@ -141,7 +164,7 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "5m";
-        OnUnitActiveSec = "15m";
+        OnUnitActiveSec = "1h";
         Unit = "immich-admin-reconcile.service";
       };
     };

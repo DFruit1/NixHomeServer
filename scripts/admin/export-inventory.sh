@@ -77,23 +77,28 @@ echo
 echo "Identity"
 echo "  Kanidm groups: $(jq '.identity.kanidmGroups | length' <<<"$inventory_json")"
 echo "  OAuth clients: $(jq '.identity.oauthClients | length' <<<"$inventory_json")"
+echo "  auth mode: $(jq -r '.identity.authGateway.mode' <<<"$inventory_json")"
 echo
 
 echo "Storage"
 echo "  profile: $(jq -r '.storage.profile' <<<"$inventory_json")"
+echo "  root filesystem: $(jq -r '.storage.rootFsType' <<<"$inventory_json")"
+echo "  requires ZFS: $(jq -r '.storage.requiresZfs' <<<"$inventory_json")"
 echo "  data root: $(jq -r '.storage.dataRoot' <<<"$inventory_json")"
+echo "  data root is mountpoint: $(jq -r '.storage.dataRootIsMountPoint' <<<"$inventory_json")"
 echo "  users root: $(jq -r '.storage.usersRoot' <<<"$inventory_json")"
 echo "  shared root: $(jq -r '.storage.sharedRoot' <<<"$inventory_json")"
 echo "  backup root: $(jq -r '.storage.backupRoot' <<<"$inventory_json")"
+echo "  ZFS snapshot policy: $(jq -c '.storage.zfsSnapshotPolicy' <<<"$inventory_json")"
 echo
 
 echo "Backups"
 echo "  app state entries: $(jq '.backups.appStateEntries | length' <<<"$inventory_json")"
 echo "  critical paths: $(jq '.backups.criticalPaths | length' <<<"$inventory_json")"
+echo "  snapshot roots: $(jq -r '.backups.snapshotRoots | join(", ")' <<<"$inventory_json")"
+echo "  Kopia repository: $(jq -r '.backups.repositoryPath' <<<"$inventory_json")"
 echo "  path inventories: $(jq '.backups.pathInventories | length' <<<"$inventory_json")"
 echo "  SQLite dumps: $(jq '.backups.sqliteDumps | length' <<<"$inventory_json")"
-echo "  phone backup enabled: $(jq -r '.backups.phoneBackup.enable' <<<"$inventory_json")"
-echo "  phone backup repo: $(jq -r '.backups.phoneBackup.repositoryPath' <<<"$inventory_json")"
 echo
 
 echo "Impermanence"

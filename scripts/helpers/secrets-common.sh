@@ -96,11 +96,18 @@ validate_cf() {
 
 extract_cf_api_token() {
   local file="$1"
+  local token
 
-  sed -n \
+  token="$(sed -n \
     -e 's/^CLOUDFLARE_DNS_API_TOKEN=//p' \
     -e 's/^CLOUDFLARE_ZONE_API_TOKEN=//p' \
-    "$file" | head -n 1
+    "$file" | head -n 1)"
+
+  if [[ -z "$token" ]]; then
+    token="$(tr -d '\r\n' <"$file")"
+  fi
+
+  printf '%s' "$token"
 }
 
 validate_cf_api_token() {
@@ -130,5 +137,5 @@ normalize_cf_api_token() {
   local token
 
   token="$(extract_cf_api_token "$source_file")" || return 1
-  printf 'CLOUDFLARE_DNS_API_TOKEN=%s\nCLOUDFLARE_ZONE_API_TOKEN=%s\n' "$token" "$token" >"$destination_file"
+  printf '%s' "$token" >"$destination_file"
 }

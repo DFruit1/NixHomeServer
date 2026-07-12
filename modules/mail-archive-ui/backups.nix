@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, vars, ... }:
 
 let
   cfg = config.services.mail-archive-ui;
@@ -73,22 +73,8 @@ in
           printf '%s\t%s\tdata-root-not-mounted\t%s\tdata-root-not-mounted\t0\t0\n' "-" ${lib.escapeShellArg cfg.storeRoot} "-" >> "$mail_archive_roots_file"
         fi
 
-        mail_report="${"$"}{metadataRoot}/mail-archive-attachments.json"
-        mail_report_tmp=${lib.escapeShellArg "${cfg.runtimeDir}/mail-archive-attachments.backup.json"}
-        ${pkgs.util-linux}/bin/runuser -u mail-archive-ui -- ${pkgs.coreutils}/bin/env \
-          PATH="$PATH" \
-          MAIL_ARCHIVE_UI_DATA_DIR=${lib.escapeShellArg cfg.dataDir} \
-          MAIL_ARCHIVE_UI_STORE_ROOT=${lib.escapeShellArg cfg.storeRoot} \
-          MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT=${lib.escapeShellArg cfg.accountStateRoot} \
-          MAIL_ARCHIVE_UI_RUNTIME_DIR=${lib.escapeShellArg cfg.runtimeDir} \
-          MAIL_ARCHIVE_UI_LOCK_DIR=${lib.escapeShellArg cfg.lockDir} \
-          MAIL_ARCHIVE_UI_DEFAULT_TAGS="new" \
-          TMPDIR=${lib.escapeShellArg cfg.runtimeDir} \
-          SQLITE_TMPDIR=${lib.escapeShellArg cfg.runtimeDir} \
-          ${cfg.package}/bin/mail-archive-ui \
-          verify-attachments --repair --report "$mail_report_tmp"
-        install -m 0600 "$mail_report_tmp" "$mail_report"
-        rm -f "$mail_report_tmp"
+        # Attachment verification and repair is intentionally operator-triggered.
+        # Running it here made every backup mutate and rescan the full archive.
       '';
     };
   };

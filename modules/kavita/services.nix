@@ -33,6 +33,10 @@ in
       settings = {
         Port = kavitaPort;
         IpAddresses = "${vars.networking.loopbackIPv4},${vars.networking.loopbackIPv6}";
+        Logging.LogLevel = {
+          Default = "Information";
+          "Microsoft.AspNetCore" = "Warning";
+        };
         OpenIdConnectSettings = {
           Enabled = true;
           Authority = vars.kanidmIssuer "kavita-web";
@@ -66,7 +70,7 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         OnBootSec = "30m";
-        OnUnitActiveSec = "2h";
+        OnUnitActiveSec = "24h";
         AccuracySec = "10m";
         RandomizedDelaySec = "10m";
         Persistent = true;
@@ -152,10 +156,10 @@ in
 
         ready=0
         for _ in $(seq 1 60); do
-          if curl --silent --show-error --fail --max-time 5 "$base_url/api/Server/server-info-slim" >/dev/null; then
-            ready=1
-            break
-          fi
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$base_url/api/Server/server-info-slim" || true)"
+          case "$status" in
+            200|401|403) ready=1; break ;;
+          esac
           sleep 1
         done
         (( ready == 1 )) || {

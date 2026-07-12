@@ -72,10 +72,6 @@ export const serviceTips: Record<string, string[]> = {
     'Kopia browser access is separately protected and still needs the native Kopia password.',
     'Use this for local backup administration and restore checks.',
   ],
-  'offsite-backups': [
-    'The MEGA remote and Kopia offsite sync are managed declaratively.',
-    'Use the Rclone Web GUI for remote inspection and active job visibility.',
-  ],
   sftp: [
     'Generate an SSH key pair, upload the public key, then mount your files with SSHFS.',
     'Use port 2222 on the server LAN hostname for the SSHFS/SFTP endpoint.',

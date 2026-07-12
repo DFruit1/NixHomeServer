@@ -60,8 +60,8 @@ in
           UMask = lib.mkForce "0002";
           ReadWritePaths = [
             "/var/lib/sonarr"
-            "/mnt/data/shared/_Videos/_Shows"
-            "/mnt/data/shared/_Downloads/qbittorrent"
+            "${vars.sharedRoot}/_Videos/_Shows"
+            "${vars.sharedRoot}/_Downloads/qbittorrent"
           ];
         };
       };

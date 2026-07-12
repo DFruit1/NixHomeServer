@@ -52,16 +52,6 @@
       "uploadNotes": "Backup repository files are managed by Kopia."
     },
     {
-      "id": "offsite-backups",
-      "name": "Offsite Backups",
-      "url": "https://rclone.sydneybasiniot.org",
-      "enabled": true,
-      "category": "operations",
-      "description": "Rclone Web GUI for configuring and running offsite copies of the encrypted Kopia repository.",
-      "loginNotes": "Requires backup-admin through Kanidm.",
-      "uploadNotes": "Configure a MEGA remote, then copy or sync /mnt/data/backups/kopia."
-    },
-    {
       "id": "offline-media",
       "name": "Offline Media",
       "url": "/services/offline-media",
@@ -127,7 +117,7 @@
     {
       "title": "Check backup timers",
       "command": "systemctl list-timers '*kopia*' --no-pager",
-      "detail": "Verify Kopia snapshots, phone backups, and offsite sync timers are scheduled and see their next run times."
+      "detail": "Verify Kopia snapshots and offsite sync timers are scheduled and see their next run times."
     },
     {
       "title": "Check service health",
@@ -135,14 +125,6 @@
       "detail": "List failed units after deploys or incidents. Follow up with status and logs for each named unit."
     }
   ],
-  "phoneBackup": {
-    "enabled": false,
-    "deviceName": "phone",
-    "folderId": "nixhomeserver-kopia-phone",
-    "folderLabel": "NixHomeServer Kopia phone backup",
-    "repositoryPath": "/mnt/backup/kopia-phone",
-    "connectionAddresses": []
-  },
   "offlineMedia": {
     "enabled": true,
     "connectionAddresses": ["tcp://server.internal:22000"],

@@ -17,6 +17,25 @@ let
       meta = { inherit description; };
     };
 
+  maintenanceApp = name: { description, unit }:
+    let
+      app = pkgs.writeShellApplication {
+        inherit name;
+        runtimeInputs = with pkgs; [ nix openssh ];
+        text = ''
+          repo="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
+          host="$(nix eval --raw "$repo#lib.nixhomeserverSettings.serverLanIP")"
+          user="$(nix eval --raw "$repo#lib.nixhomeserverSettings.localAdminUser")"
+          exec ssh -o BatchMode=yes "$user@$host" sudo systemctl start --wait ${unit}
+        '';
+      };
+    in
+    {
+      type = "app";
+      program = "${app}/bin/${name}";
+      meta = { inherit description; };
+    };
+
   scriptApps = {
     validate-config-readiness = {
       description = "Validate evaluated settings, required secrets, and bootstrap/deploy preconditions";
@@ -91,5 +110,19 @@ let
     };
   };
 
+  maintenanceApps = {
+    backup-snapshot-now = {
+      description = "Run an immediate encrypted Kopia snapshot of persisted state";
+      unit = "kopia-persist-snapshot.service";
+    };
+    backup-mega-sync-now = {
+      description = "Run an immediate offsite MEGA synchronization";
+      unit = "rclone-mega-kopia-sync.service";
+    };
+    fileshare-acl-repair = {
+      description = "Run the explicit recursive fileshare ACL repair";
+      unit = "fileshare-acl-repair.service";
+    };
+  };
 in
-pkgs.lib.mapAttrs scriptApp scriptApps
+(pkgs.lib.mapAttrs scriptApp scriptApps) // (pkgs.lib.mapAttrs maintenanceApp maintenanceApps)

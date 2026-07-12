@@ -3,10 +3,6 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$script_dir/helpers/repo-common.sh"
-init_repo_root "STORAGE_DEVICE_DISCOVERY_REPO_ROOT"
-cd_repo_root
-ensure_default_nix_config
 
 dev_disk_root="${STORAGE_DEVICE_DISCOVERY_DEV_DISK_ROOT:-/dev/disk}"
 by_id_dir="${dev_disk_root}/by-id"
@@ -19,8 +15,9 @@ usage() {
   cat <<'EOF'
 Usage: scripts/discover-storage-devices.sh [--format json|text] [--config-json-file <path>]
 
-Discover the current system disk, live ZFS data-pool members, and all other
-attached non-system disks for SMART monitoring.
+Discover the current system disk, live ZFS data-pool members when the selected
+storage profile uses ZFS, and all other attached non-system disks for SMART
+monitoring.
 EOF
 }
 
@@ -58,7 +55,12 @@ case "$format" in
     ;;
 esac
 
-need jq "$lsblk_bin" "$smartctl_bin" "$readlink_bin"
+for required_command in jq "$lsblk_bin" "$smartctl_bin" "$readlink_bin"; do
+  command -v "$required_command" >/dev/null 2>&1 || {
+    echo "❌ Required command not found: $required_command" >&2
+    exit 1
+  }
+done
 
 declare -A smartctl_args_by_device=()
 declare -a smartctl_scan_devices=()
@@ -77,6 +79,14 @@ load_discovery_config_json() {
     cat "$config_json_file"
     return 0
   fi
+
+  # Interactive repository use may evaluate vars.nix. Runtime services always
+  # provide a pre-rendered JSON file and therefore have no repository or Nix
+  # dependency.
+  source "$script_dir/helpers/repo-common.sh"
+  init_repo_root "STORAGE_DEVICE_DISCOVERY_REPO_ROOT"
+  cd_repo_root
+  ensure_default_nix_config
 
   nix_json '{
     storageProfile = vars.storageProfile;
@@ -281,7 +291,10 @@ system_disk_id="$(jq -r '.systemDisk.diskId // empty' <<<"$config_json")"
 data_pool_name="$(jq -r '.dataPool.name // empty' <<<"$config_json")"
 
 if [[ "$storage_profile" == "zfs-mirror" ]]; then
-  need "$zpool_bin"
+  command -v "$zpool_bin" >/dev/null 2>&1 || {
+    echo "❌ Required command not found: $zpool_bin" >&2
+    exit 1
+  }
 else
   data_pool_name=""
 fi

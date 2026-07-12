@@ -151,9 +151,7 @@ let
   persistedPathsInsidePersist = lib.filter
     (path: path == "/persist" || lib.hasPrefix "/persist/" path)
     (map persistenceDirectoryPath config.repo.impermanence.inventory.persistenceDirectories);
-  legacyOfflineMusicCfg = vars.offlineMusic or { };
-  offlineMediaCfg =
-    if builtins.hasAttr "offlineMedia" vars then vars.offlineMedia else legacyOfflineMusicCfg;
+  offlineMediaCfg = vars.offlineMedia;
   offlineMediaEnabled = offlineMediaCfg.enable or false;
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaTmpfilesRule = "d ${offlineMediaStateDir} 0750 root root -";
@@ -164,12 +162,20 @@ in
 {
   assertions = [
     {
+      assertion = !(builtins.hasAttr "offlineMusic" vars);
+      message = "nixhomeserver: vars.offlineMusic was removed; use vars.offlineMedia.";
+    }
+    {
       assertion = builtins.elem vars.hostPlatform supportedHostPlatforms;
       message = "nixhomeserver: system.hostPlatform must be one of: ${lib.concatStringsSep ", " supportedHostPlatforms}.";
     }
     {
       assertion = builtins.elem vars.hardwareProfile supportedHardwareProfiles;
       message = "nixhomeserver: system.hardwareProfile must be one of: ${lib.concatStringsSep ", " supportedHardwareProfiles}.";
+    }
+    {
+      assertion = vars.hardwareProfile != "existing-server" || vars.hostPlatform == "x86_64-linux";
+      message = "nixhomeserver: system.hardwareProfile = existing-server is this repo's checked-in x86_64 hardware profile. Use generic-uefi for aarch64-linux.";
     }
     {
       assertion = builtins.elem vars.storageProfile supportedStorageProfiles;
@@ -196,8 +202,8 @@ in
       message = "nixhomeserver: replace all ZFS data-pool disk placeholders.";
     }
     {
-      assertion = allowPlaceholders || vars.hostId != "00000000";
-      message = "nixhomeserver: replace the example hostId with a stable 8-character hexadecimal value.";
+      assertion = allowPlaceholders || !vars.enableZfsDataPool || vars.hostId != "00000000";
+      message = "nixhomeserver: replace the example hostId with a stable 8-character hexadecimal value for ZFS.";
     }
     {
       assertion = validHostId;
@@ -254,6 +260,18 @@ in
     {
       assertion = vars.storageProfile != "zfs-mirror" || fileSystemHasOption "/persist" "subvol=/persist";
       message = "nixhomeserver: /persist Btrfs mount must retain subvol=/persist in the initrd.";
+    }
+    {
+      assertion = vars.storageProfile != "single-disk-ext4" || (config.fileSystems."/".fsType or null) == "ext4";
+      message = "nixhomeserver: single-disk-ext4 requires the root filesystem to be ext4.";
+    }
+    {
+      assertion = vars.storageProfile != "single-disk-ext4" || !(builtins.hasAttr "/nix" config.fileSystems);
+      message = "nixhomeserver: single-disk-ext4 expects /nix to be a regular directory on the root filesystem, not a separate mount.";
+    }
+    {
+      assertion = vars.storageProfile != "single-disk-ext4" || !(builtins.hasAttr "/persist" config.fileSystems);
+      message = "nixhomeserver: single-disk-ext4 expects /persist to be a regular directory on the root filesystem, not a separate mount.";
     }
     {
       assertion = persistedPathsInsidePersist == [ ];

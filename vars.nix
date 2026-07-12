@@ -100,31 +100,6 @@ rec {
     ];
   };
 
-  phoneBackup = {
-    enable = true; # Set true after replacing the Syncthing device ID below.
-    maxRepositoryBytes = 75 * 1024 * 1024 * 1024;
-    minimumSuccessfulSnapshots = 7;
-    compression = "zstd";
-    repositoryPath = "${backupRoot}/kopia-phone";
-    stateDir = "/persist/appdata/kopia-phone";
-    syncthing = {
-      deviceName = "phone";
-      deviceId = "BEAF3NP-DUDLXFK-DCCSELQ-LIL5664-HGHQP7Z-2EZNUXF-OZ7VIGK-ZMJMGQ6";
-      folderId = "nixhomeserver-kopia-phone";
-    };
-    sources = {
-      includePersist = true;
-      extraPaths = [ ];
-      excludePatterns = [
-        "**/.cache/**"
-        "**/cache/**"
-        "**/tmp/**"
-        "**/thumbs/**"
-        "**/encoded-video/**"
-      ];
-    };
-  };
-
   offlineMedia = {
     enable = true;
     musicFolderName = "_Music";
@@ -155,11 +130,9 @@ rec {
       oauth2ProxyKopia = 4185;
       oauth2ProxyHomepage = 4186;
       oauth2ProxyMonitor = 4187;
-      oauth2ProxyRclone = 4188;
       beszelHub = 8090;
       beszelAgent = 45876;
       kopia = 51515;
-      rcloneRc = 5572;
       groundwaterLogger = 8091;
       groundwaterMqtt = 1883;
       homepage = 8084;
@@ -306,6 +279,9 @@ rec {
     randomizedDelaySec = "30m";
     transfers = 4;
     checkers = 8;
+    warnPercent = 80;
+    criticalPercent = 90;
+    repositoryLimitBytes = 19327352832; # 18 GiB, preserving 2 GiB of MEGA headroom.
   };
   externalUsbMountRoot = "/mnt/external-usb";
   staleReferenceCleanup = {
@@ -326,7 +302,6 @@ rec {
 
   kanidmDomain = "id.${domain}";
   kopiaDomain = "kopia.${domain}";
-  rcloneDomain = "rclone.${domain}";
   monitorDomain = "monitor.${domain}";
   kanidmBaseUrl = "https://${kanidmDomain}";
   kanidmIssuer = clientId: "${kanidmBaseUrl}/oauth2/openid/${clientId}";

@@ -16,17 +16,18 @@ in
 
   services.caddy.virtualHosts = {
     ${photosHost} = {
+      logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
         reverse_proxy http://${loopback}:${toString config.services.immich.port}
       '';
     };
     ${shareHost} = {
+      logFormat = null;
       useACMEHost = vars.domain;
       extraConfig = ''
         reverse_proxy http://${loopback}:${toString vars.networking.ports.immichPublicProxy} {
           header_up X-Forwarded-Proto https
-          header_up X-Forwarded-Host {host}
         }
       '';
     };

@@ -1,4 +1,4 @@
-{ appPackages, config, lib, pkgs, vars, ... }:
+{ appPackages, config, lib, vars, ... }:
 
 let
   cfg = config.repo.groundwaterLogger;
@@ -79,9 +79,6 @@ in
       after = [
         "network-online.target"
         "mosquitto.service"
-      ];
-      path = with pkgs; [
-        sqlite
       ];
       environment = {
         GROUNDWATER_LOGGER_HOST = listenAddress;

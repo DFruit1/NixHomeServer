@@ -14,13 +14,21 @@ let
     map (diskId: "/dev/disk/by-id/${diskId}")
       (lib.unique ([ vars.mainDisk ] ++ vars.zfsDataPoolDiskIds));
 
-  extraFilesystems = [
-    "${vars.dataRoot}__DataPool"
-    "${vars.usersRoot}__Users"
-    "${vars.sharedRoot}__Shared"
-    "${vars.backupRoot}__Backups"
-    "/persist__Persist"
-  ];
+  extraFilesystems =
+    if vars.dataRootIsMountPoint then
+      [
+        "${vars.dataRoot}__DataPool"
+        "${vars.usersRoot}__Users"
+        "${vars.sharedRoot}__Shared"
+        "${vars.backupRoot}__Backups"
+        "/persist__Persist"
+      ]
+    else
+      [
+        "/__Root"
+        "${vars.dataRoot}__DataRoot"
+        "/persist__Persist"
+      ];
 
   servicePatterns = [
     "caddy*"

@@ -87,6 +87,12 @@ case "$hardware_profile" in
     ;;
 esac
 
+if [[ "$hardware_profile" == "existing-server" && "$host_platform" != "x86_64-linux" ]]; then
+  block "vars.nix -> system.hardwareProfile existing-server is only valid with x86_64-linux; use generic-uefi for ${host_platform}"
+else
+  ready "vars.nix -> system.hardwareProfile is compatible with ${host_platform}"
+fi
+
 case "$storage_profile" in
   zfs-mirror|single-disk-ext4)
     ready "vars.nix -> storage.profile is ${storage_profile}"
@@ -148,10 +154,14 @@ else
   block "vars.nix -> network.lanIp is invalid: ${lan_ip}"
 fi
 
-if [[ "$host_id" =~ ^[0-9a-f]{8}$ && "$host_id" != "00000000" ]]; then
-  ready "vars.nix -> system.hostId is set"
+if [[ ! "$host_id" =~ ^[0-9a-f]{8}$ ]]; then
+  block "vars.nix -> system.hostId must be an 8-character lowercase hexadecimal value"
+elif [[ "$host_id" == "00000000" && "$storage_profile" == "zfs-mirror" ]]; then
+  block "vars.nix -> system.hostId must be non-placeholder for zfs-mirror"
+elif [[ "$host_id" == "00000000" ]]; then
+  warn "vars.nix -> system.hostId is still 00000000; acceptable for single-disk-ext4, but set a stable value before switching to ZFS"
 else
-  block "vars.nix -> system.hostId must be a non-placeholder 8-character lowercase hexadecimal value"
+  ready "vars.nix -> system.hostId is set"
 fi
 
 if [[ "$main_disk" == *CHANGE_ME* ]]; then

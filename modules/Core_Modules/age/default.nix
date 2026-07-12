@@ -42,11 +42,8 @@ in
     monitorOauth2ProxyCookieSecret = { file = secretFile "monitorOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     beszelHubEnv = { file = secretFile "beszelHubEnv"; owner = "root"; mode = "0400"; };
     kopiaServerPassword = { file = secretFile "kopiaServerPassword"; owner = "root"; mode = "0400"; };
-    kopiaPhonePassword = { file = secretFile "kopiaPhonePassword"; owner = "root"; mode = "0400"; };
     kopiaOauth2ProxyClientSecret = { file = secretFile "kopiaOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     kopiaOauth2ProxyCookieSecret = { file = secretFile "kopiaOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
-    rcloneOauth2ProxyClientSecret = { file = secretFile "rcloneOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
-    rcloneOauth2ProxyCookieSecret = { file = secretFile "rcloneOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     seerrOauth2ProxyClientSecret = { file = secretFile "seerrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     seerrOauth2ProxyCookieSecret = { file = secretFile "seerrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     sonarrOauth2ProxyClientSecret = { file = secretFile "sonarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };

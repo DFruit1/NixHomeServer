@@ -8,12 +8,13 @@ let
     (_name: client: (client.present or true) && !(client.public or false))
     config.services.kanidm.provision.systems.oauth2;
   disableConsentCommands = lib.concatStringsSep "\n"
-    (map (clientName: ''
-      ${pkgs.kanidm_1_10}/bin/kanidm system oauth2 disable-consent-prompt \
-        -H ${kanidmCliUrl} \
-        -D idm_admin \
-        ${lib.escapeShellArg clientName}
-    '')
+    (map
+      (clientName: ''
+        ${pkgs.kanidm_1_10}/bin/kanidm system oauth2 disable-consent-prompt \
+          -H ${kanidmCliUrl} \
+          -D idm_admin \
+          ${lib.escapeShellArg clientName}
+      '')
       (builtins.attrNames oauth2ClientsForConsentPrompt));
 in
 {
@@ -30,6 +31,12 @@ in
 
       tls_chain = "/var/lib/acme/${vars.kanidmDomain}/fullchain.pem";
       tls_key = "/var/lib/acme/${vars.kanidmDomain}/key.pem";
+
+      online_backup = {
+        path = "/var/lib/kanidm/backups";
+        schedule = "00 02 * * *";
+        versions = 7;
+      };
     };
   };
 
@@ -73,5 +80,6 @@ in
 
   systemd.tmpfiles.rules = [
     "d /var/lib/kanidm 0700 kanidm kanidm -"
+    "d /var/lib/kanidm/backups 0700 kanidm kanidm -"
   ];
 }

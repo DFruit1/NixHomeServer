@@ -464,7 +464,9 @@ Set these first:
 
 - `system.timeZone`: your local IANA time zone.
 
-- `system.hostId`: a stable 8-character lowercase hexadecimal value.
+- `system.hostId`: a stable 8-character lowercase hexadecimal value. It is
+  required for `zfs-mirror`; `single-disk-ext4` may keep `00000000`, but setting
+  a real value keeps later ZFS migration straightforward.
 
 - `edge.cloudflareTunnelName`: the tunnel name from Cloudflare.
 
@@ -516,7 +518,6 @@ Core modules included by default are:
 - `monitoring`: health visibility and health-driven troubleshooting surface.
 - `netbird`: private overlay network for remote access with predictable identity-aware routing.
 - `oauth2-proxy`: central OIDC-to-HTTP auth gateway used by apps that do not do native OIDC.
-- `phone-backup`: first-class mobile backup entrypoint wiring.
 - `rclone`: backup destination sync paths and automation.
 - `storage`: mount points and shared storage policy contract for apps.
 - `storage-monitoring`: scheduled SMART short/long self-test sweeps for physical disks.
@@ -662,12 +663,24 @@ process, then mount the installed layout under `/mnt`.
 
 Before installing, verify the mounts:
 
+For `zfs-mirror`:
+
 ```bash
 findmnt /mnt
 findmnt /mnt/boot
 findmnt /mnt/nix
 findmnt /mnt/persist
 zpool status
+```
+
+For `single-disk-ext4`:
+
+```bash
+findmnt /mnt
+findmnt /mnt/boot
+df -hT /mnt
+test -d /mnt/persist
+test -d /mnt/nix
 ```
 
 Do not use disko for routine rebuilds, existing-server app changes, or in-place
@@ -722,7 +735,6 @@ Check the basics on the server:
 
 ```bash
 sudo systemctl --failed --no-pager
-findmnt /persist
 test -d /mnt/data
 ```
 
@@ -736,7 +748,16 @@ For `zfs-mirror`, also check:
 
 ```bash
 zpool status
+findmnt /persist
 findmnt /mnt/data
+```
+
+For `single-disk-ext4`, also check:
+
+```bash
+df -hT /
+test -d /persist
+test -d /mnt/data
 ```
 
 From your admin workstation repo, run the full guarded test deploy:

@@ -1,4 +1,4 @@
-{ config, lib, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   paperlessPort = vars.networking.ports.paperless;
@@ -54,6 +54,12 @@ let
   ] ++ map mkCaseInsensitiveExtensionPattern blockedOfficeExtensions;
 in
 {
+  options.repo.paperless.officeConversion.enable = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Enable Tika and Gotenberg for Office document conversion.";
+  };
+
   imports = [
     ./package.nix
   ];
@@ -63,16 +69,15 @@ in
 
     services.paperless = {
       enable = true;
-      configureTika = true;
+      configureTika = config.repo.paperless.officeConversion.enable;
       dataDir = dataDir;
       mediaDir = paths.archive;
       consumptionDir = paths.inbox;
       address = vars.networking.loopbackIPv4;
       port = paperlessPort;
       exporter = {
-        enable = true;
+        enable = false;
         directory = paths.export;
-        onCalendar = "02:00";
       };
 
       settings = {
@@ -91,6 +96,41 @@ in
         PAPERLESS_CONSUMER_INOTIFY_DELAY = "2";
         PAPERLESS_CONSUMER_POLLING = "60";
         PAPERLESS_CONSUMER_IGNORE_PATTERNS = paperlessConsumerIgnorePatterns;
+      };
+    };
+
+    systemd.services.paperless-exporter = {
+      description = "Export Paperless documents with explicit application quiescing";
+      after = [ "paperless-web.service" "paperless-storage-layout-v1.service" ];
+      wants = [ "paperless-storage-layout-v1.service" ];
+      path = [ config.services.paperless.manage pkgs.systemd pkgs.util-linux ];
+      serviceConfig = {
+        Type = "oneshot";
+        Nice = 10;
+        CPUWeight = 20;
+        IOWeight = 20;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+        TimeoutStartSec = "4h";
+      };
+      script = ''
+        set -euo pipefail
+        units=(paperless-consumer.service paperless-scheduler.service paperless-task-queue.service paperless-web.service)
+        restart_paperless() { systemctl start "''${units[@]}"; }
+        trap restart_paperless EXIT
+        systemctl stop "''${units[@]}"
+        runuser -u paperless -- paperless-manage document_exporter \
+          ${lib.escapeShellArg paths.export} \
+          --compare-checksums --delete --no-color --no-progress-bar
+      '';
+    };
+
+    systemd.timers.paperless-exporter = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = "*-*-* 02:00:00";
+        Persistent = true;
+        RandomizedDelaySec = "20m";
       };
     };
 

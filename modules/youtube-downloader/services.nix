@@ -26,7 +26,6 @@ in
         path = with pkgs; [
           coreutils
           ffmpeg
-          sqlite
           yt-dlp
         ];
         environment = {

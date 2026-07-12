@@ -24,14 +24,9 @@ let
   prowlarrHost = "prowlarr.${vars.domain}";
   torrentsHost = "torrents.${vars.domain}";
   backupsHost = vars.kopiaDomain;
-  rcloneHost = vars.rcloneDomain;
   monitorHost = vars.monitorDomain;
   syncthingHost = "syncthing.${vars.domain}";
-  phoneBackupCfg = vars.phoneBackup or { enable = false; };
-  phoneBackupSyncthing = phoneBackupCfg.syncthing or { };
-  phoneBackupRepositoryPath = phoneBackupCfg.repositoryPath or "${vars.backupRoot}/kopia-phone";
-  legacyOfflineMusicCfg = vars.offlineMusic or { };
-  offlineMediaCfg = if builtins.hasAttr "offlineMedia" vars then vars.offlineMedia else legacyOfflineMusicCfg;
+  offlineMediaCfg = vars.offlineMedia;
   offlineMediaEnabled = offlineMediaCfg.enable or false;
   offlineMediaMusicFolderName = offlineMediaCfg.musicFolderName or offlineMediaCfg.folderName or "_Music";
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
@@ -90,8 +85,8 @@ let
   prowlarrEnabled = hostEnabled prowlarrHost;
   qbittorrentEnabled = hostEnabled torrentsHost;
   kopiaEnabled = hostEnabled backupsHost;
-  rcloneEnabled = hostEnabled rcloneHost;
   monitorEnabled = hostEnabled monitorHost;
+  personalPath = relativePath: "${vars.usersRoot}/{username}/${relativePath}";
   sftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
   installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" ''
     set -euo pipefail
@@ -787,26 +782,12 @@ let
       url = "https://${backupsHost}";
       enabled = kopiaEnabled;
       category = "operations";
-      description = "Kopia local backup management for system state and encrypted repositories.";
+      description = "Kopia backup management for critical state, Paperless data, and consistent database dumps.";
       loginNotes = "Requires backup-admin plus the native Kopia password.";
       projectUrl = "https://kopia.io";
       logoUrl = "https://raw.githubusercontent.com/kopia/kopia/master/icons/kopia.svg";
       appName = "kopia";
       uploadNotes = "Backup repository files are managed by Kopia.";
-      requiredGroups = [ vars.backupAccess.adminGroup ];
-    }
-    {
-      id = "offsite-backups";
-      name = "Offsite Backups";
-      url = "https://${rcloneHost}";
-      enabled = rcloneEnabled;
-      category = "operations";
-      description = "Rclone Web GUI for inspecting declarative offsite copies of the encrypted Kopia repository.";
-      loginNotes = "Requires backup-admin through Kanidm.";
-      projectUrl = "https://rclone.org";
-      logoUrl = "https://cdn.simpleicons.org/rclone";
-      appName = "rclone";
-      uploadNotes = "MEGA sync is scheduled by rclone-mega-kopia-sync.timer.";
       requiredGroups = [ vars.backupAccess.adminGroup ];
     }
     {
@@ -831,7 +812,7 @@ let
       enabled = paperlessEnabled;
       serviceIds = [ "documents" "files" "emails" ];
       fileTypes = [ "pdf" "jpg" "jpeg" "png" "tiff" "eml attachments" ];
-      personalPath = "/mnt/data/users/{username}/_Files";
+      personalPath = personalPath "_Files";
       sharedPath = "${vars.dataRoot}/paperless/inbox";
       instructions = [
         "Use Paperless for scanned documents, bills, statements, receipts, and searchable PDFs."
@@ -859,7 +840,7 @@ let
       enabled = audiobookshelfEnabled;
       serviceIds = [ "audiobooks" "downloads" "files" ];
       fileTypes = [ "m4b" "mp3" "flac" "opus" "m4a" "cue" "jpg" "opf" ];
-      personalPath = "/mnt/data/users/{username}/_Audiobooks";
+      personalPath = personalPath "_Audiobooks";
       sharedPath = "${vars.sharedRoot}/_Audiobooks";
       instructions = [
         "Keep each audiobook in its own folder with cover art and metadata beside the audio files."
@@ -873,7 +854,7 @@ let
       enabled = jellyfinEnabled;
       serviceIds = [ "videos" "downloads" "files" ];
       fileTypes = [ "mkv" "mp4" "webm" "avi" "srt" "ass" "nfo" ];
-      personalPath = "/mnt/data/users/{username}/_Videos";
+      personalPath = personalPath "_Videos";
       sharedPath = "${vars.sharedRoot}/_Videos";
       instructions = [
         "Put films in _Movies and series in _Shows so Jellyfin can identify them."
@@ -887,7 +868,7 @@ let
       enabled = offlineMediaEnabledForHomepage;
       serviceIds = [ "offline-media" "files" "downloads" ];
       fileTypes = [ "mp3" "flac" "m4a" "opus" "ogg" "wav" "mkv" "mp4" "webm" ];
-      personalPath = "/mnt/data/users/{username}";
+      personalPath = "${vars.usersRoot}/{username}";
       sharedPath = null;
       instructions = [
         "Place music files in _Music."
@@ -902,7 +883,7 @@ let
       enabled = kavitaEnabled;
       serviceIds = [ "books" "files" ];
       fileTypes = [ "epub" "pdf" "cbz" "cbr" "zip" "rar" ];
-      personalPath = "/mnt/data/users/{username}/_Books";
+      personalPath = personalPath "_Books";
       sharedPath = "${vars.sharedRoot}/_Books";
       instructions = [
         "Use _Ebooks for prose books, _Comics for western comics, and _Manga for manga."
@@ -916,7 +897,7 @@ let
       enabled = mailArchiveEnabled;
       serviceIds = [ "emails" "files" "documents" ];
       fileTypes = [ "eml" "zip" "attachments" ];
-      personalPath = "/mnt/data/users/{username}/_Emails";
+      personalPath = personalPath "_Emails";
       sharedPath = "${vars.sharedRoot}/_Emails";
       instructions = [
         "Use the Mail Archive UI for search, sync, attachment download, and reindex actions."
@@ -937,6 +918,51 @@ let
         "Kiwix library uploads are operator-managed because the server regenerates its library catalog."
         "After upload, the Kiwix sync service publishes valid ZIM files into the web library."
       ];
+    }
+  ];
+
+  zfsStorageAdminGuide = lib.optionals vars.enableZfsDataPool [
+    {
+      title = "Check ZFS pool status";
+      command = "zpool status -v ${vars.zfsDataPool.name}";
+      detail = "Inspect data pool health, mirror state, scrub history, checksums, and device errors.";
+    }
+    {
+      title = "Start ZFS scrub";
+      command = "sudo zpool scrub ${vars.zfsDataPool.name}";
+      detail = "Start a scrub for the mirrored data pool. Monitor progress and any repaired errors with the ZFS pool status command.";
+    }
+    {
+      title = "Show Btrfs filesystem usage";
+      command = "sudo btrfs filesystem usage /persist";
+      detail = "Check Btrfs allocation and data/metadata usage for persistent state on the system SSD.";
+    }
+    {
+      title = "Check Btrfs scrub status";
+      command = "sudo btrfs scrub status /persist";
+      detail = "Review the latest Btrfs scrub result for persistent state on the system SSD.";
+    }
+  ];
+  singleDiskStorageAdminGuide = lib.optionals (!vars.enableZfsDataPool) [
+    {
+      title = "Check root filesystem usage";
+      command = "df -hT / ${vars.dataRoot} /persist";
+      detail = "Check free space and filesystem types for the single-disk root, data root directory, and persistent state directory.";
+    }
+    {
+      title = "Inspect root mount options";
+      command = "findmnt -no SOURCE,FSTYPE,OPTIONS /";
+      detail = "Confirm the root device, filesystem type, and active mount options on the single-disk ext4 profile.";
+    }
+    {
+      title = "Check storage layout logs";
+      command = "sudo journalctl -u data-pool-layout.service -n 100 --no-pager";
+      detail = "Review creation and repair logs for data, appdata, shared, backup, and user-root directories.";
+    }
+    {
+      title = "Inspect system disk with SMART";
+      command = "sudo smartctl -a /dev/disk/by-id/${vars.mainDisk}";
+      detail = "Read SMART attributes, self-test history, and error logs for the single system disk.";
     }
   ];
 
@@ -1131,26 +1157,10 @@ let
       command = "./scripts/discover-storage-devices.sh --format text";
       detail = "List disks detected by storage monitoring and SMART checks, including stable by-id paths to use in config.";
     }
-    {
-      title = "Check ZFS pool status";
-      command = "zpool status -v ${vars.zfsDataPool.name}";
-      detail = "Inspect data pool health, mirror state, scrub history, checksums, and device errors.";
-    }
-    {
-      title = "Start ZFS scrub";
-      command = "sudo zpool scrub ${vars.zfsDataPool.name}";
-      detail = "Start a scrub for the mirrored data pool. Monitor progress and any repaired errors with the ZFS pool status command.";
-    }
-    {
-      title = "Show Btrfs filesystem usage";
-      command = "sudo btrfs filesystem usage /persist";
-      detail = "Check Btrfs allocation and data/metadata usage for persistent state on the system SSD.";
-    }
-    {
-      title = "Check Btrfs scrub status";
-      command = "sudo btrfs scrub status /persist";
-      detail = "Review the latest Btrfs scrub result for persistent state on the system SSD.";
-    }
+  ]
+  ++ zfsStorageAdminGuide
+  ++ singleDiskStorageAdminGuide
+  ++ [
     {
       title = "Run SMART short sweep";
       command = "sudo ./scripts/run-storage-smart-sweep.sh --kind short";
@@ -1169,12 +1179,12 @@ let
     {
       title = "Check backup timers";
       command = "systemctl list-timers 'kopia*' 'rclone*' --all --no-pager";
-      detail = "Verify Kopia snapshots, phone backups, and offsite sync timers are scheduled and see their next run times.";
+      detail = "Verify Kopia snapshots and offsite sync timers are scheduled and see their next run times.";
     }
     {
       title = "Check Kopia services";
-      command = "systemctl status kopia.service kopia-auth-proxy.service kopia-oauth2-proxy.service --no-pager";
-      detail = "Inspect the local Kopia server, native auth proxy, and SSO proxy together when backup UI or auth is failing.";
+      command = "systemctl status kopia.service kopia-auth-proxy.service auth-gateway-oauth2-proxy.service auth-gateway-router.service --no-pager";
+      detail = "Inspect the local Kopia server, native auth proxy, and shared SSO gateway together when backup UI or auth is failing.";
     }
     {
       title = "Run persist snapshot now";
@@ -1185,11 +1195,6 @@ let
       title = "Inspect persist snapshot logs";
       command = "journalctl -u kopia-persist-snapshot.service -n 100 --no-pager";
       detail = "Review the most recent persist snapshot run, including Kopia errors and excluded paths.";
-    }
-    {
-      title = "Run phone backup snapshot now";
-      command = "sudo systemctl start kopia-phone-snapshot.service";
-      detail = "Trigger the phone backup snapshot chain when phone backup is enabled and Syncthing has already received the latest files.";
     }
     {
       title = "Run offsite Kopia sync now";
@@ -1290,17 +1295,6 @@ let
     services = serviceCards;
     kanidmGroups = kanidmGroups;
     kanidmGroupDescriptions = kanidmGroupDescriptions;
-    phoneBackup = {
-      enabled = phoneBackupCfg.enable or false;
-      deviceName = phoneBackupSyncthing.deviceName or "phone";
-      configuredPhoneDeviceId = phoneBackupSyncthing.deviceId or "";
-      folderId = phoneBackupSyncthing.folderId or "nixhomeserver-kopia-phone";
-      folderLabel = "NixHomeServer Kopia phone backup";
-      repositoryPath = phoneBackupRepositoryPath;
-      connectionAddresses = [
-        "tcp://${syncthingHost}:22000"
-      ];
-    };
     offlineMedia = {
       enabled = offlineMediaEnabledForHomepage;
       connectionAddresses = [

@@ -27,7 +27,6 @@ let
     "torrents.${vars.domain}"
     "syncthing.${vars.domain}"
     vars.kopiaDomain
-    vars.rcloneDomain
   ] ++ lib.optionals (config.repo.seerr.enable or false) [
     "requests.${vars.domain}"
   ] ++ lib.optionals (config.repo.groundwaterLogger.enable or false) [
@@ -43,6 +42,7 @@ let
         {
           name = httpAlias;
           value = {
+            logFormat = null;
             extraConfig = ''
               redir https://${hostName}{uri} 308
             '';
@@ -72,6 +72,7 @@ let
         {
           name = "http://${shortHost}.${lanDomain}";
           value = {
+            logFormat = null;
             extraConfig = ''
               redir https://${hostName}{uri} 308
             '';
@@ -99,6 +100,9 @@ let
     log {
       output file /var/log/caddy/access.log {
         mode 0640
+        roll_size 25MiB
+        roll_keep 5
+        roll_keep_for 720h
       }
       format json
     }
@@ -115,6 +119,7 @@ in
     email = vars.kanidmAdminEmail;
     virtualHosts = {
       "${vars.domain}" = {
+        logFormat = null;
         useACMEHost = vars.domain;
         extraConfig = ''
           ${accessLogConfig}
@@ -123,6 +128,7 @@ in
       };
 
       "www.${vars.domain}" = {
+        logFormat = null;
         useACMEHost = vars.domain;
         extraConfig = ''
           ${accessLogConfig}
@@ -131,6 +137,7 @@ in
       };
 
       "${vars.kanidmDomain}" = {
+        logFormat = null;
         useACMEHost = vars.kanidmDomain;
         extraConfig = ''
           ${accessLogConfig}
@@ -142,7 +149,6 @@ in
               tls_trust_pool file /var/lib/acme/${vars.kanidmDomain}/fullchain.pem
             }
             header_up X-Forwarded-Proto https
-            header_up X-Forwarded-Host  {host}
           }
         '';
       };

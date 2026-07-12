@@ -33,6 +33,8 @@ test_scripts=(
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-public-route-check.sh
   scripts/tests/test-export-inventory.sh
+  scripts/tests/test-platform-storage-profiles.sh
+  scripts/tests/test-runtime-reliability.sh
   scripts/tests/test-secret-definitions.sh
 )
 

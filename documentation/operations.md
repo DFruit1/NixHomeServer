@@ -47,6 +47,10 @@ reminders.
 - Local encrypted backup repository: `/mnt/data/backups/kopia`
 - Manual external USB media root for operators: `/mnt/external-usb/`
 
+`/mnt/data` is the configured data root for both storage profiles. On
+`zfs-mirror` it is a ZFS pool mountpoint; on `single-disk-ext4` it is a normal
+directory on the root filesystem.
+
 ## App Hostnames
 
 Immich uses separate private and public hostnames on purpose. Show evaluated
@@ -74,12 +78,16 @@ Use the kopia hostname for local Kopia backup management. Browser access is gate
 Kanidm through OAuth2 Proxy and requires membership in `backup-admin`.
 After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
 from the generated `kopiaServerPassword` secret. The managed repository is a
-local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`, and
-`kopia-persist-snapshot.timer` snapshots `/persist` into it daily.
+local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`.
+`backup-prepare.service` first creates integrity-checked SQLite dumps and an
+Immich PostgreSQL custom-format dump under
+`/persist/appdata/backup-metadata/successful`; `kopia-persist-snapshot.timer`
+then snapshots `/persist` and `/mnt/data/paperless` daily. On
+`single-disk-ext4`, both paths live on the same root filesystem, so an external
+or offsite backup remains important.
 
-Use the rclone hostname for offsite backup inspection. Browser access is gated
-by Kanidm through OAuth2 Proxy and requires membership in `backup-admin`.
-The MEGA remote and regular Kopia offsite sync are managed declaratively:
+The MEGA remote and regular Kopia offsite sync are managed declaratively; there
+is no persistent Rclone web service:
 
 1. Set `rcloneMega.email` in `vars.nix` to the MEGA account email.
 2. Confirm `rcloneMega.destination`, normally `mega:NixHomeServer/kopia`.
@@ -97,9 +105,9 @@ The MEGA remote and regular Kopia offsite sync are managed declaratively:
    systemctl start rclone-mega-kopia-sync.service
    ```
 
-The scheduled job syncs `/mnt/data/backups/kopia` to the configured MEGA
-destination through the running Rclone RC daemon, so jobs are visible from the
-Rclone Web GUI while systemd remains the source of truth for schedule and logs.
+The scheduled oneshot job syncs `/mnt/data/backups/kopia` directly to the
+configured MEGA destination. No Rclone daemon or web UI remains running between
+jobs.
 Check status with `systemctl status rclone-mega-kopia-sync.timer`,
 `systemctl status rclone-mega-kopia-sync.service`, or
 `journalctl -u rclone-mega-kopia-sync.service`.
@@ -128,9 +136,10 @@ kanidm group get backup-admin
 systemctl status 'files-shared-bindfs@<user>.service'
 systemctl status 'files-usb-bindfs@<user>.service'
 systemctl status 'files-backups-bindfs@<user>.service'
-mountpoint /mnt/data/users/<user>/_Shared
-mountpoint /mnt/data/users/<user>/_USB
-mountpoint /mnt/data/users/<user>/_Backups
+findmnt /mnt/data || test -d /mnt/data
+findmnt /mnt/data/users/<user>/_Shared || mountpoint /mnt/data/users/<user>/_Shared
+findmnt /mnt/data/users/<user>/_USB || mountpoint /mnt/data/users/<user>/_USB
+findmnt /mnt/data/users/<user>/_Backups || mountpoint /mnt/data/users/<user>/_Backups
 
 sudo -u filestash sh -lc 'probe=/mnt/data/users/<user>/_Shared/.write-probe && : >"$probe" && test -f "$probe"'
 sudo -u filestash rm /mnt/data/users/<user>/_Shared/.write-probe
@@ -210,8 +219,8 @@ sudo -u mail-archive-ui env \
   mail-archive-ui verify-attachments --repair --report /tmp/mail-archive-attachments.json
 ```
 
-Kopia policies should include this verifier output if mail archive attachment
-metadata is part of the backup set. Mail payload bytes remain on the mirrored
+This repair command is intentionally manual and is not run by routine backup
+preparation. Mail payload bytes remain on the mirrored
 `/mnt/data/users` pool unless an operator intentionally adds those paths to a
 Kopia policy.
 
@@ -350,7 +359,9 @@ curl -kI --resolve <passwords-domain>:443:<server-lan-ip> https://<passwords-dom
 
 - if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
 
-Storage monitoring now discovers disks live at runtime:
+Storage monitoring now discovers disks live at runtime from an evaluated JSON
+inventory embedded in the system generation; smartd startup does not evaluate
+Nix or read the repository checkout:
 - `system` is the static `vars.mainDisk`
 - `dataN` are the current live `data` pool members discovered from ZFS
 - `otherN` are every other attached non-system disk, including retired disks that are still physically attached
@@ -359,13 +370,35 @@ Storage monitoring now discovers disks live at runtime:
 
 Kopia uses a managed encrypted filesystem repository at
 `/mnt/data/backups/kopia`. The `kopia-persist-snapshot.timer` creates daily
-snapshots of `/persist`.
+snapshots of `/persist` and `/mnt/data/paperless` after consistent logical
+database preparation.
 
-Rclone provides an authenticated Web GUI for inspecting offsite copies of that
-encrypted repository. The MEGA remote is rendered from `vars.rcloneMega` and the
+Rclone is an on-demand oneshot synchronizer for offsite copies of that encrypted
+repository. The MEGA remote is rendered from `vars.rcloneMega` and the
 `rcloneMegaPassword` agenix secret at activation time, and
 `rclone-mega-kopia-sync.timer` regularly syncs the local encrypted Kopia
 repository to MEGA.
+
+The Kopia policy is deliberately bounded to 7 latest, 14 daily, 4 weekly, and
+2 monthly snapshots (with no hourly or annual tier). Runtime caches, application
+logs, retired Restic/pool-migration copies, and reproducible download/cache data
+under `/persist` are excluded from the offsite snapshot.
+
+MEGA synchronization uses permanent, delete-before semantics for this dedicated
+Kopia mirror. This is important because the MEGA backend otherwise puts deleted
+packs in its rubbish bin, where they continue consuming quota. A six-hourly
+capacity check journals a warning at 80% and fails visibly at 90%, or when the
+local repository reaches 18 GiB. Inspect it with:
+
+```bash
+sudo systemctl status rclone-mega-capacity-check.service --no-pager
+sudo journalctl -t backup-capacity -n 50 --no-pager
+```
+
+`--mega-hard-delete` only affects future deletions made by this sync. Emptying
+the account's existing MEGA rubbish bin is a separate, account-wide destructive
+operation and must be performed explicitly after checking that it contains
+nothing that should be recovered.
 
 External USB storage is no longer a managed backup target. If an operator wants
 to copy backups to a removable SSD, mount it manually under `/mnt/external-usb`
@@ -373,6 +406,40 @@ and copy or sync the encrypted repository files from `/mnt/data/backups`.
 
 The previous automatic Restic `system-state` behavior is retired and no Restic
 timer or backup service is enabled by this module.
+
+Run safe repository maintenance and then propagate reclaimed packs to MEGA:
+
+```bash
+sudo systemctl start kopia-full-maintenance.service
+sudo systemctl start rclone-mega-kopia-sync.service
+sudo journalctl -u kopia-full-maintenance.service -u rclone-mega-kopia-sync.service -n 200 --no-pager
+```
+
+Kopia deletion safety is not overridden. UI-deleted snapshots may remain until
+a later full-maintenance cycle. Routine journal retention is 14 days/256 MiB;
+Kopia file logs are removed after 14 days. Caddy keeps five 25 MiB rolled access
+logs for at most 30 days.
+
+## Local ZFS Snapshots
+
+The ZFS profile retains 24 hourly, 7 daily, and 4 weekly snapshots. The backup
+and upload-staging datasets are excluded. Inspect usage with:
+
+```bash
+sudo zfs list -t snapshot -o name,creation,used -s creation -r data
+sudo systemctl status zfs-snapshot-health.service --no-pager
+```
+
+`orphan-state-report.service` reports preserved legacy paths and datasets under
+`/persist/appdata/backup-metadata/metadata/orphan-state.json`; it never deletes
+them.
+
+## Shared Authentication Logout
+
+Proxy-protected applications use the shared `auth.<domain>` gateway and one
+domain cookie. Signing out there signs out every gateway-protected application.
+Native OIDC applications keep independent sessions because Kanidm does not
+advertise an end-session, front-channel logout, or back-channel logout endpoint.
 
 ## SMART Monitoring
 

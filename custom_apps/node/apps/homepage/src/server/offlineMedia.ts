@@ -43,7 +43,7 @@ export const normaliseSyncthingDeviceName = (raw: unknown, username: string): st
 };
 
 const offlineMediaConfig = (config: AppConfig): OfflineMediaSetup | undefined =>
-  config.homepage.offlineMedia ?? config.homepage.offlineMusic;
+  config.homepage.offlineMedia;
 
 export const getOfflineMediaSetup = async (config: AppConfig, user: CurrentUser): Promise<OfflineMediaSetup | undefined> => {
   const base = offlineMediaConfig(config);

@@ -1,4 +1,4 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   externalUsbMountRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
@@ -9,12 +9,17 @@ let
   metadataRoot = "${stagingRoot}/metadata";
   dumpsRoot = "${stagingRoot}/dumps";
   inventoryRoot = "${metadataRoot}/inventories";
-  fsPackages = with pkgs; [
-    btrfs-progs
-    exfatprogs
-    ntfs3g
-    xfsprogs
-  ];
+  successfulRoot = "${stagingRoot}/successful";
+  repositoryPath = "${backupRoot}/kopia";
+  maintenanceLock = "/run/lock/nixhomeserver-maintenance.lock";
+  fsPackages =
+    (with pkgs; [
+      e2fsprogs
+      exfatprogs
+      ntfs3g
+      xfsprogs
+    ])
+    ++ lib.optional (vars.storageProfile == "zfs-mirror") pkgs.btrfs-progs;
   coreAppStateEntries = [
     {
       app = "kanidm";
@@ -52,12 +57,35 @@ let
       notes = "Monitoring hub database, SSH key, and local dashboard state.";
     }
   ];
-  coreCriticalPaths = [
-    vars.dataRoot
-    vars.usersRoot
-    vars.sharedRoot
-    backupRoot
+  coreSnapshotRoots = [
+    "/persist"
+    "${vars.dataRoot}/paperless"
   ];
+  coreSqliteDumps = [
+    { source = "/var/lib/audiobookshelf/config/absdatabase.sqlite"; outputName = "audiobookshelf.sqlite"; }
+    { source = "/var/lib/jellyfin/data/jellyfin.db"; outputName = "jellyfin.sqlite"; }
+    { source = "/var/lib/kavita/config/kavita.db"; outputName = "kavita.sqlite"; }
+    { source = "/var/lib/paperless/db.sqlite3"; outputName = "paperless.sqlite"; }
+    { source = "/var/lib/seerr/db/db.sqlite3"; outputName = "seerr.sqlite"; }
+    { source = "/var/lib/vaultwarden/db.sqlite3"; outputName = "vaultwarden.sqlite"; }
+    { source = "/var/lib/beszel-hub/beszel_data/data.db"; outputName = "beszel.sqlite"; }
+  ];
+  sqliteDumpScript = dump: ''
+    source=${lib.escapeShellArg dump.source}
+    output="$work/dumps/${lib.escapeShellArg dump.outputName}"
+    if [[ ! -f "$source" ]]; then
+      echo "Required backup database is missing: $source" >&2
+      exit 1
+    fi
+    echo "Preparing SQLite backup: ${dump.outputName}"
+    sqlite3 "$source" ".timeout 60000" ".backup '$output'"
+    integrity="$(sqlite3 -readonly "$output" 'PRAGMA integrity_check;')"
+    if [[ "$integrity" != ok ]]; then
+      echo "SQLite integrity check failed for ${dump.outputName}: $integrity" >&2
+      exit 1
+    fi
+    sha256sum "$output" >> "$work/metadata/SHA256SUMS"
+  '';
 in
 {
   options.repo.backups = {
@@ -88,6 +116,33 @@ in
       type = lib.types.listOf lib.types.str;
       default = [ ];
       description = "Important content roots available to backup tooling such as Kopia policy definitions.";
+    };
+
+    snapshotRoots = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = coreSnapshotRoots;
+      description = "Content roots actually snapshotted by Kopia.";
+    };
+
+    repositoryPath = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = repositoryPath;
+      description = "Local encrypted Kopia repository path.";
+    };
+
+    successfulStagingRoot = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = successfulRoot;
+      description = "Last atomically published set of logical backup dumps and metadata.";
+    };
+
+    maintenanceLock = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = maintenanceLock;
+      description = "Host-wide lock used to serialize storage-intensive maintenance jobs.";
     };
 
     pathInventories = lib.mkOption {
@@ -142,14 +197,16 @@ in
     prepareFragments = lib.mkOption {
       type = lib.types.attrsOf lib.types.lines;
       default = { };
-      description = "Named shell fragments retained for future backup orchestration.";
+      description = "Named lightweight shell fragments executed during backup preparation.";
     };
   };
 
   config = {
     repo.backups = {
       appStateEntries = coreAppStateEntries;
-      criticalPaths = coreCriticalPaths;
+      criticalPaths = coreSnapshotRoots;
+      snapshotRoots = coreSnapshotRoots;
+      sqliteDumps = coreSqliteDumps;
       pathInventories = [
         {
           label = "users";
@@ -166,13 +223,15 @@ in
       ];
     };
 
-    boot.supportedFilesystems = [
-      "btrfs"
-      "exfat"
-      "ntfs"
-      "vfat"
-      "xfs"
-    ];
+    boot.supportedFilesystems =
+      [
+        "ext4"
+        "exfat"
+        "ntfs"
+        "vfat"
+        "xfs"
+      ]
+      ++ lib.optional (vars.storageProfile == "zfs-mirror") "btrfs";
     system.fsPackages = fsPackages;
 
     systemd.tmpfiles.rules = [
@@ -182,6 +241,70 @@ in
       "d ${metadataRoot} 0700 root root -"
       "d ${dumpsRoot} 0700 root root -"
       "d ${inventoryRoot} 0700 root root -"
+      "d ${successfulRoot} 0700 root root -"
+      "f ${maintenanceLock} 0660 root ${toString backupStorageAccessGid} -"
     ];
+
+    assertions = map
+      (root: {
+        assertion = !(root == repositoryPath || lib.hasPrefix "${root}/" repositoryPath);
+        message = "nixhomeserver: backup snapshot root ${root} contains the Kopia repository ${repositoryPath}";
+      })
+      config.repo.backups.snapshotRoots;
+
+    systemd.services.backup-prepare = {
+      description = "Prepare consistent logical databases for Kopia";
+      wants = [ "postgresql.service" ];
+      after = [ "postgresql.service" "kanidm.service" ];
+      path = with pkgs; [ coreutils findutils jq postgresql sqlite util-linux ];
+      serviceConfig = {
+        Type = "oneshot";
+        Nice = 10;
+        CPUWeight = 20;
+        IOWeight = 20;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+        MemoryHigh = "1G";
+        MemoryMax = "2G";
+      };
+      script = ''
+        set -euo pipefail
+        install -d -m 0755 /run/lock
+        exec 9>${lib.escapeShellArg maintenanceLock}
+        flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
+
+        work="$(mktemp -d ${lib.escapeShellArg stagingRoot}/.prepare.XXXXXX)"
+        trap 'rm -rf "$work"' EXIT
+        install -d -m 0700 "$work/dumps" "$work/metadata"
+        metadataRoot="$work/metadata"
+        dumpsRoot="$work/dumps"
+        export metadataRoot dumpsRoot
+        : > "$work/metadata/SHA256SUMS"
+
+        ${lib.concatMapStringsSep "\n" sqliteDumpScript config.repo.backups.sqliteDumps}
+
+        echo "Preparing Immich PostgreSQL backup"
+        runuser -u immich -- pg_dump --host=/run/postgresql --format=custom immich \
+          > "$work/dumps/immich.pgdump"
+        pg_restore --list "$work/dumps/immich.pgdump" >/dev/null
+        sha256sum "$work/dumps/immich.pgdump" >> "$work/metadata/SHA256SUMS"
+
+        ${lib.concatStringsSep "\n" (builtins.attrValues config.repo.backups.prepareFragments)}
+
+        jq -n \
+          --arg createdAt "$(date --utc --iso-8601=seconds)" \
+          --arg host ${lib.escapeShellArg vars.hostname} \
+          --argjson sqliteCount ${toString (builtins.length config.repo.backups.sqliteDumps)} \
+          '{schemaVersion: 1, createdAt: $createdAt, host: $host, sqliteDumps: $sqliteCount, postgresqlDumps: ["immich"]}' \
+          > "$work/metadata/manifest.json"
+
+        rm -rf ${lib.escapeShellArg successfulRoot}.previous
+        if [[ -d ${lib.escapeShellArg successfulRoot} ]]; then
+          mv ${lib.escapeShellArg successfulRoot} ${lib.escapeShellArg successfulRoot}.previous
+        fi
+        mv "$work" ${lib.escapeShellArg successfulRoot}
+        trap - EXIT
+      '';
+    };
   };
 }

@@ -394,7 +394,7 @@ in
 
     indexRoot = lib.mkOption {
       type = lib.types.str;
-      default = "${config.repo.files.paths.stateDir}/ratarmount-indexes";
+      default = "/persist/appdata/files-archives";
       description = "Persistent root for archive view source state.";
     };
 

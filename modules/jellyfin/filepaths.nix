@@ -199,21 +199,10 @@ in
           done
         }
 
-        apply_recursive_acl() {
-          local access_spec="$1"
-          local default_spec="$2"
-          shift
-          shift
-
-          for path in "$@"; do
-            [[ -d "$path" ]] || continue
-            setfacl -R -m "$access_spec" "$path"
-            find "$path" -type d -exec setfacl -m "$default_spec" '{}' +
-          done
-        }
-
         grant_traverse_acl jellyfin-media ${lib.escapeShellArgs [ vars.sharedRoot cfg.paths.sharedVideosRoot ]}
-        apply_recursive_acl "g:jellyfin-media:rwX" "d:g:jellyfin-media:rwx" ${lib.escapeShellArgs sharedJellyfinDirs}
+        for path in ${lib.escapeShellArgs sharedJellyfinDirs}; do
+          setfacl -m g:jellyfin-media:rwx,d:g:jellyfin-media:rwx "$path"
+        done
       '';
     };
 
