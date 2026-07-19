@@ -54,6 +54,23 @@ export class Database {
     return this.getConnection().prepare(sql).all() as unknown as T[];
   }
 
+  close(): void {
+    this.connection?.close();
+    this.connection = undefined;
+  }
+
+  private transaction(sql: string): void {
+    const connection = this.getConnection();
+    connection.exec('begin immediate;');
+    try {
+      connection.exec(sql);
+      connection.exec('commit;');
+    } catch (error) {
+      connection.exec('rollback;');
+      throw error;
+    }
+  }
+
   async migrate(): Promise<void> {
     await this.exec(`
       pragma journal_mode = wal;
@@ -133,7 +150,7 @@ export class Database {
     alert?: JobAlert;
   }): Promise<void> {
     const status = params.initialStatus ?? 'queued';
-    await this.exec(`
+    this.transaction(`
       insert into jobs(id, parent_id, created_at, updated_at, created_by, status, request_json, alert_json)
       values (
         ${sqlValue(params.id)},
@@ -145,8 +162,13 @@ export class Database {
         ${jsonValue(params.request)},
         ${params.alert ? jsonValue(params.alert) : 'null'}
       );
+      insert into job_events(job_id, created_at, event_type, message, data_json)
+      values (
+        ${sqlValue(params.id)}, datetime('now'), ${sqlValue(status)},
+        ${sqlValue(status === 'alert' ? params.alert?.message : 'Job queued')},
+        ${params.alert ? jsonValue(params.alert) : 'null'}
+      );
     `);
-    await this.addEvent(params.id, status, status === 'alert' ? params.alert?.message : 'Job queued');
   }
 
   async addEvent(jobId: string, eventType: string, message?: string, data?: unknown): Promise<void> {
@@ -164,19 +186,20 @@ export class Database {
   }
 
   async setStatus(jobId: string, status: JobStatus, error?: string): Promise<void> {
-    await this.exec(`
+    this.transaction(`
       update jobs
       set status = ${sqlValue(status)},
           updated_at = datetime('now'),
           error = ${sqlValue(error)},
           alert_json = ${status === 'alert' ? 'alert_json' : 'null'}
       where id = ${sqlValue(jobId)};
+      insert into job_events(job_id, created_at, event_type, message, data_json)
+      values (${sqlValue(jobId)}, datetime('now'), ${sqlValue(status)}, ${sqlValue(error)}, null);
     `);
-    await this.addEvent(jobId, status, error);
   }
 
   async setAlert(jobId: string, alert: JobAlert): Promise<void> {
-    await this.exec(`
+    this.transaction(`
       update jobs
       set status = 'alert',
           updated_at = datetime('now'),
@@ -184,8 +207,9 @@ export class Database {
           progress_json = null,
           alert_json = ${jsonValue(alert)}
       where id = ${sqlValue(jobId)};
+      insert into job_events(job_id, created_at, event_type, message, data_json)
+      values (${sqlValue(jobId)}, datetime('now'), 'alert', ${sqlValue(alert.message)}, ${jsonValue(alert)});
     `);
-    await this.addEvent(jobId, 'alert', alert.message, alert);
   }
 
   async clearAlertAndQueue(jobId: string, request?: CreateJobRequest): Promise<void> {
@@ -239,10 +263,11 @@ export class Database {
     `);
   }
 
-  async listJobs(limit = 100): Promise<Job[]> {
+  async listJobs(createdBy: string, limit = 100): Promise<Job[]> {
     const rows = await this.query<JobRow>(`
       select *
       from jobs
+      where created_by = ${sqlValue(createdBy)}
       order by created_at desc
       limit ${Math.max(1, Math.min(limit, 500))};
     `);
@@ -251,6 +276,15 @@ export class Database {
 
   async getJob(id: string): Promise<Job | undefined> {
     const [row] = await this.query<JobRow>(`select * from jobs where id = ${sqlValue(id)} limit 1;`);
+    return row ? this.rowToJob(row) : undefined;
+  }
+
+  async getJobForUser(id: string, createdBy: string): Promise<Job | undefined> {
+    const [row] = await this.query<JobRow>(`
+      select * from jobs
+      where id = ${sqlValue(id)} and created_by = ${sqlValue(createdBy)}
+      limit 1;
+    `);
     return row ? this.rowToJob(row) : undefined;
   }
 
@@ -264,11 +298,47 @@ export class Database {
     return Promise.all(rows.map((row) => this.rowToJob(row)));
   }
 
-  async findCompletedDownload(request: CreateJobRequest, excludeJobId?: string): Promise<Job | undefined> {
+  /** Atomically reserves one queued job so concurrent queue pumps cannot start it twice. */
+  async claimNextQueuedJob(): Promise<Job | undefined> {
+    const connection = this.getConnection();
+    connection.exec('begin immediate;');
+    try {
+      const row = connection.prepare(`
+        select * from jobs
+        where status = 'queued'
+        order by created_at asc, id asc
+        limit 1;
+      `).get() as JobRow | undefined;
+      if (!row) {
+        connection.exec('commit;');
+        return undefined;
+      }
+      const claimed = connection.prepare(`
+        update jobs
+        set status = 'probing', updated_at = datetime('now'), error = null
+        where id = ? and status = 'queued';
+      `).run(row.id);
+      if (Number(claimed.changes) !== 1) {
+        connection.exec('rollback;');
+        return undefined;
+      }
+      connection.prepare(`
+        insert into job_events(job_id, created_at, event_type, message, data_json)
+        values (?, datetime('now'), 'probing', 'Job claimed by worker', null);
+      `).run(row.id);
+      connection.exec('commit;');
+      return this.getJob(row.id);
+    } catch (error) {
+      connection.exec('rollback;');
+      throw error;
+    }
+  }
+
+  async findCompletedDownload(request: CreateJobRequest, createdBy: string, excludeJobId?: string): Promise<Job | undefined> {
     const rows = await this.query<JobRow>(`
       select *
       from jobs
-      where status = 'completed'
+      where status = 'completed' and created_by = ${sqlValue(createdBy)}
       order by updated_at desc, created_at desc;
     `);
     const normalizedUrl = normalizeDownloadUrl(request.url);
@@ -284,12 +354,46 @@ export class Database {
     return undefined;
   }
 
-  async deleteJob(id: string): Promise<void> {
-    await this.exec(`delete from jobs where id = ${sqlValue(id)} and status in ('completed', 'failed', 'cancelled');`);
+  async deleteJob(id: string, createdBy: string): Promise<void> {
+    await this.exec(`
+      delete from jobs
+      where id = ${sqlValue(id)}
+        and created_by = ${sqlValue(createdBy)}
+        and status in ('completed', 'failed', 'cancelled');
+    `);
   }
 
-  async clearHistory(): Promise<void> {
-    await this.exec(`delete from jobs where status in ('completed', 'failed', 'cancelled');`);
+  async clearHistory(createdBy: string): Promise<void> {
+    await this.exec(`
+      delete from jobs
+      where created_by = ${sqlValue(createdBy)}
+        and status in ('completed', 'failed', 'cancelled');
+    `);
+  }
+
+  async pruneEvents(retentionDays: number): Promise<number> {
+    const connection = this.getConnection();
+    const statement = connection.prepare(`
+      delete from job_events
+      where id in (
+        select id from job_events
+        where created_at < datetime('now', ?)
+          and job_id in (select id from jobs where status in ('completed', 'failed', 'cancelled'))
+        order by id asc
+        limit 10000
+      );
+    `);
+    let deleted = 0;
+    for (;;) {
+      const result = statement.run(`-${Math.max(1, retentionDays)} days`);
+      const changes = Number(result.changes);
+      deleted += changes;
+      if (changes < 10000) {
+        break;
+      }
+    }
+    connection.exec('pragma wal_checkpoint(passive); pragma optimize;');
+    return deleted;
   }
 
   private async rowToJob(row: JobRow): Promise<Job> {

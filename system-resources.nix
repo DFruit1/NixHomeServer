@@ -20,8 +20,8 @@ let
       ]
       ++ lib.optionals vars.enableZfsDataPool [
         "zfs-scrub.service"
-        "btrfs-scrub--.service"
-      ];
+      ]
+      ++ lib.optionals (vars.storageProfile == "zfs-mirror") [ "btrfs-scrub--.service" ];
     wakeOnLan = {
       enable = true;
       interface = vars.network.lanInterface;
@@ -42,6 +42,8 @@ let
     "i686-linux"
     "x86_64-linux"
   ];
+  hasModule = name: config.nixhomeserver.modules.${name} or false;
+  moduleEnabled = name: hasModule name && (config.repo.${name}.enable or true);
   nightlySuspend = power.nightlySuspend;
 
   usbDenyRule = device:
@@ -114,12 +116,19 @@ lib.mkMerge [
       "fs.inotify.max_user_instances" = 1024;
     };
 
-    systemd.services = {
+    systemd.services =
+      lib.optionalAttrs (hasModule "immich") {
       immich-machine-learning.serviceConfig = {
         MemoryHigh = "4G";
         MemoryMax = "6G";
         CPUQuota = "250%";
       };
+      immich-server.serviceConfig = {
+        MemoryHigh = "1500M";
+        MemoryMax = "2500M";
+      };
+    }
+    // lib.optionalAttrs (hasModule "kavita") {
 
       kavita.serviceConfig = {
         MemoryHigh = "750M";
@@ -138,6 +147,8 @@ lib.mkMerge [
         IOSchedulingClass = "best-effort";
         IOSchedulingPriority = 7;
       };
+    }
+    // lib.optionalAttrs (hasModule "audiobookshelf") {
 
       audiobookshelf-stale-reference-cleanup.serviceConfig = {
         CPUQuota = "75%";
@@ -147,6 +158,8 @@ lib.mkMerge [
         IOSchedulingClass = "best-effort";
         IOSchedulingPriority = 7;
       };
+    }
+    // lib.optionalAttrs (hasModule "jellyfin") {
 
       jellyfin-library-sync.serviceConfig = {
         CPUQuota = "100%";
@@ -157,20 +170,21 @@ lib.mkMerge [
         IOSchedulingPriority = 7;
       };
 
-      youtube-downloader.serviceConfig.CPUQuota = "200%";
-
       jellyfin.serviceConfig = {
         MemoryHigh = "1G";
         MemoryMax = "2G";
       };
-
-      immich-server.serviceConfig = {
-        MemoryHigh = "1500M";
-        MemoryMax = "2500M";
-      };
-
+    }
+    // lib.optionalAttrs (hasModule "youtube-downloader") {
+      youtube-downloader.serviceConfig.CPUQuota = "200%";
+    }
+    // lib.optionalAttrs (moduleEnabled "sonarr") {
       sonarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
+    }
+    // lib.optionalAttrs (moduleEnabled "radarr") {
       radarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
+    }
+    // lib.optionalAttrs (moduleEnabled "prowlarr") {
       prowlarr.serviceConfig = { MemoryHigh = "500M"; MemoryMax = "750M"; };
     };
   }

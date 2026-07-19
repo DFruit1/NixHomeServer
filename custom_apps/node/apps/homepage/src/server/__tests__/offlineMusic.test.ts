@@ -23,6 +23,7 @@ const baseConfig = (dir: string, sudoPath: string): AppConfig => ({
   offlineMediaEnrollCommand: 'homepage-offline-media-enroll',
   offlineMediaRemoveCommand: 'homepage-offline-media-remove',
   homepage: {
+    brandName: 'Test Home',
     domain: 'example.test',
     services: [],
     folderGuides: [],
@@ -149,7 +150,15 @@ if (command === 'homepage-show-syncthing-device-id') {
       serverFolderPath: '/mnt/data/users/alice/_Music',
       suggestedDevicePath: 'Music/NixHomeServer'
     }],
-    devices: [{ deviceId: ${JSON.stringify(validDeviceId)}, deviceName: 'alice-phone' }]
+    devices: [{
+      deviceId: ${JSON.stringify(validDeviceId)},
+      deviceName: 'alice-phone',
+      connected: false,
+      lastSeen: '2026-06-15T13:43:28Z',
+      completion: 54.75,
+      needBytes: 4755446849,
+      needItems: 46
+    }]
   }));
 }
 `,
@@ -163,7 +172,14 @@ if (command === 'homepage-show-syncthing-device-id') {
       expect(data.offlineMedia).toMatchObject({
         enabled: true,
         serverDeviceId,
-        devices: [{ deviceId: validDeviceId, deviceName: 'alice-phone' }],
+        devices: [{
+          deviceId: validDeviceId,
+          deviceName: 'alice-phone',
+          connected: false,
+          completion: 54.75,
+          needBytes: 4755446849,
+          needItems: 46,
+        }],
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -174,7 +190,11 @@ if (command === 'homepage-show-syncthing-device-id') {
     const request = Readable.from([JSON.stringify({ deviceId: validDeviceId })]) as IncomingMessage;
     request.method = 'POST';
     request.url = '/api/offline-media/devices';
-    request.headers = { host: 'localhost' };
+    request.headers = {
+      host: 'localhost',
+      origin: 'http://localhost',
+      'content-type': 'application/json',
+    };
 
     const response = makeResponse();
     const handled = await handleApiRequest(baseConfig(tmpdir(), execPath), request, response.res);

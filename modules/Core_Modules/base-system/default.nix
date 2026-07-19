@@ -1,4 +1,4 @@
-{ pkgs, lib, vars, ... }:
+{ config, pkgs, lib, vars, ... }:
 
 let
   systemPackages = with pkgs; [
@@ -88,6 +88,9 @@ in
   };
   boot.loader.systemd-boot.enable = lib.mkForce false;
   boot.loader.efi.canTouchEfiVariables = false;
+  # Root is Btrfs/ext4; never force-import a potentially foreign ZFS pool as a
+  # root pool during boot. The managed data pool is reconciled separately.
+  boot.zfs.forceImportRoot = false;
 
   hardware.cpu.intel.updateMicrocode = isX86;
   hardware.cpu.amd.updateMicrocode = isX86;
@@ -111,6 +114,37 @@ in
     openssh.authorizedKeys.keys = [
       vars.serverSSHPubKey
     ];
+  };
+
+  # Keep the generated recovery credential functional for local-console login
+  # and any future sudo policy that requires authentication. SSH password login
+  # remains disabled, so this does not add a network password-authentication path.
+  systemd.services.local-admin-bootstrap-password = {
+    description = "Reconcile the local administrator recovery password";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "systemd-user-sessions.service" ];
+    restartTriggers = [ config.age.secrets.serverBootstrapSudoPassword.file ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      Restart = "on-failure";
+      RestartSec = "30s";
+      LoadCredential = [
+        "bootstrap-password:${config.age.secrets.serverBootstrapSudoPassword.path}"
+      ];
+      UMask = "0077";
+      PrivateTmp = true;
+    };
+    script = ''
+      set -euo pipefail
+      password="$(<"$CREDENTIALS_DIRECTORY/bootstrap-password")"
+      if [[ -z "$password" || "$password" == *:* || "$password" == *$'\n'* ]]; then
+        echo "Invalid local administrator recovery password" >&2
+        exit 1
+      fi
+      printf '%s:%s\n' ${lib.escapeShellArg localAdminUser} "$password" \
+        | ${pkgs.shadow}/bin/chpasswd
+    '';
   };
 
   security.sudo.extraRules = [
@@ -151,15 +185,13 @@ in
   nix.gc.automatic = false;
   nix.optimise.automatic = false;
 
-  services.journald.extraConfig = ''
-    SystemMaxUse=256M
-    MaxRetentionSec=14day
-    SystemKeepFree=2G
-  '';
-
   systemd.services.nixhomeserver-nix-gc = {
     description = "Low-priority weekly Nix garbage collection";
     path = [ pkgs.nix pkgs.util-linux ];
+    unitConfig = {
+      StartLimitIntervalSec = "4h";
+      StartLimitBurst = 2;
+    };
     serviceConfig = {
       Type = "oneshot";
       Nice = 15;
@@ -169,6 +201,9 @@ in
       IOSchedulingPriority = 7;
       MemoryHigh = "1G";
       MemoryMax = "2G";
+      TimeoutStartSec = "4h";
+      Restart = "on-failure";
+      RestartSec = "30min";
     };
     script = ''
       set -euo pipefail
@@ -190,6 +225,10 @@ in
   systemd.services.nixhomeserver-nix-optimise = {
     description = "Low-priority weekly Nix store optimisation";
     path = [ pkgs.nix pkgs.util-linux ];
+    unitConfig = {
+      StartLimitIntervalSec = "6h";
+      StartLimitBurst = 2;
+    };
     serviceConfig = {
       Type = "oneshot";
       Nice = 15;
@@ -199,6 +238,9 @@ in
       IOSchedulingPriority = 7;
       MemoryHigh = "1G";
       MemoryMax = "2G";
+      TimeoutStartSec = "6h";
+      Restart = "on-failure";
+      RestartSec = "30min";
     };
     script = ''
       set -euo pipefail

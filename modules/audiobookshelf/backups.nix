@@ -13,4 +13,10 @@
       notes = "Local users, metadata, and server config.";
     }
   ];
+  repo.backups.sqliteDumps = [
+    {
+      source = "/var/lib/audiobookshelf/config/absdatabase.sqlite";
+      outputName = "audiobookshelf.sqlite";
+    }
+  ];
 }

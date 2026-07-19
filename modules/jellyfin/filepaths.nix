@@ -22,7 +22,9 @@ let
     };
   };
   userVideoSubdirs = map (library: library.dir) cfg.libraries.personal;
-  sharedJellyfinDirs = map (library: "${cfg.paths.sharedVideosRoot}/${library.dir}") cfg.libraries.shared;
+  sharedJellyfinDirs =
+    (map (library: "${cfg.paths.sharedVideosRoot}/${library.dir}") cfg.libraries.shared)
+    ++ (map (library: "${cfg.paths.sharedMusicRoot}/${library.dir}") cfg.libraries.sharedMusic);
   logDir = "/var/lib/jellyfin/log";
 in
 {
@@ -86,7 +88,7 @@ in
       ];
     };
 
-    repo.storage.sharedRoots.contentSubdirs = [ "_Videos" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_Videos" "_Music" ];
     repo.storage.sharedRoots.videoSubdirs = userVideoSubdirs;
 
     systemd.tmpfiles.rules = [
@@ -96,7 +98,8 @@ in
     systemd.services.media-folder-layout-v2 = {
       description = "Migrate media video folder layout to Movies, Shows, YouTube, and Other";
       wantedBy = [ "multi-user.target" ];
-      wants = [ "data-pool-layout.service" "local-fs.target" ];
+      requires = [ "data-pool-layout.service" ];
+      wants = [ "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [
         "fileshare-user-root-sync.service"
@@ -166,7 +169,8 @@ in
     systemd.services.jellyfin-storage-layout-v1 = {
       description = "Provision Jellyfin storage layout";
       wantedBy = [ "multi-user.target" ];
-      wants = [ "data-pool-layout.service" "local-fs.target" "media-folder-layout-v2.service" ];
+      requires = [ "data-pool-layout.service" "media-folder-layout-v2.service" ];
+      wants = [ "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" "media-folder-layout-v2.service" ];
       before = [ "jellyfin.service" ];
       unitConfig = lib.mkIf vars.dataRootIsMountPoint {
@@ -185,6 +189,7 @@ in
         set -euo pipefail
 
         install -d -m 1770 -o root -g root ${cfg.paths.sharedVideosRoot}
+        install -d -m 1770 -o root -g root ${cfg.paths.sharedMusicRoot}
         for path in ${lib.escapeShellArgs sharedJellyfinDirs}; do
           install -d -m 1770 -o root -g root "$path"
         done
@@ -199,7 +204,7 @@ in
           done
         }
 
-        grant_traverse_acl jellyfin-media ${lib.escapeShellArgs [ vars.sharedRoot cfg.paths.sharedVideosRoot ]}
+        grant_traverse_acl jellyfin-media ${lib.escapeShellArgs [ vars.sharedRoot cfg.paths.sharedVideosRoot cfg.paths.sharedMusicRoot ]}
         for path in ${lib.escapeShellArgs sharedJellyfinDirs}; do
           setfacl -m g:jellyfin-media:rwx,d:g:jellyfin-media:rwx "$path"
         done
@@ -207,6 +212,7 @@ in
     };
 
     systemd.services.jellyfin = {
+      requires = [ "media-folder-layout-v2.service" "jellyfin-storage-layout-v1.service" ];
       wants = [ "media-folder-layout-v2.service" "jellyfin-storage-layout-v1.service" ];
       after = [ "media-folder-layout-v2.service" "jellyfin-storage-layout-v1.service" ];
     };

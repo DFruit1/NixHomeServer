@@ -7,25 +7,84 @@ let
   listenPort = vars.networking.ports.youtubeDownloader;
   paths = config.repo.youtubeDownloader.paths;
   youtubeDownloader = pkgs.callPackage ../../custom_apps/node/apps/youtube-downloader { };
+  ownershipMigrationMarker = "/persist/appdata/migrations/youtube-downloader-ownership-v1";
+  repairStateOwnership = pkgs.writeShellScript "youtube-downloader-repair-state-ownership" ''
+    set -euo pipefail
+    expected_identity="$(${pkgs.coreutils}/bin/id -u ${serviceUser}):$(${pkgs.coreutils}/bin/id -g ${serviceUser})"
+    if [[ -f ${lib.escapeShellArg ownershipMigrationMarker} ]] \
+      && [[ "$(<${lib.escapeShellArg ownershipMigrationMarker})" == "$expected_identity" ]]; then
+      exit 0
+    fi
+
+    ${pkgs.coreutils}/bin/chown -R ${serviceUser}:${serviceGroup} \
+      ${lib.escapeShellArg paths.stateRoot} \
+      ${lib.escapeShellArg paths.cacheRoot}
+    ${pkgs.coreutils}/bin/install -d -m 0700 -o root -g root \
+      ${lib.escapeShellArg (builtins.dirOf ownershipMigrationMarker)}
+    marker_tmp="$(${pkgs.coreutils}/bin/mktemp ${lib.escapeShellArg "${builtins.dirOf ownershipMigrationMarker}/.youtube-ownership.XXXXXX"})"
+    trap 'rm -f "$marker_tmp"' EXIT
+    printf '%s\n' "$expected_identity" >"$marker_tmp"
+    ${pkgs.coreutils}/bin/chown root:root "$marker_tmp"
+    ${pkgs.coreutils}/bin/chmod 0400 "$marker_tmp"
+    ${pkgs.coreutils}/bin/mv "$marker_tmp" ${lib.escapeShellArg ownershipMigrationMarker}
+    trap - EXIT
+  '';
   host = "ytdownload.${vars.domain}";
 in
 {
+  options.repo.youtubeDownloader.eventRetentionDays = lib.mkOption {
+    type = lib.types.ints.positive;
+    default = 90;
+    description = "Retention period for detailed events belonging to terminal download jobs.";
+  };
+
   config = lib.mkMerge [
     {
+      systemd.services.youtube-downloader-ownership-migration = {
+        description = "One-time YouTube Downloader dynamic-identity ownership migration";
+        before = [ "youtube-downloader.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "+${repairStateOwnership}";
+          TimeoutStartSec = "2h";
+          Nice = 10;
+          IOWeight = 20;
+        };
+      };
+
       systemd.services.youtube-downloader = {
         description = "Authenticated YouTube media downloader";
         wantedBy = [ "multi-user.target" ];
+        requires = [
+          "data-pool-layout.service"
+          "fileshare-user-root-sync.service"
+          "youtube-downloader-ownership-migration.service"
+        ];
         wants = [
           "network-online.target"
-          "data-pool-layout.service"
         ];
         after = [
           "network-online.target"
           "data-pool-layout.service"
+          "fileshare-user-root-sync.service"
+          "youtube-downloader-ownership-migration.service"
+        ];
+        unitConfig = lib.mkMerge [
+          {
+            StartLimitIntervalSec = "5min";
+            StartLimitBurst = 5;
+            RequiresMountsFor = [ vars.dataRoot ];
+          }
+          (lib.mkIf vars.dataRootIsMountPoint {
+            ConditionPathIsMountPoint = vars.dataRoot;
+          })
         ];
         path = with pkgs; [
           coreutils
           ffmpeg
+          nodejs
+          python3
           yt-dlp
         ];
         environment = {
@@ -42,16 +101,24 @@ in
           YOUTUBE_DOWNLOADER_CONCURRENCY = "1";
           YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP = vars.fileAccess.sharedAccessGroup or "files-shared-users";
           YOUTUBE_DOWNLOADER_FILE_BROWSER_SHARED_MOUNT_NAME = vars.fileAccess.sharedMountName or "_Shared";
+          YOUTUBE_DOWNLOADER_EVENT_RETENTION_DAYS = toString config.repo.youtubeDownloader.eventRetentionDays;
         };
         serviceConfig = {
           Type = "simple";
           User = serviceUser;
           Group = serviceGroup;
-          SupplementaryGroups = [ "users" ];
+          SupplementaryGroups = [
+            "users"
+            (vars.fileAccess.sharedAccessGroup or "files-shared-users")
+          ];
           ExecStart = "${youtubeDownloader}/bin/youtube-downloader";
           Restart = "on-failure";
           RestartSec = "5s";
           TimeoutStartSec = "60s";
+          TimeoutStopSec = "20s";
+          MemoryHigh = "1G";
+          MemoryMax = "2G";
+          OOMPolicy = "stop";
           UMask = "0002";
           NoNewPrivileges = true;
           PrivateTmp = true;
@@ -67,6 +134,7 @@ in
           ];
         };
       };
+
     }
 
     (oauth2Proxy.mkSidecarService {

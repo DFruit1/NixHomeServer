@@ -6,7 +6,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/admin/validate-config-readiness.sh [--host <flake-hostname>]
+Usage: scripts/admin/validate-config-readiness.sh [--host <flake-hostname>] [--identity <age-key>]
+       [--require-local-hardware] [--allow-unverified-secrets]
 
 Validate evaluated settings, required secrets, and local bootstrap/deploy
 preconditions without changing the system.
@@ -14,11 +15,28 @@ EOF
 }
 
 host=""
+identity_file=""
+require_local_hardware=0
+allow_unverified_secrets=0
 while (($# > 0)); do
   case "$1" in
     --host)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --host requires a flake hostname" >&2; exit 1; }
       host="${2:-}"
       shift 2
+      ;;
+    --identity)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --identity requires a path" >&2; exit 1; }
+      identity_file="${2:-}"
+      shift 2
+      ;;
+    --require-local-hardware)
+      require_local_hardware=1
+      shift
+      ;;
+    --allow-unverified-secrets)
+      allow_unverified_secrets=1
+      shift
       ;;
     -h|--help)
       usage
@@ -34,26 +52,46 @@ done
 if [[ -z "$host" ]]; then
   host="$(default_host)"
 fi
+if ! validate_flake_host_name "$host"; then
+  echo "blocked: --host must be one DNS hostname label (letters, digits, and interior hyphens)" >&2
+  exit 1
+fi
 
 echo "NixHomeServer config readiness validation"
 echo "host: ${host}"
 echo
 
-need bash git jq nix rg ssh
+need age age-keygen awk bash find git ip jq mktemp nix paste python3 readlink rg sed ssh ssh-keygen tr
 if ((status_blocked > 0)); then
   finish_report
 fi
 
-if nix eval --raw ".#nixosConfigurations.${host}.config.system.name" >/dev/null 2>&1; then
-  ready "flake host '${host}' evaluates"
+readiness_tmpdir="$(mktemp -d)"
+cleanup_readiness_tmpdir() { rm -rf "$readiness_tmpdir"; }
+trap cleanup_readiness_tmpdir EXIT
+nix_eval_log="$readiness_tmpdir/nix-eval.log"
+source "$repo_root/scripts/helpers/secrets-common.sh"
+load_manifest_json
+external_specs="$(manifest_external_specs)"
+declare -A external_secret_validators=()
+while IFS=$'\t' read -r external_name validator_name _required; do
+  [[ -n "$external_name" ]] || continue
+  external_secret_validators[$external_name]="$(validator_function "$validator_name")"
+done <<<"$external_specs"
+
+if nix eval --raw ".#nixosConfigurations.${host}.config.system.build.toplevel.drvPath" \
+  >/dev/null 2>"$nix_eval_log"; then
+  ready "complete NixOS closure for flake host '${host}' evaluates"
 else
-  block "flake host '${host}' does not evaluate"
+  block "complete NixOS closure for flake host '${host}' does not evaluate"
+  echo "Nix evaluation details:" >&2
+  sed 's/^/  /' "$nix_eval_log" >&2
   finish_report
 fi
 
-settings_json="$(nix_json_for_host "$host" "removeAttrs flake.lib.nixhomeserverSettings.${host} [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
+settings_json="$(nix_json_for_host "$host" "removeAttrs (builtins.getAttr hostName flake.lib.nixhomeserverSettings) [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
 caddy_hosts_json="$(nix_json_for_host "$host" "builtins.attrNames cfg.services.caddy.virtualHosts")"
-external_secrets_json="$(nix eval --json --impure --expr "builtins.attrNames ((import ${repo_root}/secrets/manifest.nix).externalSecrets)")"
+active_secret_names_json="$(nix_json_for_host "$host" "builtins.attrNames cfg.age.secrets")"
 
 domain="$(jq -r '.domain' <<<"$settings_json")"
 admin_user="$(jq -r '.kanidmAdminUser' <<<"$settings_json")"
@@ -61,6 +99,10 @@ local_admin_user="$(jq -r '.localAdminUser' <<<"$settings_json")"
 ssh_key="$(jq -r '.serverSSHPubKey' <<<"$settings_json")"
 lan_iface="$(jq -r '.netIface' <<<"$settings_json")"
 lan_ip="$(jq -r '.serverLanIP' <<<"$settings_json")"
+lan_prefix="$(jq -r '.networking.lan.prefixLength' <<<"$settings_json")"
+lan_gateway="$(jq -r '.networking.lan.gateway' <<<"$settings_json")"
+netbird_ip="$(jq -r '.networking.netbird.ip' <<<"$settings_json")"
+netbird_cidr="$(jq -r '.networking.netbird.cidr' <<<"$settings_json")"
 dns_mode="$(jq -r '.dnsMode' <<<"$settings_json")"
 main_disk="$(jq -r '.mainDisk' <<<"$settings_json")"
 host_platform="$(jq -r '.hostPlatform' <<<"$settings_json")"
@@ -79,16 +121,16 @@ case "$host_platform" in
 esac
 
 case "$hardware_profile" in
-  existing-server|generic-uefi)
+  generated|existing-server|generic-uefi)
     ready "vars.nix -> system.hardwareProfile is ${hardware_profile}"
     ;;
   *)
-    block "vars.nix -> system.hardwareProfile must be existing-server or generic-uefi, got ${hardware_profile}"
+    block "vars.nix -> system.hardwareProfile must be generated, existing-server, or generic-uefi, got ${hardware_profile}"
     ;;
 esac
 
 if [[ "$hardware_profile" == "existing-server" && "$host_platform" != "x86_64-linux" ]]; then
-  block "vars.nix -> system.hardwareProfile existing-server is only valid with x86_64-linux; use generic-uefi for ${host_platform}"
+  block "vars.nix -> system.hardwareProfile existing-server is only valid with x86_64-linux; generate hardware-configuration.nix and use generated for ${host_platform}"
 else
   ready "vars.nix -> system.hardwareProfile is compatible with ${host_platform}"
 fi
@@ -123,15 +165,20 @@ else
   ready "vars.nix -> identity.adminUser is separate from local admin ${local_admin_user}"
 fi
 
-if [[ "$ssh_key" =~ ^ssh-(ed25519|rsa|ecdsa)[[:space:]] ]]; then
-  if [[ "$ssh_key" == *CHANGE_ME* ]]; then
-    block "vars.nix -> identity.sshPublicKey is still a placeholder"
-  else
-    ready "vars.nix -> identity.sshPublicKey is present"
-  fi
+ssh_key_file="$readiness_tmpdir/server-ssh-key.pub"
+: >"$ssh_key_file"
+chmod 0600 "$ssh_key_file"
+if [[ "$ssh_key" == *CHANGE_ME* ]]; then
+  block "vars.nix -> identity.sshPublicKey is still a placeholder"
+elif [[ "$ssh_key" == *$'\n'* || "$ssh_key" == *$'\r'* ]]; then
+  block "vars.nix -> identity.sshPublicKey must contain exactly one public-key line"
+elif ! printf '%s\n' "$ssh_key" >"$ssh_key_file" \
+  || ! ssh-keygen -l -f "$ssh_key_file" >/dev/null 2>&1; then
+  block "vars.nix -> identity.sshPublicKey is not a valid OpenSSH public key"
 else
-  block "vars.nix -> identity.sshPublicKey does not look like an SSH public key"
+  ready "vars.nix -> identity.sshPublicKey is a valid OpenSSH public key"
 fi
+rm -f "$ssh_key_file"
 
 case "$dns_mode" in
   split-horizon|netbird-only)
@@ -144,14 +191,39 @@ esac
 
 if ip link show "$lan_iface" >/dev/null 2>&1; then
   ready "vars.nix -> network.lanInterface exists locally: ${lan_iface}"
+elif ((require_local_hardware == 1)); then
+  block "vars.nix -> network.lanInterface '${lan_iface}' is absent on this installer/target host"
 else
   warn "vars.nix -> network.lanInterface '${lan_iface}' is not present on this workstation; verify it on the target server"
 fi
 
-if [[ "$lan_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  ready "vars.nix -> network.lanIp is shaped correctly: ${lan_ip}"
+if network_error="$(python3 - "$lan_ip" "$lan_prefix" "$lan_gateway" "$netbird_ip" "$netbird_cidr" <<'PY'
+import ipaddress
+import sys
+
+try:
+    lan_ip = ipaddress.IPv4Address(sys.argv[1])
+    prefix = int(sys.argv[2])
+    if not 1 <= prefix <= 30:
+        raise ValueError("LAN prefix must be between 1 and 30")
+    lan_network = ipaddress.IPv4Network(f"{lan_ip}/{prefix}", strict=False)
+    gateway = ipaddress.IPv4Address(sys.argv[3])
+    netbird_ip = ipaddress.IPv4Address(sys.argv[4])
+    netbird_network = ipaddress.IPv4Network(sys.argv[5], strict=True)
+    if lan_ip in (lan_network.network_address, lan_network.broadcast_address):
+        raise ValueError("LAN IP cannot be the subnet network or broadcast address")
+    if gateway not in lan_network or gateway in (lan_network.network_address, lan_network.broadcast_address):
+        raise ValueError("LAN gateway must be a usable address in the configured LAN subnet")
+    if netbird_ip not in netbird_network:
+        raise ValueError("NetBird IP must belong to network.netbirdCidr")
+except (ValueError, ipaddress.AddressValueError, ipaddress.NetmaskValueError) as error:
+    print(error)
+    raise SystemExit(1)
+PY
+)"; then
+  ready "LAN and NetBird addresses, prefixes, and gateway are valid and internally consistent"
 else
-  block "vars.nix -> network.lanIp is invalid: ${lan_ip}"
+  block "vars.nix -> network addressing is invalid: ${network_error}"
 fi
 
 if [[ ! "$host_id" =~ ^[0-9a-f]{8}$ ]]; then
@@ -168,6 +240,8 @@ if [[ "$main_disk" == *CHANGE_ME* ]]; then
   block "vars.nix -> storage.systemDisk is still a placeholder"
 elif [[ -e "/dev/disk/by-id/${main_disk}" ]]; then
   ready "vars.nix -> storage.systemDisk exists locally: /dev/disk/by-id/${main_disk}"
+elif ((require_local_hardware == 1)); then
+  block "vars.nix -> storage.systemDisk is absent on this installer/target host: /dev/disk/by-id/${main_disk}"
 else
   warn "vars.nix -> storage.systemDisk /dev/disk/by-id/${main_disk} is not present locally; verify it from the installer or target host"
 fi
@@ -179,10 +253,38 @@ if [[ "$storage_profile" == "zfs-mirror" ]]; then
       block "vars.nix -> storage.dataPool.mirrorPairs contains a placeholder: ${disk_id}"
     elif [[ -e "/dev/disk/by-id/${disk_id}" ]]; then
       ready "vars.nix -> storage.dataPool disk exists locally: /dev/disk/by-id/${disk_id}"
+    elif ((require_local_hardware == 1)); then
+      block "vars.nix -> storage.dataPool disk is absent on this installer/target host: /dev/disk/by-id/${disk_id}"
     else
       warn "vars.nix -> storage.dataPool disk /dev/disk/by-id/${disk_id} is not present locally; verify it from the installer or target host"
     fi
   done < <(jq -r '.zfsDataPoolDiskIds[]' <<<"$settings_json")
+
+  invalid_pair_count="$(jq '[.zfsDataPool.mirrorPairs[] | select((type != "array") or (length != 2))] | length' <<<"$settings_json")"
+  if [[ "$invalid_pair_count" != "0" ]]; then
+    block "vars.nix -> every storage.dataPool.mirrorPairs entry must contain exactly two disks"
+  else
+    ready "vars.nix -> every ZFS mirror contains exactly two disks"
+  fi
+
+  duplicate_disk_ids="$(jq -r '[.mainDisk] + .zfsDataPoolDiskIds | sort | group_by(.)[] | select(length > 1) | .[0]' <<<"$settings_json")"
+  if [[ -n "$duplicate_disk_ids" ]]; then
+    block "vars.nix -> system and data disks must be unique; repeated IDs: $(paste -sd ',' <<<"$duplicate_disk_ids")"
+  else
+    ready "vars.nix -> system and data disk IDs are unique"
+  fi
+
+  declare -A physical_disks=()
+  while IFS= read -r disk_id; do
+    disk_path="/dev/disk/by-id/${disk_id}"
+    [[ -e "$disk_path" ]] || continue
+    canonical_disk="$(readlink -f "$disk_path")"
+    if [[ -n "${physical_disks[$canonical_disk]:-}" ]]; then
+      block "vars.nix -> ${disk_id} and ${physical_disks[$canonical_disk]} are aliases for the same physical disk ${canonical_disk}"
+    else
+      physical_disks[$canonical_disk]="$disk_id"
+    fi
+  done < <(jq -r '[.mainDisk] + .zfsDataPoolDiskIds | .[]' <<<"$settings_json")
 else
   ready "storage.profile single-disk-ext4 does not require ZFS data disks"
 fi
@@ -194,21 +296,65 @@ else
   ready "vars.nix -> advanced.ports assignments are unique"
 fi
 
-if [[ -s secrets/pubkeys/age.pub ]]; then
+if [[ -s secrets/pubkeys/age.pub ]] && [[ "$(tr -d '\r\n' <secrets/pubkeys/age.pub)" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]+$ ]]; then
   ready "age public key exists at secrets/pubkeys/age.pub"
 else
-  block "missing age public key at secrets/pubkeys/age.pub"
+  block "missing or invalid age public key at secrets/pubkeys/age.pub"
 fi
 
-while IFS= read -r secret; do
-  if [[ -s "secrets/${secret}.age" ]]; then
-    ready "encrypted external secret exists: secrets/${secret}.age"
-  elif [[ -s "secrets/unencrypted/${secret}" ]]; then
-    warn "external secret is staged but not encrypted yet: secrets/unencrypted/${secret}"
+if ! plaintext_staging_is_empty "$repo_root/secrets/unencrypted"; then
+  block "plaintext staging directory is not empty; move secrets to a vault or remove secrets/unencrypted before copying or installing this repository"
+else
+  ready "plaintext staging directory is empty or absent"
+fi
+
+identity_matches=0
+if [[ -n "$identity_file" ]]; then
+  if [[ ! -r "$identity_file" || ! -f "$identity_file" ]]; then
+    block "age identity is not a readable regular file: ${identity_file}"
+  elif [[ "$(age-keygen -y "$identity_file" 2>/dev/null | tr -d '\r\n')" != "$(tr -d '\r\n' <secrets/pubkeys/age.pub)" ]]; then
+    block "age identity ${identity_file} does not match secrets/pubkeys/age.pub"
   else
-    block "missing external secret input: stage secrets/unencrypted/${secret} or generate secrets/${secret}.age"
+    identity_matches=1
+    ready "age identity matches secrets/pubkeys/age.pub"
   fi
-done < <(jq -r '.[]' <<<"$external_secrets_json")
+fi
+
+active_secret_names="$(jq -r '.[]' <<<"$active_secret_names_json")"
+while IFS= read -r secret; do
+  [[ -n "$secret" ]] || continue
+  age_file="secrets/${secret}.age"
+  if [[ -s "$age_file" && -f "$age_file" && ! -L "$age_file" ]]; then
+    if ((identity_matches == 1)); then
+      clear_file="$readiness_tmpdir/${secret}.clear"
+      if ! age --decrypt --identity "$identity_file" --output "$clear_file" "$age_file" >/dev/null 2>&1; then
+        block "encrypted manifest secret does not decrypt with ${identity_file}: ${age_file}"
+      elif [[ -n "${external_secret_validators[$secret]:-}" ]] \
+        && ! "${external_secret_validators[$secret]}" "$clear_file"; then
+        block "encrypted external secret fails its manifest validator: ${age_file}"
+      else
+        ready "encrypted manifest secret decrypts and validates: ${age_file}"
+      fi
+      rm -f "$clear_file"
+    else
+      ready "encrypted manifest secret exists: ${age_file}"
+    fi
+  elif [[ -e "$age_file" || -L "$age_file" ]]; then
+    block "manifest ciphertext is empty, non-regular, or symlinked: ${age_file}"
+  elif [[ -s "secrets/unencrypted/${secret}" ]]; then
+    block "manifest secret is staged but not encrypted yet: secrets/unencrypted/${secret}"
+  else
+    block "missing manifest secret: generate secrets/${secret}.age"
+  fi
+done <<<"$active_secret_names"
+
+if [[ -z "$identity_file" ]]; then
+  if ((allow_unverified_secrets == 1)); then
+    warn "secret decryptability was not tested because --allow-unverified-secrets was supplied"
+  else
+    block "secret decryptability was not tested; supply --identity <age-key> (or explicitly use --allow-unverified-secrets for inspection only)"
+  fi
+fi
 
 if [[ "$cloudflare_tunnel" == *CHANGE_ME* || -z "$cloudflare_tunnel" ]]; then
   block "vars.nix -> edge.cloudflareTunnelName is not configured"

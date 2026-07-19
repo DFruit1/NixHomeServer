@@ -8,7 +8,7 @@ in
 {
   options.repo.seerr.enable = lib.mkOption {
     type = lib.types.bool;
-    default = true;
+    default = false;
     description = "Whether to enable the Jellyfin-oriented Seerr request manager.";
   };
 

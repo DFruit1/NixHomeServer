@@ -138,9 +138,22 @@ let
       ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE '${vars.zfsDataPool.name}'
     fi
 
+    refuse_nonempty_mountpoint() {
+      local mountpoint="$1"
+
+      if ! ${pkgs.util-linux}/bin/mountpoint -q "$mountpoint" \
+        && [[ -d "$mountpoint" ]] \
+        && [[ -n "$(${pkgs.findutils}/bin/find "$mountpoint" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        echo "Refusing to hide existing files beneath unmounted data-pool path $mountpoint" >&2
+        exit 1
+      fi
+    }
+
     ensure_dataset() {
       local dataset="$1"
       local mountpoint="$2"
+
+      refuse_nonempty_mountpoint "$mountpoint"
 
       if ! ${zfsBin} list -H -o name "$dataset" >/dev/null 2>&1; then
         ${zfsBin} create -o mountpoint="$mountpoint" "$dataset"
@@ -148,6 +161,12 @@ let
         set_zfs_property "$dataset" canmount on
         set_zfs_property "$dataset" mountpoint "$mountpoint"
         ${zfsBin} mount "$dataset" >/dev/null 2>&1 || true
+      fi
+
+      if [[ "$(${zfsBin} get -H -o value mounted "$dataset")" != yes ]] \
+        || ! ${pkgs.util-linux}/bin/mountpoint -q "$mountpoint"; then
+        echo "Required ZFS dataset $dataset is not mounted at $mountpoint" >&2
+        exit 1
       fi
     }
 
@@ -163,11 +182,16 @@ let
       fi
     }
 
+    refuse_nonempty_mountpoint '${vars.dataRoot}'
     set_zfs_property '${vars.zfsDataPool.name}' canmount on
     set_zfs_property '${vars.zfsDataPool.name}' mountpoint '${vars.dataRoot}'
     set_zfs_property '${vars.zfsDataPool.name}' 'com.sun:auto-snapshot' true
     ${zfsBin} mount '${vars.zfsDataPool.name}' >/dev/null 2>&1 || true
-    ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'
+    if [[ "$(${zfsBin} get -H -o value mounted '${vars.zfsDataPool.name}')" != yes ]] \
+      || ! ${pkgs.util-linux}/bin/mountpoint -q '${vars.dataRoot}'; then
+      echo "Required ZFS pool ${vars.zfsDataPool.name} is not mounted at ${vars.dataRoot}" >&2
+      exit 1
+    fi
 
     ${zfsDatasetCommands}
     if ${zfsBin} list -H -o name '${vars.zfsDataPool.name}/upload-staging' >/dev/null 2>&1; then
@@ -251,6 +275,7 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        TimeoutStartSec = "10min";
       };
       script = if vars.enableZfsDataPool then zfsLayoutScript else directoryLayoutScript;
     };

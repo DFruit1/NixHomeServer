@@ -41,6 +41,7 @@ stdin.on('end', () => stdout.write('installed /persist/appdata/files-sftp-author
         sftpKeyInstallCommand: 'homepage-install-sftp-key',
         sudoPath: sudo,
         homepage: {
+          brandName: 'Test Home',
           domain: 'example.test',
           services: [],
           folderGuides: [],

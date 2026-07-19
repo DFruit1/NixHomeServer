@@ -4,11 +4,32 @@ _repo_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 init_repo_root() {
   local override_var="${1:-}"
+  local requested_root git_root
 
   if [[ -n "$override_var" && -n "${!override_var:-}" ]]; then
-    repo_root="${!override_var}"
+    requested_root="${!override_var}"
   else
-    repo_root="$(cd "${_repo_lib_dir}/../.." && pwd)"
+    requested_root="${_repo_lib_dir}/../.."
+  fi
+
+  if ! repo_root="$(cd "$requested_root" && pwd -P)"; then
+    echo "❌ Repository root does not exist or is not accessible: $requested_root" >&2
+    return 1
+  fi
+
+  # Nix expressions consume these through builtins.getEnv so repository paths
+  # are never interpolated as Nix syntax. A live checkout uses Git filtering to
+  # exclude ignored build trees; deployment archives have no .git directory and
+  # are already manifest-filtered, so they deliberately use a path flake.
+  export NIXHOMESERVER_REPO_ROOT_FOR_EVAL="$repo_root"
+  git_root=""
+  if command -v git >/dev/null 2>&1; then
+    git_root="$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)"
+  fi
+  if [[ -n "$git_root" ]] && [[ "$(cd "$git_root" && pwd -P)" == "$repo_root" ]]; then
+    export NIXHOMESERVER_FLAKE_REF_FOR_EVAL="git+file://$repo_root"
+  else
+    export NIXHOMESERVER_FLAKE_REF_FOR_EVAL="path:$repo_root"
   fi
 }
 
@@ -55,36 +76,66 @@ nix_cache_hash() {
   return 1
 }
 
-sha256_file() {
-  local path="$1"
+plaintext_staging_is_empty() {
+  local staging_dir="$1"
+  local first_entry
 
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$path" | awk '{ print $1 }'
-    return 0
+  [[ ! -d "$staging_dir" ]] && return 0
+  if ! first_entry="$(find "$staging_dir" -mindepth 1 -print -quit)"; then
+    return 1
   fi
-
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$path" | awk '{ print $1 }'
-    return 0
-  fi
-
-  return 1
+  [[ -z "$first_entry" ]]
 }
 
 create_deploy_repo_archive() {
   local archive_path="$1"
-  local manifest tar_status
+  local manifest git_manifest untracked_manifest refused_path tar_status
 
   if command -v git >/dev/null 2>&1 && git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     manifest="$(mktemp /tmp/deploy-repo-manifest.XXXXXX)"
+    git_manifest="$(mktemp /tmp/deploy-git-manifest.XXXXXX)"
+    untracked_manifest="$(mktemp /tmp/deploy-untracked-manifest.XXXXXX)"
 
-    while IFS= read -r -d '' path; do
+    if ! git -C "$repo_root" ls-files -z --others --exclude-standard >"$untracked_manifest"; then
+      rm -f "$manifest" "$git_manifest" "$untracked_manifest"
+      return 1
+    fi
+    if [[ -s "$untracked_manifest" ]]; then
+      echo "❌ Refusing to deploy with untracked, non-ignored files." >&2
+      echo "   Review and stage intended files with 'git add', or ignore local-only files:" >&2
+      while IFS= read -r -d '' path; do
+        printf '   %s\n' "$path" >&2
+      done <"$untracked_manifest"
+      rm -f "$manifest" "$git_manifest" "$untracked_manifest"
+      return 1
+    fi
+    rm -f "$untracked_manifest"
+
+    if ! git -C "$repo_root" ls-files -z --cached --modified --deduplicate >"$git_manifest"; then
+      rm -f "$manifest" "$git_manifest"
+      return 1
+    fi
+    refused_path=""
+    if ! while IFS= read -r -d '' path; do
+      case "$path" in
+        secrets/unencrypted|secrets/unencrypted/*|SensitivePrivateSecrets|SensitivePrivateSecrets/*)
+          echo "❌ Refusing to archive tracked plaintext secret path: $path" >&2
+          refused_path="$path"
+          break
+          ;;
+      esac
       if [[ -f "$repo_root/$path" || -L "$repo_root/$path" ]]; then
         printf '%s\0' "$path"
       fi
-    done < <(
-      git -C "$repo_root" ls-files -z --cached --modified --others --exclude-standard
-    ) >"$manifest"
+    done <"$git_manifest" >"$manifest"; then
+      rm -f "$manifest" "$git_manifest"
+      return 1
+    fi
+    if [[ -n "$refused_path" ]]; then
+      rm -f "$manifest" "$git_manifest"
+      return 1
+    fi
+    rm -f "$git_manifest"
 
     if tar -C "$repo_root" --null -T "$manifest" -cf "$archive_path"; then
       tar_status=0
@@ -118,25 +169,6 @@ stage_archive_on_remote() {
     return 1
   fi
   printf '%s\n' "$remote_archive"
-}
-
-hash_deploy_repo_archive() {
-  local archive_path archive_status
-
-  archive_path="$(mktemp /tmp/deploy-validation-archive.XXXXXX.tar)"
-
-  if create_deploy_repo_archive "$archive_path"; then
-    if sha256_file "$archive_path"; then
-      archive_status=0
-    else
-      archive_status=$?
-    fi
-  else
-    archive_status=$?
-  fi
-
-  rm -f "$archive_path"
-  return "$archive_status"
 }
 
 nix_eval_with_optional_cache() {
@@ -178,9 +210,10 @@ nix_json() {
   local expr="$1"
   nix_eval_with_optional_cache json "
     let
-      flake = builtins.getFlake (toString ${repo_root});
+      repoPath = builtins.getEnv \"NIXHOMESERVER_REPO_ROOT_FOR_EVAL\";
+      flake = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
       lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
+      vars = import (builtins.toPath (repoPath + \"/vars.nix\")) { inherit lib; };
       cfg = (builtins.getAttr vars.hostname flake.nixosConfigurations).config;
     in
       ${expr}
@@ -191,9 +224,10 @@ nix_flake_var() {
   local expr="$1"
   nix_eval_with_optional_cache raw "
     let
-      flake = builtins.getFlake (toString ${repo_root});
+      repoPath = builtins.getEnv \"NIXHOMESERVER_REPO_ROOT_FOR_EVAL\";
+      flake = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
       lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
+      vars = import (builtins.toPath (repoPath + \"/vars.nix\")) { inherit lib; };
     in
       ${expr}
   "

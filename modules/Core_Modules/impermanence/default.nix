@@ -2,10 +2,15 @@
 
 let
   cfg = config.repo.impermanence;
+  safeSubvolumeName = value:
+    builtins.isString value
+    && builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" value != null;
 
   corePersistenceDirectories = [
+    "/etc/nixos"
     "/etc/ssh"
     "/etc/agenix"
+    "/home/${vars.localAdminUser}"
     "/var/lib/acme"
     "/var/lib/beszel-hub"
     "/var/lib/kanidm"
@@ -15,6 +20,7 @@ let
     "/var/lib/syncthing"
     "/var/lib/systemd/timers"
     "/var/lib/unbound"
+    "/var/log/caddy"
     "/var/log/journal"
   ];
 
@@ -25,13 +31,15 @@ let
     "/var/lib/filestash"
     "/var/lib/groundwater-logger"
     "/var/lib/groundwater-mosquitto"
+    "/var/lib/homepage-canary"
+    "/var/lib/homepage-canary-credentials"
     "/var/lib/immich"
     "/var/lib/immich-public-proxy"
     "/var/lib/jellyfin"
     "/var/lib/kavita"
     "/var/lib/kiwix"
     "/var/lib/paperless"
-    "/var/lib/postgresql/16"
+    "/var/lib/postgresql"
     "/var/lib/prowlarr"
     "/var/lib/qBittorrent"
     "/var/lib/radarr"
@@ -44,38 +52,71 @@ let
     "/var/log/filestash"
   ];
 
-  corePersistenceFiles = [ ];
+  corePersistenceFiles = [
+    "/etc/machine-id"
+    "/var/lib/systemd/random-seed"
+  ];
 
   rollbackScript = ''
     set -eu
 
-    mount_point=/mnt
+    mount_point=/run/nixhomeserver-root-rollback
     root_device=/dev/disk/by-id/${vars.mainDisk}-part2
     old_roots_dir="$mount_point/${cfg.oldRootsDir}"
     root_subvolume="$mount_point/${cfg.rootSubvolume}"
     blank_snapshot="$mount_point/${cfg.blankSnapshot}"
 
-    mkdir -p "$mount_point"
-    mount -t btrfs -o subvolid=5 "$root_device" "$mount_point"
-
-    if [ ! -d "$blank_snapshot" ]; then
-      echo "Missing blank root snapshot: $blank_snapshot" >&2
-      umount "$mount_point"
+    for attempt in $(${pkgs.coreutils}/bin/seq 1 300); do
+      [ -b "$root_device" ] && break
+      ${pkgs.coreutils}/bin/sleep 0.1
+    done
+    if [ ! -b "$root_device" ]; then
+      echo "Root Btrfs device did not appear: $root_device" >&2
       exit 1
     fi
 
-    mkdir -p "$old_roots_dir"
-    if [ -e "$root_subvolume" ]; then
-      mv "$root_subvolume" "$old_roots_dir/$(date -u +%Y%m%dT%H%M%SZ)"
+    ${pkgs.coreutils}/bin/mkdir -p "$mount_point"
+    /bin/mount -t btrfs -o subvolid=5 "$root_device" "$mount_point"
+    cleanup() {
+      /bin/umount "$mount_point" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    if [ ! -d "$blank_snapshot" ] \
+      || ! ${pkgs.btrfs-progs}/bin/btrfs subvolume show "$blank_snapshot" >/dev/null 2>&1 \
+      || [ "$(${pkgs.btrfs-progs}/bin/btrfs property get -ts "$blank_snapshot" ro)" != "ro=true" ]; then
+      echo "Missing, invalid, or writable blank root snapshot: $blank_snapshot" >&2
+      exit 1
     fi
 
-    find "$old_roots_dir" -mindepth 1 -maxdepth 1 -type d -mtime +${toString cfg.oldRootRetentionDays} -print0 \
-      | while IFS= read -r -d "" old_root; do
-          ${pkgs.btrfs-progs}/bin/btrfs subvolume delete "$old_root" >/dev/null 2>&1 || true
-        done
+    ${pkgs.coreutils}/bin/mkdir -p "$old_roots_dir"
+    if [ -e "$root_subvolume" ]; then
+      if ! ${pkgs.btrfs-progs}/bin/btrfs subvolume show "$root_subvolume" >/dev/null 2>&1; then
+        echo "Refusing to rotate a root path that is not a Btrfs subvolume: $root_subvolume" >&2
+        exit 1
+      fi
+      rotated_root="$old_roots_dir/$(${pkgs.coreutils}/bin/date -u +%Y%m%dT%H%M%S.%NZ)"
+      if [ -e "$rotated_root" ]; then
+        echo "Refusing to overwrite an existing rotated root: $rotated_root" >&2
+        exit 1
+      fi
+      ${pkgs.coreutils}/bin/mv "$root_subvolume" "$rotated_root"
+    fi
+
+    # Retention is based on the rotation timestamp in our generated name, not
+    # the live root directory's potentially ancient mtime.
+    retention_cutoff="$(${pkgs.coreutils}/bin/date -u -d '${toString cfg.oldRootRetentionDays} days ago' +%Y%m%dT%H%M%S)"
+    for old_root in "$old_roots_dir"/*; do
+      [ -d "$old_root" ] || continue
+      rotation_name="''${old_root##*/}"
+      rotation_second="''${rotation_name%%.*}"
+      if [[ "$rotation_second" =~ ^[0-9]{8}T[0-9]{6}$ ]] \
+        && [[ "$rotation_second" < "$retention_cutoff" ]]; then
+        ${pkgs.btrfs-progs}/bin/btrfs subvolume delete "$old_root" >/dev/null 2>&1 || true
+      fi
+    done
 
     ${pkgs.btrfs-progs}/bin/btrfs subvolume snapshot "$blank_snapshot" "$root_subvolume"
-    umount "$mount_point"
   '';
 in
 {
@@ -87,13 +128,15 @@ in
     rootSubvolume = lib.mkOption {
       type = lib.types.str;
       default = "root";
-      description = "Writable Btrfs root subvolume used when root rollback is enabled.";
+      readOnly = true;
+      description = "Fixed writable Btrfs root subvolume created by the bootstrap Disko layout.";
     };
 
     blankSnapshot = lib.mkOption {
       type = lib.types.str;
       default = "root-blank";
-      description = "Read-only blank Btrfs root snapshot used for root rollback.";
+      readOnly = true;
+      description = "Fixed read-only blank Btrfs root snapshot created by the bootstrap Disko layout.";
     };
 
     oldRootsDir = lib.mkOption {
@@ -157,6 +200,22 @@ in
         assertion = !cfg.enableRootRollback || vars.storageProfile == "zfs-mirror";
         message = "repo.impermanence.enableRootRollback requires the zfs-mirror storage profile because it rolls back a Btrfs root subvolume.";
       }
+      {
+        assertion = !cfg.enableRootRollback || vars.enableRootRollback;
+        message = "repo.impermanence.enableRootRollback must be selected as storage.enableRootRollback before blank-disk bootstrap so Disko creates the required root and root-blank subvolumes.";
+      }
+      {
+        assertion = safeSubvolumeName cfg.rootSubvolume && safeSubvolumeName cfg.blankSnapshot && safeSubvolumeName cfg.oldRootsDir;
+        message = "repo.impermanence rootSubvolume, blankSnapshot, and oldRootsDir must be safe single Btrfs path components.";
+      }
+      {
+        assertion = cfg.rootSubvolume != cfg.blankSnapshot && cfg.rootSubvolume != cfg.oldRootsDir && cfg.blankSnapshot != cfg.oldRootsDir;
+        message = "repo.impermanence rootSubvolume, blankSnapshot, and oldRootsDir must be distinct.";
+      }
+      {
+        assertion = cfg.oldRootRetentionDays >= 1;
+        message = "repo.impermanence.oldRootRetentionDays must be at least one day.";
+      }
     ];
 
     repo.impermanence.inventory = {
@@ -165,8 +224,55 @@ in
     };
 
     repo.impermanence.enablePersistence = lib.mkDefault true;
+    repo.impermanence.enableRootRollback = lib.mkDefault vars.enableRootRollback;
     repo.impermanence.directories = corePersistenceDirectories ++ appPersistenceDirectories;
     repo.impermanence.files = corePersistenceFiles;
+
+    # Seed newly centralized persistence paths before impermanence creates and
+    # mounts their backing locations. This preserves an existing installation
+    # when it first adopts these core entries; fresh installs pre-seed
+    # /persist/etc/nixos as documented and are left untouched.
+    system.activationScripts.seedCorePersistence = {
+      deps = [ "users" "groups" ];
+      text = ''
+        seed_directory() {
+          source_path="$1"
+          persistent_path="/persist$source_path"
+
+          [ -d "$source_path" ] || return 0
+          if [ ! -e "$persistent_path" ]; then
+            ${pkgs.coreutils}/bin/mkdir -p "$(${pkgs.coreutils}/bin/dirname "$persistent_path")"
+            ${pkgs.coreutils}/bin/cp -a -- "$source_path" "$persistent_path"
+          elif [ -d "$persistent_path" ] \
+            && [ -z "$(${pkgs.findutils}/bin/find "$persistent_path" -mindepth 1 -print -quit)" ] \
+            && [ -n "$(${pkgs.findutils}/bin/find "$source_path" -mindepth 1 -print -quit)" ]; then
+            ${pkgs.coreutils}/bin/cp -a -- "$source_path"/. "$persistent_path"/
+          fi
+        }
+
+        seed_file() {
+          source_path="$1"
+          persistent_path="/persist$source_path"
+
+          [ -f "$source_path" ] || return 0
+          if [ ! -e "$persistent_path" ]; then
+            ${pkgs.coreutils}/bin/mkdir -p "$(${pkgs.coreutils}/bin/dirname "$persistent_path")"
+            ${pkgs.coreutils}/bin/cp -a -- "$source_path" "$persistent_path"
+          fi
+        }
+
+        seed_directory /etc/nixos
+        seed_directory /home/${lib.escapeShellArg vars.localAdminUser}
+        seed_directory /var/lib/postgresql
+        seed_directory /var/log/caddy
+        seed_file /etc/machine-id
+        seed_file /var/lib/systemd/random-seed
+      '';
+    };
+    system.activationScripts.createPersistentStorageDirs.deps =
+      lib.mkBefore [ "seedCorePersistence" ];
+    system.activationScripts.persist-files.deps =
+      lib.mkBefore [ "seedCorePersistence" ];
 
     fileSystems = lib.mkIf (vars.storageProfile == "zfs-mirror") {
       "/persist".neededForBoot = true;
@@ -243,6 +349,13 @@ in
       files = cfg.files;
     };
 
-    boot.initrd.postResumeCommands = lib.mkIf cfg.enableRootRollback rollbackScript;
+    boot.initrd.systemd.services.nixhomeserver-root-rollback = lib.mkIf cfg.enableRootRollback {
+      description = "Rotate the disposable Btrfs root before mounting sysroot";
+      requiredBy = [ "sysroot.mount" ];
+      before = [ "sysroot.mount" ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig.Type = "oneshot";
+      script = rollbackScript;
+    };
   };
 }

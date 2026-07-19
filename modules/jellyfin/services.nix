@@ -30,7 +30,13 @@ in
 
     systemd.services.jellyfin = {
       after = [ "data-pool-layout.service" ];
-      wants = [ "data-pool-layout.service" ];
+      requires = [ "data-pool-layout.service" ];
+      unitConfig = lib.mkMerge [
+        { RequiresMountsFor = [ vars.dataRoot ]; }
+        (lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        })
+      ];
       serviceConfig.SupplementaryGroups = [ "jellyfin-media" "video" "render" ];
     };
 
@@ -64,8 +70,8 @@ in
         "jellyfin-library-bootstrap-v1.service"
         "jellyfin-library-monitor-v1.service"
         "jellyfin-storage-layout-v1.service"
-        "data-pool-layout.service"
       ];
+      requires = [ "data-pool-layout.service" ];
       unitConfig = lib.mkIf vars.dataRootIsMountPoint {
         ConditionPathIsMountPoint = vars.dataRoot;
       };

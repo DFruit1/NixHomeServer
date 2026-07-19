@@ -16,7 +16,7 @@ let
             && builtins.pathExists secretPath
             && content != ""
             && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
-          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then use nix run .#generate-secrets -- --identity /path/to/current/age.key.";
         })
       secretNames;
   loopback = vars.networking.loopbackIPv4;
@@ -28,6 +28,41 @@ let
   dataDbPath = "${dataDir}/data/jellyfin.db";
   managedDir = "${dataDir}/.nixos-managed";
   managedUsersFile = "${managedDir}/users.json";
+  credentialStateFile = "${managedDir}/initial-credential-state.json";
+  initialCredentialsDir = "${managedDir}/initial-credentials";
+  showInitialCredential = pkgs.writeShellApplication {
+    name = "jellyfin-initial-credential";
+    runtimeInputs = [ pkgs.coreutils pkgs.findutils ];
+    text = ''
+      set -euo pipefail
+      credential_dir=${lib.escapeShellArg initialCredentialsDir}
+      if (( EUID != 0 )); then
+        echo "Run this command through sudo because Jellyfin initial credentials are root-only." >&2
+        exit 1
+      fi
+      username="''${1:-}"
+      if [[ -z "$username" ]]; then
+        echo "Available initial Jellyfin credentials:"
+        find "$credential_dir" -mindepth 1 -maxdepth 1 -type f -printf '  %f\n' | sort
+        echo "Use: sudo jellyfin-initial-credential USERNAME"
+        exit 0
+      fi
+      case "$username" in
+        ""|*/*|*..*|*[!A-Za-z0-9._-]*)
+          echo "Invalid username." >&2
+          exit 1
+          ;;
+      esac
+      credential_file="$credential_dir/$username"
+      if [[ ! -f "$credential_file" ]]; then
+        echo "No initial credential is available for '$username'." >&2
+        exit 1
+      fi
+      printf 'Jellyfin username: %s\nInitial password: ' "$username"
+      cat "$credential_file"
+      echo "Change this password after the first login, then securely delete the credential file if desired."
+    '';
+  };
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
   apiKeyName = "nixos-jellyfin-library-sync-v1";
   knownProxiesXml = "<string>${vars.networking.loopbackProxyCidr}</string><string>${vars.networking.loopbackIPv6}/128</string>";
@@ -40,13 +75,22 @@ let
     findutils
     perl
   ];
-  sharedLibraries = map
+  sharedVideoLibraries = map
     (library: library // {
       name = "Shared ${library.label}";
       path = "${config.repo.jellyfin.paths.sharedVideosRoot}/${library.dir}";
       owner = null;
     })
     config.repo.jellyfin.libraries.shared;
+  sharedMusicLibraries = map
+    (library: library // {
+      name = "Shared ${library.label}";
+      path = "${config.repo.jellyfin.paths.sharedMusicRoot}/${library.dir}";
+      owner = null;
+    })
+    config.repo.jellyfin.libraries.sharedMusic;
+  sharedLibraries = sharedVideoLibraries ++ sharedMusicLibraries;
+  sharedLibraryNames = map (library: library.name) sharedLibraries;
   sharedLibrariesJson = builtins.toJSON sharedLibraries;
   personalLibrariesJson = builtins.toJSON config.repo.jellyfin.libraries.personal;
   legacyVideoLibrariesJson = builtins.toJSON [
@@ -62,7 +106,7 @@ let
     }
   ];
   jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or vars.kanidmAppAdminUsers);
-  jellyfinAdminOwnerUser = vars.kanidmAdminUser or "admindsaw";
+  jellyfinAdminOwnerUser = vars.kanidmAdminUser;
   jellyfinLibraryBootstrapPath = with pkgs; [
     coreutils
     curl
@@ -75,8 +119,15 @@ let
 in
 {
   config = {
-    assertions = mkSecretAssertions [
+    environment.systemPackages = [ showInitialCredential ];
+
+    assertions = (mkSecretAssertions [
       "kanidmAdminPass"
+    ]) ++ [
+      {
+        assertion = builtins.length sharedLibraryNames == builtins.length (lib.unique sharedLibraryNames);
+        message = "Jellyfin shared video and music library labels must be unique because both are displayed as 'Shared <label>'.";
+      }
     ];
 
     systemd.services.jellyfin-network-config-v1 = {
@@ -103,7 +154,10 @@ in
           [[ -f "$config_file" ]] && break
           sleep 1
         done
-        [[ -f "$config_file" ]] || exit 0
+        [[ -f "$config_file" ]] || {
+          echo "Jellyfin network configuration is not ready; retrying reconciliation." >&2
+          exit 1
+        }
 
         current="$(cat "$config_file")"
         updated="$(
@@ -129,7 +183,11 @@ in
         touch "$marker_file"
         /run/current-system/sw/bin/systemctl restart jellyfin.service
       '';
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
     };
 
     systemd.services.jellyfin-library-monitor-v1 = {
@@ -159,7 +217,10 @@ in
           [[ -f "$config_file" ]] && break
           sleep 1
         done
-        [[ -f "$config_file" ]] || exit 0
+        [[ -f "$config_file" ]] || {
+          echo "Jellyfin system configuration is not ready; retrying reconciliation." >&2
+          exit 1
+        }
 
         current="$(cat "$config_file")"
         updated="$(
@@ -211,7 +272,11 @@ in
           /run/current-system/sw/bin/systemctl restart jellyfin.service
         fi
       '';
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
     };
 
     systemd.services.jellyfin-library-bootstrap-v1 = {
@@ -223,8 +288,8 @@ in
         "jellyfin-storage-layout-v1.service"
         "fileshare-user-root-sync.service"
         "kanidm.service"
-        "data-pool-layout.service"
       ];
+      requires = [ "data-pool-layout.service" ];
       wants = [
         "jellyfin.service"
         "media-folder-layout-v2.service"
@@ -240,6 +305,8 @@ in
         db=${lib.escapeShellArg dataDbPath}
         managed_dir=${lib.escapeShellArg managedDir}
         managed_users_file=${lib.escapeShellArg managedUsersFile}
+        credential_state_file=${lib.escapeShellArg credentialStateFile}
+        initial_credentials_dir=${lib.escapeShellArg initialCredentialsDir}
         api_key_file=${lib.escapeShellArg apiKeyFile}
         api_key_name=${lib.escapeShellArg apiKeyName}
         jellyfin_admin_owner_user=${lib.escapeShellArg jellyfinAdminOwnerUser}
@@ -252,15 +319,13 @@ in
         legacy_video_libraries_json=${lib.escapeShellArg legacyVideoLibrariesJson}
         jellyfin_admin_users_json=${lib.escapeShellArg jellyfinAdminUsersJson}
 
-        install -d -m 0750 -o jellyfin -g jellyfin "$managed_dir"
-
         for _ in $(seq 1 60); do
           [[ -f "$db" ]] && break
           sleep 1
         done
         [[ -f "$db" ]] || {
-          echo "Jellyfin database not found at $db; skipping library bootstrap"
-          exit 0
+          echo "Jellyfin database not found at $db; retrying library bootstrap." >&2
+          exit 1
         }
 
         ready=0
@@ -278,8 +343,8 @@ in
           sleep 1
         done
         (( ready == 1 )) || {
-          echo "Jellyfin HTTP endpoint is not ready yet; skipping library bootstrap"
-          exit 0
+          echo "Jellyfin HTTP endpoint is not ready yet; retrying library bootstrap." >&2
+          exit 1
         }
 
         if sqlite3 -readonly "$db" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ApiKeys' LIMIT 1;" | grep -qx '1'; then
@@ -290,6 +355,95 @@ in
           echo "Failed to find the Jellyfin API keys table in $db" >&2
           exit 1
         fi
+
+        export HOME="$(mktemp -d)"
+        trap 'rm -rf "$HOME"' EXIT
+        KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+        export KANIDM_PASSWORD
+        kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
+
+        snapshot_group_members_json() {
+          local group_name="$1"
+          local group_json members_json
+
+          if ! group_json="$(
+            kanidm group get \
+              "$group_name" \
+              -H ${kanidmCliUrl} \
+              -D idm_admin \
+              -o json
+          )"; then
+            echo "Unable to read Kanidm group '$group_name'; refusing to reconcile Jellyfin" >&2
+            return 1
+          fi
+          if ! members_json="$(
+            jq -cer '
+              if ((.attrs.member // []) | type) != "array" then
+                error("Kanidm group member attribute is not an array")
+              else
+                [ .attrs.member[]? | strings | split("@")[0] | select(length > 0) ] | unique
+              end
+            ' <<<"$group_json"
+          )"; then
+            echo "Kanidm returned an invalid membership document for '$group_name'; refusing to reconcile Jellyfin" >&2
+            return 1
+          fi
+
+          printf '%s\n' "$members_json"
+        }
+
+        # Identity is authoritative for destructive library and policy changes.
+        # Stage every required snapshot before provisioning an API key or
+        # mutating any Jellyfin library/user state.
+        if ! jellyfin_members_json="$(snapshot_group_members_json jellyfin-users)"; then
+          exit 1
+        fi
+        if ! shared_members_json="$(snapshot_group_members_json ${lib.escapeShellArg sharedAccessGroup})"; then
+          exit 1
+        fi
+        if ! app_admin_members_json="$(snapshot_group_members_json app-admin)"; then
+          exit 1
+        fi
+        jellyfin_admin_members_json="$(
+          jq -n \
+            --argjson appAdmins "$app_admin_members_json" \
+            --argjson allowed "$jellyfin_admin_users_json" \
+            '$appAdmins | map(select($allowed | index(.) != null))'
+        )"
+
+        expected_libraries="$(
+          jq -n \
+            --arg usersRoot ${lib.escapeShellArg vars.usersRoot} \
+            --argjson shared "$shared_libraries_json" \
+            --argjson personal "$personal_libraries_json" \
+            --argjson users "$jellyfin_members_json" \
+            '$shared + [ $users[] as $user | $personal[] | . + {
+              name: ($user + " " + .label),
+              path: ($usersRoot + "/" + $user + "/_Videos/" + .dir),
+              owner: $user
+            } ]'
+        )"
+
+        legacy_libraries="$(
+          jq -n \
+            --arg usersRoot ${lib.escapeShellArg vars.usersRoot} \
+            --arg sharedVideosRoot ${lib.escapeShellArg config.repo.jellyfin.paths.sharedVideosRoot} \
+            --argjson legacy "$legacy_video_libraries_json" \
+            --argjson users "$jellyfin_members_json" \
+            '[ $legacy[] | . + {
+              name: ("Shared " + .label),
+              path: ($sharedVideosRoot + "/" + .dir),
+              owner: null
+            } ]
+            + [ $users[] as $user | $legacy[] | . + {
+              name: ($user + " " + .label),
+              path: ($usersRoot + "/" + $user + "/_Videos/" + .dir),
+              owner: $user
+            } ]'
+        )"
+
+        install -d -m 0750 -o jellyfin -g jellyfin "$managed_dir"
+        install -d -m 0700 -o root -g root "$initial_credentials_dir"
 
         api_key="$(sqlite3 -readonly -cmd '.timeout 5000' "$db" "
           SELECT AccessToken
@@ -362,6 +516,64 @@ in
             >/dev/null
         }
 
+        set_initial_password() {
+          local user_id="$1"
+          local password="$2"
+
+          # Reset first so this also recovers users created by the former bootstrap,
+          # whose randomly generated password was never handed to the operator.
+          jq -n '{ResetPassword: true}' \
+            | curl_jellyfin \
+              -X POST \
+              -H "Content-Type: application/json" \
+              --data-binary @- \
+              "$base_url/Users/$user_id/Password" \
+              >/dev/null
+          jq -n --arg password "$password" \
+            '{CurrentPw: "", NewPw: $password, ResetPassword: false}' \
+            | curl_jellyfin \
+              -X POST \
+              -H "Content-Type: application/json" \
+              --data-binary @- \
+              "$base_url/Users/$user_id/Password" \
+              >/dev/null
+        }
+
+        provision_initial_credential() {
+          local username="$1"
+          local user_id="$2"
+          local password="''${3:-}"
+          local credential_file temporary
+
+          if jq -e --arg username "$username" '.initializedUsers | index($username) != null' \
+            >/dev/null <<<"$credential_state_json"; then
+            return 0
+          fi
+          case "$username" in
+            ""|*/*|*..*|*[!A-Za-z0-9._-]*)
+              echo "Refusing unsafe Jellyfin username '$username'" >&2
+              exit 1
+              ;;
+          esac
+
+          if [[ -z "$password" ]]; then
+            password="$(openssl rand -base64 36 | tr -d '\n')"
+            set_initial_password "$user_id" "$password"
+          fi
+
+          credential_file="$initial_credentials_dir/$username"
+          temporary="$(mktemp)"
+          printf '%s\n' "$password" >"$temporary"
+          install -m 0600 -o root -g root "$temporary" "$credential_file"
+          rm -f "$temporary"
+          credential_state_json="$(
+            jq --arg username "$username" \
+              '.initializedUsers = ((.initializedUsers + [$username]) | unique)' \
+              <<<"$credential_state_json"
+          )"
+          echo "Initial Jellyfin credential for '$username' is available to root at $credential_file"
+        }
+
         library_matches() {
           local name="$1"
           local collection_type="$2"
@@ -417,72 +629,6 @@ in
           refresh_virtual_folders
         }
 
-        export HOME="$(mktemp -d)"
-        trap 'rm -rf "$HOME"' EXIT
-        KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
-        export KANIDM_PASSWORD
-        kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
-
-        group_members_json() {
-          local group_name="$1"
-          local group_json
-
-          if group_json="$(
-            kanidm group get \
-              "$group_name" \
-              -H ${kanidmCliUrl} \
-              -D idm_admin \
-              -o json
-          )"; then
-            jq -r '.attrs.member[]? | split("@")[0]' <<<"$group_json" \
-              | sort -u \
-              | jq -R -s 'split("\n") | map(select(length > 0))'
-          else
-            printf '[]\n'
-          fi
-        }
-
-        jellyfin_members_json="$(group_members_json jellyfin-users)"
-        shared_members_json="$(group_members_json ${lib.escapeShellArg sharedAccessGroup})"
-        app_admin_members_json="$(group_members_json app-admin)"
-        jellyfin_admin_members_json="$(
-          jq -n \
-            --argjson appAdmins "$app_admin_members_json" \
-            --argjson allowed "$jellyfin_admin_users_json" \
-            '$appAdmins | map(select($allowed | index(.) != null))'
-        )"
-
-        expected_libraries="$(
-          jq -n \
-            --arg usersRoot ${lib.escapeShellArg vars.usersRoot} \
-            --argjson shared "$shared_libraries_json" \
-            --argjson personal "$personal_libraries_json" \
-            --argjson users "$jellyfin_members_json" \
-            '$shared + [ $users[] as $user | $personal[] | . + {
-              name: ($user + " " + .label),
-              path: ($usersRoot + "/" + $user + "/_Videos/" + .dir),
-              owner: $user
-            } ]'
-        )"
-
-        legacy_libraries="$(
-          jq -n \
-            --arg usersRoot ${lib.escapeShellArg vars.usersRoot} \
-            --arg sharedVideosRoot ${lib.escapeShellArg config.repo.jellyfin.paths.sharedVideosRoot} \
-            --argjson legacy "$legacy_video_libraries_json" \
-            --argjson users "$jellyfin_members_json" \
-            '[ $legacy[] | . + {
-              name: ("Shared " + .label),
-              path: ($sharedVideosRoot + "/" + .dir),
-              owner: null
-            } ]
-            + [ $users[] as $user | $legacy[] | . + {
-              name: ($user + " " + .label),
-              path: ($usersRoot + "/" + $user + "/_Videos/" + .dir),
-              owner: $user
-            } ]'
-        )"
-
         refresh_virtual_folders
 
         while IFS=$'\t' read -r name path; do
@@ -529,6 +675,16 @@ in
         else
           managed_users_json='[]'
         fi
+        if [[ -f "$credential_state_file" ]]; then
+          credential_state_json="$(jq -c '
+            if (.schemaVersion == 1 and (.initializedUsers | type == "array"))
+            then .
+            else error("invalid Jellyfin initial credential state")
+            end
+          ' "$credential_state_file")"
+        else
+          credential_state_json='{"schemaVersion":1,"initializedUsers":[]}'
+        fi
 
         while IFS= read -r username; do
           [[ -n "$username" ]] || continue
@@ -536,7 +692,7 @@ in
           user_id="$(jq -r --arg name "$username" '.[] | select(.Name == $name) | .Id // empty' <<<"$jellyfin_users" | head -n 1)"
           if [[ -z "$user_id" ]]; then
             password="$(openssl rand -base64 48)"
-            echo "Creating disabled managed Jellyfin user '$username'"
+            echo "Creating managed Jellyfin user '$username'"
             created_user="$(
               jq -n --arg name "$username" --arg password "$password" '{Name: $name, Password: $password}' \
                 | curl_jellyfin \
@@ -572,6 +728,7 @@ in
               )"
             fi
             post_policy "$user_id" "$initial_policy"
+            provision_initial_credential "$username" "$user_id" "$password"
             managed_users_json="$(
               jq --arg name "$username" --arg id "$user_id" '
                 (. + [{name: $name, id: $id}]) | unique_by(.name)
@@ -579,6 +736,10 @@ in
             )"
             refresh_users
           fi
+
+          # Recover legacy managed accounts once. A root-only marker prevents
+          # subsequent reconciliations from overwriting a user-chosen password.
+          provision_initial_credential "$username" "$user_id"
 
           is_admin=false
           if jq -e --arg name "$username" 'index($name) != null' >/dev/null <<<"$jellyfin_admin_members_json"; then
@@ -630,6 +791,8 @@ in
           desired_policy="$(
             jq -c --argjson isAdmin "$is_admin" --argjson folderIds "$folder_ids" '
               .IsAdministrator = $isAdmin
+              | .IsHidden = false
+              | .IsDisabled = false
               | .EnableAllFolders = false
               | .EnabledFolders = $folderIds
               | .EnableMediaPlayback = true
@@ -694,6 +857,10 @@ in
         printf '%s\n' "$managed_users_json" >"$tmp_users"
         install -m 0600 -o jellyfin -g jellyfin "$tmp_users" "$managed_users_file"
         rm -f "$tmp_users"
+        tmp_credential_state="$(mktemp)"
+        printf '%s\n' "$credential_state_json" >"$tmp_credential_state"
+        install -m 0600 -o root -g root "$tmp_credential_state" "$credential_state_file"
+        rm -f "$tmp_credential_state"
 
         if (( changed == 1 )); then
           /run/current-system/sw/bin/systemctl start --no-block jellyfin-library-sync.service
@@ -704,6 +871,12 @@ in
         Restart = "on-failure";
         RestartSec = "5s";
       };
+      unitConfig = lib.mkMerge [
+        { RequiresMountsFor = [ vars.dataRoot ]; }
+        (lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        })
+      ];
     };
   };
 }

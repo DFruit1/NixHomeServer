@@ -6,7 +6,6 @@ let
   group = "mail-archive-ui";
   defaultTags = [ "new" ];
   mailArchiveSyncTimer = "*-*-* 06,18:15:00";
-  mailArchivePaperlessTaskTimer = "*-*-* *:0/5:00";
   mailArchiveUiPort = vars.networking.ports.mailArchiveUi;
   mailArchiveStoreRoot = vars.usersRoot;
   dataDirDefault = "/persist/appdata/mail-archive-ui";
@@ -135,6 +134,13 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Optional read-only Paperless SQLite database path used to avoid handing off documents Paperless already has.";
+    };
+
+    paperlessTaskPollInterval = lib.mkOption {
+      type = lib.types.str;
+      default = "5m";
+      example = "2m";
+      description = "How often the scheduler checks for due or retryable Paperless attachment tasks.";
     };
   };
 
@@ -310,6 +316,12 @@ in
         PrivateTmp = true;
         ProtectSystem = "strict";
         ProtectHome = true;
+        Nice = 10;
+        CPUWeight = 20;
+        IOWeight = 20;
+        IOSchedulingClass = "best-effort";
+        IOSchedulingPriority = 7;
+        TimeoutStartSec = "25m";
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
@@ -334,8 +346,9 @@ in
     systemd.timers.mail-archive-paperless-tasks = lib.mkIf (cfg.paperlessConsumeRoot != null) {
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnCalendar = mailArchivePaperlessTaskTimer;
-        Persistent = true;
+        OnBootSec = cfg.paperlessTaskPollInterval;
+        OnUnitInactiveSec = cfg.paperlessTaskPollInterval;
+        AccuracySec = "30s";
       };
     };
   };

@@ -9,4 +9,6 @@
     ./bootstrap.nix
     ./backups.nix
   ];
+
+  nixhomeserver.modules.mail-archive-ui = true;
 }

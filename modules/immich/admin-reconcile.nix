@@ -14,7 +14,6 @@ let
   immichAdminReconcileInputs = with pkgs; [
     coreutils
     gnugrep
-    gnused
     jq
     kanidm_1_10
     postgresql
@@ -24,6 +23,8 @@ let
     name = "immich-admin-reconcile";
     runtimeInputs = immichAdminReconcileInputs;
     text = ''
+      set -euo pipefail
+
       temp_home="$(mktemp -d)"
       export HOME="$temp_home"
       cleanup() {
@@ -38,43 +39,103 @@ let
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 
-      group_member_usernames() {
+      snapshot_group_members() {
         local group_name="$1"
+        local output_file="$2"
+        local group_json
 
-        kanidm group get \
-          "$group_name" \
-          -H ${kanidmCliUrl} \
-          -D idm_admin \
-          -o json \
-          | jq -r '.attrs.member[]? | split("@")[0]' \
-          | sed '/^$/d' \
-          | sort -u
+        if ! group_json="$(
+          kanidm group get \
+            "$group_name" \
+            -H ${kanidmCliUrl} \
+            -D idm_admin \
+            -o json
+        )"; then
+          echo "Unable to read Kanidm group '$group_name'; refusing to reconcile Immich admins" >&2
+          return 1
+        fi
+        if ! jq -cer '
+          if ((.attrs.member // []) | type) != "array" then
+            error("Kanidm group member attribute is not an array")
+          else
+            [ .attrs.member[]? | strings | split("@")[0] | select(length > 0) ] | unique
+          end
+        ' <<<"$group_json" >"$output_file"; then
+          echo "Kanidm returned an invalid membership document for '$group_name'; refusing to reconcile Immich admins" >&2
+          return 1
+        fi
       }
 
-      mapfile -t desired_admin_emails < <(
-        comm -12 \
-          <(group_member_usernames "immich-users") \
-          <(group_member_usernames "app-admin") \
-          | while IFS= read -r username; do
-              [[ -n "$username" ]] || continue
-              kanidm person get \
-                "$username" \
-                -H ${kanidmCliUrl} \
-                -D idm_admin \
-                -o json \
-                | jq -r '(.attrs.mail[0] // .attrs.email[0] // empty)'
-            done \
-          | sed '/^$/d' \
-          | sort -u
-      )
+      snapshot_person_email() {
+        local username="$1"
+        local person_json email
 
-      mapfile -t current_admin_emails < <(
-        runuser -u ${config.services.immich.user} -- \
-          psql \
-            "dbname=${immichDbName} host=/run/postgresql user=${immichDbUser}" \
-            -At \
-            -c "select email from \"user\" where \"deletedAt\" is null and char_length(\"oauthId\") > 0 and \"isAdmin\" = true order by email;"
-      )
+        if ! person_json="$(
+          kanidm person get \
+            "$username" \
+            -H ${kanidmCliUrl} \
+            -D idm_admin \
+            -o json
+        )"; then
+          echo "Unable to read Kanidm person '$username'; refusing to reconcile Immich admins" >&2
+          return 1
+        fi
+        if ! email="$(
+          jq -er '
+            (.attrs.mail[0] // .attrs.email[0])
+            | select(type == "string" and length > 0)
+          ' <<<"$person_json"
+        )"; then
+          echo "Kanidm person '$username' has no valid mail address; refusing to reconcile Immich admins" >&2
+          return 1
+        fi
+
+        printf '%s\n' "$email"
+      }
+
+      immich_members_file="$temp_home/immich-members.json"
+      app_admin_members_file="$temp_home/app-admin-members.json"
+      desired_usernames_file="$temp_home/desired-usernames"
+      desired_admin_candidates_file="$temp_home/desired-admin-emails.unsorted"
+      desired_admin_emails_file="$temp_home/desired-admin-emails"
+      current_admin_emails_file="$temp_home/current-admin-emails"
+
+      # Materialize every authoritative snapshot and validate each command
+      # status explicitly. Process substitution would hide failures and could
+      # otherwise turn an identity outage into an empty desired-admin set.
+      snapshot_group_members "immich-users" "$immich_members_file"
+      snapshot_group_members "app-admin" "$app_admin_members_file"
+      if ! jq -nr \
+        --slurpfile immichMembers "$immich_members_file" \
+        --slurpfile appAdmins "$app_admin_members_file" \
+        '$immichMembers[0][] | select(. as $username | $appAdmins[0] | index($username) != null)' \
+        >"$desired_usernames_file"; then
+        echo "Unable to intersect Kanidm group snapshots; refusing to reconcile Immich admins" >&2
+        exit 1
+      fi
+
+      : >"$desired_admin_candidates_file"
+      while IFS= read -r username; do
+        [[ -n "$username" ]] || continue
+        if ! email="$(snapshot_person_email "$username")"; then
+          exit 1
+        fi
+        printf '%s\n' "$email" >>"$desired_admin_candidates_file"
+      done <"$desired_usernames_file"
+      sort -u "$desired_admin_candidates_file" >"$desired_admin_emails_file"
+
+      if ! runuser -u ${config.services.immich.user} -- \
+        psql \
+          "dbname=${immichDbName} host=/run/postgresql user=${immichDbUser}" \
+          -At \
+          -c "select email from \"user\" where \"deletedAt\" is null and char_length(\"oauthId\") > 0 and \"isAdmin\" = true order by email;" \
+        >"$current_admin_emails_file"; then
+        echo "Unable to read current Immich admins; refusing to change admin privileges" >&2
+        exit 1
+      fi
+
+      mapfile -t desired_admin_emails <"$desired_admin_emails_file"
+      mapfile -t current_admin_emails <"$current_admin_emails_file"
 
       run_immich_admin() {
         local command="$1"

@@ -8,6 +8,6 @@
     originLanding = "https://${vars.monitorDomain}";
     basicSecretFile = config.age.secrets.monitorOauth2ProxyClientSecret.path;
     preferShortUsername = true;
-    scopeMaps."app-admin" = [ "openid" "profile" "email" "groups_name" ];
+    scopeMaps.${vars.monitoringAccess.group} = [ "openid" "profile" "email" "groups_name" ];
   };
 }

@@ -27,7 +27,9 @@ let
   monitorHost = vars.monitorDomain;
   syncthingHost = "syncthing.${vars.domain}";
   offlineMediaCfg = vars.offlineMedia;
-  offlineMediaEnabled = offlineMediaCfg.enable or false;
+  offlineMediaEnabled =
+    (config.nixhomeserver.modules."offline-music" or false)
+    && (offlineMediaCfg.enable or false);
   offlineMediaMusicFolderName = offlineMediaCfg.musicFolderName or offlineMediaCfg.folderName or "_Music";
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaStateFile = "${offlineMediaStateDir}/devices.json";
@@ -160,6 +162,8 @@ let
     state_file=${lib.escapeShellArg offlineMediaStateFile}
     folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
     users_root=${lib.escapeShellArg vars.usersRoot}
+    runtime_error=""
+    runtime_devices='[]'
 
     if [[ -f "$state_file" ]]; then
       state="$(${pkgs.jq}/bin/jq -c '
@@ -188,11 +192,85 @@ let
       state='{"version":2,"users":{}}'
     fi
 
+    api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
+    headers_file="$(${pkgs.coreutils}/bin/mktemp)"
+    trap 'rm -f "$api_key_file" "$headers_file"' EXIT
+    if ! ${pkgs.libxml2}/bin/xmllint \
+      --xpath 'string(configuration/gui/apikey)' \
+      ${lib.escapeShellArg syncthingConfigDir}/config.xml \
+      >"$api_key_file" 2>/dev/null \
+      || [[ ! -s "$api_key_file" ]]; then
+      runtime_error="Syncthing configuration is unavailable"
+    else
+      { ${pkgs.coreutils}/bin/printf 'X-API-Key: '; ${pkgs.coreutils}/bin/cat "$api_key_file"; } >"$headers_file"
+
+      api() {
+        local path="$1"
+        ${pkgs.curl}/bin/curl -fsSL \
+          --connect-timeout 1 \
+          --max-time 3 \
+          -H "@$headers_file" \
+          "http://127.0.0.1:8384$path"
+      }
+
+      if api /rest/system/ping >/dev/null 2>&1; then
+        if connections="$(api /rest/system/connections 2>/dev/null)" \
+          && device_stats="$(api /rest/stats/device 2>/dev/null)"; then
+          while IFS=$'\t' read -r enrolled_device_id; do
+            [[ -n "$enrolled_device_id" ]] || continue
+            completion_rows='[]'
+            sync_error=""
+            while IFS=$'\t' read -r folder_id_prefix; do
+              folder_id="$folder_id_prefix-$username"
+              if completion="$(api "/rest/db/completion?device=$enrolled_device_id&folder=$folder_id" 2>/dev/null)"; then
+                completion_rows="$(${pkgs.jq}/bin/jq \
+                  --argjson completion "$completion" \
+                  '. + [$completion]' \
+                  <<<"$completion_rows")"
+              else
+                sync_error="One or more folder statuses could not be read"
+              fi
+            done < <(${pkgs.jq}/bin/jq -r '.[] | [.folderIdPrefix] | @tsv' <<<"$folder_specs_json")
+
+            runtime_device="$(${pkgs.jq}/bin/jq -n \
+              --arg deviceId "$enrolled_device_id" \
+              --arg syncError "$sync_error" \
+              --argjson connections "$connections" \
+              --argjson stats "$device_stats" \
+              --argjson rows "$completion_rows" \
+              '{
+                deviceId: $deviceId,
+                connected: ($connections.connections[$deviceId].connected // false),
+                lastSeen: ($stats[$deviceId].lastSeen // null),
+                needBytes: ([$rows[]?.needBytes // 0] | add // 0),
+                needItems: ([$rows[]?.needItems // 0] | add // 0),
+                completion: (
+                  ([$rows[]?.globalBytes // 0] | add // 0) as $total
+                  | ([$rows[]?.needBytes // 0] | add // 0) as $needed
+                  | if $total > 0 then ((($total - $needed) * 10000 / $total) | floor / 100) else 100 end
+                ),
+                syncError: (if $syncError == "" then null else $syncError end)
+              }')"
+            runtime_devices="$(${pkgs.jq}/bin/jq \
+              --argjson device "$runtime_device" \
+              '. + [$device]' \
+              <<<"$runtime_devices")"
+          done < <(${pkgs.jq}/bin/jq -r --arg username "$username" '.users[$username].devices[]?.deviceId' <<<"$state")
+        else
+          runtime_error="Syncthing status is temporarily unavailable"
+        fi
+      else
+        runtime_error="Syncthing is not responding"
+      fi
+    fi
+
     ${pkgs.jq}/bin/jq -n \
       --arg username "$username" \
       --arg usersRoot "$users_root" \
+      --arg runtimeError "$runtime_error" \
       --argjson specs "$folder_specs_json" \
       --argjson state "$state" \
+      --argjson runtimeDevices "$runtime_devices" \
       '{
         folders: [
           $specs[] | {
@@ -204,7 +282,17 @@ let
             suggestedDevicePath
           }
         ],
-        devices: ($state.users[$username].devices // [])
+        devices: (
+          ($state.users[$username].devices // [])
+          | map(
+              . as $saved
+              | . + (
+                  first($runtimeDevices[]? | select(.deviceId == $saved.deviceId))
+                  // (if $runtimeError == "" then {} else {syncError: $runtimeError} end)
+                )
+            )
+        ),
+        runtimeError: (if $runtimeError == "" then null else $runtimeError end)
       }'
   '';
   offlineMediaEnroll = pkgs.writeShellScript "homepage-offline-media-enroll" ''
@@ -359,7 +447,7 @@ let
           | .type = "sendonly"
           | .devices = ((((.devices // []) | map(.deviceID)) + [$deviceId]) | unique | map({ deviceID: . }))
           | .fsWatcherEnabled = true
-          | .rescanIntervalS = 3600'
+          | .rescanIntervalS = 300'
       )"
       api_json POST /rest/config/folders "$folder_json"
     done < <(${pkgs.jq}/bin/jq -r '.[] | [.key, .label, .relativePath, .folderIdPrefix, .suggestedDevicePath] | @tsv' <<<"$folder_specs_json")
@@ -705,12 +793,12 @@ let
       url = "/services/offline-media";
       enabled = offlineMediaEnabledForHomepage;
       category = "media";
-      description = "Personal music and selected video folders synced offline to enrolled devices with Syncthing.";
-      loginNotes = "Use Kanidm on the homepage, then enroll your Syncthing device ID.";
+      description = "Automatically keep copies of your server music and videos on a computer or phone.";
+      loginNotes = "Connect each computer or phone once, then Syncthing keeps its offline copies up to date.";
       projectUrl = "https://syncthing.net";
       logoUrl = "https://cdn.simpleicons.org/syncthing";
       appName = "syncthing";
-      uploadNotes = "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root.";
+      uploadNotes = "Add media with the Files app first; this service then copies it to your connected devices.";
     }
     {
       id = "books";
@@ -797,11 +885,12 @@ let
       enabled = monitorEnabled;
       category = "operations";
       description = "Beszel monitoring dashboard for host resources, app units, storage, and disk health.";
-      loginNotes = "Requires app-admin through Kanidm, then the native Beszel admin login.";
+      loginNotes = "Requires ${vars.monitoringAccess.group} through Kanidm, then the native Beszel login.";
       projectUrl = "https://beszel.dev";
       logoUrl = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/beszel.svg";
       appName = "beszel";
       uploadNotes = "Monitoring state is managed by Beszel.";
+      requiredGroups = [ vars.monitoringAccess.group ];
     }
   ];
 
@@ -1102,11 +1191,15 @@ let
       command = "sudo systemctl start jellyfin-library-sync.service";
       detail = "Refresh Jellyfin libraries after media folders are created, repaired, or populated.";
     }
+  ]
+  ++ lib.optionals kiwixEnabled [
     {
       title = "Re-run Kiwix library sync";
       command = "sudo systemctl start kiwix-library-sync.service";
       detail = "Publish newly uploaded or repaired ZIM files into the Kiwix web library catalog.";
     }
+  ]
+  ++ [
     {
       title = "Check Kanidm health";
       command = "systemctl status kanidm.service --no-pager";
@@ -1263,8 +1356,8 @@ let
     }
     {
       title = "Rotate or regenerate secrets";
-      command = "./scripts/generate-all-secrets.sh";
-      detail = "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit that directory.";
+      command = "nix run .#generate-secrets -- --identity /path/to/current/age.key";
+      detail = "Verify every manifest secret with the current identity. Use the documented explicit --fresh or --rekey mode only when intentionally changing credentials or recipients.";
     }
     {
       title = "List encrypted secrets";
@@ -1283,22 +1376,26 @@ let
     }
     {
       title = "Encrypt staged external secrets";
-      command = "./scripts/helpers/encrypt-staged-external-secrets.sh";
-      detail = "Encrypt staged external secret files into agenix files and remove the plaintext staging material.";
+      command = "nix run .#generate-secrets -- --replace-external SECRET_NAME --identity /path/to/current/age.key";
+      detail = "Validate and replace one named external manifest secret without rotating unrelated generated credentials. Securely remove its staged plaintext after verifying the result.";
     }
   ];
 
   homepageConfig = pkgs.writeText "homepage-config.json" (builtins.toJSON {
+    brandName = vars.brandName;
     domain = vars.domain;
     serverLanHost = serverLanHost;
     sshfsHost = vars.network.hostname;
     services = serviceCards;
     kanidmGroups = kanidmGroups;
     kanidmGroupDescriptions = kanidmGroupDescriptions;
+    canaryAdminUser = vars.kanidmAdminUser;
     offlineMedia = {
       enabled = offlineMediaEnabledForHomepage;
       connectionAddresses = [
         "tcp://${syncthingHost}:22000"
+        "tcp://${vars.networking.lan.ip}:22000"
+        "tcp://${vars.networking.netbird.ip}:22000"
       ];
       folders = [ ];
       devices = [ ];
@@ -1333,11 +1430,12 @@ in
           HOMEPAGE_CONFIG_FILE = homepageConfig;
           HOMEPAGE_STATIC_DIR = "${appPackages.homepage}/share/homepage/client";
           HOMEPAGE_SFTP_KEY_INSTALL_COMMAND = installSftpKey;
+          HOMEPAGE_SUDO = "/run/wrappers/bin/sudo";
+        } // lib.optionalAttrs offlineMediaEnabledForHomepage {
           HOMEPAGE_SYNCTHING_DEVICE_ID_COMMAND = showSyncthingDeviceId;
           HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND = offlineMediaStatus;
           HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND = offlineMediaEnroll;
           HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND = offlineMediaRemove;
-          HOMEPAGE_SUDO = "/run/wrappers/bin/sudo";
         };
         serviceConfig = {
           Type = "simple";
@@ -1349,13 +1447,11 @@ in
           PrivateTmp = true;
           ProtectSystem = "strict";
           ProtectHome = true;
-          ReadWritePaths = [
-            sftpAuthorizedKeysDir
-            offlineMediaStateDir
-          ]
-          # The sudo helpers inherit homepage.service's mount namespace, so
-          # offline-media enrollment needs this writable despite running as root.
-          ++ lib.optional offlineMediaEnabledForHomepage vars.usersRoot;
+          ReadWritePaths = [ sftpAuthorizedKeysDir ]
+            ++ lib.optional offlineMediaEnabledForHomepage offlineMediaStateDir
+            # The sudo helpers inherit homepage.service's mount namespace, so
+            # offline-media enrollment needs this writable despite running as root.
+            ++ lib.optional offlineMediaEnabledForHomepage vars.usersRoot;
           ReadOnlyPaths = [
             homepageConfig
           ];
@@ -1374,6 +1470,7 @@ in
               command = "${installSftpKey}";
               options = [ "NOPASSWD" ];
             }
+          ] ++ lib.optionals offlineMediaEnabledForHomepage [
             {
               command = "${showSyncthingDeviceId}";
               options = [ "NOPASSWD" ];

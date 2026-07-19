@@ -14,13 +14,7 @@ let
   oauth2ClientSecretFile = "${secretRuntimeDir}/oauth2-client-secret";
   oauth2CookieSecretFile = "${secretRuntimeDir}/oauth2-cookie-secret";
   webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
-  usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
-  webAccessGroups = [
-    webAccessGroup
-    usbAccessGroup
-    backupStorageAccessGroup
-  ];
+  webAccessGroups = [ webAccessGroup ];
   proxyUserHeader = "X-Auth-Request-Preferred-Username";
   proxyEmailHeader = "X-Auth-Request-Email";
   proxyGroupsHeader = "X-Auth-Request-Groups";
@@ -30,6 +24,12 @@ let
       vars.kanidmAdminMailAddresses
     else
       [ vars.kanidmAdminEmail ];
+  filestashLoginUsers = lib.unique (
+    (vars.kanidmAppUsers or [ ])
+    ++ (vars.filesSftpUsers or [ ])
+    ++ (vars.kanidmBackupUsers or [ ])
+    ++ (vars.fileAccess.usbUsers or [ ])
+  );
   sftpLoginUserEmailEntries =
     lib.flatten (map
       (user:
@@ -47,7 +47,7 @@ let
             inherit user mail;
           })
           mailAddresses)
-      vars.kanidmAppUsers);
+      filestashLoginUsers);
   sftpLoginUserEmailMapGo = lib.concatMapStringsSep "\n"
     (entry:
       "    ${builtins.toJSON (lib.toLower entry.mail)}: ${builtins.toJSON entry.user},"
@@ -368,14 +368,12 @@ in
 
       systemd.services.filestash = {
         requires = [
-          "files-sftp-sshd.service"
-          "filestash-secret-materialize.service"
-        ];
-        wants = [
           "data-pool-layout.service"
           "files-sftp-sshd.service"
           "fileshare-user-root-sync.service"
           "filestash-secret-materialize.service"
+        ];
+        wants = [
           "network-online.target"
         ];
         after = [

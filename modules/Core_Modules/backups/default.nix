@@ -9,7 +9,9 @@ let
   metadataRoot = "${stagingRoot}/metadata";
   dumpsRoot = "${stagingRoot}/dumps";
   inventoryRoot = "${metadataRoot}/inventories";
-  successfulRoot = "${stagingRoot}/successful";
+  legacySuccessfulRoot = "${stagingRoot}/successful";
+  successfulGenerationRoot = "${stagingRoot}/generations";
+  successfulCurrentPath = "${stagingRoot}/current";
   repositoryPath = "${backupRoot}/kopia";
   maintenanceLock = "/run/lock/nixhomeserver-maintenance.lock";
   fsPackages =
@@ -57,22 +59,14 @@ let
       notes = "Monitoring hub database, SSH key, and local dashboard state.";
     }
   ];
-  coreSnapshotRoots = [
-    "/persist"
-    "${vars.dataRoot}/paperless"
-  ];
+  coreSnapshotRoots = [ "/persist" ];
   coreSqliteDumps = [
-    { source = "/var/lib/audiobookshelf/config/absdatabase.sqlite"; outputName = "audiobookshelf.sqlite"; }
-    { source = "/var/lib/jellyfin/data/jellyfin.db"; outputName = "jellyfin.sqlite"; }
-    { source = "/var/lib/kavita/config/kavita.db"; outputName = "kavita.sqlite"; }
-    { source = "/var/lib/paperless/db.sqlite3"; outputName = "paperless.sqlite"; }
-    { source = "/var/lib/seerr/db/db.sqlite3"; outputName = "seerr.sqlite"; }
-    { source = "/var/lib/vaultwarden/db.sqlite3"; outputName = "vaultwarden.sqlite"; }
     { source = "/var/lib/beszel-hub/beszel_data/data.db"; outputName = "beszel.sqlite"; }
   ];
   sqliteDumpScript = dump: ''
     source=${lib.escapeShellArg dump.source}
-    output="$work/dumps/${lib.escapeShellArg dump.outputName}"
+    output_name=${lib.escapeShellArg dump.outputName}
+    output="$work/dumps/$output_name"
     if [[ ! -f "$source" ]]; then
       echo "Required backup database is missing: $source" >&2
       exit 1
@@ -84,8 +78,29 @@ let
       echo "SQLite integrity check failed for ${dump.outputName}: $integrity" >&2
       exit 1
     fi
-    sha256sum "$output" >> "$work/metadata/SHA256SUMS"
+    (
+      cd "$work"
+      sha256sum -- "dumps/$output_name"
+    ) >> "$work/metadata/SHA256SUMS"
   '';
+  postgresqlDumpScript = dump: ''
+    echo "Preparing PostgreSQL backup: ${dump.outputName}"
+    output_name=${lib.escapeShellArg dump.outputName}
+    output="$work/dumps/$output_name"
+    runuser -u ${lib.escapeShellArg dump.user} -- pg_dump \
+      --host=/run/postgresql \
+      --format=custom \
+      ${lib.escapeShellArg dump.database} \
+      > "$output"
+    pg_restore --list "$output" >/dev/null
+    (
+      cd "$work"
+      sha256sum -- "dumps/$output_name"
+    ) >> "$work/metadata/SHA256SUMS"
+  '';
+  dumpOutputNames =
+    (map (dump: dump.outputName) config.repo.backups.sqliteDumps)
+    ++ (map (dump: dump.outputName) config.repo.backups.postgresqlDumps);
 in
 {
   options.repo.backups = {
@@ -134,8 +149,34 @@ in
     successfulStagingRoot = lib.mkOption {
       type = lib.types.str;
       readOnly = true;
-      default = successfulRoot;
-      description = "Last atomically published set of logical backup dumps and metadata.";
+      default = successfulCurrentPath;
+      description = "Compatibility alias for the atomically published current logical backup generation.";
+    };
+
+    successfulGenerationRoot = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = successfulGenerationRoot;
+      description = "Root containing immutable successful logical backup generations.";
+    };
+
+    successfulCurrentPath = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = successfulCurrentPath;
+      description = "Symlink atomically selecting the current successful logical backup generation.";
+    };
+
+    retainedSuccessfulGenerations = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 2;
+      description = "Number of successfully published logical backup generations to retain.";
+    };
+
+    minimumFreeBytes = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 2 * 1024 * 1024 * 1024;
+      description = "Minimum free space required on the logical backup staging filesystem before preparation starts.";
     };
 
     maintenanceLock = lib.mkOption {
@@ -187,11 +228,23 @@ in
       type = lib.types.listOf (lib.types.submodule {
         options = {
           source = lib.mkOption { type = lib.types.str; };
-          outputName = lib.mkOption { type = lib.types.str; };
+          outputName = lib.mkOption { type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*"; };
         };
       });
       default = [ ];
       description = "SQLite databases backup tooling may dump before snapshots.";
+    };
+
+    postgresqlDumps = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          database = lib.mkOption { type = lib.types.str; };
+          user = lib.mkOption { type = lib.types.str; };
+          outputName = lib.mkOption { type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*"; };
+        };
+      });
+      default = [ ];
+      description = "PostgreSQL databases contributed by enabled application modules for logical backup.";
     };
 
     prepareFragments = lib.mkOption {
@@ -241,11 +294,16 @@ in
       "d ${metadataRoot} 0700 root root -"
       "d ${dumpsRoot} 0700 root root -"
       "d ${inventoryRoot} 0700 root root -"
-      "d ${successfulRoot} 0700 root root -"
+      "d ${successfulGenerationRoot} 0700 root root -"
       "f ${maintenanceLock} 0660 root ${toString backupStorageAccessGid} -"
     ];
 
-    assertions = map
+    assertions = [
+      {
+        assertion = builtins.length dumpOutputNames == builtins.length (lib.unique dumpOutputNames);
+        message = "nixhomeserver: logical backup dump output names must be unique across enabled modules.";
+      }
+    ] ++ map
       (root: {
         assertion = !(root == repositoryPath || lib.hasPrefix "${root}/" repositoryPath);
         message = "nixhomeserver: backup snapshot root ${root} contains the Kopia repository ${repositoryPath}";
@@ -254,11 +312,19 @@ in
 
     systemd.services.backup-prepare = {
       description = "Prepare consistent logical databases for Kopia";
-      wants = [ "postgresql.service" ];
-      after = [ "postgresql.service" "kanidm.service" ];
+      requires = lib.optional (config.repo.backups.postgresqlDumps != [ ]) "postgresql.service";
+      after = [ "kanidm.service" ]
+        ++ lib.optional (config.repo.backups.postgresqlDumps != [ ]) "postgresql.service";
+      unitConfig = {
+        StartLimitIntervalSec = "2h";
+        StartLimitBurst = 3;
+      };
       path = with pkgs; [ coreutils findutils jq postgresql sqlite util-linux ];
       serviceConfig = {
         Type = "oneshot";
+        TimeoutStartSec = "4h";
+        Restart = "on-failure";
+        RestartSec = "15min";
         Nice = 10;
         CPUWeight = 20;
         IOWeight = 20;
@@ -273,7 +339,39 @@ in
         exec 9>${lib.escapeShellArg maintenanceLock}
         flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
 
-        work="$(mktemp -d ${lib.escapeShellArg stagingRoot}/.prepare.XXXXXX)"
+        publish_current_link() {
+          local target="$1"
+          local link_dir
+          link_dir="$(mktemp -d ${lib.escapeShellArg stagingRoot}/.current-link.XXXXXX)"
+          ln -s "$target" "$link_dir/current"
+          mv -Tf "$link_dir/current" ${lib.escapeShellArg successfulCurrentPath}
+          rmdir "$link_dir"
+        }
+
+        # Interrupted publications can leave only root-owned temporary link
+        # directories. They are never reused by a later run.
+        find ${lib.escapeShellArg stagingRoot} -mindepth 1 -maxdepth 1 \
+          -type d -name '.current-link.*' -mmin +60 -exec rm -rf -- {} +
+
+        available_bytes="$(df --output=avail -B1 ${lib.escapeShellArg stagingRoot} | tail -n 1 | tr -d '[:space:]')"
+        if [[ ! "$available_bytes" =~ ^[0-9]+$ ]] || (( available_bytes < ${toString config.repo.backups.minimumFreeBytes} )); then
+          echo "Insufficient backup staging space: available=$available_bytes required=${toString config.repo.backups.minimumFreeBytes}" >&2
+          exit 1
+        fi
+
+        # One-time adoption of the former mutable successful directory. Moving it
+        # within the staging filesystem is atomic and preserves its contents.
+        if [[ -d ${lib.escapeShellArg legacySuccessfulRoot} && ! -L ${lib.escapeShellArg legacySuccessfulRoot} ]]; then
+          if [[ -n "$(find ${lib.escapeShellArg legacySuccessfulRoot} -mindepth 1 -print -quit)" ]]; then
+            legacy_generation="legacy-$(date --utc +%Y%m%dT%H%M%SZ)"
+            mv ${lib.escapeShellArg legacySuccessfulRoot} ${lib.escapeShellArg successfulGenerationRoot}/"$legacy_generation"
+            publish_current_link "generations/$legacy_generation"
+          else
+            rmdir ${lib.escapeShellArg legacySuccessfulRoot}
+          fi
+        fi
+
+        work="$(mktemp -d ${lib.escapeShellArg successfulGenerationRoot}/.prepare.XXXXXX)"
         trap 'rm -rf "$work"' EXIT
         install -d -m 0700 "$work/dumps" "$work/metadata"
         metadataRoot="$work/metadata"
@@ -283,27 +381,38 @@ in
 
         ${lib.concatMapStringsSep "\n" sqliteDumpScript config.repo.backups.sqliteDumps}
 
-        echo "Preparing Immich PostgreSQL backup"
-        runuser -u immich -- pg_dump --host=/run/postgresql --format=custom immich \
-          > "$work/dumps/immich.pgdump"
-        pg_restore --list "$work/dumps/immich.pgdump" >/dev/null
-        sha256sum "$work/dumps/immich.pgdump" >> "$work/metadata/SHA256SUMS"
+        ${lib.concatMapStringsSep "\n" postgresqlDumpScript config.repo.backups.postgresqlDumps}
 
         ${lib.concatStringsSep "\n" (builtins.attrValues config.repo.backups.prepareFragments)}
+
+        if [[ -s "$work/metadata/SHA256SUMS" ]]; then
+          (
+            cd "$work"
+            sha256sum --check metadata/SHA256SUMS
+          )
+        fi
 
         jq -n \
           --arg createdAt "$(date --utc --iso-8601=seconds)" \
           --arg host ${lib.escapeShellArg vars.hostname} \
           --argjson sqliteCount ${toString (builtins.length config.repo.backups.sqliteDumps)} \
-          '{schemaVersion: 1, createdAt: $createdAt, host: $host, sqliteDumps: $sqliteCount, postgresqlDumps: ["immich"]}' \
+          --argjson postgresqlDumps ${lib.escapeShellArg (builtins.toJSON (map (dump: dump.database) config.repo.backups.postgresqlDumps))} \
+          '{schemaVersion: 1, createdAt: $createdAt, host: $host, sqliteDumps: $sqliteCount, postgresqlDumps: $postgresqlDumps}' \
           > "$work/metadata/manifest.json"
 
-        rm -rf ${lib.escapeShellArg successfulRoot}.previous
-        if [[ -d ${lib.escapeShellArg successfulRoot} ]]; then
-          mv ${lib.escapeShellArg successfulRoot} ${lib.escapeShellArg successfulRoot}.previous
-        fi
-        mv "$work" ${lib.escapeShellArg successfulRoot}
+        generation="$(date --utc +%Y%m%dT%H%M%S)-$$"
+        generation_path=${lib.escapeShellArg successfulGenerationRoot}/"$generation"
+        mv "$work" "$generation_path"
         trap - EXIT
+
+        publish_current_link "generations/$generation"
+
+        mapfile -t generations < <(find ${lib.escapeShellArg successfulGenerationRoot} -mindepth 1 -maxdepth 1 -type d ! -name '.prepare.*' -printf '%T@ %f\n' | sort -nr | cut -d' ' -f2-)
+        if (( ''${#generations[@]} > ${toString config.repo.backups.retainedSuccessfulGenerations} )); then
+          for old_generation in "''${generations[@]:${toString config.repo.backups.retainedSuccessfulGenerations}}"; do
+            rm -rf -- ${lib.escapeShellArg successfulGenerationRoot}/"$old_generation"
+          done
+        fi
       '';
     };
   };

@@ -10,4 +10,6 @@
     ./bootstrap.nix
     ./backups.nix
   ];
+
+  nixhomeserver.modules.files = true;
 }

@@ -1,4 +1,4 @@
-{ config, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   kanidmPort = vars.networking.ports.kanidm;
@@ -29,7 +29,7 @@ in
       kanidm system domain set-displayname \
         -H ${kanidmCliUrl} \
         -D admin \
-        "Sydney Basin Services"
+        ${lib.escapeShellArg vars.brandName}
 
       kanidm system domain set-image \
         -H ${kanidmCliUrl} \
@@ -37,6 +37,10 @@ in
         ${./assets/portal.svg} \
         svg
     '';
-    serviceConfig.Type = "oneshot";
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "30s";
+    };
   };
 }

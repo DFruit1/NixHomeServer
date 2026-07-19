@@ -1,5 +1,5 @@
 import { component$ } from '@builder.io/qwik';
-import { Link, type DocumentHead } from '@builder.io/qwik-city';
+import { Link } from '@builder.io/qwik-city';
 
 export default component$(() => (
   <section class="section">
@@ -12,7 +12,3 @@ export default component$(() => (
     </div>
   </section>
 ));
-
-export const head: DocumentHead = {
-  title: 'Page Not Found | Sydney Basin Services',
-};

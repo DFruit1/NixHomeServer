@@ -50,9 +50,16 @@ let
     "kiwix*"
     "kavita*"
     "mail-archive-ui*"
+    "offline-media*"
     "offline-music*"
     "youtube-downloader*"
+    "groundwater-logger*"
     "paperless*"
+    "prowlarr*"
+    "qbittorrent*"
+    "radarr*"
+    "seerr*"
+    "sonarr*"
     "vaultwarden*"
     "postgresql*"
     "redis-*"
@@ -80,8 +87,11 @@ lib.mkMerge [
         APP_URL = "https://${vars.monitorDomain}";
         CHECK_UPDATES = "false";
         CONTAINER_DETAILS = "false";
-        DISABLE_PASSWORD_AUTH = "true";
-        TRUSTED_AUTH_HEADER = "X-Forwarded-Email";
+        # The OAuth2 proxy is the external access boundary, while Beszel keeps
+        # its own login. Trusting an ordinary forwarded-email header would let
+        # any compromised local process impersonate an administrator by
+        # connecting directly to this loopback listener.
+        DISABLE_PASSWORD_AUTH = "false";
         USER_CREATION = "true";
         USER_EMAIL = vars.kanidmAdminEmail;
       };
@@ -158,7 +168,7 @@ lib.mkMerge [
     domain = vars.monitorDomain;
     port = vars.networking.ports.oauth2ProxyMonitor;
     upstream = "http://${loopback}:${toString hubPort}";
-    allowedGroups = [ "app-admin" ];
+    allowedGroups = [ vars.monitoringAccess.group ];
     serviceDependencies = [ "beszel-hub.service" "caddy.service" ];
     upstreamCheck = {
       displayName = "Beszel hub";

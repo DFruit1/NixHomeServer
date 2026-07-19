@@ -28,7 +28,7 @@ Operational rule:
 Refresh the repo-managed secrets:
 
 ```bash
-./scripts/generate-all-secrets.sh
+nix run .#generate-secrets -- --identity /path/to/current/age.key
 ```
 
 Vaultwarden does not need SMTP in this stack. Users create local accounts directly on the Vaultwarden signup page.

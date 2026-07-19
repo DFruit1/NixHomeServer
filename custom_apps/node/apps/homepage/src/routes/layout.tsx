@@ -1,8 +1,9 @@
 import { $, Slot, component$, useContextProvider, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import { routeLoader$, type DocumentHead } from '@builder.io/qwik-city';
+import { routeLoader$, useLocation, type DocumentHead } from '@builder.io/qwik-city';
 import { ProfileMenu } from '../components/ProfileMenu.js';
 import { TopNav } from '../components/TopNav.js';
 import { HomepageContext, type HomepageLoad } from '../shared/homepage-context.js';
+import { brandedPageTitle } from '../shared/branding.js';
 
 export const useHomepageData = routeLoader$(async (event): Promise<HomepageLoad> => {
   try {
@@ -22,13 +23,16 @@ export const useHomepageData = routeLoader$(async (event): Promise<HomepageLoad>
 
 export default component$(() => {
   const homepage = useHomepageData();
+  const location = useLocation();
   const profileImage = useSignal('');
   useContextProvider(HomepageContext, homepage.value);
   const data = homepage.value.data;
   const user = data?.user;
 
-  useVisibleTask$(() => {
+  useVisibleTask$(({ track }) => {
+    const pathname = track(() => location.url.pathname);
     profileImage.value = window.localStorage.getItem('homepage.profileImage') ?? '';
+    document.title = brandedPageTitle(data?.brandName, pageNameForPath(pathname));
   });
 
   const updateProfileImage = $(async (_event: Event, target: HTMLInputElement) => {
@@ -74,6 +78,15 @@ export default component$(() => {
   );
 });
 
-export const head: DocumentHead = {
-  title: 'Sydney Basin Services',
+export const head: DocumentHead = ({ resolveValue, url }) => ({
+  title: brandedPageTitle(resolveValue(useHomepageData).data?.brandName, pageNameForPath(url.pathname)),
+});
+
+const pageNameForPath = (pathname: string): string | undefined => {
+  if (pathname === '/') return undefined;
+  if (pathname === '/getting-started') return 'Getting Started';
+  if (pathname === '/uploads') return 'How to Upload Files';
+  if (pathname === '/admins') return 'For Admins';
+  if (pathname.startsWith('/services/')) return 'Service';
+  return 'Page Not Found';
 };

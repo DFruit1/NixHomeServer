@@ -8,4 +8,6 @@
     ./bootstrap.nix
     ./backups.nix
   ];
+
+  nixhomeserver.modules.prowlarr = true;
 }

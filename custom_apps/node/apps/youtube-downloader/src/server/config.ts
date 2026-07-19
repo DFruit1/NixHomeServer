@@ -15,6 +15,7 @@ export type AppConfig = {
   sharedWriteGroup: string;
   fileBrowserUrlTemplate?: string;
   fileBrowserSharedMountName: string;
+  eventRetentionDays: number;
 };
 
 const numberFromEnv = (name: string, fallback: number): number => {
@@ -45,5 +46,6 @@ export const loadConfig = (): AppConfig => {
     sharedWriteGroup: process.env.YOUTUBE_DOWNLOADER_SHARED_WRITE_GROUP ?? 'files-shared-users',
     fileBrowserUrlTemplate: process.env.YOUTUBE_DOWNLOADER_FILE_BROWSER_URL_TEMPLATE,
     fileBrowserSharedMountName: process.env.YOUTUBE_DOWNLOADER_FILE_BROWSER_SHARED_MOUNT_NAME ?? '_Shared',
+    eventRetentionDays: numberFromEnv('YOUTUBE_DOWNLOADER_EVENT_RETENTION_DAYS', 90),
   };
 };

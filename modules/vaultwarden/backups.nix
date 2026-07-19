@@ -11,5 +11,11 @@
         notes = "Encrypted password vault database and attachments.";
       }
     ];
+    repo.backups.sqliteDumps = [
+      {
+        source = "/var/lib/vaultwarden/db.sqlite3";
+        outputName = "vaultwarden.sqlite";
+      }
+    ];
   };
 }

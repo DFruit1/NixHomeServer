@@ -14,5 +14,11 @@
         notes = "Library database, local users, and server settings.";
       }
     ];
+    repo.backups.sqliteDumps = [
+      {
+        source = "/var/lib/kavita/config/kavita.db";
+        outputName = "kavita.sqlite";
+      }
+    ];
   };
 }

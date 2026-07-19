@@ -21,11 +21,18 @@ let
     let
       app = pkgs.writeShellApplication {
         inherit name;
-        runtimeInputs = with pkgs; [ nix openssh ];
+        runtimeInputs = with pkgs; [ jq nix openssh ];
         text = ''
           repo="''${NIXHOMESERVER_REPO_ROOT:-$PWD}"
-          host="$(nix eval --raw "$repo#lib.nixhomeserverSettings.serverLanIP")"
-          user="$(nix eval --raw "$repo#lib.nixhomeserverSettings.localAdminUser")"
+          settings_json="$(nix eval --json "$repo#lib.nixhomeserverSerializableSettings")"
+          host="$(jq -er '
+            if length == 1 then to_entries[0].value.serverLanIP
+            else error("expected exactly one configured host") end
+          ' <<<"$settings_json")"
+          user="$(jq -er '
+            if length == 1 then to_entries[0].value.localAdminUser
+            else error("expected exactly one configured host") end
+          ' <<<"$settings_json")"
           exec ssh -o BatchMode=yes "$user@$host" sudo systemctl start --wait ${unit}
         '';
       };
@@ -37,18 +44,38 @@ let
     };
 
   scriptApps = {
-    validate-config-readiness = {
-      description = "Validate evaluated settings, required secrets, and bootstrap/deploy preconditions";
+    generate-secrets = {
+      description = "Generate, verify, replace, or rekey all manifest-managed age secrets";
       runtimeInputs = with pkgs; [
+        age
         bash
         coreutils
         findutils
-        gitMinimal
         gnugrep
         gnused
         jq
         nix
+        openssl
+      ];
+      script = "scripts/generate-all-secrets.sh";
+    };
+
+    validate-config-readiness = {
+      description = "Validate evaluated settings, required secrets, and bootstrap/deploy preconditions";
+      runtimeInputs = with pkgs; [
+        age
+        bash
+        coreutils
+        findutils
+        gawk
+        gitMinimal
+        gnugrep
+        gnused
+        iproute2
+        jq
+        nix
         openssh
+        python3
         ripgrep
         util-linux
       ];
@@ -60,6 +87,7 @@ let
       runtimeInputs = with pkgs; [
         bash
         coreutils
+        gitMinimal
         jq
         nix
         gnused
@@ -72,6 +100,7 @@ let
       runtimeInputs = with pkgs; [
         bash
         coreutils
+        gitMinimal
         jq
         nix
         gnused
@@ -85,13 +114,31 @@ let
         bash
         coreutils
         findutils
+        gitMinimal
         jq
+        nix
         smartmontools
         util-linux
         gnused
         gnugrep
       ];
       script = "bootstrap/storage-plan.sh";
+    };
+
+    bootstrap-disks = {
+      description = "Guarded destructive blank-disk provisioning using the flake-pinned disko release";
+      runtimeInputs = with pkgs; [
+        bash
+        coreutils
+        findutils
+        gawk
+        gitMinimal
+        gnused
+        jq
+        nix
+        util-linux
+      ];
+      script = "bootstrap/apply-disko.sh";
     };
 
     deploy = {

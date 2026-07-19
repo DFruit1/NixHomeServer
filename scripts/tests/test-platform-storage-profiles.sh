@@ -7,13 +7,14 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 
 ensure_tools bash jq nix rg
+host="$(test_default_host)"
 
-current_profile_json="$(nix eval --impure --json --expr '
+current_profile_json="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
 let
-  f = builtins.getFlake (toString ./.);
-  lib = f.inputs.nixpkgs.lib;
-  cfg = f.nixosConfigurations.server.config;
-  vars = f.lib.nixhomeserverSettings.server;
+  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+  host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+  cfg = (builtins.getAttr host f.nixosConfigurations).config;
+  vars = builtins.getAttr host f.lib.nixhomeserverSettings;
 in {
   inherit (vars) hostPlatform storageProfile enableZfsDataPool dataRootIsMountPoint;
   rootFsType = cfg.fileSystems."/".fsType;
@@ -24,24 +25,34 @@ in {
 }')"
 
 jq -e '
-  (.hostPlatform == "x86_64-linux")
-  and (.storageProfile == "zfs-mirror")
-  and (.rootFsType == "btrfs")
-  and (.hasNixFs == true)
-  and (.hasPersistFs == true)
-  and (.enableZfsDataPool == true)
-  and (.dataRootIsMountPoint == true)
-  and (.smartdWants | index("zfs.target") != null)
-  and (.beszelExtraFilesystems | contains("/mnt/data__DataPool"))
+  (.hostPlatform == "x86_64-linux" or .hostPlatform == "aarch64-linux")
+  and (.storageProfile == "zfs-mirror" or .storageProfile == "single-disk-ext4")
+  and (if .storageProfile == "zfs-mirror" then
+    (.rootFsType == "btrfs")
+    and (.hasNixFs == true)
+    and (.hasPersistFs == true)
+    and (.enableZfsDataPool == true)
+    and (.dataRootIsMountPoint == true)
+    and (.smartdWants | index("zfs.target") != null)
+    and (.beszelExtraFilesystems | contains("__DataPool"))
+  else
+    (.rootFsType == "ext4")
+    and (.hasNixFs == false)
+    and (.hasPersistFs == false)
+    and (.enableZfsDataPool == false)
+    and (.dataRootIsMountPoint == false)
+    and (.smartdWants | index("zfs.target") == null)
+    and (.beszelExtraFilesystems | contains("__DataPool") | not)
+  end)
 ' <<<"$current_profile_json" >/dev/null || {
-  echo "❌ Current x86/ZFS profile changed unexpectedly."
+  echo "❌ Current host platform/storage profile is internally inconsistent."
   jq . <<<"$current_profile_json"
   exit 1
 }
 
 synthetic_profile_expr='
 let
-  f = builtins.getFlake (toString ./.);
+  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   nixpkgs = f.inputs.nixpkgs;
   lib = nixpkgs.lib;
   baseVars = import ./vars.nix { inherit lib; };
@@ -78,12 +89,12 @@ let
     inherit lib vars pkgs appPackages;
     system = "aarch64-linux";
   };
-in host.nixosConfigurations.server.config
+in host.nixosConfigurations.${baseVars.hostname}.config
 '
 
 synthetic_homepage_profile_expr='
 let
-  f = builtins.getFlake (toString ./.);
+  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   nixpkgs = f.inputs.nixpkgs;
   lib = nixpkgs.lib;
   baseVars = import ./vars.nix { inherit lib; };
@@ -120,7 +131,7 @@ let
     inherit lib vars pkgs appPackages;
     system = "x86_64-linux";
   };
-in host.nixosConfigurations.server.config
+in host.nixosConfigurations.${baseVars.hostname}.config
 '
 
 synthetic_profile_json="$(nix eval --impure --json --expr "
@@ -182,49 +193,53 @@ if rg -q "zpool|zfsBin|zpoolBin|zfsDatasetCommands" <<<"$directory_layout_block"
   exit 1
 fi
 
-current_homepage_config="$(
-  nix build --impure --no-link --print-out-paths --expr '
-    let
-      f = builtins.getFlake (toString ./.);
-    in f.nixosConfigurations.server.config.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE
-  '
-)"
-current_homepage_commands="$(jq -r ".adminGuide[].command" "$current_homepage_config")"
+if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
+  current_homepage_config="$(
+    nix build --impure --no-link --print-out-paths --expr "
+      let
+        f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+      in f.nixosConfigurations.${host}.config.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE
+    "
+  )"
+  current_homepage_commands="$(jq -r ".adminGuide[].command" "$current_homepage_config")"
 
-if ! rg -Fq "zpool status -v" <<<"$current_homepage_commands"; then
-  echo "❌ Current ZFS profile should expose ZFS status commands in Homepage."
-  exit 1
-fi
+  if [[ "$(jq -r '.storageProfile' <<<"$current_profile_json")" == "zfs-mirror" ]]; then
+    for command in "zpool status -v" "btrfs filesystem usage /persist"; do
+      if ! rg -Fq "$command" <<<"$current_homepage_commands"; then
+        echo "❌ Current ZFS profile should expose this Homepage command: $command"
+        exit 1
+      fi
+    done
+  elif rg -q "zpool|btrfs" <<<"$current_homepage_commands"; then
+    echo "❌ Current single-disk Homepage commands must not include ZFS or Btrfs commands."
+    exit 1
+  fi
 
-if ! rg -Fq "btrfs filesystem usage /persist" <<<"$current_homepage_commands"; then
-  echo "❌ Current ZFS profile should expose Btrfs persistent-state commands in Homepage."
-  exit 1
-fi
+  synthetic_homepage_config="$(
+    nix build --impure --no-link --print-out-paths --expr "
+      let
+        cfg = ${synthetic_homepage_profile_expr};
+      in cfg.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE
+    "
+  )"
+  synthetic_homepage_commands="$(jq -r ".adminGuide[].command" "$synthetic_homepage_config")"
 
-synthetic_homepage_config="$(
-  nix build --impure --no-link --print-out-paths --expr "
-    let
-      cfg = ${synthetic_homepage_profile_expr};
-    in cfg.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE
-  "
-)"
-synthetic_homepage_commands="$(jq -r ".adminGuide[].command" "$synthetic_homepage_config")"
-
-if rg -q "zpool|btrfs" <<<"$synthetic_homepage_commands"; then
-  echo "❌ Single-disk Homepage admin commands must not include ZFS or Btrfs commands."
-  echo "$synthetic_homepage_commands"
-  exit 1
-fi
-
-for expected_command in \
-  "df -hT / /mnt/data /persist" \
-  "findmnt -no SOURCE,FSTYPE,OPTIONS /" \
-  "sudo journalctl -u data-pool-layout.service -n 100 --no-pager"; do
-  if ! rg -Fq "$expected_command" <<<"$synthetic_homepage_commands"; then
-    echo "❌ Single-disk Homepage commands should include: $expected_command"
+  if rg -q "zpool|btrfs" <<<"$synthetic_homepage_commands"; then
+    echo "❌ Single-disk Homepage admin commands must not include ZFS or Btrfs commands."
     echo "$synthetic_homepage_commands"
     exit 1
   fi
-done
+
+  for expected_command in \
+    "df -hT / /mnt/data /persist" \
+    "findmnt -no SOURCE,FSTYPE,OPTIONS /" \
+    "sudo journalctl -u data-pool-layout.service -n 100 --no-pager"; do
+    if ! rg -Fq "$expected_command" <<<"$synthetic_homepage_commands"; then
+      echo "❌ Single-disk Homepage commands should include: $expected_command"
+      echo "$synthetic_homepage_commands"
+      exit 1
+    fi
+  done
+fi
 
 echo "✅ Platform and storage profile regression tests passed."

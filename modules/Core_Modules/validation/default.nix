@@ -1,6 +1,10 @@
 { config, lib, vars, ... }:
 
 let
+  networkValidation = import ../../../lib/network-validation.nix { inherit lib; };
+  identityValidation = import ../../../lib/identity-validation.nix;
+  nameValidation = import ../../../lib/name-validation.nix { inherit lib; };
+  storageValidation = import ../../../lib/storage-validation.nix { inherit lib; };
   allowPlaceholders = vars.validation.allowPlaceholders or false;
   containsChangeMe = value: lib.hasInfix "CHANGE_ME" (toString value);
   externallyBoundPorts = lib.filterAttrs (name: _: !(lib.hasSuffix "Container" name)) vars.networking.ports;
@@ -42,9 +46,7 @@ let
           isAllowedLanAlias = builtins.elem name allowedLanAliasHosts;
         in
         name == ""
-        || (lib.hasInfix "://" name && !isAllowedLanAlias)
-        || (lib.hasInfix "/" name && !isAllowedLanAlias)
-        || (lib.hasInfix ":" name && !isAllowedLanAlias))
+        || (!isAllowedLanAlias && name != "default" && !nameValidation.validDnsName name))
       (caddyHosts ++ cloudflareHosts ++ privateDnsHostNames);
   offDomainAppHosts =
     lib.filter
@@ -100,6 +102,28 @@ let
   kanidmAppUserMailAddresses = lib.attrValues vars.kanidmAppUserEmails;
   kanidmAdminAppUserMailConflicts =
     lib.intersectLists kanidmAdminMailAddresses kanidmAppUserMailAddresses;
+  kanidmProvision = config.services.kanidm.provision;
+  kanidmProvisionedPersons = kanidmProvision.persons or { };
+  kanidmProvisionedGroups = kanidmProvision.groups or { };
+  kanidmPersonNames = builtins.attrNames kanidmProvisionedPersons;
+  kanidmGroupNames = builtins.attrNames kanidmProvisionedGroups;
+  kanidmGroupMemberships = lib.concatMap
+    (groupName:
+      map
+        (memberName: {
+          inherit groupName memberName;
+        })
+        (kanidmProvisionedGroups.${groupName}.members or [ ]))
+    kanidmGroupNames;
+  invalidKanidmPersonNames = lib.filter
+    (name: !nameValidation.validKanidmUser name)
+    kanidmPersonNames;
+  invalidKanidmGroupNames = lib.filter
+    (name: !nameValidation.validKanidmGroup name)
+    kanidmGroupNames;
+  invalidKanidmGroupMemberships = lib.filter
+    (membership: !nameValidation.validKanidmEntryName membership.memberName)
+    kanidmGroupMemberships;
   fileSystemHasOption = mountPoint: option:
     builtins.elem option (config.fileSystems.${mountPoint}.options or [ ]);
   fileAccessGids = lib.attrValues vars.fileAccessPosixGids;
@@ -152,12 +176,38 @@ let
     (path: path == "/persist" || lib.hasPrefix "/persist/" path)
     (map persistenceDirectoryPath config.repo.impermanence.inventory.persistenceDirectories);
   offlineMediaCfg = vars.offlineMedia;
-  offlineMediaEnabled = offlineMediaCfg.enable or false;
+  offlineMediaEnabled =
+    (config.nixhomeserver.modules."offline-music" or false)
+    && (offlineMediaCfg.enable or false);
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaTmpfilesRule = "d ${offlineMediaStateDir} 0750 root root -";
   supportedHostPlatforms = [ "x86_64-linux" "aarch64-linux" ];
-  supportedHardwareProfiles = [ "existing-server" "generic-uefi" ];
+  supportedHardwareProfiles = [ "generated" "existing-server" "generic-uefi" ];
   supportedStorageProfiles = [ "zfs-mirror" "single-disk-ext4" ];
+  safeDiskId = storageValidation.validDiskId;
+  dataMirrorPairs = vars.zfsDataPool.mirrorPairs or [ ];
+  validMirrorPairs = builtins.all
+    (pair: builtins.isList pair && builtins.length pair == 2 && builtins.all safeDiskId pair)
+    dataMirrorPairs;
+  uniqueDataDiskIds = lib.unique vars.zfsDataPoolDiskIds;
+  canonicalDataDatasets = [ "users" "shared" "backups" ];
+  configuredDataDatasets = vars.zfsDataPool.datasets or [ ];
+  canonicalDatasetSet =
+    lib.sort builtins.lessThan configuredDataDatasets
+    == lib.sort builtins.lessThan canonicalDataDatasets;
+  validDataMountPoint = builtins.match "/mnt/[A-Za-z0-9][A-Za-z0-9._-]*" vars.dataRoot != null;
+  validDataPoolName = storageValidation.validZpoolName vars.zfsDataPool.name;
+  conflictingDataFileSystems = lib.filter
+    (mountPoint: mountPoint == vars.dataRoot || lib.hasPrefix "${vars.dataRoot}/" mountPoint)
+    (builtins.attrNames config.fileSystems);
+  configuredKanidmGroups = kanidmGroupNames;
+  protectedCanaryGroups = builtins.filter
+    (group: builtins.elem group [ "app-admin" "domain_admins" "system_admins" ] || lib.hasPrefix "idm_" group)
+    configuredKanidmGroups;
+  canaryProtectedMemberships = builtins.filter
+    (group: builtins.elem vars.kanidmCanaryUser (kanidmProvisionedGroups.${group}.members or [ ]))
+    protectedCanaryGroups;
+  canaryIdentityCollisionSources = identityValidation.canaryCollisionSources vars;
 in
 {
   assertions = [
@@ -175,11 +225,48 @@ in
     }
     {
       assertion = vars.hardwareProfile != "existing-server" || vars.hostPlatform == "x86_64-linux";
-      message = "nixhomeserver: system.hardwareProfile = existing-server is this repo's checked-in x86_64 hardware profile. Use generic-uefi for aarch64-linux.";
+      message = "nixhomeserver: system.hardwareProfile = existing-server is this repo's checked-in x86_64 hardware profile. Generate hardware-configuration.nix and use generated for aarch64-linux.";
     }
     {
       assertion = builtins.elem vars.storageProfile supportedStorageProfiles;
       message = "nixhomeserver: storage.profile must be one of: ${lib.concatStringsSep ", " supportedStorageProfiles}.";
+    }
+    {
+      assertion = safeDiskId vars.mainDisk;
+      message = "nixhomeserver: storage.systemDisk must be a safe /dev/disk/by-id basename, not a path or whitespace-containing value.";
+    }
+    {
+      assertion = validDataMountPoint;
+      message = "nixhomeserver: storage.dataPool.mountPoint must be a normalized /mnt/<name> path with no trailing slash or traversal components.";
+    }
+    {
+      assertion = validDataPoolName;
+      message = "nixhomeserver: storage.dataPool.name must be a non-empty ZFS-compatible pool name.";
+    }
+    {
+      assertion = canonicalDatasetSet && builtins.length configuredDataDatasets == builtins.length canonicalDataDatasets;
+      message = "nixhomeserver: storage.dataPool.datasets must contain exactly users, shared, and backups once each.";
+    }
+    {
+      assertion = !vars.enableZfsDataPool || (dataMirrorPairs != [ ] && validMirrorPairs);
+      message = "nixhomeserver: zfs-mirror requires one or more data mirror pairs containing exactly two safe by-id basenames each.";
+    }
+    {
+      assertion =
+        !vars.enableZfsDataPool
+        || (
+          builtins.length uniqueDataDiskIds == builtins.length vars.zfsDataPoolDiskIds
+          && !(builtins.elem vars.mainDisk vars.zfsDataPoolDiskIds)
+        );
+      message = "nixhomeserver: system and ZFS data disks must be distinct, and each configured data-disk ID may appear only once.";
+    }
+    {
+      assertion =
+        vars.brandName != ""
+        && builtins.stringLength vars.brandName <= 100
+        && !lib.hasInfix "\n" vars.brandName
+        && !lib.hasInfix "\r" vars.brandName;
+      message = "nixhomeserver: branding.displayName must be 1-100 characters on one line.";
     }
     {
       assertion = allowPlaceholders || vars.domain != "example.test";
@@ -214,12 +301,68 @@ in
       message = "nixhomeserver: identity.adminUser must be a dedicated Kanidm operator account, not the local Unix admin '${vars.localAdminUser}'.";
     }
     {
+      assertion = nameValidation.validDnsLabel vars.hostname;
+      message = "nixhomeserver: network.hostname must be a lowercase DNS label of at most 63 characters.";
+    }
+    {
+      assertion = nameValidation.validPublicDomain vars.domain;
+      message = "nixhomeserver: network.domain must be a valid lowercase public DNS name.";
+    }
+    {
+      assertion = nameValidation.validDnsName vars.networking.dns.lanDomain;
+      message = "nixhomeserver: dnsSettings.lanDomain must be a valid lowercase DNS name.";
+    }
+    {
+      assertion = invalidKanidmPersonNames == [ ];
+      message = "nixhomeserver: provisioned Kanidm person names must start with a lowercase letter, contain only lowercase letters, digits, dot, underscore, or hyphen, and be at most 64 characters: ${builtins.toJSON invalidKanidmPersonNames}";
+    }
+    {
+      assertion = invalidKanidmGroupNames == [ ];
+      message = "nixhomeserver: provisioned Kanidm group names must start with a lowercase letter, contain only lowercase letters, digits, dot, underscore, or hyphen, and be at most 64 characters: ${builtins.toJSON invalidKanidmGroupNames}";
+    }
+    {
+      assertion = invalidKanidmGroupMemberships == [ ];
+      message = "nixhomeserver: provisioned Kanidm group members must use valid local Kanidm entry names: ${builtins.toJSON invalidKanidmGroupMemberships}";
+    }
+    {
+      assertion = canaryIdentityCollisionSources == [ ] && canaryProtectedMemberships == [ ];
+      message = "nixhomeserver: identity.canaryUser must be distinct from configured human identities and remain non-privileged; identity collisions: ${lib.concatStringsSep ", " canaryIdentityCollisionSources}; protected memberships: ${lib.concatStringsSep ", " canaryProtectedMemberships}";
+    }
+    {
       assertion = kanidmAdminAppUserMailConflicts == [ ];
       message = "nixhomeserver: identity.adminMailAddresses must not reuse an address assigned in identity.appUserEmails: ${lib.concatStringsSep ", " kanidmAdminAppUserMailConflicts}";
     }
     {
       assertion = builtins.elem vars.dnsMode [ "split-horizon" "netbird-only" ];
       message = "nixhomeserver: dnsMode must be either split-horizon or netbird-only.";
+    }
+    {
+      assertion = networkValidation.validIPv4 vars.serverLanIP;
+      message = "nixhomeserver: network.lanIp must be a valid IPv4 address.";
+    }
+    {
+      assertion = networkValidation.validIPv4 vars.networking.lan.gateway;
+      message = "nixhomeserver: network.lanGateway must be a valid IPv4 address.";
+    }
+    {
+      assertion = vars.networking.lan.prefixLength >= 1 && vars.networking.lan.prefixLength <= 30;
+      message = "nixhomeserver: network.lanPrefixLength must be between 1 and 30.";
+    }
+    {
+      assertion = networkValidation.sameUsableSubnet vars.serverLanIP vars.networking.lan.gateway vars.networking.lan.prefixLength;
+      message = "nixhomeserver: network.lanIp and network.lanGateway must be usable addresses in the same configured subnet.";
+    }
+    {
+      assertion = networkValidation.validIPv4 vars.networking.netbird.ip;
+      message = "nixhomeserver: network.netbirdIp must be a valid IPv4 address.";
+    }
+    {
+      assertion = networkValidation.validIPv4Cidr vars.networking.netbird.cidr;
+      message = "nixhomeserver: network.netbirdCidr must be a valid IPv4 CIDR.";
+    }
+    {
+      assertion = networkValidation.cidrContains vars.networking.netbird.ip vars.networking.netbird.cidr;
+      message = "nixhomeserver: network.netbirdIp must belong to network.netbirdCidr.";
     }
     {
       assertion = builtins.length portValues == builtins.length uniquePortValues;
@@ -272,6 +415,10 @@ in
     {
       assertion = vars.storageProfile != "single-disk-ext4" || !(builtins.hasAttr "/persist" config.fileSystems);
       message = "nixhomeserver: single-disk-ext4 expects /persist to be a regular directory on the root filesystem, not a separate mount.";
+    }
+    {
+      assertion = conflictingDataFileSystems == [ ];
+      message = "nixhomeserver: hardware-configuration.nix must not declare data-pool filesystems; regenerate it with --no-filesystems. Conflicts: ${lib.concatStringsSep ", " conflictingDataFileSystems}";
     }
     {
       assertion = persistedPathsInsidePersist == [ ];

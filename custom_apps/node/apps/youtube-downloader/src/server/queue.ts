@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.js';
@@ -27,11 +28,26 @@ const MEDIA_EXTENSIONS = new Set([
   '.webm',
 ]);
 const THUMBNAIL_EXTENSIONS = new Set(['.jpg', '.jpeg']);
+const ALLOWED_DOWNLOAD_HOSTS = ['youtube.com', 'youtu.be', 'youtube-nocookie.com'];
+const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+const YOUTUBE_PLAYLIST_ID = /^[A-Za-z0-9_-]{2,128}$/;
+const YOUTUBE_CHANNEL_SEGMENT = /^[A-Za-z0-9_.@-]{1,128}$/;
+const YOUTUBE_CHANNEL_TABS = new Set(['featured', 'playlists', 'shorts', 'streams', 'videos']);
 
 export class JobQueue {
   private readonly running = new Map<string, ChildProcess>();
   private readonly probing = new Map<string, ChildProcess>();
+  private readonly externalProbing = new Set<ChildProcess>();
+  private readonly externalProbeOperations = new Set<Promise<ProbeResponse>>();
+  private readonly postprocessing = new Set<ChildProcess>();
   private active = 0;
+  private pumping = false;
+  private pumpRequested = false;
+  private stopped = false;
+  private stopPromise?: Promise<void>;
+  private pumpPromise?: Promise<void>;
+  private shutdownGraceMs = 5000;
+  private readonly workers = new Set<Promise<unknown>>();
 
   constructor(
     private readonly config: AppConfig,
@@ -39,12 +55,51 @@ export class JobQueue {
   ) {}
 
   async start(): Promise<void> {
+    if (this.stopped) {
+      throw new Error('download queue is shutting down');
+    }
     await mkdir(this.config.tempRoot, { recursive: true, mode: 0o750 });
     await this.db.markInterrupted();
     this.pump();
   }
 
+  async stop(graceMs = 5000): Promise<void> {
+    if (this.stopPromise) {
+      return this.stopPromise;
+    }
+    this.stopped = true;
+    this.pumpRequested = false;
+    this.shutdownGraceMs = Math.max(0, graceMs);
+    this.stopPromise = this.stopChildrenAndWorkers(this.shutdownGraceMs);
+    return this.stopPromise;
+  }
+
+  async probe(url: string): Promise<ProbeResponse> {
+    if (this.stopped) {
+      throw new Error('download queue is shutting down');
+    }
+    validateDownloadUrl(url);
+    let child: ChildProcess | undefined;
+    const operation = probeUrl(this.config, url, (spawnedChild) => {
+      child = spawnedChild;
+      this.externalProbing.add(spawnedChild);
+      this.terminateLateChild(spawnedChild);
+    });
+    this.externalProbeOperations.add(operation);
+    try {
+      return await operation;
+    } finally {
+      if (child) {
+        this.externalProbing.delete(child);
+      }
+      this.externalProbeOperations.delete(operation);
+    }
+  }
+
   async enqueue(user: CurrentUser, request: CreateJobRequest): Promise<string> {
+    if (this.stopped) {
+      throw new Error('download queue is shutting down');
+    }
     const normalizedRequest = normalizeCreateJobRequest({
       ...request,
       url: normalizeDownloadUrl(request.url),
@@ -54,7 +109,9 @@ export class JobQueue {
       throw new Error('shared downloads require shared file access');
     }
     const id = randomUUID();
-    const duplicate = normalizedRequest.duplicateConfirmed ? undefined : await this.db.findCompletedDownload(normalizedRequest);
+    const duplicate = normalizedRequest.duplicateConfirmed
+      ? undefined
+      : await this.db.findCompletedDownload(normalizedRequest, user.username);
     if (duplicate) {
       await this.db.createJob({
         id,
@@ -71,14 +128,18 @@ export class JobQueue {
   }
 
   async retry(id: string, user: CurrentUser): Promise<string> {
-    const job = await this.db.getJob(id);
+    const job = await this.db.getJobForUser(id, user.username);
     if (!job) {
       throw new Error('job not found');
     }
     return this.enqueue(user, job.request);
   }
 
-  async cancel(id: string): Promise<void> {
+  async cancel(id: string, user: CurrentUser): Promise<void> {
+    const job = await this.db.getJobForUser(id, user.username);
+    if (!job) {
+      throw new Error('job not found');
+    }
     const child = this.running.get(id);
     if (child) {
       killChildGroup(child, 'SIGTERM');
@@ -93,14 +154,17 @@ export class JobQueue {
         killChildGroup(probingChild, 'SIGKILL');
       }, 5000).unref();
     }
-    const job = await this.db.getJob(id);
     if (job?.status === 'queued' || job?.status === 'alert' || job?.status === 'probing') {
       await this.db.setStatus(id, 'cancelled', 'cancelled before starting');
     }
   }
 
-  async resolveAlert(id: string, action: 'download-again' | 'split-chapters' | 'single-file' | 'cancel'): Promise<void> {
-    const job = await this.db.getJob(id);
+  async resolveAlert(
+    id: string,
+    action: 'download-again' | 'split-chapters' | 'single-file' | 'cancel',
+    user: CurrentUser,
+  ): Promise<void> {
+    const job = await this.db.getJobForUser(id, user.username);
     if (!job) {
       throw new Error('job not found');
     }
@@ -148,40 +212,91 @@ export class JobQueue {
   }
 
   private pump(): void {
-    void this.pumpAsync().catch((error) => {
-      console.error('queue pump failed', error);
-    });
+    if (this.stopped) {
+      return;
+    }
+    if (this.pumping) {
+      this.pumpRequested = true;
+      return;
+    }
+    this.pumping = true;
+    let operation!: Promise<void>;
+    operation = this.pumpAsync()
+      .catch((error) => {
+        console.error('queue pump failed', error);
+      })
+      .finally(() => {
+        if (this.pumpPromise === operation) {
+          this.pumpPromise = undefined;
+        }
+        this.pumping = false;
+        if (this.pumpRequested && !this.stopped) {
+          this.pumpRequested = false;
+          this.pump();
+        }
+      });
+    this.pumpPromise = operation;
+    void operation;
   }
 
   private async pumpAsync(): Promise<void> {
-    while (this.active < this.config.concurrency) {
-      const [job] = await this.db.queuedJobs();
+    while (!this.stopped && this.active < this.config.concurrency) {
+      const job = await this.db.claimNextQueuedJob();
       if (!job) {
         return;
       }
+      if (this.stopped) {
+        await this.db.setStatus(job.id, 'queued', 'service stopped before the job started');
+        return;
+      }
       this.active += 1;
-      void this.runJob(job)
-        .catch((error) => this.db.setStatus(job.id, 'failed', error instanceof Error ? error.message : String(error)))
+      const worker = this.runJob(job)
+        .catch(async (error) => {
+          if (this.stopped) {
+            await rm(path.join(this.config.tempRoot, job.id), { recursive: true, force: true }).catch((cleanupError) => {
+              console.error(`failed to clean up interrupted job ${job.id}`, cleanupError);
+            });
+            await this.db.setStatus(job.id, 'failed', 'interrupted by service shutdown');
+            return;
+          }
+          await this.db.setStatus(job.id, 'failed', error instanceof Error ? error.message : String(error));
+        })
         .finally(() => {
           this.active -= 1;
           this.running.delete(job.id);
           this.pump();
         });
+      this.workers.add(worker);
+      void worker.then(
+        () => this.workers.delete(worker),
+        () => this.workers.delete(worker),
+      );
     }
   }
 
   private async runJob(job: Job): Promise<void> {
-    let request = job.request;
+    let request = normalizeCreateJobRequest({
+      ...job.request,
+      url: normalizeDownloadUrl(job.request.url),
+    });
+    validateRequest(request);
+    if (JSON.stringify(request) !== JSON.stringify(job.request)) {
+      await this.db.updateRequest(job.id, request);
+    }
+    const ytDlpPath = ytDlpPathFor(this.config, request);
     const tempDir = path.join(this.config.tempRoot, job.id);
     await rm(tempDir, { recursive: true, force: true });
     await mkdir(tempDir, { recursive: true, mode: 0o750 });
+    if (await this.abortIfCancelled(job.id, tempDir)) {
+      return;
+    }
 
-    await this.db.setStatus(job.id, 'probing');
     let source: ProbeResponse;
     try {
       source = await probeUrl(this.config, request.url, (child) => {
         this.probing.set(job.id, child);
-      });
+        this.terminateLateChild(child);
+      }, ytDlpPath);
     } catch (error) {
       if (await this.abortIfCancelled(job.id, tempDir)) {
         return;
@@ -198,7 +313,7 @@ export class JobQueue {
       return;
     }
     if (!request.duplicateConfirmed) {
-      const duplicate = await this.db.findCompletedDownload(request, job.id);
+      const duplicate = await this.db.findCompletedDownload(request, job.createdBy, job.id);
       if (duplicate) {
         await rm(tempDir, { recursive: true, force: true });
         await this.db.setAlert(job.id, duplicateAlert(request, duplicate.id));
@@ -246,8 +361,13 @@ export class JobQueue {
     const args = buildDownloadArgs(request, baseTemplate, chapterTemplate);
     await this.db.setStatus(job.id, 'running');
     try {
-      await this.runYtDlp(job.id, args);
+      await this.runYtDlp(job.id, ytDlpPath, args);
     } catch (error) {
+      if (this.stopped) {
+        await rm(tempDir, { recursive: true, force: true });
+        await this.db.setStatus(job.id, 'failed', 'interrupted by service shutdown');
+        return;
+      }
       if (error instanceof Error && error.message === 'cancelled by user') {
         await rm(tempDir, { recursive: true, force: true });
         await this.db.setStatus(job.id, 'cancelled', 'cancelled by user');
@@ -255,11 +375,27 @@ export class JobQueue {
       }
       throw error;
     }
+    if (await this.abortIfCancelled(job.id, tempDir)) {
+      return;
+    }
 
     await this.db.setStatus(job.id, 'postprocessing');
     if (request.splitChapters && request.mediaType === 'audio') {
       await this.db.setProgress(job.id, { phase: 'postprocess' });
-      await splitAudioChapters(tempDir, source, request.audioFormat ?? 'flac', request.embedAudioCoverArt !== false);
+      await splitAudioChapters(
+        tempDir,
+        source,
+        request.audioFormat ?? 'flac',
+        request.embedAudioCoverArt !== false,
+        {
+          isStopped: () => this.stopped,
+          onSpawn: (child) => {
+            this.postprocessing.add(child);
+            this.terminateLateChild(child);
+          },
+          onExit: (child) => this.postprocessing.delete(child),
+        },
+      );
     }
     await this.db.setProgress(job.id, { phase: 'move' });
     const sourceDir = request.splitChapters ? path.join(tempDir, 'chapters') : tempDir;
@@ -273,6 +409,13 @@ export class JobQueue {
 
   private async abortIfCancelled(jobId: string, tempDir: string): Promise<boolean> {
     const job = await this.db.getJob(jobId);
+    if (this.stopped) {
+      await rm(tempDir, { recursive: true, force: true });
+      if (job && !['completed', 'failed', 'cancelled'].includes(job.status)) {
+        await this.db.setStatus(jobId, 'failed', 'interrupted by service shutdown');
+      }
+      return true;
+    }
     if (job?.status === 'cancelled') {
       await rm(tempDir, { recursive: true, force: true });
       return true;
@@ -280,13 +423,17 @@ export class JobQueue {
     return false;
   }
 
-  private async runYtDlp(jobId: string, args: string[]): Promise<void> {
+  private async runYtDlp(jobId: string, ytDlpPath: string, args: string[]): Promise<void> {
+    if (this.stopped) {
+      throw new Error('download queue is shutting down');
+    }
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(this.config.ytDlpPath, args, {
+      const child = spawn(ytDlpPath, args, {
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       this.running.set(jobId, child);
+      this.terminateLateChild(child);
       let stderr = '';
       const onLine = (line: string) => {
         const parsed = parseProgress(line);
@@ -325,23 +472,69 @@ export class JobQueue {
       await this.db.addFile(jobId, relative, kind);
     }
   }
+
+  private async stopChildrenAndWorkers(graceMs: number): Promise<void> {
+    const pumpAtShutdown = this.pumpPromise;
+    const children = [...new Set([
+      ...this.running.values(),
+      ...this.probing.values(),
+      ...this.externalProbing,
+      ...this.postprocessing,
+    ])];
+    const exits = children.map((child) => waitForChildExit(child));
+    for (const child of children) {
+      killChildGroup(child, 'SIGTERM');
+    }
+    if (children.length > 0) {
+      const exitedDuringGrace = await Promise.race([
+        Promise.all(exits).then(() => true),
+        delay(graceMs).then(() => false),
+      ]);
+      if (!exitedDuringGrace) {
+        for (const child of children) {
+          if (!childHasExited(child)) {
+            killChildGroup(child, 'SIGKILL');
+          }
+        }
+      }
+      await Promise.all(exits);
+    }
+    await pumpAtShutdown;
+    await Promise.allSettled([...this.workers, ...this.externalProbeOperations]);
+  }
+
+  private terminateLateChild(child: ChildProcess): void {
+    if (!this.stopped || childHasExited(child)) {
+      return;
+    }
+    killChildGroup(child, 'SIGTERM');
+    const cleanup = () => {
+      clearTimeout(killTimer);
+      child.off('close', cleanup);
+      child.off('error', cleanup);
+    };
+    const killTimer = setTimeout(() => {
+      cleanup();
+      if (!childHasExited(child)) {
+        killChildGroup(child, 'SIGKILL');
+      }
+    }, this.shutdownGraceMs);
+    killTimer.unref();
+    child.once('close', cleanup);
+    child.once('error', cleanup);
+  }
 }
 
 export const validateRequest = (request: CreateJobRequest): void => {
-  let parsed: URL;
-  try {
-    parsed = new URL(request.url);
-  } catch {
-    throw new Error('download URL is invalid');
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('download URL must use http or https');
-  }
+  validateDownloadUrl(request.url);
   if (request.destination !== 'personal' && request.destination !== 'shared') {
     throw new Error('destination must be personal or shared');
   }
   if (typeof request.splitChapters !== 'boolean') {
     throw new Error('split chapters flag must be a boolean');
+  }
+  if (request.ytDlpVersion !== 'packaged') {
+    throw new Error('yt-dlp version must be the reproducible packaged build');
   }
   if (request.mediaType === 'audio') {
     if (!request.audioFormat || !['flac', 'm4a', 'mp3', 'opus', 'wav'].includes(request.audioFormat)) {
@@ -368,11 +561,116 @@ export const validateRequest = (request: CreateJobRequest): void => {
   }
 };
 
+export const validateDownloadUrl = (rawUrl: string): void => {
+  if (typeof rawUrl !== 'string' || rawUrl.length > 2048) {
+    throw new Error('download URL must be at most 2048 characters');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('download URL is invalid');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('download URL must use http or https');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('download URL must not contain credentials');
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || isPrivateAddress(hostname)) {
+    throw new Error('download URL must not target a local or private address');
+  }
+  if (!ALLOWED_DOWNLOAD_HOSTS.some((allowed) => hostname === allowed || hostname.endsWith(`.${allowed}`))) {
+    throw new Error('download URL host is not supported; only YouTube URLs are allowed');
+  }
+  if (parsed.protocol !== 'https:' || parsed.port) {
+    throw new Error('YouTube download URLs must use HTTPS on the default port');
+  }
+  if (!isSupportedYouTubePath(parsed, hostname)) {
+    throw new Error('download URL must identify a supported YouTube video, playlist, or channel');
+  }
+};
+
+const isSupportedYouTubePath = (url: URL, hostname: string): boolean => {
+  const segments = url.pathname.split('/').filter(Boolean);
+  if (hostname === 'youtu.be' || hostname.endsWith('.youtu.be')) {
+    return segments.length === 1 && YOUTUBE_VIDEO_ID.test(segments[0]);
+  }
+  if (hostname === 'youtube-nocookie.com' || hostname.endsWith('.youtube-nocookie.com')) {
+    return segments.length === 2 && segments[0] === 'embed' && YOUTUBE_VIDEO_ID.test(segments[1]);
+  }
+  if (url.pathname === '/watch') {
+    const videoId = url.searchParams.get('v');
+    const playlistId = url.searchParams.get('list');
+    return (videoId != null && YOUTUBE_VIDEO_ID.test(videoId))
+      || (videoId == null && playlistId != null && YOUTUBE_PLAYLIST_ID.test(playlistId));
+  }
+  if (url.pathname === '/playlist') {
+    const playlistId = url.searchParams.get('list');
+    return playlistId != null && YOUTUBE_PLAYLIST_ID.test(playlistId);
+  }
+  if (segments[0]?.startsWith('@')) {
+    return YOUTUBE_CHANNEL_SEGMENT.test(segments[0])
+      && (segments.length === 1 || (segments.length === 2 && YOUTUBE_CHANNEL_TABS.has(segments[1])));
+  }
+  if (['c', 'channel', 'user'].includes(segments[0])) {
+    return segments.length >= 2
+      && segments.length <= 3
+      && YOUTUBE_CHANNEL_SEGMENT.test(segments[1])
+      && (segments.length === 2 || YOUTUBE_CHANNEL_TABS.has(segments[2]));
+  }
+  return segments.length === 2
+    && ['embed', 'live', 'shorts', 'v'].includes(segments[0])
+    && YOUTUBE_VIDEO_ID.test(segments[1]);
+};
+
 export const normalizeCreateJobRequest = (request: CreateJobRequest): CreateJobRequest => ({
   ...request,
+  ytDlpVersion: 'packaged',
   splitChapters: request.splitChapters ?? true,
   embedAudioCoverArt: request.mediaType === 'audio' ? (request.embedAudioCoverArt ?? true) : undefined,
 });
+
+export const ytDlpPathFor = (config: AppConfig, _request: CreateJobRequest): string => config.ytDlpPath;
+
+const isPrivateAddress = (hostname: string): boolean => {
+  const mappedAddress = ipv4FromMappedIpv6(hostname);
+  if (mappedAddress) {
+    return isPrivateAddress(mappedAddress);
+  }
+  const family = isIP(hostname);
+  if (family === 4) {
+    const [a, b] = hostname.split('.').map(Number);
+    return a === 0
+      || a === 10
+      || a === 127
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 100 && b >= 64 && b <= 127)
+      || a >= 224;
+  }
+  if (family === 6) {
+    return hostname === '::1'
+      || hostname === '::'
+      || hostname.startsWith('fc')
+      || hostname.startsWith('fd')
+      || /^fe[89ab]/.test(hostname)
+      || hostname.startsWith('ff');
+  }
+  return false;
+};
+
+const ipv4FromMappedIpv6 = (hostname: string): string | undefined => {
+  const match = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(hostname);
+  if (!match) {
+    return undefined;
+  }
+  const high = Number.parseInt(match[1], 16);
+  const low = Number.parseInt(match[2], 16);
+  return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
+};
 
 export const chapterGateFor = (request: CreateJobRequest, source: ProbeResponse): 'download' | 'single-file' | 'alert' => {
   if (request.splitChapters && source.chapters.length === 0) {
@@ -404,8 +702,7 @@ const killChildGroup = (child: ChildProcess, signal: NodeJS.Signals): void => {
   try {
     if (child.pid) {
       process.kill(-child.pid, signal);
-    } else {
-      child.kill(signal);
+      return;
     }
   } catch (error) {
     const code = typeof error === 'object' && error != null && 'code' in error ? String(error.code) : '';
@@ -413,7 +710,37 @@ const killChildGroup = (child: ChildProcess, signal: NodeJS.Signals): void => {
       throw error;
     }
   }
+  try {
+    child.kill(signal);
+  } catch (error) {
+    const code = typeof error === 'object' && error != null && 'code' in error ? String(error.code) : '';
+    if (code !== 'ESRCH') {
+      throw error;
+    }
+  }
 };
+
+const childHasExited = (child: ChildProcess): boolean => child.exitCode !== null || child.signalCode !== null;
+
+const waitForChildExit = (child: ChildProcess): Promise<void> => {
+  if (childHasExited(child)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const done = () => {
+      child.off('close', done);
+      child.off('error', done);
+      resolve();
+    };
+    child.once('close', done);
+    child.once('error', done);
+  });
+};
+
+const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => {
+  const timer = setTimeout(resolve, milliseconds);
+  timer.unref();
+});
 
 const copyDirectoryContents = async (sourceDir: string, destinationDir: string): Promise<void> => {
   const entries = await readdir(sourceDir, { withFileTypes: true });
@@ -437,6 +764,11 @@ const splitAudioChapters = async (
   source: ProbeResponse,
   audioFormat: AudioFormat,
   embedCoverArt: boolean,
+  childHooks?: {
+    isStopped: () => boolean;
+    onSpawn: (child: ChildProcess) => void;
+    onExit: (child: ChildProcess) => void;
+  },
 ): Promise<void> => {
   const input = await findDownloadedMedia(tempDir);
   const chapterDir = path.join(tempDir, 'chapters');
@@ -446,6 +778,9 @@ const splitAudioChapters = async (
 
   const specs = audioChapterSpecs(source);
   for (const spec of specs) {
+    if (childHooks?.isStopped()) {
+      throw new Error('interrupted by service shutdown');
+    }
     const title = sanitizeSegment(spec.chapter.title, 'Chapter');
     const output = path.join(chapterDir, `${String(spec.chapter.index).padStart(2, '0')} - ${title}.${audioFormat}`);
     const args = buildAudioChapterFfmpegArgs({
@@ -458,9 +793,12 @@ const splitAudioChapters = async (
       coverPath,
     });
     const timeoutMs = Math.max(120000, Math.ceil(spec.duration + 60) * 1000);
-    let result = await runCommand('ffmpeg', args, { timeoutMs });
+    let result = await runTrackedCommand('ffmpeg', args, timeoutMs, childHooks);
     if (result.code !== 0 && coverPath) {
-      result = await runCommand(
+      if (childHooks?.isStopped()) {
+        throw new Error('interrupted by service shutdown');
+      }
+      result = await runTrackedCommand(
         'ffmpeg',
         buildAudioChapterFfmpegArgs({
           input,
@@ -470,11 +808,37 @@ const splitAudioChapters = async (
           duration: spec.duration,
           audioFormat,
         }),
-        { timeoutMs },
+        timeoutMs,
+        childHooks,
       );
     }
     if (result.code !== 0) {
       throw new Error(result.stderr.trim() || `ffmpeg exited with code ${result.code ?? 'unknown'} while splitting chapter ${spec.chapter.index}`);
+    }
+  }
+};
+
+const runTrackedCommand = async (
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  childHooks?: {
+    onSpawn: (child: ChildProcess) => void;
+    onExit: (child: ChildProcess) => void;
+  },
+) => {
+  let spawnedChild: ChildProcess | undefined;
+  try {
+    return await runCommand(command, args, {
+      timeoutMs,
+      onSpawn: (child) => {
+        spawnedChild = child;
+        childHooks?.onSpawn(child);
+      },
+    });
+  } finally {
+    if (spawnedChild) {
+      childHooks?.onExit(spawnedChild);
     }
   }
 };

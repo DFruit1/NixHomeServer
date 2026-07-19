@@ -11,5 +11,11 @@
         notes = "Seerr request manager database and application config.";
       }
     ];
+    repo.backups.sqliteDumps = [
+      {
+        source = "/var/lib/seerr/db/db.sqlite3";
+        outputName = "seerr.sqlite";
+      }
+    ];
   };
 }

@@ -99,6 +99,7 @@ echo "  snapshot roots: $(jq -r '.backups.snapshotRoots | join(", ")' <<<"$inven
 echo "  Kopia repository: $(jq -r '.backups.repositoryPath' <<<"$inventory_json")"
 echo "  path inventories: $(jq '.backups.pathInventories | length' <<<"$inventory_json")"
 echo "  SQLite dumps: $(jq '.backups.sqliteDumps | length' <<<"$inventory_json")"
+echo "  PostgreSQL dumps: $(jq '.backups.postgresqlDumps | length' <<<"$inventory_json")"
 echo
 
 echo "Impermanence"
@@ -108,7 +109,8 @@ echo
 
 echo "Secrets"
 echo "  age secrets: $(jq '.secrets.ageSecretNames | length' <<<"$inventory_json")"
-echo "  external secrets: $(jq '.secrets.externalSecretNames | length' <<<"$inventory_json")"
+echo "  required external secrets: $(jq '.secrets.requiredExternalSecretNames | length' <<<"$inventory_json")"
+echo "  optional external secrets: $(jq '.secrets.optionalExternalSecretNames | length' <<<"$inventory_json")"
 echo
 
 echo "Systemd"

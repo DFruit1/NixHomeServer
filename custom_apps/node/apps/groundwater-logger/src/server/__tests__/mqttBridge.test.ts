@@ -42,6 +42,8 @@ const config = (databasePath: string): AppConfig => ({
   mqttPassword: 'secret',
   mqttSubscribeTopics: ['azman1/feeds/#', 'cmd/#', 'cfg/#'],
   mqttDefaultQos: 1,
+  retentionDays: 90,
+  maximumMessages: 500000,
 });
 
 describe('MqttBridge', () => {

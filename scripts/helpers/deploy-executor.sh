@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deploy-command.sh"
+
 export NIX_CONFIG="${NIX_CONFIG:-experimental-features = nix-command flakes
 accept-flake-config = true}"
 
@@ -86,23 +88,6 @@ check_failed_units() {
   fi
 }
 
-make_rebuild_command() {
-  local -n out_cmd="$1"
-  local rebuild_action="$ACTION"
-
-  if [[ "$ACTION" == "switch" ]]; then
-    rebuild_action="boot"
-  fi
-
-  out_cmd=(nix run --inputs-from . nixpkgs#nixos-rebuild -- "$rebuild_action" --flake ".#${HOSTNAME_ARG}" --sudo)
-
-  if [[ "$BUILD_LOCALLY" == "true" ]]; then
-    out_cmd+=(--target-host "$TARGET_HOST")
-  elif [[ "$TARGET_HOST" != "$BUILD_HOST" ]]; then
-    out_cmd+=(--target-host "$TARGET_HOST")
-  fi
-}
-
 target_command() {
   local command="$1"
 
@@ -116,7 +101,7 @@ target_command() {
 run_detached_switch() {
   local unit state result status start_command
 
-  unit="nixos-detached-switch-$(date +%s)"
+  unit="nixos-detached-switch-$(date +%s%N)-$$"
   start_command="sudo systemd-run --unit=$(printf '%q' "$unit") --description='Detached NixOS switch activation' --service-type=exec /nix/var/nix/profiles/system/bin/switch-to-configuration switch"
 
   echo "starting detached switch activation as ${unit}"
@@ -155,14 +140,24 @@ check_free_space
 
 echo "evaluating host ${HOSTNAME_ARG}"
 nix eval --raw ".#nixosConfigurations.${HOSTNAME_ARG}.config.system.build.toplevel.drvPath" >/dev/null
+homepage_canary_enabled="$(
+  nix eval --json ".#nixosConfigurations.${HOSTNAME_ARG}.config.nixhomeserver.modules" \
+    --apply 'modules: modules.homepage or false'
+)"
 
 if [[ "$DEBUG_MODE" == "true" ]]; then
   echo "running debug validation"
-  ./scripts/validate-repo.sh --full
+  nix shell --inputs-from . \
+    nixpkgs#age nixpkgs#gawk nixpkgs#gitMinimal nixpkgs#gnugrep \
+    nixpkgs#gnused nixpkgs#gnutar nixpkgs#jq nixpkgs#nodejs \
+    nixpkgs#openssl nixpkgs#python3 nixpkgs#ripgrep nixpkgs#sqlite \
+    nixpkgs#util-linux \
+    -c bash ./scripts/validate-repo.sh --full
 fi
 
 cmd=()
-make_rebuild_command cmd
+build_nixos_rebuild_command cmd \
+  "$ACTION" "$HOSTNAME_ARG" "$BUILD_LOCALLY" "$TARGET_HOST" "$BUILD_HOST"
 
 if [[ "$ACTION" == "switch" ]]; then
   echo "running nixos-rebuild boot before detached switch"
@@ -183,4 +178,12 @@ if command -v curl >/dev/null 2>&1; then
   ./scripts/check-public-routes.sh --hostname "$HOSTNAME_ARG"
 else
   nix shell --inputs-from . nixpkgs#curl -c bash ./scripts/check-public-routes.sh --hostname "$HOSTNAME_ARG"
+fi
+
+if [[ "$homepage_canary_enabled" == "true" ]]; then
+  echo "running authenticated service-access canary"
+  target_command "sudo systemctl start homepage-canary.service"
+  target_command "sudo /run/current-system/sw/bin/homepage-canary-assert"
+else
+  echo "skipping authenticated service-access canary: homepage module is absent"
 fi

@@ -1,18 +1,81 @@
-import { $, component$, useSignal } from '@builder.io/qwik';
+import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import type { OfflineMediaDevice, OfflineMediaEnrollResponse, OfflineMediaRemoveResponse, OfflineMediaSetup } from '../shared/types.js';
 import { QrValue } from './QrValue.js';
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
+const meaningfulLastSeen = (lastSeen?: string | null): string | undefined => {
+  if (!lastSeen) {
+    return undefined;
+  }
+  const date = new Date(lastSeen);
+  if (!Number.isFinite(date.getTime()) || date.getUTCFullYear() < 2000) {
+    return undefined;
+  }
+  return `${date.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+};
+
+const deviceSyncSummary = (device: OfflineMediaDevice): string => {
+  if (device.syncError) {
+    return `Sync status unavailable: ${device.syncError}`;
+  }
+  const remaining = device.needItems ?? 0;
+  const remainingSize = device.needBytes ? ` (${formatBytes(device.needBytes)})` : '';
+  if (device.connected) {
+    return remaining > 0 ? `Syncing — ${remaining} items${remainingSize} remaining` : 'Connected and up to date';
+  }
+  const lastSeen = meaningfulLastSeen(device.lastSeen);
+  if (remaining > 0) {
+    return `Not connected — ${remaining} items${remainingSize} waiting${lastSeen ? `. Last seen ${lastSeen}` : ''}`;
+  }
+  return lastSeen ? `Not connected — last seen ${lastSeen}` : 'Never connected — open Syncthing on this device';
+};
+
+const connectionLabel = (address: string): string => {
+  if (address.includes('100.')) {
+    return 'Away from home (NetBird)';
+  }
+  if (address.includes('192.168.') || address.includes('10.')) {
+    return 'At home (LAN)';
+  }
+  return 'Recommended server address';
+};
 
 export const OfflineMediaSetupPanel = component$(
   ({ offlineMedia, username }: { offlineMedia?: OfflineMediaSetup; username?: string }) => {
     const displayUsername = username ?? '{username}';
     const deviceId = useSignal('');
-    const deviceName = useSignal(`${displayUsername}-phone`);
+    const deviceName = useSignal(`${displayUsername}-device`);
     const status = useSignal('');
     const statusKind = useSignal<'success' | 'error'>('success');
     const submitting = useSignal(false);
     const removingDeviceId = useSignal('');
     const devices = useSignal<OfflineMediaDevice[]>(offlineMedia?.devices ?? []);
+    const runtimeError = useSignal(offlineMedia?.runtimeError ?? '');
     const folders = offlineMedia?.folders ?? [];
+
+    useVisibleTask$(({ cleanup }) => {
+      const refreshStatus = async () => {
+        const response = await fetch('/api/offline-media');
+        if (!response.ok) {
+          return;
+        }
+        const latest = (await response.json()) as OfflineMediaSetup;
+        devices.value = latest.devices ?? devices.value;
+        runtimeError.value = latest.runtimeError ?? '';
+      };
+      void refreshStatus();
+      const timer = window.setInterval(() => void refreshStatus(), 15_000);
+      cleanup(() => window.clearInterval(timer));
+    });
 
     const saveDevice = $(async () => {
       const submittedDeviceId = deviceId.value.trim();
@@ -44,7 +107,7 @@ export const OfflineMediaSetupPanel = component$(
         devices.value = body.devices ?? devices.value;
         deviceId.value = '';
         statusKind.value = 'success';
-        status.value = 'Offline media sync is ready. Accept each folder on your device as receive-only.';
+        status.value = 'Connected. Accept the shared folders on your device and choose Receive Only.';
       } catch (caught) {
         statusKind.value = 'error';
         status.value = caught instanceof Error ? caught.message : String(caught);
@@ -59,6 +122,8 @@ export const OfflineMediaSetupPanel = component$(
       try {
         const response = await fetch(`/api/offline-media/devices/${encodeURIComponent(targetDeviceId)}`, {
           method: 'DELETE',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
         });
         const body = (await response.json().catch(() => ({}))) as Partial<OfflineMediaRemoveResponse> & { error?: string };
         if (!response.ok || body.ok === false) {
@@ -78,59 +143,59 @@ export const OfflineMediaSetupPanel = component$(
     if (!offlineMedia?.enabled) {
       return (
         <section class="detail-block">
-          <h3>Offline Media Sync</h3>
-          <p class="hint">Offline media sync is not enabled in this server build.</p>
+          <h3>Keep media on your device</h3>
+          <p class="hint">Automatic offline copies are not available on this server.</p>
         </section>
       );
     }
 
     return (
       <section class="detail-block">
-        <h3>Offline Media Sync</h3>
+        <h3>Keep media on your device</h3>
         <p>
-          The server publishes music, downloaded videos, and other videos with Syncthing as send-only folders. Add the
-          server to each device, save the device ID here, then accept the shared folders as receive-only on the device.
+          Connect a computer or phone once and it will automatically download your music and selected videos from the
+          server. New files added to the server will appear on the device when Syncthing is running.
         </p>
+        <aside class="guide-callout neutral">
+          This sync goes from the server to your device. To add new media to the server, upload it with the Files app
+          first. Deleting a synced copy from your device will not delete the server copy.
+        </aside>
+        {runtimeError.value && (
+          <aside class="guide-callout">The server cannot check sync status right now: {runtimeError.value}</aside>
+        )}
+
+        <h4>Set up a computer or phone</h4>
+        <ol class="steps">
+          <li>
+            Install Syncthing on a computer, a Syncthing-compatible app on Android, or Möbius Sync on iPhone and iPad.
+          </li>
+          <li>
+            In the app, choose <strong>Add device</strong>, scan or paste the server ID below, then add the at-home or
+            away-from-home address shown under <strong>Connection help</strong>. This keeps the connection reliable when
+            automatic discovery is unavailable.
+          </li>
+          <li>
+            Copy your device's ID from the app, paste it below, give the device a name, and select{' '}
+            <strong>Connect device</strong>.
+          </li>
+          <li>Back in the app, accept the shared folders and choose <strong>Receive Only</strong> when asked.</li>
+        </ol>
+
         <div class="qr-grid">
           {offlineMedia.serverDeviceId ? (
-            <QrValue label="Server Device ID" value={offlineMedia.serverDeviceId} />
+            <QrValue label="Server ID — scan or paste this in your app" value={offlineMedia.serverDeviceId} />
           ) : (
             <div class="qr-card unavailable">
-              <h4>Server Device ID</h4>
-              <p>{offlineMedia.serverDeviceIdError || 'The server device ID is not available yet.'}</p>
+              <h4>Server ID</h4>
+              <p>{offlineMedia.serverDeviceIdError || 'The server ID is not available yet.'}</p>
             </div>
           )}
-          {offlineMedia.connectionAddresses.map((address) => (
-            <QrValue key={address} label={address.includes('100.') ? 'NetBird Address' : 'LAN Address'} value={address} />
-          ))}
-        </div>
-
-        <div class="folder-grid">
-          {folders.map((folder) => (
-            <article class="folder-card" key={folder.key}>
-              <h4>{folder.label}</h4>
-              <dl>
-                <div>
-                  <dt>Folder ID</dt>
-                  <dd>{folder.folderId}</dd>
-                </div>
-                <div>
-                  <dt>Server Folder</dt>
-                  <dd>{folder.serverFolderPath}</dd>
-                </div>
-                <div>
-                  <dt>Suggested Device Path</dt>
-                  <dd>{folder.suggestedDevicePath}</dd>
-                </div>
-              </dl>
-            </article>
-          ))}
         </div>
 
         <div class="key-form compact-form offline-media-enroll-form">
-          <h4>Enroll Device</h4>
+          <h4>Connect your device</h4>
           <label class="offline-media-device-id-field">
-            Device ID
+            Your device ID (copy this from the app)
             <input
               id="offline-media-device-id"
               type="text"
@@ -142,7 +207,7 @@ export const OfflineMediaSetupPanel = component$(
             />
           </label>
           <label>
-            Device Name
+            Device name
             <input
               id="offline-media-device-name"
               type="text"
@@ -153,19 +218,20 @@ export const OfflineMediaSetupPanel = component$(
             />
           </label>
           <button id="save-offline-media-device" type="button" disabled={submitting.value} onClick$={saveDevice}>
-            {submitting.value ? 'Saving...' : 'Save Device'}
+            {submitting.value ? 'Connecting...' : 'Connect device'}
           </button>
           {status.value && <p class={{ 'key-status': true, error: statusKind.value === 'error' }}>{status.value}</p>}
         </div>
 
         <section class="detail-block compact">
-          <h4>Enrolled Devices</h4>
+          <h4>Connected devices</h4>
           {devices.value.length > 0 ? (
             <div class="device-list">
               {devices.value.map((device) => (
                 <div class="device-row" key={device.deviceId}>
                   <div>
                     <strong>{device.deviceName}</strong>
+                    <p class="hint">{deviceSyncSummary(device)}</p>
                     <span>{device.deviceId}</span>
                   </div>
                   <button
@@ -179,17 +245,26 @@ export const OfflineMediaSetupPanel = component$(
               ))}
             </div>
           ) : (
-            <p class="hint">No devices are enrolled yet.</p>
+            <p class="hint">No devices are connected yet.</p>
           )}
         </section>
 
-        <ol class="steps">
-          <li>On your device, install Syncthing-Fork or another Syncthing client and open its add-device screen.</li>
-          <li>Scan or paste the Server Device ID. Use the LAN or NetBird address if discovery does not find the server.</li>
-          <li>Paste your device ID above and save it. Saving the same device again updates its display name.</li>
-          <li>Accept each offered folder and use receive-only mode where available.</li>
-          <li>Do not delete media from the device expecting it to delete server files. The server copy remains authoritative.</li>
-        </ol>
+        <details class="detail-block compact">
+          <summary>Connection help</summary>
+          <p>If the app cannot find the server automatically, add one of these addresses to the server device:</p>
+          <div class="qr-grid">
+            {offlineMedia.connectionAddresses.map((address) => (
+              <QrValue
+                key={address}
+                label={connectionLabel(address)}
+                value={address}
+              />
+            ))}
+          </div>
+          {folders.length > 0 && (
+            <p class="hint">Folders you will be offered: {folders.map((folder) => folder.label).join(', ')}.</p>
+          )}
+        </details>
       </section>
     );
   },

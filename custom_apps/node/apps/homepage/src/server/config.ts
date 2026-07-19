@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { fallbackBrandName } from '../shared/branding.js';
 import type { AdminStep, FolderGuide, OfflineMediaSetup, ServiceCard } from '../shared/types.js';
 
 export type HomepageConfig = {
+  brandName: string;
   domain: string;
   services: ServiceCard[];
   folderGuides: FolderGuide[];
@@ -9,6 +11,7 @@ export type HomepageConfig = {
   kanidmGroups?: string[];
   kanidmGroupDescriptions?: Record<string, string>;
   offlineMedia?: OfflineMediaSetup;
+  canaryAdminUser?: string;
 };
 
 export type AppConfig = {
@@ -22,6 +25,9 @@ export type AppConfig = {
   offlineMediaEnrollCommand?: string;
   offlineMediaRemoveCommand?: string;
   sudoPath: string;
+  canaryAdminUser?: string;
+  canaryStateDir?: string;
+  canaryTriggerCommand?: string;
   homepage: HomepageConfig;
 };
 
@@ -35,6 +41,7 @@ const numberFromEnv = (name: string, fallback: number): number => {
 };
 
 const fallbackHomepage: HomepageConfig = {
+  brandName: fallbackBrandName,
   domain: 'example.test',
   services: [],
   folderGuides: [],
@@ -42,13 +49,27 @@ const fallbackHomepage: HomepageConfig = {
   kanidmGroups: [],
   kanidmGroupDescriptions: {},
   offlineMedia: undefined,
+  canaryAdminUser: undefined,
 };
 
 export const loadHomepageConfig = (path: string | undefined): HomepageConfig => {
   if (!path) {
     return fallbackHomepage;
   }
-  return JSON.parse(readFileSync(path, 'utf8')) as HomepageConfig;
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<HomepageConfig>;
+  const brandName = typeof parsed.brandName === 'string' ? parsed.brandName.trim() : '';
+  if (!brandName || brandName.length > 100) {
+    throw new Error('homepage brandName must be a non-empty string of at most 100 characters');
+  }
+  const domain = typeof parsed.domain === 'string' ? parsed.domain.trim() : '';
+  if (!domain) {
+    throw new Error('homepage domain must be a non-empty string');
+  }
+  return {
+    ...(parsed as HomepageConfig),
+    brandName,
+    domain,
+  };
 };
 
 export const loadConfig = (): AppConfig => ({
@@ -62,5 +83,8 @@ export const loadConfig = (): AppConfig => ({
   offlineMediaEnrollCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND ?? process.env.HOMEPAGE_OFFLINE_MUSIC_ENROLL_COMMAND,
   offlineMediaRemoveCommand: process.env.HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND,
   sudoPath: process.env.HOMEPAGE_SUDO ?? 'sudo',
+  canaryAdminUser: process.env.HOMEPAGE_CANARY_ADMIN_USER,
+  canaryStateDir: process.env.HOMEPAGE_CANARY_STATE_DIR,
+  canaryTriggerCommand: process.env.HOMEPAGE_CANARY_TRIGGER_COMMAND,
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });

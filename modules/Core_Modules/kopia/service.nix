@@ -38,6 +38,12 @@ let
     kopia
     util-linux
   ];
+  requireDataRoot = lib.optionalString vars.dataRootIsMountPoint ''
+    if ! ${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg vars.dataRoot}; then
+      echo "Refusing backup operation because ${vars.dataRoot} is not a mounted data pool" >&2
+      exit 1
+    fi
+  '';
   kopiaAuthProxyCaddyfile = pkgs.writeText "kopia-auth-proxy.Caddyfile" ''
     {
       admin off
@@ -65,10 +71,8 @@ in
       systemd.services.kopia-repository-bootstrap = {
         description = "Create or connect the local encrypted Kopia repository";
         wantedBy = [ "multi-user.target" ];
-        wants = [
-          "data-pool-layout.service"
-          "kanidm-files-posix-groups.service"
-        ];
+        requires = [ "data-pool-layout.service" ];
+        wants = [ "kanidm-files-posix-groups.service" ];
         after = [
           "data-pool-layout.service"
           "kanidm-files-posix-groups.service"
@@ -76,12 +80,15 @@ in
         path = commonPath;
         serviceConfig = {
           Type = "oneshot";
+          Restart = "on-failure";
+          RestartSec = "30s";
           LoadCredential = [
             "${credentials.serverPassword}:${config.age.secrets.kopiaServerPassword.path}"
           ];
         };
         script = ''
           set -euo pipefail
+          ${requireDataRoot}
 
           password="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
           export KOPIA_CHECK_FOR_UPDATES=false
@@ -205,9 +212,20 @@ in
 
       systemd.services.kopia-persist-snapshot = {
         description = "Prepare data and create encrypted Kopia snapshots";
-        requires = [ "backup-prepare.service" ];
-        wants = [ "kopia-repository-bootstrap.service" ];
-        after = [ "backup-prepare.service" "kopia-repository-bootstrap.service" ];
+        requires = [
+          "backup-prepare.service"
+          "data-pool-layout.service"
+          "kopia-repository-bootstrap.service"
+        ];
+        after = [
+          "backup-prepare.service"
+          "data-pool-layout.service"
+          "kopia-repository-bootstrap.service"
+        ];
+        unitConfig = {
+          StartLimitIntervalSec = "2h";
+          StartLimitBurst = 3;
+        };
         path = commonPath;
         serviceConfig = {
           Type = "oneshot";
@@ -221,9 +239,13 @@ in
           Nice = 10;
           IOSchedulingClass = "best-effort";
           IOSchedulingPriority = 7;
+          TimeoutStartSec = "12h";
+          Restart = "on-failure";
+          RestartSec = "15min";
         };
         script = ''
           set -euo pipefail
+          ${requireDataRoot}
 
           password="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
           export KOPIA_CHECK_FOR_UPDATES=false
@@ -245,8 +267,12 @@ in
 
       systemd.services.kopia-full-maintenance = {
         description = "Run weekly full Kopia repository maintenance";
-        wants = [ "kopia-repository-bootstrap.service" ];
+        requires = [ "kopia-repository-bootstrap.service" ];
         after = [ "kopia-repository-bootstrap.service" ];
+        unitConfig = {
+          StartLimitIntervalSec = "4h";
+          StartLimitBurst = 3;
+        };
         path = commonPath;
         serviceConfig = {
           Type = "oneshot";
@@ -258,9 +284,13 @@ in
           IOWeight = 10;
           IOSchedulingClass = "best-effort";
           IOSchedulingPriority = 7;
+          TimeoutStartSec = "12h";
+          Restart = "on-failure";
+          RestartSec = "30min";
         };
         script = ''
           set -euo pipefail
+          ${requireDataRoot}
           export KOPIA_CHECK_FOR_UPDATES=false
           export KOPIA_PASSWORD="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
           export KOPIA_CONFIG_PATH=${lib.escapeShellArg configFile}

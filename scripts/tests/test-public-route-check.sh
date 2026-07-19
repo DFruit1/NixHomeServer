@@ -71,7 +71,7 @@ case "$url" in
     ;;
 esac
 EOF
-chmod +x "$tmpdir/curl"
+make_test_executable "$tmpdir/curl"
 
 run_route_check() {
   PATH="$tmpdir:$PATH" \
@@ -86,7 +86,10 @@ if ! rg -Fq "Public route checks passed" <<<"$healthy_output"; then
   exit 1
 fi
 
-gateway_output="$(run_route_check "https://gateway.example.test" || true)"
+if gateway_output="$(run_route_check "https://gateway.example.test")"; then
+  echo "❌ Public route check returned success for HTTP 502."
+  exit 1
+fi
 if ! rg -Fq "HTTP 502" <<<"$gateway_output"; then
   echo "❌ Public route check should report HTTP 502 responses."
   echo "$gateway_output"
@@ -98,7 +101,10 @@ if ! rg -Fq "blocked: public route health check failed" <<<"$gateway_output"; th
   exit 1
 fi
 
-body_output="$(run_route_check "https://body.example.test" || true)"
+if body_output="$(run_route_check "https://body.example.test")"; then
+  echo "❌ Public route check returned success for a Bad Gateway response body."
+  exit 1
+fi
 if ! rg -Fq "response body contains Bad Gateway" <<<"$body_output"; then
   echo "❌ Public route check should fail when a response body contains Bad Gateway."
   echo "$body_output"
@@ -109,5 +115,15 @@ require_fixed \
   scripts/helpers/deploy-executor.sh \
   "scripts/check-public-routes.sh --hostname" \
   "Deploy executor should run the public route health check after rebuilds."
+
+require_fixed \
+  scripts/helpers/deploy-executor.sh \
+  "systemctl start homepage-canary.service" \
+  "Deploy executor should run the authenticated service-access canary."
+
+require_fixed \
+  scripts/helpers/deploy-executor.sh \
+  "homepage-canary-assert" \
+  "Deploy executor should fail when the canary result is not passing."
 
 echo "✅ Public route check tests passed."

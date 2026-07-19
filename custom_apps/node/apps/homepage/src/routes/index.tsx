@@ -2,7 +2,6 @@ import { $, component$, useContext, useSignal, useVisibleTask$ } from '@builder.
 import { ServiceTile } from '../components/ServiceTile.js';
 import { ServiceLogo } from '../components/ServiceLogo.js';
 import { HomepageContext } from '../shared/homepage-context.js';
-import type { DocumentHead } from '@builder.io/qwik-city';
 
 export default component$(() => {
   const homepage = useContext(HomepageContext);
@@ -89,7 +88,3 @@ export default component$(() => {
     </>
   );
 });
-
-export const head: DocumentHead = {
-  title: 'Sydney Basin Services',
-};

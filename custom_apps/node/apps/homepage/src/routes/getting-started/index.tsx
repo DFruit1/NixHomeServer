@@ -1,16 +1,14 @@
 import { $, component$, useContext, useStore, useVisibleTask$, type JSXOutput } from '@builder.io/qwik';
-import { Link, useLocation, type DocumentHead } from '@builder.io/qwik-city';
-import { CommandSnippet } from '../../components/CommandSnippet.js';
+import { Link, useLocation } from '@builder.io/qwik-city';
+import { CredentialBackupGuide } from '../../components/CredentialBackupGuide.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { ServiceCard } from '../../shared/types.js';
-import { sftpKeygenCommands } from '../../shared/ui-constants.js';
 
-const stepIds = ['sign-in', 'secure-account', 'passwords', 'services', 'files', 'photos', 'finish'] as const;
+const stepIds = ['account', 'recovery', 'services', 'uploads', 'devices', 'finish'] as const;
 type GettingStartedStepId = (typeof stepIds)[number];
 type SetupStatus = 'verified' | 'manual' | 'pending' | 'unavailable';
 
 const isStepId = (value: string | null): value is GettingStartedStepId => stepIds.includes(value as GettingStartedStepId);
-
 const manualCheckStorageKey = 'homepage.gettingStartedChecks';
 
 const serviceStatus = (service: ServiceCard | undefined): SetupStatus => {
@@ -25,12 +23,11 @@ export default component$(() => {
   const location = useLocation();
   const manualChecks = useStore<Record<string, boolean>>({});
   const data = homepage.data;
-  const domain = data?.domain ?? 'sydneybasiniot.org';
+  const domain = data?.domain ?? 'example.test';
   const username = data?.user.username ?? '{username}';
-  const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
-  const visibleServices = data?.services ?? [];
-  const enabledServices = visibleServices.filter((service) => service.enabled);
-  const serviceById = (id: string) => visibleServices.find((service) => service.id === id);
+  const services = data?.services ?? [];
+  const enabledServices = services.filter((service) => service.enabled);
+  const serviceById = (id: string) => services.find((service) => service.id === id);
   const serviceUrl = (id: string, fallback: string) => serviceById(id)?.url ?? fallback;
   const kanidmUrl = `https://id.${domain}`;
   const filesUrl = serviceUrl('files', `https://files.${domain}`);
@@ -39,8 +36,9 @@ export default component$(() => {
   const passwordsStatus = serviceStatus(serviceById('passwords'));
   const filesStatus = serviceStatus(serviceById('files'));
   const photosStatus = serviceStatus(serviceById('photos'));
+  const offlineMediaStatus = serviceStatus(serviceById('offline-media'));
   const requestedStep = location.url.searchParams.get('step');
-  const activeStepId: GettingStartedStepId = isStepId(requestedStep) ? requestedStep : 'sign-in';
+  const activeStepId: GettingStartedStepId = isStepId(requestedStep) ? requestedStep : 'account';
 
   useVisibleTask$(() => {
     const saved = window.localStorage.getItem(manualCheckStorageKey);
@@ -59,17 +57,14 @@ export default component$(() => {
     window.localStorage.setItem(manualCheckStorageKey, JSON.stringify(manualChecks));
   });
 
+  const closeStepMenu = $((_event: Event, target: HTMLAnchorElement) => {
+    target.closest('details')?.removeAttribute('open');
+  });
+
   const statusLabel = (status: SetupStatus): string => {
-    if (status === 'verified') {
-      return 'Verified';
-    }
-    if (status === 'manual') {
-      return 'Confirmed';
-    }
-    if (status === 'unavailable') {
-      return 'Not enabled';
-    }
-    return 'Needs confirmation';
+    if (status === 'verified' || status === 'manual') return 'Done';
+    if (status === 'unavailable') return 'Skip — this app is not available';
+    return 'Not done';
   };
 
   const StatusMark = ({ status }: { status: SetupStatus }) => (
@@ -83,19 +78,10 @@ export default component$(() => {
       <input
         type="checkbox"
         checked={Boolean(manualChecks[id])}
-        onChange$={(event, target) => {
-          void event;
-          void setManualCheck(id, target.checked);
-        }}
+        onChange$={(_event, target) => setManualCheck(id, target.checked)}
       />
       <span>{label}</span>
     </label>
-  );
-
-  const OptionalStatusText = ({ status, enabledText }: { status: SetupStatus; enabledText: string }) => (
-    <p class="getting-started-note">
-      {status === 'verified' ? enabledText : 'This service is not enabled for this account. Skip this step unless an admin grants access later.'}
-    </p>
   );
 
   const setupItems = [
@@ -105,90 +91,60 @@ export default component$(() => {
       status: data?.user.username ? 'verified' : 'pending',
     },
     {
-      id: 'kanidm-direct-signin',
-      label: 'Confirmed direct Kanidm sign-in works',
-      status: manualChecks['kanidm-direct-signin'] ? 'manual' : 'pending',
+      id: 'account-secured',
+      label: 'Checked my sign-in and account recovery options',
+      status: manualChecks['account-secured'] ? 'manual' : 'pending',
       manual: true,
     },
     {
-      id: 'kanidm-security',
-      label: 'Confirmed password, TOTP, passkey, and recovery options',
-      status: manualChecks['kanidm-security'] ? 'manual' : 'pending',
+      id: 'recovery-saved',
+      label: 'Created and tested a recovery backup',
+      status: manualChecks['recovery-saved'] ? 'manual' : 'pending',
       manual: true,
-    },
-    {
-      id: 'password-vault',
-      label: 'Passwords service is enabled',
-      status: passwordsStatus,
-    },
-    {
-      id: 'passwords-saved',
-      label: 'Saved account credentials, TOTP, passkey, and recovery details',
-      status: manualChecks['passwords-saved'] ? 'manual' : 'pending',
-      manual: true,
-    },
-    {
-      id: 'services-visible',
-      label: enabledServices.length > 0 ? `${enabledServices.length} service${enabledServices.length === 1 ? '' : 's'} available to this account` : 'Services available to this account',
-      status: enabledServices.length > 0 ? 'verified' : 'pending',
     },
     {
       id: 'services-opened',
-      label: 'Opened the services you expect to use',
+      label: 'Opened the apps I plan to use',
       status: manualChecks['services-opened'] ? 'manual' : 'pending',
       manual: true,
     },
     {
-      id: 'files-service',
-      label: 'Files service is enabled',
-      status: filesStatus,
-    },
-    {
-      id: 'file-upload',
-      label: 'Chose browser uploads or SSHFS desktop uploads',
-      status: filesStatus === 'verified' ? (manualChecks['file-upload'] ? 'manual' : 'pending') : 'unavailable',
+      id: 'upload-ready',
+      label: 'Uploaded a test file or connected Files to my computer',
+      status: filesStatus === 'verified' ? (manualChecks['upload-ready'] ? 'manual' : 'pending') : 'unavailable',
       manual: true,
     },
     {
-      id: 'photos-service',
-      label: 'Photos service is enabled',
-      status: photosStatus,
+      id: 'photos-ready',
+      label: 'Checked that a phone photo appears in Photos',
+      status: photosStatus === 'verified' ? (manualChecks['photos-ready'] ? 'manual' : 'pending') : 'unavailable',
+      manual: true,
     },
     {
-      id: 'photos-mobile',
-      label: 'Installed Immich mobile app and tested backup',
-      status: photosStatus === 'verified' ? (manualChecks['photos-mobile'] ? 'manual' : 'pending') : 'unavailable',
+      id: 'offline-ready',
+      label: 'Connected this device to Offline Media',
+      status: offlineMediaStatus === 'verified' ? (manualChecks['offline-ready'] ? 'manual' : 'pending') : 'unavailable',
       manual: true,
     },
     {
       id: 'setup-reviewed',
-      label: 'Reviewed app-specific setup notes for the services you use',
+      label: 'Finished setting up the apps I use',
       status: manualChecks['setup-reviewed'] ? 'manual' : 'pending',
       manual: true,
     },
-  ] satisfies {
-    id: string;
-    label: string;
-    status: SetupStatus;
-    manual?: boolean;
-  }[];
+  ] satisfies { id: string; label: string; status: SetupStatus; manual?: boolean }[];
 
   const stepStatus = (ids: string[]): SetupStatus => {
     const statuses = ids.map((id) => setupItems.find((item) => item.id === id)?.status ?? 'pending');
-    if (statuses.some((status) => status === 'pending')) {
-      return 'pending';
-    }
-    if (statuses.every((status) => status === 'unavailable')) {
-      return 'unavailable';
-    }
-    return statuses.some((status) => status === 'manual') ? 'manual' : 'verified';
+    const relevant = statuses.filter((status) => status !== 'unavailable');
+    if (relevant.length === 0) return 'unavailable';
+    if (relevant.some((status) => status === 'pending')) return 'pending';
+    return relevant.some((status) => status === 'manual') ? 'manual' : 'verified';
   };
 
   const renderSetupItem = (id: string) => {
     const item = setupItems.find((candidate) => candidate.id === id);
-    if (!item) {
-      return null;
-    }
+    if (!item) return null;
     return (
       <li key={item.id} class={{ 'setup-item': true, [item.status]: true }}>
         <StatusMark status={item.status} />
@@ -199,241 +155,227 @@ export default component$(() => {
 
   const steps = [
     {
-      id: 'sign-in',
-      label: 'Sign in',
-      status: stepStatus(['signed-in']),
+      id: 'account',
+      label: 'Protect your account',
+      summary: 'Check how you sign in and recover your account.',
+      status: stepStatus(['signed-in', 'account-secured']),
       content: (
         <>
-          <h2>Sign in</h2>
-          <p>Start by confirming Kanidm works for your account outside any individual app. This verifies the account before app-specific SSO, permissions, or first-run setup gets involved.</p>
-          <ul class="setup-list">{['signed-in'].map(renderSetupItem)}</ul>
+          <span class="eyebrow">Step 1 · Account</span>
+          <h2>Protect your account</h2>
+          <p class="step-lead">Kanidm is where you manage the account used by most apps. Check that you can sign in and that you have another way in if you lose your phone or computer.</p>
+          <ul class="setup-list">{['signed-in', 'account-secured'].map(renderSetupItem)}</ul>
           <ol class="steps">
-            <li>Open Kanidm and sign in as {username}.</li>
-            <li>Return to this guide after the Kanidm page loads successfully and shows your account.</li>
+            <li>Open Kanidm. Check that your name and email address are correct.</li>
+            <li>Open your sign-in settings. If possible, add a second way to sign in, such as a passkey or a code from an authenticator app.</li>
+            <li>Check that losing one device would not remove every way you can sign in.</li>
           </ol>
           <div class="getting-started-actions compact">
-            <a class="primary-link" href={kanidmUrl} target="_blank" rel="noreferrer">
-              Open Kanidm
-            </a>
+            <a class="primary-link" href={kanidmUrl} target="_blank" rel="noreferrer">Open Kanidm</a>
           </div>
-          <p class="getting-started-note">If Kanidm asks for a reset or credential update, finish it first. App sign-in depends on this account being healthy.</p>
+          <aside class="guide-callout">If you cannot sign in to Kanidm, stop here and ask an admin for a temporary account recovery link.</aside>
         </>
       ),
     },
     {
-      id: 'secure-account',
-      label: 'Secure account',
-      status: stepStatus(['kanidm-direct-signin', 'kanidm-security']),
+      id: 'recovery',
+      label: 'Prepare for account recovery',
+      summary: 'Keep recovery details somewhere safe outside this server.',
+      status: stepStatus(['recovery-saved']),
       content: (
         <>
-          <h2>Secure your account</h2>
-          <p>Confirm the credentials attached to your Kanidm account before relying on the rest of the server. This is the recovery point if an app session expires, a phone is replaced, or a browser profile is lost.</p>
-          <ul class="setup-list">{['kanidm-direct-signin', 'kanidm-security'].map(renderSetupItem)}</ul>
+          <span class="eyebrow">Step 2 · Recovery</span>
+          <h2>Prepare for account recovery</h2>
+          <p class="step-lead">Save your sign-in details in a password manager. Keep at least one recovery method somewhere that still works when this server is offline.</p>
+          <ul class="setup-list">{['recovery-saved'].map(renderSetupItem)}</ul>
           <ol class="steps">
-            <li>
-              Open <a href={kanidmUrl} target="_blank" rel="noreferrer">Kanidm</a> and sign in directly as {username}.
-            </li>
-            <li>Open the credentials or account security area.</li>
-            <li>Confirm your password works, your TOTP code works, at least one passkey is listed, and recovery details are stored somewhere you can reach without this server.</li>
-            <li>If anything is missing or only stored on one device, add another method before moving on.</li>
-          </ol>
-          <div class="getting-started-actions compact">
-            <a class="primary-link" href={kanidmUrl} target="_blank" rel="noreferrer">
-              Open Kanidm
-            </a>
-          </div>
-          <p class="getting-started-note">If you cannot get back in, ask the server admin for a new short-lived Kanidm credential reset link.</p>
-        </>
-      ),
-    },
-    {
-      id: 'passwords',
-      label: 'Save passwords',
-      status: stepStatus(['password-vault', 'passwords-saved']),
-      content: (
-        <>
-          <h2>Save passwords and recovery details</h2>
-          <p>Save the account details you just verified before opening more apps. Vaultwarden is the preferred shared password manager when it is enabled for your account.</p>
-          <ul class="setup-list">{['password-vault', 'passwords-saved'].map(renderSetupItem)}</ul>
-          <ol class="steps">
-            <li>
-              Open <a href={passwordsUrl} target="_blank" rel="noreferrer">Passwords</a>. If this is your first visit, create a Vaultwarden account using the same email address as your Kanidm account.
-            </li>
-            <li>Create one login item named Kanidm - {username}.</li>
-            <li>Save the Kanidm username, password, sign-in URL ({kanidmUrl}), TOTP seed, passkey notes, and recovery codes in that item.</li>
-            <li>Choose and store the Vaultwarden master password carefully; it protects the vault separately from Kanidm sign-in.</li>
-            <li>Install the Vaultwarden or Bitwarden browser extension or mobile app if you want it to store passkeys.</li>
-            <li>Repeat this pattern later for any app that asks for its own local password.</li>
+            <li>{passwordsStatus === 'verified' ? 'Open the Passwords app and create an account with the same email address you use for Kanidm.' : 'Use a password manager that you trust.'}</li>
+            <li>Save your Kanidm username, sign-in page, and password. Note which devices hold your passkeys or authenticator app.</li>
+            <li>Keep recovery codes in a second secure place that does not rely on this server.</li>
+            <li>If an app gives you its own password, save that too. It may be different from your Kanidm password.</li>
           </ol>
           {passwordsStatus === 'verified' ? (
             <div class="getting-started-actions compact">
-              <a class="primary-link" href={passwordsUrl} target="_blank" rel="noreferrer">
-                Open Passwords
-              </a>
+              <a class="primary-link" href={passwordsUrl} target="_blank" rel="noreferrer">Open Passwords</a>
             </div>
           ) : (
-            <p class="getting-started-note">The server password manager is not enabled for this account. Use another password manager now and ask an admin to enable Passwords if you should have it.</p>
+            <aside class="guide-callout neutral">The Passwords app is not available to you. Use another password manager, or ask an admin whether you should have access.</aside>
           )}
+          <CredentialBackupGuide />
         </>
       ),
     },
     {
       id: 'services',
-      label: 'Open services',
-      status: stepStatus(['services-visible', 'services-opened']),
+      label: 'Open your apps',
+      summary: 'Check that each app you need opens correctly.',
+      status: stepStatus(['services-opened']),
       content: (
         <>
-          <h2>Open services</h2>
-          <p>Use the Services page as the source of truth for what your account can access. Open the apps you expect to use from there, and let each app finish any first-run login or profile setup.</p>
-          <ul class="setup-list">{['services-visible', 'services-opened'].map(renderSetupItem)}</ul>
-          <p class="getting-started-note">
-            {enabledServices.length > 0
-              ? `${enabledServices.length} service${enabledServices.length === 1 ? '' : 's'} available to this account.`
-              : 'No services are currently available to this account.'}
-          </p>
+          <span class="eyebrow">Step 3 · Services</span>
+          <h2>Open your apps</h2>
+          <p class="step-lead">The Services page shows the apps you can use. You currently have {enabledServices.length} app{enabledServices.length === 1 ? '' : 's'}.</p>
+          <ul class="setup-list">{['services-opened'].map(renderSetupItem)}</ul>
+          {enabledServices.length > 0 && (
+            <div class="available-service-list" aria-label="Available services">
+              {enabledServices.map((service) => (
+                <a key={service.id} href={service.url} target={service.url.startsWith('/') ? undefined : '_blank'} rel="noreferrer">{service.name}</a>
+              ))}
+            </div>
+          )}
           <ol class="steps">
-            <li>Open Services and click each active card you plan to use.</li>
-            <li>If an app asks to approve Kanidm access, approve it.</li>
-            <li>If an app shows its own first-run screen, finish that setup and save any local password or recovery details in your password manager.</li>
-            <li>If an expected app is missing, ask an admin to check your access groups before troubleshooting the app itself.</li>
-            <li>If a visible app loops back to sign-in or shows forbidden, report the app name and the account you used.</li>
-            <li>Use each service detail page when you need app-specific upload, login, or first-run notes.</li>
+            <li>Open each app you plan to use. Complete any setup questions it shows.</li>
+            <li>If an app creates a separate password, save it in your password manager.</li>
+            <li>If an app is missing, ask an admin to check your access. If an app will not open, tell the admin its name and copy the error message.</li>
           </ol>
           <div class="getting-started-actions compact">
-            <Link class="primary-link" href="/">
-              Open Services
-            </Link>
+            <Link class="primary-link" href="/">Open Services</Link>
           </div>
         </>
       ),
     },
     {
-      id: 'files',
-      label: 'Set up files',
-      status: stepStatus(['files-service', 'file-upload']),
+      id: 'uploads',
+      label: 'Add your files',
+      summary: 'Choose how you want to copy files to the server.',
+      status: stepStatus(['upload-ready']),
       content: (
         <>
-          <h2>Set up files and uploads</h2>
-          <p>Use Files for one-off browser uploads. Use SSHFS when you want a mounted desktop folder or larger repeated uploads.</p>
-          <ul class="setup-list">{['files-service', 'file-upload'].map(renderSetupItem)}</ul>
-          <OptionalStatusText status={filesStatus} enabledText="Files is enabled for this account." />
-          <ol class="steps">
-            <li>
-              Open <a href={filesUrl} target="_blank" rel="noreferrer">Files</a> and confirm you can create a test folder.
-            </li>
-            <li>Delete the test folder after the check so later uploads are easier to scan.</li>
-            <li>Open the upload guide and choose the content type you are uploading so files land in the app folder that watches them.</li>
-            <li>Optional: for desktop uploads, generate an SSH key on your computer and paste the public key into the upload guide.</li>
-          </ol>
-          <p class="getting-started-note">Linux or macOS SSH key command:</p>
-          <CommandSnippet command={sftpKeygenCommands.linux} />
-          <p class="getting-started-note">Windows PowerShell SSH key command:</p>
-          <CommandSnippet command={sftpKeygenCommands.windows} />
-          <p class="getting-started-note">After saving the public key, the mount target is {username}@{serverHost}:/ on port 2222. The upload guide fills in copyable mount commands for Windows, macOS, and Linux.</p>
+          <span class="eyebrow">Step 4 · Files</span>
+          <h2>Choose how to add files</h2>
+          <p class="step-lead">For a few files, upload them in your web browser. If you move files often, you can connect Files to your computer so it appears like another folder.</p>
+          <ul class="setup-list">{['upload-ready'].map(renderSetupItem)}</ul>
           {filesStatus === 'verified' ? (
-            <div class="getting-started-actions compact">
-              <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">
-                Open Files
-              </a>
-              <Link class="secondary-link" href="/uploads">
-                Upload guide
-              </Link>
-            </div>
+            <>
+              <div class="choice-grid">
+                <article><strong>Upload in your browser</strong><span>Best for a few files. Open Files, choose the folder for that type of content, then drag your files into it.</span></article>
+                <article><strong>Connect Files to your computer</strong><span>Best for regular or large transfers. Follow the guide for Windows, macOS, or Linux.</span></article>
+              </div>
+              <aside class="guide-callout neutral">Check the upload guide before choosing a folder. Each app imports files from a specific folder. Using the wrong one can stop the file from appearing or create a duplicate later.</aside>
+              <div class="getting-started-actions compact">
+                <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">Open Files</a>
+                <Link class="secondary-link" href="/uploads">See where and how to upload</Link>
+              </div>
+            </>
           ) : (
-            <p class="getting-started-note">Files is not enabled for this account. Skip this unless an admin grants file access.</p>
+            <aside class="guide-callout neutral">The Files app is not available to you. Skip this step, or ask an admin if you need access.</aside>
           )}
         </>
       ),
     },
     {
-      id: 'photos',
-      label: 'Set up photos',
-      status: stepStatus(['photos-service', 'photos-mobile']),
+      id: 'devices',
+      label: 'Connect devices',
+      summary: 'Optional: connect photo backup or offline media.',
+      status: stepStatus(['photos-ready', 'offline-ready']),
       content: (
         <>
-          <h2>Set up photos</h2>
-          <p>This step is optional. If you use the photo library, set up Immich from both the web app and your phone before relying on camera backup.</p>
-          <ul class="setup-list">{['photos-service', 'photos-mobile'].map(renderSetupItem)}</ul>
-          <OptionalStatusText status={photosStatus} enabledText="Photos is enabled for this account." />
-          <ol class="steps">
-            <li>
-              Open <a href={photosUrl} target="_blank" rel="noreferrer">Photos</a> in the browser and confirm the library loads.
-            </li>
-            <li>Install the Immich mobile app from your phone app store.</li>
-            <li>Use {photosUrl} as the server endpoint in the mobile app.</li>
-            <li>Sign in with Kanidm, choose the camera albums to back up, and leave the app open until the first backup starts.</li>
-            <li>Allow photo and background permissions on the phone, and disable battery restrictions for Immich if your phone pauses backups.</li>
-            <li>Confirm a new phone photo appears in the Photos web app.</li>
-          </ol>
-          {photosStatus === 'verified' ? (
-            <div class="getting-started-actions compact">
-              <a class="primary-link" href={photosUrl} target="_blank" rel="noreferrer">
-                Open Photos
-              </a>
-              <Link class="secondary-link" href="/services/photos">
-                Photos setup notes
-              </Link>
-            </div>
-          ) : (
-            <p class="getting-started-note">Photos is not enabled for this account. Skip this unless an admin enables Immich for you.</p>
+          <span class="eyebrow">Step 5 · Optional</span>
+          <h2>Connect your devices</h2>
+          <p class="step-lead">This step is optional. Connect only the apps that you want to use on this phone or computer.</p>
+          <ul class="setup-list">{['photos-ready', 'offline-ready'].map(renderSetupItem)}</ul>
+          <div class="device-setup-list">
+            {photosStatus === 'verified' && (
+              <article>
+                <div><span class="eyebrow">Phone backup</span><h3>Photos</h3></div>
+                <p>Install the Immich app and enter <strong>{photosUrl}</strong> when it asks for the server address. Sign in, choose the phone albums to back up, and keep the app open for the first upload. Then check that a new photo appears in Photos.</p>
+                <a class="secondary-link" href={photosUrl} target="_blank" rel="noreferrer">Open Photos</a>
+              </article>
+            )}
+            {offlineMediaStatus === 'verified' && (
+              <article>
+                <div><span class="eyebrow">Offline access</span><h3>Offline Media</h3></div>
+                <p>Install Syncthing, the app used to copy media to this device. Copy the device ID it shows, then open the Offline Media setup page and follow the steps. Check that your device appears before waiting for files to download.</p>
+                <Link class="secondary-link" href="/services/offline-media">Set up Offline Media</Link>
+              </article>
+            )}
+          </div>
+          {photosStatus === 'unavailable' && offlineMediaStatus === 'unavailable' && (
+            <aside class="guide-callout neutral">Photo backup and Offline Media are not available to you. You can skip this step.</aside>
           )}
         </>
       ),
     },
     {
       id: 'finish',
-      label: 'Review setup',
+      label: 'Finish',
+      summary: 'Check your setup and find help when you need it.',
       status: stepStatus(['setup-reviewed']),
       content: (
         <>
-          <h2>Review setup</h2>
-          <p>Use this final pass to confirm the account is usable and that recovery details are saved before you close the guide.</p>
-          <ul class="setup-list">{['signed-in', 'kanidm-security', 'passwords-saved', 'services-opened', 'file-upload', 'photos-mobile', 'setup-reviewed'].map(renderSetupItem)}</ul>
-          <ol class="steps">
-            <li>Use Services for app-specific detail pages when you need login, upload, import, or first-run notes.</li>
-            <li>Use the upload guide before moving files into Documents, Books, Videos, Audiobooks, Downloads, Mail Archive, or Offline Media folders.</li>
-            <li>Save any local app password in your password manager before closing that app.</li>
-            <li>Bookmark the homepage after setup; it stays the easiest way to find enabled services and account-specific guidance.</li>
-          </ol>
+          <span class="eyebrow">Step 6 · Review</span>
+          <h2>Finish setup</h2>
+          <p class="step-lead">You do not need to set up every app today. Check the items below, then return to this guide when you add an app or device.</p>
+          <ul class="setup-list">{['signed-in', 'account-secured', 'recovery-saved', 'services-opened', 'upload-ready', 'photos-ready', 'offline-ready', 'setup-reviewed'].map(renderSetupItem)}</ul>
+          <div class="finish-next-steps">
+            <h3>Where to go next</h3>
+            <p><strong>Services</strong> opens your apps and their help pages. <strong>How to Upload Files</strong> shows which folder to use and how to connect Files to your computer. Ask an admin about a missing app, account recovery, or an app that will not open.</p>
+          </div>
           <div class="getting-started-actions compact">
-            <Link class="primary-link" href="/">
-              Open Services
-            </Link>
-            <Link class="secondary-link" href="/uploads">
-              Open Upload Guide
-            </Link>
+            <Link class="primary-link" href="/">Go to Services</Link>
+            <Link class="secondary-link" href="/uploads">Open Upload Guide</Link>
           </div>
         </>
       ),
     },
-  ] satisfies {
-    id: GettingStartedStepId;
-    label: string;
-    status: SetupStatus;
-    content: JSXOutput;
-  }[];
-  const activeStep = steps.find((step) => step.id === activeStepId) ?? steps[0];
+  ] satisfies { id: GettingStartedStepId; label: string; summary: string; status: SetupStatus; content: JSXOutput }[];
+
+  const activeStepIndex = steps.findIndex((step) => step.id === activeStepId);
+  const activeStep = steps[activeStepIndex] ?? steps[0];
+  const relevantItems = setupItems.filter((item) => item.status !== 'unavailable');
+  const completeItems = relevantItems.filter((item) => item.status === 'verified' || item.status === 'manual');
+  const progress = relevantItems.length === 0 ? 0 : Math.round((completeItems.length / relevantItems.length) * 100);
+  const previousStep = activeStepIndex > 0 ? steps[activeStepIndex - 1] : undefined;
+  const nextStep = activeStepIndex < steps.length - 1 ? steps[activeStepIndex + 1] : undefined;
 
   return (
     <section id="guide" class="getting-started-guide">
-      <nav class="getting-started-toc" aria-label="Getting started steps">
-        <ol>
-          {steps.map((step) => (
-            <li key={step.id}>
-              <Link href={`/getting-started?step=${step.id}#guide`} class={{ selected: activeStepId === step.id }}>
-                <StatusMark status={step.status} />
-                <span>{step.label}</span>
-              </Link>
-            </li>
-          ))}
-        </ol>
-      </nav>
+      <header class="getting-started-header">
+        <div>
+          <span class="eyebrow">First-time setup · your progress is saved on this device</span>
+          <h1>Set up your account</h1>
+          <p>Start by protecting the account for {username}. Then set up only the apps and devices you plan to use.</p>
+        </div>
+        <div class="setup-progress" aria-label={`${progress}% of setup complete`}>
+          <div><strong>{completeItems.length} of {relevantItems.length}</strong><span>tasks done</span></div>
+          <progress max={100} value={progress}>{progress}%</progress>
+        </div>
+      </header>
 
-      <article class="getting-started-step">{activeStep.content}</article>
+      <aside class="getting-started-path">
+        <details>
+          <summary>
+            <span class="eyebrow">Setup steps</span>
+            <strong>Step {activeStepIndex + 1} of {steps.length} · {activeStep.label}</strong>
+            <small>Show all steps</small>
+          </summary>
+          <nav class="getting-started-toc" aria-label="Getting started steps">
+            <ol>
+              {steps.map((step, index) => (
+                <li key={step.id}>
+                  <Link
+                    href={`/getting-started?step=${step.id}#guide`}
+                    class={{ selected: activeStepId === step.id }}
+                    onClick$={closeStepMenu}
+                  >
+                    <span class="step-number" aria-hidden="true">{index + 1}</span>
+                    <span class="step-label"><strong>{step.label}</strong><small>{step.summary}</small></span>
+                    <StatusMark status={step.status} />
+                  </Link>
+                </li>
+              ))}
+            </ol>
+          </nav>
+        </details>
+      </aside>
+
+      <article class="getting-started-step">
+        {activeStep.content}
+        <nav class="step-pagination" aria-label="Guide pagination">
+          {previousStep ? <Link class="secondary-link" href={`/getting-started?step=${previousStep.id}#guide`}>&larr; {previousStep.label}</Link> : <span />}
+          {nextStep && <Link class="primary-link" href={`/getting-started?step=${nextStep.id}#guide`}>{nextStep.label} &rarr;</Link>}
+        </nav>
+      </article>
     </section>
   );
 });
-
-export const head: DocumentHead = {
-  title: 'Getting Started | Sydney Basin Services',
-};

@@ -30,15 +30,31 @@ done
 test_scripts=(
   scripts/tests/test-app-module-structure.sh
   scripts/tests/test-module-boundaries.sh
+  scripts/tests/test-module-removal-evaluation.sh
+  scripts/tests/test-netbird-login-convergence.sh
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-public-route-check.sh
+  scripts/tests/test-canary-render-check.sh
+  scripts/tests/test-application-hardening.sh
+  scripts/tests/test-archive-view-safety.sh
+  scripts/tests/test-bootstrap-safety.sh
+  scripts/tests/test-core-runtime-safety.sh
+  scripts/tests/test-config-input-validation.sh
+  scripts/tests/test-decrypt-age-secrets.sh
   scripts/tests/test-export-inventory.sh
+  scripts/tests/test-first-boot-convergence.sh
+  scripts/tests/test-identity-reconcile-fail-closed.sh
+  scripts/tests/test-install-repository-seeding.sh
+  scripts/tests/test-kanidm-provision-validation.sh
+  scripts/tests/test-kiwix-disable-evaluation.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
   scripts/tests/test-secret-definitions.sh
+  scripts/tests/test-secret-generation-flow.sh
 )
 
 for test_script in "${test_scripts[@]}"; do
+  printf '==> %s\n' "$test_script"
   bash "$test_script"
 done
 

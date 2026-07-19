@@ -1,9 +1,8 @@
-{ config, pkgs, vars, ... }:
+{ pkgs, vars, ... }:
 
 let
   proxyUser = "immich-public-proxy";
   proxyGroup = "immich-public-proxy";
-  proxyUid = config.users.users.${proxyUser}.uid;
   proxyListenPort = vars.networking.ports.immichPublicProxy;
   photosHost = "photos.${vars.domain}";
   shareHost = "sharephotos.${vars.domain}";
@@ -32,8 +31,10 @@ in
         Group = proxyGroup;
         WorkingDirectory = "/var/lib/immich-public-proxy";
         ExecStartPre = "+${pkgs.writeShellScript "immich-public-proxy-stale-podman-cleanup" ''
+          ${pkgs.coreutils}/bin/chown -R ${proxyUser}:${proxyGroup} /var/lib/immich-public-proxy
+          proxy_uid="$(${pkgs.coreutils}/bin/id -u ${proxyUser})"
           ${pkgs.util-linux}/bin/runuser -u ${proxyUser} -- \
-            env XDG_RUNTIME_DIR=/run/user/${toString proxyUid} \
+            env XDG_RUNTIME_DIR="/run/user/$proxy_uid" \
             ${pkgs.systemd}/bin/systemctl --user stop immich-public-proxy.service || true
           ${pkgs.procps}/bin/pkill -u ${proxyUser} -f 'podman|conmon|passt|node dist/index.js' || true
         ''}";

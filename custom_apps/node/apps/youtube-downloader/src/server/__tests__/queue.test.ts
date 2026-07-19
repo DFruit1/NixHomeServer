@@ -1,10 +1,18 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import { Database } from '../db.js';
-import { JobQueue, audioChapterSpecs, buildAudioChapterFfmpegArgs, chapterGateFor, normalizeCreateJobRequest } from '../queue.js';
+import {
+  JobQueue,
+  audioChapterSpecs,
+  buildAudioChapterFfmpegArgs,
+  chapterGateFor,
+  normalizeCreateJobRequest,
+  validateDownloadUrl,
+  ytDlpPathFor,
+} from '../queue.js';
 import type { CreateJobRequest, CurrentUser, ProbeResponse } from '../../shared/types.js';
 
 let tempDir = '';
@@ -48,6 +56,7 @@ const config = (): AppConfig => ({
   concurrency: 0,
   sharedWriteGroup: 'files-shared-users',
   fileBrowserSharedMountName: '_Shared',
+  eventRetentionDays: 90,
 });
 
 beforeEach(async () => {
@@ -59,6 +68,137 @@ afterEach(async () => {
 });
 
 describe('queue alerts', () => {
+  it('refuses to start or claim new work after shutdown begins', async () => {
+    const db = new Database(path.join(tempDir, 'state.sqlite'));
+    await db.migrate();
+    const queue = new JobQueue({ ...config(), concurrency: 1 }, db);
+
+    await queue.stop(0);
+
+    await expect(queue.start()).rejects.toThrow(/shutting down/);
+    await expect(queue.enqueue(user, request)).rejects.toThrow(/shutting down/);
+    await expect(db.queuedJobs()).resolves.toEqual([]);
+    db.close();
+  });
+
+  it('waits for TERM then KILL child exit before shutdown resolves', async () => {
+    const marker = path.join(tempDir, 'child.pid');
+    const termMarker = path.join(tempDir, 'child.term');
+    const stubbornProbe = path.join(tempDir, 'stubborn-probe.mjs');
+    await writeFile(
+      stubbornProbe,
+      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, String(process.pid));\nprocess.on('SIGTERM', () => writeFileSync(${JSON.stringify(termMarker)}, 'term'));\nsetInterval(() => {}, 1000);\n`,
+    );
+    await chmod(stubbornProbe, 0o755);
+
+    const db = new Database(path.join(tempDir, 'state.sqlite'));
+    await db.migrate();
+    await db.createJob({ id: 'stubborn-job', createdBy: user.username, request });
+    const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: stubbornProbe }, db);
+    await queue.start();
+    await waitForFile(marker);
+
+    await expect(queue.stop(75)).resolves.toBeUndefined();
+
+    await expect(readFile(termMarker, 'utf8')).resolves.toBe('term');
+    const childPid = Number(await readFile(marker, 'utf8'));
+    expect(() => process.kill(childPid, 0)).toThrow();
+    await expect(db.getJob('stubborn-job')).resolves.toMatchObject({
+      status: 'failed',
+      error: 'interrupted by service shutdown',
+    });
+    db.close();
+  });
+
+  it('waits for an in-flight queue claim before shutdown completes', async () => {
+    let releaseClaim!: () => void;
+    let markClaimStarted!: () => void;
+    const claimStarted = new Promise<void>((resolve) => {
+      markClaimStarted = resolve;
+    });
+    const claimGate = new Promise<void>((resolve) => {
+      releaseClaim = resolve;
+    });
+    const db = {
+      markInterrupted: async () => {},
+      claimNextQueuedJob: async () => {
+        markClaimStarted();
+        await claimGate;
+        return undefined;
+      },
+    } as unknown as Database;
+    const queue = new JobQueue({ ...config(), concurrency: 1 }, db);
+    await queue.start();
+    await claimStarted;
+
+    let stopped = false;
+    const stopping = queue.stop(0).then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseClaim();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it('terminates and waits for direct metadata probes during shutdown', async () => {
+    const marker = path.join(tempDir, 'direct-probe.pid');
+    const termMarker = path.join(tempDir, 'direct-probe.term');
+    const stubbornProbe = path.join(tempDir, 'stubborn-direct-probe.mjs');
+    await writeFile(
+      stubbornProbe,
+      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, String(process.pid));\nprocess.on('SIGTERM', () => writeFileSync(${JSON.stringify(termMarker)}, 'term'));\nsetInterval(() => {}, 1000);\n`,
+    );
+    await chmod(stubbornProbe, 0o755);
+
+    const db = new Database(path.join(tempDir, 'state.sqlite'));
+    await db.migrate();
+    const queue = new JobQueue({ ...config(), ytDlpPath: stubbornProbe }, db);
+    await queue.start();
+    const probeResult = queue.probe(request.url).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await waitForFile(marker);
+
+    await expect(queue.stop(75)).resolves.toBeUndefined();
+
+    expect(await probeResult).toBeInstanceOf(Error);
+    await expect(readFile(termMarker, 'utf8')).resolves.toBe('term');
+    const childPid = Number(await readFile(marker, 'utf8'));
+    expect(() => process.kill(childPid, 0)).toThrow();
+    db.close();
+  });
+
+  it('revalidates restored queued jobs before starting yt-dlp', async () => {
+    const marker = path.join(tempDir, 'unsafe-probe-started');
+    const probe = path.join(tempDir, 'marker-probe.mjs');
+    await writeFile(
+      probe,
+      `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'started');\n`,
+    );
+    await chmod(probe, 0o755);
+
+    const db = new Database(path.join(tempDir, 'state.sqlite'));
+    await db.migrate();
+    await db.createJob({
+      id: 'unsafe-restored-job',
+      createdBy: user.username,
+      request: { ...request, url: 'https://www.youtube.com/redirect?q=http://127.0.0.1/admin' },
+    });
+    const queue = new JobQueue({ ...config(), concurrency: 1, ytDlpPath: probe }, db);
+    await queue.start();
+
+    const failed = await waitForJobStatus(db, 'unsafe-restored-job', 'failed');
+    expect(failed.error).toMatch(/video, playlist, or channel/);
+    await expect(readFile(marker)).rejects.toThrow();
+
+    await queue.stop(0);
+    db.close();
+  });
+
   it('pauses duplicate jobs without queueing a worker-visible job', async () => {
     const db = new Database(path.join(tempDir, 'state.sqlite'));
     await db.migrate();
@@ -83,7 +223,7 @@ describe('queue alerts', () => {
 
     const queue = new JobQueue(config(), db);
     const id = await queue.enqueue(user, request);
-    await queue.resolveAlert(id, 'download-again');
+    await queue.resolveAlert(id, 'download-again', user);
 
     const job = await db.getJob(id);
     expect(job?.status).toBe('queued');
@@ -108,6 +248,7 @@ describe('queue alerts', () => {
     expect(normalizeCreateJobRequest({ ...request, splitChapters: undefined as unknown as boolean })).toMatchObject({
       splitChapters: true,
       embedAudioCoverArt: true,
+      ytDlpVersion: 'packaged',
     });
     expect(
       normalizeCreateJobRequest({
@@ -122,6 +263,41 @@ describe('queue alerts', () => {
       splitChapters: true,
       embedAudioCoverArt: undefined,
     });
+  });
+
+  it('always uses the Nix-packaged yt-dlp', () => {
+    const appConfig = config();
+    expect(ytDlpPathFor(appConfig, { ...request, ytDlpVersion: 'packaged' })).toBe('yt-dlp');
+  });
+
+  it('rejects local, private, credential-bearing, and oversized URLs', () => {
+    expect(() => validateDownloadUrl('http://127.0.0.1/admin')).toThrow(/local or private/);
+    expect(() => validateDownloadUrl('http://[::1]/admin')).toThrow(/local or private/);
+    expect(() => validateDownloadUrl('http://[::ffff:127.0.0.1]/admin')).toThrow(/local or private/);
+    expect(() => validateDownloadUrl('https://user:password@example.com/video')).toThrow(/credentials/);
+    expect(() => validateDownloadUrl(`https://example.com/${'a'.repeat(2048)}`)).toThrow(/2048/);
+    expect(() => validateDownloadUrl('https://www.youtube.com/watch?v=fiwd5hMQsEU')).not.toThrow();
+  });
+
+  it('allows only exact YouTube hostnames and subdomains, preventing attacker-controlled DNS targets', () => {
+    expect(() => validateDownloadUrl('https://youtu.be/fiwd5hMQsEU')).not.toThrow();
+    expect(() => validateDownloadUrl('https://music.youtube.com/watch?v=fiwd5hMQsEU')).not.toThrow();
+    expect(() => validateDownloadUrl('https://www.youtube-nocookie.com/embed/fiwd5hMQsEU')).not.toThrow();
+    expect(() => validateDownloadUrl('https://example.com/video')).toThrow(/only YouTube/);
+    expect(() => validateDownloadUrl('https://youtube.com.attacker.example/video')).toThrow(/only YouTube/);
+    expect(() => validateDownloadUrl('https://notyoutube.com/video')).toThrow(/only YouTube/);
+  });
+
+  it('rejects YouTube redirect and arbitrary paths before yt-dlp can follow them', () => {
+    expect(() => validateDownloadUrl('https://www.youtube.com/redirect?q=http://127.0.0.1/admin')).toThrow(/video, playlist, or channel/);
+    expect(() => validateDownloadUrl('https://www.youtube.com/results?search_query=example')).toThrow(/video, playlist, or channel/);
+    expect(() => validateDownloadUrl('https://www.youtube.com/watch?v=invalid')).toThrow(/video, playlist, or channel/);
+    expect(() => validateDownloadUrl('http://www.youtube.com/watch?v=fiwd5hMQsEU')).toThrow(/HTTPS/);
+    expect(() => validateDownloadUrl('https://www.youtube.com:8443/watch?v=fiwd5hMQsEU')).toThrow(/default port/);
+    expect(() => validateDownloadUrl('https://www.youtube.com/playlist?list=PL123')).not.toThrow();
+    expect(() => validateDownloadUrl('https://www.youtube.com/shorts/fiwd5hMQsEU')).not.toThrow();
+    expect(() => validateDownloadUrl('https://www.youtube.com/@example/videos')).not.toThrow();
+    expect(() => validateDownloadUrl('https://www.youtube.com/channel/UC1234567890')).not.toThrow();
   });
 
   it('derives audio chapter durations from explicit and adjacent chapter boundaries', () => {
@@ -193,3 +369,26 @@ describe('queue alerts', () => {
     expect(args).toContain('-vn');
   });
 });
+
+const waitForFile = async (file: string): Promise<void> => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await readFile(file);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error(`timed out waiting for ${file}`);
+};
+
+const waitForJobStatus = async (db: Database, id: string, status: string) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const job = await db.getJob(id);
+    if (job?.status === status) {
+      return job;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${id} to become ${status}`);
+};

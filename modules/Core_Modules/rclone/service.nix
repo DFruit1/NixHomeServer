@@ -26,6 +26,13 @@ let
   megaConfigCredential = "mega-password";
   maintenanceLock = config.repo.backups.maintenanceLock;
   snapshotSuccessMarker = "${backupRoot}/.kopia-last-snapshot-success.json";
+  syncSuccessMarker = "${stateDir}/last-mega-sync-success.json";
+  requireDataRoot = lib.optionalString vars.dataRootIsMountPoint ''
+    if ! ${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg vars.dataRoot}; then
+      echo "Refusing offsite sync because ${vars.dataRoot} is not a mounted data pool" >&2
+      exit 1
+    fi
+  '';
   capacityCheck = pkgs.writeShellScript "rclone-mega-capacity-check" ''
     set -euo pipefail
     quota="$(${pkgs.rclone}/bin/rclone about \
@@ -105,9 +112,20 @@ in
     systemd.services.rclone-mega-kopia-sync = {
       description = "Sync encrypted Kopia repository to MEGA with Rclone";
       unitConfig.OnSuccess = [ "rclone-mega-capacity-check.service" ];
-      requires = [ "rclone-mega-config.service" ];
-      wants = [ "kopia-repository-bootstrap.service" "network-online.target" ];
-      after = [ "rclone-mega-config.service" "kopia-persist-snapshot.service" "kopia-full-maintenance.service" "kopia-repository-bootstrap.service" "network-online.target" ];
+      requires = [
+        "data-pool-layout.service"
+        "kopia-repository-bootstrap.service"
+        "rclone-mega-config.service"
+      ];
+      wants = [ "network-online.target" ];
+      after = [
+        "data-pool-layout.service"
+        "kopia-full-maintenance.service"
+        "kopia-persist-snapshot.service"
+        "kopia-repository-bootstrap.service"
+        "network-online.target"
+        "rclone-mega-config.service"
+      ];
       serviceConfig = {
         Type = "oneshot";
         User = serviceUser;
@@ -125,6 +143,7 @@ in
       };
       script = ''
         set -euo pipefail
+        ${requireDataRoot}
         success_marker=${lib.escapeShellArg snapshotSuccessMarker}
         [[ -s "$success_marker" ]] || { echo "No successful Kopia snapshot marker; refusing MEGA sync" >&2; exit 1; }
         marker_age=$(( $(date +%s) - $(stat -c %Y "$success_marker") ))
@@ -136,7 +155,7 @@ in
         fi
         exec 9>${lib.escapeShellArg maintenanceLock}
         ${pkgs.util-linux}/bin/flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
-        exec ${pkgs.rclone}/bin/rclone sync \
+        ${pkgs.rclone}/bin/rclone sync \
           --config ${lib.escapeShellArg configFile} \
           --cache-dir ${lib.escapeShellArg cacheDir} \
           --fast-list \
@@ -149,6 +168,26 @@ in
           --stats 30s \
           ${lib.escapeShellArg megaSource} \
           ${lib.escapeShellArg megaDestination}
+
+        # Independently compare every source object with its destination after
+        # the mirror completes before publishing the success marker.
+        ${pkgs.rclone}/bin/rclone check \
+          --config ${lib.escapeShellArg configFile} \
+          --cache-dir ${lib.escapeShellArg cacheDir} \
+          --one-way \
+          --checkers ${toString megaCheckers} \
+          ${lib.escapeShellArg megaSource} \
+          ${lib.escapeShellArg megaDestination}
+
+        marker_tmp=${lib.escapeShellArg syncSuccessMarker}.tmp
+        ${pkgs.jq}/bin/jq -n \
+          --arg completedAt "$(date --utc --iso-8601=seconds)" \
+          --arg destination ${lib.escapeShellArg megaDestination} \
+          --argjson repositoryBytes "$repository_bytes" \
+          '{schemaVersion: 1, completedAt: $completedAt, destination: $destination, repositoryBytes: $repositoryBytes, verified: true}' \
+          > "$marker_tmp"
+        chmod 0600 "$marker_tmp"
+        mv -f "$marker_tmp" ${lib.escapeShellArg syncSuccessMarker}
       '';
     };
 

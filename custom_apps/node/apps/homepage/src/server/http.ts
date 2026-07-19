@@ -7,6 +7,7 @@ import type { AppConfig } from './config.js';
 import { enrollOfflineMediaDevice, getOfflineMediaSetup, removeOfflineMediaDevice } from './offlineMedia.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { buildHomepageData } from './homepageData.js';
+import { getCanaryFailure, getCanaryStatus, triggerCanary } from './canary.js';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -15,6 +16,7 @@ const CONTENT_TYPES: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
+const MAX_JSON_BODY_BYTES = 64 * 1024;
 
 export const handleRequest = async (config: AppConfig, request: IncomingMessage, response: ServerResponse): Promise<void> => {
   if (await handleApiRequest(config, request, response)) {
@@ -37,9 +39,26 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       return true;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/canary') {
+      sendJson(response, 200, await getCanaryStatus(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/canary/run') {
+      await readMutationJson<Record<string, never>>(request);
+      sendJson(response, 202, await triggerCanary(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'GET' && url.pathname.startsWith('/api/canary/failures/')) {
+      const runId = decodeURIComponent(url.pathname.slice('/api/canary/failures/'.length));
+      sendJson(response, 200, await getCanaryFailure(config, request.headers, runId));
+      return true;
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/sftp-key') {
+      const body = await readMutationJson<{ publicKey?: string }>(request);
       const user = currentUserFromHeaders(request.headers, config.devUser);
-      const body = await readJson<{ publicKey?: string }>(request);
       const publicKey = normalisePublicKey(body.publicKey);
       sendJson(response, 200, await installSftpPublicKey(config, user, publicKey));
       return true;
@@ -52,13 +71,14 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     }
 
     if (request.method === 'POST' && (url.pathname === '/api/offline-media/devices' || url.pathname === '/api/offline-music/device')) {
+      const body = await readMutationJson<{ deviceId?: string; deviceName?: string }>(request);
       const user = currentUserFromHeaders(request.headers, config.devUser);
-      const body = await readJson<{ deviceId?: string; deviceName?: string }>(request);
       sendJson(response, 200, await enrollOfflineMediaDevice(config, user, body));
       return true;
     }
 
     if (request.method === 'DELETE' && url.pathname.startsWith('/api/offline-media/devices/')) {
+      await readMutationJson<Record<string, never>>(request);
       const user = currentUserFromHeaders(request.headers, config.devUser);
       const deviceId = decodeURIComponent(url.pathname.slice('/api/offline-media/devices/'.length));
       sendJson(response, 200, await removeOfflineMediaDevice(config, user, deviceId));
@@ -73,19 +93,114 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     return false;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes('authenticated user') ? 401 : 500;
-    sendJson(response, status, { error: message });
+    const status = message.includes('authenticated user') ? 401
+      : message.includes('not authorised') ? 403
+        : message.includes('content type') ? 415
+          : message.includes('too large') ? 413
+            : error instanceof SyntaxError ? 400
+              : message.includes('already active') ? 409
+                : message.includes('not found') ? 404
+                  : 500;
+    if (!response.destroyed && !response.writableEnded) {
+      if (response.headersSent) {
+        response.destroy(error instanceof Error ? error : undefined);
+      } else {
+        sendJson(response, status, { error: message });
+      }
+    }
     return true;
   }
 };
 
-const readJson = async <T>(request: IncomingMessage): Promise<T> => {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+const assertSameOrigin = (request: IncomingMessage): void => {
+  const fetchSite = headerValue(request.headers['sec-fetch-site']);
+  if (fetchSite && fetchSite !== 'same-origin') {
+    throw new Error('not authorised: request is not same-origin');
   }
-  const text = Buffer.concat(chunks).toString('utf8');
-  return text ? (JSON.parse(text) as T) : ({} as T);
+  const origin = headerValue(request.headers.origin, false);
+  const host = headerValue(request.headers.host, false);
+  if (!origin || !host) {
+    throw new Error('not authorised: origin and host headers are required');
+  }
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    throw new Error('not authorised: invalid origin');
+  }
+  if (parsedOrigin.origin !== origin || !['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.host.toLowerCase() !== host.toLowerCase()) {
+    throw new Error('not authorised: origin mismatch');
+  }
+  const forwardedProtocol = headerValue(request.headers['x-forwarded-proto']);
+  if (forwardedProtocol && `${forwardedProtocol.toLowerCase()}:` !== parsedOrigin.protocol) {
+    throw new Error('not authorised: origin protocol mismatch');
+  }
+};
+
+const readMutationJson = async <T>(request: IncomingMessage): Promise<T> => {
+  assertSameOrigin(request);
+  const contentType = headerValue(request.headers['content-type'], false)?.split(';', 1)[0]?.trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    throw new Error('JSON content type is required');
+  }
+  const text = await readBoundedBody(request);
+  const parsed = text ? (JSON.parse(text) as unknown) : {};
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new SyntaxError('JSON request body must be an object');
+  }
+  return parsed as T;
+};
+
+const readBoundedBody = async (request: IncomingMessage): Promise<string> => {
+  const declaredLength = headerValue(request.headers['content-length'], false);
+  if (declaredLength && Number(declaredLength) > MAX_JSON_BODY_BYTES) {
+    request.resume();
+    throw new Error('request body is too large');
+  }
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const cleanup = () => {
+      request.off('data', onData);
+      request.off('end', onEnd);
+      request.off('aborted', onAborted);
+      request.off('error', onError);
+    };
+    const fail = (error: Error) => {
+      cleanup();
+      request.resume();
+      reject(error);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > MAX_JSON_BODY_BYTES) {
+        fail(new Error('request body is too large'));
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    };
+    const onAborted = () => fail(new Error('request body was aborted'));
+    const onError = (error: Error) => fail(error);
+    request.on('data', onData);
+    request.on('end', onEnd);
+    request.on('aborted', onAborted);
+    request.on('error', onError);
+  });
+};
+
+const headerValue = (value: string | string[] | undefined, firstListValue = true): string | undefined => {
+  if (Array.isArray(value)) {
+    return value.length === 1 ? value[0]?.trim() : undefined;
+  }
+  if (!value) {
+    return undefined;
+  }
+  return (firstListValue ? value.split(',', 1)[0] : value).trim();
 };
 
 const sendJson = (response: ServerResponse, status: number, value: unknown): void => {

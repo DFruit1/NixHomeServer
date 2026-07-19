@@ -8,6 +8,7 @@ const baseConfig: AppConfig = {
   staticDir: '.',
   sudoPath: 'sudo',
   homepage: {
+    brandName: 'Test Home',
     domain: 'example.test',
     services: [
       {

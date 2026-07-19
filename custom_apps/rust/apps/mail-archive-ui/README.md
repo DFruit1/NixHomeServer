@@ -53,12 +53,15 @@ Attachment download model:
 - attachment-specific GET parameters include `extension`, `attachment_name`, `mime_type`, `min_size`, `max_size`, `min_attachments`, and `max_attachments`
 - selected attachments are downloaded as a browser ZIP streamed from runtime storage
 - selected attachments can also be copied into the configured Paperless consume inbox; successful handoffs are recorded per user and attachment key
+- saved attachment filters can drive automatic Paperless jobs on a daily or repeating cadence, with a configurable per-run batch cap and optional failure retries
 - ZIPs include `manifest.json` with source mailbox, message, filename, MIME type, size, and SHA-256 metadata for every file
 - ZIP files are organized as `<optional-subfolder>/<mailbox>/<yyyy-mm-dd> - <subject>/<filename>`, with duplicate filenames written as `file (1).ext`
 - original attachment filenames, including Unicode and emoji names, are preserved for browser downloads and ZIP entries except for path separators/control characters
 - inline images and body fragments extracted as `textfile0`, `textfile1`, and similar artifacts are hidden by default and can be included with page filters
 - attachment rows show a simple file type and message date by default; full MIME detail is optional
 - Paperless handoff uses the consume directory; Paperless ownership and post-processing follow the normal Paperless consumer behavior
+- automatic jobs use expiring execution leases to prevent overlap, retry failed or partial runs with capped exponential backoff, and keep durable status counters plus run history
+- duplicate checks reuse one checksum index of the pending consume directory per batch and check the Paperless SQLite database read-only when configured
 
 ## Development
 

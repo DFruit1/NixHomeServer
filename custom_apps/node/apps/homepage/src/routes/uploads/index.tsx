@@ -1,5 +1,5 @@
 import { component$, useContext } from '@builder.io/qwik';
-import { Link, useLocation, type DocumentHead } from '@builder.io/qwik-city';
+import { Link, useLocation } from '@builder.io/qwik-city';
 import { GuidePanel } from '../../components/GuidePanel.js';
 import { SftpSetup } from '../../components/SftpSetup.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
@@ -13,7 +13,7 @@ export default component$(() => {
   const guide = guides.find((item) => item.id === requestedGuide) ?? guides[0];
   const activeGuide = guide?.id ?? requestedGuide;
   const username = data?.user.username ?? '{username}';
-  const domain = data?.domain ?? 'sydneybasiniot.org';
+  const domain = data?.domain ?? 'example.test';
   const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
 
   return (
@@ -41,7 +41,3 @@ export default component$(() => {
     </>
   );
 });
-
-export const head: DocumentHead = {
-  title: 'How to Upload Files | Sydney Basin Services',
-};

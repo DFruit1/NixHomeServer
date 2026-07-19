@@ -1,5 +1,6 @@
 import { component$ } from '@builder.io/qwik';
 import { QwikCityProvider, RouterOutlet, ServiceWorkerRegister, useDocumentHead } from '@builder.io/qwik-city';
+import { fallbackBrandName } from './shared/branding.js';
 import './global.css';
 
 export default component$(() => (
@@ -21,7 +22,7 @@ export const RouterHead = component$(() => {
 
   return (
     <>
-      <title>{head.title || 'Sydney Basin Services'}</title>
+      <title>{head.title || fallbackBrandName}</title>
       {head.meta.map((meta) => (
         <meta key={meta.key} {...meta} />
       ))}

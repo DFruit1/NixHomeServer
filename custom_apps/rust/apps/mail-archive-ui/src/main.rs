@@ -14,7 +14,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
 };
-use chrono::{DateTime, Datelike, Local, NaiveDate, NaiveTime, Timelike, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, Timelike, Utc};
 #[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, RestrictionStatus, Ruleset, RulesetAttr,
@@ -36,7 +36,7 @@ use std::{
     fmt::Write as _,
     fs::{self, OpenOptions},
     io::{ErrorKind, Read},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path as FsPath, PathBuf},
     process::{Command, Output},
@@ -54,6 +54,12 @@ const DEFAULT_LOCK_DIR: &str = ".";
 const ATTACHMENTS_PER_PAGE: usize = 100;
 const MAX_ZIP_ATTACHMENTS: usize = 500;
 const MAX_PAPERLESS_TASK_ATTACHMENTS: usize = 2_000;
+const DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS: usize = 500;
+const MIN_PAPERLESS_TASK_INTERVAL_MINUTES: i64 = 15;
+const MAX_PAPERLESS_TASK_INTERVAL_MINUTES: i64 = 7 * 24 * 60;
+const PAPERLESS_TASK_LEASE_MINUTES: i64 = 30;
+const PAPERLESS_TASK_RETRY_BASE_MINUTES: i64 = 5;
+const PAPERLESS_TASK_RETRY_MAX_MINUTES: i64 = 6 * 60;
 const MAX_ZIP_BYTES: u64 = 1024 * 1024 * 1024;
 const RUNTIME_EXPORT_MAX_AGE_SECONDS: i64 = 6 * 60 * 60;
 const PAPERLESS_HANDOFF_STAGING_MAX_AGE_SECONDS: i64 = 6 * 60 * 60;
@@ -545,6 +551,10 @@ struct AttachmentPresetSaveForm {
 struct AttachmentPaperlessTaskSaveForm {
     task_name: String,
     schedule_time: String,
+    schedule_mode: Option<String>,
+    interval_minutes: Option<String>,
+    paperless_max_documents: Option<String>,
+    retry_enabled: Option<String>,
     q: Option<String>,
     account_id: Option<String>,
     priority: Option<String>,
@@ -1100,10 +1110,19 @@ struct AttachmentPaperlessTask {
     name: String,
     query: String,
     schedule_time: String,
+    schedule_mode: String,
+    interval_minutes: i64,
+    max_attachments: usize,
+    retry_enabled: bool,
     enabled: bool,
     last_run_date: Option<String>,
     last_run_at: Option<String>,
     last_summary: Option<String>,
+    last_status: Option<String>,
+    next_retry_at: Option<String>,
+    consecutive_failures: usize,
+    successful_runs: usize,
+    failed_runs: usize,
 }
 
 #[tokio::main]
@@ -2889,10 +2908,20 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
                 name TEXT NOT NULL,
                 query TEXT NOT NULL,
                 schedule_time TEXT NOT NULL,
+                schedule_mode TEXT NOT NULL DEFAULT 'daily',
+                interval_minutes INTEGER NOT NULL DEFAULT 1440,
+                max_attachments INTEGER NOT NULL DEFAULT 500,
+                retry_enabled INTEGER NOT NULL DEFAULT 1,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 last_run_date TEXT,
                 last_run_at TEXT,
                 last_summary TEXT,
+                last_status TEXT,
+                next_retry_at TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                successful_runs INTEGER NOT NULL DEFAULT 0,
+                failed_runs INTEGER NOT NULL DEFAULT 0,
+                lease_until TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE (username, name)
@@ -2900,6 +2929,25 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
 
             CREATE INDEX IF NOT EXISTS idx_attachment_paperless_tasks_due
             ON attachment_paperless_tasks (enabled, schedule_time, last_run_date);
+
+            CREATE TABLE IF NOT EXISTS attachment_paperless_task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                task_name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                sent_count INTEGER NOT NULL DEFAULT 0,
+                already_uploaded_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES attachment_paperless_tasks(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_attachment_paperless_task_runs_task
+            ON attachment_paperless_task_runs (task_id, id DESC);
 
             CREATE TABLE IF NOT EXISTS attachment_paperless_handoffs (
                 username TEXT NOT NULL,
@@ -2970,9 +3018,67 @@ fn initialize_db(config: &AppConfig) -> Result<(), String> {
             "last_verified_at",
             "ALTER TABLE attachment_catalog ADD COLUMN last_verified_at TEXT",
         ),
+        (
+            "attachment_paperless_tasks",
+            "schedule_mode",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'daily'",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "interval_minutes",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN interval_minutes INTEGER NOT NULL DEFAULT 1440",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "max_attachments",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN max_attachments INTEGER NOT NULL DEFAULT 500",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "retry_enabled",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN retry_enabled INTEGER NOT NULL DEFAULT 1",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "last_status",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN last_status TEXT",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "next_retry_at",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN next_retry_at TEXT",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "consecutive_failures",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "successful_runs",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN successful_runs INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "failed_runs",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN failed_runs INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "attachment_paperless_tasks",
+            "lease_until",
+            "ALTER TABLE attachment_paperless_tasks ADD COLUMN lease_until TEXT",
+        ),
     ] {
         ensure_table_column(&connection, table, column, sql)?;
     }
+    connection
+        .execute_batch(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_attachment_paperless_tasks_scheduler
+            ON attachment_paperless_tasks (enabled, next_retry_at, lease_until, schedule_time);
+            "#,
+        )
+        .map_err(|error| format!("failed to create Paperless task scheduler index: {error}"))?;
 
     Ok(())
 }
@@ -3048,7 +3154,15 @@ fn drop_account_column_if_exists(connection: &Connection, column: &str) -> Resul
 
 fn open_db(config: &AppConfig) -> Result<Connection, String> {
     let db_path = PathBuf::from(config.data_dir.as_ref()).join(DB_FILENAME);
-    Connection::open(db_path).map_err(|error| format!("failed to open sqlite database: {error}"))
+    let connection = Connection::open(db_path)
+        .map_err(|error| format!("failed to open sqlite database: {error}"))?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(30))
+        .map_err(|error| format!("failed to configure sqlite busy timeout: {error}"))?;
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|error| format!("failed to configure sqlite connection: {error}"))?;
+    Ok(connection)
 }
 
 fn identity_from_headers(headers: &HeaderMap) -> Result<Identity, (StatusCode, String)> {
@@ -3171,6 +3285,7 @@ fn validate_account_form(
     if display_name.is_empty() {
         return Err("Display name is required".to_string());
     }
+    validate_single_line_config_value("Display name", display_name, 256)?;
 
     let secret = form.secret.trim();
     if secret_required && secret.is_empty() {
@@ -3184,6 +3299,7 @@ fn validate_account_form(
         if host.is_empty() {
             return Err("IMAP host is required for generic IMAP".to_string());
         }
+        validate_imap_host(host)?;
         host.to_string()
     };
 
@@ -3200,10 +3316,14 @@ fn validate_account_form(
     if imap_username.is_empty() {
         return Err("Mailbox username is required".to_string());
     }
+    validate_single_line_config_value("Mailbox username", imap_username, 1024)?;
 
     let folder_patterns = parse_folder_patterns(provider_kind, &form.folder_patterns);
     if folder_patterns.is_empty() {
         return Err("At least one folder pattern is required".to_string());
+    }
+    for pattern in &folder_patterns {
+        validate_single_line_config_value("Folder pattern", pattern, 1024)?;
     }
 
     let folder_mode = if provider_kind == "gmail" && folder_patterns == gmail_default_patterns() {
@@ -3225,6 +3345,55 @@ fn validate_account_form(
         secret: (!secret.is_empty()).then(|| secret.to_string()),
         sync_enabled: form.sync_enabled.is_some(),
     })
+}
+
+fn validate_single_line_config_value(
+    label: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), String> {
+    if value.len() > max_bytes {
+        return Err(format!("{label} is too long"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{label} must not contain control characters"));
+    }
+    Ok(())
+}
+
+fn validate_imap_host(host: &str) -> Result<(), String> {
+    validate_single_line_config_value("IMAP host", host, 253)?;
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    let dns_name = host.strip_suffix('.').unwrap_or(host);
+    let valid = !dns_name.is_empty()
+        && dns_name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err("IMAP host must be a valid DNS name or IP address".to_string())
+    }
+}
+
+fn escape_mbsync_quoted_value(value: &str) -> Result<String, String> {
+    validate_single_line_config_value("mbsync value", value, 1024)?;
+    Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn parse_folder_patterns(provider_kind: &str, raw: &str) -> Vec<String> {
@@ -3875,50 +4044,177 @@ fn sync_due(config: &AppConfig) -> Result<bool, String> {
 }
 
 fn due_paperless_tasks(config: &AppConfig) -> Result<Vec<AttachmentPaperlessTask>, String> {
-    let now = Local::now();
-    let today = format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day());
-    let current_time = now.format("%H:%M").to_string();
+    let now_local = Local::now();
+    let now_utc = Utc::now();
+    let now_rfc3339 = now_utc.to_rfc3339();
     let connection = open_db(config)?;
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, username, name, query, schedule_time, enabled, last_run_date, last_run_at, last_summary
+            SELECT id, username, name, query, schedule_time, schedule_mode,
+                   interval_minutes, max_attachments, retry_enabled, enabled,
+                   last_run_date, last_run_at, last_summary, last_status,
+                   next_retry_at, consecutive_failures, successful_runs, failed_runs
             FROM attachment_paperless_tasks
             WHERE enabled = 1
-              AND schedule_time <= ?1
-              AND (last_run_date IS NULL OR last_run_date != ?2)
-            ORDER BY schedule_time, lower(name), name
+              AND (lease_until IS NULL OR lease_until <= ?1)
+            ORDER BY COALESCE(next_retry_at, ''), schedule_time, lower(name), name
             "#,
         )
         .map_err(|error| format!("failed to prepare Paperless task query: {error}"))?;
     let rows = statement
-        .query_map(params![current_time, today], map_attachment_paperless_task)
+        .query_map(params![now_rfc3339], map_attachment_paperless_task)
         .map_err(|error| format!("failed to query Paperless tasks: {error}"))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("failed to decode Paperless tasks: {error}"))
+    let tasks = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed to decode Paperless tasks: {error}"))?;
+    Ok(tasks
+        .into_iter()
+        .filter(|task| paperless_task_is_due(task, now_local, now_utc))
+        .collect())
+}
+
+fn paperless_task_is_due(
+    task: &AttachmentPaperlessTask,
+    now_local: DateTime<Local>,
+    now_utc: DateTime<Utc>,
+) -> bool {
+    if let Some(next_retry_at) = task.next_retry_at.as_deref() {
+        return DateTime::parse_from_rfc3339(next_retry_at)
+            .map(|retry_at| retry_at <= now_utc)
+            .unwrap_or(true);
+    }
+    if task.schedule_mode == "interval" {
+        return task
+            .last_run_at
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .is_none_or(|last_run| last_run + Duration::minutes(task.interval_minutes) <= now_utc);
+    }
+
+    let today = now_local.format("%Y-%m-%d").to_string();
+    task.schedule_time <= now_local.format("%H:%M").to_string()
+        && task.last_run_date.as_deref() != Some(today.as_str())
+}
+
+fn claim_paperless_task(config: &AppConfig, task_id: i64) -> Result<bool, String> {
+    let now = Utc::now();
+    let connection = open_db(config)?;
+    let updated = connection
+        .execute(
+            r#"
+            UPDATE attachment_paperless_tasks
+            SET lease_until = ?2
+            WHERE id = ?1
+              AND enabled = 1
+              AND (lease_until IS NULL OR lease_until <= ?3)
+            "#,
+            params![
+                task_id,
+                (now + Duration::minutes(PAPERLESS_TASK_LEASE_MINUTES)).to_rfc3339(),
+                now.to_rfc3339(),
+            ],
+        )
+        .map_err(|error| format!("failed to claim Paperless task: {error}"))?;
+    Ok(updated == 1)
+}
+
+fn paperless_retry_delay_minutes(consecutive_failures: usize) -> i64 {
+    let exponent = u32::try_from(consecutive_failures.saturating_sub(1).min(10)).unwrap_or(10);
+    PAPERLESS_TASK_RETRY_BASE_MINUTES
+        .saturating_mul(2_i64.saturating_pow(exponent))
+        .min(PAPERLESS_TASK_RETRY_MAX_MINUTES)
+}
+
+struct PaperlessTaskRunResult {
+    status: &'static str,
+    summary: String,
+    handoff: PaperlessHandoffSummary,
 }
 
 fn record_paperless_task_run(
     config: &AppConfig,
-    task_id: i64,
+    task: &AttachmentPaperlessTask,
+    started_at: &str,
     run_date: &str,
-    summary: &str,
+    result: &PaperlessTaskRunResult,
 ) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
-    let connection = open_db(config)?;
-    connection
+    let failed = result.status != "success";
+    let consecutive_failures = if failed {
+        task.consecutive_failures.saturating_add(1)
+    } else {
+        0
+    };
+    let next_retry_at = if failed && task.retry_enabled {
+        Some(
+            (Utc::now() + Duration::minutes(paperless_retry_delay_minutes(consecutive_failures)))
+                .to_rfc3339(),
+        )
+    } else {
+        None
+    };
+    let mut connection = open_db(config)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("failed to begin Paperless task state transaction: {error}"))?;
+    transaction
         .execute(
             r#"
             UPDATE attachment_paperless_tasks
-            SET last_run_date = ?2,
+            SET last_run_date = CASE
+                    WHEN ?5 = 'success' OR ?8 = 0 THEN ?2
+                    ELSE last_run_date
+                END,
                 last_run_at = ?3,
                 last_summary = ?4,
+                last_status = ?5,
+                next_retry_at = ?6,
+                consecutive_failures = ?7,
+                successful_runs = successful_runs + CASE WHEN ?5 = 'success' THEN 1 ELSE 0 END,
+                failed_runs = failed_runs + CASE WHEN ?5 = 'success' THEN 0 ELSE 1 END,
+                lease_until = NULL,
                 updated_at = ?3
             WHERE id = ?1
             "#,
-            params![task_id, run_date, now, summary],
+            params![
+                task.id,
+                run_date,
+                now,
+                result.summary,
+                result.status,
+                next_retry_at,
+                consecutive_failures,
+                if task.retry_enabled { 1 } else { 0 },
+            ],
         )
         .map_err(|error| format!("failed to record Paperless task run: {error}"))?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO attachment_paperless_task_runs (
+                task_id, username, task_name, started_at, finished_at, status,
+                sent_count, already_uploaded_count, skipped_count, failed_count, summary
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "#,
+            params![
+                task.id,
+                task.username,
+                task.name,
+                started_at,
+                now,
+                result.status,
+                result.handoff.sent,
+                result.handoff.already_uploaded,
+                result.handoff.skipped,
+                result.handoff.failures.len(),
+                result.summary,
+            ],
+        )
+        .map_err(|error| format!("failed to append Paperless task run history: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("failed to commit Paperless task state: {error}"))?;
     Ok(())
 }
 
@@ -3938,25 +4234,54 @@ fn run_due_paperless_tasks(config: &AppConfig) -> Result<bool, String> {
     let mut had_errors = false;
 
     for task in tasks {
-        let result = send_attachment_filter_to_paperless(config, &task.username, &task.query);
-        let summary = match result {
-            Ok(summary) => paperless_task_summary(&summary),
+        if !claim_paperless_task(config, task.id)? {
+            continue;
+        }
+        let started_at = Utc::now().to_rfc3339();
+        let result = send_attachment_filter_to_paperless(
+            config,
+            &task.username,
+            &task.query,
+            task.max_attachments,
+        );
+        let run_result = match result {
+            Ok(handoff) => {
+                let status = if handoff.failures.is_empty() {
+                    "success"
+                } else {
+                    "partial"
+                };
+                if status != "success" {
+                    had_errors = true;
+                }
+                PaperlessTaskRunResult {
+                    status,
+                    summary: paperless_task_summary(&handoff),
+                    handoff,
+                }
+            }
             Err(error) => {
                 had_errors = true;
-                format!("Failed: {error}")
+                PaperlessTaskRunResult {
+                    status: "failed",
+                    summary: format!("Failed: {error}"),
+                    handoff: PaperlessHandoffSummary::default(),
+                }
             }
         };
-        if let Err(error) = record_paperless_task_run(config, task.id, &run_date, &summary) {
+        if let Err(error) =
+            record_paperless_task_run(config, &task, &started_at, &run_date, &run_result)
+        {
             eprintln!(
                 "mail-archive-ui Paperless task state update failed task_id={} detail={}",
                 task.id, error
             );
             had_errors = true;
         }
-        if summary.starts_with("Failed:") {
+        if run_result.status != "success" {
             eprintln!(
-                "mail-archive-ui Paperless task failed task_id={} name={} detail={}",
-                task.id, task.name, summary
+                "mail-archive-ui Paperless task {} task_id={} name={} detail={}",
+                run_result.status, task.id, task.name, run_result.summary
             );
         }
     }
@@ -4411,6 +4736,13 @@ fn write_temp_mbsyncrc(
     secret_path: &FsPath,
 ) -> Result<TempConfigFile, String> {
     let patterns = decode_folder_patterns(account)?;
+    validate_imap_host(&account.imap_host)?;
+    validate_single_line_config_value("Mailbox username", &account.imap_username, 1024)?;
+    let rendered_username = escape_mbsync_quoted_value(&account.imap_username)?;
+    let rendered_patterns = patterns
+        .iter()
+        .map(|pattern| escape_mbsync_quoted_value(pattern).map(|value| format!("\"{value}\"")))
+        .collect::<Result<Vec<_>, _>>()?;
     let path = PathBuf::from(config.runtime_dir.as_ref()).join(format!(
         "account-{}-mbsyncrc-{}.conf",
         account.id,
@@ -4425,7 +4757,7 @@ fn write_temp_mbsyncrc(
         .map_err(|error| format!("failed to render config: {error}"))?;
     writeln!(&mut rendered, "Port {}", account.imap_port)
         .map_err(|error| format!("failed to render config: {error}"))?;
-    writeln!(&mut rendered, "User {}", account.imap_username)
+    writeln!(&mut rendered, "User \"{rendered_username}\"")
         .map_err(|error| format!("failed to render config: {error}"))?;
     writeln!(&mut rendered, "PassCmd \"cat {}\"", secret_path.display())
         .map_err(|error| format!("failed to render config: {error}"))?;
@@ -4455,16 +4787,8 @@ fn write_temp_mbsyncrc(
         .map_err(|error| format!("failed to render config: {error}"))?;
     writeln!(&mut rendered, "Near :{account_alias}-local:")
         .map_err(|error| format!("failed to render config: {error}"))?;
-    writeln!(
-        &mut rendered,
-        "Patterns {}",
-        patterns
-            .iter()
-            .map(|pattern| format!("\"{pattern}\""))
-            .collect::<Vec<_>>()
-            .join(" ")
-    )
-    .map_err(|error| format!("failed to render config: {error}"))?;
+    writeln!(&mut rendered, "Patterns {}", rendered_patterns.join(" "))
+        .map_err(|error| format!("failed to render config: {error}"))?;
     rendered.push_str(
         "Create Near\nExpunge None\nRemove None\nSync Pull New Flags\nCopyArrivalDate yes\n",
     );
@@ -6829,6 +7153,48 @@ fn normalize_daily_schedule_time(raw: &str) -> Result<String, String> {
     Ok(time.format("%H:%M").to_string())
 }
 
+fn normalize_paperless_schedule(
+    mode: Option<&str>,
+    interval_minutes: Option<&str>,
+) -> Result<(String, i64), String> {
+    match mode.unwrap_or("daily").trim() {
+        "daily" => Ok(("daily".to_string(), 24 * 60)),
+        "interval" => {
+            let minutes = interval_minutes
+                .unwrap_or("60")
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "Repeat interval must be a whole number of minutes.".to_string())?;
+            if !(MIN_PAPERLESS_TASK_INTERVAL_MINUTES..=MAX_PAPERLESS_TASK_INTERVAL_MINUTES)
+                .contains(&minutes)
+            {
+                return Err(format!(
+                    "Repeat interval must be between {MIN_PAPERLESS_TASK_INTERVAL_MINUTES} and {MAX_PAPERLESS_TASK_INTERVAL_MINUTES} minutes."
+                ));
+            }
+            Ok(("interval".to_string(), minutes))
+        }
+        _ => Err("Schedule mode must be daily or repeating.".to_string()),
+    }
+}
+
+fn normalize_paperless_task_max_attachments(raw: Option<&str>) -> Result<usize, String> {
+    let trimmed = raw.unwrap_or("").trim();
+    let value = if trimmed.is_empty() {
+        DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS
+    } else {
+        trimmed
+            .parse::<usize>()
+            .map_err(|_| "Maximum attachments per run must be a whole number.".to_string())?
+    };
+    if !(1..=MAX_PAPERLESS_TASK_ATTACHMENTS).contains(&value) {
+        return Err(format!(
+            "Maximum attachments per run must be between 1 and {MAX_PAPERLESS_TASK_ATTACHMENTS}."
+        ));
+    }
+    Ok(value)
+}
+
 fn map_attachment_paperless_task(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AttachmentPaperlessTask> {
@@ -6838,10 +7204,19 @@ fn map_attachment_paperless_task(
         name: row.get(2)?,
         query: row.get(3)?,
         schedule_time: row.get(4)?,
-        enabled: row.get::<_, i64>(5)? != 0,
-        last_run_date: row.get(6)?,
-        last_run_at: row.get(7)?,
-        last_summary: row.get(8)?,
+        schedule_mode: row.get(5)?,
+        interval_minutes: row.get(6)?,
+        max_attachments: row.get(7)?,
+        retry_enabled: row.get::<_, i64>(8)? != 0,
+        enabled: row.get::<_, i64>(9)? != 0,
+        last_run_date: row.get(10)?,
+        last_run_at: row.get(11)?,
+        last_summary: row.get(12)?,
+        last_status: row.get(13)?,
+        next_retry_at: row.get(14)?,
+        consecutive_failures: row.get(15)?,
+        successful_runs: row.get(16)?,
+        failed_runs: row.get(17)?,
     })
 }
 
@@ -6853,7 +7228,10 @@ fn list_attachment_paperless_tasks(
     let mut statement = connection
         .prepare(
             r#"
-            SELECT id, username, name, query, schedule_time, enabled, last_run_date, last_run_at, last_summary
+            SELECT id, username, name, query, schedule_time, schedule_mode,
+                   interval_minutes, max_attachments, retry_enabled, enabled,
+                   last_run_date, last_run_at, last_summary, last_status,
+                   next_retry_at, consecutive_failures, successful_runs, failed_runs
             FROM attachment_paperless_tasks
             WHERE username = ?1
             ORDER BY schedule_time, lower(name), name
@@ -6877,6 +7255,13 @@ fn save_attachment_paperless_task_for_user(
     }
     let name = normalize_attachment_preset_name(&form.task_name)?;
     let schedule_time = normalize_daily_schedule_time(&form.schedule_time)?;
+    let (schedule_mode, interval_minutes) = normalize_paperless_schedule(
+        form.schedule_mode.as_deref(),
+        form.interval_minutes.as_deref(),
+    )?;
+    let max_attachments =
+        normalize_paperless_task_max_attachments(form.paperless_max_documents.as_deref())?;
+    let retry_enabled = form.retry_enabled.as_deref() != Some("0");
     let query = attachment_paperless_task_query_from_form(form)?;
     if query.trim().is_empty() {
         return Err(
@@ -6890,22 +7275,43 @@ fn save_attachment_paperless_task_for_user(
         .execute(
             r#"
             INSERT INTO attachment_paperless_tasks (
-                username, name, query, schedule_time, enabled, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)
+                username, name, query, schedule_time, schedule_mode, interval_minutes,
+                max_attachments, retry_enabled, enabled, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?9)
             ON CONFLICT(username, name) DO UPDATE SET
                 query = excluded.query,
                 schedule_time = excluded.schedule_time,
+                schedule_mode = excluded.schedule_mode,
+                interval_minutes = excluded.interval_minutes,
+                max_attachments = excluded.max_attachments,
+                retry_enabled = excluded.retry_enabled,
                 enabled = 1,
+                next_retry_at = NULL,
+                consecutive_failures = 0,
+                lease_until = NULL,
                 updated_at = excluded.updated_at
             "#,
-            params![username, name, query, schedule_time, now],
+            params![
+                username,
+                name,
+                query,
+                schedule_time,
+                schedule_mode,
+                interval_minutes,
+                max_attachments,
+                if retry_enabled { 1 } else { 0 },
+                now,
+            ],
         )
         .map_err(|error| format!("failed to save Paperless task: {error}"))?;
 
     connection
         .query_row(
             r#"
-            SELECT id, username, name, query, schedule_time, enabled, last_run_date, last_run_at, last_summary
+            SELECT id, username, name, query, schedule_time, schedule_mode,
+                   interval_minutes, max_attachments, retry_enabled, enabled,
+                   last_run_date, last_run_at, last_summary, last_status,
+                   next_retry_at, consecutive_failures, successful_runs, failed_runs
             FROM attachment_paperless_tasks
             WHERE username = ?1 AND name = ?2
             LIMIT 1
@@ -7271,6 +7677,7 @@ fn attachment_keys_for_params(
 ) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
     let mut seen = HashSet::new();
+    let connection = open_db(config)?;
     let mut page = 1;
 
     loop {
@@ -7280,14 +7687,17 @@ fn attachment_keys_for_params(
         page_params.error = None;
         let data = load_attachment_page_data(config, username, &page_params)?;
         for item in data.items {
-            if seen.insert(item.attachment.attachment_key.clone()) {
+            if seen.insert(item.attachment.attachment_key.clone())
+                && attachment_key_is_new_for_paperless(
+                    &connection,
+                    username,
+                    &item.attachment.attachment_key,
+                )?
+            {
                 keys.push(item.attachment.attachment_key);
             }
-            if keys.len() > max_keys {
-                return Err(format!(
-                    "Too many attachments matched. Narrow the filters to {} files or fewer.",
-                    max_keys
-                ));
+            if keys.len() >= max_keys {
+                return Ok(keys);
             }
         }
         if !data.state.has_next_page {
@@ -7312,10 +7722,10 @@ fn send_attachment_filter_to_paperless(
     config: &AppConfig,
     username: &str,
     query: &str,
+    max_attachments: usize,
 ) -> Result<PaperlessHandoffSummary, String> {
     let params = attachment_params_from_query(query)?;
-    let keys =
-        attachment_keys_for_params(config, username, &params, MAX_PAPERLESS_TASK_ATTACHMENTS)?;
+    let keys = attachment_keys_for_params(config, username, &params, max_attachments)?;
     if keys.is_empty() {
         return Ok(PaperlessHandoffSummary {
             skipped: 0,
@@ -7323,21 +7733,7 @@ fn send_attachment_filter_to_paperless(
         });
     }
 
-    let connection = open_db(config)?;
-    let mut new_keys = Vec::new();
-    for key in keys {
-        if attachment_key_is_new_for_paperless(&connection, username, &key)? {
-            new_keys.push(key);
-        }
-    }
-    if new_keys.is_empty() {
-        return Ok(PaperlessHandoffSummary {
-            skipped: 0,
-            ..Default::default()
-        });
-    }
-
-    send_attachments_to_paperless(config, username, &new_keys)
+    send_attachments_to_paperless(config, username, &keys)
 }
 
 fn parse_attachment_download_form_body(body: &[u8]) -> AttachmentDownloadForm {
@@ -7535,21 +7931,28 @@ struct PaperlessDocumentMatch {
     id: i64,
 }
 
-fn load_paperless_document_by_checksum(
-    config: &AppConfig,
-    checksum: &str,
-) -> Result<Option<PaperlessDocumentMatch>, String> {
+fn open_paperless_database(config: &AppConfig) -> Result<Option<Connection>, String> {
     let Some(database_path) = config.paperless_database_path.as_deref() else {
         return Ok(None);
     };
     let uri = format!("file:{database_path}?mode=ro&immutable=1");
-    let connection = Connection::open_with_flags(
+    Connection::open_with_flags(
         uri,
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_URI
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|error| format!("failed to open Paperless database: {error}"))?;
+    .map(Some)
+    .map_err(|error| format!("failed to open Paperless database: {error}"))
+}
+
+fn load_paperless_document_by_checksum(
+    connection: Option<&Connection>,
+    checksum: &str,
+) -> Result<Option<PaperlessDocumentMatch>, String> {
+    let Some(connection) = connection else {
+        return Ok(None);
+    };
     connection
         .query_row(
             r#"
@@ -7644,13 +8047,12 @@ impl PaperlessHandoffSummary {
 }
 
 fn record_attachment_paperless_handoff(
-    config: &AppConfig,
+    connection: &Connection,
     username: &str,
     attachment: &AttachmentRecord,
     consume_filename: &str,
     sent_at: &str,
 ) -> Result<(), String> {
-    let connection = open_db(config)?;
     connection
         .execute(
             r#"
@@ -7706,6 +8108,17 @@ fn send_attachments_to_paperless(
     })?;
     cleanup_old_paperless_handoff_staging(&handoff_staging_root)?;
 
+    let connection = open_db(config)?;
+    let paperless_database = match open_paperless_database(config) {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!(
+                "mail-archive-ui Paperless duplicate database check unavailable detail={error}"
+            );
+            None
+        }
+    };
+    let mut consume_checksums = index_paperless_consume_files(&consume_root)?;
     let mut seen = HashSet::new();
     let mut reserved_consume_filenames = HashSet::new();
     let mut summary = PaperlessHandoffSummary::default();
@@ -7715,7 +8128,6 @@ fn send_attachments_to_paperless(
             continue;
         }
 
-        let connection = open_db(config)?;
         if load_attachment_paperless_handoff(&connection, username, key)?.is_some() {
             summary.skipped += 1;
             continue;
@@ -7739,7 +8151,7 @@ fn send_attachments_to_paperless(
             &attachment.attachment_sha256,
         )? {
             if let Err(error) = record_attachment_paperless_handoff(
-                config,
+                &connection,
                 username,
                 &attachment,
                 &consume_filename,
@@ -7768,12 +8180,13 @@ fn send_attachments_to_paperless(
                     continue;
                 }
             };
-        if let Some(consume_filename) =
-            find_matching_paperless_consume_file(&consume_root, &attachment.attachment_sha256)?
+        if let Some(consume_filename) = consume_checksums
+            .get(&attachment.attachment_sha256)
+            .cloned()
         {
             let sent_at = Utc::now().to_rfc3339();
             if let Err(error) = record_attachment_paperless_handoff(
-                config,
+                &connection,
                 username,
                 &attachment,
                 &consume_filename,
@@ -7790,14 +8203,14 @@ fn send_attachments_to_paperless(
             summary.sent_attachment_keys.push(key.to_string());
             continue;
         }
-        match md5_file(&attachment_path)
-            .and_then(|checksum| load_paperless_document_by_checksum(config, &checksum))
-        {
+        match md5_file(&attachment_path).and_then(|checksum| {
+            load_paperless_document_by_checksum(paperless_database.as_ref(), &checksum)
+        }) {
             Ok(Some(document)) => {
                 let consume_filename = format!("paperless-document-{}", document.id);
                 let sent_at = Utc::now().to_rfc3339();
                 if let Err(error) = record_attachment_paperless_handoff(
-                    config,
+                    &connection,
                     username,
                     &attachment,
                     &consume_filename,
@@ -7840,7 +8253,7 @@ fn send_attachments_to_paperless(
             continue;
         }
         if let Err(error) = record_attachment_paperless_handoff(
-            config,
+            &connection,
             username,
             &attachment,
             &consume_filename,
@@ -7853,6 +8266,7 @@ fn send_attachments_to_paperless(
             });
             continue;
         }
+        consume_checksums.insert(attachment.attachment_sha256.clone(), consume_filename);
         summary.sent += 1;
         summary.sent_attachment_keys.push(key.to_string());
     }
@@ -7891,13 +8305,11 @@ fn reserve_available_paperless_consume_filename(
     fallback
 }
 
-fn find_matching_paperless_consume_file(
-    consume_root: &FsPath,
-    attachment_sha256: &str,
-) -> Result<Option<String>, String> {
+fn index_paperless_consume_files(consume_root: &FsPath) -> Result<HashMap<String, String>, String> {
+    let mut checksums = HashMap::new();
     let entries = match fs::read_dir(consume_root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(checksums),
         Err(error) => {
             return Err(format!(
                 "failed to read Paperless consume directory {}: {error}",
@@ -7906,28 +8318,44 @@ fn find_matching_paperless_consume_file(
         }
     };
     for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "failed to read Paperless consume directory {}: {error}",
-                consume_root.display()
-            )
-        })?;
-        let metadata = entry.metadata().map_err(|error| {
-            format!(
-                "failed to inspect Paperless consume file {}: {error}",
-                entry.path().display()
-            )
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                eprintln!(
+                    "mail-archive-ui skipped transient Paperless consume entry detail={error}"
+                );
+                continue;
+            }
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                eprintln!(
+                    "mail-archive-ui skipped Paperless consume entry path={} detail={error}",
+                    entry.path().display()
+                );
+                continue;
+            }
+        };
         if !metadata.is_file() {
             continue;
         }
         let candidate_path = entry.path();
-        let candidate_sha256 = sha256_file(&candidate_path)?;
-        if candidate_sha256 == attachment_sha256 {
-            return Ok(Some(entry.file_name().to_string_lossy().to_string()));
-        }
+        let candidate_sha256 = match sha256_file(&candidate_path) {
+            Ok(checksum) => checksum,
+            Err(error) => {
+                eprintln!(
+                    "mail-archive-ui skipped changing Paperless consume file path={} detail={error}",
+                    candidate_path.display()
+                );
+                continue;
+            }
+        };
+        checksums
+            .entry(candidate_sha256)
+            .or_insert_with(|| entry.file_name().to_string_lossy().to_string());
     }
-    Ok(None)
+    Ok(checksums)
 }
 
 fn paperless_consume_filename_with_suffix(filename: &str, suffix: usize) -> String {
@@ -10727,6 +11155,14 @@ fn render_preset_auto_export(
     let schedule_time = task
         .map(|task| task.schedule_time.as_str())
         .unwrap_or("06:30");
+    let schedule_mode = task
+        .map(|task| task.schedule_mode.as_str())
+        .unwrap_or("daily");
+    let interval_minutes = task.map(|task| task.interval_minutes).unwrap_or(60);
+    let max_attachments = task
+        .map(|task| task.max_attachments)
+        .unwrap_or(DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS);
+    let retry_enabled = task.is_none_or(|task| task.retry_enabled);
     writeln!(
         &mut html,
         "<details class=\"preset-auto-export\">
@@ -10736,7 +11172,11 @@ fn render_preset_auto_export(
             <input type=\"hidden\" name=\"return_to\" value=\"{}\">
             {}
             {}
-            <label class=\"filter-row\"><span>Run daily at</span><span class=\"filter-control\"><input type=\"time\" name=\"schedule_time\" value=\"{}\" required></span></label>
+            <label class=\"filter-row\"><span>Cadence</span><span class=\"filter-control\"><select name=\"schedule_mode\"><option value=\"daily\" {}>Daily</option><option value=\"interval\" {}>Repeating interval</option></select></span></label>
+            <label class=\"filter-row\"><span>Daily time</span><span class=\"filter-control\"><input type=\"time\" name=\"schedule_time\" value=\"{}\" required></span></label>
+            <label class=\"filter-row\"><span>Repeat every (minutes)</span><span class=\"filter-control\"><input type=\"number\" name=\"interval_minutes\" min=\"{}\" max=\"{}\" value=\"{}\" required></span></label>
+            <label class=\"filter-row\"><span>Maximum per run</span><span class=\"filter-control\"><input type=\"number\" name=\"paperless_max_documents\" min=\"1\" max=\"{}\" value=\"{}\" required></span></label>
+            <label class=\"filter-row\"><span>Retry failures</span><span class=\"filter-control\"><select name=\"retry_enabled\"><option value=\"1\" {}>Enabled</option><option value=\"0\" {}>Disabled</option></select></span></label>
             <button class=\"secondary\" type=\"submit\">{}</button>
           </form>",
         escape_html(&preset.name),
@@ -10751,7 +11191,16 @@ fn render_preset_auto_export(
         } else {
             "<p class=\"meta\">No auto-export configured for this preset.</p>".to_string()
         },
+        if schedule_mode == "daily" { "selected" } else { "" },
+        if schedule_mode == "interval" { "selected" } else { "" },
         escape_html(schedule_time),
+        MIN_PAPERLESS_TASK_INTERVAL_MINUTES,
+        MAX_PAPERLESS_TASK_INTERVAL_MINUTES,
+        interval_minutes,
+        MAX_PAPERLESS_TASK_ATTACHMENTS,
+        max_attachments,
+        if retry_enabled { "selected" } else { "" },
+        if retry_enabled { "" } else { "selected" },
         if task.is_some() {
             "Update auto-export"
         } else {
@@ -10795,6 +11244,18 @@ fn render_preset_auto_export(
             )
             .ok();
         }
+        writeln!(
+            &mut html,
+            "<p class=\"meta task-summary\">Status: {} · {} successful run(s) · {} failed/partial run(s){}</p>",
+            escape_html(task.last_status.as_deref().unwrap_or("not run")),
+            task.successful_runs,
+            task.failed_runs,
+            task.next_retry_at
+                .as_deref()
+                .map(|retry| format!(" · retry scheduled for {}", escape_html(retry)))
+                .unwrap_or_default(),
+        )
+        .ok();
     }
     html.push_str("</details>");
     html
@@ -12695,6 +13156,7 @@ mod tests {
         let rendered = fs::read_to_string(&mbsyncrc.path).expect("read mbsyncrc");
 
         assert!(rendered.contains("Host imap.example.com"));
+        assert!(rendered.contains("User \"alice@example.com\""));
         assert!(rendered.contains(&format!(
             "SyncState {}",
             paths.sync_state_dir.join("state").display()
@@ -13709,6 +14171,41 @@ mod tests {
     }
 
     #[test]
+    fn generic_imap_fields_reject_mbsync_directive_injection() {
+        let mut form = CreateAccountForm {
+            provider_kind: "generic_imap".to_string(),
+            display_name: "Personal".to_string(),
+            imap_host: "imap.example.com\nPassCmd malicious".to_string(),
+            imap_port: "993".to_string(),
+            imap_username: "alice@example.com".to_string(),
+            secret: "secret".to_string(),
+            folder_patterns: "INBOX".to_string(),
+            sync_enabled: Some("on".to_string()),
+        };
+
+        assert!(validate_account_form(&form, true).is_err());
+        form.imap_host = "imap.example.com".to_string();
+        form.imap_username = "alice@example.com\nTunnel malicious".to_string();
+        assert!(validate_account_form(&form, true).is_err());
+        form.imap_username = "alice@example.com".to_string();
+        form.folder_patterns = "INBOX\nbad\u{0000}folder".to_string();
+        assert!(validate_account_form(&form, true).is_err());
+    }
+
+    #[test]
+    fn mbsync_rendering_rejects_legacy_unsafe_account_values() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        prepare_test_layout(&config);
+        let mut account = example_account();
+        account.imap_host = "imap.example.com\nPassCmd malicious".to_string();
+        let paths = ensure_account_paths(&config, &account).expect("paths");
+        let secret = write_temp_secret(&config, account.id, "sekret").expect("secret");
+
+        assert!(write_temp_mbsyncrc(&config, &account, &paths, &secret.path).is_err());
+    }
+
+    #[test]
     fn saved_query_detection_only_runs_on_explicit_q_param() {
         assert!(has_explicit_query_param("q=from%3Abilling"));
         assert!(!has_explicit_query_param("account_id=4"));
@@ -14017,6 +14514,8 @@ mod tests {
             "attachment_messages",
             "attachment_catalog",
             "attachment_paperless_handoffs",
+            "attachment_paperless_tasks",
+            "attachment_paperless_task_runs",
         ];
         for name in names {
             let count = connection
@@ -14037,6 +14536,61 @@ mod tests {
                 )
                 .expect("table count");
             assert_eq!(count, 0, "expected table {name} to stay absent");
+        }
+    }
+
+    #[test]
+    fn legacy_paperless_task_schema_is_migrated_in_place() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config = test_config(&tempdir);
+        ensure_app_layout(&config).expect("layout");
+        let connection = open_db(&config).expect("db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE attachment_paperless_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    schedule_time TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_run_date TEXT,
+                    last_run_at TEXT,
+                    last_summary TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (username, name)
+                );
+                "#,
+            )
+            .expect("legacy schema");
+        drop(connection);
+
+        initialize_db(&config).expect("migrate");
+        let connection = open_db(&config).expect("db");
+        for column in [
+            "schedule_mode",
+            "interval_minutes",
+            "max_attachments",
+            "retry_enabled",
+            "last_status",
+            "next_retry_at",
+            "consecutive_failures",
+            "successful_runs",
+            "failed_runs",
+            "lease_until",
+        ] {
+            let found = connection
+                .prepare("PRAGMA table_info(attachment_paperless_tasks)")
+                .expect("table info")
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("columns")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("column names")
+                .into_iter()
+                .any(|name| name == column);
+            assert!(found, "expected migrated column {column}");
         }
     }
 
@@ -14766,7 +15320,106 @@ mod tests {
                 tasks[0].last_summary.as_deref(),
                 Some("1 attachment sent to Paperless")
             );
+            assert_eq!(tasks[0].last_status.as_deref(), Some("success"));
+            assert_eq!(tasks[0].successful_runs, 1);
+            let run_count = open_db(&config)
+                .expect("db")
+                .query_row(
+                    "SELECT COUNT(*) FROM attachment_paperless_task_runs WHERE task_id = ?1",
+                    params![task.id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("run history");
+            assert_eq!(run_count, 1);
         });
+    }
+
+    #[test]
+    fn paperless_task_custom_schedule_is_validated_and_execution_is_leased() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let mut config = test_config(&tempdir);
+        configure_test_paperless_handoff(&mut config, &tempdir);
+        prepare_test_layout(&config);
+
+        let task = save_attachment_paperless_task_for_user(
+            &config,
+            "alice",
+            &AttachmentPaperlessTaskSaveForm {
+                task_name: "Frequent invoices".to_string(),
+                schedule_time: "06:30".to_string(),
+                schedule_mode: Some("interval".to_string()),
+                interval_minutes: Some("30".to_string()),
+                paperless_max_documents: Some("37".to_string()),
+                retry_enabled: Some("0".to_string()),
+                subject: Some("invoice".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("save task");
+
+        assert_eq!(task.schedule_mode, "interval");
+        assert_eq!(task.interval_minutes, 30);
+        assert_eq!(task.max_attachments, 37);
+        assert!(!task.retry_enabled);
+        assert!(due_paperless_tasks(&config)
+            .expect("due tasks")
+            .iter()
+            .any(|candidate| candidate.id == task.id));
+        assert!(claim_paperless_task(&config, task.id).expect("first claim"));
+        assert!(!claim_paperless_task(&config, task.id).expect("duplicate claim"));
+
+        assert!(normalize_paperless_schedule(Some("interval"), Some("14")).is_err());
+        assert!(normalize_paperless_task_max_attachments(Some("2001")).is_err());
+        assert!(normalize_paperless_task_max_attachments(Some("many")).is_err());
+    }
+
+    #[test]
+    fn failed_paperless_task_records_history_and_exponential_retry() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let mut config = test_config(&tempdir);
+        configure_test_paperless_handoff(&mut config, &tempdir);
+        prepare_test_layout(&config);
+
+        let task = save_attachment_paperless_task_for_user(
+            &config,
+            "alice",
+            &AttachmentPaperlessTaskSaveForm {
+                task_name: "Retry invoices".to_string(),
+                schedule_time: "00:00".to_string(),
+                subject: Some("invoice".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("save task");
+        assert!(claim_paperless_task(&config, task.id).expect("claim"));
+        let started_at = Utc::now().to_rfc3339();
+        record_paperless_task_run(
+            &config,
+            &task,
+            &started_at,
+            &Local::now().format("%Y-%m-%d").to_string(),
+            &PaperlessTaskRunResult {
+                status: "failed",
+                summary: "Failed: temporary consume error".to_string(),
+                handoff: PaperlessHandoffSummary::default(),
+            },
+        )
+        .expect("record failure");
+
+        let updated = list_attachment_paperless_tasks(&config, "alice")
+            .expect("tasks")
+            .remove(0);
+        assert_eq!(updated.last_status.as_deref(), Some("failed"));
+        assert_eq!(updated.consecutive_failures, 1);
+        assert_eq!(updated.failed_runs, 1);
+        assert!(updated.next_retry_at.is_some());
+        assert!(due_paperless_tasks(&config)
+            .expect("due tasks")
+            .iter()
+            .all(|candidate| candidate.id != task.id));
+        assert_eq!(paperless_retry_delay_minutes(1), 5);
+        assert_eq!(paperless_retry_delay_minutes(2), 10);
+        assert_eq!(paperless_retry_delay_minutes(20), 360);
     }
 
     #[test]
@@ -15205,6 +15858,53 @@ mod tests {
                 fs::read(consume_root.join("invoice.pdf")).expect("invoice"),
                 b"existing"
             );
+        });
+    }
+
+    #[test]
+    fn paperless_task_batch_limit_advances_past_prior_handoffs() {
+        with_stubbed_path(&mail_export_stub_commands(), |_| {
+            let tempdir = TempDir::new().expect("tempdir");
+            let mut config = test_config(&tempdir);
+            configure_test_paperless_handoff(&mut config, &tempdir);
+            prepare_test_layout(&config);
+            let account_id = seed_account_with_flags(&config, "alice", "secret", true);
+            let account = read_account(&config, "alice", account_id);
+            let account_paths = ensure_account_paths(&config, &account).expect("paths");
+            write_maildir_message(
+                &account_paths,
+                "Inbox/cur/msg-batched",
+                "Message-ID: <batched-paperless@example.com>\nSubject: Batched Paperless\nDate: Thu, 18 Apr 2024 14:32:00 +0000\n\nATTACH:pdf-and-zip\n",
+            );
+            run_account_action_for_user(&config, "alice", account_id, AccountAction::Sync)
+                .expect("sync");
+
+            let first = send_attachment_filter_to_paperless(
+                &config,
+                "alice",
+                "subject=Batched+Paperless",
+                1,
+            )
+            .expect("first batch");
+            let second = send_attachment_filter_to_paperless(
+                &config,
+                "alice",
+                "subject=Batched+Paperless",
+                1,
+            )
+            .expect("second batch");
+            let finished = send_attachment_filter_to_paperless(
+                &config,
+                "alice",
+                "subject=Batched+Paperless",
+                1,
+            )
+            .expect("finished batch");
+
+            assert_eq!(first.sent, 1);
+            assert_eq!(second.sent, 1);
+            assert_eq!(finished.sent, 0);
+            assert!(finished.failures.is_empty());
         });
     }
 

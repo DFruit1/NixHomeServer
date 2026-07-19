@@ -4,6 +4,7 @@ export type AudioFormat = 'flac' | 'm4a' | 'mp3' | 'opus' | 'wav';
 export type AudioQuality = 'best' | 'high' | 'medium' | 'low';
 export type VideoContainer = 'mkv' | 'mp4' | 'webm';
 export type VideoQuality = 'best' | '2160p' | '1440p' | '1080p' | '720p' | '480p';
+export type YtDlpVersion = 'packaged';
 
 export type CurrentUser = {
   username: string;
@@ -56,6 +57,7 @@ export type CreateJobRequest = {
   includeChannel: boolean;
   includeDate: boolean;
   saveAudioToAudiobooks?: boolean;
+  ytDlpVersion?: YtDlpVersion;
   duplicateConfirmed?: boolean;
   chaptersConfirmed?: boolean;
   outputFolderCollisionConfirmed?: boolean;

@@ -1,11 +1,11 @@
-{ config, ... }:
+{ config, lib, ... }:
 
 let
   libraryRoot = config.repo.kiwix.paths.libraryRoot;
 in
 
 {
-  config = {
+  config = lib.mkIf config.repo.kiwix.enable {
     repo.backups = {
       criticalPaths = [
         libraryRoot

@@ -4,44 +4,72 @@ let
   cfg = config.repo.authGateway;
   loopback = vars.networking.loopbackIPv4;
   authHost = cfg.domain;
+  hasModule = name: config.nixhomeserver.modules.${name} or false;
+  homepageEnabled = hasModule "homepage";
+  moduleEnabled = name:
+    hasModule name
+    && (config.repo.${name}.enable or true);
   sidecarServices = [
-    "filestash-oauth2-proxy"
-    "homepage-oauth2-proxy"
-    "kiwix-oauth2-proxy"
     "kopia-oauth2-proxy"
-    "mail-archive-oauth2-proxy"
     "monitor-oauth2-proxy"
-    "prowlarr-oauth2-proxy"
-    "qbittorrent-oauth2-proxy"
-    "radarr-oauth2-proxy"
-    "seerr-oauth2-proxy"
-    "sonarr-oauth2-proxy"
-    "youtube-downloader-oauth2-proxy"
-  ];
+  ]
+  ++ lib.optionals (hasModule "files") [ "filestash-oauth2-proxy" ]
+  ++ lib.optionals homepageEnabled [ "homepage-oauth2-proxy" ]
+  ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-oauth2-proxy" ]
+  ++ lib.optionals (hasModule "mail-archive-ui") [ "mail-archive-oauth2-proxy" ]
+  ++ lib.optionals (moduleEnabled "prowlarr") [ "prowlarr-oauth2-proxy" ]
+  ++ lib.optionals (moduleEnabled "qbittorrent") [ "qbittorrent-oauth2-proxy" ]
+  ++ lib.optionals (moduleEnabled "radarr") [ "radarr-oauth2-proxy" ]
+  ++ lib.optionals (moduleEnabled "sonarr") [ "sonarr-oauth2-proxy" ]
+  ++ lib.optionals (hasModule "youtube-downloader") [ "youtube-downloader-oauth2-proxy" ]
+  ++ lib.optionals (moduleEnabled "seerr") [ "seerr-oauth2-proxy" ];
   sidecarUnits = map (name: "${name}.service") sidecarServices;
   mkApp = host: upstream: allowedGroups: {
     inherit host upstream allowedGroups;
   };
   defaultApps = {
+    monitor = mkApp vars.monitorDomain "http://${loopback}:${toString vars.networking.ports.beszelHub}" [ vars.monitoringAccess.group ];
+    kopia = mkApp vars.kopiaDomain "http://${loopback}:${toString (vars.networking.ports.kopia + 1)}" [ vars.backupAccess.adminGroup ];
+  }
+  // lib.optionalAttrs homepageEnabled {
     homepage = mkApp "homepage.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.homepage}" [ "users" ];
+  }
+  // lib.optionalAttrs (hasModule "files") {
     files = (mkApp "files.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.filestash}" [
       vars.fileAccess.webAccessGroup
-      vars.fileAccess.usbAccessGroup
-      vars.backupAccess.storageGroup
     ]) // {
       skipAuthPreflight = true;
     };
+  }
+  // lib.optionalAttrs (hasModule "mail-archive-ui") {
     mail = mkApp "emails.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.mailArchiveUi}" [ "mail-archive-users" ];
+  }
+  // lib.optionalAttrs (moduleEnabled "kiwix") {
     kiwix = mkApp "wiki.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.kiwix}" [ "kiwix-users" ];
+  }
+  // lib.optionalAttrs (hasModule "youtube-downloader") {
     downloads = mkApp "ytdownload.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.youtubeDownloader}" [ "downloads-users" ];
-    monitor = mkApp vars.monitorDomain "http://${loopback}:${toString vars.networking.ports.beszelHub}" [ "app-admin" ];
-    kopia = mkApp vars.kopiaDomain "http://${loopback}:${toString (vars.networking.ports.kopia + 1)}" [ vars.backupAccess.adminGroup ];
-    seerr = mkApp "requests.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.seerr}" [ "media-automation-users" ];
+  }
+  // lib.optionalAttrs (moduleEnabled "sonarr") {
     sonarr = mkApp "sonarr.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.sonarr}" [ "media-automation-users" ];
+  }
+  // lib.optionalAttrs (moduleEnabled "radarr") {
     radarr = mkApp "radarr.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.radarr}" [ "media-automation-users" ];
+  }
+  // lib.optionalAttrs (moduleEnabled "prowlarr") {
     prowlarr = mkApp "prowlarr.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.prowlarr}" [ "media-automation-users" ];
+  }
+  // lib.optionalAttrs (moduleEnabled "qbittorrent") {
     qbittorrent = mkApp "torrents.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.qbittorrentWeb}" [ "media-automation-users" ];
+  }
+  // lib.optionalAttrs (moduleEnabled "seerr") {
+    seerr = mkApp "requests.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.seerr}" [ "media-automation-users" ];
   };
+  upstreamTransport = app: lib.optionalString (app.upstreamTimeout != null) ''
+    transport http {
+      response_header_timeout ${app.upstreamTimeout}
+    }
+  '';
   matcherName = name: lib.replaceStrings [ "-" "." ] [ "_" "_" ] name;
   mkRouterBlock = name: app:
     let
@@ -54,6 +82,7 @@ let
         @denied_${matcher} not header_regexp X-Forwarded-Groups "(?i)(^|,)[[:space:]]*(${groups})[[:space:]]*(,|$)"
         respond @denied_${matcher} "Forbidden" 403
         reverse_proxy ${app.upstream} {
+          ${upstreamTransport app}
           header_up -X-Auth-Request-User
           header_up -X-Auth-Request-Email
           header_up -X-Auth-Request-Groups
@@ -70,7 +99,8 @@ let
       admin off
       auto_https off
     }
-    http://${loopback}:${toString cfg.internalPort} {
+    http://:${toString cfg.internalPort} {
+      bind ${loopback}
       ${lib.concatStringsSep "\n" (lib.mapAttrsToList mkRouterBlock cfg.protectedApps)}
       respond "Unknown protected application" 404
     }
@@ -154,7 +184,9 @@ let
       ${lib.optionalString app.skipAuthPreflight ''
         @preflight_${matcherName name} method OPTIONS
         handle @preflight_${matcherName name} {
-          reverse_proxy ${app.upstream}
+          reverse_proxy ${app.upstream} {
+            ${upstreamTransport app}
+          }
         }
       ''}
       ${lib.optionalString app.apiUnauthenticated401 ''
@@ -205,108 +237,116 @@ in
           upstreamTimeout = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; };
         };
       });
-      default = defaultApps;
+      default = { };
     };
   };
 
-  config = lib.mkIf (cfg.enable && cfg.mode == "gateway") {
-    systemd.services = (lib.genAttrs sidecarServices (_: { wantedBy = lib.mkForce [ ]; })) // {
-      auth-gateway-router = {
-        description = "Route authenticated gateway requests to protected applications";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "network.target" ];
-        serviceConfig = {
-          Type = "simple";
-          User = "oauth2-proxy";
-          Group = "oauth2-proxy";
-          ExecStart = "${pkgs.caddy}/bin/caddy run --config ${routerCaddyfile}";
-          Restart = "on-failure";
-          RestartSec = "5s";
-          NoNewPrivileges = true;
-          PrivateTmp = true;
+  config = lib.mkMerge [
+    {
+      # This is a normal attrsOf definition rather than an option default so
+      # independently registered apps merge with the core/app inventory.
+      repo.authGateway.protectedApps = defaultApps;
+    }
+
+    (lib.mkIf (cfg.enable && cfg.mode == "gateway") {
+      systemd.services = (lib.genAttrs sidecarServices (_: { wantedBy = lib.mkForce [ ]; })) // {
+        auth-gateway-router = {
+          description = "Route authenticated gateway requests to protected applications";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "network.target" ];
+          serviceConfig = {
+            Type = "simple";
+            User = "oauth2-proxy";
+            Group = "oauth2-proxy";
+            ExecStart = "${pkgs.caddy}/bin/caddy run --config ${routerCaddyfile}";
+            Restart = "on-failure";
+            RestartSec = "5s";
+            NoNewPrivileges = true;
+            PrivateTmp = true;
+          };
+        };
+
+        auth-gateway-oauth2-proxy = {
+          description = "Shared OAuth2 Proxy authentication gateway";
+          wantedBy = [ "multi-user.target" ];
+          conflicts = sidecarUnits;
+          before = sidecarUnits;
+          wants = [ "network-online.target" "kanidm.service" "auth-gateway-router.service" ];
+          after = [ "network-online.target" "kanidm.service" "auth-gateway-router.service" ];
+          serviceConfig = {
+            Type = "simple";
+            User = "oauth2-proxy";
+            Group = "oauth2-proxy";
+            ExecStart = lib.concatStringsSep " " (map lib.escapeShellArg [
+              "${pkgs.oauth2-proxy}/bin/oauth2-proxy"
+              "--provider=oidc"
+              "--oidc-issuer-url=${vars.kanidmIssuer "auth-gateway-web"}"
+              "--client-id=auth-gateway-web"
+              "--client-secret-file=/run/auth-gateway/client-secret"
+              "--cookie-secret-file=/run/auth-gateway/cookie-secret"
+              "--cookie-name=__Secure-nixhomeserver_sso"
+              "--cookie-domain=.${vars.domain}"
+              "--cookie-secure=true"
+              "--cookie-httponly=true"
+              "--cookie-samesite=lax"
+              "--whitelist-domain=.${vars.domain}"
+              "--redirect-url=https://${authHost}/oauth2/callback"
+              "--http-address=${loopback}:${toString cfg.port}"
+              "--upstream=static://202"
+              "--scope=openid profile email groups_name"
+              "--email-domain=*"
+              "--oidc-groups-claim=groups"
+              "--pass-user-headers=true"
+              "--set-xauthrequest=true"
+              "--reverse-proxy=true"
+              "--skip-provider-button=true"
+              "--skip-auth-preflight=true"
+              "--api-route=^/api/"
+              "--code-challenge-method=S256"
+              "--provider-ca-file=/etc/ssl/certs/ca-bundle.crt"
+            ]);
+            Restart = "on-failure";
+            RestartSec = "5s";
+            NoNewPrivileges = true;
+            PrivateTmp = true;
+            ProtectSystem = "strict";
+            ProtectHome = true;
+            RuntimeDirectory = "auth-gateway";
+            UMask = "0077";
+            ExecStartPre = [ prepareClientSecret prepareCookieSecret waitForDiscovery ];
+            ReadOnlyPaths = [
+              config.age.secrets.oauth2ProxyClientSecret.path
+              config.age.secrets.oauth2ProxyCookieSecret.path
+            ];
+          };
         };
       };
 
-      auth-gateway-oauth2-proxy = {
-        description = "Shared OAuth2 Proxy authentication gateway";
-        wantedBy = [ "multi-user.target" ];
-        conflicts = sidecarUnits;
-        before = sidecarUnits;
-        wants = [ "network-online.target" "kanidm.service" "auth-gateway-router.service" ];
-        after = [ "network-online.target" "kanidm.service" "auth-gateway-router.service" ];
-        serviceConfig = {
-          Type = "simple";
-          User = "oauth2-proxy";
-          Group = "oauth2-proxy";
-          ExecStart = lib.concatStringsSep " " (map lib.escapeShellArg [
-            "${pkgs.oauth2-proxy}/bin/oauth2-proxy"
-            "--provider=oidc"
-            "--oidc-issuer-url=${vars.kanidmIssuer "auth-gateway-web"}"
-            "--client-id=auth-gateway-web"
-            "--client-secret-file=/run/auth-gateway/client-secret"
-            "--cookie-secret-file=/run/auth-gateway/cookie-secret"
-            "--cookie-name=__Secure-nixhomeserver_sso"
-            "--cookie-domain=.${vars.domain}"
-            "--cookie-secure=true"
-            "--cookie-httponly=true"
-            "--cookie-samesite=lax"
-            "--whitelist-domain=.${vars.domain}"
-            "--redirect-url=https://${authHost}/oauth2/callback"
-            "--http-address=${loopback}:${toString cfg.port}"
-            "--upstream=static://202"
-            "--scope=openid profile email groups_name"
-            "--email-domain=*"
-            "--oidc-groups-claim=groups"
-            "--pass-user-headers=true"
-            "--set-xauthrequest=true"
-            "--reverse-proxy=true"
-            "--skip-provider-button=true"
-            "--skip-auth-preflight=true"
-            "--api-route=^/api/"
-            "--code-challenge-method=S256"
-            "--provider-ca-file=/etc/ssl/certs/ca-bundle.crt"
-          ]);
-          Restart = "on-failure";
-          RestartSec = "5s";
-          NoNewPrivileges = true;
-          PrivateTmp = true;
-          ProtectSystem = "strict";
-          ProtectHome = true;
-          RuntimeDirectory = "auth-gateway";
-          UMask = "0077";
-          ExecStartPre = [ prepareClientSecret prepareCookieSecret waitForDiscovery ];
-          ReadOnlyPaths = [
-            config.age.secrets.oauth2ProxyClientSecret.path
-            config.age.secrets.oauth2ProxyCookieSecret.path
-          ];
+      services.caddy.virtualHosts =
+        (lib.mapAttrs'
+          (name: app: lib.nameValuePair app.host {
+            logFormat = lib.mkForce null;
+            useACMEHost = vars.domain;
+            extraConfig = lib.mkForce (lib.optionalString (app.host == "files.${vars.domain}") ''
+              @download_html_svg path *.html *.svg
+              header @download_html_svg Content-Disposition attachment
+              header @download_html_svg X-Content-Type-Options nosniff
+            '' + mkProtectedProxyConfig name app);
+          })
+          cfg.protectedApps)
+        // {
+          ${authHost} = {
+            logFormat = lib.mkForce null;
+            useACMEHost = vars.domain;
+            extraConfig = lib.mkForce authProxyConfig;
+          };
         };
-      };
-    };
 
-    services.caddy.virtualHosts =
-      (lib.mapAttrs'
-        (name: app: lib.nameValuePair app.host {
-          logFormat = lib.mkForce null;
-          useACMEHost = vars.domain;
-          extraConfig = lib.mkForce (lib.optionalString (app.host == "files.${vars.domain}") ''
-            @download_html_svg path *.html *.svg
-            header @download_html_svg Content-Disposition attachment
-            header @download_html_svg X-Content-Type-Options nosniff
-          '' + mkProtectedProxyConfig name app);
-        })
-        cfg.protectedApps)
-      // {
-        ${authHost} = {
-          logFormat = lib.mkForce null;
-          useACMEHost = vars.domain;
-          extraConfig = lib.mkForce authProxyConfig;
-        };
+      services.unbound.privateHosts.${authHost}.target = "private";
+      services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress.${authHost} = {
+        service = "https://${loopback}:${toString vars.networking.ports.https}";
+        originRequest.originServerName = authHost;
       };
-
-    services.unbound.privateHosts.${authHost}.target = "private";
-    services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress.${authHost} = {
-      service = "https://${loopback}:${toString vars.networking.ports.https}";
-      originRequest.originServerName = authHost;
-    };
-  };
+    })
+  ];
 }

@@ -3,20 +3,15 @@
 let
   proxyUser = "immich-public-proxy";
   proxyGroup = "immich-public-proxy";
-  proxyUid = 3001;
-  proxyGid = 3001;
   host = "photos.${vars.domain}";
 in
 
 {
   config = {
-    users.groups.${proxyGroup} = {
-      gid = proxyGid;
-    };
+    users.groups.${proxyGroup} = { };
 
     users.users.${proxyUser} = {
       isSystemUser = true;
-      uid = proxyUid;
       group = proxyGroup;
       home = "/var/lib/immich-public-proxy";
       createHome = true;

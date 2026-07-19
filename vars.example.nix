@@ -7,8 +7,13 @@ rec {
   # first block, then running `nix run .#validate-config-readiness`.
   # ---------------------------------------------------------------------------
 
+  branding = {
+    displayName = "Home Server"; # Human-readable name shown in the portal and identity provider.
+  };
+
   identity = {
     adminUser = "kanidm-admin"; # Dedicated Kanidm operator account; keep separate from the local Unix admin.
+    canaryUser = "canary-user"; # Non-privileged synthetic user used by browser access checks.
     appUsers = [ ]; # Extra existing Kanidm users granted default access to hosted apps.
     appAdminUsers = [ ]; # Extra existing Kanidm users granted app-level admin roles.
     appUserEmails = { }; # Optional email map for extra app users, for example { alice = "alice@example.test"; }.
@@ -31,7 +36,7 @@ rec {
 
   system = {
     hostPlatform = "x86_64-linux"; # Nix target platform. Supported values: "x86_64-linux" and "aarch64-linux".
-    hardwareProfile = "generic-uefi"; # Use "existing-server" only for this repo's current checked-in hardware config.
+    hardwareProfile = "generated"; # Use the hardware-configuration.nix generated on the target. "generic-uefi" is an expert fallback only.
     timeZone = "Etc/UTC"; # IANA time zone for timers, logs, and local maintenance windows.
     hostId = "00000000"; # Replace with a stable 8-character hexadecimal host ID for zfs-mirror.
   };
@@ -52,6 +57,7 @@ rec {
 
   storage = {
     profile = "zfs-mirror"; # Use "single-disk-ext4" for a simple one-disk install.
+    enableRootRollback = false; # Optional for blank installs only; requires zfs-mirror and must be chosen before running Disko.
     systemDisk = "CHANGE_ME_SYSTEM_DISK_BY_ID"; # System SSD /dev/disk/by-id basename.
     dataPool = {
       name = "data";
@@ -88,6 +94,11 @@ rec {
     storageGroup = "backup-admin"; # Grants read access to encrypted backup repository files.
     storageUsers = [ ]; # Extra existing Kanidm users allowed to browse backup repository files.
     storageMountName = "_Backups";
+  };
+
+  monitoringAccess = {
+    group = "monitoring-users"; # Grants monitoring access without app-admin privileges.
+    users = [ identity.adminUser identity.canaryUser ];
   };
 
   seerrAccess = {
@@ -177,20 +188,23 @@ rec {
   hostname = network.hostname;
   domain = network.domain;
   hostPlatform = system.hostPlatform or "x86_64-linux";
-  hardwareProfile = system.hardwareProfile or "generic-uefi";
+  hardwareProfile = system.hardwareProfile or "generated";
   timeZone = system.timeZone;
   hostId = system.hostId;
   kanidmAdminUser = identity.adminUser;
-  kanidmAppUsers = lib.unique ([ identity.adminUser ] ++ (identity.appUsers or [ ]));
+  kanidmCanaryUser = identity.canaryUser;
+  kanidmAppUsers = lib.unique ([ identity.adminUser identity.canaryUser ] ++ (identity.appUsers or [ ]));
   kanidmAppAdminUsers = lib.unique ([ identity.adminUser ] ++ (identity.appAdminUsers or [ ]));
   kanidmBackupUsers = lib.unique (
-    [ identity.adminUser ]
+    [ identity.adminUser identity.canaryUser ]
     ++ (backupAccess.adminUsers or [ ])
     ++ (backupAccess.storageUsers or [ ])
   );
   kanidmBackupAdminUsers = kanidmBackupUsers;
   kanidmBackupStorageUsers = kanidmBackupUsers;
-  kanidmAppUserEmails = identity.appUserEmails or { };
+  kanidmAppUserEmails = (identity.appUserEmails or { }) // {
+    ${identity.canaryUser} = "${identity.canaryUser}@${network.domain}";
+  };
   kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
   kanidmAdminEmail = identity.adminEmail;
   seerrRequestManagerGroup = seerrAccess.requestManagerGroup;
@@ -239,8 +253,10 @@ rec {
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
   filesSessionExpirationHours = 8; # Files web UI browser session lifetime in hours.
+  brandName = branding.displayName;
 
   storageProfile = storage.profile or "zfs-mirror";
+  enableRootRollback = storage.enableRootRollback or false;
   enableZfsDataPool = storageProfile == "zfs-mirror";
   dataRootIsMountPoint = enableZfsDataPool;
   mainDisk = storage.systemDisk;

@@ -16,7 +16,7 @@ let
             && builtins.pathExists secretPath
             && content != ""
             && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
-          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then use nix run .#generate-secrets -- --identity /path/to/current/age.key.";
         })
       secretNames;
 in
@@ -24,5 +24,7 @@ in
   config.assertions = mkSecretAssertions [
     "homepageOauth2ProxyClientSecret"
     "homepageOauth2ProxyCookieSecret"
+    "kanidmAdminPass"
+    "canaryUserPassword"
   ];
 }

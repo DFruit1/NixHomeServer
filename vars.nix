@@ -7,8 +7,13 @@ rec {
   # first block, then running `nix run .#validate-config-readiness`.
   # ---------------------------------------------------------------------------
 
+  branding = {
+    displayName = "Sydney Basin Services"; # Human-readable portal and identity-provider name.
+  };
+
   identity = {
     adminUser = "admindsaw"; # Dedicated Kanidm operator account; keep separate from the local Unix admin.
+    canaryUser = "canary-user"; # Non-privileged synthetic user used by browser access checks.
     appUsers = [ "dsaw" ]; # Non-admin Kanidm users granted default access to hosted apps.
     appAdminUsers = [ ]; # Extra Kanidm users granted app-level admin roles.
     appUserEmails = {
@@ -54,6 +59,7 @@ rec {
 
   storage = {
     profile = "zfs-mirror"; # Storage layout. Use "single-disk-ext4" for a simple one-disk install.
+    enableRootRollback = false; # Blank-machine only: create a disposable Btrfs root and restore it from a read-only blank snapshot at every boot.
     systemDisk = "ata-SK_hynix_SC401_SATA_256GB_EI89QSTDS10309C9E"; # System SSD /dev/disk/by-id basename.
     dataPool = {
       name = "data";
@@ -90,6 +96,11 @@ rec {
     storageGroup = "backup-admin"; # Grants read access to encrypted backup repository files.
     storageUsers = [ "dsaw" ]; # Extra existing Kanidm users allowed to browse backup repository files.
     storageMountName = "_Backups";
+  };
+
+  monitoringAccess = {
+    group = "monitoring-users"; # Grants access to the monitoring gateway without app-admin privileges.
+    users = [ identity.adminUser identity.canaryUser ];
   };
 
   seerrAccess = {
@@ -186,16 +197,19 @@ rec {
   timeZone = system.timeZone;
   hostId = system.hostId;
   kanidmAdminUser = identity.adminUser;
-  kanidmAppUsers = lib.unique ([ identity.adminUser ] ++ (identity.appUsers or [ ]));
+  kanidmCanaryUser = identity.canaryUser;
+  kanidmAppUsers = lib.unique ([ identity.adminUser identity.canaryUser ] ++ (identity.appUsers or [ ]));
   kanidmAppAdminUsers = lib.unique ([ identity.adminUser ] ++ (identity.appAdminUsers or [ ]));
   kanidmBackupUsers = lib.unique (
-    [ identity.adminUser ]
+    [ identity.adminUser identity.canaryUser ]
     ++ (backupAccess.adminUsers or [ ])
     ++ (backupAccess.storageUsers or [ ])
   );
   kanidmBackupAdminUsers = kanidmBackupUsers;
   kanidmBackupStorageUsers = kanidmBackupUsers;
-  kanidmAppUserEmails = identity.appUserEmails or { };
+  kanidmAppUserEmails = (identity.appUserEmails or { }) // {
+    ${identity.canaryUser} = "${identity.canaryUser}@${network.domain}";
+  };
   kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
   kanidmAdminEmail = identity.adminEmail;
   seerrRequestManagerGroup = seerrAccess.requestManagerGroup;
@@ -244,8 +258,10 @@ rec {
   kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
   filesSessionExpirationHours = 8; # Files web UI browser session lifetime in hours.
+  brandName = branding.displayName;
 
   storageProfile = storage.profile or "zfs-mirror";
+  enableRootRollback = storage.enableRootRollback or false;
   enableZfsDataPool = storageProfile == "zfs-mirror";
   dataRootIsMountPoint = enableZfsDataPool;
   mainDisk = storage.systemDisk;

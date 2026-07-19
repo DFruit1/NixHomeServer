@@ -9,6 +9,8 @@
     agenix.inputs.nixpkgs.follows = "nixpkgs";
     impermanence.url = "github:nix-community/impermanence";
     impermanence.inputs.nixpkgs.follows = "nixpkgs";
+    disko.url = "github:nix-community/disko";
+    disko.inputs.nixpkgs.follows = "nixpkgs";
     filestashNix.url = "github:dermetfan/filestash.nix";
     filestashNix.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -35,10 +37,32 @@
         system = hostSystem;
         appPackages = hostPackageData.appPackages;
       };
+      mkOfflineInput = input: {
+        path = toString input.outPath;
+        inherit (input) narHash;
+      };
+      offlineInputSources = {
+        agenix = mkOfflineInput inputs.agenix;
+        crane = mkOfflineInput inputs.crane;
+        darwin = mkOfflineInput inputs.agenix.inputs.darwin;
+        disko = mkOfflineInput inputs.disko;
+        filestash = mkOfflineInput inputs.filestashNix.inputs.filestash;
+        filestashNix = mkOfflineInput inputs.filestashNix;
+        home-manager = mkOfflineInput inputs.agenix.inputs.home-manager;
+        home-manager_2 = mkOfflineInput inputs.impermanence.inputs.home-manager;
+        impermanence = mkOfflineInput inputs.impermanence;
+        nixpkgs = mkOfflineInput inputs.nixpkgs;
+        parts = mkOfflineInput inputs.filestashNix.inputs.parts;
+        systems = mkOfflineInput inputs.agenix.inputs.systems;
+        systems_2 = mkOfflineInput inputs.filestashNix.inputs.systems;
+      };
     in
     {
-      nixosConfigurations = host.nixosConfigurations;
+      nixosConfigurations = host.nixosConfigurations // host.bootstrapConfigurations;
       lib.nixhomeserverSettings = host.nixhomeserverSettings;
+      lib.nixhomeserverSerializableSettings = lib.mapAttrs
+        (_: settings: removeAttrs settings [ "kanidmIssuer" "kanidmDiscoveryUrl" ])
+        host.nixhomeserverSettings;
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
       checks = forAllSystems
         (system:
@@ -47,8 +71,8 @@
             packageData = mkPackageData system;
           in
           import ./flake/checks.nix {
-            inherit self lib pkgs;
-            inherit (host) nixosConfigurations nixhomeserverSettings;
+            inherit self lib pkgs offlineInputSources;
+            inherit (host) nixosConfigurations bootstrapConfigurations nixhomeserverSettings;
             inherit (packageData) rustApps nodeApps;
           });
       devShells = forAllSystems

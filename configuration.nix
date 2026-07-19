@@ -35,6 +35,4 @@
     ./modules/Integrations/wait_for_jellyfin_storage_before_youtube_downloader.nix
     ./modules/Integrations/wire_media_automation_stack.nix
   ];
-
-  repo.seerr.enable = false;
 }

@@ -80,7 +80,13 @@ export class Database {
       create index if not exists messages_direction_created_at_idx on messages(direction, created_at);
 
       insert or ignore into schema_migrations(version, applied_at) values (1, datetime('now'));
+      pragma optimize;
     `);
+  }
+
+  close(): void {
+    this.connection?.close();
+    this.connection = undefined;
   }
 
   async insertMessage(params: {
@@ -95,24 +101,51 @@ export class Database {
     source: string;
   }): Promise<number> {
     const bytes = Buffer.byteLength(params.payloadText);
-    await this.exec(`
+    const result = this.getConnection().prepare(`
       insert into messages(created_at, direction, topic, qos, retain, payload_text, payload_json, payload_encoding, payload_bytes, parse_error, source)
       values (
         datetime('now'),
-        ${sqlValue(params.direction)},
-        ${sqlValue(params.topic)},
-        ${sqlValue(params.qos)},
-        ${params.retain ? 1 : 0},
-        ${sqlValue(params.payloadText)},
-        ${params.payloadJson === undefined ? 'null' : jsonValue(params.payloadJson)},
-        ${sqlValue(params.payloadEncoding ?? 'utf8')},
-        ${sqlValue(bytes)},
-        ${sqlValue(params.parseError)},
-        ${sqlValue(params.source)}
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      );
+    `).run(
+      params.direction,
+      params.topic,
+      params.qos ?? null,
+      params.retain ? 1 : 0,
+      params.payloadText,
+      params.payloadJson === undefined ? null : JSON.stringify(params.payloadJson),
+      params.payloadEncoding ?? 'utf8',
+      bytes,
+      params.parseError ?? null,
+      params.source,
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  async prune(retentionDays: number, maximumMessages: number): Promise<number> {
+    const connection = this.getConnection();
+    const statement = connection.prepare(`
+      delete from messages
+      where id in (
+        select id
+        from messages
+        where created_at < datetime('now', ?)
+           or id <= max(0, (select max(id) from messages) - ?)
+        order by id asc
+        limit 10000
       );
     `);
-    const rows = await this.query<{ id: number }>('select id from messages order by id desc limit 1;');
-    return rows[0]?.id ?? 0;
+    let deleted = 0;
+    for (;;) {
+      const result = statement.run(`-${Math.max(1, retentionDays)} days`, Math.max(1, maximumMessages));
+      const changes = Number(result.changes);
+      deleted += changes;
+      if (changes < 10000) {
+        break;
+      }
+    }
+    connection.exec('pragma wal_checkpoint(passive); pragma optimize;');
+    return deleted;
   }
 
   async listMessages(filters: MessageFilters = {}): Promise<MqttMessage[]> {
@@ -130,15 +163,17 @@ export class Database {
     return rows.map(rowToMessage);
   }
 
-  async exportMessages(filters: MessageFilters = {}): Promise<MqttMessage[]> {
+  *iterateMessages(filters: MessageFilters = {}): IterableIterator<MqttMessage> {
     const where = this.whereClause(filters);
-    const rows = await this.query<MessageRow>(`
+    const rows = this.getConnection().prepare(`
       select *
       from messages
       ${where}
       order by created_at asc, id asc;
-    `);
-    return rows.map(rowToMessage);
+    `).iterate() as Iterable<MessageRow>;
+    for (const row of rows) {
+      yield rowToMessage(row);
+    }
   }
 
   async observedTopics(): Promise<string[]> {

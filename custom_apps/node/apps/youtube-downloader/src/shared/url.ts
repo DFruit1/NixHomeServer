@@ -16,7 +16,7 @@ export const isYouTubeUrl = (value: string): boolean => {
   } catch {
     return false;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (parsed.protocol !== 'https:') {
     return false;
   }
   return isYouTubeHost(parsed.hostname.toLowerCase());

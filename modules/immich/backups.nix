@@ -19,7 +19,7 @@ in
           component = "postgresql";
           stateRoot = config.services.postgresql.dataDir;
           payloadRoots = [ paths.managed ];
-          notes = "PostgreSQL cluster; logical dump also lands in dumps/postgresql.sql.";
+          notes = "PostgreSQL cluster; a custom-format logical dump is published as dumps/immich.pgdump.";
         }
         {
           app = "immich";
@@ -32,6 +32,13 @@ in
       criticalPaths = [
         paths.root
         paths.managed
+      ];
+      postgresqlDumps = [
+        {
+          database = config.services.immich.database.name;
+          user = config.services.immich.database.user;
+          outputName = "immich.pgdump";
+        }
       ];
       pathInventories = [
         {

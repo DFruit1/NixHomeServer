@@ -49,8 +49,9 @@ export const probeUrl = async (
   config: AppConfig,
   url: string,
   onSpawn?: (child: ChildProcess) => void,
+  ytDlpPath = config.ytDlpPath,
 ): Promise<ProbeResponse> => {
-  const result = await runCommand(config.ytDlpPath, ['--dump-single-json', '--flat-playlist', '--no-warnings', url], {
+  const result = await runCommand(ytDlpPath, ['--no-config', '--dump-single-json', '--flat-playlist', '--no-warnings', url], {
     timeoutMs: 120000,
     onSpawn,
   });
@@ -85,6 +86,7 @@ export const probeUrl = async (
 
 export const buildDownloadArgs = (request: CreateJobRequest, outputTemplate: string, chapterTemplate: string): string[] => {
   const args = [
+    '--no-config',
     '--newline',
     '--no-simulate',
     '--no-overwrites',

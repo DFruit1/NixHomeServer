@@ -1,6 +1,10 @@
 # Kanidm Guide
 
-`kanidm-admin` was archived and removed from active deployment. Use this guide with the native `kanidm` CLI and the homepage "For Admins" page for live-generated commands.
+The old custom helper package named `kanidm-admin` was archived and removed
+from active deployment. That package is not the Kanidm operator account: an
+installation may still choose `kanidm-admin` as the value of
+`identity.adminUser`. Active procedures use the native `kanidm` CLI and the
+homepage "For Admins" page for live-generated commands.
 
 Use this as the operator guide for:
 - checking people and groups during onboarding
@@ -19,7 +23,8 @@ The homepage app now shows live groups from Kanidm and generates ready-to-copy c
 
 - Placeholders such as `<USER>`, `<GROUP>`, and `<EMAIL>` are examples.
 - Use the current server shell context when running commands (the homepage guide is generated with live context).
-- This repository intentionally avoids `kanidm-admin` for production procedures.
+- References to the archived `kanidm-admin` helper mean the old package, never
+  the account configured by `identity.adminUser`.
 
 ## Native CLI Task Snippets
 
@@ -60,10 +65,13 @@ kanidm group get "$GROUP"
 Issue a short-lived reset token for first sign-in:
 
 ```bash
-kanidm person credential create-reset-token "$USER" 3600
+OPERATOR="<identity.adminUser>"
+kanidm person credential create-reset-token "$USER" --name "$OPERATOR"
 ```
 
-If a token is shared, send it through a secure channel and treat it as an active secret.
+Replace `<identity.adminUser>` with the configured Kanidm operator username. If
+a token is shared, send it through a secure channel and treat it as an active
+secret.
 
 ## File Access Baseline
 
@@ -105,6 +113,7 @@ If the problem looks like stale grants:
 
 ## Safe-to-avoid Guidance
 
-- do not keep deprecated `kanidm-admin` in active workflows
+- do not reintroduce the archived custom `kanidm-admin` helper package; use the
+  native `kanidm` CLI
 - prefer the homepage command snippets (live group catalog + current context)
 - keep all sensitive reset tokens and credential artifacts out of long-lived logs

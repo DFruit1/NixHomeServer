@@ -43,7 +43,8 @@ oauth_clients_json="$(jq -c '.identity.oauthClients' <<<"$preview_json")"
 groups_json="$(jq -c '.identity.kanidmGroups' <<<"$preview_json")"
 user_content_subdirs_json="$(jq -c '.storage.userContentSubdirs' <<<"$preview_json")"
 shared_content_subdirs_json="$(jq -c '.storage.sharedContentSubdirs' <<<"$preview_json")"
-external_secrets_json="$(jq -c '.secrets.externalSecretNames' <<<"$preview_json")"
+required_external_secrets_json="$(jq -c '.secrets.requiredExternalSecretNames' <<<"$preview_json")"
+optional_external_secrets_json="$(jq -c '.secrets.optionalExternalSecretNames' <<<"$preview_json")"
 
 echo "NixHomeServer configuration preview"
 echo "host: ${host}"
@@ -109,7 +110,11 @@ echo "  Kopia roots: $(jq -r '.backups.snapshotRoots | join(", ")' <<<"$preview_
 echo
 
 echo "Required external secrets"
-jq -r '.[] | "  - secrets/unencrypted/" + .' <<<"$external_secrets_json"
+jq -r '.[] | "  - secrets/unencrypted/" + .' <<<"$required_external_secrets_json"
+echo
+
+echo "Optional external secrets"
+jq -r '.[] | "  - secrets/unencrypted/" + .' <<<"$optional_external_secrets_json"
 echo
 
 echo "Run \`nix run .#validate-config-readiness\` for readiness checks."

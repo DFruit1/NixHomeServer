@@ -20,11 +20,18 @@ export const runCommand = (
     options.onSpawn?.(child);
     let stdout = '';
     let stderr = '';
+    let killTimeout: NodeJS.Timeout | undefined;
     const timeout =
       options.timeoutMs == null
         ? undefined
         : setTimeout(() => {
             child.kill('SIGTERM');
+            killTimeout = setTimeout(() => {
+              if (child.exitCode === null && child.signalCode === null) {
+                child.kill('SIGKILL');
+              }
+            }, 5000);
+            killTimeout.unref();
           }, options.timeoutMs);
 
     child.stdout.setEncoding('utf8');
@@ -39,6 +46,9 @@ export const runCommand = (
     child.on('close', (code, signal) => {
       if (timeout) {
         clearTimeout(timeout);
+      }
+      if (killTimeout) {
+        clearTimeout(killTimeout);
       }
       resolve({ code, signal, stdout, stderr });
     });

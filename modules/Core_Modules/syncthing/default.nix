@@ -1,8 +1,10 @@
-{ lib, vars, ... }:
+{ config, lib, vars, ... }:
 
 let
   offlineMediaCfg = vars.offlineMedia;
-  enabled = offlineMediaCfg.enable or false;
+  enabled =
+    (config.nixhomeserver.modules."offline-music" or false)
+    && (offlineMediaCfg.enable or false);
   lanIface = vars.networking.interfaces.lan;
   netbirdIface = vars.networking.interfaces.netbird;
   syncthingHost = "syncthing.${vars.domain}";
@@ -22,6 +24,7 @@ in
       overrideFolders = false;
 
       settings.options = {
+        natEnabled = false;
         relaysEnabled = false;
         globalAnnounceEnabled = false;
         localAnnounceEnabled = true;
@@ -45,14 +48,12 @@ in
       };
     };
 
-    services.caddy.virtualHosts.${syncthingHost} = {
-      logFormat = null;
-      useACMEHost = vars.domain;
-      extraConfig = ''
-        reverse_proxy http://127.0.0.1:8384 {
-          header_up X-Forwarded-Proto https
-        }
-      '';
+    # The administrative GUI is never published directly. Register it with
+    # the shared SSO gateway so a disabled or unavailable gateway fails closed.
+    repo.authGateway.protectedApps.syncthing = {
+      host = syncthingHost;
+      upstream = "http://127.0.0.1:8384";
+      allowedGroups = [ "app-admin" ];
     };
 
     services.unbound.privateHosts.${syncthingHost} = {

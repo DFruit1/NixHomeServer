@@ -4,6 +4,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/helpers/repo-common.sh"
+source "$script_dir/helpers/deploy-command.sh"
 init_repo_root
 cd_repo_root
 ensure_default_nix_config
@@ -14,7 +15,7 @@ Usage: scripts/deploy.sh [--target <user@host>] [--build-host <user@host>] [--bu
 
 Stage the current repo and run a NixOS rebuild.
 
-By default, the target is vars.localAdminUser@vars.hostname and the target host
+By default, the target is vars.localAdminUser@vars.serverLanIP and the target host
 also performs the build. Use --build-locally to build on this workstation and
 activate the default target over SSH.
 
@@ -38,10 +39,12 @@ local_tmpdir=""
 while (($# > 0)); do
   case "$1" in
     --target)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --target requires user@host" >&2; exit 1; }
       target_host="${2:-}"
       shift 2
       ;;
     --build-host)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --build-host requires user@host" >&2; exit 1; }
       build_host="${2:-}"
       shift 2
       ;;
@@ -50,10 +53,12 @@ while (($# > 0)); do
       shift
       ;;
     --action)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --action requires test or switch" >&2; exit 1; }
       action="${2:-}"
       shift 2
       ;;
     --hostname)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --hostname requires a flake hostname" >&2; exit 1; }
       hostname="${2:-}"
       shift 2
       ;;
@@ -87,27 +92,20 @@ need nix
 if [[ -z "$hostname" ]]; then
   hostname="$(nix_flake_var 'vars.hostname')"
 fi
+if [[ ! "$hostname" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+  echo "blocked: --hostname must be one DNS hostname label" >&2
+  exit 1
+fi
 
 if [[ -z "$target_host" ]]; then
   local_admin_user="$(nix_flake_var 'if vars ? localAdminUser then vars.localAdminUser else vars.identity.localAdminUser')"
-  target_host="${local_admin_user}@${hostname}"
+  target_address="$(nix_flake_var 'vars.serverLanIP')"
+  target_host="${local_admin_user}@${target_address}"
 fi
 
 if [[ "$build_locally" != "true" && -z "$build_host" ]]; then
   build_host="$target_host"
 fi
-
-make_rebuild_command() {
-  local -n out_cmd="$1"
-
-  out_cmd=(nix run --inputs-from . nixpkgs#nixos-rebuild -- "$action" --flake ".#${hostname}" --sudo)
-
-  if [[ "$build_locally" == "true" ]]; then
-    out_cmd+=(--target-host "$target_host")
-  elif [[ "$target_host" != "$build_host" ]]; then
-    out_cmd+=(--target-host "$target_host")
-  fi
-}
 
 print_quoted_command() {
   local command=("$@")
@@ -118,7 +116,8 @@ print_quoted_command() {
 
 if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   dry_run_rebuild_command=()
-  make_rebuild_command dry_run_rebuild_command
+  build_nixos_rebuild_command dry_run_rebuild_command \
+    "$action" "$hostname" "$build_locally" "$target_host" "$build_host"
 
   echo "mode=$([[ "$build_locally" == "true" ]] && echo local || echo remote)"
   echo "target_host=${target_host}"
@@ -128,6 +127,9 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   echo "debug=${debug}"
   echo -n "rebuild_command="
   print_quoted_command "${dry_run_rebuild_command[@]}"
+  if [[ "$action" == "switch" ]]; then
+    echo "activation_command=detached switch-to-configuration switch"
+  fi
   exit 0
 fi
 

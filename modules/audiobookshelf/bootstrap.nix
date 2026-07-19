@@ -16,7 +16,7 @@ let
             && builtins.pathExists secretPath
             && content != ""
             && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
-          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then use nix run .#generate-secrets -- --identity /path/to/current/age.key.";
         })
       secretNames;
   dataDir = "/var/lib/${config.services.audiobookshelf.dataDir}";
@@ -56,7 +56,10 @@ in
           [[ -f "$db" ]] && break
           sleep 1
         done
-        [[ -f "$db" ]] || exit 0
+        [[ -f "$db" ]] || {
+          echo "Audiobookshelf database is not ready; retrying library watcher reconciliation." >&2
+          exit 1
+        }
 
         escape_sql() {
           printf '%s' "$1" | perl -pe 's/\x27/\x27\x27/g'

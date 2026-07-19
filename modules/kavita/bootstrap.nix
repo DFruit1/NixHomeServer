@@ -16,7 +16,7 @@ let
             && builtins.pathExists secretPath
             && content != ""
             && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
-          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then use nix run .#generate-secrets -- --identity /path/to/current/age.key.";
         })
       secretNames;
   dataDir = "/var/lib/kavita";
@@ -113,12 +113,18 @@ in
           [[ "$table_ready" == "1" ]] && break
           sleep 1
         done
-        [[ "$table_ready" == "1" ]] || exit 0
+        [[ "$table_ready" == "1" ]] || {
+          echo "Kavita settings table is not ready; retrying OIDC bootstrap." >&2
+          exit 1
+        }
 
         client_secret="$(< ${config.age.secrets.kavitaClientSecret.path})"
         current="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
           "select Value from ServerSetting where Key = 40;" 2>/dev/null || true)"
-        [[ -n "$current" ]] || exit 0
+        [[ -n "$current" ]] || {
+          echo "Kavita OIDC settings row is not ready; retrying OIDC bootstrap." >&2
+          exit 1
+        }
 
         updated="$(printf '%s' "$current" | ${pkgs.jq}/bin/jq -c \
           --arg authority "${vars.kanidmIssuer "kavita-web"}" \
@@ -154,26 +160,41 @@ in
         export KANIDM_PASSWORD
         kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
 
-        group_members_json() {
+        snapshot_group_members_json() {
           local group_name="$1"
-          local group_json
+          local group_json members_json
 
-          if group_json="$(
+          if ! group_json="$(
             kanidm group get \
               "$group_name" \
               -H ${kanidmCliUrl} \
               -D idm_admin \
               -o json
           )"; then
-            jq -r '.attrs.member[]? | split("@")[0]' <<<"$group_json" \
-              | sort -u \
-              | jq -R -s 'split("\n") | map(select(length > 0))'
-          else
-            printf '[]\n'
+            echo "Unable to read Kanidm group '$group_name'; refusing to reconcile Kavita access" >&2
+            return 1
           fi
+          if ! members_json="$(
+            jq -cer '
+              if ((.attrs.member // []) | type) != "array" then
+                error("Kanidm group member attribute is not an array")
+              else
+                [ .attrs.member[]? | strings | split("@")[0] | select(length > 0) ] | unique
+              end
+            ' <<<"$group_json"
+          )"; then
+            echo "Kanidm returned an invalid membership document for '$group_name'; refusing to reconcile Kavita access" >&2
+            return 1
+          fi
+
+          printf '%s\n' "$members_json"
         }
 
-        shared_members_json="$(group_members_json "$shared_access_group")"
+        # Resolve and validate the authoritative membership snapshot before the
+        # first settings, role, identity, or library database write.
+        if ! shared_members_json="$(snapshot_group_members_json "$shared_access_group")"; then
+          exit 1
+        fi
 
         if [[ "$current" != "$updated" ]]; then
           escaped="$(escape_sql "$updated")"
@@ -447,11 +468,17 @@ in
           [[ -f "$db" ]] && break
           sleep 1
         done
-        [[ -f "$db" ]] || exit 0
+        [[ -f "$db" ]] || {
+          echo "Kavita database is not ready; retrying library watcher reconciliation." >&2
+          exit 1
+        }
 
         libraries_needing_watchers="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
           "select count(*) from Library where FolderWatching != 1;" 2>/dev/null || true)"
-        [[ "$libraries_needing_watchers" =~ ^[0-9]+$ ]] || exit 0
+        [[ "$libraries_needing_watchers" =~ ^[0-9]+$ ]] || {
+          echo "Kavita library schema is not ready; retrying library watcher reconciliation." >&2
+          exit 1
+        }
 
         global_folder_watching="$(${pkgs.sqlite}/bin/sqlite3 -readonly "$db" \
           "select Value from ServerSetting where Key = 17;" 2>/dev/null || true)"

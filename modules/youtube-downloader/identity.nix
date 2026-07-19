@@ -6,13 +6,10 @@ in
 
 {
   config = {
-    users.groups.youtube-downloader = {
-      gid = 3002;
-    };
+    users.groups.youtube-downloader = { };
 
     users.users.youtube-downloader = {
       isSystemUser = true;
-      uid = 3002;
       group = "youtube-downloader";
       extraGroups = [ "users" ];
       home = "/var/lib/youtube-downloader";

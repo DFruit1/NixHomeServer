@@ -46,6 +46,18 @@ let
     systemd
     util-linux
   ];
+  dataRootGuard = pkgs.writeShellScript "require-fileshare-data-root" ''
+    set -euo pipefail
+    ${lib.optionalString vars.dataRootIsMountPoint ''
+      if ! ${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg vars.dataRoot}; then
+        echo "Refusing fileshare operation because ${vars.dataRoot} is not a mounted data pool" >&2
+        exit 1
+      fi
+    ''}
+    [[ -d ${lib.escapeShellArg vars.usersRoot} ]]
+    [[ -d ${lib.escapeShellArg vars.sharedRoot} ]]
+    [[ -d ${lib.escapeShellArg backupRoot} ]]
+  '';
 
   mkPerUserDirCommand =
     { root
@@ -172,13 +184,19 @@ let
     ${pkgs.acl}/bin/setfacl "''${root_acl_args[@]}" "$root"
 
     apply_recursive_acl() {
-      local access_spec="$1"
-      local default_spec="$2"
+      local group_name="$1"
       shift
+      local access_spec="$1"
+      shift
+      local default_spec="$1"
       shift
 
       for path in "$@"; do
         [[ -d "$path" ]] || continue
+        if [[ "$repair_recursive" != true ]] \
+          && ${pkgs.acl}/bin/getfacl -cp "$path" | ${pkgs.gnugrep}/bin/grep -q "^group:''${group_name}:"; then
+          continue
+        fi
         ${pkgs.acl}/bin/setfacl -R -m "$access_spec" "$path"
         ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl -m "$default_spec" '{}' +
       done
@@ -188,14 +206,14 @@ let
       local group_name="$1"
       shift
 
-      apply_recursive_acl "g:''${group_name}:rwX" "d:g:''${group_name}:rwx" "$@"
+      apply_recursive_acl "$group_name" "g:''${group_name}:rwX" "d:g:''${group_name}:rwx" "$@"
     }
 
     apply_readonly_acl() {
       local group_name="$1"
       shift
 
-      apply_recursive_acl "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
+      apply_recursive_acl "$group_name" "g:''${group_name}:r-X" "d:g:''${group_name}:r-x" "$@"
     }
 
     apply_directory_noaccess_acl() {
@@ -204,6 +222,10 @@ let
 
       for path in "$@"; do
         [[ -d "$path" ]] || continue
+        if [[ "$repair_recursive" != true ]] \
+          && ${pkgs.acl}/bin/getfacl -cp "$path" | ${pkgs.gnugrep}/bin/grep -q "^group:''${group_name}:"; then
+          continue
+        fi
         ${pkgs.findutils}/bin/find "$path" -type d -exec ${pkgs.acl}/bin/setfacl \
           -m "g:''${group_name}:---" \
           -m "d:g:''${group_name}:---" \
@@ -211,15 +233,14 @@ let
       done
     }
 
-    if [[ "$repair_recursive" == true ]]; then
-      ${recursiveWritableGrantScript}
-      ${recursiveReadonlyGrantScript}
-      ${recursiveDirectoryNoAccessGrantScript}
-    fi
+    ${recursiveWritableGrantScript}
+    ${recursiveReadonlyGrantScript}
+    ${recursiveDirectoryNoAccessGrantScript}
   '';
 
   syncFileshareUserRoots = pkgs.writeShellScript "sync-fileshare-user-roots" ''
     set -euo pipefail
+    ${dataRootGuard}
 
     repair_recursive="''${FILES_ACL_REPAIR:-false}"
 
@@ -228,18 +249,39 @@ let
     KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
     export KANIDM_PASSWORD
 
-    group_members() {
-      local group_name="$1"
+    declare -A group_members_by_name=()
 
-      if group_json="$(
+    snapshot_group_members() {
+      local group_name="$1"
+      local group_json members
+
+      if ! group_json="$(
         ${pkgs.kanidm_1_10}/bin/kanidm group get \
           "$group_name" \
           -H ${kanidmCliUrl} \
           -D idm_admin \
           -o json
       )"; then
-        printf '%s\n' "$group_json" | ${pkgs.jq}/bin/jq -r '.attrs.member[]? | split("@")[0]'
+        echo "Unable to read Kanidm group '$group_name'; refusing to reconcile fileshare access" >&2
+        return 1
       fi
+      if ! members="$(
+        printf '%s\n' "$group_json" \
+          | ${pkgs.jq}/bin/jq -er '
+              if ((.attrs.member // []) | type) != "array" then
+                error("Kanidm group member attribute is not an array")
+              else
+                [ .attrs.member[]? | strings | split("@")[0] | select(length > 0) ]
+                | unique
+                | join("\n")
+              end
+            '
+      )"; then
+        echo "Kanidm returned an invalid membership document for '$group_name'; refusing to reconcile fileshare access" >&2
+        return 1
+      fi
+
+      group_members_by_name["$group_name"]="$members"
     }
 
     service_instance() {
@@ -315,26 +357,38 @@ let
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 
-    members_json="$(
-      for group_name in ${lib.escapeShellArgs memberGroups}; do
-        group_members "$group_name"
-      done | ${pkgs.coreutils}/bin/sort -u
-    )"
+    # Fetch and validate every identity snapshot before making any persistent
+    # account, ACL, directory, or mount changes. A partial/empty snapshot must
+    # never be interpreted as access revocation.
+    for group_name in ${lib.escapeShellArgs memberGroups}; do
+      if ! snapshot_group_members "$group_name"; then
+        exit 1
+      fi
+    done
 
     shared_members_json="$(
-      group_members ${lib.escapeShellArg sharedAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+      printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg sharedAccessGroup}]}"
     )"
 
     sftp_members_json="$(
-      group_members ${lib.escapeShellArg sftpAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+      {
+        printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg webAccessGroup}]}"
+        printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg sftpAccessGroup}]}"
+      } | ${pkgs.coreutils}/bin/sort -u
     )"
 
     usb_members_json="$(
-      group_members ${lib.escapeShellArg usbAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+      printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg usbAccessGroup}]}"
     )"
 
     backup_storage_members_json="$(
-      group_members ${lib.escapeShellArg backupStorageAccessGroup} | ${pkgs.coreutils}/bin/sort -u
+      printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg backupStorageAccessGroup}]}"
+    )"
+
+    members_json="$(
+      for group_name in ${lib.escapeShellArgs memberGroups}; do
+        printf '%s\n' "''${group_members_by_name[$group_name]}"
+      done | ${pkgs.coreutils}/bin/sort -u
     )"
 
     declare -A shared_members=()
@@ -540,18 +594,24 @@ in
       description = "Create per-user fileshare content and upload roots from Kanidm group membership";
       wantedBy = [ "multi-user.target" ];
       wants = [
-        "data-pool-layout.service"
         "kanidm.service"
         "kanidm-files-posix-groups.service"
+        "kanidm-unixd.service"
         "local-fs.target"
       ];
+      requires = [ "data-pool-layout.service" ];
       after = [
         "data-pool-layout.service"
         "kanidm.service"
         "kanidm-files-posix-groups.service"
+        "kanidm-unixd.service"
         "local-fs.target"
       ];
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        Restart = "on-failure";
+        RestartSec = "1min";
+      };
       path = fileshareUserRootSyncPath;
       script = ''
         ${syncFileshareUserRoots}
@@ -560,10 +620,23 @@ in
 
     systemd.services.fileshare-acl-migrate = {
       description = "Apply versioned recursive fileshare ACL policy";
-      wants = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
-      after = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "data-pool-layout.service" ];
+      wants = [
+        "fileshare-user-root-sync.service"
+        "kanidm.service"
+        "kanidm-files-posix-groups.service"
+      ];
+      after = [
+        "data-pool-layout.service"
+        "fileshare-user-root-sync.service"
+        "kanidm.service"
+        "kanidm-files-posix-groups.service"
+      ];
       serviceConfig = {
         Type = "oneshot";
+        Restart = "on-failure";
+        RestartSec = "1min";
         Nice = 15;
         CPUWeight = 10;
         IOWeight = 10;
@@ -582,7 +655,8 @@ in
 
     systemd.services.fileshare-acl-repair = {
       description = "Explicitly repair recursive fileshare ACLs";
-      wants = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
+      requires = [ "data-pool-layout.service" ];
+      wants = [ "kanidm.service" "kanidm-files-posix-groups.service" ];
       after = [ "data-pool-layout.service" "kanidm.service" "kanidm-files-posix-groups.service" ];
       serviceConfig = {
         Type = "oneshot";
@@ -609,8 +683,8 @@ in
     };
 
     systemd.services."files-shared-bindfs@" = {
-      description = "Mount delete-protected shared files view for %i";
-      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%i/${sharedMountName}";
+      description = "Mount delete-protected shared files view for %I";
+      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${sharedMountName}";
       requires = [
         "data-pool-layout.service"
       ];
@@ -619,44 +693,51 @@ in
       ];
       serviceConfig = {
         Type = "simple";
-        ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${sharedMountName}";
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%i/${sharedMountName}";
-        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${sharedMountName}";
+        ExecStartPre = [
+          dataRootGuard
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%I/${sharedMountName}"
+        ];
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%I/${sharedMountName}";
+        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${sharedMountName}";
         Restart = "on-failure";
       };
     };
 
     systemd.services."files-usb-bindfs@" = {
-      description = "Mount external USB files view for %i";
-      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%i/${usbMountName}";
+      description = "Mount external USB files view for %I";
+      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${usbMountName}";
       serviceConfig = {
         Type = "simple";
         ExecStartPre = [
-          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${usbMountName}"
+          dataRootGuard
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%I/${usbMountName}"
           "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${externalUsbMountRoot}"
         ];
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString usbAccessGid} --perms=g+rwX,o-rwx --delete-deny ${externalUsbMountRoot} ${vars.usersRoot}/%i/${usbMountName}";
-        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${usbMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString usbAccessGid} --perms=g+rwX,o-rwx --delete-deny ${externalUsbMountRoot} ${vars.usersRoot}/%I/${usbMountName}";
+        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${usbMountName}";
         Restart = "on-failure";
       };
     };
 
     systemd.services."files-backups-bindfs@" = {
-      description = "Mount encrypted backup repository view for %i";
-      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%i/${backupStorageMountName}";
+      description = "Mount encrypted backup repository view for %I";
+      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${backupStorageMountName}";
       requires = [ "data-pool-layout.service" ];
       after = [ "data-pool-layout.service" ];
       serviceConfig = {
         Type = "simple";
-        ExecStartPre = "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%i/${backupStorageMountName}";
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -r -o allow_other --force-group=${toString backupStorageAccessGid} --perms=g+rX,o-rwx --delete-deny ${backupRoot} ${vars.usersRoot}/%i/${backupStorageMountName}";
-        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%i/${backupStorageMountName}";
+        ExecStartPre = [
+          dataRootGuard
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%I/${backupStorageMountName}"
+        ];
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -r -o allow_other --force-group=${toString backupStorageAccessGid} --perms=g+rX,o-rwx --delete-deny ${backupRoot} ${vars.usersRoot}/%I/${backupStorageMountName}";
+        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${backupStorageMountName}";
         Restart = "on-failure";
       };
     };
 
     systemd.services."files-sftp-user-root@" = {
-      description = "Bind per-user files root into the SFTP chroot for %i";
+      description = "Bind per-user files root into the SFTP chroot for %I";
       requires = [ "data-pool-layout.service" ];
       wants = [
         "files-shared-bindfs@%i.service"
@@ -674,7 +755,9 @@ in
         RemainAfterExit = true;
         ExecStartPre = "${pkgs.writeShellScript "prepare-files-sftp-user-root" ''
           set -euo pipefail
-          chroot=${lib.escapeShellArg sftpChrootBase}/%i
+          ${dataRootGuard}
+          username="$1"
+          chroot=${lib.escapeShellArg sftpChrootBase}/"$username"
           old_mount="$chroot/files"
 
           ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$chroot"
@@ -687,9 +770,9 @@ in
           if ${pkgs.util-linux}/bin/mountpoint -q "$chroot"; then
             ${pkgs.util-linux}/bin/umount -l "$chroot"
           fi
-        ''}";
-        ExecStart = "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%i ${sftpChrootBase}/%i";
-        ExecStop = "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%i";
+        ''} %I";
+        ExecStart = "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%I ${sftpChrootBase}/%I";
+        ExecStop = "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I";
       };
     };
   };

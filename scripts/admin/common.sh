@@ -58,21 +58,32 @@ default_host() {
 
   nix eval --raw --impure --expr "
     let
-      flake = builtins.getFlake (toString ${repo_root});
+      repoPath = builtins.getEnv \"NIXHOMESERVER_REPO_ROOT_FOR_EVAL\";
+      flake = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
       lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
+      vars = import (builtins.toPath (repoPath + \"/vars.nix\")) { inherit lib; };
     in
       vars.hostname
   "
 }
 
+validate_flake_host_name() {
+  local host="$1"
+  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
+}
+
 nix_json_for_host() {
   local host="$1"
   local expr="$2"
-  nix eval --json --impure --expr "
+  if ! validate_flake_host_name "$host"; then
+    echo "blocked: invalid flake hostname: $host" >&2
+    return 1
+  fi
+  NIXHOMESERVER_EVAL_HOST="$host" nix eval --json --impure --expr "
     let
-      flake = builtins.getFlake (toString ${repo_root});
-      cfg = flake.nixosConfigurations.${host}.config;
+      flake = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+      hostName = builtins.getEnv \"NIXHOMESERVER_EVAL_HOST\";
+      cfg = (builtins.getAttr hostName flake.nixosConfigurations).config;
     in
       ${expr}
   "
@@ -83,16 +94,16 @@ inventory_json_for_host() {
 
   nix_json_for_host "$host" "
     let
-      settings = removeAttrs flake.lib.nixhomeserverSettings.${host} [
+      settings = removeAttrs (builtins.getAttr hostName flake.lib.nixhomeserverSettings) [
         \"kanidmIssuer\"
         \"kanidmDiscoveryUrl\"
       ];
       tunnel = cfg.services.cloudflared.tunnels.\${settings.cloudflareTunnelName};
-      secretManifest = import ${repo_root}/secrets/manifest.nix;
+      secretManifest = import (builtins.toPath (builtins.getEnv \"NIXHOMESERVER_REPO_ROOT_FOR_EVAL\" + \"/secrets/manifest.nix\"));
     in
     {
-      schemaVersion = 1;
-      host = \"${host}\";
+      schemaVersion = 2;
+      host = hostName;
       inherit settings;
       network = {
         caddyHosts = builtins.attrNames cfg.services.caddy.virtualHosts;
@@ -132,8 +143,13 @@ inventory_json_for_host() {
           snapshotRoots
           repositoryPath
           successfulStagingRoot
+          successfulCurrentPath
+          successfulGenerationRoot
+          retainedSuccessfulGenerations
+          minimumFreeBytes
           pathInventories
-          sqliteDumps;
+          sqliteDumps
+          postgresqlDumps;
       };
       impermanence = {
         directories = cfg.repo.impermanence.inventory.persistenceDirectories;
@@ -142,6 +158,12 @@ inventory_json_for_host() {
       secrets = {
         ageSecretNames = builtins.attrNames cfg.age.secrets;
         externalSecretNames = builtins.attrNames secretManifest.externalSecrets;
+        requiredExternalSecretNames = builtins.filter
+          (name: ((builtins.getAttr name secretManifest.externalSecrets).required or true))
+          (builtins.attrNames secretManifest.externalSecrets);
+        optionalExternalSecretNames = builtins.filter
+          (name: !((builtins.getAttr name secretManifest.externalSecrets).required or true))
+          (builtins.attrNames secretManifest.externalSecrets);
       };
       systemd = {
         serviceNames = builtins.attrNames cfg.systemd.services;

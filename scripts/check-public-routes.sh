@@ -91,9 +91,10 @@ resolve_public_route_urls() {
 
   nix eval --raw --impure --expr "
     let
-      flake = builtins.getFlake (toString ${repo_root});
+      repoPath = builtins.getEnv \"NIXHOMESERVER_REPO_ROOT_FOR_EVAL\";
+      flake = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
       lib = flake.inputs.nixpkgs.lib;
-      vars = import ${repo_root}/vars.nix { inherit lib; };
+      vars = import (builtins.toPath (repoPath + \"/vars.nix\")) { inherit lib; };
       cfg = (builtins.getAttr ${hostname_nix} flake.nixosConfigurations).config;
       tunnel = cfg.services.cloudflared.tunnels.\${vars.cloudflareTunnelName};
       domainSuffix = \".\${vars.domain}\";

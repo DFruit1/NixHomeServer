@@ -15,5 +15,11 @@
         notes = "Local users, libraries, and server config.";
       }
     ];
+    repo.backups.sqliteDumps = [
+      {
+        source = "/var/lib/jellyfin/data/jellyfin.db";
+        outputName = "jellyfin.sqlite";
+      }
+    ];
   };
 }

@@ -1,5 +1,5 @@
 import { component$, useContext } from '@builder.io/qwik';
-import { Link, useLocation, type DocumentHead } from '@builder.io/qwik-city';
+import { Link, useLocation } from '@builder.io/qwik-city';
 import { ServiceDetail } from '../../../components/ServiceDetail.js';
 import { HomepageContext } from '../../../shared/homepage-context.js';
 
@@ -34,7 +34,3 @@ export default component$(() => {
     />
   );
 });
-
-export const head: DocumentHead = {
-  title: 'Service | Sydney Basin Services',
-};

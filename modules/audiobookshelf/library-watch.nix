@@ -36,8 +36,8 @@ in
       wants = [
         "audiobookshelf.service"
         "audiobookshelf-storage-layout-v1.service"
-        "data-pool-layout.service"
       ];
+      requires = [ "data-pool-layout.service" ];
       unitConfig = lib.mkIf vars.dataRootIsMountPoint {
         ConditionPathIsMountPoint = vars.dataRoot;
       };

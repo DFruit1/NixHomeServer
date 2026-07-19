@@ -11,6 +11,8 @@ export type AppConfig = {
   mqttPassword: string;
   mqttSubscribeTopics: string[];
   mqttDefaultQos: 0 | 1 | 2;
+  retentionDays: number;
+  maximumMessages: number;
 };
 
 const numberFromEnv = (name: string, fallback: number): number => {
@@ -69,6 +71,8 @@ export const loadConfig = (): AppConfig => {
       'cfg/#',
     ]),
     mqttDefaultQos: qosFromEnv('GROUNDWATER_MQTT_DEFAULT_QOS', 1),
+    retentionDays: numberFromEnv('GROUNDWATER_LOGGER_RETENTION_DAYS', 90),
+    maximumMessages: numberFromEnv('GROUNDWATER_LOGGER_MAXIMUM_MESSAGES', 500000),
   };
 };
 

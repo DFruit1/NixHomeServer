@@ -1,6 +1,9 @@
 { lib, pkgs, rustLib }:
 
 {
+  kanidm-canary-bootstrap = import ./kanidm-canary-bootstrap/default.nix {
+    inherit rustLib;
+  };
   mail-archive-ui = import ./mail-archive-ui/default.nix {
     inherit lib pkgs rustLib;
   };

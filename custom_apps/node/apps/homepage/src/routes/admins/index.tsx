@@ -1,7 +1,7 @@
 import { $, Slot, component$, useContext, useSignal } from '@builder.io/qwik';
-import type { DocumentHead } from '@builder.io/qwik-city';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminStep } from '../../shared/types.js';
+import { CanaryPanel } from '../../components/CanaryPanel.js';
 
 type AdminCategoryId = 'server' | 'apps' | 'identity' | 'storageBackups' | 'network';
 type AdminIntentId = 'add-user' | 'manage-user' | 'manage-secrets';
@@ -10,23 +10,24 @@ type AdminModeId = AdminIntentId | 'other';
 type AdminStepMeta = {
   category: AdminCategoryId;
   intents?: AdminIntentId[];
+  displayTitle?: string;
 };
 
 const adminCategories: { id: AdminCategoryId; title: string; description: string }[] = [
   {
     id: 'server',
-    title: 'Server Management',
-    description: 'Read-only checks, readiness gates, and secret staging commands.',
+    title: 'Server health',
+    description: 'Check the server before a change or when something is not working.',
   },
   {
     id: 'apps',
-    title: 'Configure Apps & Services',
-    description: 'Repo validation, guarded deploys, service logs, restarts, and app reconciliation.',
+    title: 'Deployments and apps',
+    description: 'Check and deploy repository changes, inspect app services, and apply managed configuration.',
   },
   {
     id: 'identity',
-    title: 'Users & Logins',
-    description: 'Kanidm accounts, groups, reset links, and access lifecycle.',
+    title: 'User accounts and access',
+    description: 'Add users, change app access, recover accounts, and update Kanidm-managed access.',
   },
   {
     id: 'storageBackups',
@@ -35,38 +36,38 @@ const adminCategories: { id: AdminCategoryId; title: string; description: string
   },
   {
     id: 'network',
-    title: 'Network & Edge',
-    description: 'Caddy routing, private DNS, Cloudflare tunnel, NetBird, and firewall checks.',
+    title: 'Network and external access',
+    description: 'Check web routing, private DNS, the Cloudflare tunnel, NetBird, and firewall rules.',
   },
 ];
 
 const adminStepMeta: Record<string, AdminStepMeta> = {
-  'Review evaluated config': { category: 'server' },
-  'Validate config readiness': { category: 'server' },
-  'Export operations inventory': { category: 'server' },
-  'Check git worktree': { category: 'server' },
+  'Review evaluated config': { category: 'server', displayTitle: 'Review the generated configuration' },
+  'Validate config readiness': { category: 'server', displayTitle: 'Check configuration and deployment requirements' },
+  'Export operations inventory': { category: 'server', displayTitle: 'Export the server inventory' },
+  'Check git worktree': { category: 'server', displayTitle: 'Check local Git changes' },
   'Check service health': { category: 'server' },
   'List scheduled timers': { category: 'server' },
   'Review current boot warnings': { category: 'server' },
-  'Show resource snapshot': { category: 'server' },
-  'Validate broad changes': { category: 'apps' },
-  'Run lean repo validation': { category: 'apps' },
-  'Run full repo validation': { category: 'apps' },
+  'Show resource snapshot': { category: 'server', displayTitle: 'Show overall server status' },
+  'Validate broad changes': { category: 'apps', displayTitle: 'Test a large change' },
+  'Run lean repo validation': { category: 'apps', displayTitle: 'Run quick repository checks' },
+  'Run full repo validation': { category: 'apps', displayTitle: 'Run all repository checks' },
   'Evaluate flake without building': { category: 'apps' },
-  'Dry-run deploy target resolution': { category: 'apps' },
-  'Run routine guarded deploy': { category: 'apps' },
-  'Run guarded deploy with local build': { category: 'apps' },
-  'Switch after a passing test': { category: 'apps' },
-  'Show generations for rollback': { category: 'apps' },
-  'Rollback current generation': { category: 'apps' },
+  'Dry-run deploy target resolution': { category: 'apps', displayTitle: 'Preview the deployment command' },
+  'Run routine guarded deploy': { category: 'apps', displayTitle: 'Test a deployment on the server' },
+  'Run guarded deploy with local build': { category: 'apps', displayTitle: 'Test a deployment built on this computer' },
+  'Switch after a passing test': { category: 'apps', displayTitle: 'Make a tested deployment permanent' },
+  'Show generations for rollback': { category: 'apps', displayTitle: 'List system versions available for rollback' },
+  'Rollback current generation': { category: 'apps', displayTitle: 'Roll back to the previous system version' },
   'Check app service status': { category: 'apps' },
   'Follow app logs': { category: 'apps' },
   'Restart a single app service': { category: 'apps' },
   'Restart homepage': { category: 'apps' },
   'Check OAuth proxy logs': { category: 'apps' },
   'Re-run storage layout services': { category: 'apps' },
-  'Re-run Immich OIDC reconcile': { category: 'apps' },
-  'Re-run Paperless OIDC reconcile': { category: 'apps' },
+  'Re-run Immich OIDC reconcile': { category: 'apps', displayTitle: 'Update Immich accounts from Kanidm' },
+  'Re-run Paperless OIDC reconcile': { category: 'apps', displayTitle: 'Update Paperless accounts from Kanidm' },
   'Re-run Jellyfin library sync': { category: 'apps' },
   'Re-run Kiwix library sync': { category: 'apps' },
   'Check Kanidm health': { category: 'identity' },
@@ -74,8 +75,8 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'List Kanidm groups': { category: 'identity' },
   'Inspect Kanidm group': { category: 'identity', intents: ['manage-user'] },
   'Remove user from access group': { category: 'identity', intents: ['manage-user'] },
-  'Restart identity reconciliation': { category: 'identity' },
-  'Manage Kanidm entity removal explicitly': { category: 'identity', intents: ['manage-user'] },
+  'Restart identity reconciliation': { category: 'identity', displayTitle: 'Apply Kanidm account and file-access changes' },
+  'Manage Kanidm entity removal explicitly': { category: 'identity', intents: ['manage-user'], displayTitle: 'Remove a managed Kanidm user or group' },
   'Show mounted filesystems': { category: 'storageBackups' },
   'Show disk layout': { category: 'storageBackups' },
   'Discover monitored storage devices': { category: 'storageBackups' },
@@ -103,16 +104,17 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'Inspect Cloudflare tunnel logs': { category: 'network' },
   'Check NetBird status': { category: 'network' },
   'Inspect firewall rules': { category: 'network' },
-  'Rotate or regenerate secrets': { category: 'server', intents: ['manage-secrets'] },
+  'Rotate or regenerate secrets': { category: 'server', intents: ['manage-secrets'], displayTitle: 'Create or replace encrypted secrets' },
   'List encrypted secrets': { category: 'server', intents: ['manage-secrets'] },
   'List expected external secrets': { category: 'server', intents: ['manage-secrets'] },
-  'Edit staged external secret': { category: 'server', intents: ['manage-secrets'] },
-  'Encrypt staged external secrets': { category: 'server', intents: ['manage-secrets'] },
+  'Edit staged external secret': { category: 'server', intents: ['manage-secrets'], displayTitle: 'Edit a plaintext secret before encryption' },
+  'Encrypt staged external secrets': { category: 'server', intents: ['manage-secrets'], displayTitle: 'Encrypt one staged external secret' },
 };
 
 const fallbackStepMeta: AdminStepMeta = { category: 'server' };
 
 const metaForStep = (step: AdminStep): AdminStepMeta => adminStepMeta[step.title] ?? fallbackStepMeta;
+const titleForStep = (step: AdminStep): string => metaForStep(step).displayTitle ?? step.title;
 
 const groupedAdminSteps = (steps: AdminStep[]) =>
   adminCategories
@@ -155,13 +157,13 @@ const buildMembershipCommands = (groups: string[], userArg: string): string[] =>
 };
 
 const formatCommandBlock = (commands: string[]): string =>
-  commands.length ? commands.join('\n') : '# Select one or more access groups above, then copy generated commands.';
+  commands.length ? commands.join('\n') : '# Choose one or more groups above to generate the commands.';
 
 const adminIntents: { id: AdminModeId; label: string }[] = [
-  { id: 'add-user', label: 'Add New User' },
-  { id: 'manage-user', label: 'Manage Existing User' },
-  { id: 'manage-secrets', label: 'Manage Secrets / Passwords' },
-  { id: 'other', label: 'Other' },
+  { id: 'add-user', label: 'Add a user' },
+  { id: 'manage-user', label: "Change a user's access" },
+  { id: 'manage-secrets', label: 'Recover an account or manage secrets' },
+  { id: 'other', label: 'Search all commands' },
 ];
 
 const isAdminIntent = (mode: AdminModeId | ''): mode is AdminIntentId =>
@@ -176,6 +178,14 @@ const shouldShowForIntent = (activeIntent: AdminIntentId | '', intents: AdminInt
 const matchesSearch = (query: string, values: (string | undefined)[]): boolean => {
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return normalizedQuery.length > 0 && values.some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
+};
+
+const executionContext = (command: string | undefined): string => {
+  if (!command) return 'Guided steps';
+  if (/^(?:sudo )?\.\//.test(command) || /^(?:git |nix (?:run|flake|eval)|DEPLOY_|\$EDITOR |find secrets)/.test(command)) {
+    return 'Repository folder';
+  }
+  return 'Server terminal';
 };
 
 const AdminCommand = component$(({ command }: { command: string }) => {
@@ -216,14 +226,14 @@ const AdminTask = component$(
     title,
     description,
     activeIntent,
-    showDescription,
+    context,
     forceOpen = false,
     intents = [],
   }: {
     title: string;
     description: string;
     activeIntent: AdminIntentId | '';
-    showDescription: boolean;
+    context: string;
     forceOpen?: boolean;
     intents?: AdminIntentId[];
   }) => (
@@ -231,10 +241,11 @@ const AdminTask = component$(
       <summary class="admin-task__summary">
         <span class="admin-task__main">
           <span class="admin-task__title">{title}</span>
+          <span class="admin-task__context">{context}</span>
         </span>
       </summary>
       <div class="admin-task__content">
-        {showDescription && <p>{description}</p>}
+        <p>{description}</p>
         <Slot />
       </div>
     </details>
@@ -246,11 +257,11 @@ export default component$(() => {
   const adminGuide = homepage.data?.adminGuide ?? [];
   const domain = homepage.data?.domain ?? 'example.test';
   const currentUser = homepage.data?.user;
+  const operatorArg = shellSingleQuote(homepage.data?.canaryAdminUser?.trim() || 'idm_admin');
   const username = useSignal('');
   const email = useSignal('');
   const selectedMode = useSignal<AdminModeId | ''>('');
   const searchQuery = useSignal('');
-  const showExplanations = useSignal(false);
   const groupDescriptions = homepage.data?.kanidmGroupDescriptions ?? {};
   const accessGroups = (homepage.data?.kanidmGroups ?? [])
     .filter((group) => !isProtectedGroup(group))
@@ -264,40 +275,41 @@ export default component$(() => {
   const membershipCommand = formatCommandBlock(buildMembershipCommands(selectedGroups.value, userArg));
   const adminSections = groupedAdminSteps(adminGuide);
   const activeIntent: AdminIntentId | '' = isAdminIntent(selectedMode.value) ? selectedMode.value : '';
+  const hasSelectedMode = selectedMode.value !== '';
   const searchIsActive = selectedMode.value === 'other';
   const userTaskSearchMatches = {
-    checkUser: matchesSearch(searchQuery.value, ['Check user exists', 'Use before creating or resetting an account. Confirms Kanidm can see the person record.', `kanidm person get ${userArg}`]),
+    checkUser: matchesSearch(searchQuery.value, ['Find user account', 'Check that the Kanidm user exists before creating the account or changing its sign-in methods.', `kanidm person get ${userArg}`]),
     createAccount: matchesSearch(searchQuery.value, [
-      'Create Kanidm account',
-      'Create the Kanidm person record and attach the primary email used by apps. Credentials are issued separately with the reset-link command.',
+      'Create user in Kanidm',
+      'Create the user and save the main email address that apps will use. Create the first sign-in link in a later step.',
       `kanidm person create ${userArg} ${displayNameArg}`,
       `kanidm person update ${userArg} --mail ${emailArg}`,
     ]),
     grantBaseline: matchesSearch(searchQuery.value, [
-      'Grant baseline access',
-      'Add the baseline users group required for normal Kanidm sign-in and app user lookup.',
+      'Allow standard sign-in',
+      'Add the user to the standard users group so they can sign in and apps can find their account.',
       `kanidm group add-members users ${userArg}`,
     ]),
     grantAccess: matchesSearch(searchQuery.value, [
-      'Grant app/file/admin access',
-      'Select app, file, backup, or admin groups. The generated loop grants access; reconciliation may be needed before every app sees it.',
+      'Choose app and admin access',
+      'Select the groups that control apps, files, backups, and admin tools. Some apps need an account update before the change appears.',
       membershipCommand,
       accessGroups.join(' '),
     ]),
     vaultwardenSignup: matchesSearch(searchQuery.value, [
-      'Vaultwarden signup',
-      'Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm. This creates a separate vault master password.',
+      'Create Passwords account',
+      'Ask the user to register in the Passwords app with their Kanidm email address. They must create and save a separate master password.',
       `https://passwords.${domain}/#/signup`,
     ]),
     signInLink: matchesSearch(searchQuery.value, [
-      'Create first sign-in link',
-      'Generate a Kanidm credential reset link that expires after 3600 seconds. Share it out-of-band for first sign-in or recovery.',
-      `kanidm person credential create-reset-token ${userArg} 3600`,
+      'Create account recovery link',
+      'Generate a single-use Kanidm link that is valid for one hour. The user opens it to set a password and review other sign-in methods.',
+      `kanidm person credential create-reset-token ${userArg} --name ${operatorArg}`,
     ]),
     handoff: matchesSearch(searchQuery.value, [
-      'Hand off first sign-in',
-      'Ask the user to set password and MFA, open granted apps, save recovery details, and confirm expected services are visible.',
-      'Confirm the user can sign in, open granted apps, set MFA, and save recovery details before closing the onboarding task.',
+      'Help user finish setup',
+      'Ask the user to set a password and second sign-in method, open their apps, and save recovery details.',
+      'Confirm the user can sign in, open their apps, add a second sign-in method, save recovery details, and see the expected apps on the homepage.',
     ]),
   };
   const hasMatchingUserTasks = Object.values(userTaskSearchMatches).some(Boolean);
@@ -313,11 +325,11 @@ export default component$(() => {
     ? userTaskSearchMatches.signInLink
     : shouldShowForIntent(activeIntent, ['add-user', 'manage-user', 'manage-secrets']);
   const showHandoff = searchIsActive ? userTaskSearchMatches.handoff : shouldShowForIntent(activeIntent, ['add-user']);
-  const visibleAdminSections = adminSections
+  const visibleAdminSections = (hasSelectedMode ? adminSections : [])
     .map((section) => ({
       ...section,
       steps: searchIsActive
-        ? section.steps.filter((step) => matchesSearch(searchQuery.value, [step.title, step.detail, step.command]))
+        ? section.steps.filter((step) => matchesSearch(searchQuery.value, [step.title, titleForStep(step), step.detail, step.command]))
         : activeIntent
           ? section.steps.filter((step) => shouldShowForIntent(activeIntent, metaForStep(step).intents))
         : section.steps,
@@ -362,10 +374,6 @@ export default component$(() => {
     searchQuery.value = input.value;
   });
 
-  const toggleExplanations = $(() => {
-    showExplanations.value = !showExplanations.value;
-  });
-
   const renderGroupOption = (group: string) => (
     <label key={group} class="group-picker__option">
       <input type="checkbox" checked={selectedGroups.value.includes(group)} onChange$={(event) => toggleGroup(group, event)} />
@@ -377,9 +385,31 @@ export default component$(() => {
 
   return (
     <>
-      <section class="section">
-        <div class={{ 'admin-intent-hero': true, 'is-compact': activeIntent !== '' }}>
-          <h2 aria-hidden={activeIntent !== ''}>What do you need to do?</h2>
+      {currentUser?.username === homepage.data?.canaryAdminUser && <CanaryPanel />}
+      <section class="section admin-page">
+        <header class="admin-page-header">
+          <span class="eyebrow">Server administration</span>
+          <h1>Admin tools</h1>
+          <p>Choose a task to see the relevant steps, or search all commands. Each command shows where to run it and what it does.</p>
+        </header>
+        <details class="admin-safety-guide">
+          <summary>
+            <span>
+              <strong>Inspect before changing anything</strong>
+              <small>These commands can change the live server. Check where each command runs and replace example values before you copy it.</small>
+            </span>
+          </summary>
+          <div>
+            <p><strong>Test before switching.</strong> Run the deployment test first. Check failed systemd units before making the new version permanent.</p>
+            <p><strong>Change one thing at a time.</strong> Start with service status and logs, then change only the affected service.</p>
+            <p><strong>Replace example values.</strong> APP, USERNAME, and disk IDs must refer to the real service, user, or disk.</p>
+          </div>
+        </details>
+        <div class={{ 'admin-intent-hero': true, 'is-compact': hasSelectedMode }}>
+          <div class="admin-intent-heading">
+            <span class="eyebrow">Start with an outcome</span>
+            <h2 aria-hidden={activeIntent !== ''}>What do you need to do?</h2>
+          </div>
           <div class="admin-intent-actions" role="group" aria-label="Common admin tasks">
             {adminIntents.map((intent) => (
               <button
@@ -395,24 +425,13 @@ export default component$(() => {
           </div>
           {searchIsActive && (
             <label class="admin-search">
-              <span>Search commands</span>
-              <input type="search" value={searchQuery.value} onInput$={setSearchQuery} placeholder="Try service, secrets, user, storage..." />
+              <span>Search all admin commands</span>
+              <input type="search" value={searchQuery.value} onInput$={setSearchQuery} placeholder="For example: failed service, deploy, backup, DNS, user" />
             </label>
           )}
-          <button
-            type="button"
-            class={{ 'admin-help-toggle': true, 'is-active': showExplanations.value }}
-            aria-pressed={showExplanations.value}
-            onClick$={toggleExplanations}
-          >
-            {showExplanations.value ? "Okay, I'm good now. :)" : 'What the heck is all this? :('}
-          </button>
-          {showExplanations.value && (
-            <p class="admin-explanation-note">
-              Fear not, additional explanations now shown to help you out! To hide these explanations, just click the button again.
-            </p>
-          )}
         </div>
+        {!hasSelectedMode && <p class="admin-selection-hint">Choose a task to see its checklist.</p>}
+        {searchIsActive && searchQuery.value.trim() === '' && <p class="admin-selection-hint">Search for a service, problem, or action.</p>}
         {visibleAdminSections.length > 0 && (
           <div class="admin-command-layout">
             {visibleAdminSections.map((section) => (
@@ -420,17 +439,17 @@ export default component$(() => {
                 <summary class="admin-command-category__summary">
                   <span class="admin-command-category__heading">
                     <h3>{section.title}</h3>
-                    {showExplanations.value && <p>{section.description}</p>}
+                    <p>{section.description}</p>
                   </span>
                 </summary>
                 {section.steps.length > 0 && (
                   <div class="admin-task-list">
                     {section.steps.map((step) => (
                       <AdminTask
-                        title={step.title}
+                        title={titleForStep(step)}
                         description={step.detail}
                         activeIntent={activeIntent}
-                        showDescription={showExplanations.value}
+                        context={executionContext(step.command)}
                         forceOpen={searchIsActive}
                         intents={metaForStep(step).intents}
                         key={step.title}
@@ -454,16 +473,16 @@ export default component$(() => {
                     </div>
                     <div class="admin-fill-row">
                       <button type="button" class="admin-fill-btn" onClick$={fillMe}>
-                        It's for me
+                        Use my account details
                       </button>
                     </div>
                     <div class="admin-task-list">
                       {showCheckUser && (
                         <AdminTask
-                          title="Check user exists"
-                          description="Use before creating or resetting an account. Confirms Kanidm can see the person record."
+                          title="Find user account"
+                          description="Check that the Kanidm user exists before creating the account or changing its sign-in methods."
                           activeIntent={activeIntent}
-                          showDescription={showExplanations.value}
+                          context="Admin terminal"
                           forceOpen={searchIsActive}
                           intents={['add-user', 'manage-user']}
                         >
@@ -472,10 +491,10 @@ export default component$(() => {
                       )}
                       {showCreateAccount && (
                         <AdminTask
-                          title="Create Kanidm account"
-                          description="Create the Kanidm person record and attach the primary email used by apps. Credentials are issued separately with the reset-link command."
+                          title="Create user in Kanidm"
+                          description="Create the user and save the main email address that apps will use. Create the first sign-in link in a later step."
                           activeIntent={activeIntent}
-                          showDescription={showExplanations.value}
+                          context="Admin terminal"
                           forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
@@ -485,10 +504,10 @@ export default component$(() => {
                       )}
                       {showGrantBaseline && (
                         <AdminTask
-                          title="Grant baseline access"
-                          description="Add the baseline users group required for normal Kanidm sign-in and app user lookup."
+                          title="Allow standard sign-in"
+                          description="Add the user to the standard users group so they can sign in and apps can find their account."
                           activeIntent={activeIntent}
-                          showDescription={showExplanations.value}
+                          context="Admin terminal"
                           forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
@@ -497,21 +516,21 @@ export default component$(() => {
                       )}
                       {showGrantAccess && (
                         <AdminTask
-                          title="Grant app/file/admin access"
-                          description="Select app, file, backup, or admin groups. The generated loop grants access; reconciliation may be needed before every app sees it."
+                          title="Choose app and admin access"
+                          description="Select the groups that control apps, files, backups, and admin tools. Some apps need an account update before the change appears."
                           activeIntent={activeIntent}
-                          showDescription={showExplanations.value}
+                          context="Admin terminal"
                           forceOpen={searchIsActive}
                           intents={['add-user', 'manage-user']}
                         >
                           {accessGroups.length > 0 ? (
                             <>
                               <div class="group-picker-section">
-                                <h4>Unassigned</h4>
+                                <h4>Not assigned</h4>
                                 {unassignedAccessGroups.length > 0 ? (
                                   <div class="group-picker">{unassignedAccessGroups.map((group) => renderGroupOption(group))}</div>
                                 ) : (
-                                  <p>No unassigned groups for selected user.</p>
+                                  <p>This user already has every available group.</p>
                                 )}
                               </div>
                               <div class="group-picker-section">
@@ -519,22 +538,22 @@ export default component$(() => {
                                 {assignedAccessGroups.length > 0 ? (
                                   <div class="group-picker">{assignedAccessGroups.map((group) => renderGroupOption(group))}</div>
                                 ) : (
-                                  <p>No assigned groups for selected user.</p>
+                                  <p>This user does not have any of these groups.</p>
                                 )}
                               </div>
                             </>
                           ) : (
-                            <p>No non-protected groups are currently exposed from the configured Kanidm catalog.</p>
+                            <p>No app or admin access groups are available in the current Kanidm configuration.</p>
                           )}
                           <AdminCommand command={membershipCommand} />
                         </AdminTask>
                       )}
                       {showVaultwardenSignup && (
                         <AdminTask
-                          title="Vaultwarden signup"
-                          description="Have the user register in Vaultwarden from a trusted browser using the same email as Kanidm. This creates a separate vault master password."
+                          title="Create Passwords account"
+                          description="Ask the user to register in the Passwords app with their Kanidm email address. They must create and save a separate master password."
                           activeIntent={activeIntent}
-                          showDescription={showExplanations.value}
+                          context="User instructions"
                           forceOpen={searchIsActive}
                           intents={['add-user', 'manage-secrets']}
                         >
@@ -544,26 +563,27 @@ export default component$(() => {
                       )}
                       {showSignInLink && (
                         <AdminTask
-                          title="Create first sign-in link"
-                          description="Generate a Kanidm credential reset link that expires after 3600 seconds. Share it out-of-band for first sign-in or recovery."
+                          title="Create account recovery link"
+                          description="Generate a single-use Kanidm link that is valid for one hour. The user opens it to set a password and review other sign-in methods."
                           activeIntent={activeIntent}
-                          showDescription={showExplanations.value}
+                          context="Admin terminal"
                           forceOpen={searchIsActive}
                           intents={['add-user', 'manage-user', 'manage-secrets']}
                         >
-                          <AdminCommand command={`kanidm person credential create-reset-token ${userArg} 3600`} />
+                          <AdminCommand command={`kanidm person credential create-reset-token ${userArg} --name ${operatorArg}`} />
+                          <p>Send the generated URL to the user through a trusted channel. The link is single-use and should not be posted in tickets or shared logs.</p>
                         </AdminTask>
                       )}
                       {showHandoff && (
                         <AdminTask
-                          title="Hand off first sign-in"
-                          description="Ask the user to set password and MFA, open granted apps, save recovery details, and confirm expected services are visible."
+                          title="Help user finish setup"
+                          description="Ask the user to set a password and second sign-in method, open their apps, and save recovery details."
                           activeIntent={activeIntent}
-                          showDescription={showExplanations.value}
+                          context="User instructions"
                           forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
-                          <p>Confirm the user can sign in, open granted apps, set MFA, save recovery details, and see the expected homepage service cards.</p>
+                          <p>Confirm the user can sign in, open their apps, add a second sign-in method, save recovery details, and see the expected apps on the homepage.</p>
                         </AdminTask>
                       )}
                     </div>
@@ -573,12 +593,8 @@ export default component$(() => {
             ))}
           </div>
         )}
-        {searchIsActive && searchQuery.value.trim() !== '' && visibleAdminSections.length === 0 && <p class="admin-search-empty">No matching commands.</p>}
+        {searchIsActive && searchQuery.value.trim() !== '' && visibleAdminSections.length === 0 && <p class="admin-search-empty">No commands match your search.</p>}
       </section>
     </>
   );
 });
-
-export const head: DocumentHead = {
-  title: 'For Admins | Sydney Basin Services',
-};

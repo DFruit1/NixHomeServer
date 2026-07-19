@@ -25,6 +25,7 @@ Full mode:
   - runs `nix flake check --no-build` unless --skip-flake-check is used
   - runs the lean script suite through scripts/tests/run-script-tests.sh
   - builds flake check derivations except repo-policy, which is run directly
+  - runs the pinned Homepage Playwright end-to-end suite
 
 Examples:
   scripts/validate-repo.sh
@@ -39,8 +40,6 @@ run_flake_check=false
 skip_flake_check=false
 tests_dir="${VALIDATE_REPO_TESTS_DIR:-$repo_root/scripts/tests}"
 eval_cache_dir=""
-validation_cache_dir="${DEPLOY_VALIDATION_CACHE_DIR:-$repo_root/.cache/deploy-validation}"
-flake_check_completed=false
 
 cleanup_tmpdirs() {
   if [[ -n "$eval_cache_dir" && -d "$eval_cache_dir" ]]; then
@@ -87,20 +86,28 @@ current_system() {
 }
 
 run_full_derivation_checks() {
-  local system check_name
+  local system check_name check_names
 
   if [[ "$full_mode" != true ]]; then
     return 0
   fi
 
   system="$(current_system)"
+  if ! check_names="$(
+    nix eval --json ".#checks.${system}" --apply 'checks: builtins.attrNames checks' \
+      | jq -r '.[]' \
+      | sort
+  )" || [[ -z "$check_names" ]]; then
+    echo "❌ Could not evaluate a non-empty flake check worklist for ${system}." >&2
+    exit 1
+  fi
 
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
     [[ "$check_name" != "repo-policy" ]] || continue
     echo "ℹ️ Running ${check_name} derivation…"
     nix build ".#checks.${system}.${check_name}" --no-link --print-build-logs
-  done < <(nix eval --json ".#checks.${system}" --apply 'checks: builtins.attrNames checks' | jq -r '.[]' | sort)
+  done <<<"$check_names"
 }
 
 run_shell_tests() {
@@ -108,38 +115,24 @@ run_shell_tests() {
   "${tests_dir}/run-script-tests.sh"
 }
 
+run_full_e2e_checks() {
+  if [[ "$full_mode" != true ]]; then
+    return 0
+  fi
+
+  echo "ℹ️ Running Homepage Playwright end-to-end tests…"
+  "$repo_root/scripts/test-homepage-ui.sh"
+}
+
 if [[ "$skip_flake_check" == false ]]; then
   if [[ "$full_mode" == true || "$run_flake_check" == true ]]; then
     echo "ℹ️ Running flake checks (no build)…"
     nix flake check --no-build
-    flake_check_completed=true
   fi
 fi
 
 run_full_derivation_checks
 run_shell_tests
-
-write_validation_stamp() {
-  local archive_sha stamp_file created_epoch
-
-  archive_sha="$(hash_deploy_repo_archive)"
-  stamp_file="${validation_cache_dir}/${archive_sha}.json"
-  created_epoch="$(date +%s)"
-
-  mkdir -p "$validation_cache_dir"
-  jq -n \
-    --arg archiveSha256 "$archive_sha" \
-    --argjson createdEpoch "$created_epoch" \
-    '{
-      archiveSha256: $archiveSha256,
-      createdEpoch: $createdEpoch,
-      flakeCheckSucceeded: true,
-      checkRepoSucceeded: true
-    }' >"$stamp_file"
-}
-
-if [[ "$flake_check_completed" == true ]]; then
-  write_validation_stamp
-fi
+run_full_e2e_checks
 
 echo "✅ Repository checks passed."

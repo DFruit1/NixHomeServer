@@ -1,9 +1,16 @@
-{ config, lib, ... }:
+{ config, lib, options, ... }:
 
 {
-  users.users.filestash.extraGroups = lib.mkAfter [ "kiwix" ];
+  config = lib.mkIf
+    (
+      lib.hasAttrByPath [ "repo" "files" ] options
+      && lib.hasAttrByPath [ "repo" "kiwix" ] options
+    )
+    (lib.mkIf config.repo.kiwix.enable {
+      users.users.filestash.extraGroups = lib.mkAfter [ "kiwix" ];
 
-  systemd.services.filestash.serviceConfig.ReadWritePaths = lib.mkAfter [
-    config.repo.kiwix.paths.libraryRoot
-  ];
+      systemd.services.filestash.serviceConfig.ReadWritePaths = lib.mkAfter [
+        config.repo.kiwix.paths.libraryRoot
+      ];
+    });
 }

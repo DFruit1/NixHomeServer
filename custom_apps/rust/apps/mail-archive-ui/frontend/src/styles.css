@@ -988,7 +988,8 @@ form {
 .filter-control input,
 .filter-control select,
 .preset-save-form input,
-.auto-export-form input {
+.auto-export-form input,
+.auto-export-form select {
   min-height: 2rem;
   padding: 0.34rem 0.52rem;
   font-size: 0.86rem;

@@ -1,17 +1,18 @@
-{ config, vars, ... }:
+{ config, lib, vars, ... }:
 
 let
+  cfg = config.repo.kiwix;
   host = "wiki.${vars.domain}";
 in
 
 {
-  config = {
+  config = lib.mkIf cfg.enable {
     assertions = map
       (user: {
         assertion = builtins.hasAttr user config.users.users;
         message = "repo.kiwix.extraUploadUsers entry '${user}' must name a local Unix account.";
       })
-      config.repo.kiwix.extraUploadUsers;
+      cfg.extraUploadUsers;
 
     users.groups.kiwix = { };
 
@@ -20,7 +21,7 @@ in
     users.users.kiwix = {
       isSystemUser = true;
       group = "kiwix";
-      home = config.repo.kiwix.stateDir;
+      home = cfg.stateDir;
       createHome = false;
     };
 

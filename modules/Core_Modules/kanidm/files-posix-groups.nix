@@ -105,6 +105,10 @@ in
         ensure_posix_account ${lib.escapeShellArg username}
       '') fileAccessPosixUsers}
     '';
-    serviceConfig.Type = "oneshot";
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "30s";
+    };
   };
 }

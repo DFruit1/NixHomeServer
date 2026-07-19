@@ -187,6 +187,11 @@ in
               rrset-roundrobin = true;
               auto-trust-anchor-file = "/var/lib/unbound/root.key";
               do-not-query-localhost = false;
+              # NetBird creates its interface asynchronously after first-boot
+              # enrollment. Linux freebind lets Unbound reserve that configured
+              # address before the interface exists, avoiding a DNS/NetBird
+              # startup deadlock while the firewall still limits access.
+              ip-freebind = true;
             }
             // (
               if splitDnsMode then
@@ -233,5 +238,9 @@ in
 
     systemd.services.unbound.after = [ "dnscrypt-proxy.service" ];
     systemd.services.unbound.requires = [ "dnscrypt-proxy.service" ];
+    systemd.services.unbound.before = [
+      "netbird-main.service"
+      "netbird-main-login.service"
+    ];
   };
 }

@@ -1,27 +1,58 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, options, pkgs, vars, ... }:
 
 let
+  hasRepoModule = name: lib.hasAttrByPath [ "repo" name ] options;
+  appEnabled = name:
+    hasRepoModule name
+    && lib.attrByPath [ "repo" name "enable" ] false config;
+  seerrEnabled = appEnabled "seerr";
+  sonarrEnabled = appEnabled "sonarr";
+  radarrEnabled = appEnabled "radarr";
+  prowlarrEnabled = appEnabled "prowlarr";
+  qbittorrentEnabled = appEnabled "qbittorrent";
+  jellyfinPresent = hasRepoModule "jellyfin";
+  # Jellyfin is enabled by importing its module; unlike the Arr modules, it
+  # intentionally has no separate repo.jellyfin.enable switch.
+  jellyfinEnabled = jellyfinPresent;
   enabled =
-    (config.repo.seerr.enable or false)
-    || (config.repo.sonarr.enable or false)
-    || (config.repo.radarr.enable or false)
-    || (config.repo.prowlarr.enable or false)
-    || (config.repo.qbittorrent.enable or false);
+    seerrEnabled
+    || sonarrEnabled
+    || radarrEnabled
+    || prowlarrEnabled
+    || qbittorrentEnabled;
+  videoLayoutEnabled = sonarrEnabled || radarrEnabled;
+  storageLayoutEnabled = videoLayoutEnabled || qbittorrentEnabled;
   loopback = vars.networking.loopbackIPv4;
   ports = vars.networking.ports;
-  qbitPaths = config.repo.qbittorrent.paths;
-  moviesRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/_Movies";
-  showsRoot = "${config.repo.jellyfin.paths.sharedVideosRoot}/_Shows";
+  qbitPaths =
+    if hasRepoModule "qbittorrent" then
+      config.repo.qbittorrent.paths
+    else
+      rec {
+        downloadRoot = "${vars.sharedRoot}/_Downloads/qbittorrent";
+        incompleteDir = "${downloadRoot}/incomplete";
+        completeDir = "${downloadRoot}/complete";
+        moviesDir = "${completeDir}/movies";
+        tvDir = "${completeDir}/tv";
+        prowlarrDir = "${vars.sharedRoot}/_Downloads/prowlarr";
+      };
+  sharedVideosRoot =
+    if jellyfinPresent then config.repo.jellyfin.paths.sharedVideosRoot
+    else "${vars.sharedRoot}/_Videos";
+  moviesRoot = "${sharedVideosRoot}/_Movies";
+  showsRoot = "${sharedVideosRoot}/_Shows";
   seerrManagedDir = "/var/lib/seerr/.nixos-managed";
   seerrJellyfinBootstrapUser = "seerr-bootstrap";
   seerrJellyfinBootstrapEmail = "seerr-bootstrap@${vars.domain}";
   seerrLibraryNamesJson = builtins.toJSON (
-    map (library: "Shared ${library.label}") config.repo.jellyfin.libraries.shared
+    if jellyfinPresent then
+      map (library: "Shared ${library.label}") config.repo.jellyfin.libraries.shared
+    else
+      [ ]
   );
-  mediaAutomationTraversalDirs = [
-    vars.sharedRoot
-    config.repo.jellyfin.paths.sharedVideosRoot
-  ];
+  mediaAutomationTraversalDirs =
+    [ vars.sharedRoot ]
+    ++ lib.optional videoLayoutEnabled sharedVideosRoot;
   automationPath = with pkgs; [
     acl
     coreutils
@@ -31,33 +62,33 @@ let
     gnused
     jq
   ];
+  reconcileServiceConfig = {
+    Type = "oneshot";
+    Restart = "on-failure";
+    RestartSec = "30s";
+  };
 in
 {
   config = lib.mkIf enabled {
-    assertions = [
-      {
-        assertion = config.repo.jellyfin or null != null;
-        message = "The media automation stack expects the regular Jellyfin module to be imported.";
-      }
-    ];
+    warnings = lib.optional (seerrEnabled && !jellyfinEnabled)
+      "Seerr is enabled without Jellyfin; automatic Seerr/Jellyfin bootstrap is disabled and Seerr must be configured manually.";
 
-    repo.storage.sharedRoots.contentSubdirs = [
-      "_Downloads"
-    ];
+    repo.storage.sharedRoots.contentSubdirs = lib.mkIf storageLayoutEnabled (
+      lib.optional qbittorrentEnabled "_Downloads"
+      ++ lib.optional videoLayoutEnabled "_Videos"
+    );
 
-    systemd.services.media-automation-storage-layout-v1 = {
+    systemd.services.media-automation-storage-layout-v1 = lib.mkIf storageLayoutEnabled {
       description = "Provision shared storage for media automation";
       wantedBy = [ "multi-user.target" ];
       wants = [
         "data-pool-layout.service"
-        "jellyfin-storage-layout-v1.service"
         "local-fs.target"
-      ];
+      ] ++ lib.optional jellyfinEnabled "jellyfin-storage-layout-v1.service";
       after = [
         "data-pool-layout.service"
-        "jellyfin-storage-layout-v1.service"
         "local-fs.target"
-      ];
+      ] ++ lib.optional jellyfinEnabled "jellyfin-storage-layout-v1.service";
       before = [
         "sonarr.service"
         "radarr.service"
@@ -81,28 +112,34 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 1770 -o root -g media-automation ${lib.escapeShellArg "${vars.sharedRoot}/_Downloads"}
+        ${lib.optionalString qbittorrentEnabled ''
+          install -d -m 1770 -o root -g media-automation ${lib.escapeShellArg "${vars.sharedRoot}/_Downloads"}
+        ''}
         for path in ${lib.escapeShellArgs mediaAutomationTraversalDirs}; do
           setfacl -m g:media-automation:--x "$path"
         done
-        for path in ${lib.escapeShellArgs [
-          qbitPaths.downloadRoot
-          qbitPaths.incompleteDir
-          qbitPaths.completeDir
-          qbitPaths.moviesDir
-          qbitPaths.tvDir
-          qbitPaths.prowlarrDir
-          moviesRoot
-          showsRoot
-        ]}; do
+        for path in ${lib.escapeShellArgs (
+          lib.optionals qbittorrentEnabled [
+            qbitPaths.downloadRoot
+            qbitPaths.incompleteDir
+            qbitPaths.completeDir
+            qbitPaths.moviesDir
+            qbitPaths.tvDir
+            qbitPaths.prowlarrDir
+          ]
+          ++ lib.optional radarrEnabled moviesRoot
+          ++ lib.optional sonarrEnabled showsRoot
+        )}; do
           install -d -m 1770 -o root -g media-automation "$path"
           setfacl -m g:media-automation:rwX,d:g:media-automation:rwx "$path"
-          setfacl -m g:jellyfin-media:rwX,d:g:jellyfin-media:rwx "$path"
+          ${lib.optionalString jellyfinEnabled ''
+            setfacl -m g:jellyfin-media:rwX,d:g:jellyfin-media:rwx "$path"
+          ''}
         done
       '';
     };
 
-    systemd.services.media-automation-bootstrap-qbittorrent = lib.mkIf config.repo.qbittorrent.enable {
+    systemd.services.media-automation-bootstrap-qbittorrent = lib.mkIf qbittorrentEnabled {
       description = "Bootstrap qBittorrent media automation categories";
       wantedBy = [ "multi-user.target" ];
       wants = [
@@ -114,7 +151,7 @@ in
         "media-automation-storage-layout-v1.service"
       ];
       path = automationPath;
-      serviceConfig.Type = "oneshot";
+      serviceConfig = reconcileServiceConfig;
       script = ''
         set -euo pipefail
 
@@ -126,6 +163,10 @@ in
           fi
           sleep 1
         done
+        curl --silent --show-error --fail "$qbit_url/api/v2/app/version" >/dev/null || {
+          echo "qBittorrent HTTP endpoint is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         create_category() {
           local name="$1"
@@ -139,7 +180,7 @@ in
             -X POST \
             -F "category=$name" \
             -F "savePath=$save_path" \
-            "$qbit_url/api/v2/torrents/editCategory" >/dev/null || true
+            "$qbit_url/api/v2/torrents/editCategory" >/dev/null
         }
 
         create_category movies ${lib.escapeShellArg qbitPaths.moviesDir}
@@ -170,7 +211,7 @@ in
       '';
     };
 
-    systemd.services.media-automation-bootstrap-prowlarr-qbittorrent = lib.mkIf (config.repo.prowlarr.enable && config.repo.qbittorrent.enable) {
+    systemd.services.media-automation-bootstrap-prowlarr-qbittorrent = lib.mkIf (prowlarrEnabled && qbittorrentEnabled) {
       description = "Bootstrap Prowlarr direct qBittorrent download client";
       wantedBy = [ "multi-user.target" ];
       wants = [
@@ -186,7 +227,7 @@ in
         "media-automation-bootstrap-qbittorrent.service"
       ];
       path = automationPath;
-      serviceConfig.Type = "oneshot";
+      serviceConfig = reconcileServiceConfig;
       script = ''
         set -euo pipefail
 
@@ -199,9 +240,15 @@ in
           [[ -f "$prowlarr_config" ]] && grep -q '<ApiKey>' "$prowlarr_config" && break
           sleep 1
         done
-        [[ -f "$prowlarr_config" ]] || exit 0
+        [[ -f "$prowlarr_config" ]] || {
+          echo "Prowlarr configuration is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
         prowlarr_key="$(sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$prowlarr_config" | head -n1)"
-        [[ -n "$prowlarr_key" ]] || exit 0
+        [[ -n "$prowlarr_key" ]] || {
+          echo "Prowlarr API key is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         papi() {
           curl --silent --show-error --fail -H "X-Api-Key: $prowlarr_key" "$@"
@@ -213,7 +260,10 @@ in
           fi
           sleep 1
         done
-        papi "$prowlarr_url/api/v1/system/status" >/dev/null || exit 0
+        papi "$prowlarr_url/api/v1/system/status" >/dev/null || {
+          echo "Prowlarr HTTP endpoint is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         existing_id="$(papi "$prowlarr_url/api/v1/downloadclient" | jq -r '.[] | select(.name == "qBittorrent") | .id' | head -n1)"
         payload="$(
@@ -246,7 +296,10 @@ in
                 ))'
         )"
 
-        [[ -n "$payload" && "$payload" != "null" ]] || exit 0
+        [[ -n "$payload" && "$payload" != "null" ]] || {
+          echo "Prowlarr did not expose a qBittorrent client schema; retrying media bootstrap." >&2
+          exit 1
+        }
         if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
           jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
             | papi -X PUT -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/downloadclient/$existing_id" >/dev/null
@@ -256,7 +309,7 @@ in
       '';
     };
 
-    systemd.services.media-automation-bootstrap-sonarr = lib.mkIf (config.repo.sonarr.enable && config.repo.qbittorrent.enable) {
+    systemd.services.media-automation-bootstrap-sonarr = lib.mkIf (sonarrEnabled && qbittorrentEnabled) {
       description = "Bootstrap Sonarr media automation settings";
       wantedBy = [ "multi-user.target" ];
       wants = [
@@ -272,7 +325,7 @@ in
         "media-automation-bootstrap-qbittorrent.service"
       ];
       path = automationPath;
-      serviceConfig.Type = "oneshot";
+      serviceConfig = reconcileServiceConfig;
       script = ''
         set -euo pipefail
 
@@ -286,9 +339,15 @@ in
           [[ -f "$config_xml" ]] && grep -q '<ApiKey>' "$config_xml" && break
           sleep 1
         done
-        [[ -f "$config_xml" ]] || exit 0
+        [[ -f "$config_xml" ]] || {
+          echo "Sonarr configuration is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
         api_key="$(sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$config_xml" | head -n1)"
-        [[ -n "$api_key" ]] || exit 0
+        [[ -n "$api_key" ]] || {
+          echo "Sonarr API key is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         api() {
           curl --silent --show-error --fail -H "X-Api-Key: $api_key" "$@"
@@ -300,7 +359,10 @@ in
           fi
           sleep 1
         done
-        api "$base_url/api/v3/system/status" >/dev/null || exit 0
+        api "$base_url/api/v3/system/status" >/dev/null || {
+          echo "Sonarr HTTP endpoint is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         if ! api "$base_url/api/v3/rootfolder" | jq -e --arg path "$root_path" '.[] | select(.path == $path)' >/dev/null; then
           jq -n --arg path "$root_path" '{path: $path}' \
@@ -337,18 +399,20 @@ in
                 ))'
         )"
 
-        if [[ -n "$payload" && "$payload" != "null" ]]; then
-          if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
-            jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
-              | api -X PUT -H 'Content-Type: application/json' --data-binary @- "$base_url/api/v3/downloadclient/$existing_id" >/dev/null
-          else
-            api -X POST -H 'Content-Type: application/json' --data-binary "$payload" "$base_url/api/v3/downloadclient" >/dev/null
-          fi
+        [[ -n "$payload" && "$payload" != "null" ]] || {
+          echo "Sonarr did not expose a qBittorrent client schema; retrying media bootstrap." >&2
+          exit 1
+        }
+        if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
+          jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
+            | api -X PUT -H 'Content-Type: application/json' --data-binary @- "$base_url/api/v3/downloadclient/$existing_id" >/dev/null
+        else
+          api -X POST -H 'Content-Type: application/json' --data-binary "$payload" "$base_url/api/v3/downloadclient" >/dev/null
         fi
       '';
     };
 
-    systemd.services.media-automation-bootstrap-radarr = lib.mkIf (config.repo.radarr.enable && config.repo.qbittorrent.enable) {
+    systemd.services.media-automation-bootstrap-radarr = lib.mkIf (radarrEnabled && qbittorrentEnabled) {
       description = "Bootstrap Radarr media automation settings";
       wantedBy = [ "multi-user.target" ];
       wants = [
@@ -364,7 +428,7 @@ in
         "media-automation-bootstrap-qbittorrent.service"
       ];
       path = automationPath;
-      serviceConfig.Type = "oneshot";
+      serviceConfig = reconcileServiceConfig;
       script = ''
         set -euo pipefail
 
@@ -378,9 +442,15 @@ in
           [[ -f "$config_xml" ]] && grep -q '<ApiKey>' "$config_xml" && break
           sleep 1
         done
-        [[ -f "$config_xml" ]] || exit 0
+        [[ -f "$config_xml" ]] || {
+          echo "Radarr configuration is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
         api_key="$(sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$config_xml" | head -n1)"
-        [[ -n "$api_key" ]] || exit 0
+        [[ -n "$api_key" ]] || {
+          echo "Radarr API key is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         api() {
           curl --silent --show-error --fail -H "X-Api-Key: $api_key" "$@"
@@ -392,7 +462,10 @@ in
           fi
           sleep 1
         done
-        api "$base_url/api/v3/system/status" >/dev/null || exit 0
+        api "$base_url/api/v3/system/status" >/dev/null || {
+          echo "Radarr HTTP endpoint is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         if ! api "$base_url/api/v3/rootfolder" | jq -e --arg path "$root_path" '.[] | select(.path == $path)' >/dev/null; then
           jq -n --arg path "$root_path" '{path: $path}' \
@@ -429,18 +502,20 @@ in
                 ))'
         )"
 
-        if [[ -n "$payload" && "$payload" != "null" ]]; then
-          if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
-            jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
-              | api -X PUT -H 'Content-Type: application/json' --data-binary @- "$base_url/api/v3/downloadclient/$existing_id" >/dev/null
-          else
-            api -X POST -H 'Content-Type: application/json' --data-binary "$payload" "$base_url/api/v3/downloadclient" >/dev/null
-          fi
+        [[ -n "$payload" && "$payload" != "null" ]] || {
+          echo "Radarr did not expose a qBittorrent client schema; retrying media bootstrap." >&2
+          exit 1
+        }
+        if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
+          jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
+            | api -X PUT -H 'Content-Type: application/json' --data-binary @- "$base_url/api/v3/downloadclient/$existing_id" >/dev/null
+        else
+          api -X POST -H 'Content-Type: application/json' --data-binary "$payload" "$base_url/api/v3/downloadclient" >/dev/null
         fi
       '';
     };
 
-    systemd.services.media-automation-bootstrap-prowlarr = lib.mkIf (config.repo.prowlarr.enable && config.repo.sonarr.enable && config.repo.radarr.enable) {
+    systemd.services.media-automation-bootstrap-prowlarr = lib.mkIf (prowlarrEnabled && sonarrEnabled && radarrEnabled) {
       description = "Bootstrap Prowlarr application links to Sonarr and Radarr";
       wantedBy = [ "multi-user.target" ];
       wants = [
@@ -456,7 +531,7 @@ in
         "media-automation-storage-layout-v1.service"
       ];
       path = automationPath;
-      serviceConfig.Type = "oneshot";
+      serviceConfig = reconcileServiceConfig;
       script = ''
         set -euo pipefail
 
@@ -482,7 +557,10 @@ in
         prowlarr_key="$(read_api_key "$prowlarr_config")"
         sonarr_key="$(read_api_key "$sonarr_config")"
         radarr_key="$(read_api_key "$radarr_config")"
-        [[ -n "$prowlarr_key" && -n "$sonarr_key" && -n "$radarr_key" ]] || exit 0
+        [[ -n "$prowlarr_key" && -n "$sonarr_key" && -n "$radarr_key" ]] || {
+          echo "Prowlarr, Sonarr, or Radarr API keys are not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         papi() {
           curl --silent --show-error --fail -H "X-Api-Key: $prowlarr_key" "$@"
@@ -494,7 +572,10 @@ in
           fi
           sleep 1
         done
-        papi "$prowlarr_url/api/v1/system/status" >/dev/null || exit 0
+        papi "$prowlarr_url/api/v1/system/status" >/dev/null || {
+          echo "Prowlarr HTTP endpoint is not ready; retrying media bootstrap." >&2
+          exit 1
+        }
 
         upsert_app() {
           local name="$1"
@@ -530,7 +611,10 @@ in
                   ))'
           )"
 
-          [[ -n "$payload" && "$payload" != "null" ]] || return 0
+          [[ -n "$payload" && "$payload" != "null" ]] || {
+            echo "Prowlarr did not expose the $implementation application schema; retrying media bootstrap." >&2
+            return 1
+          }
           if [[ -n "$existing_id" && "$existing_id" != "null" ]]; then
             jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
               | papi -X PUT -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/applications/$existing_id" >/dev/null
@@ -544,35 +628,47 @@ in
       '';
     };
 
-    systemd.services.media-automation-bootstrap-seerr = lib.mkIf config.repo.seerr.enable {
+    systemd.services.media-automation-bootstrap-seerr = lib.mkIf (seerrEnabled && jellyfinEnabled) {
       description = "Bootstrap Seerr with Jellyfin, Sonarr, and Radarr";
       wantedBy = [ "multi-user.target" ];
       wants = [
         "seerr.service"
         "jellyfin.service"
         "jellyfin-library-bootstrap-v1.service"
+      ]
+      ++ lib.optionals storageLayoutEnabled [
         "media-automation-storage-layout-v1.service"
       ]
-      ++ lib.optionals config.repo.sonarr.enable [
+      ++ lib.optionals sonarrEnabled [
         "sonarr.service"
+      ]
+      ++ lib.optionals (sonarrEnabled && qbittorrentEnabled) [
         "media-automation-bootstrap-sonarr.service"
       ]
-      ++ lib.optionals config.repo.radarr.enable [
+      ++ lib.optionals radarrEnabled [
         "radarr.service"
+      ]
+      ++ lib.optionals (radarrEnabled && qbittorrentEnabled) [
         "media-automation-bootstrap-radarr.service"
       ];
       after = [
         "seerr.service"
         "jellyfin.service"
         "jellyfin-library-bootstrap-v1.service"
+      ]
+      ++ lib.optionals storageLayoutEnabled [
         "media-automation-storage-layout-v1.service"
       ]
-      ++ lib.optionals config.repo.sonarr.enable [
+      ++ lib.optionals sonarrEnabled [
         "sonarr.service"
+      ]
+      ++ lib.optionals (sonarrEnabled && qbittorrentEnabled) [
         "media-automation-bootstrap-sonarr.service"
       ]
-      ++ lib.optionals config.repo.radarr.enable [
+      ++ lib.optionals radarrEnabled [
         "radarr.service"
+      ]
+      ++ lib.optionals (radarrEnabled && qbittorrentEnabled) [
         "media-automation-bootstrap-radarr.service"
       ];
       path = automationPath ++ [ pkgs.openssl ];
@@ -773,9 +869,12 @@ in
         seerr_api_key="$(
           jq -r '.apiKey // .main?.apiKey // empty' /var/lib/seerr/settings.json 2>/dev/null || true
         )"
-        [[ -n "$seerr_api_key" && "$seerr_api_key" != "null" ]] || {
-          echo "Seerr API key is not available; skipping Arr service linking" >&2
+        if [[ ${lib.escapeShellArg (lib.boolToString (sonarrEnabled || radarrEnabled))} != "true" ]]; then
           exit 0
+        fi
+        [[ -n "$seerr_api_key" && "$seerr_api_key" != "null" ]] || {
+          echo "Seerr API key is not available; retrying Arr service linking." >&2
+          exit 1
         }
 
         seerr_api() {
@@ -813,7 +912,10 @@ in
           local payload="$3"
           local existing_id
 
-          [[ -n "$payload" && "$payload" != "null" ]] || return 0
+          [[ -n "$payload" && "$payload" != "null" ]] || {
+            echo "Seerr payload for $name is unavailable; retrying media bootstrap." >&2
+            return 1
+          }
           existing_id="$(
             seerr_api "$seerr_url/api/v1/settings/$kind" \
               | jq -r --arg name "$name" '.[] | select(.name == $name) | .id // empty' \
@@ -838,11 +940,18 @@ in
         }
 
         sonarr_key="$(read_arr_api_key /var/lib/sonarr/.config/NzbDrone/config.xml)"
-        if [[ -n "$sonarr_key" ]]; then
+        if [[ ${lib.escapeShellArg (lib.boolToString sonarrEnabled)} == "true" ]]; then
+          [[ -n "$sonarr_key" ]] || {
+            echo "Sonarr API key is not ready for Seerr linking; retrying media bootstrap." >&2
+            exit 1
+          }
           sonarr_url="http://${loopback}:${toString ports.sonarr}"
           sonarr_quality="$(first_quality_profile "$sonarr_url" "$sonarr_key" || true)"
-          if [[ -n "$sonarr_quality" && "$sonarr_quality" != "null" ]]; then
-            sonarr_payload="$(
+          [[ -n "$sonarr_quality" && "$sonarr_quality" != "null" ]] || {
+            echo "Sonarr quality profiles are not ready for Seerr linking; retrying media bootstrap." >&2
+            exit 1
+          }
+          sonarr_payload="$(
               jq -n \
                 --arg name "Sonarr" \
                 --arg hostname "${loopback}" \
@@ -875,17 +984,23 @@ in
                   animeTags: [],
                   enableSeasonFolders: true
                 }'
-            )"
-            upsert_seerr_service sonarr Sonarr "$sonarr_payload"
-          fi
+          )"
+          upsert_seerr_service sonarr Sonarr "$sonarr_payload"
         fi
 
         radarr_key="$(read_arr_api_key /var/lib/radarr/.config/Radarr/config.xml)"
-        if [[ -n "$radarr_key" ]]; then
+        if [[ ${lib.escapeShellArg (lib.boolToString radarrEnabled)} == "true" ]]; then
+          [[ -n "$radarr_key" ]] || {
+            echo "Radarr API key is not ready for Seerr linking; retrying media bootstrap." >&2
+            exit 1
+          }
           radarr_url="http://${loopback}:${toString ports.radarr}"
           radarr_quality="$(first_quality_profile "$radarr_url" "$radarr_key" || true)"
-          if [[ -n "$radarr_quality" && "$radarr_quality" != "null" ]]; then
-            radarr_payload="$(
+          [[ -n "$radarr_quality" && "$radarr_quality" != "null" ]] || {
+            echo "Radarr quality profiles are not ready for Seerr linking; retrying media bootstrap." >&2
+            exit 1
+          }
+          radarr_payload="$(
               jq -n \
                 --arg name "Radarr" \
                 --arg hostname "${loopback}" \
@@ -912,9 +1027,8 @@ in
                   minimumAvailability: "released",
                   tags: []
                 }'
-            )"
-            upsert_seerr_service radarr Radarr "$radarr_payload"
-          fi
+          )"
+          upsert_seerr_service radarr Radarr "$radarr_payload"
         fi
       '';
     };

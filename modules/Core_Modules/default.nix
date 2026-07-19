@@ -13,6 +13,7 @@
     ./kanidm
     ./kopia
     ./monitoring
+    ./module-registry.nix
     ./netbird
     ./oauth2-proxy/identity.nix
     ./rclone

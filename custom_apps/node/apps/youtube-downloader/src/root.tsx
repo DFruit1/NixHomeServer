@@ -1,11 +1,15 @@
-import { component$, $, useSignal, useVisibleTask$ } from '@builder.io/qwik';
-import type { CurrentUser, Job, CreateJobRequest } from './shared/types.js';
+import { component$, $, Slot, useSignal, useVisibleTask$ } from '@builder.io/qwik';
+import type { QRL } from '@builder.io/qwik';
+import type { CurrentUser, Job, CreateJobRequest, YtDlpVersion } from './shared/types.js';
 import { AUDIO_FORMATS, AUDIO_QUALITIES, VIDEO_CONTAINERS, VIDEO_QUALITIES } from './shared/types.js';
 import { isYouTubeUrl, normalizeDownloadUrl } from './shared/url.js';
 import './client/styles.css';
 
 const CLIPBOARD_URL_RE = /https?:\/\/[^\s]+/g;
-const RECENT_PASTED_URL_LIMIT = 6;
+const RECENT_AUTO_QUEUED_URL_LIMIT = 6;
+const OPTION_KEYS = ['splitChapters', 'includeChannel', 'includeDate', 'embedAudioCoverArt', 'saveAudioToAudiobooks', 'autoQueueOnPaste', 'ytDlpVersion'] as const;
+type OptionKey = (typeof OPTION_KEYS)[number];
+type BooleanOptionKey = Exclude<OptionKey, 'ytDlpVersion'>;
 
 const trimClipboardToken = (token: string): string => token.trim().replace(/^[([{"'\`]+|[)\]}"'\`.,;:!?]+$/g, '');
 
@@ -40,10 +44,11 @@ export default component$(() => {
   const includeChannel = useSignal(true);
   const includeDate = useSignal(true);
   const saveAudioToAudiobooks = useSignal(false);
-  const pasteAndQueue = useSignal(false);
+  const autoQueueOnPaste = useSignal(false);
+  const ytDlpVersion = useSignal<YtDlpVersion>('packaged');
+  const pinnedOptions = useSignal<OptionKey[]>([]);
   const submitting = useSignal(false);
   const recentPastedUrls = useSignal<string[]>([]);
-  const pasteQueueButtonRef = useSignal<HTMLButtonElement>();
 
   const refresh = $(async () => {
     const [meResponse, jobsResponse] = await Promise.all([fetch('/api/me'), fetch('/api/jobs')]);
@@ -59,40 +64,37 @@ export default component$(() => {
 
   useVisibleTask$(({ cleanup }) => {
     profileImage.value = window.localStorage.getItem('homepage.profileImage') ?? '';
+    try {
+      const savedPins = JSON.parse(window.localStorage.getItem('youtubeDownloader.pinnedOptions') ?? '[]') as string[];
+      pinnedOptions.value = savedPins.filter((key): key is OptionKey => OPTION_KEYS.includes(key as OptionKey));
+    } catch {
+      pinnedOptions.value = [];
+    }
     refresh().catch((caught) => {
       error.value = caught instanceof Error ? caught.message : String(caught);
     });
     const timer = window.setInterval(() => {
       refresh().catch(() => undefined);
     }, 2500);
-    const pasteQueueButton = pasteQueueButtonRef.value;
-    const onPasteQueueClick = async (event: MouseEvent) => {
-      event.preventDefault();
-      if (submitting.value) {
-        return;
-      }
-      error.value = '';
-      if (!navigator.clipboard?.readText) {
-        error.value = 'Clipboard access is not available in this browser.';
-        return;
-      }
-      try {
-        const clipboardText = await navigator.clipboard.readText();
-        const clipboardUrl = extractYouTubeUrlFromClipboard(clipboardText);
-        if (!clipboardUrl) {
-          error.value = 'Paste a YouTube URL to use the clipboard queue option.';
-          return;
-        }
-        await submit(clipboardUrl);
-      } catch {
-        error.value = 'Clipboard access was denied or unavailable.';
-      }
-    };
-    pasteQueueButton?.addEventListener('click', onPasteQueueClick);
     cleanup(() => {
       window.clearInterval(timer);
-      pasteQueueButton?.removeEventListener('click', onPasteQueueClick);
     });
+  });
+
+  const updateBooleanOption = $((key: BooleanOptionKey, value: boolean) => {
+    const signals = { splitChapters, includeChannel, includeDate, embedAudioCoverArt, saveAudioToAudiobooks, autoQueueOnPaste };
+    signals[key].value = value;
+  });
+
+  const toggleOptionPin = $((key: OptionKey) => {
+    pinnedOptions.value = pinnedOptions.value.includes(key)
+      ? pinnedOptions.value.filter((candidate) => candidate !== key)
+      : [...pinnedOptions.value, key];
+    window.localStorage.setItem('youtubeDownloader.pinnedOptions', JSON.stringify(pinnedOptions.value));
+  });
+
+  const updateYtDlpVersion = $((value: YtDlpVersion) => {
+    ytDlpVersion.value = value;
   });
 
   const updateProfileImage = $(async (_event: Event, target: HTMLInputElement) => {
@@ -118,7 +120,11 @@ export default component$(() => {
   });
 
   const clearHistory = $(async () => {
-    const response = await fetch('/api/jobs', { method: 'DELETE' });
+    const response = await fetch('/api/jobs', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
     if (response.ok) {
       await refresh();
     }
@@ -144,7 +150,7 @@ export default component$(() => {
     submitting.value = true;
     const normalizedUrl = normalizeDownloadUrl(requestedUrl);
     if (usedClipboard && recentPastedUrls.value.includes(normalizedUrl)) {
-      error.value = 'This clipboard URL was already queued from Paste & Queue.';
+      error.value = 'This pasted URL was already auto-queued.';
       submitting.value = false;
       return;
     }
@@ -162,6 +168,7 @@ export default component$(() => {
       includeChannel: includeChannel.value,
       includeDate: includeDate.value,
       saveAudioToAudiobooks: mediaType.value === 'audio' ? saveAudioToAudiobooks.value : undefined,
+      ytDlpVersion: ytDlpVersion.value,
     };
     try {
       const response = await fetch('/api/jobs', {
@@ -174,7 +181,7 @@ export default component$(() => {
         throw new Error(body.error || 'Download could not be queued');
       }
       if (usedClipboard) {
-        recentPastedUrls.value = [normalizedUrl, ...recentPastedUrls.value].slice(0, RECENT_PASTED_URL_LIMIT);
+        recentPastedUrls.value = [normalizedUrl, ...recentPastedUrls.value].slice(0, RECENT_AUTO_QUEUED_URL_LIMIT);
       }
       url.value = '';
       await refresh();
@@ -202,7 +209,23 @@ export default component$(() => {
           onImageChange={updateProfileImage}
           onImageClear={clearProfileImage}
           onClearHistory={clearHistory}
-        />
+        >
+          <OptionsPanel
+            location="profile"
+            pinned={pinnedOptions.value}
+            mediaType={mediaType.value}
+            splitChapters={splitChapters.value}
+            includeChannel={includeChannel.value}
+            includeDate={includeDate.value}
+            embedAudioCoverArt={embedAudioCoverArt.value}
+            saveAudioToAudiobooks={saveAudioToAudiobooks.value}
+            autoQueueOnPaste={autoQueueOnPaste.value}
+            ytDlpVersion={ytDlpVersion.value}
+            onBooleanChange={updateBooleanOption}
+            onVersionChange={updateYtDlpVersion}
+            onPin={toggleOptionPin}
+          />
+        </ProfileMenu>
       </section>
 
       <section class="download-form">
@@ -212,6 +235,18 @@ export default component$(() => {
             aria-label="URL"
             value={url.value}
             onInput$={(_, target) => (url.value = target.value)}
+            onPaste$={async (event) => {
+              if (!autoQueueOnPaste.value || submitting.value) {
+                return;
+              }
+              const pastedUrl = extractYouTubeUrlFromClipboard(event.clipboardData?.getData('text') ?? '');
+              if (!pastedUrl) {
+                return;
+              }
+              event.preventDefault();
+              url.value = pastedUrl;
+              await submit(pastedUrl);
+            }}
             onBlur$={() => (url.value = normalizeDownloadUrl(url.value))}
             placeholder="https://..."
           />
@@ -310,42 +345,29 @@ export default component$(() => {
           </div>
         </div>
 
-        <div class="toggles">
-          <label>
-            <input type="checkbox" checked={splitChapters.value} onChange$={(_, target) => (splitChapters.value = target.checked)} />
-            Split chapters
-          </label>
-          <label>
-            <input type="checkbox" checked={includeChannel.value} onChange$={(_, target) => (includeChannel.value = target.checked)} />
-            Channel folder
-          </label>
-          <label>
-            <input type="checkbox" checked={includeDate.value} onChange$={(_, target) => (includeDate.value = target.checked)} />
-            Release/upload date
-          </label>
-          <div class="audio-only-toggles" hidden={mediaType.value !== 'audio'}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={embedAudioCoverArt.value}
-                  onChange$={(_, target) => (embedAudioCoverArt.value = target.checked)}
-                />
-                Embed cover art
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={saveAudioToAudiobooks.value}
-                  onChange$={(_, target) => (saveAudioToAudiobooks.value = target.checked)}
-                />
-                Save audio to Audiobooks
-              </label>
-          </div>
-          <label>
-            <input type="checkbox" checked={pasteAndQueue.value} onChange$={(_, target) => (pasteAndQueue.value = target.checked)} />
-            Paste & Queue button
-          </label>
-        </div>
+        <p class={{ 'destination-note': true, warning: destination.value === 'shared' || (mediaType.value === 'audio' && saveAudioToAudiobooks.value) }}>
+          {destination.value === 'personal' && !(mediaType.value === 'audio' && saveAudioToAudiobooks.value)
+            ? 'This download will be included in your Offline Media sync.'
+            : 'This destination is not copied to your personal Offline Media devices.'}
+        </p>
+
+        {pinnedOptions.value.length > 0 && (
+          <OptionsPanel
+            location="pinned"
+            pinned={pinnedOptions.value}
+            mediaType={mediaType.value}
+            splitChapters={splitChapters.value}
+            includeChannel={includeChannel.value}
+            includeDate={includeDate.value}
+            embedAudioCoverArt={embedAudioCoverArt.value}
+            saveAudioToAudiobooks={saveAudioToAudiobooks.value}
+            autoQueueOnPaste={autoQueueOnPaste.value}
+            ytDlpVersion={ytDlpVersion.value}
+            onBooleanChange={updateBooleanOption}
+            onVersionChange={updateYtDlpVersion}
+            onPin={toggleOptionPin}
+          />
+        )}
 
         {error.value && <p class="error">{error.value}</p>}
         <div class="submit-actions">
@@ -356,15 +378,6 @@ export default component$(() => {
             onClick$={() => submit()}
           >
             {submitting.value ? 'Queueing' : 'Queue'}
-          </button>
-          <button
-            ref={pasteQueueButtonRef}
-            class="primary secondary"
-            type="button"
-            hidden={!pasteAndQueue.value}
-            disabled={submitting.value}
-          >
-            {submitting.value ? 'Queueing' : 'Paste & Queue'}
           </button>
         </div>
       </section>
@@ -445,6 +458,10 @@ const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChan
             <p>Youtube Downloader</p>
           </div>
         </div>
+        <div class="profile-options">
+          <h3>Options</h3>
+          <Slot />
+        </div>
         <button class="profile-action" type="button" onClick$={clearAndClose}>
           Clear history
         </button>
@@ -453,6 +470,92 @@ const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChan
         </a>
       </section>
     </details>
+  );
+});
+
+type OptionsPanelProps = {
+  location: 'profile' | 'pinned';
+  pinned: OptionKey[];
+  mediaType: 'audio' | 'video';
+  splitChapters: boolean;
+  includeChannel: boolean;
+  includeDate: boolean;
+  embedAudioCoverArt: boolean;
+  saveAudioToAudiobooks: boolean;
+  autoQueueOnPaste: boolean;
+  ytDlpVersion: YtDlpVersion;
+  onBooleanChange: QRL<(key: BooleanOptionKey, value: boolean) => void>;
+  onVersionChange: QRL<(value: YtDlpVersion) => void>;
+  onPin: QRL<(key: OptionKey) => void>;
+};
+
+const OptionsPanel = component$<OptionsPanelProps>((props) => {
+  const visible = (key: OptionKey): boolean => props.location === 'profile' || props.pinned.includes(key);
+  const pinButton = (key: OptionKey) => (
+    <button
+      type="button"
+      class={{ 'option-pin': true, pinned: props.pinned.includes(key) }}
+      aria-label={`${props.pinned.includes(key) ? 'Unpin' : 'Pin'} option`}
+      aria-pressed={props.pinned.includes(key)}
+      title={props.pinned.includes(key) ? 'Remove from download form' : 'Show on download form'}
+      onClick$={() => props.onPin(key)}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m14 4 6 6-3 1-4 4-1 5-2-2-4 4-2-2 4-4-2-2 5-1 4-4 1-3Z" />
+      </svg>
+    </button>
+  );
+
+  return (
+    <div class={{ 'options-panel': true, 'options-panel--pinned': props.location === 'pinned' }}>
+      {visible('splitChapters') && (
+        <div class="option-row">
+          <label><input type="checkbox" checked={props.splitChapters} onChange$={(_, target) => props.onBooleanChange('splitChapters', target.checked)} /> Split chapters</label>
+          {pinButton('splitChapters')}
+        </div>
+      )}
+      {visible('includeChannel') && (
+        <div class="option-row">
+          <label><input type="checkbox" checked={props.includeChannel} onChange$={(_, target) => props.onBooleanChange('includeChannel', target.checked)} /> Channel folder</label>
+          {pinButton('includeChannel')}
+        </div>
+      )}
+      {visible('includeDate') && (
+        <div class="option-row">
+          <label><input type="checkbox" checked={props.includeDate} onChange$={(_, target) => props.onBooleanChange('includeDate', target.checked)} /> Release/upload date</label>
+          {pinButton('includeDate')}
+        </div>
+      )}
+      {props.mediaType === 'audio' && visible('embedAudioCoverArt') && (
+        <div class="option-row">
+          <label><input type="checkbox" checked={props.embedAudioCoverArt} onChange$={(_, target) => props.onBooleanChange('embedAudioCoverArt', target.checked)} /> Embed cover art</label>
+          {pinButton('embedAudioCoverArt')}
+        </div>
+      )}
+      {props.mediaType === 'audio' && visible('saveAudioToAudiobooks') && (
+        <div class="option-row">
+          <label><input type="checkbox" checked={props.saveAudioToAudiobooks} onChange$={(_, target) => props.onBooleanChange('saveAudioToAudiobooks', target.checked)} /> Save audio to Audiobooks</label>
+          {pinButton('saveAudioToAudiobooks')}
+        </div>
+      )}
+      {visible('autoQueueOnPaste') && (
+        <div class="option-row">
+          <label><input type="checkbox" checked={props.autoQueueOnPaste} onChange$={(_, target) => props.onBooleanChange('autoQueueOnPaste', target.checked)} /> Auto-queue on link paste</label>
+          {pinButton('autoQueueOnPaste')}
+        </div>
+      )}
+      {visible('ytDlpVersion') && (
+        <div class="option-row option-row--select">
+          <label>
+            <span>yt-dlp version</span>
+            <select value={props.ytDlpVersion} onChange$={(_, target) => props.onVersionChange(target.value as YtDlpVersion)}>
+              <option value="packaged">Packaged (reproducible)</option>
+            </select>
+          </label>
+          {pinButton('ytDlpVersion')}
+        </div>
+      )}
+    </div>
   );
 });
 
@@ -467,6 +570,8 @@ const JobList = component$<JobListProps>(({ title, jobs, refresh, currentUser })
   const action = $(async (job: Job, command: 'cancel' | 'retry' | 'delete') => {
     const response = await fetch(`/api/jobs/${job.id}${command === 'delete' ? '' : `/${command}`}`, {
       method: command === 'delete' ? 'DELETE' : 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
     });
     if (response.ok) {
       await refresh();
@@ -538,6 +643,8 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
   const swiped = useSignal(false);
   const coverIndex = coverFileIndex(job);
   const coverUrl = coverIndex == null ? undefined : `/api/jobs/${encodeURIComponent(job.id)}/files/${coverIndex}`;
+  const artUrl = coverUrl ?? youtubeThumbnailUrl(job.request.url);
+  const terminalMessage = ['failed', 'cancelled'].includes(job.status) ? singleLine(job.error) : undefined;
 
   const endDrag = $(async () => {
     if (!isDragging.value) {
@@ -564,6 +671,7 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
         'job-swipeable': canSwipeClear,
         dragging: isDragging.value,
       }}
+      title={terminalMessage}
       style={{ transform: dragOffset.value > 0 ? `translateX(${dragOffset.value}px)` : undefined }}
       onPointerDown$={(event, target) => {
         if (!canSwipeClear || event.button !== 0 || (event.target instanceof Element && event.target.closest('button,a,input,select'))) {
@@ -601,12 +709,12 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
         openInBrowser(event, job);
       }}
     >
-      {coverUrl && <div class="job-art" style={{ backgroundImage: `url("${coverUrl}")` }} aria-hidden="true" />}
+      {artUrl && <div class="job-art" style={{ backgroundImage: `url("${artUrl}")` }} aria-hidden="true" />}
       <div class="job-content">
         <div class="job-head">
           <div>
             <strong>{job.source?.title || job.request.url}</strong>
-            {!job.outputFolder && <p>{job.request.mediaType}</p>}
+            {!job.outputFolder && !['failed', 'cancelled'].includes(job.status) && <p>{job.request.mediaType}</p>}
           </div>
           <span class={`status-badge ${job.status}`}>{job.status}</span>
         </div>
@@ -619,7 +727,7 @@ const JobCard = component$<JobCardProps>(({ job, canSwipeClear, action, resolveA
             <p class="progress-label">{progressLabel(job)}</p>
           </div>
         )}
-        {job.error && <p class="error">{job.error}</p>}
+        {job.error && !['failed', 'cancelled'].includes(job.status) && <p class="error">{job.error}</p>}
         <div class="job-actions">
           {job.status === 'alert' && job.alert?.kind === 'duplicate' && (
             <>
@@ -738,6 +846,18 @@ const progressLabel = (job: Job): string => {
 const coverFileIndex = (job: Job): number | undefined => {
   const index = job.files.findIndex((file) => /\.(?:jpe?g|png|webp)$/i.test(file));
   return index >= 0 ? index : undefined;
+};
+
+const singleLine = (value: string | undefined): string | undefined => value?.replace(/\s+/g, ' ').trim() || undefined;
+
+const youtubeThumbnailUrl = (rawUrl: string): string | undefined => {
+  try {
+    const parsed = new URL(rawUrl);
+    const id = parsed.hostname === 'youtu.be' ? parsed.pathname.split('/').filter(Boolean)[0] : parsed.searchParams.get('v');
+    return id && /^[A-Za-z0-9_-]{6,}$/.test(id) ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg` : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 export const buildFileBrowserUrl = (

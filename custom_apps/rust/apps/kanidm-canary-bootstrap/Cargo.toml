@@ -1,0 +1,15 @@
+[package]
+name = "kanidm-canary-bootstrap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+data-encoding = "2.9.0"
+hmac = "0.12.1"
+kanidm_client = "1.10.4"
+kanidm_proto = "1.10.4"
+sha2 = "0.10.9"
+tokio = { version = "1.51.0", features = ["macros", "rt-multi-thread", "time"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

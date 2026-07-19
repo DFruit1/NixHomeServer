@@ -16,7 +16,7 @@ let
             && builtins.pathExists secretPath
             && content != ""
             && builtins.substring 0 (builtins.stringLength ageHeader) content == ageHeader;
-          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then run ./scripts/generate-all-secrets.sh.";
+          message = "Missing or invalid agenix secret '${name}'. Expected secrets/${name}.age to exist, be non-empty, and start with '${ageHeader}'. Stage cleartext at secrets/unencrypted/${name} if needed, then use nix run .#generate-secrets -- --identity /path/to/current/age.key.";
         })
       secretNames;
   dataDir = "/var/lib/paperless";
@@ -145,6 +145,8 @@ in
             Type = "oneshot";
             User = "paperless";
             Group = "paperless";
+            Restart = "on-failure";
+            RestartSec = "5s";
           };
           script = ''
             set -euo pipefail
@@ -157,7 +159,7 @@ in
 
             [[ -f "$db" ]] || {
               echo "Paperless database not found at $db" >&2
-              exit 0
+              exit 1
             }
 
             for attempt in $(seq 1 30); do

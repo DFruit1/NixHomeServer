@@ -8,30 +8,37 @@ let
   splitDnsMode = vars.networking.dns.mode == "split-horizon";
   domainSuffix = ".${vars.domain}";
   lanDomain = vars.networking.dns.lanDomain;
-  shortAliasLongHosts = [
-    "homepage.${vars.domain}"
-    "photos.${vars.domain}"
-    "sharephotos.${vars.domain}"
-    "files.${vars.domain}"
-    "paperless.${vars.domain}"
-    "audiobooks.${vars.domain}"
-    "videos.${vars.domain}"
-    "books.${vars.domain}"
-    "wiki.${vars.domain}"
-    "passwords.${vars.domain}"
-    "emails.${vars.domain}"
-    "ytdownload.${vars.domain}"
-    "sonarr.${vars.domain}"
-    "radarr.${vars.domain}"
-    "prowlarr.${vars.domain}"
-    "torrents.${vars.domain}"
-    "syncthing.${vars.domain}"
-    vars.kopiaDomain
-  ] ++ lib.optionals (config.repo.seerr.enable or false) [
-    "requests.${vars.domain}"
-  ] ++ lib.optionals (config.repo.groundwaterLogger.enable or false) [
-    "groundwater.${vars.domain}"
-  ];
+  hasModule = name: config.nixhomeserver.modules.${name} or false;
+  homepageEnabled = hasModule "homepage";
+  kiwixEnabled = hasModule "kiwix" && (config.repo.kiwix.enable or false);
+  portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
+  # Optional applications register their real virtual hosts in their own
+  # modules. Only publish convenience aliases for applications that actually
+  # contributed a runtime unit, so removing an app module cannot leave an
+  # alias pointing at a non-existent virtual host.
+  shortAliasLongHosts =
+    [ vars.kopiaDomain ]
+    ++ lib.optionals homepageEnabled [ "homepage.${vars.domain}" ]
+    ++ lib.optionals (hasModule "immich") [
+      "photos.${vars.domain}"
+      "sharephotos.${vars.domain}"
+    ]
+    ++ lib.optionals (hasModule "files") [ "files.${vars.domain}" ]
+    ++ lib.optionals (hasModule "paperless") [ "paperless.${vars.domain}" ]
+    ++ lib.optionals (hasModule "audiobookshelf") [ "audiobooks.${vars.domain}" ]
+    ++ lib.optionals (hasModule "jellyfin") [ "videos.${vars.domain}" ]
+    ++ lib.optionals (hasModule "kavita") [ "books.${vars.domain}" ]
+    ++ lib.optionals kiwixEnabled [ "wiki.${vars.domain}" ]
+    ++ lib.optionals (hasModule "vaultwarden") [ "passwords.${vars.domain}" ]
+    ++ lib.optionals (hasModule "mail-archive-ui") [ "emails.${vars.domain}" ]
+    ++ lib.optionals (hasModule "youtube-downloader") [ "ytdownload.${vars.domain}" ]
+    ++ lib.optionals (hasModule "sonarr" && (config.repo.sonarr.enable or false)) [ "sonarr.${vars.domain}" ]
+    ++ lib.optionals (hasModule "radarr" && (config.repo.radarr.enable or false)) [ "radarr.${vars.domain}" ]
+    ++ lib.optionals (hasModule "prowlarr" && (config.repo.prowlarr.enable or false)) [ "prowlarr.${vars.domain}" ]
+    ++ lib.optionals (hasModule "qbittorrent" && (config.repo.qbittorrent.enable or false)) [ "torrents.${vars.domain}" ]
+    ++ lib.optionals (hasModule "offline-music" && (vars.offlineMedia.enable or false)) [ "syncthing.${vars.domain}" ]
+    ++ lib.optionals (hasModule "seerr" && (config.repo.seerr.enable or false)) [ "requests.${vars.domain}" ]
+    ++ lib.optionals (hasModule "groundwater-logger" && (config.repo.groundwaterLogger.enable or false)) [ "groundwater.${vars.domain}" ];
   shortAliasCaddyHosts = lib.listToAttrs (
     map
       (hostName:
@@ -123,7 +130,7 @@ in
         useACMEHost = vars.domain;
         extraConfig = ''
           ${accessLogConfig}
-          redir https://homepage.${vars.domain}{uri} 308
+          redir https://${portalHost}{uri} 308
         '';
       };
 
@@ -132,7 +139,7 @@ in
         useACMEHost = vars.domain;
         extraConfig = ''
           ${accessLogConfig}
-          redir https://homepage.${vars.domain}{uri} 308
+          redir https://${portalHost}{uri} 308
         '';
       };
 

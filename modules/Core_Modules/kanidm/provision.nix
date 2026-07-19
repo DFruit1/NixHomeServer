@@ -3,11 +3,19 @@
 let
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
+  hasModule = name: config.nixhomeserver.modules.${name} or false;
+  moduleEnabled = name: hasModule name && (config.repo.${name}.enable or true);
+  homepageEnabled = hasModule "homepage";
+  seerrEnabled = moduleEnabled "seerr";
+  mediaAutomationEnabled = lib.any moduleEnabled [ "sonarr" "radarr" "prowlarr" "qbittorrent" "seerr" ];
+  portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
     ++ vars.kanidmBackupUsers
-    ++ (vars.seerrRequestManagers or [ ])
+    ++ (vars.monitoringAccess.users or [ ])
+    ++ (vars.filesSftpUsers or [ ])
+    ++ lib.optionals seerrEnabled (vars.seerrRequestManagers or [ ])
     ++ (vars.fileAccess.usbUsers or [ ])
   );
   adminMailAddresses =
@@ -43,20 +51,11 @@ let
   delegatedOperatorGroupDescriptions = lib.genAttrs delegatedOperatorGroups (group:
     "Kanidm delegated operator group used for ${group} workflows."
   );
-  kanidmGroupDescriptions = {
+  coreKanidmGroupDescriptions = {
     "domain_admins" = "Builtin domain-wide administrative group used by platform administration.";
     "users" = "Baseline group for normal users and standard identity resolution.";
     "app-admin" = "Grants application admin access for app surfaces that trust the app-admin group.";
-    "audiobookshelf-users" = "Grants Audiobookshelf sign-in.";
-    "downloads-users" = "Grants YouTube Downloader access.";
-    "immich-users" = "Grants Immich photo library access.";
-    "jellyfin-users" = "Grants Jellyfin managed account access.";
-    "kavita-users" = "Grants Kavita books and comics access.";
-    "kiwix-users" = "Grants Kiwix offline wiki access.";
-    "mail-archive-users" = "Grants private mail archive access.";
-    "media-automation-users" = "Grants Sonarr, Radarr, Prowlarr, qBittorrent, and request-manager access.";
-    "paperless-users" = "Grants Paperless document archive access.";
-    "${vars.seerrRequestManagerGroup}" = "Grants Seerr request approval and rejection permissions.";
+    "${vars.monitoringAccess.group}" = "Grants access to the monitoring dashboard without application-admin privileges.";
     "${vars.fileAccess.webAccessGroup}" = "Grants browser file access and personal file-root provisioning.";
     "${vars.fileAccess.sftpAccessGroup}" = "Grants access to the dedicated SFTP endpoint.";
     "${vars.fileAccess.sharedAccessGroup}" = "Grants access to the shared files view.";
@@ -65,6 +64,54 @@ let
   } // delegatedOperatorGroupDescriptions // lib.optionalAttrs (vars.backupAccess.storageGroup != vars.backupAccess.adminGroup) {
     "${vars.backupAccess.storageGroup}" = "Grants read access to encrypted backup repository files.";
   };
+  appKanidmGroupDescriptions =
+    lib.optionalAttrs (hasModule "audiobookshelf")
+      {
+        "audiobookshelf-users" = "Grants Audiobookshelf sign-in.";
+      }
+    // lib.optionalAttrs (hasModule "youtube-downloader") {
+      "downloads-users" = "Grants YouTube Downloader access.";
+    }
+    // lib.optionalAttrs (hasModule "immich") {
+      "immich-users" = "Grants Immich photo library access.";
+    }
+    // lib.optionalAttrs (hasModule "jellyfin") {
+      "jellyfin-users" = "Grants Jellyfin managed account access.";
+    }
+    // lib.optionalAttrs (hasModule "kavita") {
+      "kavita-users" = "Grants Kavita books and comics access.";
+    }
+    // lib.optionalAttrs (moduleEnabled "kiwix") {
+      "kiwix-users" = "Grants Kiwix offline wiki access.";
+    }
+    // lib.optionalAttrs (hasModule "mail-archive-ui") {
+      "mail-archive-users" = "Grants private mail archive access.";
+    }
+    // lib.optionalAttrs mediaAutomationEnabled {
+      "media-automation-users" = "Grants Sonarr, Radarr, Prowlarr, qBittorrent, and request-manager access.";
+    }
+    // lib.optionalAttrs (hasModule "paperless") {
+      "paperless-users" = "Grants Paperless document archive access.";
+    }
+    // lib.optionalAttrs seerrEnabled {
+      "${vars.seerrRequestManagerGroup}" = "Grants Seerr request approval and rejection permissions.";
+    };
+  kanidmGroupDescriptions = coreKanidmGroupDescriptions // appKanidmGroupDescriptions;
+  authGatewayScopeGroups = lib.unique (
+    [
+      "users"
+      "app-admin"
+      vars.monitoringAccess.group
+      vars.fileAccess.webAccessGroup
+      vars.fileAccess.usbAccessGroup
+      vars.backupAccess.adminGroup
+      vars.backupAccess.storageGroup
+    ]
+    ++ lib.optionals (hasModule "youtube-downloader") [ "downloads-users" ]
+    ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-users" ]
+    ++ lib.optionals (hasModule "mail-archive-ui") [ "mail-archive-users" ]
+    ++ lib.optionals mediaAutomationEnabled [ "media-automation-users" ]
+  );
   personIdentityRecords =
     (lib.genAttrs appPersonNames mkAppPerson)
     // {
@@ -122,33 +169,24 @@ in
         "domain_admins" = mkManualGroup [ ];
       } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
         "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
-        ${vars.seerrRequestManagerGroup} = mkManualGroup vars.seerrRequestManagers;
+        ${vars.monitoringAccess.group} = mkManualGroup vars.monitoringAccess.users;
         ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;
         ${vars.fileAccess.sftpAccessGroup} = mkManualGroup (vars.filesSftpUsers or [ ]);
         ${vars.fileAccess.sharedAccessGroup} = mkManualGroup [ ];
         ${vars.fileAccess.usbAccessGroup} = mkManualGroup (vars.fileAccess.usbUsers or [ ]);
         users = mkManualGroup vars.kanidmAppUsers;
-      } // backupAccessGroups;
+      } // backupAccessGroups // lib.optionalAttrs seerrEnabled {
+        ${vars.seerrRequestManagerGroup} = mkManualGroup vars.seerrRequestManagers;
+      };
 
       systems.oauth2.auth-gateway-web = {
         displayName = "NixHomeServer";
         imageFile = ./assets/portal.svg;
         originUrl = "https://${config.repo.authGateway.domain}/oauth2/callback";
-        originLanding = "https://homepage.${vars.domain}";
+        originLanding = "https://${portalHost}";
         basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;
         preferShortUsername = true;
-        scopeMaps = lib.genAttrs [
-          "users"
-          "app-admin"
-          "downloads-users"
-          "kiwix-users"
-          "mail-archive-users"
-          "media-automation-users"
-          vars.fileAccess.webAccessGroup
-          vars.fileAccess.usbAccessGroup
-          vars.backupAccess.adminGroup
-          vars.backupAccess.storageGroup
-        ] (_: [ "openid" "profile" "email" "groups_name" ]);
+        scopeMaps = lib.genAttrs authGatewayScopeGroups (_: [ "openid" "profile" "email" "groups_name" ]);
       };
     };
 

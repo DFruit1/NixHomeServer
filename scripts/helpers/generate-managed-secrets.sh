@@ -2,53 +2,19 @@
 
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+repo_root="${NIXHOMESERVER_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$repo_root"
 
 source "$repo_root/scripts/helpers/secrets-common.sh"
 
+need openssl age age-keygen grep nix jq
 ensure_secrets_layout
-need openssl age
+load_manifest_json
 
-generated_secret_specs=(
-  "kanidmAdminPass:24"
-  "kanidmSysAdminPass:24"
-  "immichClientSecret:32"
-  "paperlessClientSecret:32"
-  "absClientSecret:32"
-  "absBootstrapPass:32"
-  "oauth2ProxyClientSecret:32"
-  "oauth2ProxyCookieSecret:32"
-  "mailArchiveOauth2ProxyClientSecret:32"
-  "mailArchiveOauth2ProxyCookieSecret:32"
-  "kiwixOauth2ProxyClientSecret:32"
-  "kiwixOauth2ProxyCookieSecret:32"
-  "youtubeDownloaderOauth2ProxyClientSecret:32"
-  "youtubeDownloaderOauth2ProxyCookieSecret:32"
-  "homepageOauth2ProxyClientSecret:32"
-  "homepageOauth2ProxyCookieSecret:32"
-  "monitorOauth2ProxyClientSecret:32"
-  "monitorOauth2ProxyCookieSecret:32"
-  "beszelHubEnv:32"
-  "kopiaServerPassword:32"
-  "kopiaOauth2ProxyClientSecret:32"
-  "kopiaOauth2ProxyCookieSecret:32"
-  "seerrOauth2ProxyClientSecret:32"
-  "seerrOauth2ProxyCookieSecret:32"
-  "sonarrOauth2ProxyClientSecret:32"
-  "sonarrOauth2ProxyCookieSecret:32"
-  "radarrOauth2ProxyClientSecret:32"
-  "radarrOauth2ProxyCookieSecret:32"
-  "prowlarrOauth2ProxyClientSecret:32"
-  "prowlarrOauth2ProxyCookieSecret:32"
-  "qbittorrentOauth2ProxyClientSecret:32"
-  "qbittorrentOauth2ProxyCookieSecret:32"
-  "vaultwardenAdminToken:32"
-  "kavitaClientSecret:32"
-  "kavitaTokenKey:64"
-  "groundwaterAppMqttPassword:32"
-  "groundwaterLoggerMqttPassword:32"
-)
+secret_mode="${NIXHOMESERVER_SECRET_MODE:-verify}"
+identity_file="${NIXHOMESERVER_AGE_IDENTITY_FILE:?NIXHOMESERVER_AGE_IDENTITY_FILE must point to the configured private age identity}"
+require_pubkey
+require_identity_for_recipient "$identity_file"
 
 generate_secret_value() {
   local name="$1"
@@ -70,28 +36,54 @@ encrypt_generated_secret() {
   local age_file="${secrets_dir}/${name}.age"
   local secret_value
 
-  if [[ -s "$age_file" ]]; then
-    echo "⏭  $name already encrypted - skipping"
+  if [[ -e "$clear_file" || -L "$clear_file" ]] \
+    && [[ ! -f "$clear_file" || -L "$clear_file" ]]; then
+    echo "❌ Refusing non-regular or symlinked generated-secret staging path: $clear_file" >&2
+    exit 1
+  fi
+
+  if [[ -s "$age_file" && "$secret_mode" == "verify" ]]; then
+    if ! verify_encrypted_secret "$age_file" "$identity_file"; then
+      echo "❌ Existing $age_file cannot be decrypted by $identity_file." >&2
+      echo "   Use generate-all-secrets.sh --fresh to replace inherited ciphertext," >&2
+      echo "   or --rekey with the old identity to preserve its value." >&2
+      exit 1
+    fi
+    echo "✅ $name is encrypted to the configured identity"
     return
   fi
 
-  if [[ ! -e "$clear_file" ]]; then
+  if [[ "$secret_mode" == "fresh" || ! -e "$clear_file" ]]; then
     echo "🔐  Generating $name"
     secret_value="$(generate_secret_value "$name" "$bytes")"
     printf '%s' "$secret_value" >"$clear_file"
-    chmod 0440 "$clear_file"
+    chmod 0600 "$clear_file"
   else
     echo "📄 Reusing staged clear-text value for $name"
   fi
 
   encrypt_secret_file "$clear_file" "$age_file"
+  verify_encrypted_secret "$age_file" "$identity_file" || {
+    echo "❌ Could not decrypt newly encrypted $age_file" >&2
+    exit 1
+  }
   echo "🔐  Encrypted $name -> $age_file"
 }
 
-for spec in "${generated_secret_specs[@]}"; do
-  IFS=: read -r name bytes <<<"$spec"
+if ! generated_specs="$(manifest_generated_specs)" || [[ -z "$generated_specs" ]]; then
+  echo "❌ Manifest contains no valid generated-secret worklist." >&2
+  exit 1
+fi
+generated_count=0
+while IFS=$'\t' read -r name bytes; do
   encrypt_generated_secret "$name" "$bytes"
-done
+  generated_count=$((generated_count + 1))
+  if [[ "${NIXHOMESERVER_TEST_FAIL_GENERATED_AFTER:-}" =~ ^[0-9]+$ ]] \
+    && ((generated_count >= NIXHOMESERVER_TEST_FAIL_GENERATED_AFTER)); then
+    echo "❌ Injected generated-secret failure for regression testing." >&2
+    exit 1
+  fi
+done <<<"$generated_specs"
 
 echo
 echo "✅ Generated and encrypted repo-managed secrets."

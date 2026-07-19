@@ -38,6 +38,10 @@ in
         idm_all_persons \
         ${toString vars.kanidmPrivilegeSessionExpirySeconds}
     '';
-    serviceConfig.Type = "oneshot";
+    serviceConfig = {
+      Type = "oneshot";
+      Restart = "on-failure";
+      RestartSec = "30s";
+    };
   };
 }

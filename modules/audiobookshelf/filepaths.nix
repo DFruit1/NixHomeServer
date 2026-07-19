@@ -13,7 +13,7 @@ in
   config = {
     repo.storage.userRoots = {
       contentSubdirs = [ "_Audiobooks" ];
-      rootWritableGroups = [
+      rootTraverseGroups = [
         "audiobookshelf-media"
       ];
       recursiveWritableGrants = [
@@ -29,7 +29,8 @@ in
     systemd.services.audiobookshelf-storage-layout-v1 = {
       description = "Provision Audiobookshelf storage layout";
       wantedBy = [ "multi-user.target" ];
-      wants = [ "data-pool-layout.service" "local-fs.target" ];
+      requires = [ "data-pool-layout.service" ];
+      wants = [ "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [ "audiobookshelf.service" ];
       unitConfig = lib.mkIf vars.dataRootIsMountPoint {
@@ -56,6 +57,7 @@ in
     };
 
     systemd.services.audiobookshelf = {
+      requires = [ "audiobookshelf-storage-layout-v1.service" ];
       wants = [ "audiobookshelf-storage-layout-v1.service" ];
       after = [ "audiobookshelf-storage-layout-v1.service" ];
     };

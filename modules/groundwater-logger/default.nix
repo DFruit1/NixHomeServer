@@ -9,4 +9,6 @@
     ./bootstrap.nix
     ./backups.nix
   ];
+
+  nixhomeserver.modules.groundwater-logger = true;
 }

@@ -17,6 +17,7 @@ host=""
 while (($# > 0)); do
   case "$1" in
     --host)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --host requires a flake hostname" >&2; exit 1; }
       host="${2:-}"
       shift 2
       ;;
@@ -40,7 +41,7 @@ if ((status_blocked > 0)); then
   finish_report
 fi
 
-settings_json="$(nix_json_for_host "$host" "removeAttrs flake.lib.nixhomeserverSettings.${host} [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
+settings_json="$(nix_json_for_host "$host" "removeAttrs (builtins.getAttr hostName flake.lib.nixhomeserverSettings) [ \"kanidmIssuer\" \"kanidmDiscoveryUrl\" ]")"
 
 echo "Storage inventory"
 echo
@@ -79,7 +80,7 @@ vars.nix single-disk storage snippet template:
 
   system = {
     hostPlatform = "aarch64-linux"; # or "x86_64-linux"
-    hardwareProfile = "generic-uefi";
+    hardwareProfile = "generated";
     timeZone = "Etc/UTC";
     hostId = "00000000"; # Non-placeholder stable 8-hex value is required when using zfs-mirror.
   };

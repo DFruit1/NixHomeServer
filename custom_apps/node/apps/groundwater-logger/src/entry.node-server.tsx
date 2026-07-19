@@ -10,6 +10,11 @@ import { MqttBridge } from './server/mqttBridge.js';
 const config = loadConfig();
 const db = new Database(config.databasePath);
 await db.migrate();
+await db.prune(config.retentionDays, config.maximumMessages);
+const pruneTimer = setInterval(() => {
+  void db.prune(config.retentionDays, config.maximumMessages).catch((error) => console.error('message retention failed', error));
+}, 24 * 60 * 60 * 1000);
+pruneTimer.unref();
 
 const mqttBridge = new MqttBridge(config, db);
 mqttBridge.start();
@@ -64,8 +69,12 @@ const server = createServer((request, response) => {
 });
 
 const shutdown = () => {
+  clearInterval(pruneTimer);
   mqttBridge.stop();
-  server.close(() => process.exit(0));
+  server.close(() => {
+    db.close();
+    process.exit(0);
+  });
   setTimeout(() => process.exit(1), 5000).unref();
 };
 

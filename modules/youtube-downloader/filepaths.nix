@@ -2,6 +2,7 @@
 
 let
   paths = config.repo.youtubeDownloader.paths;
+  sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   userVideoWritablePaths = map (name: "_Videos/${name}") config.repo.storage.userRoots.videoSubdirs;
 in
 {
@@ -79,9 +80,9 @@ in
       "d ${paths.stateDir} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.cacheRoot} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.tempDir} 0750 youtube-downloader youtube-downloader -"
-      "d ${paths.sharedVideoRoot} 1770 root root -"
-      "d ${paths.sharedAudioRoot} 1770 root root -"
-      "d ${paths.sharedAudiobooksRoot} 1770 root root -"
+      "d ${paths.sharedVideoRoot} 1770 youtube-downloader ${sharedAccessGroup} -"
+      "d ${paths.sharedAudioRoot} 1770 youtube-downloader ${sharedAccessGroup} -"
+      "d ${paths.sharedAudiobooksRoot} 1770 youtube-downloader ${sharedAccessGroup} -"
     ];
   };
 }

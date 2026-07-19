@@ -17,6 +17,41 @@ ensure_tools() {
   done
 }
 
+# Test doubles are often invoked through PATH. Pin their shebang to the Bash
+# that is actually running the suite because pure Nix build sandboxes do not
+# provide /usr/bin/env.
+make_test_executable() {
+  local bash_path script
+  bash_path="$(type -P bash)"
+  if [[ "$bash_path" != /* ]]; then
+    bash_path="$(cd -P -- "$(dirname -- "$bash_path")" && pwd)/$(basename -- "$bash_path")"
+  fi
+  if [[ ! -x "$bash_path" ]] || ! command -v sed >/dev/null 2>&1; then
+    echo "❌ Cannot create a test executable without absolute Bash and sed paths." >&2
+    return 1
+  fi
+
+  for script in "$@"; do
+    sed -i "1s|.*|#!${bash_path}|" "$script"
+    chmod +x "$script"
+  done
+}
+
+test_default_host() {
+  if [[ -n "${NIXHOMESERVER_DEFAULT_HOST:-}" ]]; then
+    printf '%s\n' "$NIXHOMESERVER_DEFAULT_HOST"
+    return
+  fi
+
+  nix eval --raw --impure --expr '
+    let
+      f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+      lib = f.inputs.nixpkgs.lib;
+      vars = import ./vars.nix { inherit lib; };
+    in vars.hostname
+  '
+}
+
 require_match() {
   local file="$1"
   local pattern="$2"

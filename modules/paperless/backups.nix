@@ -28,6 +28,13 @@ in
         paths.archive
         paths.export
       ];
+      snapshotRoots = [ paths.root ];
+      sqliteDumps = [
+        {
+          source = "/var/lib/paperless/db.sqlite3";
+          outputName = "paperless.sqlite";
+        }
+      ];
       pathInventories = [
         {
           label = "paperless";

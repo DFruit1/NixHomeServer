@@ -1,5 +1,6 @@
 {
-  "domain": "sydneybasiniot.org",
+  "brandName": "Example Home Services",
+  "domain": "example.test",
   "serverLanHost": "server.home.arpa",
   "sshfsHost": "server",
   "kanidmGroups": ["backup-admin", "files-personal-users", "photos-users", "users"],
@@ -13,7 +14,7 @@
     {
       "id": "photos",
       "name": "Photos",
-      "url": "https://photos.sydneybasiniot.org",
+      "url": "https://photos.example.test",
       "enabled": true,
       "category": "media",
       "description": "Photo and video library with private login and public share-link support.",
@@ -24,7 +25,7 @@
     {
       "id": "files",
       "name": "Files",
-      "url": "https://files.sydneybasiniot.org",
+      "url": "https://files.example.test",
       "enabled": true,
       "category": "files",
       "description": "Browser file workspace backed by each user's restricted SFTP root.",
@@ -34,7 +35,7 @@
     {
       "id": "passwords",
       "name": "Passwords",
-      "url": "https://passwords.sydneybasiniot.org",
+      "url": "https://passwords.example.test",
       "enabled": false,
       "category": "identity",
       "description": "Shared password manager for server and account credentials.",
@@ -44,7 +45,7 @@
     {
       "id": "backups",
       "name": "Local Backups",
-      "url": "https://kopia.sydneybasiniot.org",
+      "url": "https://kopia.example.test",
       "enabled": true,
       "category": "operations",
       "description": "Kopia local backup management for system state and encrypted repositories.",
@@ -106,8 +107,8 @@
     },
     {
       "title": "Rotate or regenerate secrets",
-      "command": "./scripts/generate-all-secrets.sh",
-      "detail": "Generate managed secrets and encrypt staged external inputs. Keep plaintext only under secrets/unencrypted/ and never commit that directory."
+      "command": "./scripts/generate-all-secrets.sh --identity /path/to/current/age.key",
+      "detail": "Verify every manifest secret with the current identity. Use explicit fresh or rekey modes only when intentionally changing credentials or recipients."
     },
     {
       "title": "Manage Kanidm entity removal explicitly",

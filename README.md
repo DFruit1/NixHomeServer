@@ -334,6 +334,11 @@ In the Cloudflare dashboard:
    - Give the tunnel a stable name (you will store this exact string in
      `edge.cloudflareTunnelName`).
    - Do not publish token text anywhere else.
+4. After `vars.nix` is configured, run `nix run .#show-config-summary` and copy
+   every entry under **Cloudflare Tunnel ingress** into the tunnel's Public
+   Hostnames/routes. Equivalently, create proxied CNAME records for those names
+   pointing to `<TunnelID>.cfargotunnel.com`. The credentials file and ACME API
+   token do not create these application DNS records automatically.
 
 You will need these values later:
 
@@ -362,8 +367,8 @@ MEGA is used as an optional offsite target via `rclone`.
 4. Create a strong MEGA password and store it safely while staging
    `rcloneMegaPassword`.
 
-Do this even if you only enable offsite backups later; the repo’s current secret
-manifest expects the value during bootstrap.
+Skip this step during bootstrap when `rcloneMega.enable = false`. Stage the MEGA
+password when you explicitly enable the optional offsite mirror.
 
 ### Step 6: Prepare deployment administrator credentials
 
@@ -400,14 +405,10 @@ You need a NetBird setup key:
 
 - `netbirdSetupKey`: enrolls the server into your private NetBird network.
 
-You need a storage alert destination:
+If you enable the optional MEGA mirror, also prepare:
 
-- `storageAlertWebhookUrl`: a webhook URL where disk-health alerts can be sent.
-
-The default secret generator also expects:
-
-- `rcloneMegaPassword`: MEGA account password for the default Rclone offsite
-  Kopia integration, even if that sync is left disabled initially.
+- `rcloneMegaPassword`: MEGA account password for the Rclone offsite Kopia
+  integration.
 
 You need an SSH key for server administration. SSH is the secure remote command
 line. The public key goes into `vars.nix`; the private key stays on your admin
@@ -481,17 +482,17 @@ head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n'
 printf '\n'
 ```
 
-Run the non-destructive readiness helpers:
+Run the non-destructive summary helpers:
 
 ```bash
-nix run .#validate-config-readiness
 nix run .#show-config-summary
 nix run .#export-inventory -- --format text
 ```
 
 These commands do not wipe disks or deploy the server. They check whether the
-configuration is internally coherent and print a readable summary. Disk and
-interface warnings are expected before you verify the real target hardware.
+configuration evaluates and print a readable summary. The full readiness gate
+is intentionally deferred until the encrypted secrets and real target hardware
+IDs are available.
 
 Application selection is controlled by explicit imports in
 [`configuration.nix`](./configuration.nix). The fixed platform layer is
@@ -545,7 +546,8 @@ This repo uses agenix. It works like a lock and key:
 
 - The public age recipient goes in `secrets/pubkeys/age.pub` and can be
   committed.
-- The private age key goes on the server at `/etc/agenix/age.key` and must not
+- The private age key goes on persistent storage at
+  `/persist/etc/agenix/age.key` and must not
   be committed.
 
 Create a new age identity:
@@ -579,13 +581,16 @@ Place these files in it:
 - `secrets/unencrypted/netbirdSetupKey`
 - `secrets/unencrypted/cfHomeCreds`
 - `secrets/unencrypted/cfAPIToken`
-- `secrets/unencrypted/storageAlertWebhookUrl`
-- `secrets/unencrypted/rcloneMegaPassword`
+- Optional when `rcloneMega.enable = true`:
+  `secrets/unencrypted/rcloneMegaPassword`
 
 Then generate all repo-managed secrets and encrypt the staged values:
 
 ```bash
-./scripts/generate-all-secrets.sh
+nix run .#generate-secrets -- \
+  --fresh \
+  --identity /tmp/nixhomeserver-age/age.key
+rm -rf secrets/unencrypted
 ```
 
 Expected result:
@@ -593,12 +598,84 @@ Expected result:
 - Encrypted `secrets/*.age` files exist.
 - `secrets/pubkeys/age.pub` matches the private key you will install on the
   server.
+- `serverBootstrapSudoPassword.age` is generated and verified with the rest of
+  the manifest.
 - No error reports a missing or invalid staged secret.
 
-Track the encrypted files and public key. Keep `secrets/unencrypted/` and the
-private age key untracked. After encryption, move the plaintext copies into a
-password manager or secure offline location, or delete them after confirming the
-encrypted files exist.
+Track the encrypted files and public key. After encryption, move any plaintext
+values you must retain into a password manager or secure offline location and
+remove `secrets/unencrypted/`. An ignored directory is still copied by `cp -a`,
+so readiness validation blocks installation while anything remains there. Never
+commit the private age key.
+
+Use `--fresh` only when adopting a clone or intentionally replacing generated
+values. Routine verification preserves values and proves every manifest
+ciphertext is decryptable:
+
+```bash
+nix run .#generate-secrets -- --identity /path/to/current/age.key
+```
+
+To preserve values while changing keys:
+
+```bash
+nix run .#generate-secrets -- --rekey \
+  --source-identity /path/to/old/age.key \
+  --identity /path/to/new/age.key
+```
+
+To rotate one staged external value without rotating application credentials:
+
+```bash
+nix run .#generate-secrets -- \
+  --replace-external <manifest-name> \
+  --identity /path/to/current/age.key
+```
+
+The generated `serverBootstrapSudoPassword` is the local administrator's
+recovery password. It can be decrypted from
+`secrets/serverBootstrapSudoPassword.age` with the private age identity and used
+to log in at the server's physical or virtual console. SSH still accepts keys
+only: password and keyboard-interactive SSH authentication remain disabled. On
+the running server the same value is root-only at
+`/run/agenix/serverBootstrapSudoPassword`; do not paste it into chat, tickets,
+or shell history.
+
+### Checkpoint: Save The Encrypted Revision
+
+Before the installer makes a fresh clone or receives a fresh copy, commit the
+encrypted configuration and record its revision. Add any other configuration
+files you intentionally changed as well:
+
+```bash
+git add vars.nix secrets/pubkeys/age.pub secrets/*.age
+git add -u -- secrets
+git diff --cached --check
+git status --short
+git commit -m "Prepare encrypted server configuration"
+git status --short
+git rev-parse HEAD
+```
+
+The second `git status --short`, after the commit, must print nothing. If it
+lists a file, either commit that intended configuration or remove it from the
+installer workflow before continuing.
+
+Push that revision to a private Git remote:
+
+```bash
+git push
+```
+
+If no suitable remote is available, put a committed bundle on trusted removable
+media or transfer it through another secure channel:
+
+```bash
+git bundle create /path/to/secure-media/nixhomeserver.bundle HEAD
+```
+
+Record the printed revision either way. Never include the private age key or
+`secrets/unencrypted/` in the repository copy.
 
 ## Stage 8: Boot The Installer And Confirm Real Hardware Names
 
@@ -607,10 +684,14 @@ Now move to the target server.
 Boot a recent NixOS installer ISO, get network access, then clone the repo:
 
 ```bash
-mkdir -p /mnt/src
-git clone <your-fork-or-origin-url> /mnt/src
-cd /mnt/src
+git clone <your-fork-or-origin-url> /tmp/nixhomeserver
+cd /tmp/nixhomeserver
+test "$(git rev-parse HEAD)" = "<recorded-encrypted-config-revision>"
 ```
+
+When using a bundle, substitute its local path for the clone URL. When using a
+direct secure copy, place the committed repository at `/tmp/nixhomeserver`,
+enter it, and run the same revision check before continuing.
 
 Inspect disks and network interfaces:
 
@@ -641,25 +722,70 @@ Update `vars.nix` with the real values:
 
 Stop if any selected disk contains data you intend to keep.
 
+Transfer the private age identity to the installer through a secure channel or
+removable medium; never place it in Git. Before any destructive action, verify
+the complete config and decrypt every manifest secret:
+
+```bash
+nix run .#validate-config-readiness -- \
+  --host <vars.hostname> \
+  --require-local-hardware \
+  --identity /path/to/age.key
+```
+
 ## Stage 9: Provision Blank Disks
 
 This stage wipes disks. Read it twice before running any destructive disk tool.
 
 The selected `storage.profile` controls the destructive layout:
 
-- `zfs-mirror`: system SSD with UEFI boot plus Btrfs subvolumes for `/`, `/nix`,
-  and `/persist`; data disks form a mirrored ZFS pool mounted under `/mnt/data`.
+- `zfs-mirror`: system SSD with UEFI boot plus a Btrfs root filesystem. By
+  default its top level is mounted at `/`, with separate `/nix` and `/persist`
+  subvolumes; data disks form a mirrored ZFS pool mounted under `/mnt/data`.
 - `single-disk-ext4`: one disk with UEFI boot plus a single ext4 root filesystem;
   `/persist` and `/mnt/data` are normal directories on that disk.
+
+Decide `storage.enableRootRollback` before running Disko; it changes the
+on-disk layout and is only available with `zfs-mirror`. When enabled, Disko
+creates a writable `root` subvolume mounted at `/` and a read-only `root-blank`
+subvolume as its rollback source, alongside `/nix` and `/persist`.
 
 The layout references are:
 
 - [`bootstrap/disko-system.nix`](./bootstrap/disko-system.nix)
 - [`bootstrap/disko-data.nix`](./bootstrap/disko-data.nix)
 
-This repository intentionally does not hide disk wiping behind a convenience
-wrapper. Review the plan, run your chosen disko or equivalent provisioning
-process, then mount the installed layout under `/mnt`.
+This repository pins disko and puts a strict confirmation wrapper in front of
+it. Print the plan first:
+
+```bash
+nix run .#bootstrap-disks -- --host <vars.hostname>
+```
+
+The wrapper resolves every by-id name to a unique, unmounted whole disk. After
+reviewing every size, model, signature and ID, apply by repeating the hostname
+and every disk from the plan:
+
+```bash
+sudo nix run .#bootstrap-disks -- \
+  --host <vars.hostname> --apply \
+  --confirm-host <vars.hostname> \
+  --confirm-disk <system-disk-id> \
+  --confirm-disk <data-disk-1-id> \
+  --confirm-disk <data-disk-2-id>
+```
+
+Omit the data-disk confirmations for `single-disk-ext4`. Any mismatch aborts
+before disko runs.
+
+After the guarded Disko command completes, enter a root login shell for all
+remaining `/mnt` operations and for `nixos-install`. The installer normally
+logs in as the unprivileged `nixos` user:
+
+```bash
+sudo -i
+cd /tmp/nixhomeserver
+```
 
 Before installing, verify the mounts:
 
@@ -689,29 +815,49 @@ storage repair. Existing storage maintenance belongs in
 
 ## Stage 10: Install NixOS
 
-Copy the complete repository into the target system:
+Create the persisted checkout with the controlled seeding helper, then bind it
+at the conventional NixOS path. The helper refuses non-empty
+`secrets/unencrypted` and legacy `SensitivePrivateSecrets` staging, refuses all
+untracked non-ignored files, copies only current Git-tracked contents, and
+preserves the Git checkout for later commits and synchronization:
 
 ```bash
-mkdir -p /mnt/etc/nixos
-cp -a /mnt/src/. /mnt/etc/nixos/
+cd /tmp/nixhomeserver
+install -d -m 0755 /mnt/persist/etc
+scripts/admin/seed-install-repository.sh --target /mnt/persist/etc/nixos
+install -d -m 0755 /mnt/etc/nixos
+mount --bind /mnt/persist/etc/nixos /mnt/etc/nixos
 ```
 
 Generate and review hardware configuration:
 
 ```bash
-nixos-generate-config --root /mnt
+nixos-generate-config --root /mnt --no-filesystems --show-hardware-config \
+  > /mnt/etc/nixos/hardware-configuration.nix
 $EDITOR /mnt/etc/nixos/hardware-configuration.nix
 ```
 
-`hardware-configuration.nix` records what NixOS discovered about this specific
-machine. It is the bridge between the generic repo and the real hardware.
+`--no-filesystems` is required because this repository owns the root, `/nix`,
+`/persist`, and data-pool filesystem declarations; generated duplicates can race
+the guarded storage services. `hardware-configuration.nix` records what NixOS discovered about this specific
+machine. It is the bridge between the generic repo and the real hardware. Keep
+`system.hardwareProfile = "generated"`; `--show-hardware-config` is important
+because it does not overwrite the repository's main `configuration.nix`.
 
 Install the private agenix key:
 
 ```bash
-install -d -m 0700 /mnt/etc/agenix
-install -m 0400 /path/to/age.key /mnt/etc/agenix/age.key
+install -d -m 0700 /mnt/persist/etc/agenix
+install -m 0400 /path/to/age.key /mnt/persist/etc/agenix/age.key
+test "$(age-keygen -y /mnt/persist/etc/agenix/age.key)" = \
+  "$(tr -d '\r\n' </mnt/etc/nixos/secrets/pubkeys/age.pub)"
 ```
+
+Run `nix run .#validate-config-readiness -- --host <vars.hostname>
+--require-local-hardware --identity /mnt/persist/etc/agenix/age.key` before
+`nixos-install`. Do not deploy later from
+another clone until both clones report the same `git rev-parse HEAD`; commit and
+sync the target's hardware and disk edits first.
 
 Install the flake host, replacing `<vars.hostname>` with the hostname from
 `vars.nix`:
@@ -726,10 +872,12 @@ reboot
 After reboot, SSH in as the local admin user:
 
 ```bash
-ssh <local-admin-user>@<vars.hostname>
+ssh <local-admin-user>@<network.lanIp>
 ```
 
-If that works, the server is on the network and your SSH key is accepted.
+Use the configured LAN IP for first contact because client-side DNS may not yet
+know the server hostname. If that works, the server is on the network and your
+SSH key is accepted.
 
 Check the basics on the server:
 
@@ -775,7 +923,7 @@ Only switch after the guarded test path passes:
 ./scripts/deploy.sh --action switch
 ```
 
-The deploy helper defaults to `vars.localAdminUser@vars.hostname`, where
+The deploy helper defaults to `vars.localAdminUser@network.lanIp`, where
 `vars.localAdminUser` is derived from `identity.localAdminUser`. It builds on
 the remote server and starts with `--action test` unless told otherwise. Use
 `./scripts/deploy.sh --help` for supported flags.
@@ -785,6 +933,11 @@ the remote server and starts with `--action test` unless told otherwise. Use
 If you chose NetBird-only mode, enroll your admin devices in NetBird and use the
 private NetBird path for private services. Your router should not need special
 DNS configuration for this repo.
+
+While still connected over LAN, run `ip -4 -o address show dev nb0` on the
+server. If NetBird assigned a different address than `network.netbirdIp`, update
+that value and redeploy over the LAN IP; `netbird-address-verify.service` keeps
+private DNS failed closed until they agree.
 
 If you chose split-DNS mode, configure your router after the server is healthy:
 

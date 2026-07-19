@@ -1,5 +1,9 @@
 {
   generatedSecrets = {
+    serverBootstrapSudoPassword = {
+      description = "Bootstrap sudo password retained for guarded recovery and deployment prompts.";
+      bytes = 32;
+    };
     kanidmAdminPass = {
       description = "Initial delegated Kanidm admin password.";
       bytes = 24;
@@ -62,6 +66,10 @@
     };
     homepageOauth2ProxyCookieSecret = {
       description = "Cookie secret for the home page OAuth2 Proxy.";
+      bytes = 32;
+    };
+    canaryUserPassword = {
+      description = "Password for the non-privileged Kanidm service-access canary.";
       bytes = 32;
     };
     monitorOauth2ProxyClientSecret = {
@@ -155,26 +163,26 @@
       description = "NetBird setup key used to enroll the server.";
       format = "plain text setup key";
       settingPath = "secrets/unencrypted/netbirdSetupKey";
+      validator = "netbird-setup-key";
     };
     cfHomeCreds = {
       description = "Cloudflare Tunnel credentials JSON for the configured tunnel.";
       format = "cloudflared tunnel credentials JSON";
       settingPath = "secrets/unencrypted/cfHomeCreds";
+      validator = "cloudflared-credentials-json";
     };
     cfAPIToken = {
       description = "Cloudflare API token used by ACME DNS-01 certificate issuance.";
       format = "plain token value";
       settingPath = "secrets/unencrypted/cfAPIToken";
-    };
-    storageAlertWebhookUrl = {
-      description = "Webhook URL for storage health alerts.";
-      format = "https URL";
-      settingPath = "secrets/unencrypted/storageAlertWebhookUrl";
+      validator = "cloudflare-api-token";
     };
     rcloneMegaPassword = {
       description = "MEGA account password used by declarative Rclone offsite Kopia sync.";
       format = "plain text MEGA password";
       settingPath = "secrets/unencrypted/rcloneMegaPassword";
+      validator = "nonempty";
+      required = false;
     };
   };
 }

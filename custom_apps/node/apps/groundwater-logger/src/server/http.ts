@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import type { AppConfig } from './config.js';
 import type { Database } from './db.js';
-import { messagesToCsv, messagesToJsonl } from './export.js';
+import { csvHeader, messageToCsvRow, messageToJsonlRow } from './export.js';
 import type { MqttBridge } from './mqttBridge.js';
 import { commandPresets } from './presets.js';
 import type { Direction, MessageFilters, PublishRequest } from '../shared/types.js';
@@ -16,6 +16,7 @@ const CONTENT_TYPES: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
+const MAX_JSON_BODY_BYTES = 64 * 1024;
 
 export type ServerContext = {
   config: AppConfig;
@@ -41,7 +42,18 @@ export const handleApiRequest = async (
     await handleApi(context, request, response, url);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    sendJson(response, message.includes('not found') ? 404 : 400, { error: message });
+    const status = message.includes('not authorised') ? 403
+      : message.includes('content type') ? 415
+        : message.includes('too large') ? 413
+          : message.includes('not found') ? 404
+            : 400;
+    if (!response.destroyed && !response.writableEnded) {
+      if (response.headersSent) {
+        response.destroy(error instanceof Error ? error : undefined);
+      } else {
+        sendJson(response, status, { error: message });
+      }
+    }
   }
   return true;
 };
@@ -78,12 +90,21 @@ const handleApi = async (
   if (request.method === 'GET' && url.pathname === '/api/messages/export') {
     const filters = filtersFromUrl(url);
     const format = url.searchParams.get('format') === 'jsonl' ? 'jsonl' : 'csv';
-    const messages = await db.exportMessages(filters);
-    const body = format === 'jsonl' ? messagesToJsonl(messages) : messagesToCsv(messages);
     response.statusCode = 200;
     response.setHeader('content-type', format === 'jsonl' ? 'application/x-ndjson; charset=utf-8' : 'text/csv; charset=utf-8');
     response.setHeader('content-disposition', `attachment; filename="groundwater-mqtt-${new Date().toISOString()}.${format}"`);
-    response.end(body);
+    if (format === 'csv' && !(await writeChunk(response, csvHeader()))) {
+      return;
+    }
+    for (const message of db.iterateMessages(filters)) {
+      const chunk = format === 'jsonl' ? messageToJsonlRow(message) : messageToCsvRow(message);
+      if (!(await writeChunk(response, chunk))) {
+        return;
+      }
+    }
+    if (!response.destroyed && !response.writableEnded) {
+      response.end();
+    }
     return;
   }
 
@@ -107,7 +128,7 @@ const handleApi = async (
   }
 
   if (request.method === 'POST' && url.pathname === '/api/publish') {
-    const body = await readJson<PublishRequest>(request);
+    const body = await readMutationJson<PublishRequest>(request);
     const message = await mqttBridge.publish(body);
     sendJson(response, 201, { ok: true, messageId: message.id });
     return;
@@ -138,13 +159,125 @@ const numberParam = (url: URL, key: string): number | undefined => {
   return Number.isFinite(value) ? value : undefined;
 };
 
-const readJson = async <T>(request: IncomingMessage): Promise<T> => {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+const assertSameOrigin = (request: IncomingMessage): void => {
+  const fetchSite = headerValue(request.headers['sec-fetch-site']);
+  if (fetchSite && fetchSite !== 'same-origin') {
+    throw new Error('not authorised: request is not same-origin');
   }
-  const text = Buffer.concat(chunks).toString('utf8');
-  return text ? (JSON.parse(text) as T) : ({} as T);
+  const origin = headerValue(request.headers.origin, false);
+  const host = headerValue(request.headers.host, false);
+  if (!origin || !host) {
+    throw new Error('not authorised: origin and host headers are required');
+  }
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    throw new Error('not authorised: invalid origin');
+  }
+  if (parsedOrigin.origin !== origin || !['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.host.toLowerCase() !== host.toLowerCase()) {
+    throw new Error('not authorised: origin mismatch');
+  }
+  const forwardedProtocol = headerValue(request.headers['x-forwarded-proto']);
+  if (forwardedProtocol && `${forwardedProtocol.toLowerCase()}:` !== parsedOrigin.protocol) {
+    throw new Error('not authorised: origin protocol mismatch');
+  }
+};
+
+const readMutationJson = async <T>(request: IncomingMessage): Promise<T> => {
+  assertSameOrigin(request);
+  const contentType = headerValue(request.headers['content-type'], false)?.split(';', 1)[0]?.trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    throw new Error('JSON content type is required');
+  }
+  const text = await readBoundedBody(request);
+  const parsed = text ? (JSON.parse(text) as unknown) : {};
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new SyntaxError('JSON request body must be an object');
+  }
+  return parsed as T;
+};
+
+const readBoundedBody = async (request: IncomingMessage): Promise<string> => {
+  const declaredLength = headerValue(request.headers['content-length'], false);
+  if (declaredLength && Number(declaredLength) > MAX_JSON_BODY_BYTES) {
+    request.resume();
+    throw new Error('request body is too large');
+  }
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const cleanup = () => {
+      request.off('data', onData);
+      request.off('end', onEnd);
+      request.off('aborted', onAborted);
+      request.off('error', onError);
+    };
+    const fail = (error: Error) => {
+      cleanup();
+      request.resume();
+      reject(error);
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > MAX_JSON_BODY_BYTES) {
+        fail(new Error('request body is too large'));
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    };
+    const onAborted = () => fail(new Error('request body was aborted'));
+    const onError = (error: Error) => fail(error);
+    request.on('data', onData);
+    request.on('end', onEnd);
+    request.on('aborted', onAborted);
+    request.on('error', onError);
+  });
+};
+
+const headerValue = (value: string | string[] | undefined, firstListValue = true): string | undefined => {
+  if (Array.isArray(value)) {
+    return value.length === 1 ? value[0]?.trim() : undefined;
+  }
+  if (!value) {
+    return undefined;
+  }
+  return (firstListValue ? value.split(',', 1)[0] : value).trim();
+};
+
+const writeChunk = async (response: ServerResponse, chunk: string): Promise<boolean> => {
+  if (response.destroyed || response.writableEnded) {
+    return false;
+  }
+  if (response.write(chunk)) {
+    return true;
+  }
+  return new Promise<boolean>((resolve) => {
+    const cleanup = () => {
+      response.off('drain', onDrain);
+      response.off('close', onTermination);
+      response.off('error', onTermination);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve(true);
+    };
+    const onTermination = () => {
+      cleanup();
+      resolve(false);
+    };
+    response.once('drain', onDrain);
+    response.once('close', onTermination);
+    response.once('error', onTermination);
+    if (response.destroyed || response.writableEnded) {
+      onTermination();
+    }
+  });
 };
 
 const sendJson = (response: ServerResponse, status: number, value: unknown): void => {

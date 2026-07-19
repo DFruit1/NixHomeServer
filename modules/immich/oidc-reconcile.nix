@@ -76,13 +76,14 @@ in
                 reconcile_user() {
                   local username="$1"
                   local mail="$2"
-                  local kanidm_uuid updated
+                  local kanidm_uuid updated username_hex
 
                   [[ -n "$username" && -n "$mail" ]] || return 0
 
+                  username_hex="$(printf '%s' "$username" | od -An -tx1 | tr -d ' \n')"
                   kanidm_uuid="$(
                     sqlite3 -readonly "$kanidm_db" \
-                      "select uuid from idx_name2uuid where name = '$username';" \
+                      "select uuid from idx_name2uuid where name = cast(X'$username_hex' as text);" \
                       2>/dev/null || true
                   )"
                   [[ -n "$kanidm_uuid" ]] || return 0
@@ -91,20 +92,25 @@ in
                     runuser -u ${config.services.immich.user} -- \
                       psql \
                         "dbname=${immichDbName} host=/run/postgresql user=${immichDbUser}" \
+                        --set=ON_ERROR_STOP=1 \
+                        --set=kanidm_uuid="$kanidm_uuid" \
+                        --set=mail="$mail" \
+                        --set=username="$username" \
+                        --set=admin_username=${lib.escapeShellArg vars.kanidmAdminUser} \
                         -At <<SQL
         with updated as (
           update "user"
-             set "oauthId" = '$kanidm_uuid',
-                 email = '$mail',
+             set "oauthId" = :'kanidm_uuid',
+                 email = :'mail',
                  "updatedAt" = now()
            where "deletedAt" is null
              and (
-               lower(email) = lower('$mail')
-               or "storageLabel" = '$username'
-               or ('$username' = '${vars.kanidmAdminUser}' and "storageLabel" = 'admin')
-               or name = '$username'
+               lower(email) = lower(:'mail')
+               or "storageLabel" = :'username'
+               or (:'username' = :'admin_username' and "storageLabel" = 'admin')
+               or name = :'username'
              )
-             and ("oauthId" <> '$kanidm_uuid' or email <> '$mail')
+             and ("oauthId" <> :'kanidm_uuid' or email <> :'mail')
            returning id
         )
         select count(*) from updated;

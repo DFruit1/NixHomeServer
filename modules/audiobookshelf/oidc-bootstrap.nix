@@ -181,6 +181,11 @@ in
 
         /run/current-system/sw/bin/systemctl restart audiobookshelf.service
       '';
+      serviceConfig = {
+        Type = "oneshot";
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
     };
   };
 }

@@ -19,6 +19,7 @@ let
       backupStorageAccessGroup
     ]);
   sftpKanidmGroups = [
+    webAccessGroup
     sftpAccessGroup
     usbAccessGroup
     backupStorageAccessGroup
@@ -48,7 +49,7 @@ let
     PermitRootLogin no
     AllowGroups ${lib.concatStringsSep " " sftpUnixGroups}
     PubkeyAuthentication yes
-    AuthorizedKeysFile ${sftpAuthorizedKeysDir}/%u ${userSftpAuthorizedKeysDir}/%u
+    AuthorizedKeysFile ${sftpAuthorizedKeysDir}/%u ${userSftpAuthorizedKeysDir}/%u ${sftpAuthorizedKeysDir}/.filestash
     AllowTcpForwarding no
     PermitTunnel no
     PermitTTY no
@@ -132,18 +133,20 @@ in
   systemd.services.files-sftp-sshd = {
     description = "Dedicated OpenSSH SFTP endpoint for Filestash and file clients";
     wantedBy = [ "multi-user.target" ];
+    requires = [
+      "data-pool-layout.service"
+      "fileshare-user-root-sync.service"
+    ];
     wants = [
       "files-sftp-chroot-layout.service"
-      "fileshare-user-root-sync.service"
-      "filestash-secret-materialize.service"
       "kanidm-unixd.service"
       "network-online.target"
       "sshd-keygen.service"
     ];
     after = [
       "files-sftp-chroot-layout.service"
+      "data-pool-layout.service"
       "fileshare-user-root-sync.service"
-      "filestash-secret-materialize.service"
       "kanidm-unixd.service"
       "network-online.target"
       "sshd-keygen.service"

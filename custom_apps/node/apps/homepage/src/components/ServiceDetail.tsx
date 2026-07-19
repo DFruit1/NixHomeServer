@@ -18,6 +18,7 @@ export const ServiceDetail = component$(
     serverHost: string;
   }) => {
     const displayUsername = username ?? '{username}';
+    const isOfflineMedia = service.id === 'offline-media';
     const baseTips = serviceTips[service.id] ?? ['Open the app once after access is granted so local account setup can finish.'];
     const tips =
       service.id === 'photos'
@@ -30,7 +31,7 @@ export const ServiceDetail = component$(
           <ServiceLogo service={service} large />
           <div>
             <h2>{service.name}</h2>
-            {service.projectUrl && (
+            {service.projectUrl && !isOfflineMedia && (
               <a class="project-link" href={service.projectUrl} target="_blank" rel="noreferrer">
                 Project homepage
               </a>
@@ -38,47 +39,53 @@ export const ServiceDetail = component$(
           </div>
         </div>
         <p>{service.description}</p>
-        <div class="detail-actions">
-          <a class="primary-link" href={service.url} target="_blank" rel="noreferrer">
-            {service.id === 'sftp' ? 'Open app' : 'Open app'}
-          </a>
-          {service.projectUrl && (
-            <a class="secondary-link" href={service.projectUrl} target="_blank" rel="noreferrer">
-              Project Homepage
+        {!isOfflineMedia && (
+          <div class="detail-actions">
+            <a class="primary-link" href={service.url} target="_blank" rel="noreferrer">
+              {service.id === 'sftp' ? 'Open app' : 'Open app'}
             </a>
-          )}
-        </div>
-        <dl class="info-list">
-          <div>
-            <dt>Open</dt>
-            <dd>{service.id === 'sftp' ? `sshfs ${displayUsername}@${serverHost}:/` : service.url}</dd>
+            {service.projectUrl && (
+              <a class="secondary-link" href={service.projectUrl} target="_blank" rel="noreferrer">
+                Project Homepage
+              </a>
+            )}
           </div>
-          {service.id === 'photos' && (
+        )}
+        {!isOfflineMedia && (
+          <dl class="info-list">
             <div>
-              <dt>Mobile app endpoint</dt>
-              <dd>{service.url}</dd>
+              <dt>Open</dt>
+              <dd>{service.id === 'sftp' ? `sshfs ${displayUsername}@${serverHost}:/` : service.url}</dd>
             </div>
-          )}
-          <div>
-            <dt>Access</dt>
-            <dd>{service.loginNotes}</dd>
-          </div>
-          {service.uploadNotes && (
+            {service.id === 'photos' && (
+              <div>
+                <dt>Mobile app endpoint</dt>
+                <dd>{service.url}</dd>
+              </div>
+            )}
             <div>
-              <dt>Uploads</dt>
-              <dd>{service.uploadNotes}</dd>
+              <dt>Access</dt>
+              <dd>{service.loginNotes}</dd>
             </div>
-          )}
-        </dl>
-        <section class="detail-block">
-          <h3>Getting Started</h3>
-          <ol class="steps">
-            {tips.map((tip) => (
-              <li key={tip}>{tip}</li>
-            ))}
-          </ol>
-        </section>
-        {service.id === 'offline-media' && <OfflineMediaSetupPanel offlineMedia={offlineMedia} username={username} />}
+            {service.uploadNotes && (
+              <div>
+                <dt>Uploads</dt>
+                <dd>{service.uploadNotes}</dd>
+              </div>
+            )}
+          </dl>
+        )}
+        {!isOfflineMedia && (
+          <section class="detail-block">
+            <h3>Getting Started</h3>
+            <ol class="steps">
+              {tips.map((tip) => (
+                <li key={tip}>{tip}</li>
+              ))}
+            </ol>
+          </section>
+        )}
+        {isOfflineMedia && <OfflineMediaSetupPanel offlineMedia={offlineMedia} username={username} />}
         {service.id === 'sftp' && <SftpAccessInstructions username={displayUsername} serverHost={serverHost} />}
       </article>
     );
