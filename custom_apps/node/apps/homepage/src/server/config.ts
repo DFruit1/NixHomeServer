@@ -1,6 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { fallbackBrandName } from '../shared/branding.js';
-import type { AdminStep, FolderGuide, OfflineMediaSetup, ServiceCard } from '../shared/types.js';
+import type {
+  AdminStep,
+  FolderGuide,
+  KanidmGroupManagementSource,
+  OfflineMediaConnectionAddress,
+  OfflineMediaSetup,
+  ServiceCard,
+} from '../shared/types.js';
 
 export type HomepageConfig = {
   brandName: string;
@@ -10,6 +17,22 @@ export type HomepageConfig = {
   adminGuide: AdminStep[];
   kanidmGroups?: string[];
   kanidmGroupDescriptions?: Record<string, string>;
+  kanidmGroupManagement?: Record<string, KanidmGroupManagementSource>;
+  adminUsers?: string[];
+  adminGroups?: string[];
+  sftp?: {
+    enabled: boolean;
+    host: string;
+    port: number;
+    networkNote: string;
+    requiredAllGroups?: string[];
+    requiredAnyGroups?: string[];
+    accessNotes?: Array<{
+      text: string;
+      requiredAllGroups?: string[];
+      requiredAnyGroups?: string[];
+    }>;
+  };
   offlineMedia?: OfflineMediaSetup;
   canaryAdminUser?: string;
 };
@@ -48,8 +71,47 @@ const fallbackHomepage: HomepageConfig = {
   adminGuide: [],
   kanidmGroups: [],
   kanidmGroupDescriptions: {},
+  kanidmGroupManagement: {},
+  adminUsers: [],
+  adminGroups: [],
   offlineMedia: undefined,
   canaryAdminUser: undefined,
+};
+
+const singleLineString = (value: unknown, maximumLength: number): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maximumLength || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
+};
+
+export const normaliseOfflineMediaConnectionAddresses = (value: unknown): OfflineMediaConnectionAddress[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const connections: OfflineMediaConnectionAddress[] = [];
+  const seenAddresses = new Set<string>();
+  for (const entry of value) {
+    const legacyAddress = singleLineString(entry, 512);
+    const objectEntry = typeof entry === 'object' && entry !== null && !Array.isArray(entry)
+      ? entry as Record<string, unknown>
+      : undefined;
+    const address = legacyAddress ?? singleLineString(objectEntry?.address, 512);
+    if (!address || seenAddresses.has(address)) {
+      continue;
+    }
+    const label = legacyAddress
+      ? 'Server address'
+      : singleLineString(objectEntry?.label, 100) ?? 'Server address';
+    seenAddresses.add(address);
+    connections.push({ address, label });
+  }
+  return connections;
 };
 
 export const loadHomepageConfig = (path: string | undefined): HomepageConfig => {
@@ -65,10 +127,20 @@ export const loadHomepageConfig = (path: string | undefined): HomepageConfig => 
   if (!domain) {
     throw new Error('homepage domain must be a non-empty string');
   }
+  const offlineMediaRaw = parsed.offlineMedia;
+  const offlineMedia = typeof offlineMediaRaw === 'object' && offlineMediaRaw !== null && !Array.isArray(offlineMediaRaw)
+    ? {
+        ...(offlineMediaRaw as OfflineMediaSetup),
+        connectionAddresses: normaliseOfflineMediaConnectionAddresses(
+          (offlineMediaRaw as { connectionAddresses?: unknown }).connectionAddresses,
+        ),
+      }
+    : undefined;
   return {
     ...(parsed as HomepageConfig),
     brandName,
     domain,
+    offlineMedia,
   };
 };
 

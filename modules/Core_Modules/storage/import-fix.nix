@@ -5,6 +5,22 @@ let
   zfsBin = "${config.boot.zfs.package}/sbin/zfs";
   poolName = vars.zfsDataPool.name;
   poolImportArgs = "-d /dev/disk/by-id";
+  storageValidation = import ../../../lib/storage-validation.nix { inherit lib; };
+  expectedPoolGuidRaw = vars.zfsDataPool.expectedGuid or null;
+  expectedPoolGuid =
+    if builtins.isString expectedPoolGuidRaw && storageValidation.validZpoolGuid expectedPoolGuidRaw
+    then expectedPoolGuidRaw
+    else null;
+  poolImportIdentifier = if expectedPoolGuid == null then poolName else expectedPoolGuid;
+  poolIdentityVerifier = pkgs.writeShellScript "verify-zfs-pool-identity"
+    (builtins.readFile ../../../scripts/helpers/verify-zfs-pool-identity.sh);
+  poolIdentityVerifierArgs = lib.escapeShellArgs (
+    [ "--pool" poolName ]
+    ++ lib.optionals (expectedPoolGuid != null) [ "--expected-guid" expectedPoolGuid ]
+    ++ lib.concatMap
+      (diskId: [ "--expected-device" "/dev/disk/by-id/${diskId}" ])
+      vars.zfsDataPoolDiskIds
+  );
 in
 lib.mkIf vars.enableZfsDataPool {
   systemd.services.zfs-import-data.script = lib.mkForce ''
@@ -19,40 +35,31 @@ lib.mkIf vars.enableZfsDataPool {
       esac
     done
 
-    poolReady() {
-      local pool="$1"
-      local state
-      state="$(${zpoolBin} import ${poolImportArgs} 2>/dev/null \
-        | ${pkgs.gawk}/bin/awk "/pool: $pool/ { found = 1 }; /state:/ { if (found == 1) { print \\$2; exit } }; END { if (found == 0) { print \"MISSING\" } }")"
-      if [[ "$state" = "ONLINE" || "$state" = "DEGRADED" ]]; then
-        return 0
-      else
-        echo "Pool $pool in state $state, waiting"
-        return 1
-      fi
-    }
-
     poolImported() {
       local pool="$1"
       ${zpoolBin} list "$pool" >/dev/null 2>/dev/null
     }
 
     poolImport() {
-      local pool="$1"
       # shellcheck disable=SC2086
-      ${zpoolBin} import ${poolImportArgs} -N $ZFS_FORCE "$pool"
+      ${zpoolBin} import ${poolImportArgs} -N $ZFS_FORCE ${lib.escapeShellArg poolImportIdentifier}
     }
 
     if ! poolImported "${poolName}"; then
       echo -n "importing ZFS pool \"${poolName}\"..."
       for _ in $(seq 1 60); do
-        poolReady "${poolName}" && poolImport "${poolName}" && break
+        poolImport && break
         sleep 1
       done
-      poolImported "${poolName}" || poolImport "${poolName}"
+      poolImported "${poolName}" || poolImport
     fi
 
     if poolImported "${poolName}"; then
+      ZFS_POOL_IDENTITY_ZPOOL_BIN=${lib.escapeShellArg zpoolBin} \
+        ZFS_POOL_IDENTITY_AWK_BIN=${lib.escapeShellArg "${pkgs.gawk}/bin/awk"} \
+        ZFS_POOL_IDENTITY_LSBLK_BIN=${lib.escapeShellArg "${pkgs.util-linux}/bin/lsblk"} \
+        ${poolIdentityVerifier} ${poolIdentityVerifierArgs}
+
       ${zfsBin} list -rHo name,keylocation,keystatus -t volume,filesystem ${poolName} | while IFS=$'\t' read -r ds kl ks; do
         {
           if [[ "$ks" != unavailable ]]; then

@@ -1,8 +1,10 @@
-import { component$ } from '@builder.io/qwik';
+import { component$, useContext } from '@builder.io/qwik';
 import { Link, useLocation } from '@builder.io/qwik-city';
+import { HomepageContext } from '../shared/homepage-context.js';
 
 export const TopNav = component$(() => {
   const location = useLocation();
+  const homepage = useContext(HomepageContext);
   const path = location.url.pathname;
   const isUploads = path.startsWith('/uploads');
   const isGettingStarted = path.startsWith('/getting-started');
@@ -23,11 +25,11 @@ export const TopNav = component$(() => {
       label: 'How to Upload Files',
       selected: isUploads,
     },
-    {
+    ...(homepage.data?.isAdmin ? [{
       href: '/admins',
       label: 'For Admins',
       selected: isAdmins,
-    },
+    }] : []),
   ].sort((a, b) => Number(b.selected) - Number(a.selected));
 
   return (

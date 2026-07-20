@@ -15,7 +15,7 @@ rec {
     adminUser = "kanidm-admin"; # Dedicated Kanidm operator account; keep separate from the local Unix admin.
     canaryUser = "canary-user"; # Non-privileged synthetic user used by browser access checks.
     appUsers = [ ]; # Extra existing Kanidm users granted default access to hosted apps.
-    appAdminUsers = [ ]; # Extra existing Kanidm users granted app-level admin roles.
+    appAdminUsers = [ ]; # Extra app admins; they inherit normal app access and need not be repeated in appUsers.
     appUserEmails = { }; # Optional email map for extra app users, for example { alice = "alice@example.test"; }.
     adminMailAddresses = [ ]; # Optional Kanidm mail addresses for the primary admin user.
     adminEmail = "admin@example.test"; # Contact email for ACME and the first Kanidm admin user.
@@ -62,6 +62,10 @@ rec {
     dataPool = {
       name = "data";
       mountPoint = "/mnt/data";
+      # Optional immutable ZFS identity. The first verified topology-only boot
+      # logs the numeric GUID to place here; once set, a same-named foreign pool
+      # is rejected even if device paths have changed.
+      expectedGuid = null;
       mirrorPairs = [
         [
           "CHANGE_ME_DATA_DISK_1_BY_ID"
@@ -83,17 +87,18 @@ rec {
     sharedAccessGroup = "files-shared-users"; # Adds the protected _Shared view inside personal roots.
     usbAccessGroup = "usb-access"; # Adds the _USB view inside personal roots when external USB media is manually mounted.
     usbUsers = [ ]; # Kanidm users allowed to see _USB inside their personal file root.
-    sharedMountName = "_Shared";
-    usbMountName = "_USB";
-    sftpChrootBase = "/srv/files-sftp/chroots";
+    sharedMountName = "_Shared"; # Safe single directory name; no slashes, whitespace, or traversal components.
+    usbMountName = "_USB"; # Safe single directory name shown in each permitted user root.
+    sftpChrootBase = "/srv/files-sftp/chroots"; # Normalized absolute path below /srv; do not use /, .., or spaces.
   };
 
   backupAccess = {
     adminGroup = "backup-admin"; # Grants access to the Kopia backup-management UI.
     adminUsers = [ ]; # Extra existing Kanidm users allowed to manage backups.
-    storageGroup = "backup-admin"; # Grants read access to encrypted backup repository files.
-    storageUsers = [ ]; # Extra existing Kanidm users allowed to browse backup repository files.
-    storageMountName = "_Backups";
+    storageGroup = "backup-storage-users"; # Separate POSIX group granting read-only access to encrypted backup repository files.
+    storageGid = 2005; # Stable on-disk GID for backup ownership and ACLs; keep unique and within 1000-59999.
+    storageUsers = [ ]; # Storage-only users. Backup admins inherit storage access and should not be repeated here.
+    storageMountName = "_Backups"; # Safe single directory name for the read-only repository view.
   };
 
   monitoringAccess = {
@@ -108,7 +113,7 @@ rec {
 
   offlineMedia = {
     enable = true;
-    musicFolderName = "_Music";
+    musicFolderName = "_Music"; # Safe relative directory name under each managed user root.
     stateDir = "/persist/appdata/offline-media";
     musicFolderIdPrefix = "nixhomeserver-music";
     youtubeFolderIdPrefix = "nixhomeserver-youtube-videos";
@@ -193,22 +198,48 @@ rec {
   hostId = system.hostId;
   kanidmAdminUser = identity.adminUser;
   kanidmCanaryUser = identity.canaryUser;
-  kanidmAppUsers = lib.unique ([ identity.adminUser identity.canaryUser ] ++ (identity.appUsers or [ ]));
-  kanidmAppAdminUsers = lib.unique ([ identity.adminUser ] ++ (identity.appAdminUsers or [ ]));
-  kanidmBackupUsers = lib.unique (
-    [ identity.adminUser identity.canaryUser ]
-    ++ (backupAccess.adminUsers or [ ])
-    ++ (backupAccess.storageUsers or [ ])
-  );
-  kanidmBackupAdminUsers = kanidmBackupUsers;
-  kanidmBackupStorageUsers = kanidmBackupUsers;
-  kanidmAppUserEmails = (identity.appUserEmails or { }) // {
+  authorizationGroupModel = (import ./lib/authorization-groups.nix { inherit lib; }) {
+    inherit monitoringAccess seerrAccess;
+  };
+  configuredMonitoringAccessGroup = authorizationGroupModel.configuredMonitoringGroup;
+  monitoringAccessGroup = authorizationGroupModel.monitoringGroup;
+  configuredSeerrRequestManagerGroup = authorizationGroupModel.configuredSeerrRequestManagerGroup;
+  identityAccessModel = (import ./lib/identity-access.nix { inherit lib; }) {
+    inherit fileAccess identity monitoringAccess seerrAccess;
+  };
+  configuredIdentityAppUsers = identityAccessModel.configuredAppUsers;
+  configuredIdentityAppAdminUsers = identityAccessModel.configuredAppAdminUsers;
+  configuredIdentityAppUserEmails = identityAccessModel.configuredAppUserEmails;
+  configuredIdentityAdminMailAddresses = identityAccessModel.configuredAdminMailAddresses;
+  configuredMonitoringAccessUsers = identityAccessModel.configuredMonitoringUsers;
+  configuredSeerrRequestManagers = identityAccessModel.configuredSeerrRequestManagers;
+  configuredFileAccessUsbUsers = identityAccessModel.configuredUsbUsers;
+  kanidmAppUsers = identityAccessModel.appUsers;
+  kanidmAppAdminUsers = identityAccessModel.appAdminUsers;
+  monitoringAccessUsers = identityAccessModel.monitoringUsers;
+  fileAccessUsbUsers = identityAccessModel.usbUsers;
+  fileAccessGidModel = import ./lib/file-access-gids.nix { inherit fileAccess; };
+  backupAccessModel = (import ./lib/backup-access.nix { inherit lib; }) {
+    inherit backupAccess identity;
+    basePosixGids = fileAccessGidModel.posixGids;
+  };
+  configuredBackupAdminUsers = backupAccessModel.configuredAdminUsers;
+  configuredBackupStorageUsers = backupAccessModel.configuredStorageUsers;
+  backupAdminUsers = backupAccessModel.adminUsers;
+  backupStorageUsers = backupAccessModel.storageUsers;
+  backupAdminGroup = backupAccessModel.adminGroup;
+  backupStorageGroup = backupAccessModel.storageGroup;
+  backupStorageGid = backupAccessModel.storageGid;
+  kanidmBackupAdminUsers = backupAccessModel.adminMembers;
+  kanidmBackupStorageUsers = backupAccessModel.storageMembers;
+  kanidmBackupUsers = backupAccessModel.allUsers;
+  kanidmAppUserEmails = identityAccessModel.appUserEmails // {
     ${identity.canaryUser} = "${identity.canaryUser}@${network.domain}";
   };
-  kanidmAdminMailAddresses = identity.adminMailAddresses or [ ];
+  kanidmAdminMailAddresses = identityAccessModel.adminMailAddresses;
   kanidmAdminEmail = identity.adminEmail;
-  seerrRequestManagerGroup = seerrAccess.requestManagerGroup;
-  seerrRequestManagers = seerrAccess.requestManagers;
+  seerrRequestManagerGroup = authorizationGroupModel.seerrRequestManagerGroup;
+  seerrRequestManagers = identityAccessModel.seerrRequestManagers;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
 
@@ -299,13 +330,7 @@ rec {
     users = false;
     shared = false;
   };
-  fileAccessPosixGids = {
-    "files-personal-users" = 2001;
-    "files-sftp-users" = 2002;
-    "files-shared-users" = 2003;
-    "usb-access" = 2004;
-    "backup-admin" = 2005;
-  };
+  fileAccessPosixGids = backupAccessModel.fileAccessPosixGids;
   filesSftpUsers = kanidmAppUsers; # Kanidm users with POSIX accounts and restricted files SFTP chroots.
   jellyfinAdminUsers = kanidmAppAdminUsers;
   userContentSubdirs = [ ];

@@ -3,12 +3,20 @@
 let
   cfg = config.repo.authGateway;
   loopback = vars.networking.loopbackIPv4;
+  kopiaPort = vars.networking.ports.kopia;
+  # Invalid user input is rejected by Core_Modules/validation.  Avoid doing
+  # arithmetic on it first, which would hide that diagnostic behind a Nix
+  # type error.
+  kopiaAuthProxyPort = if builtins.isInt kopiaPort then kopiaPort + 1 else -1;
   authHost = cfg.domain;
   hasModule = name: config.nixhomeserver.modules.${name} or false;
   homepageEnabled = hasModule "homepage";
   moduleEnabled = name:
     hasModule name
     && (config.repo.${name}.enable or true);
+  mailArchiveEnabled =
+    hasModule "mail-archive-ui"
+    && config.services.mail-archive-ui.enable;
   sidecarServices = [
     "kopia-oauth2-proxy"
     "monitor-oauth2-proxy"
@@ -16,7 +24,7 @@ let
   ++ lib.optionals (hasModule "files") [ "filestash-oauth2-proxy" ]
   ++ lib.optionals homepageEnabled [ "homepage-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-oauth2-proxy" ]
-  ++ lib.optionals (hasModule "mail-archive-ui") [ "mail-archive-oauth2-proxy" ]
+  ++ lib.optionals mailArchiveEnabled [ "mail-archive-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "prowlarr") [ "prowlarr-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "qbittorrent") [ "qbittorrent-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "radarr") [ "radarr-oauth2-proxy" ]
@@ -27,12 +35,20 @@ let
   mkApp = host: upstream: allowedGroups: {
     inherit host upstream allowedGroups;
   };
+  homepageAccessGroups = lib.unique [
+    "users"
+    vars.fileAccess.webAccessGroup
+    vars.fileAccess.sftpAccessGroup
+    vars.fileAccess.sharedAccessGroup
+    vars.fileAccess.usbAccessGroup
+    vars.backupStorageGroup
+  ];
   defaultApps = {
-    monitor = mkApp vars.monitorDomain "http://${loopback}:${toString vars.networking.ports.beszelHub}" [ vars.monitoringAccess.group ];
-    kopia = mkApp vars.kopiaDomain "http://${loopback}:${toString (vars.networking.ports.kopia + 1)}" [ vars.backupAccess.adminGroup ];
+    monitor = mkApp vars.monitorDomain "http://${loopback}:${toString vars.networking.ports.beszelHub}" [ vars.monitoringAccessGroup ];
+    kopia = mkApp vars.kopiaDomain "http://${loopback}:${toString kopiaAuthProxyPort}" [ vars.backupAdminGroup ];
   }
   // lib.optionalAttrs homepageEnabled {
-    homepage = mkApp "homepage.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.homepage}" [ "users" ];
+    homepage = mkApp "homepage.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.homepage}" homepageAccessGroups;
   }
   // lib.optionalAttrs (hasModule "files") {
     files = (mkApp "files.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.filestash}" [
@@ -41,7 +57,7 @@ let
       skipAuthPreflight = true;
     };
   }
-  // lib.optionalAttrs (hasModule "mail-archive-ui") {
+  // lib.optionalAttrs mailArchiveEnabled {
     mail = mkApp "emails.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.mailArchiveUi}" [ "mail-archive-users" ];
   }
   // lib.optionalAttrs (moduleEnabled "kiwix") {

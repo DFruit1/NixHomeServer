@@ -15,12 +15,22 @@ Usage: scripts/deploy.sh [--target <user@host>] [--build-host <user@host>] [--bu
 
 Stage the current repo and run a NixOS rebuild.
 
+Run this helper from a Git checkout. Copied directories and source ZIPs are
+rejected because they do not provide a safe tracked-file deployment manifest.
+
 By default, the target is vars.localAdminUser@vars.serverLanIP and the target host
 also performs the build. Use --build-locally to build on this workstation and
 activate the default target over SSH.
 
-Fast mode performs only high-value checks: host evaluation, remote free-space
-checks, nixos-rebuild, and failed-unit inspection.
+Fast mode performs high-value checks: host evaluation, build and target
+free-space checks, a live test activation, failed-unit and route checks, and the
+authenticated Homepage canary when enabled.
+
+`--action test` records the exact repository hash and NixOS closure only after
+all gates pass. `--action switch` refuses changed source and commits that exact
+tested closure as the boot default. A failed or interrupted activation is rolled
+back to the previous live generation. HUP, INT, and TERM trigger immediate
+recovery; a target-side rollback timer remains the backstop for abrupt loss.
 
 Debug mode adds the full repository validation gate before the rebuild and
 prints extra systemd/journal context if failed units remain afterward.
@@ -115,25 +125,30 @@ print_quoted_command() {
 }
 
 if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
-  dry_run_rebuild_command=()
-  build_nixos_rebuild_command dry_run_rebuild_command \
-    "$action" "$hostname" "$build_locally" "$target_host" "$build_host"
-
   echo "mode=$([[ "$build_locally" == "true" ]] && echo local || echo remote)"
   echo "target_host=${target_host}"
   echo "build_host=$([[ "$build_locally" == "true" ]] && echo local || echo "$build_host")"
   echo "hostname=${hostname}"
   echo "action=${action}"
   echo "debug=${debug}"
-  echo -n "rebuild_command="
-  print_quoted_command "${dry_run_rebuild_command[@]}"
-  if [[ "$action" == "switch" ]]; then
-    echo "activation_command=detached switch-to-configuration switch"
+  if [[ "$action" == "test" ]]; then
+    dry_run_rebuild_command=()
+    build_nixos_rebuild_command dry_run_rebuild_command \
+      build "$hostname" "$build_locally" "$target_host" "$build_host"
+    echo -n "rebuild_command="
+    print_quoted_command "${dry_run_rebuild_command[@]}"
+    echo "activation_command=activate the returned closure through the guarded target-side test unit"
+    echo "result=record source hash and exact passing closure"
+  else
+    echo "stamp_required=true"
+    echo "activation_command=activate exact stamped closure in test mode"
+    echo "boot_commit=only after failed-unit route and authenticated-canary gates pass"
   fi
+  echo "rollback=restore previous live and boot generations on failure"
   exit 0
 fi
 
-need ssh tar
+need git ssh tar
 
 cleanup_local_archive() {
   if [[ -n "$repo_archive" && -f "$repo_archive" ]]; then

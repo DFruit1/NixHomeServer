@@ -1,4 +1,4 @@
-{ config, ... }:
+{ config, lib, ... }:
 
 let
   repoRoot = ../..;
@@ -21,8 +21,8 @@ let
       secretNames;
 in
 {
-  config.assertions = mkSecretAssertions [
+  config.assertions = lib.mkIf config.repo.sonarr.enable (mkSecretAssertions [
     "sonarrOauth2ProxyClientSecret"
     "sonarrOauth2ProxyCookieSecret"
-  ];
+  ]);
 }

@@ -4,9 +4,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { currentUserFromHeaders } from './auth.js';
 import type { AppConfig } from './config.js';
-import { enrollOfflineMediaDevice, getOfflineMediaSetup, removeOfflineMediaDevice } from './offlineMedia.js';
+import { enrollOfflineMediaDevice, getOfflineMediaSetup, OfflineMediaInputError, removeOfflineMediaDevice } from './offlineMedia.js';
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
-import { buildHomepageData } from './homepageData.js';
+import { assertFeatureAccess, buildHomepageData } from './homepageData.js';
 import { getCanaryFailure, getCanaryStatus, triggerCanary } from './canary.js';
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -23,7 +23,15 @@ export const handleRequest = async (config: AppConfig, request: IncomingMessage,
     return;
   }
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-  await serveStatic(config, response, url.pathname);
+  try {
+    await serveStatic(config, response, url.pathname);
+  } catch (error) {
+    if (error instanceof URIError && !response.destroyed && !response.writableEnded) {
+      sendJson(response, 400, { error: error.message });
+      return;
+    }
+    throw error;
+  }
 };
 
 export const handleApiRequest = async (config: AppConfig, request: IncomingMessage, response: ServerResponse): Promise<boolean> => {
@@ -59,6 +67,10 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     if (request.method === 'POST' && url.pathname === '/api/sftp-key') {
       const body = await readMutationJson<{ publicKey?: string }>(request);
       const user = currentUserFromHeaders(request.headers, config.devUser);
+      if (!config.homepage.sftp?.enabled) {
+        throw new Error('SFTP access is not enabled');
+      }
+      assertFeatureAccess(user, config.homepage.sftp.requiredAllGroups, config.homepage.sftp.requiredAnyGroups);
       const publicKey = normalisePublicKey(body.publicKey);
       sendJson(response, 200, await installSftpPublicKey(config, user, publicKey));
       return true;
@@ -66,6 +78,10 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
 
     if (request.method === 'GET' && (url.pathname === '/api/offline-media' || url.pathname === '/api/offline-music')) {
       const user = currentUserFromHeaders(request.headers, config.devUser);
+      if (!config.homepage.offlineMedia?.enabled) {
+        throw new Error('offline media access is not enabled');
+      }
+      assertFeatureAccess(user, config.homepage.offlineMedia?.requiredAllGroups, config.homepage.offlineMedia?.requiredAnyGroups);
       sendJson(response, 200, await getOfflineMediaSetup(config, user));
       return true;
     }
@@ -73,6 +89,10 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     if (request.method === 'POST' && (url.pathname === '/api/offline-media/devices' || url.pathname === '/api/offline-music/device')) {
       const body = await readMutationJson<{ deviceId?: string; deviceName?: string }>(request);
       const user = currentUserFromHeaders(request.headers, config.devUser);
+      if (!config.homepage.offlineMedia?.enabled) {
+        throw new Error('offline media access is not enabled');
+      }
+      assertFeatureAccess(user, config.homepage.offlineMedia?.requiredAllGroups, config.homepage.offlineMedia?.requiredAnyGroups);
       sendJson(response, 200, await enrollOfflineMediaDevice(config, user, body));
       return true;
     }
@@ -80,6 +100,10 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
     if (request.method === 'DELETE' && url.pathname.startsWith('/api/offline-media/devices/')) {
       await readMutationJson<Record<string, never>>(request);
       const user = currentUserFromHeaders(request.headers, config.devUser);
+      if (!config.homepage.offlineMedia?.enabled) {
+        throw new Error('offline media access is not enabled');
+      }
+      assertFeatureAccess(user, config.homepage.offlineMedia?.requiredAllGroups, config.homepage.offlineMedia?.requiredAnyGroups);
       const deviceId = decodeURIComponent(url.pathname.slice('/api/offline-media/devices/'.length));
       sendJson(response, 200, await removeOfflineMediaDevice(config, user, deviceId));
       return true;
@@ -97,10 +121,13 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
       : message.includes('not authorised') ? 403
         : message.includes('content type') ? 415
           : message.includes('too large') ? 413
-            : error instanceof SyntaxError ? 400
-              : message.includes('already active') ? 409
-                : message.includes('not found') ? 404
-                  : 500;
+            : error instanceof SyntaxError || error instanceof URIError || error instanceof OfflineMediaInputError ? 400
+              : message.startsWith('public key ') || message.startsWith('publicKey ')
+                || message === 'invalid OpenSSH public key'
+                || message === 'invalid or corrupted OpenSSH public key' ? 400
+                : message.includes('already active') ? 409
+                  : message.includes('not found') || message.includes('not enabled') ? 404
+                    : 500;
     if (!response.destroyed && !response.writableEnded) {
       if (response.headersSent) {
         response.destroy(error instanceof Error ? error : undefined);

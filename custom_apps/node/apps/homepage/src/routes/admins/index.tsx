@@ -1,5 +1,12 @@
 import { $, Slot, component$, useContext, useSignal } from '@builder.io/qwik';
 import { HomepageContext } from '../../shared/homepage-context.js';
+import {
+  buildMembershipCommands,
+  configuredMembershipEdit,
+  configuredMembershipEffect,
+  configuredMembershipSelections,
+  type AccessChangeAction,
+} from '../../shared/admin-access.js';
 import type { AdminStep } from '../../shared/types.js';
 import { CanaryPanel } from '../../components/CanaryPanel.js';
 
@@ -59,22 +66,26 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'Run guarded deploy with local build': { category: 'apps', displayTitle: 'Test a deployment built on this computer' },
   'Switch after a passing test': { category: 'apps', displayTitle: 'Make a tested deployment permanent' },
   'Show generations for rollback': { category: 'apps', displayTitle: 'List system versions available for rollback' },
-  'Rollback current generation': { category: 'apps', displayTitle: 'Roll back to the previous system version' },
+  'Emergency rollback current generation': { category: 'apps', displayTitle: 'Emergency rollback to the previous system version' },
   'Check app service status': { category: 'apps' },
   'Follow app logs': { category: 'apps' },
   'Restart a single app service': { category: 'apps' },
   'Restart homepage': { category: 'apps' },
   'Check OAuth proxy logs': { category: 'apps' },
-  'Re-run storage layout services': { category: 'apps' },
+  'List storage layout services': { category: 'apps' },
   'Re-run Immich OIDC reconcile': { category: 'apps', displayTitle: 'Update Immich accounts from Kanidm' },
   'Re-run Paperless OIDC reconcile': { category: 'apps', displayTitle: 'Update Paperless accounts from Kanidm' },
+  'Retrieve Jellyfin initial password': { category: 'apps', intents: ['add-user', 'manage-user'], displayTitle: 'Give a user their initial Jellyfin password' },
   'Re-run Jellyfin library sync': { category: 'apps' },
   'Re-run Kiwix library sync': { category: 'apps' },
   'Check Kanidm health': { category: 'identity' },
+  'Bootstrap or recover operator credential': { category: 'identity', intents: ['manage-secrets'] },
+  'Authenticate Kanidm CLI': { category: 'identity' },
   'List Kanidm people': { category: 'identity', intents: ['manage-user'] },
   'List Kanidm groups': { category: 'identity' },
   'Inspect Kanidm group': { category: 'identity', intents: ['manage-user'] },
   'Remove user from access group': { category: 'identity', intents: ['manage-user'] },
+  'Revoke offline-media device access': { category: 'identity', intents: ['manage-user'] },
   'Restart identity reconciliation': { category: 'identity', displayTitle: 'Apply Kanidm account and file-access changes' },
   'Manage Kanidm entity removal explicitly': { category: 'identity', intents: ['manage-user'], displayTitle: 'Remove a managed Kanidm user or group' },
   'Show mounted filesystems': { category: 'storageBackups' },
@@ -104,6 +115,7 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'Inspect Cloudflare tunnel logs': { category: 'network' },
   'Check NetBird status': { category: 'network' },
   'Inspect firewall rules': { category: 'network' },
+  'Show SFTP host key fingerprint': { category: 'network' },
   'Rotate or regenerate secrets': { category: 'server', intents: ['manage-secrets'], displayTitle: 'Create or replace encrypted secrets' },
   'List encrypted secrets': { category: 'server', intents: ['manage-secrets'] },
   'List expected external secrets': { category: 'server', intents: ['manage-secrets'] },
@@ -142,22 +154,6 @@ const buildDisplayNameArg = (username: string): string => {
   const trimmed = username.trim();
   return trimmed ? shellSingleQuote(trimmed) : '"$DISPLAY_NAME"';
 };
-
-const buildMembershipCommands = (groups: string[], userArg: string): string[] => {
-  if (groups.length === 0) {
-    return [];
-  }
-  const quotedGroups = groups
-    .map((group) => group.trim())
-    .filter((group) => group.length > 0)
-    .sort()
-    .map((group) => shellSingleQuote(group))
-    .join(' ');
-  return [`for group in ${quotedGroups}; do`, `  kanidm group add-members "$group" ${userArg}`, 'done'];
-};
-
-const formatCommandBlock = (commands: string[]): string =>
-  commands.length ? commands.join('\n') : '# Choose one or more groups above to generate the commands.';
 
 const adminIntents: { id: AdminModeId; label: string }[] = [
   { id: 'add-user', label: 'Add a user' },
@@ -254,6 +250,16 @@ const AdminTask = component$(
 
 export default component$(() => {
   const homepage = useContext(HomepageContext);
+  if (!homepage.data?.isAdmin) {
+    return (
+      <section class="section">
+        <div class="empty-state">
+          <h2>Administrator access required</h2>
+          <p>This handbook is available only to the configured server operator.</p>
+        </div>
+      </section>
+    );
+  }
   const adminGuide = homepage.data?.adminGuide ?? [];
   const domain = homepage.data?.domain ?? 'example.test';
   const currentUser = homepage.data?.user;
@@ -263,16 +269,24 @@ export default component$(() => {
   const selectedMode = useSignal<AdminModeId | ''>('');
   const searchQuery = useSignal('');
   const groupDescriptions = homepage.data?.kanidmGroupDescriptions ?? {};
+  const groupManagement = homepage.data?.kanidmGroupManagement ?? {};
+  const passwordsEnabled = homepage.data?.services.some((service) => service.id === 'passwords' && service.enabled) ?? false;
   const accessGroups = (homepage.data?.kanidmGroups ?? [])
     .filter((group) => !isProtectedGroup(group))
     .sort((a, b) => a.localeCompare(b));
+  const appBundleAccessGroups = accessGroups.filter((group) => groupManagement[group] === 'identity.appUsers');
   const selectedGroups = useSignal<string[]>([]);
+  const accessAction = useSignal<AccessChangeAction>('grant');
 
   const userArg = buildUserArg(username.value);
   const emailArg = buildEmailArg(email.value);
   const displayNameArg = buildDisplayNameArg(username.value);
 
-  const membershipCommand = formatCommandBlock(buildMembershipCommands(selectedGroups.value, userArg));
+  const liveManagedGroups = selectedGroups.value.filter((group) => !groupManagement[group] || groupManagement[group] === 'manual');
+  const configuredGroups = selectedGroups.value.filter((group) => groupManagement[group] && groupManagement[group] !== 'manual');
+  const membershipCommand = buildMembershipCommands(liveManagedGroups, userArg, accessAction.value).join('\n');
+  const managedMemberships = configuredMembershipSelections(configuredGroups, groupManagement);
+  const configuredMemberValue = JSON.stringify(username.value.trim() || '<username>');
   const adminSections = groupedAdminSteps(adminGuide);
   const activeIntent: AdminIntentId | '' = isAdminIntent(selectedMode.value) ? selectedMode.value : '';
   const hasSelectedMode = selectedMode.value !== '';
@@ -296,7 +310,7 @@ export default component$(() => {
       membershipCommand,
       accessGroups.join(' '),
     ]),
-    vaultwardenSignup: matchesSearch(searchQuery.value, [
+    vaultwardenSignup: passwordsEnabled && matchesSearch(searchQuery.value, [
       'Create Passwords account',
       'Ask the user to register in the Passwords app with their Kanidm email address. They must create and save a separate master password.',
       `https://passwords.${domain}/#/signup`,
@@ -320,7 +334,11 @@ export default component$(() => {
   const showCreateAccount = searchIsActive ? userTaskSearchMatches.createAccount : shouldShowForIntent(activeIntent, ['add-user']);
   const showGrantBaseline = searchIsActive ? userTaskSearchMatches.grantBaseline : shouldShowForIntent(activeIntent, ['add-user']);
   const showGrantAccess = searchIsActive ? userTaskSearchMatches.grantAccess : shouldShowForIntent(activeIntent, ['add-user', 'manage-user']);
-  const showVaultwardenSignup = searchIsActive ? userTaskSearchMatches.vaultwardenSignup : shouldShowForIntent(activeIntent, ['add-user', 'manage-secrets']);
+  const showVaultwardenSignup = passwordsEnabled
+    && (searchIsActive ? userTaskSearchMatches.vaultwardenSignup : shouldShowForIntent(activeIntent, ['add-user', 'manage-secrets']));
+  const showVaultwardenUnavailable = !passwordsEnabled
+    && !searchIsActive
+    && shouldShowForIntent(activeIntent, ['add-user', 'manage-secrets']);
   const showSignInLink = searchIsActive
     ? userTaskSearchMatches.signInLink
     : shouldShowForIntent(activeIntent, ['add-user', 'manage-user', 'manage-secrets']);
@@ -336,9 +354,21 @@ export default component$(() => {
     }))
     .filter((section) => section.steps.length > 0 || (section.id === 'identity' && showUserManagement));
   const typedUsername = username.value.trim();
-  const typedUserGroups = currentUser && typedUsername === currentUser.username ? currentUser.groups : [];
-  const unassignedAccessGroups = accessGroups.filter((group) => !typedUserGroups.includes(group));
-  const assignedAccessGroups = accessGroups.filter((group) => typedUserGroups.includes(group));
+  const membershipIsKnown = Boolean(currentUser && typedUsername === currentUser.username);
+  const targetIsConfiguredOperator = Boolean(
+    homepage.data?.canaryAdminUser && typedUsername === homepage.data.canaryAdminUser,
+  );
+  const typedUserGroups = membershipIsKnown ? currentUser?.groups ?? [] : [];
+  const unassignedAccessGroups = membershipIsKnown ? accessGroups.filter((group) => !typedUserGroups.includes(group)) : accessGroups;
+  const assignedAccessGroups = membershipIsKnown ? accessGroups.filter((group) => typedUserGroups.includes(group)) : [];
+  const candidateAccessGroups = membershipIsKnown
+    ? accessAction.value === 'grant' ? unassignedAccessGroups : assignedAccessGroups
+    : accessGroups;
+  const actionableAccessGroups = accessAction.value === 'revoke' && targetIsConfiguredOperator
+    ? candidateAccessGroups.filter((group) => group === 'app-admin'
+      ? false
+      : !groupManagement[group] || groupManagement[group] === 'manual')
+    : candidateAccessGroups;
 
   const setUsername = $((event: Event) => {
     const input = event.target as HTMLInputElement;
@@ -357,9 +387,24 @@ export default component$(() => {
 
   const toggleGroup = $((group: string, event: Event) => {
     const input = event.target as HTMLInputElement;
+    const isAppBundleGroup = groupManagement[group] === 'identity.appUsers';
+    const affectedGroups = accessAction.value === 'grant'
+      ? group === 'app-admin'
+        ? ['app-admin', ...appBundleAccessGroups]
+        : isAppBundleGroup
+          ? [...appBundleAccessGroups, ...(!input.checked && selectedGroups.value.includes('app-admin') ? ['app-admin'] : [])]
+          : [group]
+      : isAppBundleGroup
+        ? [...appBundleAccessGroups, 'app-admin']
+        : [group];
     selectedGroups.value = input.checked
-      ? [...new Set([...selectedGroups.value, group])].sort()
-      : selectedGroups.value.filter((current) => current !== group);
+      ? [...new Set([...selectedGroups.value, ...affectedGroups])].sort()
+      : selectedGroups.value.filter((current) => !affectedGroups.includes(current));
+  });
+
+  const selectAccessAction = $((action: AccessChangeAction) => {
+    accessAction.value = action;
+    selectedGroups.value = [];
   });
 
   const selectMode = $((mode: AdminModeId) => {
@@ -380,6 +425,7 @@ export default component$(() => {
       <span class="group-name" title={groupDescriptions[group] ?? 'No description available'}>
         {group}
       </span>
+      {groupManagement[group] && groupManagement[group] !== 'manual' && <small>{groupManagement[group]}</small>}
     </label>
   );
 
@@ -517,35 +563,87 @@ export default component$(() => {
                       {showGrantAccess && (
                         <AdminTask
                           title="Choose app and admin access"
-                          description="Select the groups that control apps, files, backups, and admin tools. Some apps need an account update before the change appears."
+                          description="Choose whether to grant or revoke access, then select the groups involved. Homepage separates live manual groups from memberships that must be changed in vars.nix."
                           activeIntent={activeIntent}
                           context="Admin terminal"
                           forceOpen={searchIsActive}
                           intents={['add-user', 'manage-user']}
                         >
+                          <div class="admin-intent-actions access-action-selector" role="group" aria-label="Access change action">
+                            <button
+                              type="button"
+                              class={{ selected: accessAction.value === 'grant' }}
+                              aria-pressed={accessAction.value === 'grant'}
+                              onClick$={() => selectAccessAction('grant')}
+                            >
+                              Grant access
+                            </button>
+                            <button
+                              type="button"
+                              class={{ selected: accessAction.value === 'revoke' }}
+                              aria-pressed={accessAction.value === 'revoke'}
+                              onClick$={() => selectAccessAction('revoke')}
+                            >
+                              Revoke access
+                            </button>
+                          </div>
                           {accessGroups.length > 0 ? (
                             <>
+                              {appBundleAccessGroups.length > 0 && (
+                                <p class="hint"><strong>Default app bundle:</strong> groups marked <code>identity.appUsers</code> cannot be changed independently by this configuration. Selecting any one selects the whole enabled-app bundle. This grants every enabled default app group above, not only one app. Granting <code>app-admin</code> also grants that bundle; revoking the bundle also revokes <code>app-admin</code> so an administrator is not left without access to the apps they manage.</p>
+                              )}
                               <div class="group-picker-section">
-                                <h4>Not assigned</h4>
-                                {unassignedAccessGroups.length > 0 ? (
-                                  <div class="group-picker">{unassignedAccessGroups.map((group) => renderGroupOption(group))}</div>
+                                <h4>{membershipIsKnown
+                                  ? accessAction.value === 'grant' ? 'Not assigned' : 'Currently assigned'
+                                  : accessAction.value === 'grant' ? 'Access to grant' : 'Access to revoke'}</h4>
+                                {actionableAccessGroups.length > 0 ? (
+                                  <div class="group-picker">{actionableAccessGroups.map((group) => renderGroupOption(group))}</div>
                                 ) : (
-                                  <p>This user already has every available group.</p>
+                                  <p>{accessAction.value === 'grant'
+                                    ? 'This user already has every available group.'
+                                    : 'This user does not have any of these groups.'}</p>
                                 )}
                               </div>
-                              <div class="group-picker-section">
-                                <h4>Already assigned</h4>
-                                {assignedAccessGroups.length > 0 ? (
-                                  <div class="group-picker">{assignedAccessGroups.map((group) => renderGroupOption(group))}</div>
-                                ) : (
-                                  <p>This user does not have any of these groups.</p>
-                                )}
-                              </div>
+                              {!membershipIsKnown && <p class="hint">Homepage does not query live membership for another person. Run the “Find user account” command first and verify the current groups in Kanidm before changing access. Never revoke a group merely because it appears in this evaluated catalog.</p>}
+                              {accessAction.value === 'revoke' && targetIsConfiguredOperator && (
+                                <div class="guide-callout">
+                                  <strong>The configured operator has inherited access</strong>
+                                  <p><code>identity.adminUser</code> deliberately inherits the default app bundle, <code>app-admin</code>, and both backup roles. Those groups are hidden from this revocation picker because removing the operator from the ordinary user lists will not revoke them. Treat changing the operator as a planned identity migration, not routine access removal.</p>
+                                </div>
+                              )}
                             </>
                           ) : (
                             <p>No app or admin access groups are available in the current Kanidm configuration.</p>
                           )}
-                          <AdminCommand command={membershipCommand} />
+                          {membershipCommand && (
+                            <>
+                              <p class="hint"><strong>Manual/additive membership:</strong> run this {accessAction.value === 'grant' ? 'grant' : 'revocation'} command in an authenticated admin terminal. {accessAction.value === 'grant'
+                                ? 'Extra members are preserved when this additive group is provisioned again.'
+                                : <>Before relying on the revocation, search <code>vars.nix</code> for the username: a member seeded by configuration must also be removed from its source list and deployed, or provisioning can add it again.</>}</p>
+                              <AdminCommand command={membershipCommand} />
+                              <p class="hint">Run <code>kanidm person get {userArg}</code> afterward and have the user sign out and back in before checking the result.</p>
+                            </>
+                          )}
+                          {managedMemberships.length > 0 && (
+                            <div class="guide-callout neutral">
+                              <strong>Repository-managed access: edit before deploying</strong>
+                              <p>These memberships come from configuration and cannot be changed by a Kanidm command alone.</p>
+                              <ol>
+                                {managedMemberships.map((selection) => (
+                                  <li key={selection.source}>
+                                    In <code>vars.nix</code>, {configuredMembershipEdit(selection.source, accessAction.value, configuredMemberValue)}.
+                                    {' '}This controls <code>{selection.groups.join(' ')}</code>. {configuredMembershipEffect(selection.source, accessAction.value)}
+                                  </li>
+                                ))}
+                                <li>Review the edited list for duplicate or unintended users, then save and validate <code>vars.nix</code>.</li>
+                                <li>Run <code>./scripts/deploy.sh --action test</code> from the repository folder. A live Kanidm command alone will be overwritten for these groups.</li>
+                                <li>After the deploy passes, run <code>kanidm person get {userArg}</code>, then have the user sign out and back in before testing access.</li>
+                              </ol>
+                            </div>
+                          )}
+                          {!membershipCommand && managedMemberships.length === 0 && (
+                            <p class="hint">Choose one or more groups above to generate the appropriate {accessAction.value === 'grant' ? 'grant' : 'revocation'} command or configuration checklist.</p>
+                          )}
                         </AdminTask>
                       )}
                       {showVaultwardenSignup && (
@@ -560,6 +658,12 @@ export default component$(() => {
                           <p>Have them open this URL and register with the same email used in Kanidm:</p>
                           <AdminCommand command={`https://passwords.${domain}/#/signup`} />
                         </AdminTask>
+                      )}
+                      {showVaultwardenUnavailable && (
+                        <div class="guide-callout neutral">
+                          <strong>Passwords account step unavailable</strong>
+                          <p>The Passwords service is disabled in this server configuration. Skip its signup step unless an administrator enables and deploys Vaultwarden first.</p>
+                        </div>
                       )}
                       {showSignInLink && (
                         <AdminTask

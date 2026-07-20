@@ -6,6 +6,9 @@ let
   hasModule = name: config.nixhomeserver.modules.${name} or false;
   moduleEnabled = name: hasModule name && (config.repo.${name}.enable or true);
   homepageEnabled = hasModule "homepage";
+  mailArchiveEnabled =
+    hasModule "mail-archive-ui"
+    && config.services.mail-archive-ui.enable;
   seerrEnabled = moduleEnabled "seerr";
   mediaAutomationEnabled = lib.any moduleEnabled [ "sonarr" "radarr" "prowlarr" "qbittorrent" "seerr" ];
   portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
@@ -13,10 +16,10 @@ let
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
     ++ vars.kanidmBackupUsers
-    ++ (vars.monitoringAccess.users or [ ])
+    ++ (vars.monitoringAccessUsers or [ ])
     ++ (vars.filesSftpUsers or [ ])
     ++ lib.optionals seerrEnabled (vars.seerrRequestManagers or [ ])
-    ++ (vars.fileAccess.usbUsers or [ ])
+    ++ (vars.fileAccessUsbUsers or [ ])
   );
   adminMailAddresses =
     if vars.kanidmAdminMailAddresses != [ ] then
@@ -34,10 +37,16 @@ let
       inherit members;
       overwriteMembers = false;
     };
+  mkManagedAccessGroup = members: {
+    inherit members;
+    # Backup authorization is a security boundary. Exact reconciliation also
+    # removes storage-only users left in the admin group by older releases.
+    overwriteMembers = true;
+  };
   backupAccessGroups = {
-    ${vars.backupAccess.adminGroup} = mkManualGroup vars.kanidmBackupUsers;
-  } // lib.optionalAttrs (vars.backupAccess.storageGroup != vars.backupAccess.adminGroup) {
-    ${vars.backupAccess.storageGroup} = mkManualGroup vars.kanidmBackupUsers;
+    ${vars.backupAdminGroup} = mkManagedAccessGroup vars.kanidmBackupAdminUsers;
+  } // {
+    ${vars.backupStorageGroup} = mkManagedAccessGroup vars.kanidmBackupStorageUsers;
   };
   delegatedOperatorGroups = [
     "idm_account_policy_admins"
@@ -51,18 +60,34 @@ let
   delegatedOperatorGroupDescriptions = lib.genAttrs delegatedOperatorGroups (group:
     "Kanidm delegated operator group used for ${group} workflows."
   );
+  fileAccessGroupDescriptions = builtins.listToAttrs [
+    {
+      name = vars.fileAccess.webAccessGroup;
+      value = "Grants browser file access and personal file-root provisioning.";
+    }
+    {
+      name = vars.fileAccess.sftpAccessGroup;
+      value = "Grants access to the dedicated SFTP endpoint.";
+    }
+    {
+      name = vars.fileAccess.sharedAccessGroup;
+      value = "Grants access to the shared files view.";
+    }
+    {
+      name = vars.fileAccess.usbAccessGroup;
+      value = "Grants access to the mounted USB files view.";
+    }
+  ];
   coreKanidmGroupDescriptions = {
     "domain_admins" = "Builtin domain-wide administrative group used by platform administration.";
     "users" = "Baseline group for normal users and standard identity resolution.";
     "app-admin" = "Grants application admin access for app surfaces that trust the app-admin group.";
-    "${vars.monitoringAccess.group}" = "Grants access to the monitoring dashboard without application-admin privileges.";
-    "${vars.fileAccess.webAccessGroup}" = "Grants browser file access and personal file-root provisioning.";
-    "${vars.fileAccess.sftpAccessGroup}" = "Grants access to the dedicated SFTP endpoint.";
-    "${vars.fileAccess.sharedAccessGroup}" = "Grants access to the shared files view.";
-    "${vars.fileAccess.usbAccessGroup}" = "Grants access to the mounted USB files view.";
-    "${vars.backupAccess.adminGroup}" = "Grants backup administration access.";
-  } // delegatedOperatorGroupDescriptions // lib.optionalAttrs (vars.backupAccess.storageGroup != vars.backupAccess.adminGroup) {
-    "${vars.backupAccess.storageGroup}" = "Grants read access to encrypted backup repository files.";
+  } // {
+    "${vars.monitoringAccessGroup}" = "Grants access to the monitoring dashboard without application-admin privileges.";
+  } // fileAccessGroupDescriptions // {
+    "${vars.backupAdminGroup}" = "Grants backup administration access.";
+  } // delegatedOperatorGroupDescriptions // {
+    "${vars.backupStorageGroup}" = "Grants read access to encrypted backup repository files.";
   };
   appKanidmGroupDescriptions =
     lib.optionalAttrs (hasModule "audiobookshelf")
@@ -84,7 +109,7 @@ let
     // lib.optionalAttrs (moduleEnabled "kiwix") {
       "kiwix-users" = "Grants Kiwix offline wiki access.";
     }
-    // lib.optionalAttrs (hasModule "mail-archive-ui") {
+    // lib.optionalAttrs mailArchiveEnabled {
       "mail-archive-users" = "Grants private mail archive access.";
     }
     // lib.optionalAttrs mediaAutomationEnabled {
@@ -101,15 +126,17 @@ let
     [
       "users"
       "app-admin"
-      vars.monitoringAccess.group
+      vars.monitoringAccessGroup
       vars.fileAccess.webAccessGroup
+      vars.fileAccess.sftpAccessGroup
+      vars.fileAccess.sharedAccessGroup
       vars.fileAccess.usbAccessGroup
-      vars.backupAccess.adminGroup
-      vars.backupAccess.storageGroup
+      vars.backupAdminGroup
+      vars.backupStorageGroup
     ]
     ++ lib.optionals (hasModule "youtube-downloader") [ "downloads-users" ]
     ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-users" ]
-    ++ lib.optionals (hasModule "mail-archive-ui") [ "mail-archive-users" ]
+    ++ lib.optionals mailArchiveEnabled [ "mail-archive-users" ]
     ++ lib.optionals mediaAutomationEnabled [ "media-automation-users" ]
   );
   personIdentityRecords =
@@ -120,6 +147,24 @@ let
         mailAddresses = adminMailAddresses;
       };
     };
+  fileAccessGroups = builtins.listToAttrs [
+    {
+      name = vars.fileAccess.webAccessGroup;
+      value = mkManualGroup vars.kanidmAppUsers;
+    }
+    {
+      name = vars.fileAccess.sftpAccessGroup;
+      value = mkManualGroup (vars.filesSftpUsers or [ ]);
+    }
+    {
+      name = vars.fileAccess.sharedAccessGroup;
+      value = mkManualGroup [ ];
+    }
+    {
+      name = vars.fileAccess.usbAccessGroup;
+      value = mkManualGroup (vars.fileAccessUsbUsers or [ ]);
+    }
+  ];
   mkMailArgs = mailAddresses:
     lib.concatMapStringsSep " " (mail: "--mail ${lib.escapeShellArg mail}") mailAddresses;
   mkPersonIdentityReconcile = name:
@@ -169,13 +214,10 @@ in
         "domain_admins" = mkManualGroup [ ];
       } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
         "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
-        ${vars.monitoringAccess.group} = mkManualGroup vars.monitoringAccess.users;
-        ${vars.fileAccess.webAccessGroup} = mkManualGroup vars.kanidmAppUsers;
-        ${vars.fileAccess.sftpAccessGroup} = mkManualGroup (vars.filesSftpUsers or [ ]);
-        ${vars.fileAccess.sharedAccessGroup} = mkManualGroup [ ];
-        ${vars.fileAccess.usbAccessGroup} = mkManualGroup (vars.fileAccess.usbUsers or [ ]);
         users = mkManualGroup vars.kanidmAppUsers;
-      } // backupAccessGroups // lib.optionalAttrs seerrEnabled {
+      } // {
+        ${vars.monitoringAccessGroup} = mkManualGroup (vars.monitoringAccessUsers or [ ]);
+      } // fileAccessGroups // backupAccessGroups // lib.optionalAttrs seerrEnabled {
         ${vars.seerrRequestManagerGroup} = mkManualGroup vars.seerrRequestManagers;
       };
 

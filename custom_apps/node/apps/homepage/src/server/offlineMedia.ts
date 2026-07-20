@@ -12,6 +12,10 @@ import type {
 const DEVICE_ID_PATTERN = /^[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}-[A-Z2-7]{7}$/;
 const DEVICE_NAME_PATTERN = /^[A-Za-z0-9._ -]{1,64}$/;
 
+export class OfflineMediaInputError extends Error {
+  override readonly name = 'OfflineMediaInputError';
+}
+
 export type OfflineMediaEnrollInput = {
   deviceId?: unknown;
   deviceName?: unknown;
@@ -19,11 +23,11 @@ export type OfflineMediaEnrollInput = {
 
 export const normaliseSyncthingDeviceId = (raw: unknown): string => {
   if (typeof raw !== 'string') {
-    throw new Error('deviceId must be a string');
+    throw new OfflineMediaInputError('deviceId must be a string');
   }
   const deviceId = raw.trim().toUpperCase();
   if (!DEVICE_ID_PATTERN.test(deviceId)) {
-    throw new Error('deviceId must be a valid Syncthing device ID');
+    throw new OfflineMediaInputError('deviceId must be a valid Syncthing device ID');
   }
   return deviceId;
 };
@@ -33,11 +37,11 @@ export const normaliseSyncthingDeviceName = (raw: unknown, username: string): st
     return `${username}-media`;
   }
   if (typeof raw !== 'string') {
-    throw new Error('deviceName must be a string');
+    throw new OfflineMediaInputError('deviceName must be a string');
   }
   const deviceName = raw.trim();
   if (!DEVICE_NAME_PATTERN.test(deviceName)) {
-    throw new Error('deviceName must be 1-64 printable characters');
+    throw new OfflineMediaInputError('deviceName must be 1-64 printable characters');
   }
   return deviceName;
 };
@@ -56,9 +60,18 @@ export const getOfflineMediaSetup = async (config: AppConfig, user: CurrentUser)
     setup.serverDeviceId = await getSyncthingDeviceId(config);
   }
   if (config.offlineMediaStatusCommand) {
+    const runtimeSetup = await runJsonHelper<Partial<OfflineMediaSetup>>(
+      config,
+      config.offlineMediaStatusCommand,
+      [user.username],
+    );
     setup = {
       ...setup,
-      ...(await runJsonHelper<Partial<OfflineMediaSetup>>(config, config.offlineMediaStatusCommand, [user.username])),
+      ...runtimeSetup,
+      // Connection routes and their meanings are declarative network data.
+      // A runtime status helper must not replace them with stale or malformed
+      // values while reporting devices and folders.
+      connectionAddresses: base.connectionAddresses,
     };
   }
   return setup;

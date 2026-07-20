@@ -35,7 +35,7 @@ export const installSftpPublicKey = async (config: AppConfig, user: CurrentUser,
   const details = await runInstaller(config, installCommand, user.username, publicKey);
   return {
     ok: true,
-    message: 'SFTP public key saved and verified on the server.',
+    message: 'SFTP device key added and verified on the server.',
     details,
   };
 };

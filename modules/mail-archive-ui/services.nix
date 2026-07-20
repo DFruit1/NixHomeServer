@@ -55,7 +55,7 @@ in
     enable = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Whether to run the private mail archive UI service.";
+      description = "Whether to enable the private Mail Archive app and its active integration surfaces.";
     };
 
     package = lib.mkOption {
@@ -154,21 +154,14 @@ in
     systemd.services.mail-archive-ui = {
       description = "Mail archive UI";
       wantedBy = [ "multi-user.target" ];
-      unitConfig = lib.mkMerge [
-        (lib.mkIf vars.dataRootIsMountPoint {
-          ConditionPathIsMountPoint = vars.dataRoot;
-        })
-        {
-          RequiresMountsFor = [
-            cfg.storeRoot
-            cfg.dataDir
-            cfg.accountStateRoot
-            cfg.runtimeDir
-            cfg.lockDir
-          ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
-          ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
-        }
-      ];
+      unitConfig.RequiresMountsFor = [
+        cfg.storeRoot
+        cfg.dataDir
+        cfg.accountStateRoot
+        cfg.runtimeDir
+        cfg.lockDir
+      ] ++ lib.optional (cfg.paperlessConsumeRoot != null) cfg.paperlessConsumeRoot
+      ++ lib.optional (cfg.paperlessHandoffStagingRoot != null) cfg.paperlessHandoffStagingRoot;
       wants = [
         "data-pool-layout.service"
         "local-fs.target"
@@ -229,9 +222,6 @@ in
         "network-online.target"
         "unbound.service"
       ];
-      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
-        ConditionPathIsMountPoint = vars.dataRoot;
-      };
       serviceConfig = {
         Type = "oneshot";
         User = user;
@@ -286,24 +276,17 @@ in
         "mail-archive-ui.service"
         "local-fs.target"
       ];
-      unitConfig = lib.mkMerge [
-        (lib.mkIf vars.dataRootIsMountPoint {
-          ConditionPathIsMountPoint = vars.dataRoot;
-        })
-        {
-          RequiresMountsFor = [
-            cfg.storeRoot
-            cfg.dataDir
-            cfg.accountStateRoot
-            cfg.runtimeDir
-            cfg.lockDir
-            cfg.paperlessConsumeRoot
-          ]
-          ++ lib.optional
-            (cfg.paperlessHandoffStagingRoot != null)
-            cfg.paperlessHandoffStagingRoot;
-        }
-      ];
+      unitConfig.RequiresMountsFor = [
+        cfg.storeRoot
+        cfg.dataDir
+        cfg.accountStateRoot
+        cfg.runtimeDir
+        cfg.lockDir
+        cfg.paperlessConsumeRoot
+      ]
+      ++ lib.optional
+        (cfg.paperlessHandoffStagingRoot != null)
+        cfg.paperlessHandoffStagingRoot;
       serviceConfig = {
         Type = "oneshot";
         User = user;

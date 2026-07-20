@@ -11,9 +11,11 @@ export const useHomepageData = routeLoader$(async (event): Promise<HomepageLoad>
       import('../server/config.js'),
       import('../server/homepageData.js'),
     ]);
-    return {
-      data: await buildHomepageData(loadConfig(), headersToIncomingHttpHeaders(event.request.headers)),
-    };
+    const data = await buildHomepageData(loadConfig(), headersToIncomingHttpHeaders(event.request.headers));
+    if (event.url.pathname.startsWith('/admins') && !data.isAdmin) {
+      event.status(403);
+    }
+    return { data };
   } catch (caught) {
     return {
       error: caught instanceof Error ? caught.message : String(caught),
@@ -28,10 +30,11 @@ export default component$(() => {
   useContextProvider(HomepageContext, homepage.value);
   const data = homepage.value.data;
   const user = data?.user;
+  const profileStorageKey = `homepage.profileImage.${user?.username ?? 'unknown'}`;
 
   useVisibleTask$(({ track }) => {
     const pathname = track(() => location.url.pathname);
-    profileImage.value = window.localStorage.getItem('homepage.profileImage') ?? '';
+    profileImage.value = window.localStorage.getItem(profileStorageKey) ?? '';
     document.title = brandedPageTitle(data?.brandName, pageNameForPath(pathname));
   });
 
@@ -47,14 +50,18 @@ export default component$(() => {
         return;
       }
       profileImage.value = reader.result;
-      window.localStorage.setItem('homepage.profileImage', reader.result);
+      try {
+        window.localStorage.setItem(profileStorageKey, reader.result);
+      } catch {
+        // Keep the preview for this page even when the browser's local quota is full.
+      }
     });
     reader.readAsDataURL(file);
   });
 
   const clearProfileImage = $(() => {
     profileImage.value = '';
-    window.localStorage.removeItem('homepage.profileImage');
+    window.localStorage.removeItem(profileStorageKey);
   });
 
   return (

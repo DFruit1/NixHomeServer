@@ -146,15 +146,15 @@ create_deploy_repo_archive() {
     return "$tar_status"
   fi
 
-  tar -C "$repo_root" \
-    --exclude=.git \
-    --exclude='./result' \
-    --exclude='./result-*' \
-    --exclude='./.cache' \
-    --exclude='./secrets/unencrypted' \
-    --exclude='./SensitivePrivateSecrets' \
-    --exclude='./custom_apps/rust/apps/mail-archive-ui/target' \
-    -cf "$archive_path" .
+  # Deploy source must come from Git's explicit tracked-file manifest. A broad
+  # directory tar from a copied/ZIP checkout can silently include ignored
+  # plaintext secrets, node_modules, caches, and other host-local state; Nix
+  # would then import those files into the build host store. The already staged
+  # remote archive never calls this helper, so failing closed here does not
+  # interfere with executor-side path-flake evaluation.
+  echo "❌ Refusing to create a deployment archive outside a Git worktree." >&2
+  echo "   Clone the repository with Git, review/stage intended files, and retry." >&2
+  return 1
 }
 
 stage_archive_on_remote() {

@@ -12,8 +12,9 @@ usage() {
   cat <<'EOF'
 Usage: scripts/check-public-routes.sh [--hostname <flake-hostname>] [--url <url>] [--attempts <count>] [--retry-delay <seconds>] [--max-time <seconds>]
 
-Check public Caddy routes for gateway/server errors. By default, URLs are
-derived from evaluated Caddy virtual hosts under vars.domain.
+Check public Caddy routes for successful responses or explicit redirects. By
+default, URLs are derived from evaluated Caddy virtual hosts under vars.domain.
+Unexpected 4xx/5xx responses and redirects without a Location header fail.
 
 PUBLIC_ROUTE_CHECK_URLS may be set to a newline-delimited URL list for tests.
 EOF
@@ -142,14 +143,16 @@ fi
 
 check_url_once() {
   local url="$1"
-  local body_file status curl_status
+  local body_file headers_file status curl_status
 
   body_file="$(mktemp /tmp/public-route-check.XXXXXX)"
+  headers_file="$(mktemp /tmp/public-route-headers.XXXXXX)"
   set +e
   status="$(curl \
     --silent \
     --show-error \
     --max-time "$max_time" \
+    --dump-header "$headers_file" \
     --output "$body_file" \
     --write-out '%{http_code}' \
     "$url")"
@@ -157,30 +160,40 @@ check_url_once() {
   set -e
 
   if ((curl_status != 0)); then
-    rm -f "$body_file"
+    rm -f "$body_file" "$headers_file"
     echo "curl failed with exit ${curl_status}"
     return 1
   fi
 
   if [[ ! "$status" =~ ^[0-9][0-9][0-9]$ ]]; then
-    rm -f "$body_file"
+    rm -f "$body_file" "$headers_file"
     echo "unexpected HTTP status '${status}'"
     return 1
   fi
 
-  if [[ "$status" =~ ^5 ]]; then
-    rm -f "$body_file"
+  if [[ ! "$status" =~ ^[23] ]]; then
+    rm -f "$body_file" "$headers_file"
     echo "HTTP ${status}"
     return 1
   fi
 
+  # RFC-compliant redirects may use either an absolute URI or an absolute-path
+  # reference (for example, /login). Require an actual destination without
+  # rejecting healthy applications that deliberately use the latter.
+  if [[ "$status" =~ ^3 ]] \
+    && ! grep -Eiq '^location:[[:space:]]*[^[:space:]]+' "$headers_file"; then
+    rm -f "$body_file" "$headers_file"
+    echo "HTTP ${status} without a non-empty Location header"
+    return 1
+  fi
+
   if grep -aiq 'bad gateway' "$body_file"; then
-    rm -f "$body_file"
+    rm -f "$body_file" "$headers_file"
     echo "response body contains Bad Gateway"
     return 1
   fi
 
-  rm -f "$body_file"
+  rm -f "$body_file" "$headers_file"
   echo "HTTP ${status}"
   return 0
 }

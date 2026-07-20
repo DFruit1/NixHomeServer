@@ -30,6 +30,7 @@ pin_bootstrap_source_snapshot() {
 
 build_pinned_disko_plan() {
   local host="$1"
+  local configuration_suffix="${2:--bootstrap}"
 
   if [[ -z "${NIXHOMESERVER_PINNED_FLAKE_REF:-}" ]] \
     || [[ "${NIXHOMESERVER_FLAKE_REF_FOR_EVAL:-}" != "$NIXHOMESERVER_PINNED_FLAKE_REF" ]] \
@@ -39,7 +40,37 @@ build_pinned_disko_plan() {
   fi
 
   nix build --no-link --print-out-paths --no-update-lock-file --no-write-lock-file \
-    "${NIXHOMESERVER_PINNED_FLAKE_REF}#nixosConfigurations.${host}-bootstrap.config.system.build.diskoScript"
+    "${NIXHOMESERVER_PINNED_FLAKE_REF}#nixosConfigurations.${host}${configuration_suffix}.config.system.build.diskoScript"
+}
+
+build_pinned_target_system() {
+  local host="$1"
+
+  if [[ -z "${NIXHOMESERVER_PINNED_FLAKE_REF:-}" ]] \
+    || [[ "${NIXHOMESERVER_FLAKE_REF_FOR_EVAL:-}" != "$NIXHOMESERVER_PINNED_FLAKE_REF" ]] \
+    || [[ "${NIXHOMESERVER_REPO_ROOT_FOR_EVAL:-}" != "${NIXHOMESERVER_PINNED_SOURCE_PATH:-}" ]]; then
+    echo "❌ The bootstrap source pin is missing or changed; refusing to build the target system." >&2
+    return 1
+  fi
+
+  nix build --no-link --print-out-paths --no-update-lock-file --no-write-lock-file \
+    "${NIXHOMESERVER_PINNED_FLAKE_REF}#nixosConfigurations.${host}.config.system.build.toplevel"
+}
+
+validate_pinned_target_system() {
+  local system_path="$1"
+  local canonical_system
+
+  canonical_system="$(readlink -f -- "$system_path" 2>/dev/null || true)"
+  if [[ ! "$system_path" =~ ^/nix/store/[0-9a-z]{32}-[^/[:space:]]+$ ]] \
+    || [[ "$system_path" == *$'\n'* ]] \
+    || [[ "$canonical_system" != "$system_path" ]] \
+    || [[ ! -d "$system_path" ]] \
+    || [[ ! -x "$system_path/activate" ]] \
+    || [[ ! -x "$system_path/bin/switch-to-configuration" ]]; then
+    echo "❌ Nix did not return one complete, immutable target-system closure." >&2
+    return 1
+  fi
 }
 
 validate_pinned_disko_plan() {

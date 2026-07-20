@@ -18,7 +18,7 @@ let
       ++ (vars.kanidmAppUsers or [ ])
       ++ (vars.filesSftpUsers or [ ])
       ++ (vars.kanidmBackupUsers or [ ])
-      ++ (vars.fileAccess.usbUsers or [ ])
+      ++ (vars.fileAccessUsbUsers or [ ])
     );
   oauth2ClientSecretFile = "${secretRuntimeDir}/oauth2-client-secret";
   oauth2ClientSecretKanidmFile = "${secretRuntimeDir}/oauth2-client-secret-kanidm";

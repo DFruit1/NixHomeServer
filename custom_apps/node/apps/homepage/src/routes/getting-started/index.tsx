@@ -6,16 +6,14 @@ import type { ServiceCard } from '../../shared/types.js';
 
 const stepIds = ['account', 'recovery', 'services', 'uploads', 'devices', 'finish'] as const;
 type GettingStartedStepId = (typeof stepIds)[number];
-type SetupStatus = 'verified' | 'manual' | 'pending' | 'unavailable';
+type SetupStatus = 'verified' | 'available' | 'manual' | 'pending' | 'unavailable';
 
 const isStepId = (value: string | null): value is GettingStartedStepId => stepIds.includes(value as GettingStartedStepId);
-const manualCheckStorageKey = 'homepage.gettingStartedChecks';
-
 const serviceStatus = (service: ServiceCard | undefined): SetupStatus => {
   if (!service) {
     return 'unavailable';
   }
-  return service.enabled ? 'verified' : 'unavailable';
+  return service.enabled ? 'available' : 'unavailable';
 };
 
 export default component$(() => {
@@ -25,6 +23,7 @@ export default component$(() => {
   const data = homepage.data;
   const domain = data?.domain ?? 'example.test';
   const username = data?.user.username ?? '{username}';
+  const manualCheckStorageKey = `homepage.gettingStartedChecks.${username}`;
   const services = data?.services ?? [];
   const enabledServices = services.filter((service) => service.enabled);
   const serviceById = (id: string) => services.find((service) => service.id === id);
@@ -36,7 +35,11 @@ export default component$(() => {
   const passwordsStatus = serviceStatus(serviceById('passwords'));
   const filesStatus = serviceStatus(serviceById('files'));
   const photosStatus = serviceStatus(serviceById('photos'));
+  const videosStatus = serviceStatus(serviceById('videos'));
   const offlineMediaStatus = serviceStatus(serviceById('offline-media'));
+  const filesWebAvailable = filesStatus === 'available';
+  const sftpAvailable = data?.sftp?.allowed === true;
+  const fileTransferAvailable = filesWebAvailable || sftpAvailable;
   const requestedStep = location.url.searchParams.get('step');
   const activeStepId: GettingStartedStepId = isStepId(requestedStep) ? requestedStep : 'account';
 
@@ -46,7 +49,15 @@ export default component$(() => {
       return;
     }
     try {
-      Object.assign(manualChecks, JSON.parse(saved) as Record<string, boolean>);
+      const parsed = JSON.parse(saved) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('invalid saved setup progress');
+      }
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === 'boolean') {
+          manualChecks[key] = value;
+        }
+      }
     } catch {
       window.localStorage.removeItem(manualCheckStorageKey);
     }
@@ -54,7 +65,11 @@ export default component$(() => {
 
   const setManualCheck = $((id: string, checked: boolean) => {
     manualChecks[id] = checked;
-    window.localStorage.setItem(manualCheckStorageKey, JSON.stringify(manualChecks));
+    try {
+      window.localStorage.setItem(manualCheckStorageKey, JSON.stringify(manualChecks));
+    } catch {
+      // Progress remains usable for this page even if browser storage is unavailable.
+    }
   });
 
   const closeStepMenu = $((_event: Event, target: HTMLAnchorElement) => {
@@ -63,6 +78,7 @@ export default component$(() => {
 
   const statusLabel = (status: SetupStatus): string => {
     if (status === 'verified' || status === 'manual') return 'Done';
+    if (status === 'available') return 'Available — not yet checked';
     if (status === 'unavailable') return 'Skip — this app is not available';
     return 'Not done';
   };
@@ -111,19 +127,19 @@ export default component$(() => {
     {
       id: 'upload-ready',
       label: 'Uploaded a test file or connected Files to my computer',
-      status: filesStatus === 'verified' ? (manualChecks['upload-ready'] ? 'manual' : 'pending') : 'unavailable',
+      status: fileTransferAvailable ? (manualChecks['upload-ready'] ? 'manual' : 'pending') : 'unavailable',
       manual: true,
     },
     {
       id: 'photos-ready',
       label: 'Checked that a phone photo appears in Photos',
-      status: photosStatus === 'verified' ? (manualChecks['photos-ready'] ? 'manual' : 'pending') : 'unavailable',
+      status: photosStatus === 'available' ? (manualChecks['photos-ready'] ? 'manual' : 'pending') : 'unavailable',
       manual: true,
     },
     {
       id: 'offline-ready',
       label: 'Connected this device to Offline Media',
-      status: offlineMediaStatus === 'verified' ? (manualChecks['offline-ready'] ? 'manual' : 'pending') : 'unavailable',
+      status: offlineMediaStatus === 'available' ? (manualChecks['offline-ready'] ? 'manual' : 'pending') : 'unavailable',
       manual: true,
     },
     {
@@ -167,7 +183,6 @@ export default component$(() => {
           <ul class="setup-list">{['signed-in', 'account-secured'].map(renderSetupItem)}</ul>
           <ol class="steps">
             <li>Open Kanidm. Check that your name and email address are correct.</li>
-            <li>Open your sign-in settings. If possible, add a second way to sign in, such as a passkey or a code from an authenticator app.</li>
             <li>Check that losing one device would not remove every way you can sign in.</li>
           </ol>
           <div class="getting-started-actions compact">
@@ -189,12 +204,12 @@ export default component$(() => {
           <p class="step-lead">Save your sign-in details in a password manager. Keep at least one recovery method somewhere that still works when this server is offline.</p>
           <ul class="setup-list">{['recovery-saved'].map(renderSetupItem)}</ul>
           <ol class="steps">
-            <li>{passwordsStatus === 'verified' ? 'Open the Passwords app and create an account with the same email address you use for Kanidm.' : 'Use a password manager that you trust.'}</li>
+            <li>{passwordsStatus === 'available' ? 'Open the Passwords app and create its separate Vaultwarden account. Using your Kanidm email is a naming convention only; it is not SSO and the server does not verify that address.' : 'Use a password manager that you trust.'}</li>
             <li>Save your Kanidm username, sign-in page, and password. Note which devices hold your passkeys or authenticator app.</li>
             <li>Keep recovery codes in a second secure place that does not rely on this server.</li>
             <li>If an app gives you its own password, save that too. It may be different from your Kanidm password.</li>
           </ol>
-          {passwordsStatus === 'verified' ? (
+          {passwordsStatus === 'available' ? (
             <div class="getting-started-actions compact">
               <a class="primary-link" href={passwordsUrl} target="_blank" rel="noreferrer">Open Passwords</a>
             </div>
@@ -214,7 +229,7 @@ export default component$(() => {
         <>
           <span class="eyebrow">Step 3 · Services</span>
           <h2>Open your apps</h2>
-          <p class="step-lead">The Services page shows the apps you can use. You currently have {enabledServices.length} app{enabledServices.length === 1 ? '' : 's'}.</p>
+          <p class="step-lead">The Services page shows {enabledServices.length} installed app{enabledServices.length === 1 ? '' : 's'} your account is authorised to use. This list is generated from configuration; opening each app is the health check.</p>
           <ul class="setup-list">{['services-opened'].map(renderSetupItem)}</ul>
           {enabledServices.length > 0 && (
             <div class="available-service-list" aria-label="Available services">
@@ -228,6 +243,11 @@ export default component$(() => {
             <li>If an app creates a separate password, save it in your password manager.</li>
             <li>If an app is missing, ask an admin to check your access. If an app will not open, tell the admin its name and copy the error message.</li>
           </ol>
+          {videosStatus === 'available' && (
+            <aside class="guide-callout neutral">
+              <strong>Videos uses a separate Jellyfin password.</strong> Before your first login, ask an administrator for the generated initial password. Sign in with your Kanidm username, change that password immediately, and save the replacement in your password manager.
+            </aside>
+          )}
           <div class="getting-started-actions compact">
             <Link class="primary-link" href="/">Open Services</Link>
           </div>
@@ -243,22 +263,22 @@ export default component$(() => {
         <>
           <span class="eyebrow">Step 4 · Files</span>
           <h2>Choose how to add files</h2>
-          <p class="step-lead">For a few files, upload them in your web browser. If you move files often, you can connect Files to your computer so it appears like another folder.</p>
+          <p class="step-lead">{filesWebAvailable ? 'Use the Files web app for a few files.' : 'Browser file uploads are not available to your account.'} {sftpAvailable ? 'For regular or large transfers, you can also connect the server to your computer as a folder.' : 'Your account does not currently have the separate SFTP/SSHFS connection permission.'}</p>
           <ul class="setup-list">{['upload-ready'].map(renderSetupItem)}</ul>
-          {filesStatus === 'verified' ? (
+          {fileTransferAvailable ? (
             <>
               <div class="choice-grid">
-                <article><strong>Upload in your browser</strong><span>Best for a few files. Open Files, choose the folder for that type of content, then drag your files into it.</span></article>
-                <article><strong>Connect Files to your computer</strong><span>Best for regular or large transfers. Follow the guide for Windows, macOS, or Linux.</span></article>
+                {filesWebAvailable && <article><strong>Upload in your browser</strong><span>Best for a few files. Open Files, choose the folder for that type of content, then drag your files into it.</span></article>}
+                {sftpAvailable && <article><strong>Connect Files to your computer</strong><span>Best for regular or large transfers. Follow the LAN-only guide for Windows, macOS, or Linux.</span></article>}
               </div>
               <aside class="guide-callout neutral">Check the upload guide before choosing a folder. Each app imports files from a specific folder. Using the wrong one can stop the file from appearing or create a duplicate later.</aside>
               <div class="getting-started-actions compact">
-                <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">Open Files</a>
+                {filesWebAvailable && <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">Open Files</a>}
                 <Link class="secondary-link" href="/uploads">See where and how to upload</Link>
               </div>
             </>
           ) : (
-            <aside class="guide-callout neutral">The Files app is not available to you. Skip this step, or ask an admin if you need access.</aside>
+            <aside class="guide-callout neutral">Neither browser file uploads nor SFTP/SSHFS are available to you. Skip this step, or ask an admin if you need file-transfer access.</aside>
           )}
         </>
       ),
@@ -275,14 +295,14 @@ export default component$(() => {
           <p class="step-lead">This step is optional. Connect only the apps that you want to use on this phone or computer.</p>
           <ul class="setup-list">{['photos-ready', 'offline-ready'].map(renderSetupItem)}</ul>
           <div class="device-setup-list">
-            {photosStatus === 'verified' && (
+            {photosStatus === 'available' && (
               <article>
                 <div><span class="eyebrow">Phone backup</span><h3>Photos</h3></div>
                 <p>Install the Immich app and enter <strong>{photosUrl}</strong> when it asks for the server address. Sign in, choose the phone albums to back up, and keep the app open for the first upload. Then check that a new photo appears in Photos.</p>
                 <a class="secondary-link" href={photosUrl} target="_blank" rel="noreferrer">Open Photos</a>
               </article>
             )}
-            {offlineMediaStatus === 'verified' && (
+            {offlineMediaStatus === 'available' && (
               <article>
                 <div><span class="eyebrow">Offline access</span><h3>Offline Media</h3></div>
                 <p>Install Syncthing, the app used to copy media to this device. Copy the device ID it shows, then open the Offline Media setup page and follow the steps. Check that your device appears before waiting for files to download.</p>

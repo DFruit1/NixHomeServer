@@ -73,6 +73,26 @@ let
     youtube-downloader = [ "youtubeDownloaderOauth2ProxyClientSecret" "youtubeDownloaderOauth2ProxyCookieSecret" ];
   };
 
+  moduleGuardedServices = {
+    immich = [ "immich-storage-layout-v1" "immich-server" ];
+    kavita = [ "kavita-storage-layout-v1" "kavita" "kavita-stale-reference-cleanup" ];
+    kiwix = [ "kiwix-library-root-layout-v1" "kiwix-library-sync" "kiwix-library-watch" "kiwix-serve" ];
+    mail-archive-ui = [ "mail-archive-ui-storage-layout-v1" "mail-archive-ui" "mail-archive-sync" "mail-archive-paperless-tasks" ];
+    offline-music = [ "offline-media-reconcile" ];
+    paperless = [
+      "paperless-storage-layout-v1"
+      "paperless-consumer"
+      "paperless-scheduler"
+      "paperless-task-queue"
+      "paperless-web"
+      "paperless-exporter"
+      "paperless-stale-reference-check"
+    ];
+    qbittorrent = [ "qbittorrent" "media-automation-bootstrap-qbittorrent" ];
+    radarr = [ "radarr" "media-automation-bootstrap-radarr" ];
+    sonarr = [ "sonarr" "media-automation-bootstrap-sonarr" ];
+  };
+
   allVariants = [ "core-only" "prowlarr-only" ] ++ map (name: "without-${name}") appNames;
   variants = requestedVariants;
 
@@ -91,6 +111,7 @@ let
         services = host.config.systemd.services;
         ageSecretNames = builtins.attrNames host.config.age.secrets;
         registry = host.config.nixhomeserver.modules;
+        guardedServices = host.config.repo.storage.dataPool.guardedServices;
         expectedRegistry = builtins.listToAttrs (map
           (name: {
             inherit name;
@@ -116,9 +137,9 @@ let
           selectedServicesUseLayout = lib.all appServiceUsesLayout mediaApps;
           layoutHasRequiredVideoRoots =
             (!builtins.elem "radarr" mediaApps
-              || lib.hasInfix "${vars.sharedRoot}/_Videos/_Movies" mediaLayoutScript)
+            || lib.hasInfix "${vars.sharedRoot}/_Videos/_Movies" mediaLayoutScript)
             && (!builtins.elem "sonarr" mediaApps
-              || lib.hasInfix "${vars.sharedRoot}/_Videos/_Shows" mediaLayoutScript);
+            || lib.hasInfix "${vars.sharedRoot}/_Videos/_Shows" mediaLayoutScript);
           layoutHasQbittorrentRoot =
             !builtins.elem "qbittorrent" mediaApps
             || lib.hasInfix "${vars.sharedRoot}/_Downloads/qbittorrent" mediaLayoutScript;
@@ -134,7 +155,28 @@ let
             builtins.elem "homepage" selectedApps
             && builtins.hasAttr "HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND"
               services.homepage.environment;
+          disabledCleanupPresent = builtins.hasAttr "offline-media-disabled-cleanup" services;
+          dedicatedAccessGroupPresent =
+            (vars.offlineMedia.accessGroup or "users") != "users"
+            && builtins.hasAttr (vars.offlineMedia.accessGroup or "users")
+              host.config.services.kanidm.provision.groups;
+          dedicatedGatewayScopePresent =
+            (vars.offlineMedia.accessGroup or "users") != "users"
+            && builtins.hasAttr (vars.offlineMedia.accessGroup or "users")
+              host.config.services.kanidm.provision.systems.oauth2.auth-gateway-web.scopeMaps;
+          dedicatedHomepageScopePresent =
+            (vars.offlineMedia.accessGroup or "users") != "users"
+            && builtins.elem "homepage" selectedApps
+            && builtins.hasAttr (vars.offlineMedia.accessGroup or "users")
+              host.config.services.kanidm.provision.systems.oauth2.homepage-web.scopeMaps;
         };
+        homepageConfigDrv =
+          if builtins.elem "homepage" selectedApps then
+            builtins.head
+              (builtins.attrNames (builtins.getContext
+                (toString services.homepage.environment.HOMEPAGE_CONFIG_FILE)))
+          else
+            null;
         removedOwnedSecretsAbsent = lib.all
           (secret: !(builtins.elem secret ageSecretNames))
           (moduleSecrets.${removed} or [ ]);
@@ -157,6 +199,10 @@ let
             syncthingEnabled = false;
             gatewayRegistered = false;
             homepageEnvironmentPresent = false;
+            disabledCleanupPresent = true;
+            dedicatedAccessGroupPresent = false;
+            dedicatedGatewayScopePresent = false;
+            dedicatedHomepageScopePresent = false;
           };
         prowlarrOnlyValid =
           variant != "prowlarr-only"
@@ -164,6 +210,16 @@ let
             host.config.services.prowlarr.enable
             && !(builtins.elem "${mediaLayoutService}.service" services.prowlarr.wants)
           );
+        guardedServicesValid = lib.all
+          (name:
+            let service = services.${name};
+            in builtins.elem "data-pool-layout.service" service.requires
+              && builtins.elem "data-pool-layout.service" service.after
+              && service.unitConfig.ConditionPathIsMountPoint == vars.dataRoot)
+          guardedServices;
+        removedGuardedServicesAbsent = lib.all
+          (name: !(builtins.elem name guardedServices))
+          (moduleGuardedServices.${removed} or [ ]);
       in
       {
         drvPath = host.config.system.build.toplevel.drvPath;
@@ -171,9 +227,13 @@ let
           registry
           selectedApps
           ageSecretNames
+          homepageConfigDrv
           offlineMediaSurface
           mediaAutomationSurface
           removedOwnedSecretsAbsent
+          guardedServices
+          guardedServicesValid
+          removedGuardedServicesAbsent
           ;
         selected = selectedApps;
         caddyHostCount = builtins.length (builtins.attrNames host.config.services.caddy.virtualHosts);
@@ -183,6 +243,8 @@ let
           && registry == expectedRegistry
           && (variant != "core-only" || (selectedApps == [ ] && registry == { }))
           && removedOwnedSecretsAbsent
+          && guardedServicesValid
+          && removedGuardedServicesAbsent
           && builtins.length (builtins.attrNames host.config.services.caddy.virtualHosts) >= 3
           && builtins.length (builtins.attrNames host.config.services.kanidm.provision.systems.oauth2) >= 3
           && mediaAutomationValid

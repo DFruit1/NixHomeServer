@@ -18,7 +18,10 @@ export type ServiceCard = {
   logoUrl?: string;
   appName?: string;
   uploadNotes?: string;
+  /** Legacy all-of requirement retained for generated configs from older generations. */
   requiredGroups?: string[];
+  requiredAllGroups?: string[];
+  requiredAnyGroups?: string[];
 };
 
 export type FolderGuide = {
@@ -29,7 +32,11 @@ export type FolderGuide = {
   fileTypes: string[];
   personalPath?: string;
   sharedPath?: string;
+  personalPathRequiredAnyGroups?: string[];
+  sharedPathRequiredAnyGroups?: string[];
   instructions: string[];
+  requiredAllGroups?: string[];
+  requiredAnyGroups?: string[];
 };
 
 export type AdminStep = {
@@ -60,28 +67,52 @@ export type OfflineMediaDevice = {
   syncError?: string | null;
 };
 
+export type OfflineMediaConnectionAddress = {
+  address: string;
+  label: string;
+};
+
 export type OfflineMediaSetup = {
   enabled: boolean;
+  requiredAllGroups?: string[];
+  requiredAnyGroups?: string[];
   serverDeviceId?: string;
   serverDeviceIdError?: string;
-  connectionAddresses: string[];
+  connectionAddresses: OfflineMediaConnectionAddress[];
   folders: OfflineMediaFolder[];
   devices: OfflineMediaDevice[];
   runtimeError?: string | null;
 };
 
+export type SftpAccess = {
+  enabled: boolean;
+  allowed: boolean;
+  host: string;
+  port: number;
+  networkNote: string;
+  accessNotes: string[];
+};
+
+export type KanidmGroupManagementSource =
+  | 'manual'
+  | 'identity.appUsers'
+  | 'backupAccess.adminUsers'
+  | 'backupAccess.storageUsers';
+
 export type HomepageData = {
   brandName: string;
   domain: string;
   serverLanHost?: string;
-  sshfsHost?: string;
   user: CurrentUser;
+  isAdmin: boolean;
   services: ServiceCard[];
   folderGuides: FolderGuide[];
   adminGuide: AdminStep[];
   kanidmGroups?: string[];
   kanidmGroupDescriptions?: Record<string, string>;
+  kanidmGroupManagement?: Record<string, KanidmGroupManagementSource>;
   offlineMedia?: OfflineMediaSetup;
+  sftp?: SftpAccess;
   canaryAdminUser?: string;
 };
 

@@ -37,6 +37,16 @@ in
   };
 
   config = {
+    repo.storage.dataPool.guardedServices = [
+      "paperless-storage-layout-v1"
+      "paperless-consumer"
+      "paperless-scheduler"
+      "paperless-task-queue"
+      "paperless-web"
+      "paperless-exporter"
+      "paperless-stale-reference-check"
+    ];
+
     systemd.services.paperless-storage-layout-v1 = {
       description = "Provision Paperless storage layout";
       wantedBy = [ "multi-user.target" ];

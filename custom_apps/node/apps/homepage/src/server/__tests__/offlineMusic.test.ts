@@ -30,7 +30,10 @@ const baseConfig = (dir: string, sudoPath: string): AppConfig => ({
     adminGuide: [],
     offlineMedia: {
       enabled: true,
-      connectionAddresses: ['tcp://server.internal:22000'],
+      connectionAddresses: [{
+        address: 'tcp://server.internal:22000',
+        label: 'Recommended server address',
+      }],
       folders: [],
       devices: [],
     },
@@ -142,6 +145,7 @@ if (command === 'homepage-show-syncthing-device-id') {
   stdout.write(${JSON.stringify(serverDeviceId)} + '\\n');
 } else if (command === 'homepage-offline-media-status') {
   stdout.write(JSON.stringify({
+    connectionAddresses: ['tcp://stale-runtime-value:22000'],
     folders: [{
       key: 'music',
       label: 'Music',
@@ -172,6 +176,10 @@ if (command === 'homepage-show-syncthing-device-id') {
       expect(data.offlineMedia).toMatchObject({
         enabled: true,
         serverDeviceId,
+        connectionAddresses: [{
+          address: 'tcp://server.internal:22000',
+          label: 'Recommended server address',
+        }],
         devices: [{
           deviceId: validDeviceId,
           deviceName: 'alice-phone',

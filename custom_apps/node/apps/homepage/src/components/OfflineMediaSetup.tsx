@@ -39,16 +39,6 @@ const deviceSyncSummary = (device: OfflineMediaDevice): string => {
   return lastSeen ? `Not connected — last seen ${lastSeen}` : 'Never connected — open Syncthing on this device';
 };
 
-const connectionLabel = (address: string): string => {
-  if (address.includes('100.')) {
-    return 'Away from home (NetBird)';
-  }
-  if (address.includes('192.168.') || address.includes('10.')) {
-    return 'At home (LAN)';
-  }
-  return 'Recommended server address';
-};
-
 export const OfflineMediaSetupPanel = component$(
   ({ offlineMedia, username }: { offlineMedia?: OfflineMediaSetup; username?: string }) => {
     const displayUsername = username ?? '{username}';
@@ -253,11 +243,11 @@ export const OfflineMediaSetupPanel = component$(
           <summary>Connection help</summary>
           <p>If the app cannot find the server automatically, add one of these addresses to the server device:</p>
           <div class="qr-grid">
-            {offlineMedia.connectionAddresses.map((address) => (
+            {offlineMedia.connectionAddresses.map((connection) => (
               <QrValue
-                key={address}
-                label={connectionLabel(address)}
-                value={address}
+                key={`${connection.address}:${connection.label}`}
+                label={connection.label}
+                value={connection.address}
               />
             ))}
           </div>

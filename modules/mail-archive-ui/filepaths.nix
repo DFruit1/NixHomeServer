@@ -12,6 +12,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    repo.storage.dataPool.guardedServices = [
+      "mail-archive-ui-storage-layout-v1"
+      "mail-archive-ui"
+      "mail-archive-sync"
+    ] ++ lib.optional (cfg.paperlessConsumeRoot != null) "mail-archive-paperless-tasks";
+
     systemd.tmpfiles.rules = [
       "d ${cfg.dataDir} 0750 mail-archive-ui mail-archive-ui -"
       "d ${cfg.accountStateRoot} 0750 mail-archive-ui mail-archive-ui -"
@@ -56,9 +62,6 @@ in
       wants = [ "data-pool-layout.service" "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [ "mail-archive-ui.service" ];
-      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
-        ConditionPathIsMountPoint = vars.dataRoot;
-      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

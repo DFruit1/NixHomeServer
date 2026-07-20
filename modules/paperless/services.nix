@@ -158,9 +158,6 @@ in
         "paperless-storage-layout-v1.service"
         "data-pool-layout.service"
       ];
-      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
-        ConditionPathIsMountPoint = vars.dataRoot;
-      };
       path = [ config.services.paperless.manage ];
       script = ''
         set -euo pipefail

@@ -31,9 +31,18 @@ let
       util-linux
     ])
     ++ lib.optional vars.enableZfsDataPool config.boot.zfs.package;
+  storageInventory = pkgs.writeShellApplication {
+    name = "nixhomeserver-storage-inventory";
+    runtimeInputs = smartdPath;
+    text = ''
+      exec ${discoverStorageDevices}/bin/discover-storage-devices-runtime \
+        --config-json-file ${discoveryConfig} \
+        "$@"
+    '';
+  };
 in
 {
-  environment.systemPackages = systemPackages;
+  environment.systemPackages = systemPackages ++ [ storageInventory ];
 
   systemd.services.smartd = {
     description = "S.M.A.R.T. Daemon";

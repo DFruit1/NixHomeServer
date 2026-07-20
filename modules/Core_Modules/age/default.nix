@@ -6,7 +6,14 @@ let
   moduleEnabled = name: config.nixhomeserver.modules.${name} or false;
   megaEnabled = (vars.rcloneMega or { }).enable or false;
   kiwixEnabled = moduleEnabled "kiwix" && config.repo.kiwix.enable;
+  mailArchiveEnabled =
+    moduleEnabled "mail-archive-ui"
+    && config.services.mail-archive-ui.enable;
+  prowlarrEnabled = moduleEnabled "prowlarr" && config.repo.prowlarr.enable;
+  qbittorrentEnabled = moduleEnabled "qbittorrent" && config.repo.qbittorrent.enable;
+  radarrEnabled = moduleEnabled "radarr" && config.repo.radarr.enable;
   seerrEnabled = moduleEnabled "seerr" && config.repo.seerr.enable;
+  sonarrEnabled = moduleEnabled "sonarr" && config.repo.sonarr.enable;
   groundwaterEnabled =
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
@@ -58,7 +65,7 @@ in
     kavitaClientSecret = { file = secretFile "kavitaClientSecret"; owner = "kanidm"; group = "kavita"; mode = "0440"; };
     kavitaTokenKey = { file = secretFile "kavitaTokenKey"; owner = "kavita"; mode = "0400"; };
   }
-  // lib.optionalAttrs (moduleEnabled "mail-archive-ui") {
+  // lib.optionalAttrs mailArchiveEnabled {
     mailArchiveOauth2ProxyClientSecret = { file = secretFile "mailArchiveOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     mailArchiveOauth2ProxyCookieSecret = { file = secretFile "mailArchiveOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
@@ -79,19 +86,19 @@ in
     seerrOauth2ProxyClientSecret = { file = secretFile "seerrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     seerrOauth2ProxyCookieSecret = { file = secretFile "seerrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
-  // lib.optionalAttrs (moduleEnabled "sonarr") {
+  // lib.optionalAttrs sonarrEnabled {
     sonarrOauth2ProxyClientSecret = { file = secretFile "sonarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     sonarrOauth2ProxyCookieSecret = { file = secretFile "sonarrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
-  // lib.optionalAttrs (moduleEnabled "radarr") {
+  // lib.optionalAttrs radarrEnabled {
     radarrOauth2ProxyClientSecret = { file = secretFile "radarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     radarrOauth2ProxyCookieSecret = { file = secretFile "radarrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
-  // lib.optionalAttrs (moduleEnabled "prowlarr") {
+  // lib.optionalAttrs prowlarrEnabled {
     prowlarrOauth2ProxyClientSecret = { file = secretFile "prowlarrOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     prowlarrOauth2ProxyCookieSecret = { file = secretFile "prowlarrOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
-  // lib.optionalAttrs (moduleEnabled "qbittorrent") {
+  // lib.optionalAttrs qbittorrentEnabled {
     qbittorrentOauth2ProxyClientSecret = { file = secretFile "qbittorrentOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     qbittorrentOauth2ProxyCookieSecret = { file = secretFile "qbittorrentOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }

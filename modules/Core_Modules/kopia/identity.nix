@@ -8,6 +8,6 @@
     originLanding = "https://${vars.kopiaDomain}";
     basicSecretFile = config.age.secrets.kopiaOauth2ProxyClientSecret.path;
     preferShortUsername = true;
-    scopeMaps.${vars.backupAccess.adminGroup} = [ "openid" "profile" "email" "groups_name" ];
+    scopeMaps.${vars.backupAdminGroup} = [ "openid" "profile" "email" "groups_name" ];
   };
 }

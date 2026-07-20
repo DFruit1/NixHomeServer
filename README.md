@@ -8,7 +8,8 @@ What apps do you get?
 
 - `immich`: photos and videos with private albums, person/group tools, and backup sync.
 - `paperless`: document capture, OCR, and searchable filing for receipts, PDFs, and paperwork.
-- `filestash`: web and SFTP file browser to work from browsers and remote devices.
+- `filestash`: optional web file browser backed by the server's Core SFTP endpoint;
+  direct LAN SFTP remains available when the Filestash module is removed.
 - `jellyfin`: media server for home streaming to phones, TVs, and web players.
 - `audiobookshelf`: organized audiobooks and podcast listening.
 - `kavita`: ebook and comic library organization and reading.
@@ -648,6 +649,12 @@ encrypted configuration and record its revision. Add any other configuration
 files you intentionally changed as well:
 
 ```bash
+git config --local user.name "$(nix eval --raw \
+  ".#lib.nixhomeserverSettings.<vars.hostname>.kanidmAdminUser")"
+git config --local user.email "$(nix eval --raw \
+  ".#lib.nixhomeserverSettings.<vars.hostname>.kanidmAdminEmail")"
+test -n "$(git config --local --get user.name)"
+test -n "$(git config --local --get user.email)"
 git add vars.nix secrets/pubkeys/age.pub secrets/*.age
 git add -u -- secrets
 git diff --cached --check
@@ -660,6 +667,10 @@ git rev-parse HEAD
 The second `git status --short`, after the commit, must print nothing. If it
 lists a file, either commit that intended configuration or remove it from the
 installer workflow before continuing.
+
+The repository-local author settings come from the configured server admin
+identity, affect only this checkout, and do not assume a fresh workstation has
+global Git identity configured.
 
 Push that revision to a private Git remote:
 
@@ -722,6 +733,31 @@ Update `vars.nix` with the real values:
 
 Stop if any selected disk contains data you intend to keep.
 
+Generate the real hardware module before erasing anything, then commit and
+publish the new installation revision:
+
+```bash
+git config --local user.name "$(nix eval --raw \
+  ".#lib.nixhomeserverSettings.<vars.hostname>.kanidmAdminUser")"
+git config --local user.email "$(nix eval --raw \
+  ".#lib.nixhomeserverSettings.<vars.hostname>.kanidmAdminEmail")"
+test -n "$(git config --local --get user.name)"
+test -n "$(git config --local --get user.email)"
+hardware_tmp="$(mktemp)"
+nixos-generate-config --no-filesystems --show-hardware-config >"$hardware_tmp"
+install -m 0644 "$hardware_tmp" hardware-configuration.nix
+rm -f "$hardware_tmp"
+git add vars.nix hardware-configuration.nix
+git diff --cached --check
+git commit -m "Record target hardware configuration"
+git push
+git rev-parse HEAD
+```
+
+If the installer cannot push, create a new Git bundle on trusted removable
+media. This target-generated revision replaces the earlier encrypted-config
+revision and is the only revision a workstation should deploy to this host.
+
 Transfer the private age identity to the installer through a secure channel or
 removable medium; never place it in Git. Before any destructive action, verify
 the complete config and decrypt every manifest secret:
@@ -733,9 +769,27 @@ nix run .#validate-config-readiness -- \
   --identity /path/to/age.key
 ```
 
+Also put a distinct second copy on separately mounted durable storage and
+verify it. The destructive helper rejects a backup on the installer root, a
+volatile filesystem, or the same filesystem as the working identity:
+
+```bash
+install -m 0400 /path/to/age.key /path/to/separately-mounted-media/nixhomeserver.age.key
+test "$(age-keygen -y /path/to/age.key)" = \
+  "$(age-keygen -y /path/to/separately-mounted-media/nixhomeserver.age.key)"
+findmnt -T /path/to/separately-mounted-media/nixhomeserver.age.key
+```
+
 ## Stage 9: Provision Blank Disks
 
 This stage wipes disks. Read it twice before running any destructive disk tool.
+
+For a full `zfs-mirror` blank-disk install, commit a bootstrap revision with
+`storage.dataPool.expectedGuid = null` before continuing. Disko creates a new
+pool with a new GUID, so retaining a pin from an older pool would make the new
+layout inconsistent with the installed system. The wrapper refuses that state
+before any build or wipe. Pin and commit the newly reported GUID only after the
+new pool has been created and verified against its configured members.
 
 The selected `storage.profile` controls the destructive layout:
 
@@ -759,16 +813,27 @@ This repository pins disko and puts a strict confirmation wrapper in front of
 it. Print the plan first:
 
 ```bash
-nix run .#bootstrap-disks -- --host <vars.hostname>
+sudo nix run .#bootstrap-disks -- --host <vars.hostname>
 ```
 
 The wrapper resolves every by-id name to a unique, unmounted whole disk. After
 reviewing every size, model, signature and ID, apply by repeating the hostname
 and every disk from the plan:
 
+An intentionally reused disk with LVM PV metadata is blocked by default. After
+separately confirming that the old volume is expendable, deactivate its entire
+volume group and add
+`--allow-inactive-lvm-pv <that-disk-by-id-basename>` to both the review and
+apply commands. The wrapper independently verifies that the PV is orphaned or
+that every LV in its volume group is inactive. Mounted filesystems, active
+swap or LVs, device holders, and imported ZFS members remain hard blockers and
+have no override.
+
 ```bash
 sudo nix run .#bootstrap-disks -- \
   --host <vars.hostname> --apply \
+  --identity /path/to/age.key \
+  --age-key-backup /path/to/separately-mounted-media/nixhomeserver.age.key \
   --confirm-host <vars.hostname> \
   --confirm-disk <system-disk-id> \
   --confirm-disk <data-disk-1-id> \
@@ -809,6 +874,58 @@ test -d /mnt/persist
 test -d /mnt/nix
 ```
 
+For `zfs-mirror`, pin the pool Disko just created before installing NixOS.
+Return temporarily to the installer user so the checkout and new commit do not
+become root-owned. Run the identity helper without `--expected-guid`, and
+repeat `--expected-device` for every configured whole data disk:
+
+```bash
+exit
+cd /tmp/nixhomeserver
+sudo scripts/helpers/verify-zfs-pool-identity.sh \
+  --pool <storage.dataPool.name> \
+  --expected-device /dev/disk/by-id/<first-configured-data-disk> \
+  --expected-device /dev/disk/by-id/<second-configured-data-disk>
+new_pool_guid="$(sudo zpool get -H -o value guid <storage.dataPool.name>)"
+[[ "$new_pool_guid" =~ ^[0-9]+$ ]]
+printf 'Verified new pool GUID: %s\n' "$new_pool_guid"
+```
+
+Stop on any topology mismatch. Replace
+`storage.dataPool.expectedGuid = null` in `vars.nix` with the quoted value in
+`$new_pool_guid`, then prove, commit, publish, and fully validate that post-Disko
+revision:
+
+```bash
+$EDITOR vars.nix
+# Set: expectedGuid = "<the value printed above>";
+test "$(nix eval --raw \
+  ".#lib.nixhomeserverSettings.<vars.hostname>.storage.dataPool.expectedGuid")" \
+  = "$new_pool_guid"
+git diff -- vars.nix
+git add vars.nix
+git diff --cached --check
+git commit -m "Pin newly created ZFS pool identity"
+git push
+test -z "$(git status --short)"
+git rev-parse HEAD
+nix run .#validate-config-readiness -- \
+  --host <vars.hostname> \
+  --require-local-hardware \
+  --identity /path/to/age.key
+```
+
+If the installer cannot push, publish that exact commit in a Git bundle on
+trusted removable media. Do not install the earlier null-GUID bootstrap
+revision. `single-disk-ext4` has no ZFS identity transition and skips this
+step. On `zfs-mirror`, re-enter the root shell for the remaining target mount
+and installation operations:
+
+```bash
+sudo -i
+cd /tmp/nixhomeserver
+```
+
 Do not use disko for routine rebuilds, existing-server app changes, or in-place
 storage repair. Existing storage maintenance belongs in
 [`documentation/restore-and-recovery.md`](./documentation/restore-and-recovery.md).
@@ -823,26 +940,25 @@ preserves the Git checkout for later commits and synchronization:
 
 ```bash
 cd /tmp/nixhomeserver
+install_revision="$(git -c safe.directory=/tmp/nixhomeserver \
+  -C /tmp/nixhomeserver rev-parse HEAD)"
+test -z "$(git -c safe.directory=/tmp/nixhomeserver \
+  -C /tmp/nixhomeserver status --short)"
 install -d -m 0755 /mnt/persist/etc
 scripts/admin/seed-install-repository.sh --target /mnt/persist/etc/nixos
+test "$(git -c safe.directory=/mnt/persist/etc/nixos \
+  -C /mnt/persist/etc/nixos rev-parse HEAD)" = "$install_revision"
+test -z "$(git -c safe.directory=/mnt/persist/etc/nixos \
+  -C /mnt/persist/etc/nixos status --short)"
 install -d -m 0755 /mnt/etc/nixos
 mount --bind /mnt/persist/etc/nixos /mnt/etc/nixos
 ```
 
-Generate and review hardware configuration:
-
-```bash
-nixos-generate-config --root /mnt --no-filesystems --show-hardware-config \
-  > /mnt/etc/nixos/hardware-configuration.nix
-$EDITOR /mnt/etc/nixos/hardware-configuration.nix
-```
-
-`--no-filesystems` is required because this repository owns the root, `/nix`,
-`/persist`, and data-pool filesystem declarations; generated duplicates can race
-the guarded storage services. `hardware-configuration.nix` records what NixOS discovered about this specific
-machine. It is the bridge between the generic repo and the real hardware. Keep
-`system.hardwareProfile = "generated"`; `--show-hardware-config` is important
-because it does not overwrite the repository's main `configuration.nix`.
+The hardware module was generated, reviewed, and committed before Disko. Do not
+regenerate it here: the exact module that passed the full pre-wipe closure build
+is already in the seeded checkout. On `zfs-mirror`, this is also the post-Disko
+commit containing the verified pool GUID. Keep
+`system.hardwareProfile = "generated"`.
 
 Install the private agenix key:
 
@@ -908,9 +1024,42 @@ test -d /persist
 test -d /mnt/data
 ```
 
-From your admin workstation repo, run the full guarded test deploy:
+Create the dedicated Kanidm operator's first credential through the root-only,
+short-lived handoff, then use that delegated identity for normal CLI work:
 
 ```bash
+sudo kanidm-operator-bootstrap status
+sudo kanidm-operator-bootstrap issue
+# Complete the printed reset URL on a trusted device and enroll MFA.
+kanidm login -D <identity.adminUser>
+kanidm self whoami
+```
+
+The reset URL is an active secret. Do not log or forward it through an
+untrusted channel, and do not use the managed `idm_admin` identity as the daily
+administrator. Existing credentials require the explicit `issue --recovery`
+flow.
+
+First give the configured admin ownership of the installed checkout and publish
+the exact installer revision:
+
+```bash
+sudo chown -R "$(id -un):$(id -gn)" /persist/etc/nixos
+cd /persist/etc/nixos
+git status --short
+git rev-parse HEAD
+git push
+```
+
+If the server cannot authenticate to the private remote, transfer a `git
+bundle` from this checkout instead. Pull/import that exact revision on the
+admin workstation, prove its worktree is clean, and only then run the full
+guarded test deploy:
+
+```bash
+git pull --ff-only
+test "$(git rev-parse HEAD)" = "<installed-repository-revision>"
+test -z "$(git status --short)"
 ./scripts/deploy.sh --debug --action test
 ```
 

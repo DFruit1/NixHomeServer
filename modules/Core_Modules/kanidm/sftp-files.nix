@@ -4,8 +4,18 @@ let
   chrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
-  localSftpAccessGroup = vars.fileAccess.localSftpAccessGroup or "files-local-sftp-users";
+  backupStorageAccessGroup = vars.backupStorageGroup;
+  localSftpAccessGroupRaw = vars.fileAccess.localSftpAccessGroup or null;
+  # Keep the module total for malformed operator input so the central
+  # validation module can report the field cleanly instead of failing while
+  # constructing users.groups or the generated sshd AllowGroups line.
+  localSftpAccessGroup =
+    if builtins.isString localSftpAccessGroupRaw
+      && builtins.stringLength localSftpAccessGroupRaw >= 1
+      && builtins.stringLength localSftpAccessGroupRaw <= 31
+      && builtins.match "[a-z_][a-z0-9_-]*" localSftpAccessGroupRaw != null
+    then localSftpAccessGroupRaw
+    else "invalid-files-local-sftp-group";
   localAdminNeedsSftpBridge = builtins.elem vars.localAdminUser (vars.filesSftpUsers or [ ]);
   webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
@@ -21,6 +31,7 @@ let
   sftpKanidmGroups = [
     webAccessGroup
     sftpAccessGroup
+    sharedAccessGroup
     usbAccessGroup
     backupStorageAccessGroup
   ];
@@ -106,7 +117,9 @@ in
       ${localSftpAccessGroup}.members = [ vars.localAdminUser ];
     }
     // lib.genAttrs localBridgeFileAccessGroups (group: {
-      gid = vars.fileAccessPosixGids.${group};
+      # Yield to a pre-existing system/service group long enough for central
+      # validation to report the configured name collision cleanly.
+      gid = lib.mkDefault vars.fileAccessPosixGids.${group};
       members = [ vars.localAdminUser ];
     })
   );

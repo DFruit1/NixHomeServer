@@ -27,36 +27,69 @@ let
   monitorHost = vars.monitorDomain;
   syncthingHost = "syncthing.${vars.domain}";
   offlineMediaCfg = vars.offlineMedia;
+  offlineMediaAccessGroupRaw = offlineMediaCfg.accessGroup or "users";
+  offlineMediaAccessGroup =
+    if builtins.isString offlineMediaAccessGroupRaw then
+      offlineMediaAccessGroupRaw
+    else
+      "invalid-offline-media-access-group";
+  offlineMediaRequiredAllGroups = [ "users" ];
+  offlineMediaRequiredAnyGroups = [ offlineMediaAccessGroup ];
+  offlineMediaLoginNotes =
+    if offlineMediaAccessGroup == "users" then
+      "Requires baseline users membership; connect each computer or phone once, then Syncthing keeps its offline copies up to date."
+    else
+      "Requires baseline users membership plus ${offlineMediaAccessGroup}; connect each computer or phone once, then Syncthing keeps its offline copies up to date.";
+  filesWebAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
+  filesSftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
+  filesSharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
+  filesUsbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
+  backupStorageAccessGroup = vars.backupStorageGroup;
+  filesUsbMountName = vars.fileAccess.usbMountName or "_USB";
+  filesSharedMountName = vars.fileAccess.sharedMountName or "_Shared";
+  backupStorageMountName = vars.backupAccess.storageMountName or "_Backups";
+  homepageAccessGroups = lib.unique [
+    "users"
+    filesWebAccessGroup
+    filesSftpAccessGroup
+    filesSharedAccessGroup
+    filesUsbAccessGroup
+    backupStorageAccessGroup
+  ];
+  sftpAccessGroups = lib.unique [
+    filesWebAccessGroup
+    filesSftpAccessGroup
+    filesSharedAccessGroup
+    filesUsbAccessGroup
+    backupStorageAccessGroup
+  ];
+  megaEnabled = vars.rcloneMega.enable or false;
   offlineMediaEnabled =
     (config.nixhomeserver.modules."offline-music" or false)
     && (offlineMediaCfg.enable or false);
-  offlineMediaMusicFolderName = offlineMediaCfg.musicFolderName or offlineMediaCfg.folderName or "_Music";
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaStateFile = "${offlineMediaStateDir}/devices.json";
-  offlineMediaFolderSpecs = offlineMediaCfg.folders or [
-    {
-      key = "music";
-      label = "Music";
-      relativePath = offlineMediaMusicFolderName;
-      folderIdPrefix = offlineMediaCfg.musicFolderIdPrefix or offlineMediaCfg.folderIdPrefix or "nixhomeserver-music";
-      suggestedDevicePath = "Music/NixHomeServer";
-    }
-    {
-      key = "youtube";
-      label = "YouTube Videos";
-      relativePath = "_Videos/_YouTube";
-      folderIdPrefix = offlineMediaCfg.youtubeFolderIdPrefix or "nixhomeserver-youtube-videos";
-      suggestedDevicePath = "Movies/NixHomeServer/YouTube";
-    }
-    {
-      key = "other";
-      label = "Other Videos";
-      relativePath = "_Videos/_Other";
-      folderIdPrefix = offlineMediaCfg.otherFolderIdPrefix or "nixhomeserver-other-videos";
-      suggestedDevicePath = "Movies/NixHomeServer/Other";
-    }
-  ];
+  offlineMediaModel = (import ../../lib/offline-media.nix { inherit lib; }) offlineMediaCfg;
+  offlineMediaFolderSpecs = offlineMediaModel.folderSpecs;
   offlineMediaFolderSpecsJson = builtins.toJSON offlineMediaFolderSpecs;
+  offlineMediaStateValidationJq = ''
+    def valid_username:
+      type == "string"
+      and test("^[a-z][a-z0-9._-]{0,63}$");
+    def valid_device:
+      if type != "object" then false
+      else
+        (.deviceId | type == "string" and test("^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$"))
+        and (.deviceName | type == "string" and test("^[A-Za-z0-9._ -]{1,64}$"))
+      end;
+    def valid_user:
+      if type != "object" or ((.devices // null) | type) != "array" then false
+      else all(.devices[]; valid_device)
+      end;
+    if type != "object" or .version != 2 or ((.users // null) | type) != "object" then false
+    else all(.users | to_entries[]; (.key | valid_username) and (.value | valid_user))
+    end
+  '';
   syncthingDataDir = "/var/lib/syncthing";
   syncthingConfigDir = "/var/lib/syncthing/.config/syncthing";
   serverLanHost = "${vars.network.hostname}.${vars.networking.dns.lanDomain}";
@@ -66,6 +99,17 @@ let
       (builtins.attrNames (config.services.kanidm.provision.groups or { }))
   );
   kanidmGroupDescriptions = (config.nixhomeserver or { }).kanidmGroupDescriptions or { };
+  kanidmGroupManagement = lib.mapAttrs
+    (name: group:
+      if !(group.overwriteMembers or true) then
+        "manual"
+      else if name == vars.backupAdminGroup then
+        "backupAccess.adminUsers"
+      else if name == vars.backupStorageGroup then
+        "backupAccess.storageUsers"
+      else
+        "identity.appUsers")
+    (config.services.kanidm.provision.groups or { });
 
   caddyHosts = config.services.caddy.virtualHosts;
   hostEnabled = name: builtins.hasAttr name caddyHosts;
@@ -74,6 +118,7 @@ let
   paperlessEnabled = hostEnabled paperlessHost;
   audiobookshelfEnabled = hostEnabled audiobooksHost;
   filesEnabled = hostEnabled filesHost;
+  filesSftpEnabled = builtins.hasAttr "files-sftp-sshd" config.systemd.services;
   jellyfinEnabled = hostEnabled videosHost;
   offlineMediaEnabledForHomepage = offlineMediaEnabled;
   kavitaEnabled = hostEnabled booksHost;
@@ -88,18 +133,17 @@ let
   qbittorrentEnabled = hostEnabled torrentsHost;
   kopiaEnabled = hostEnabled backupsHost;
   monitorEnabled = hostEnabled monitorHost;
-  personalPath = relativePath: "${vars.usersRoot}/{username}/${relativePath}";
+  personalPath = relativePath: "/${relativePath}";
+  sharedPath = relativePath: "/${vars.fileAccess.sharedMountName}/${relativePath}";
   sftpAuthorizedKeysDir = "/persist/appdata/files-sftp-authorized-keys";
   installSftpKey = pkgs.writeShellScript "homepage-install-sftp-key" ''
     set -euo pipefail
 
     username="''${1:-}"
-    case "$username" in
-      ""|*/*|*..*|*[!A-Za-z0-9._-]*)
-        echo "invalid username" >&2
-        exit 1
-        ;;
-    esac
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
 
     public_key="$(${pkgs.coreutils}/bin/cat | ${pkgs.coreutils}/bin/tr -d '\r' | ${pkgs.gnused}/bin/sed -e 's/[[:space:]]*$//')"
     case "$public_key" in
@@ -116,18 +160,49 @@ let
       exit 1
     fi
 
+    key_check="$(${pkgs.coreutils}/bin/mktemp)"
+    trap '${pkgs.coreutils}/bin/rm -f "$key_check"' EXIT
+    ${pkgs.coreutils}/bin/printf '%s\n' "$public_key" > "$key_check"
+    if ! ${pkgs.openssh}/bin/ssh-keygen -l -f "$key_check" >/dev/null 2>&1; then
+      echo "invalid or corrupted OpenSSH public key" >&2
+      exit 1
+    fi
+    ${pkgs.coreutils}/bin/rm -f "$key_check"
+    trap - EXIT
+
     ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpAuthorizedKeysDir}
+    exec 9>"${sftpAuthorizedKeysDir}/.$username.lock"
+    ${pkgs.util-linux}/bin/flock -x 9
+    target="${sftpAuthorizedKeysDir}/$username"
+    if [[ -L "$target" ]]; then
+      echo "refusing symlinked authorized-keys file" >&2
+      exit 1
+    fi
     tmp="$(${pkgs.coreutils}/bin/mktemp ${lib.escapeShellArg "${sftpAuthorizedKeysDir}/.${serviceUser}.XXXXXX"})"
     trap 'rm -f "$tmp"' EXIT
-    ${pkgs.coreutils}/bin/printf '%s\n' "$public_key" > "$tmp"
+    if [[ -e "$target" ]]; then
+      owner_group="$(${pkgs.coreutils}/bin/stat -c '%U:%G' "$target")"
+      mode="$(${pkgs.coreutils}/bin/stat -c '%a' "$target")"
+      if [[ "$owner_group" != "root:root" || "$mode" != "644" || ! -f "$target" ]]; then
+        echo "existing authorized-keys file has unsafe ownership, mode, or type" >&2
+        exit 1
+      fi
+      ${pkgs.coreutils}/bin/cat "$target" > "$tmp"
+    fi
+    if ! ${pkgs.gnugrep}/bin/grep -Fqx -- "$public_key" "$tmp"; then
+      key_count="$(${pkgs.gnugrep}/bin/grep -cve '^[[:space:]]*$' "$tmp" || true)"
+      if (( key_count >= 10 )); then
+        echo "at most 10 SFTP device keys may be registered; ask an administrator to retire an old key" >&2
+        exit 1
+      fi
+      ${pkgs.coreutils}/bin/printf '%s\n' "$public_key" >> "$tmp"
+    fi
     ${pkgs.coreutils}/bin/chown root:root "$tmp"
     ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
-    target="${sftpAuthorizedKeysDir}/$username"
     ${pkgs.coreutils}/bin/mv "$tmp" "$target"
 
-    saved_key="$(${pkgs.coreutils}/bin/cat "$target")"
-    if [ "$saved_key" != "$public_key" ]; then
-      echo "saved public key did not match submitted key" >&2
+    if ! ${pkgs.gnugrep}/bin/grep -Fqx -- "$public_key" "$target"; then
+      echo "saved authorized-keys file does not contain submitted key" >&2
       exit 1
     fi
 
@@ -138,7 +213,8 @@ let
       exit 1
     fi
 
-    ${pkgs.coreutils}/bin/printf 'installed %s owner=%s mode=%s\n' "$target" "$owner_group" "$mode"
+    key_count="$(${pkgs.gnugrep}/bin/grep -cve '^[[:space:]]*$' "$target")"
+    ${pkgs.coreutils}/bin/printf 'saved %s owner=%s mode=%s registered-keys=%s\n' "$target" "$owner_group" "$mode" "$key_count"
   '';
   showSyncthingDeviceId = pkgs.writeShellScript "homepage-show-syncthing-device-id" ''
     set -euo pipefail
@@ -152,12 +228,10 @@ let
     set -euo pipefail
 
     username="''${1:-}"
-    case "$username" in
-      ""|*/*|*..*|*[!A-Za-z0-9._-]*)
-        echo "invalid username" >&2
-        exit 1
-        ;;
-    esac
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
 
     state_file=${lib.escapeShellArg offlineMediaStateFile}
     folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
@@ -190,6 +264,10 @@ let
         end' "$state_file")"
     else
       state='{"version":2,"users":{}}'
+    fi
+    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' <<<"$state" >/dev/null; then
+      echo "offline media enrollment state is invalid" >&2
+      exit 1
     fi
 
     api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
@@ -299,24 +377,26 @@ let
     set -euo pipefail
 
     username="''${1:-}"
-    case "$username" in
-      ""|*/*|*..*|*[!A-Za-z0-9._-]*)
-        echo "invalid username" >&2
-        exit 1
-        ;;
-    esac
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
 
     payload="$(${pkgs.coreutils}/bin/cat)"
     device_id="$(${pkgs.jq}/bin/jq -er '.deviceId' <<<"$payload")"
-    device_name="$(${pkgs.jq}/bin/jq -r --arg fallback "$username-media" '.deviceName // $fallback' <<<"$payload")"
+    device_name="$(${pkgs.jq}/bin/jq -er --arg fallback "$username-media" '
+      if .deviceName == null then $fallback
+      elif (.deviceName | type) == "string" then .deviceName
+      else error("deviceName must be a string")
+      end
+    ' <<<"$payload")"
 
     if ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$' <<<"$device_id"; then
       echo "invalid Syncthing device ID" >&2
       exit 1
     fi
-    if [[ "''${#device_name}" -lt 1 || "''${#device_name}" -gt 64 ]] \
-      || ${pkgs.gnugrep}/bin/grep -q '[[:cntrl:]]' <<<"$device_name" \
-      || ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Za-z0-9._ -]+$' <<<"$device_name"; then
+    if ! ${pkgs.jq}/bin/jq -en --arg deviceName "$device_name" \
+      '$deviceName | test("^[A-Za-z0-9._ -]{1,64}$")' >/dev/null; then
       echo "invalid Syncthing device name" >&2
       exit 1
     fi
@@ -331,6 +411,90 @@ let
     state_file=${lib.escapeShellArg offlineMediaStateFile}
     folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
     users_root=${lib.escapeShellArg vars.usersRoot}
+
+    install -d -m 0750 -o root -g root "$state_dir"
+    exec 9>"$state_dir/.devices.lock"
+    ${pkgs.util-linux}/bin/flock -x 9
+
+    # The browser token can outlive a group change.  Verify current Kanidm
+    # membership under the same lock before creating folders, ACLs, peers, or
+    # enrollment state.  Offline-media access is always additive to users.
+    identity_home="$(${pkgs.coreutils}/bin/mktemp -d)"
+    trap '${pkgs.coreutils}/bin/rm -rf "$identity_home"' EXIT
+    export HOME="$identity_home"
+    KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
+    export KANIDM_PASSWORD
+    ${pkgs.kanidm_1_10}/bin/kanidm login \
+      -H ${lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}"} \
+      -D idm_admin >/dev/null
+
+    snapshot_enrollment_group() {
+      local group_name="$1"
+      local group_json
+      if ! group_json="$(${pkgs.kanidm_1_10}/bin/kanidm group get \
+        "$group_name" \
+        -H ${lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}"} \
+        -D idm_admin \
+        -o json)"; then
+        echo "unable to verify current offline-media membership; no device was enrolled" >&2
+        return 1
+      fi
+      ${pkgs.jq}/bin/jq -cer '
+        def local_username:
+          split("@")[0] as $username
+          | if ($username | test("^[a-z][a-z0-9._-]{0,63}$")) then
+              $username
+            else
+              error("invalid local username in member entry")
+            end;
+        if ((.attrs.member // []) | type) != "array" then
+          error("invalid member attribute")
+        elif any(.attrs.member[]?; type != "string") then
+          error("member array contains a non-string entry")
+        else
+          [ .attrs.member[]? | local_username ] | unique
+        end
+      ' <<<"$group_json"
+    }
+
+    if ! baseline_members="$(${pkgs.jq}/bin/jq -c . <<<"$(snapshot_enrollment_group users)")"; then
+      exit 1
+    fi
+    if [[ ${lib.escapeShellArg offlineMediaAccessGroup} == users ]]; then
+      access_members="$baseline_members"
+    elif ! access_members="$(${pkgs.jq}/bin/jq -c . <<<"$(snapshot_enrollment_group ${lib.escapeShellArg offlineMediaAccessGroup})")"; then
+      exit 1
+    fi
+    if ! ${pkgs.jq}/bin/jq -en \
+      --arg username "$username" \
+      --argjson baseline "$baseline_members" \
+      --argjson access "$access_members" \
+      '($baseline | index($username) != null) and ($access | index($username) != null)' >/dev/null; then
+      echo "current Kanidm membership no longer permits offline-media enrollment" >&2
+      exit 1
+    fi
+    ${pkgs.coreutils}/bin/rm -rf "$identity_home"
+    trap - EXIT
+
+    # Validate persistent enrollment state before provisioning folders or
+    # changing ACLs.  First-host initialization is an atomic replacement, so
+    # interruption cannot leave a truncated devices.json behind.
+    if [[ ! -f "$state_file" ]]; then
+      state_init_tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
+      if ! ${pkgs.coreutils}/bin/printf '{"version":2,"users":{}}\n' > "$state_init_tmp" \
+        || ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_init_tmp" >/dev/null \
+        || ! ${pkgs.coreutils}/bin/chmod 0640 "$state_init_tmp" \
+        || ! ${pkgs.coreutils}/bin/chown root:root "$state_init_tmp" \
+        || ! ${pkgs.coreutils}/bin/mv "$state_init_tmp" "$state_file"; then
+        ${pkgs.coreutils}/bin/rm -f "$state_init_tmp"
+        echo "unable to initialize offline media enrollment state" >&2
+        exit 1
+      fi
+    fi
+    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_file" >/dev/null; then
+      echo "offline media enrollment state is invalid; refusing to provision folders or change ACLs" >&2
+      exit 1
+    fi
 
     missing_folder=0
     while IFS=$'\t' read -r relative_path; do
@@ -366,13 +530,6 @@ let
     while IFS=$'\t' read -r relative_path; do
       grant_syncthing_read "$users_root/$username/$relative_path"
     done < <(${pkgs.jq}/bin/jq -r '.[] | [.relativePath] | @tsv' <<<"$folder_specs_json")
-
-    install -d -m 0750 -o root -g root "$state_dir"
-    if [[ ! -f "$state_file" ]]; then
-      ${pkgs.coreutils}/bin/printf '{"version":2,"users":{}}\n' > "$state_file"
-      chmod 0640 "$state_file"
-      chown root:root "$state_file"
-    fi
 
     api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
     headers_file="$(${pkgs.coreutils}/bin/mktemp)"
@@ -422,37 +579,11 @@ let
         | .name = $name
         | .addresses = ((.addresses // []) | if length > 0 then . else ["dynamic"] end)'
     )"
-    api_json POST /rest/config/devices "$device_json"
 
-    while IFS=$'\t' read -r key label relative_path folder_id_prefix suggested_device_path; do
-      folder_id="$folder_id_prefix-$username"
-      folder_label="NixHomeServer $label - $username"
-      folder_path="$users_root/$username/$relative_path"
-      folders_json="$(api /rest/config/folders)"
-      default_folder_json="$(api /rest/config/defaults/folder)"
-      folder_json="$(
-        ${pkgs.jq}/bin/jq -n \
-          --arg folderId "$folder_id" \
-          --arg label "$folder_label" \
-          --arg path "$folder_path" \
-          --arg deviceId "$device_id" \
-          --argjson folders "$folders_json" \
-          --argjson defaultFolder "$default_folder_json" \
-          '(
-            ($folders[]? | select(.id == $folderId)) // $defaultFolder
-          )
-          | .id = $folderId
-          | .label = $label
-          | .path = $path
-          | .type = "sendonly"
-          | .devices = ((((.devices // []) | map(.deviceID)) + [$deviceId]) | unique | map({ deviceID: . }))
-          | .fsWatcherEnabled = true
-          | .rescanIntervalS = 300'
-      )"
-      api_json POST /rest/config/folders "$folder_json"
-    done < <(${pkgs.jq}/bin/jq -r '.[] | [.key, .label, .relativePath, .folderIdPrefix, .suggestedDevicePath] | @tsv' <<<"$folder_specs_json")
-
-    tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
+    # Commit the validated enrollment intent before the first Syncthing
+    # mutation.  If a later API call fails, the reconciler can safely finish
+    # converging this durable intent and a user retry remains idempotent.
+    state_tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
     ${pkgs.jq}/bin/jq \
       --arg username "$username" \
       --arg deviceId "$device_id" \
@@ -493,10 +624,45 @@ let
           }]
         )
       ' \
-      "$state_file" > "$tmp"
-    chmod 0640 "$tmp"
-    chown root:root "$tmp"
-    mv "$tmp" "$state_file"
+      "$state_file" > "$state_tmp"
+    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_tmp" >/dev/null; then
+      ${pkgs.coreutils}/bin/rm -f "$state_tmp"
+      echo "refusing to save invalid offline media enrollment state" >&2
+      exit 1
+    fi
+    chmod 0640 "$state_tmp"
+    chown root:root "$state_tmp"
+    mv "$state_tmp" "$state_file"
+
+    api_json POST /rest/config/devices "$device_json"
+
+    while IFS=$'\t' read -r key label relative_path folder_id_prefix suggested_device_path; do
+      folder_id="$folder_id_prefix-$username"
+      folder_label="NixHomeServer $label - $username"
+      folder_path="$users_root/$username/$relative_path"
+      folders_json="$(api /rest/config/folders)"
+      default_folder_json="$(api /rest/config/defaults/folder)"
+      folder_json="$(
+        ${pkgs.jq}/bin/jq -n \
+          --arg folderId "$folder_id" \
+          --arg label "$folder_label" \
+          --arg path "$folder_path" \
+          --arg deviceId "$device_id" \
+          --argjson folders "$folders_json" \
+          --argjson defaultFolder "$default_folder_json" \
+          '(
+            ($folders[]? | select(.id == $folderId)) // $defaultFolder
+          )
+          | .id = $folderId
+          | .label = $label
+          | .path = $path
+          | .type = "sendonly"
+          | .devices = ((((.devices // []) | map(.deviceID)) + [$deviceId]) | unique | map({ deviceID: . }))
+          | .fsWatcherEnabled = true
+          | .rescanIntervalS = 300'
+      )"
+      api_json POST /rest/config/folders "$folder_json"
+    done < <(${pkgs.jq}/bin/jq -r '.[] | [.key, .label, .relativePath, .folderIdPrefix, .suggestedDevicePath] | @tsv' <<<"$folder_specs_json")
 
     if api /rest/config/restart-required | ${pkgs.jq}/bin/jq -e '.requiresRestart == true' >/dev/null; then
       ${pkgs.systemd}/bin/systemctl restart syncthing.service
@@ -524,12 +690,10 @@ let
 
     username="''${1:-}"
     device_id="''${2:-}"
-    case "$username" in
-      ""|*/*|*..*|*[!A-Za-z0-9._-]*)
-        echo "invalid username" >&2
-        exit 1
-        ;;
-    esac
+    if ! ${pkgs.gnugrep}/bin/grep -Eq '^[a-z][a-z0-9._-]{0,63}$' <<<"$username"; then
+      echo "invalid username" >&2
+      exit 1
+    fi
     if ! ${pkgs.gnugrep}/bin/grep -Eq '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$' <<<"$device_id"; then
       echo "invalid Syncthing device ID" >&2
       exit 1
@@ -540,10 +704,23 @@ let
     folder_specs_json=${lib.escapeShellArg offlineMediaFolderSpecsJson}
 
     install -d -m 0750 -o root -g root "$state_dir"
+    exec 9>"$state_dir/.devices.lock"
+    ${pkgs.util-linux}/bin/flock -x 9
     if [[ ! -f "$state_file" ]]; then
-      ${pkgs.coreutils}/bin/printf '{"version":2,"users":{}}\n' > "$state_file"
-      chmod 0640 "$state_file"
-      chown root:root "$state_file"
+      state_init_tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
+      if ! ${pkgs.coreutils}/bin/printf '{"version":2,"users":{}}\n' > "$state_init_tmp" \
+        || ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_init_tmp" >/dev/null \
+        || ! ${pkgs.coreutils}/bin/chmod 0640 "$state_init_tmp" \
+        || ! ${pkgs.coreutils}/bin/chown root:root "$state_init_tmp" \
+        || ! ${pkgs.coreutils}/bin/mv "$state_init_tmp" "$state_file"; then
+        ${pkgs.coreutils}/bin/rm -f "$state_init_tmp"
+        echo "unable to initialize offline media enrollment state" >&2
+        exit 1
+      fi
+    fi
+    if ! ${pkgs.jq}/bin/jq -e '${offlineMediaStateValidationJq}' "$state_file" >/dev/null; then
+      echo "offline media enrollment state is invalid; refusing to change Syncthing" >&2
+      exit 1
     fi
 
     api_key_file="$(${pkgs.coreutils}/bin/mktemp)"
@@ -585,6 +762,11 @@ let
       if ! ${pkgs.jq}/bin/jq -e --arg folderId "$folder_id" 'any(.[]; .id == $folderId)' >/dev/null <<<"$folders_json"; then
         continue
       fi
+      if ! ${pkgs.jq}/bin/jq -e --arg folderId "$folder_id" --arg deviceId "$device_id" \
+          'any(.[] | select(.id == $folderId) | (.devices // [])[]?; .deviceID == $deviceId)' \
+          <<<"$folders_json" >/dev/null; then
+        continue
+      fi
       folder_json="$(
         ${pkgs.jq}/bin/jq \
           --arg folderId "$folder_id" \
@@ -598,7 +780,11 @@ let
 
     remaining_refs="$(api /rest/config/folders | ${pkgs.jq}/bin/jq --arg deviceId "$device_id" '[.[].devices[]? | select(.deviceID == $deviceId)] | length')"
     if [[ "$remaining_refs" == "0" ]]; then
-      api /rest/config/devices/"$device_id" -X DELETE >/dev/null || true
+      devices_json="$(api /rest/config/devices)"
+      if ${pkgs.jq}/bin/jq -e --arg deviceId "$device_id" \
+          'any(.[]; .deviceID == $deviceId)' <<<"$devices_json" >/dev/null; then
+        api /rest/config/devices/"$device_id" -X DELETE >/dev/null
+      fi
     fi
 
     tmp="$(${pkgs.coreutils}/bin/mktemp "$state_dir/.devices.XXXXXX")"
@@ -632,6 +818,7 @@ let
       v2
       | .version = 2
       | .users[$username].devices = ((.users[$username].devices // []) | map(select(.deviceId != $deviceId)))
+      | if (.users[$username].devices | length) == 0 then del(.users[$username]) else . end
       ' \
       "$state_file" > "$tmp"
     chmod 0640 "$tmp"
@@ -666,9 +853,10 @@ let
       description = "Photo and video library with private login and public share-link support.";
       loginNotes = "Use Kanidm. Public shares use https://${sharePhotosHost}.";
       projectUrl = "https://immich.app";
-      logoUrl = "https://raw.githubusercontent.com/immich-app/immich/main/design/immich-logo.svg";
+      logoUrl = "/logos/photos.svg";
       appName = "immich";
       uploadNotes = "Upload through Immich web or the mobile app.";
+      requiredAnyGroups = [ "immich-users" ];
     }
     {
       id = "documents";
@@ -679,9 +867,10 @@ let
       description = "Paperless document archive with OCR, search, tags, and exports.";
       loginNotes = "Use Kanidm; first login creates the local account.";
       projectUrl = "https://docs.paperless-ngx.com";
-      logoUrl = "https://cdn.simpleicons.org/paperlessngx";
+      logoUrl = "/logos/documents.svg";
       appName = "paperless-ngx";
       uploadNotes = "Upload PDFs and image documents through Paperless or the consume inbox.";
+      requiredAnyGroups = [ "paperless-users" ];
     }
     {
       id = "files";
@@ -690,11 +879,12 @@ let
       enabled = filesEnabled;
       category = "files";
       description = "Browser file workspace backed by each user's restricted SFTP root.";
-      loginNotes = "Requires files-personal-users for browser access.";
+      loginNotes = "Requires ${filesWebAccessGroup} for browser access.";
       projectUrl = "https://www.filestash.app";
-      logoUrl = "https://raw.githubusercontent.com/mickael-kerjean/filestash/master/public/assets/logo/favicon.svg";
+      logoUrl = "/logos/files.svg";
       appName = "filestash";
       uploadNotes = "Use Files for general uploads and app-specific media folders.";
+      requiredAnyGroups = [ filesWebAccessGroup ];
     }
     {
       id = "audiobooks";
@@ -703,11 +893,12 @@ let
       enabled = audiobookshelfEnabled;
       category = "media";
       description = "Audiobooks and long-form audio libraries.";
-      loginNotes = "Use Kanidm; app-admin grants app admin when combined with access.";
+      loginNotes = "Use Kanidm. The configured server operator owns the Audiobookshelf root account; app-admin does not grant Audiobookshelf administrator rights.";
       projectUrl = "https://www.audiobookshelf.org";
-      logoUrl = "https://cdn.simpleicons.org/audiobookshelf";
+      logoUrl = "/logos/audiobooks.svg";
       appName = "audiobookshelf";
       uploadNotes = "Place audiobook folders under _Audiobooks.";
+      requiredAnyGroups = [ "audiobookshelf-users" ];
     }
     {
       id = "videos";
@@ -716,11 +907,12 @@ let
       enabled = jellyfinEnabled;
       category = "media";
       description = "Metadata-rich movie and show libraries.";
-      loginNotes = "Jellyfin uses local sign-in; Kanidm groups drive managed account policy.";
+      loginNotes = "Jellyfin uses a generated local password, not Kanidm SSO. Ask an administrator for your initial password, sign in with your Kanidm username, then change the password immediately.";
       projectUrl = "https://jellyfin.org";
-      logoUrl = "https://cdn.simpleicons.org/jellyfin";
+      logoUrl = "/logos/videos.svg";
       appName = "jellyfin";
       uploadNotes = "Place movies under _Videos/_Movies and series under _Videos/_Shows.";
+      requiredAnyGroups = [ "jellyfin-users" ];
     }
     {
       id = "requests";
@@ -734,6 +926,7 @@ let
       logoUrl = "/logos/seerr.svg";
       appName = "seerr";
       uploadNotes = "Approved requests are handed to Sonarr and Radarr.";
+      requiredAnyGroups = [ "media-automation-users" ];
     }
     {
       id = "sonarr";
@@ -744,9 +937,9 @@ let
       description = "TV show monitoring and legal download automation.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://sonarr.tv";
-      logoUrl = "https://cdn.simpleicons.org/sonarr";
       appName = "sonarr";
       uploadNotes = "Imported shows land in shared _Videos/_Shows.";
+      requiredAnyGroups = [ "media-automation-users" ];
     }
     {
       id = "radarr";
@@ -757,9 +950,9 @@ let
       description = "Movie monitoring and legal download automation.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://radarr.video";
-      logoUrl = "https://cdn.simpleicons.org/radarr";
       appName = "radarr";
       uploadNotes = "Imported movies land in shared _Videos/_Movies.";
+      requiredAnyGroups = [ "media-automation-users" ];
     }
     {
       id = "prowlarr";
@@ -770,9 +963,9 @@ let
       description = "Indexer manager for Sonarr and Radarr.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://prowlarr.com";
-      logoUrl = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/prowlarr.svg";
       appName = "prowlarr";
       uploadNotes = "Add only legal indexers and sources.";
+      requiredAnyGroups = [ "media-automation-users" ];
     }
     {
       id = "torrents";
@@ -783,9 +976,9 @@ let
       description = "qBittorrent download client for legally sourced media.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://www.qbittorrent.org";
-      logoUrl = "https://cdn.simpleicons.org/qbittorrent";
       appName = "qbittorrent";
       uploadNotes = "Completed downloads are staged under shared _Downloads.";
+      requiredAnyGroups = [ "media-automation-users" ];
     }
     {
       id = "offline-media";
@@ -794,11 +987,12 @@ let
       enabled = offlineMediaEnabledForHomepage;
       category = "media";
       description = "Automatically keep copies of your server music and videos on a computer or phone.";
-      loginNotes = "Connect each computer or phone once, then Syncthing keeps its offline copies up to date.";
+      loginNotes = offlineMediaLoginNotes;
       projectUrl = "https://syncthing.net";
-      logoUrl = "https://cdn.simpleicons.org/syncthing";
       appName = "syncthing";
       uploadNotes = "Add media with the Files app first; this service then copies it to your connected devices.";
+      requiredAllGroups = offlineMediaRequiredAllGroups;
+      requiredAnyGroups = offlineMediaRequiredAnyGroups;
     }
     {
       id = "books";
@@ -809,9 +1003,10 @@ let
       description = "Ebooks, comics, and manga in Kavita.";
       loginNotes = "Use Kanidm; first login provisions the local account.";
       projectUrl = "https://www.kavitareader.com";
-      logoUrl = "https://raw.githubusercontent.com/Kareadita/Kavita/develop/UI/Web/src/assets/images/logo.svg";
+      logoUrl = "/logos/books.svg";
       appName = "kavita";
       uploadNotes = "Place books under _Books/_Ebooks, _Comics, or _Manga.";
+      requiredAnyGroups = [ "kavita-users" ];
     }
     {
       id = "wiki";
@@ -822,9 +1017,9 @@ let
       description = "Kiwix ZIM library for offline reference material.";
       loginNotes = "Use Kanidm with kiwix-users membership.";
       projectUrl = "https://kiwix.org";
-      logoUrl = "https://cdn.simpleicons.org/kiwix";
       appName = "kiwix";
       uploadNotes = "Operators upload .zim files to the configured Kiwix library root.";
+      requiredAnyGroups = [ "kiwix-users" ];
     }
     {
       id = "emails";
@@ -837,6 +1032,7 @@ let
       logoUrl = "/logos/mail-archive.svg";
       appName = "custom app with notmuch / maildir";
       uploadNotes = "Synced mail appears as visible .eml mirrors under _Emails.";
+      requiredAnyGroups = [ "mail-archive-users" ];
     }
     {
       id = "downloads";
@@ -847,9 +1043,9 @@ let
       description = "Authenticated yt-dlp queue for audio and video downloads.";
       loginNotes = "Requires downloads-users.";
       projectUrl = "https://github.com/yt-dlp/yt-dlp";
-      logoUrl = "https://cdn.simpleicons.org/youtube";
       appName = "custom app with yt-dlp";
       uploadNotes = "Downloads land in personal or shared media folders.";
+      requiredAnyGroups = [ "downloads-users" ];
     }
     {
       id = "passwords";
@@ -860,7 +1056,7 @@ let
       description = "Shared password manager for server and account credentials.";
       loginNotes = "Vaultwarden is self-service: open the signup page on first visit and register with your local account email.";
       projectUrl = "https://github.com/dani-garcia/vaultwarden";
-      logoUrl = "https://cdn.simpleicons.org/vaultwarden";
+      logoUrl = "/logos/passwords.svg";
       appName = "vaultwarden";
       uploadNotes = "Store Kanidm credentials, recovery codes, and app-local passwords here.";
     }
@@ -871,12 +1067,11 @@ let
       enabled = kopiaEnabled;
       category = "operations";
       description = "Kopia backup management for critical state, Paperless data, and consistent database dumps.";
-      loginNotes = "Requires backup-admin plus the native Kopia password.";
+      loginNotes = "Requires ${vars.backupAdminGroup} plus the native Kopia password.";
       projectUrl = "https://kopia.io";
-      logoUrl = "https://raw.githubusercontent.com/kopia/kopia/master/icons/kopia.svg";
       appName = "kopia";
       uploadNotes = "Backup repository files are managed by Kopia.";
-      requiredGroups = [ vars.backupAccess.adminGroup ];
+      requiredAnyGroups = [ vars.backupAdminGroup ];
     }
     {
       id = "monitor";
@@ -885,12 +1080,11 @@ let
       enabled = monitorEnabled;
       category = "operations";
       description = "Beszel monitoring dashboard for host resources, app units, storage, and disk health.";
-      loginNotes = "Requires ${vars.monitoringAccess.group} through Kanidm, then the native Beszel login.";
+      loginNotes = "Requires ${vars.monitoringAccessGroup} through Kanidm, then the native Beszel login.";
       projectUrl = "https://beszel.dev";
-      logoUrl = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/beszel.svg";
       appName = "beszel";
       uploadNotes = "Monitoring state is managed by Beszel.";
-      requiredGroups = [ vars.monitoringAccess.group ];
+      requiredAnyGroups = [ vars.monitoringAccessGroup ];
     }
   ];
 
@@ -902,11 +1096,14 @@ let
       serviceIds = [ "documents" "files" "emails" ];
       fileTypes = [ "pdf" "jpg" "jpeg" "png" "tiff" "eml attachments" ];
       personalPath = personalPath "_Files";
-      sharedPath = "${vars.dataRoot}/paperless/inbox";
+      sharedPath = null;
+      personalPathRequiredAnyGroups = [ filesWebAccessGroup filesSftpAccessGroup ];
+      requiredAnyGroups = [ "paperless-users" filesWebAccessGroup "mail-archive-users" ];
       instructions = [
         "Use Paperless for scanned documents, bills, statements, receipts, and searchable PDFs."
         "Prefer PDF or image files. Convert office documents before handing them to Paperless."
         "Use Mail Archive attachment handoff when an email attachment should become a Paperless document."
+        "The Paperless consume inbox is server-managed and is not exposed as a normal Files or SFTP folder."
       ];
     }
     {
@@ -916,7 +1113,8 @@ let
       serviceIds = [ "photos" ];
       fileTypes = [ "jpg" "jpeg" "png" "heic" "webp" "mov" "mp4" ];
       personalPath = null;
-      sharedPath = "${vars.dataRoot}/immich/external";
+      sharedPath = null;
+      requiredAnyGroups = [ "immich-users" ];
       instructions = [
         "Upload through Immich web or the Immich mobile app so metadata and thumbnails are handled correctly."
         "Use the private Photos hostname for normal login."
@@ -930,7 +1128,10 @@ let
       serviceIds = [ "audiobooks" "downloads" "files" ];
       fileTypes = [ "m4b" "mp3" "flac" "opus" "m4a" "cue" "jpg" "opf" ];
       personalPath = personalPath "_Audiobooks";
-      sharedPath = "${vars.sharedRoot}/_Audiobooks";
+      sharedPath = sharedPath "_Audiobooks";
+      personalPathRequiredAnyGroups = [ filesWebAccessGroup filesSftpAccessGroup ];
+      sharedPathRequiredAnyGroups = [ vars.fileAccess.sharedAccessGroup ];
+      requiredAnyGroups = [ "audiobookshelf-users" "downloads-users" filesWebAccessGroup filesSftpAccessGroup ];
       instructions = [
         "Keep each audiobook in its own folder with cover art and metadata beside the audio files."
         "Use _Audiobooks/_YouTube for audio produced by the downloader."
@@ -944,7 +1145,10 @@ let
       serviceIds = [ "videos" "downloads" "files" ];
       fileTypes = [ "mkv" "mp4" "webm" "avi" "srt" "ass" "nfo" ];
       personalPath = personalPath "_Videos";
-      sharedPath = "${vars.sharedRoot}/_Videos";
+      sharedPath = sharedPath "_Videos";
+      personalPathRequiredAnyGroups = [ filesWebAccessGroup filesSftpAccessGroup ];
+      sharedPathRequiredAnyGroups = [ vars.fileAccess.sharedAccessGroup ];
+      requiredAnyGroups = [ "jellyfin-users" "downloads-users" filesWebAccessGroup filesSftpAccessGroup ];
       instructions = [
         "Put films in _Movies and series in _Shows so Jellyfin can identify them."
         "Use _YouTube for downloader output and _Other for other videos you want synced to devices."
@@ -957,8 +1161,11 @@ let
       enabled = offlineMediaEnabledForHomepage;
       serviceIds = [ "offline-media" "files" "downloads" ];
       fileTypes = [ "mp3" "flac" "m4a" "opus" "ogg" "wav" "mkv" "mp4" "webm" ];
-      personalPath = "${vars.usersRoot}/{username}";
+      personalPath = "/";
       sharedPath = null;
+      personalPathRequiredAnyGroups = [ filesWebAccessGroup filesSftpAccessGroup ];
+      requiredAllGroups = offlineMediaRequiredAllGroups;
+      requiredAnyGroups = offlineMediaRequiredAnyGroups;
       instructions = [
         "Place music files in _Music."
         "Use _Videos/_YouTube for downloaded videos and _Videos/_Other for other videos you want available offline."
@@ -973,7 +1180,10 @@ let
       serviceIds = [ "books" "files" ];
       fileTypes = [ "epub" "pdf" "cbz" "cbr" "zip" "rar" ];
       personalPath = personalPath "_Books";
-      sharedPath = "${vars.sharedRoot}/_Books";
+      sharedPath = sharedPath "_Books";
+      personalPathRequiredAnyGroups = [ filesWebAccessGroup filesSftpAccessGroup ];
+      sharedPathRequiredAnyGroups = [ vars.fileAccess.sharedAccessGroup ];
+      requiredAnyGroups = [ "kavita-users" filesWebAccessGroup filesSftpAccessGroup ];
       instructions = [
         "Use _Ebooks for prose books, _Comics for western comics, and _Manga for manga."
         "Keep series folders named consistently so Kavita groups volumes correctly."
@@ -987,7 +1197,10 @@ let
       serviceIds = [ "emails" "files" "documents" ];
       fileTypes = [ "eml" "zip" "attachments" ];
       personalPath = personalPath "_Emails";
-      sharedPath = "${vars.sharedRoot}/_Emails";
+      sharedPath = sharedPath "_Emails";
+      personalPathRequiredAnyGroups = [ filesWebAccessGroup filesSftpAccessGroup ];
+      sharedPathRequiredAnyGroups = [ vars.fileAccess.sharedAccessGroup ];
+      requiredAnyGroups = [ "mail-archive-users" filesWebAccessGroup filesSftpAccessGroup ];
       instructions = [
         "Use the Mail Archive UI for search, sync, attachment download, and reindex actions."
         "Visible .eml files are mirrors for browsing; do not work inside .internal-sync."
@@ -1001,10 +1214,11 @@ let
       serviceIds = [ "wiki" "files" ];
       fileTypes = [ "zim" ];
       personalPath = null;
-      sharedPath = "${vars.dataRoot}/kiwix";
+      sharedPath = null;
+      requiredAnyGroups = [ "app-admin" ];
       instructions = [
         "Use complete .zim files only."
-        "Kiwix library uploads are operator-managed because the server regenerates its library catalog."
+        "Kiwix library uploads are operator-managed and are not exposed through each user's Files/SFTP root."
         "After upload, the Kiwix sync service publishes valid ZIM files into the web library."
       ];
     }
@@ -1063,8 +1277,8 @@ let
     }
     {
       title = "Validate config readiness";
-      command = "nix run .#validate-config-readiness";
-      detail = "Preflight evaluated settings, required secret files, SSH reachability, and bootstrap/deploy prerequisites. It reports blockers without changing the server.";
+      command = "nix run .#validate-config-readiness -- --identity /secure/path/to/age.key";
+      detail = "From the repository, preflight evaluated settings, decryptability of required secrets, and bootstrap/deploy prerequisites. Replace the identity path first. This check does not prove SSH or network reachability.";
     }
     {
       title = "Export operations inventory";
@@ -1099,7 +1313,7 @@ let
     {
       title = "Validate broad changes";
       command = "./scripts/deploy.sh --debug --action test";
-      detail = "Run the broad validation gate and remote test activation after significant config, app, identity, routing, or storage changes.";
+      detail = "Run the broad validation gate and test-activate the candidate on the live server after a significant change. Test activation changes running services, but does not make the generation the next boot default.";
     }
     {
       title = "Run lean repo validation";
@@ -1124,12 +1338,12 @@ let
     {
       title = "Run routine guarded deploy";
       command = "./scripts/deploy.sh --action test";
-      detail = "Stage the repo archive on the server and run the normal remote nixos-rebuild test path. It does not switch the active generation.";
+      detail = "Stage the repo archive and test-activate it on the live server. Running services can restart or change; the candidate is not made the next boot default.";
     }
     {
       title = "Run guarded deploy with local build";
       command = "./scripts/deploy.sh --build-locally --action test";
-      detail = "Build on the admin workstation and test-activate over SSH when the server should not spend CPU or disk on the build.";
+      detail = "Build on the admin workstation and test-activate the live server over SSH. Running services can restart or change, even though the boot default is unchanged.";
     }
     {
       title = "Switch after a passing test";
@@ -1142,9 +1356,9 @@ let
       detail = "List bootable system generations and timestamps before choosing a rollback or comparing recent switches.";
     }
     {
-      title = "Rollback current generation";
+      title = "Emergency rollback current generation";
       command = "sudo nixos-rebuild switch --rollback";
-      detail = "Roll back the active system profile to the previous generation when a switch needs to be backed out immediately. Follow with failed-unit and route checks.";
+      detail = "Emergency server-console recovery only. This bypasses the guarded deploy health checks and changes both running services and the boot profile, so it may interrupt SSH. Use the guarded deploy's automatic rollback for normal failures; after this command, check failed units and routes before leaving the console.";
     }
     {
       title = "Check app service status";
@@ -1164,7 +1378,7 @@ let
     {
       title = "Restart homepage";
       command = "sudo systemctl restart homepage.service";
-      detail = "Restart the portal after changing homepage code, generated JSON, or helper command wiring when a full deploy is not being run.";
+      detail = "Recover a crashed or stuck portal using the Homepage code and generated JSON already in the active NixOS generation. Repository code or configuration changes require a guarded deploy; restarting alone cannot load them.";
     }
     {
       title = "Check OAuth proxy logs";
@@ -1172,19 +1386,30 @@ let
       detail = "Inspect SSO proxy failures across protected app surfaces, including bad upstreams, cookie issues, and denied groups.";
     }
     {
-      title = "Re-run storage layout services";
-      command = "systemctl list-units '*storage-layout-v1.service' --all --no-legend | awk '{print $1}' | xargs -r sudo systemctl start";
-      detail = "Re-apply all app storage layout units after creating, restoring, or repairing content directories. This fixes expected owners, modes, and ACLs.";
+      title = "List storage layout services";
+      command = "systemctl list-units --type=service --all '*storage-layout*' '*folder-layout*' fileshare-user-root-sync.service --no-pager";
+      detail = "Inspect the exact layout and ACL reconciliation units available in this generation. Successful oneshot units remain active, so `start` is a no-op; after checking the data mount and logs, re-run one specific unit with `sudo systemctl restart UNIT.service`.";
     }
+  ]
+  ++ lib.optionals immichEnabled [
     {
       title = "Re-run Immich OIDC reconcile";
       command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
       detail = "Force Immich user and admin reconciliation from current Kanidm group and claim state after access or admin-group changes.";
     }
+  ]
+  ++ lib.optionals paperlessEnabled [
     {
       title = "Re-run Paperless OIDC reconcile";
       command = "sudo systemctl start paperless-oidc-reconcile.service";
       detail = "Force Paperless account reconciliation from Kanidm after access, username, or email changes when the web UI has not caught up.";
+    }
+  ]
+  ++ lib.optionals jellyfinEnabled [
+    {
+      title = "Retrieve Jellyfin initial password";
+      command = "sudo jellyfin-initial-credential\nsudo jellyfin-initial-credential USERNAME";
+      detail = "List users whose root-only initial credential is still stored, then retrieve only the intended username. Treat the printed password as a secret, hand it to that user through a trusted channel, and require them to change it after their first Jellyfin login. The stored credential can be stale after that change; reconciliation does not overwrite the replacement password.";
     }
     {
       title = "Re-run Jellyfin library sync";
@@ -1199,11 +1424,33 @@ let
       detail = "Publish newly uploaded or repaired ZIM files into the Kiwix web library catalog.";
     }
   ]
+  ++ lib.optionals offlineMediaEnabledForHomepage [
+    ({
+      title = "Revoke offline-media device access";
+      detail =
+        if offlineMediaAccessGroup == "users" then
+          "Offline Media currently uses the baseline users group. Never remove that group merely to stop device sync: doing so also removes ordinary Homepage and identity access. Have the user open Offline Media and remove each enrolled device. For centrally controlled revocation, configure a new dedicated offlineMedia.accessGroup, deploy it, and grant that role explicitly."
+        else
+          "Remove only the dedicated offline-media role, then immediately reconcile. Reconciliation verifies live Kanidm membership before detaching that user's stale Syncthing folders and devices; it never deletes source media or removes baseline users access.";
+    } // lib.optionalAttrs (offlineMediaAccessGroup != "users") {
+      command = "kanidm group remove-members ${lib.escapeShellArg offlineMediaAccessGroup} USERNAME\nsudo systemctl start offline-media-reconcile.service";
+    })
+  ]
   ++ [
     {
       title = "Check Kanidm health";
       command = "systemctl status kanidm.service --no-pager";
       detail = "Check the identity provider before debugging app sign-in, OAuth, or group-claim failures.";
+    }
+    {
+      title = "Bootstrap or recover operator credential";
+      command = "sudo kanidm-operator-bootstrap status\n# If status says initial setup is required:\nsudo kanidm-operator-bootstrap issue";
+      detail = "On the server, check whether the configured operator has completed credential setup. `issue` prints a short-lived one-time setup URL only to the root terminal. For a deliberate later recovery, review the warning and add `--recovery`; never paste the URL into logs or tickets.";
+    }
+    {
+      title = "Authenticate Kanidm CLI";
+      command = "kanidm login -D ${lib.escapeShellArg vars.kanidmAdminUser} && kanidm self whoami";
+      detail = "Start or verify a CLI session as the configured delegated operator before running person or group commands. Do not use the built-in idm_admin account for routine administration.";
     }
     {
       title = "List Kanidm people";
@@ -1223,12 +1470,12 @@ let
     {
       title = "Remove user from access group";
       command = "kanidm group remove-members app-admin USERNAME";
-      detail = "Remove a user from one access group when offboarding or reducing privileges. Replace both app-admin and USERNAME first.";
+      detail = "Use this live command only for a manual/additive group such as app-admin or a file-access role, after verifying membership. First search vars.nix for the username: configured seed members must also be removed from their source list and deployed or provisioning can add them again. Application bundles and backup roles reconcile exactly and must be changed in vars.nix.";
     }
     {
       title = "Restart identity reconciliation";
       command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
-      detail = "Reconcile Kanidm provisioning, POSIX file groups, and per-user file roots after account or group changes, especially before testing file access.";
+      detail = "Refresh configured display names and mail addresses for Kanidm people that already exist, then refresh POSIX file-group mappings and per-user roots. This does not create a missing person or change repository-managed group membership; edit vars.nix and deploy for those changes.";
     }
     {
       title = "Manage Kanidm entity removal explicitly";
@@ -1247,8 +1494,8 @@ let
     }
     {
       title = "Discover monitored storage devices";
-      command = "./scripts/discover-storage-devices.sh --format text";
-      detail = "List disks detected by storage monitoring and SMART checks, including stable by-id paths to use in config.";
+      command = "sudo nixhomeserver-storage-inventory --format text";
+      detail = "On the server, list disks detected by the evaluated storage-monitoring inventory, including stable by-id paths to use in config. This installed command cannot accidentally inspect an admin workstation.";
     }
   ]
   ++ zfsStorageAdminGuide
@@ -1256,8 +1503,8 @@ let
   ++ [
     {
       title = "Run SMART short sweep";
-      command = "sudo ./scripts/run-storage-smart-sweep.sh --kind short";
-      detail = "Start short SMART self-tests for monitored storage devices. Check storage monitor logs after the tests complete.";
+      command = "sudo systemctl start storage-smart-short.service";
+      detail = "On the server, start short SMART self-tests for the evaluated monitored-device inventory. Check the storage monitor logs after the tests complete.";
     }
     {
       title = "Inspect a disk with SMART";
@@ -1272,7 +1519,7 @@ let
     {
       title = "Check backup timers";
       command = "systemctl list-timers 'kopia*' 'rclone*' --all --no-pager";
-      detail = "Verify Kopia snapshots and offsite sync timers are scheduled and see their next run times.";
+      detail = "Verify Kopia snapshot timers${lib.optionalString megaEnabled " and the configured offsite sync timer"} are scheduled and see their next run times.";
     }
     {
       title = "Check Kopia services";
@@ -1289,6 +1536,8 @@ let
       command = "journalctl -u kopia-persist-snapshot.service -n 100 --no-pager";
       detail = "Review the most recent persist snapshot run, including Kopia errors and excluded paths.";
     }
+  ]
+  ++ lib.optionals megaEnabled [
     {
       title = "Run offsite Kopia sync now";
       command = "sudo systemctl start rclone-mega-kopia-sync.service";
@@ -1299,10 +1548,12 @@ let
       command = "journalctl -u rclone-mega-kopia-sync.service -n 100 --no-pager";
       detail = "Review the most recent offsite backup sync run, including transfer failures and destination errors.";
     }
+  ]
+  ++ [
     {
       title = "Check backup repository size";
-      command = "sudo du -sh ${vars.backupRoot}";
-      detail = "Check on-disk backup repository size before storage, retention, or offsite sync troubleshooting.";
+      command = "sudo du -sh ${vars.backupRoot}/kopia";
+      detail = "Check the managed Kopia repository's on-disk size before storage, retention, or offsite sync troubleshooting.";
     }
     {
       title = "Check Caddy status";
@@ -1317,7 +1568,7 @@ let
     {
       title = "Reload Caddy";
       command = "sudo systemctl reload caddy.service";
-      detail = "Reload routes and certificates without a full service restart. Use after config changes have validated.";
+      detail = "Reload the Caddy configuration already present in the active NixOS generation. Repository route changes must be deployed first; editing the repo and reloading cannot apply them.";
     }
     {
       title = "Inspect Caddy logs";
@@ -1355,6 +1606,11 @@ let
       detail = "Inspect active nftables rules when DNS resolves and the service runs, but traffic is still blocked.";
     }
     {
+      title = "Show SFTP host key fingerprint";
+      command = "sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub";
+      detail = "Give this fingerprint to an SFTP/SSHFS user through a trusted channel before their first connection. Investigate rather than accepting an unexpected fingerprint change.";
+    }
+    {
       title = "Rotate or regenerate secrets";
       command = "nix run .#generate-secrets -- --identity /path/to/current/age.key";
       detail = "Verify every manifest secret with the current identity. Use the documented explicit --fresh or --rekey mode only when intentionally changing credentials or recipients.";
@@ -1385,17 +1641,51 @@ let
     brandName = vars.brandName;
     domain = vars.domain;
     serverLanHost = serverLanHost;
-    sshfsHost = vars.network.hostname;
     services = serviceCards;
     kanidmGroups = kanidmGroups;
     kanidmGroupDescriptions = kanidmGroupDescriptions;
+    kanidmGroupManagement = kanidmGroupManagement;
+    adminUsers = [ vars.kanidmAdminUser ];
+    adminGroups = [ ];
     canaryAdminUser = vars.kanidmAdminUser;
+    sftp = {
+      enabled = filesSftpEnabled;
+      host = serverLanHost;
+      port = vars.networking.ports.filesSftp;
+      networkNote = "LAN-only endpoint. Connect from the home network; the public web tunnel and NetBird interface do not expose this port.";
+      requiredAnyGroups = sftpAccessGroups;
+      accessNotes = [
+        {
+          text = "Your SFTP root includes /${filesSharedMountName}, a shared household view. It is writable but deletion-protected so shared files cannot be removed through this view.";
+          requiredAnyGroups = [ filesSharedAccessGroup ];
+        }
+        {
+          text = "Your SFTP root includes /${filesUsbMountName} for external USB storage. It is writable but deletion-protected, and it may be empty until an administrator mounts the USB device.";
+          requiredAnyGroups = [ filesUsbAccessGroup ];
+        }
+        {
+          text = "Your SFTP root includes /${backupStorageMountName}, a read-only view of encrypted backup repository files. You can copy files out, but cannot upload, edit, rename, or delete them; this role does not grant Kopia administration or browser Files access.";
+          requiredAnyGroups = [ backupStorageAccessGroup ];
+        }
+      ];
+    };
     offlineMedia = {
       enabled = offlineMediaEnabledForHomepage;
+      requiredAllGroups = offlineMediaRequiredAllGroups;
+      requiredAnyGroups = offlineMediaRequiredAnyGroups;
       connectionAddresses = [
-        "tcp://${syncthingHost}:22000"
-        "tcp://${vars.networking.lan.ip}:22000"
-        "tcp://${vars.networking.netbird.ip}:22000"
+        {
+          address = "tcp://${syncthingHost}:22000";
+          label = "Recommended server address";
+        }
+        {
+          address = "tcp://${vars.networking.lan.ip}:22000";
+          label = "At home (LAN)";
+        }
+        {
+          address = "tcp://${vars.networking.netbird.ip}:22000";
+          label = "Away from home (NetBird)";
+        }
       ];
       folders = [ ];
       devices = [ ];
@@ -1502,7 +1792,7 @@ in
       domain = host;
       port = vars.networking.ports.oauth2ProxyHomepage;
       upstream = "http://${listenAddress}:${toString listenPort}";
-      allowedGroups = [ "users" ];
+      allowedGroups = homepageAccessGroups;
       codeChallengeMethod = "S256";
       serviceDependencies = [
         "caddy.service"

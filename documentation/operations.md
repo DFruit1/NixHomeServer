@@ -5,9 +5,9 @@ Use this as the maintained day-2 operations guide for validation, guarded deploy
 ## Service Access Canary
 
 `canary-user` is a non-privileged Kanidm person used by the Homepage admin
-service-access test. It belongs to normal application groups plus backup and
-monitoring access, but never to `app-admin`, `domain_admins`, `system_admins`,
-or delegated `idm_*` groups.
+service-access test. It belongs to normal application groups plus monitoring
+access, but never to the exactly reconciled backup groups, `app-admin`,
+`domain_admins`, `system_admins`, or delegated `idm_*` groups.
 
 `kanidm-canary-bootstrap.service` automatically provisions the generated
 `canaryUserPassword`, enrolls a Kanidm-generated SHA-256 TOTP credential, and
@@ -33,10 +33,11 @@ after SSO. Those are reported as boundary-only checks and no app-local
 credentials are stored.
 
 Guarded deploys run the suite after public-route checks and return nonzero on a
-failure. This does not automatically roll back the activated generation.
-Failure JSON is stored under `/var/lib/homepage-canary/failures` for 14 days;
-it contains statuses and render metrics but no screenshots, HTML, cookies, or
-passwords.
+failure. A failing health gate immediately restores the previous live
+generation; the target-side rollback timer remains the backstop if immediate
+recovery cannot complete. Failure JSON is stored under
+`/var/lib/homepage-canary/failures` for 14 days; it contains statuses and render
+metrics but no screenshots, HTML, cookies, or passwords.
 
 ```bash
 sudo systemctl start homepage-canary.service
@@ -44,10 +45,12 @@ sudo homepage-canary-assert
 sudo journalctl -u homepage-canary.service -n 100 --no-pager
 ```
 
-Normal day-2 operations no longer require local Nix on the desktop. The
-documented path is to stage the repo archive over SSH and let the remote server
-perform evaluation, builds, activation, and secrets generation. Blank-machine
-bootstrap remains the installer-side exception.
+Normal day-2 builds run on the server, but the administrator's workstation still
+needs the `nix` command. The deploy wrapper uses it for local flake/hostname
+validation before staging the repository over SSH; the server performs the
+resource-intensive NixOS evaluation, build, activation, and secret generation.
+Use the Nix-capable workstation prepared in the quickstart for both bootstrap
+and routine deploys.
 
 ## After Bootstrap
 
@@ -71,6 +74,41 @@ work. Routine changes use the guarded deploy path:
 Once homepage and SSO are reachable, use the homepage "For Admins" page for
 live app configuration, user onboarding commands, and common server-management
 reminders.
+
+## Disabling Optional Applications
+
+Imported application modules are independent of one another. Removing an
+application import from `configuration.nix` is the strongest disabled state and
+is appropriate for applications with no enable switch. Keep the Core and
+Integration imports: integrations detect absent application options and become
+no-ops. The repository regression suite evaluates Core-only, every optional
+module removed independently, and a targeted single-app topology.
+
+The following imported modules also have a convenient active-feature switch.
+Setting one to `false` removes its services, routes, DNS, configured identity
+surfaces, app-owned secret materialization/requirements, backup registrations,
+and integrations while leaving centrally managed persistence in place:
+
+```nix
+repo.groundwaterLogger.enable = false;
+repo.kiwix.enable = false;
+repo.prowlarr.enable = false;
+repo.qbittorrent.enable = false;
+repo.radarr.enable = false;
+repo.seerr.enable = false;
+repo.sonarr.enable = false;
+services.mail-archive-ui.enable = false;
+```
+
+Seerr already defaults to disabled. Offline Media uses
+`offlineMedia.enable = false` in `vars.nix`; its cleanup unit revokes generated
+Syncthing runtime configuration without deleting persisted application data.
+Do not remove application paths from the central impermanence inventory merely
+because an app is disabled. After changing imports or flags, run a guarded test
+deploy before switching. Kanidm automatic deletion is intentionally disabled,
+so identity objects provisioned by an earlier generation may remain inert until
+an administrator explicitly retires them; the Homepage admin guide documents
+that separate cleanup workflow.
 
 ## Local-Console Administrator Recovery
 
@@ -122,7 +160,8 @@ URLs for a site with `nix run .#show-config-summary -- --host <host>`.
 
 - Private Immich app: `https://<photos-domain>`
 - Public Immich share links: `https://<share-photos-domain>`
-- Authenticated Filestash UI and SFTP: `https://<files-domain>/`
+- Authenticated Filestash browser UI: `https://<files-domain>/`
+- LAN-only direct SFTP: `sftp://<username>@<server-lan-host>:<filesSftp-port>/`
 - Private Vaultwarden: `https://<passwords-domain>`
 - Local Kopia backup management UI: `https://<kopia-domain>/`
 
@@ -145,7 +184,11 @@ workflow for invites, break-glass local admin handling, and the standard
 credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 
 Use the kopia hostname for local Kopia backup management. Browser access is gated by
-Kanidm through OAuth2 Proxy and requires membership in `backup-admin`.
+Kanidm through OAuth2 Proxy and requires membership in the configured
+`backupAccess.adminGroup` (`backup-admin` by default). Repository browsing is a
+separate permission granted by `backupAccess.storageGroup`
+(`backup-storage-users` by default). Backup admins inherit storage membership;
+users listed only in `backupAccess.storageUsers` never receive Kopia admin access.
 After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
 from the generated `kopiaServerPassword` secret. The managed repository is a
 local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`.
@@ -213,15 +256,22 @@ Filestash and SFTP file roots:
 
 - Filestash authenticates through OAuth2 Proxy and connects to the local SFTP endpoint as that Unix user with the managed Filestash SFTP key.
 - `files-personal-users` is the base browser-workspace grant. Membership in
-  `usb-access`, `files-shared-users`, or `backup-admin` only adds a view to an
+  `usb-access`, `files-shared-users`, or `backup-storage-users` only adds a view to an
   existing workspace and does not independently grant Filestash login.
 - Filestash opens a single normal-user source, `Files`, rooted at the user's SFTP chroot.
 - Direct SFTP opens the same personal root at `sftp://<username>@server.internal:<filesSftp-port>/`, currently port `2222`, and authenticates with the user's SSH key. Grant `files-sftp-users` for direct-only access; browser users receive the same chroot because Filestash itself uses SFTP as its backend.
-- Direct SFTP password and keyboard-interactive login are disabled; install user public keys as root in `/persist/appdata/files-sftp-authorized-keys/<username>`.
+- Direct SFTP password and keyboard-interactive login are disabled. Eligible
+  users add a device public key from Homepage's SFTP setup page; the root-owned
+  files under `/persist/appdata/files-sftp-authorized-keys/<username>` are the
+  administrator recovery/audit surface, not something users edit directly.
 - Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
 - Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB filesystems are mounted manually by an operator under that root.
-- Users in `backup-admin` also see read-only `_Backups`, backed by `/mnt/data/backups`.
+- Users in `backup-storage-users` also see read-only `_Backups`, backed by
+  `/mnt/data/backups`. Members of `backup-admin` inherit this storage group.
+- `backupAccess.storageGid` is the stable on-disk identity of that storage
+  group. Keep it unique in the range 1000-59999 and do not change it after data
+  exists without deliberately migrating ownership and ACLs.
 - `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
 
 Useful file-access checks:
@@ -232,6 +282,7 @@ kanidm group get files-sftp-users
 kanidm group get files-shared-users
 kanidm group get usb-access
 kanidm group get backup-admin
+kanidm group get backup-storage-users
 
 systemctl status 'files-shared-bindfs@<user>.service'
 systemctl status 'files-usb-bindfs@<user>.service'
@@ -350,8 +401,9 @@ Kopia policy.
 
 ## Validation Gate
 
-The documented day-2 validation path runs on the remote server and does not need
-local Nix:
+The documented day-2 validation path runs resource-intensive checks on the
+remote server. The local wrapper still needs `nix` for its lightweight flake and
+target validation:
 
 ```bash
 ./scripts/deploy.sh --debug --action test
@@ -409,11 +461,23 @@ from the configured `identity.adminUser` account name.
 ```
 
 That path resolves the target from `vars.localAdminUser` and `vars.serverLanIP`,
-stages the current repo archive on that host, and keeps all Nix evaluation,
-builds, activation, and validation on the server. Routine deploys use the lean
-repository gate before `nixos-rebuild`; run `deploy.sh --debug` separately when
-you want the full Nix, lint, and app check suite. The server also carries the
-resulting `/nix/store` churn.
+refuses untracked files that have not been reviewed, and stages the current repo
+archive on that host. By default, all Nix evaluation, builds, activation, and
+validation happen on the server, so the server also carries the resulting
+`/nix/store` churn.
+
+Run deploys from a real Git checkout. A copied directory or source ZIP is
+rejected because it has no trustworthy tracked-file manifest; broadly archiving
+such a tree could otherwise include ignored plaintext secrets, dependency
+caches, or other host-local files in the build host's Nix store.
+
+The test action checks free space on both the build host and target, builds and
+copies the closure without activating it, then activates that exact closure
+through the guarded target-side test unit without changing the boot default. It
+then checks failed systemd units, public routes, and the authenticated Homepage
+canary when that module is enabled. Only after every gate passes does it record
+a root-only stamp containing the exact repository hash and NixOS closure. That
+closure is also kept alive with a dedicated GC root.
 
 Only switch after the guarded test path passes.
 
@@ -421,18 +485,52 @@ Only switch after the guarded test path passes.
 ./scripts/deploy.sh --action switch
 ```
 
+The switch action does not rebuild a possibly different result. It refuses to
+continue if any archived repository content changed after the passing test,
+reactivates the exact stamped closure, repeats the health gates, and only then
+makes that closure the boot default. If you edit, stage, or remove a file after
+`--action test`, run the test action again before switching.
+
+Deploys are serialized with a per-host lock. A failed transaction restores both
+the previous live generation and previous boot profile immediately. `SIGHUP`,
+`SIGINT`, and `SIGTERM` trigger that same immediate recovery before the deploy
+process exits. Building and copying happen before the rollback timer is armed
+and do not mutate the live generation. The later activation atomically verifies
+the transaction owner and recovery barriers as it starts; recovery stops that
+unique target-side unit and refuses to mutate generations unless it can prove
+the activation is no longer running. A target-side timer remains armed during
+activation as a backstop for an abruptly killed process or lost SSH session,
+and is cancelled only after the transaction completes. If an immediate rollback
+itself fails, leave the timer and lock in place and inspect them instead of
+starting a competing deploy:
+
+```bash
+sudo systemctl list-timers 'nixhomeserver-deploy-*'
+sudo systemctl status 'nixhomeserver-deploy-rollback-*'
+```
+
+A completed target-side rollback retains a `recovery-complete` barrier under
+`/run/lock/nixhomeserver-deploy-<host>/` so a stalled executor cannot resume and
+commit stale work. If that executor resumes, it repeats recovery, cancels the
+finished timer, and removes the barrier before exiting; otherwise the ordinary
+stale-lock expiry removes a successful barrier. A failed delayed rollback writes
+`recovery-failed` instead, and stale-lock expiry deliberately refuses to remove
+it. Inspect the rollback service and restore a known-good live and boot
+generation before manually clearing that failed-recovery lock.
+
 For the slower full validation gate:
 
 ```bash
 ./scripts/deploy.sh --action test --debug
 ```
 
-`--debug` keeps the normal deploy ordering but adds the full repository
-validation gate before rebuilding. Use it for suspicious failures or broad
-changes; routine deploys should stay on the fast path.
+`--debug` keeps the transactional deploy ordering but adds the full repository
+validation gate before rebuilding. Use it for broad changes or suspicious
+failures; routine deploys can use the focused fast path.
 
-The regular deploy path stays intentionally quick. It evaluates the target
-host, rebuilds remotely, and fails if systemd reports failed units afterward.
+The regular deploy path stays intentionally focused. It evaluates the target,
+checks build and target capacity, rebuilds remotely, and runs the runtime health
+gates described above.
 
 ## Fast Remote Deploy
 
@@ -443,12 +541,15 @@ For normal remote deploys:
 ```
 
 This resolves the SSH target from `vars.localAdminUser` and `vars.serverLanIP`,
-stages the current repo archive, and runs `nixos-rebuild test` on the remote
-host. It intentionally skips full repository validation and flake checks, but
-still evaluates the host and checks failed units after the rebuild.
+stages the current repo archive, runs the build/copy-only `nixos-rebuild build`,
+and activates the returned closure through the guarded target-side test unit. It
+intentionally skips the full repository and flake-check suite, but it still
+evaluates the host, checks capacity, verifies failed units and public routes,
+runs the authenticated canary when enabled, and records the exact passing
+source/closure pair.
 
-Use `--action switch` only after the test path passes and you want to change the
-active system and boot default:
+Use `--action switch` only after the test path passes without subsequent repo
+changes and you want to commit that exact tested closure as the boot default:
 
 ```bash
 ./scripts/deploy.sh --action switch

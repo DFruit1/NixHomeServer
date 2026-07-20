@@ -6,8 +6,6 @@ const USER_HEADERS = [
   'x-forwarded-preferred-username',
   'x-auth-request-login',
   'x-forwarded-login',
-  'x-auth-request-email',
-  'x-forwarded-email',
   'x-auth-request-user',
   'x-forwarded-user',
 ] as const;
@@ -32,7 +30,7 @@ export const normaliseUsername = (value: string | undefined): string | undefined
     return undefined;
   }
   const localPart = first.split('@', 1)[0];
-  return /^[A-Za-z0-9._-]{1,64}$/.test(localPart) ? localPart : undefined;
+  return /^[a-z][a-z0-9._-]{0,63}$/.test(localPart) ? localPart : undefined;
 };
 
 export const parseGroups = (headers: IncomingHttpHeaders): string[] => {

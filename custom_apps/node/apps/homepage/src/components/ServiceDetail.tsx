@@ -11,11 +11,13 @@ export const ServiceDetail = component$(
     offlineMedia,
     username,
     serverHost,
+    serverPort,
   }: {
     service: ServiceCard;
     offlineMedia?: OfflineMediaSetup;
     username?: string;
     serverHost: string;
+    serverPort: number;
   }) => {
     const displayUsername = username ?? '{username}';
     const isOfflineMedia = service.id === 'offline-media';
@@ -86,7 +88,7 @@ export const ServiceDetail = component$(
           </section>
         )}
         {isOfflineMedia && <OfflineMediaSetupPanel offlineMedia={offlineMedia} username={username} />}
-        {service.id === 'sftp' && <SftpAccessInstructions username={displayUsername} serverHost={serverHost} />}
+        {service.id === 'sftp' && <SftpAccessInstructions username={displayUsername} serverHost={serverHost} port={serverPort} />}
       </article>
     );
   },

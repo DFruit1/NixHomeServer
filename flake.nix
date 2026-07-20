@@ -91,7 +91,7 @@
             pkgs = nixpkgs.legacyPackages.${system};
           in
           import ./flake/apps.nix {
-            inherit pkgs;
+            inherit pkgs vars;
           });
     };
 }

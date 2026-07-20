@@ -59,6 +59,12 @@ in
   };
 
   config = {
+    repo.storage.dataPool.guardedServices = [
+      "kavita-storage-layout-v1"
+      "kavita"
+      "kavita-stale-reference-cleanup"
+    ];
+
     repo.storage.userRoots = {
       contentSubdirs = [ "_Books" ];
       bookSubdirs = userBookSubdirs;
@@ -81,9 +87,6 @@ in
       wants = [ "data-pool-layout.service" "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [ "kavita.service" ];
-      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
-        ConditionPathIsMountPoint = vars.dataRoot;
-      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

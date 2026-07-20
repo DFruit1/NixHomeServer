@@ -57,7 +57,7 @@ stdin.on('end', () => stdout.write('installed /persist/appdata/files-sftp-author
 
       expect(response).toEqual({
         ok: true,
-        message: 'SFTP public key saved and verified on the server.',
+        message: 'SFTP device key added and verified on the server.',
         details: 'installed /persist/appdata/files-sftp-authorized-keys/alice owner=root:root mode=644',
       });
     } finally {

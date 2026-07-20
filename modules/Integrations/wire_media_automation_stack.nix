@@ -78,6 +78,17 @@ in
       ++ lib.optional videoLayoutEnabled "_Videos"
     );
 
+    repo.storage.dataPool.guardedServices =
+      lib.optional storageLayoutEnabled "media-automation-storage-layout-v1"
+      ++ lib.optional qbittorrentEnabled "qbittorrent"
+      ++ lib.optional sonarrEnabled "sonarr"
+      ++ lib.optional radarrEnabled "radarr"
+      ++ lib.optional qbittorrentEnabled "media-automation-bootstrap-qbittorrent"
+      ++ lib.optional (prowlarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-prowlarr-qbittorrent"
+      ++ lib.optional (sonarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-sonarr"
+      ++ lib.optional (radarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-radarr"
+      ++ lib.optional (prowlarrEnabled && sonarrEnabled && radarrEnabled) "media-automation-bootstrap-prowlarr";
+
     systemd.services.media-automation-storage-layout-v1 = lib.mkIf storageLayoutEnabled {
       description = "Provision shared storage for media automation";
       wantedBy = [ "multi-user.target" ];
@@ -101,9 +112,6 @@ in
         "media-automation-bootstrap-prowlarr.service"
         "media-automation-bootstrap-prowlarr-qbittorrent.service"
       ];
-      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
-        ConditionPathIsMountPoint = vars.dataRoot;
-      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

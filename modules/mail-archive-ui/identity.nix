@@ -1,11 +1,11 @@
-{ config, vars, ... }:
+{ config, lib, vars, ... }:
 
 let
   host = "emails.${vars.domain}";
 in
 
 {
-  config = {
+  config = lib.mkIf config.services.mail-archive-ui.enable {
     users.groups.mail-archive-ui = { };
 
     users.users.mail-archive-ui = {

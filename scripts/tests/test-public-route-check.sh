@@ -17,12 +17,17 @@ cat >"$tmpdir/curl" <<'EOF'
 set -euo pipefail
 
 output_file=""
+headers_file=""
 url=""
 
 while (($# > 0)); do
   case "$1" in
     --output)
       output_file="${2:-}"
+      shift 2
+      ;;
+    --dump-header)
+      headers_file="${2:-}"
       shift 2
       ;;
     --write-out)
@@ -44,9 +49,11 @@ while (($# > 0)); do
   esac
 done
 
-if [[ -z "$output_file" || -z "$url" ]]; then
+if [[ -z "$output_file" || -z "$headers_file" || -z "$url" ]]; then
   exit 2
 fi
+
+: >"$headers_file"
 
 case "$url" in
   https://ok.example.test)
@@ -55,7 +62,22 @@ case "$url" in
     ;;
   https://redirect.example.test)
     printf 'redirect' >"$output_file"
+    printf 'HTTP/2 302\r\nLocation: https://id.example.test/login\r\n\r\n' >"$headers_file"
     printf '302'
+    ;;
+  https://relative-redirect.example.test)
+    printf 'redirect' >"$output_file"
+    printf 'HTTP/2 303\r\nLocation: /login\r\n\r\n' >"$headers_file"
+    printf '303'
+    ;;
+  https://bad-redirect.example.test)
+    printf 'redirect without destination' >"$output_file"
+    printf 'HTTP/2 302\r\n\r\n' >"$headers_file"
+    printf '302'
+    ;;
+  https://forbidden.example.test)
+    printf 'forbidden' >"$output_file"
+    printf '403'
     ;;
   https://gateway.example.test)
     printf 'Bad Gateway' >"$output_file"
@@ -79,12 +101,27 @@ run_route_check() {
     bash scripts/check-public-routes.sh --attempts 1 --retry-delay 0 --max-time 1 2>&1
 }
 
-healthy_output="$(run_route_check $'https://ok.example.test\nhttps://redirect.example.test')"
+healthy_output="$(run_route_check $'https://ok.example.test\nhttps://redirect.example.test\nhttps://relative-redirect.example.test')"
 if ! rg -Fq "Public route checks passed" <<<"$healthy_output"; then
-  echo "❌ Public route check should accept non-5xx HTTP responses."
+  echo "❌ Public route check should accept successful responses and explicit redirects."
   echo "$healthy_output"
   exit 1
 fi
+
+for rejected_url in \
+  https://forbidden.example.test \
+  https://missing.example.test \
+  https://bad-redirect.example.test; do
+  if rejected_output="$(run_route_check "$rejected_url")"; then
+    echo "❌ Public route check accepted an unexpected 4xx or malformed redirect: $rejected_url"
+    exit 1
+  fi
+  if ! rg -Fq 'blocked: public route health check failed' <<<"$rejected_output"; then
+    echo "❌ Rejected public route did not produce the aggregate failure: $rejected_url"
+    echo "$rejected_output"
+    exit 1
+  fi
+done
 
 if gateway_output="$(run_route_check "https://gateway.example.test")"; then
   echo "❌ Public route check returned success for HTTP 502."

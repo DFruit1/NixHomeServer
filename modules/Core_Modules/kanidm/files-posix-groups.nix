@@ -13,7 +13,7 @@ let
     ++ (vars.filesSftpUsers or [ ])
     ++ (vars.kanidmAppUsers or [ ])
     ++ (vars.kanidmBackupUsers or [ ])
-    ++ (vars.fileAccess.usbUsers or [ ])
+    ++ (vars.fileAccessUsbUsers or [ ])
   );
   kanidmFilesPosixGroupsPath = with pkgs; [
     coreutils
@@ -22,7 +22,11 @@ let
   ];
   retiredPosixGroups = {
     user-files = vars.fileAccessPosixGids.${vars.fileAccess.webAccessGroup};
-    admin-backups = vars.fileAccessPosixGids.${vars.backupAccess.storageGroup};
+    admin-backups = vars.fileAccessPosixGids.${vars.backupStorageGroup};
+  } // lib.optionalAttrs (vars.backupAdminGroup != vars.backupStorageGroup) {
+    # Older releases assigned the repository POSIX GID to backup-admin.
+    # Release it before assigning the stable GID to the storage-only group.
+    ${vars.backupAdminGroup} = vars.backupStorageGid;
   };
 in
 {

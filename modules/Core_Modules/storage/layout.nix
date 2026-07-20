@@ -4,12 +4,34 @@ let
   cfg = config.repo.storage.dataPool;
   zpoolBin = "${config.boot.zfs.package}/sbin/zpool";
   zfsBin = "${pkgs.zfs}/bin/zfs";
+  storageValidation = import ../../../lib/storage-validation.nix { inherit lib; };
+  expectedPoolGuidRaw = vars.zfsDataPool.expectedGuid or null;
+  expectedPoolGuid =
+    if builtins.isString expectedPoolGuidRaw && storageValidation.validZpoolGuid expectedPoolGuidRaw
+    then expectedPoolGuidRaw
+    else null;
+  poolImportIdentifier = if expectedPoolGuid == null then vars.zfsDataPool.name else expectedPoolGuid;
+  poolIdentityVerifier = pkgs.writeShellScript "verify-zfs-pool-identity"
+    (builtins.readFile ../../../scripts/helpers/verify-zfs-pool-identity.sh);
+  poolIdentityVerifierArgs = lib.escapeShellArgs (
+    [ "--pool" vars.zfsDataPool.name ]
+    ++ lib.optionals (expectedPoolGuid != null) [ "--expected-guid" expectedPoolGuid ]
+    ++ lib.concatMap
+      (diskId: [ "--expected-device" "/dev/disk/by-id/${diskId}" ])
+      vars.zfsDataPoolDiskIds
+  );
   canonicalUsersDataset = "${vars.zfsDataPool.name}/users";
   canonicalSharedDataset = "${vars.zfsDataPool.name}/shared";
   canonicalBackupsDataset = "${vars.zfsDataPool.name}/backups";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
+  backupStorageAccessGroup = vars.backupStorageGroup;
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
+  invalidSharedContentNames = lib.filter
+    (name: !storageValidation.validPathComponent name)
+    config.repo.storage.sharedRoots.contentSubdirs;
+  invalidSharedVideoNames = lib.filter
+    (name: !storageValidation.validPathComponent name)
+    config.repo.storage.sharedRoots.videoSubdirs;
   sharedContentDirs = map
     (name: {
       path = "${vars.sharedRoot}/${name}";
@@ -135,8 +157,13 @@ let
 
     if ! ${zpoolBin} list '${vars.zfsDataPool.name}' >/dev/null 2>&1; then
       # shellcheck disable=SC2086
-      ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE '${vars.zfsDataPool.name}'
+      ${zpoolBin} import -d /dev/disk/by-id -N $ZFS_FORCE ${lib.escapeShellArg poolImportIdentifier}
     fi
+
+    ZFS_POOL_IDENTITY_ZPOOL_BIN=${lib.escapeShellArg zpoolBin} \
+      ZFS_POOL_IDENTITY_AWK_BIN=${lib.escapeShellArg "${pkgs.gawk}/bin/awk"} \
+      ZFS_POOL_IDENTITY_LSBLK_BIN=${lib.escapeShellArg "${pkgs.util-linux}/bin/lsblk"} \
+      ${poolIdentityVerifier} ${poolIdentityVerifierArgs}
 
     refuse_nonempty_mountpoint() {
       local mountpoint="$1"
@@ -204,6 +231,16 @@ let
 in
 {
   options.repo.storage.dataPool = {
+    guardedServices = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Systemd service names that must not run unless the data-pool layout is
+        available.  Enabled application modules contribute their storage
+        layout units and every runtime service that reads or writes dataRoot.
+      '';
+    };
+
     directories = lib.mkOption {
       type = lib.types.listOf (lib.types.submodule {
         options = {
@@ -253,6 +290,26 @@ in
         assertion = builtins.length datasetNames == builtins.length (lib.unique datasetNames);
         message = "repo.storage.dataPool.datasets contains duplicate dataset names.";
       }
+      {
+        assertion = builtins.length cfg.guardedServices == builtins.length (lib.unique cfg.guardedServices);
+        message = "repo.storage.dataPool.guardedServices contains duplicate service names.";
+      }
+      {
+        assertion = !(builtins.elem "data-pool-layout" cfg.guardedServices);
+        message = "data-pool-layout cannot depend on itself through repo.storage.dataPool.guardedServices.";
+      }
+      {
+        assertion = storageValidation.validZpoolGuid expectedPoolGuidRaw;
+        message = "storage.dataPool.expectedGuid must be null or a non-empty decimal string containing the GUID reported by zpool get guid.";
+      }
+      {
+        assertion = invalidSharedContentNames == [ ];
+        message = "repo.storage.sharedRoots.contentSubdirs must contain only safe single directory names: ${lib.concatStringsSep ", " invalidSharedContentNames}";
+      }
+      {
+        assertion = invalidSharedVideoNames == [ ];
+        message = "repo.storage.sharedRoots.videoSubdirs must contain only safe single directory names: ${lib.concatStringsSep ", " invalidSharedVideoNames}";
+      }
     ];
 
     repo.storage.dataPool = {
@@ -265,19 +322,36 @@ in
       "d /persist/appdata 0755 root root -"
     ];
 
-    systemd.services.data-pool-layout = {
-      description = "Provision data-pool-backed content layout";
-      wantedBy = [ "local-fs.target" ];
-      wants = [ "systemd-udev-settle.service" ];
-      after = [ "systemd-modules-load.service" "systemd-udev-settle.service" ];
-      before = [ "local-fs.target" ];
-      unitConfig.DefaultDependencies = false;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "10min";
-      };
-      script = if vars.enableZfsDataPool then zfsLayoutScript else directoryLayoutScript;
-    };
+    systemd.services = lib.mkMerge [
+      {
+        data-pool-layout = {
+          description = "Provision data-pool-backed content layout";
+          wantedBy = [ "local-fs.target" ];
+          wants = [ "systemd-udev-settle.service" ];
+          after = [ "systemd-modules-load.service" "systemd-udev-settle.service" ];
+          before = [ "local-fs.target" ];
+          unitConfig = {
+            DefaultDependencies = false;
+            StartLimitIntervalSec = "5min";
+            StartLimitBurst = 6;
+          };
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            TimeoutStartSec = "10min";
+            Restart = "on-failure";
+            RestartSec = "15s";
+          };
+          script = if vars.enableZfsDataPool then zfsLayoutScript else directoryLayoutScript;
+        };
+      }
+      (lib.genAttrs cfg.guardedServices (_: {
+        requires = [ "data-pool-layout.service" ];
+        after = [ "data-pool-layout.service" ];
+        unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        };
+      }))
+    ];
   };
 }

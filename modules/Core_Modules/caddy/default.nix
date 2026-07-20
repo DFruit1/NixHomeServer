@@ -11,6 +11,9 @@ let
   hasModule = name: config.nixhomeserver.modules.${name} or false;
   homepageEnabled = hasModule "homepage";
   kiwixEnabled = hasModule "kiwix" && (config.repo.kiwix.enable or false);
+  mailArchiveEnabled =
+    hasModule "mail-archive-ui"
+    && (config.services.mail-archive-ui.enable or false);
   portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
   # Optional applications register their real virtual hosts in their own
   # modules. Only publish convenience aliases for applications that actually
@@ -30,7 +33,7 @@ let
     ++ lib.optionals (hasModule "kavita") [ "books.${vars.domain}" ]
     ++ lib.optionals kiwixEnabled [ "wiki.${vars.domain}" ]
     ++ lib.optionals (hasModule "vaultwarden") [ "passwords.${vars.domain}" ]
-    ++ lib.optionals (hasModule "mail-archive-ui") [ "emails.${vars.domain}" ]
+    ++ lib.optionals mailArchiveEnabled [ "emails.${vars.domain}" ]
     ++ lib.optionals (hasModule "youtube-downloader") [ "ytdownload.${vars.domain}" ]
     ++ lib.optionals (hasModule "sonarr" && (config.repo.sonarr.enable or false)) [ "sonarr.${vars.domain}" ]
     ++ lib.optionals (hasModule "radarr" && (config.repo.radarr.enable or false)) [ "radarr.${vars.domain}" ]

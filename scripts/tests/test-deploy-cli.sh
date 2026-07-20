@@ -66,6 +66,23 @@ if ! tar -tf "$archive_test_dir/staged.tar" | rg -Fxq 'untracked.txt'; then
   exit 1
 fi
 
+copied_repo="$archive_test_dir/copied-without-git"
+mkdir -p "$copied_repo/secrets" "$copied_repo/custom_apps/node/apps/demo/node_modules/pkg"
+printf 'must-not-enter-the-store\n' >"$copied_repo/secrets/local-token"
+printf 'cache\n' >"$copied_repo/custom_apps/node/apps/demo/node_modules/pkg/cache.js"
+(
+  repo_root="$copied_repo"
+  if create_deploy_repo_archive "$archive_test_dir/copied.tar" 2>"$archive_test_dir/copied.log"; then
+    echo "❌ Deploy archive accepted a copied/non-Git source tree."
+    exit 1
+  fi
+)
+if ! rg -Fq 'Refusing to create a deployment archive outside a Git worktree' "$archive_test_dir/copied.log"; then
+  echo "❌ Non-Git deploy source was not rejected with a safe recovery path."
+  cat "$archive_test_dir/copied.log"
+  exit 1
+fi
+
 default_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --action test)"
 if ! rg -Fq "mode=remote" <<<"$default_output"; then
   echo "❌ Deploy default should build remotely on the target host."
@@ -92,6 +109,12 @@ if ! rg -Fq "rebuild_command=nix run --inputs-from . nixpkgs#nixos-rebuild" <<<"
   echo "$default_output"
   exit 1
 fi
+if ! rg -Fq -- "-- build --flake" <<<"$default_output" \
+  || ! rg -Fq 'activation_command=activate the returned closure through the guarded target-side test unit' <<<"$default_output"; then
+  echo "❌ Test deploy must split non-mutating build/copy from guarded target activation."
+  echo "$default_output"
+  exit 1
+fi
 
 local_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-locally --action switch)"
 if ! rg -Fq "mode=local" <<<"$local_output"; then
@@ -104,14 +127,20 @@ if ! rg -Fq "build_host=local" <<<"$local_output"; then
   echo "$local_output"
   exit 1
 fi
-if ! rg -Fq -- "--target-host ${expected_target}" <<<"$local_output"; then
-  echo "❌ --build-locally should activate the evaluated target over SSH."
+if ! rg -Fq 'stamp_required=true' <<<"$local_output"; then
+  echo "❌ Switch must require a previous passing source/closure stamp."
   echo "$local_output"
   exit 1
 fi
-if ! rg -Fq 'nixos-rebuild -- boot' <<<"$local_output" \
-  || ! rg -Fq 'activation_command=detached switch-to-configuration switch' <<<"$local_output"; then
-  echo "❌ Switch dry-run must describe the real boot build followed by detached activation."
+if ! rg -Fq 'activation_command=activate exact stamped closure in test mode' <<<"$local_output" \
+  || ! rg -Fq 'boot_commit=only after failed-unit route and authenticated-canary gates pass' <<<"$local_output" \
+  || ! rg -Fq 'rollback=restore previous live and boot generations on failure' <<<"$local_output"; then
+  echo "❌ Switch dry-run must describe exact-closure activation, gated boot commit, and rollback."
+  echo "$local_output"
+  exit 1
+fi
+if rg -Fq 'nixos-rebuild -- boot' <<<"$local_output"; then
+  echo "❌ Switch must not set the boot profile before post-activation health gates."
   echo "$local_output"
   exit 1
 fi
@@ -153,5 +182,84 @@ require_fixed scripts/helpers/deploy-executor.sh 'nixpkgs#nodejs' \
   "Remote debug validation must provide its Node runtime from pinned nixpkgs."
 require_fixed scripts/helpers/deploy-executor.sh 'date +%s%N' \
   "Detached activation unit names must not collide when deploys start within the same second."
+require_fixed scripts/helpers/deploy-executor.sh 'load_test_stamp' \
+  "Switch must load the exact closure recorded by the last passing test."
+require_fixed scripts/helpers/deploy-executor.sh 'repository contents differ from the last passing test' \
+  "Switch must refuse source changes after a passing test."
+require_fixed scripts/helpers/deploy-executor.sh 'run_health_gates' \
+  "Live activation must pass the shared health gates before boot commit."
+require_fixed scripts/helpers/deploy-executor.sh 'commit_boot_generation' \
+  "The boot profile must be committed in an explicit final transaction step."
+require_fixed scripts/helpers/deploy-executor.sh 'rollback_live_generation' \
+  "A failed live activation must roll back automatically."
+require_fixed scripts/helpers/deploy-executor.sh 'schedule_rollback' \
+  "An interrupted SSH deploy must leave a target-side rollback armed."
+require_fixed scripts/helpers/deploy-executor.sh 'check_target_free_space' \
+  "Deploy must check target store space independently of build-host space."
+require_fixed scripts/helpers/deploy-executor.sh 'switch reuses the exact tested closure' \
+  "Switch must not reapply a build-space gate when it performs no build or closure copy."
+require_fixed scripts/helpers/deploy-executor.sh 'acquire_deploy_lock' \
+  "Concurrent deploys must be serialized on the target host."
+require_fixed scripts/helpers/deploy-executor.sh 'previous_boot/bin/switch-to-configuration' \
+  "Interrupted deploy recovery must restore the previous boot generation as well as live state."
+require_fixed scripts/helpers/deploy-executor.sh 'recovery-complete' \
+  "A completed delayed rollback must retain a barrier against a stale executor."
+require_fixed scripts/helpers/deploy-executor.sh 'could not prove activation' \
+  "Rollback must not race an activation whose quiescence is unknown."
+require_fixed scripts/helpers/deploy-executor.sh 'run_detached_activation "$built_toplevel" test tested-build' \
+  "Test deploy must activate the built closure through the marker-guarded target unit."
+require_fixed scripts/deploy.sh 'need git ssh tar' \
+  "Deploy source creation must require Git rather than broad-archiving a copied tree."
+forbid_match scripts/helpers/deploy-executor.sh 'nixos-rebuild boot' \
+  "Deploy must not commit a boot generation before the health gates."
+
+acquire_line="$(rg -n '^acquire_deploy_lock$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
+capture_line="$(rg -n '^capture_previous_state$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
+if [[ ! "$acquire_line" =~ ^[0-9]+$ || ! "$capture_line" =~ ^[0-9]+$ ]] \
+  || ((acquire_line >= capture_line)); then
+  echo "❌ Deploy must acquire the target transaction lock before capturing live and boot rollback state."
+  exit 1
+fi
+
+build_line="$(rg -n 'built_toplevel="\$\("\$\{cmd\[@\]\}"\)"' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
+test_timer_line="$(rg -n 'schedule_rollback "24h"' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
+test_activation_line="$(rg -n 'run_detached_activation "\$built_toplevel" test tested-build' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
+if [[ ! "$build_line" =~ ^[0-9]+$ || ! "$test_timer_line" =~ ^[0-9]+$ || ! "$test_activation_line" =~ ^[0-9]+$ ]] \
+  || ((build_line >= test_timer_line || test_timer_line >= test_activation_line)); then
+  echo "❌ Test deploy must finish build/copy before arming rollback and starting guarded activation."
+  exit 1
+fi
+
+source scripts/helpers/deploy-transaction.sh
+valid_hash='sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+valid_toplevel='/nix/store/00000000000000000000000000000000-nixos-system-test-1'
+stamp_path="$archive_test_dir/tested.stamp"
+deploy_render_test_stamp "$valid_hash" "$valid_toplevel" >"$stamp_path"
+parsed_hash=""
+parsed_toplevel=""
+deploy_read_test_stamp "$stamp_path" parsed_hash parsed_toplevel
+if [[ "$parsed_hash" != "$valid_hash" || "$parsed_toplevel" != "$valid_toplevel" ]]; then
+  echo "❌ Tested deployment stamp did not round-trip exactly."
+  exit 1
+fi
+
+if deploy_render_test_stamp 'not-a-hash' "$valid_toplevel" >/dev/null 2>&1 \
+  || deploy_render_test_stamp "$valid_hash" '/tmp/not-a-store-path' >/dev/null 2>&1; then
+  echo "❌ Deployment stamp accepted an unsafe hash or closure path."
+  exit 1
+fi
+
+printf 'version=1\nsource_hash=%s\ntoplevel=%s\nunknown=value\n' \
+  "$valid_hash" "$valid_toplevel" >"$archive_test_dir/unknown.stamp"
+if deploy_read_test_stamp "$archive_test_dir/unknown.stamp" parsed_hash parsed_toplevel >/dev/null 2>&1; then
+  echo "❌ Deployment stamp accepted an unknown field."
+  exit 1
+fi
+
+ln -s "$stamp_path" "$archive_test_dir/symlink.stamp"
+if deploy_read_test_stamp "$archive_test_dir/symlink.stamp" parsed_hash parsed_toplevel >/dev/null 2>&1; then
+  echo "❌ Deployment stamp parser followed a symlink."
+  exit 1
+fi
 
 echo "✅ Deploy CLI tests passed."

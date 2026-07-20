@@ -81,15 +81,17 @@ in
   };
 
   config = {
+    repo.storage.dataPool.guardedServices = [
+      "immich-storage-layout-v1"
+      "immich-server"
+    ];
+
     systemd.services.immich-storage-layout-v1 = {
       description = "Provision Immich storage layout";
       wantedBy = [ "multi-user.target" ];
       wants = [ "data-pool-layout.service" "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [ "immich-server.service" ];
-      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
-        ConditionPathIsMountPoint = vars.dataRoot;
-      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

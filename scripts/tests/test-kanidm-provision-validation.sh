@@ -65,7 +65,9 @@ projected_people="$(nix eval --json --impure --expr '
       kanidmBackupUsers = [ ];
       filesSftpUsers = [ "sftp-only" ];
       monitoringAccess = base.monitoringAccess // { users = [ "monitor-only" ]; };
+      monitoringAccessUsers = [ "monitor-only" ];
       fileAccess = base.fileAccess // { usbUsers = [ "usb-only" ]; };
+      fileAccessUsbUsers = [ "usb-only" ];
       kanidmAdminUser = "admin-only";
       kanidmAppUserEmails = { };
       kanidmAdminMailAddresses = [ ];
@@ -182,5 +184,49 @@ for expected_message in \
     exit 1
   fi
 done
+
+operator_helper_present="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --raw --impure --expr '
+  let
+    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+    lib = f.inputs.nixpkgs.lib;
+    hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+    packages = (builtins.getAttr hostName f.nixosConfigurations).config.environment.systemPackages;
+  in if builtins.any (package: lib.getName package == "kanidm-operator-bootstrap") packages then "yes" else "no"
+')"
+if [[ "$operator_helper_present" != yes ]]; then
+  echo "❌ The installed system does not include the root-only Kanidm operator credential bootstrap helper."
+  exit 1
+fi
+operator_helper_expr='
+  let
+    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+    lib = f.inputs.nixpkgs.lib;
+    hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+    packages = (builtins.getAttr hostName f.nixosConfigurations).config.environment.systemPackages;
+  in builtins.head (builtins.filter (package: lib.getName package == "kanidm-operator-bootstrap") packages)
+'
+NIXHOMESERVER_TEST_HOST="$host" nix build --impure --no-link --expr "$operator_helper_expr"
+operator_helper_path="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --raw --impure --expr "($operator_helper_expr).outPath")"
+operator_help_output="$("$operator_helper_path/bin/kanidm-operator-bootstrap" --help)"
+if ! rg -Fq 'issue [--ttl <seconds>] [--recovery]' <<<"$operator_help_output"; then
+  echo "❌ The built Kanidm operator helper does not expose its safe enrollment/recovery workflow."
+  exit 1
+fi
+require_fixed modules/Core_Modules/kanidm/service.nix 'if [[ "$EUID" -ne 0 ]]' \
+  "Operator credential bootstrap must refuse unprivileged callers."
+require_fixed modules/Core_Modules/kanidm/service.nix 'config.age.secrets.kanidmAdminPass.path' \
+  "Operator bootstrap must use the managed root-only idm_admin credential."
+require_fixed modules/Core_Modules/kanidm/service.nix 'has_credentials' \
+  "Operator bootstrap must distinguish first enrollment from intentional recovery."
+require_fixed modules/Core_Modules/kanidm/service.nix '--recovery' \
+  "Issuing a token for an already configured operator must require an explicit recovery flag."
+require_fixed modules/Core_Modules/kanidm/service.nix 'ttl_set=false' \
+  "Status must reject issue-only TTL flags even when the caller supplies the default value."
+require_fixed modules/Core_Modules/kanidm/service.nix 'Kanidm did not return a valid credential status' \
+  "Operator bootstrap must fail closed when the current Kanidm CLI logs an error but exits successfully."
+require_fixed modules/Core_Modules/kanidm/service.nix 'Kanidm did not return a usable reset URL' \
+  "Operator bootstrap must fail closed when reset-token creation produces no URL."
+require_fixed modules/Core_Modules/kanidm/service.nix 'public_reset_link=' \
+  "Operator bootstrap must translate the loopback API endpoint into the public Kanidm reset URL."
 
 echo "✅ Kanidm person, group, membership, and special-purpose user validation passed."

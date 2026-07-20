@@ -2,13 +2,50 @@
   "brandName": "Example Home Services",
   "domain": "example.test",
   "serverLanHost": "server.home.arpa",
-  "sshfsHost": "server",
-  "kanidmGroups": ["backup-admin", "files-personal-users", "photos-users", "users"],
+  "adminUsers": ["dsaw"],
+  "adminGroups": [],
+  "sftp": {
+    "enabled": true,
+    "host": "server.home.arpa",
+    "port": 2022,
+    "networkNote": "LAN-only endpoint for this test server.",
+    "requiredAnyGroups": ["files-sftp-users", "files-shared-users", "usb-access", "backup-storage-users"],
+    "accessNotes": [
+      {
+        "text": "Your SFTP root includes /_Shared as a deletion-protected shared view.",
+        "requiredAnyGroups": ["files-shared-users"]
+      },
+      {
+        "text": "Your SFTP root includes /_USB for external USB storage. It is writable but deletion-protected.",
+        "requiredAnyGroups": ["usb-access"]
+      },
+      {
+        "text": "Your SFTP root includes /_Backups, a read-only view of encrypted backup repository files.",
+        "requiredAnyGroups": ["backup-storage-users"]
+      }
+    ]
+  },
+  "kanidmGroups": ["app-admin", "backup-admin", "backup-storage-users", "documents-users", "files-personal-users", "files-sftp-users", "jellyfin-users", "photos-users", "users"],
   "kanidmGroupDescriptions": {
+    "app-admin": "Application administration access.",
     "backup-admin": "Backup administration access.",
+    "backup-storage-users": "Read-only backup repository access.",
+    "documents-users": "Document archive access.",
     "files-personal-users": "Personal file browser access.",
+    "jellyfin-users": "Jellyfin video access.",
     "photos-users": "Photo library access.",
     "users": "Baseline user access."
+  },
+  "kanidmGroupManagement": {
+    "app-admin": "manual",
+    "backup-admin": "backupAccess.adminUsers",
+    "backup-storage-users": "backupAccess.storageUsers",
+    "documents-users": "identity.appUsers",
+    "files-personal-users": "manual",
+    "files-sftp-users": "manual",
+    "jellyfin-users": "identity.appUsers",
+    "photos-users": "identity.appUsers",
+    "users": "manual"
   },
   "services": [
     {
@@ -20,7 +57,8 @@
       "description": "Photo and video library with private login and public share-link support.",
       "loginNotes": "Use Kanidm.",
       "projectUrl": "https://immich.app",
-      "uploadNotes": "Upload through Immich web or the mobile app."
+      "uploadNotes": "Upload through Immich web or the mobile app.",
+      "requiredAnyGroups": ["photos-users"]
     },
     {
       "id": "files",
@@ -30,7 +68,19 @@
       "category": "files",
       "description": "Browser file workspace backed by each user's restricted SFTP root.",
       "loginNotes": "Requires files-personal-users for browser access.",
-      "uploadNotes": "Use Files for general uploads and app-specific media folders."
+      "uploadNotes": "Use Files for general uploads and app-specific media folders.",
+      "requiredAnyGroups": ["files-personal-users"]
+    },
+    {
+      "id": "videos",
+      "name": "Videos",
+      "url": "https://videos.example.test",
+      "enabled": true,
+      "category": "media",
+      "description": "Metadata-rich movie and show libraries.",
+      "loginNotes": "Jellyfin uses a generated local password. Ask an administrator for the initial password and change it after first login.",
+      "uploadNotes": "Place movies under _Videos/_Movies and series under _Videos/_Shows.",
+      "requiredAnyGroups": ["jellyfin-users"]
     },
     {
       "id": "passwords",
@@ -50,7 +100,8 @@
       "category": "operations",
       "description": "Kopia local backup management for system state and encrypted repositories.",
       "loginNotes": "Requires backup-admin plus the native Kopia password.",
-      "uploadNotes": "Backup repository files are managed by Kopia."
+      "uploadNotes": "Backup repository files are managed by Kopia.",
+      "requiredAnyGroups": ["backup-admin"]
     },
     {
       "id": "offline-media",
@@ -60,7 +111,8 @@
       "category": "media",
       "description": "Personal music and selected video folders synced offline to enrolled devices with Syncthing.",
       "loginNotes": "Use Kanidm on the homepage, then enroll your Syncthing device ID.",
-      "uploadNotes": "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root."
+      "uploadNotes": "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root.",
+      "requiredAnyGroups": ["users"]
     }
   ],
   "folderGuides": [
@@ -70,8 +122,9 @@
       "enabled": true,
       "serviceIds": ["documents"],
       "fileTypes": ["PDF", "images"],
-      "personalPath": "/mnt/data/users/{username}/_Documents",
-      "instructions": ["Upload PDFs and scans here."]
+      "personalPath": "/_Documents",
+      "instructions": ["Upload PDFs and scans here."],
+      "requiredAnyGroups": ["files-personal-users"]
     },
     {
       "id": "audiobooks",
@@ -79,9 +132,10 @@
       "enabled": true,
       "serviceIds": ["audiobooks"],
       "fileTypes": ["M4B", "MP3"],
-      "personalPath": "/mnt/data/users/{username}/_Audiobooks",
-      "sharedPath": "/mnt/data/shared/_Audiobooks",
-      "instructions": ["Keep one book per folder."]
+      "personalPath": "/_Audiobooks",
+      "sharedPath": "/_Shared/_Audiobooks",
+      "instructions": ["Keep one book per folder."],
+      "requiredAnyGroups": ["files-personal-users"]
     }
   ],
   "adminGuide": [
@@ -111,6 +165,11 @@
       "detail": "Verify every manifest secret with the current identity. Use explicit fresh or rekey modes only when intentionally changing credentials or recipients."
     },
     {
+      "title": "Retrieve Jellyfin initial password",
+      "command": "sudo jellyfin-initial-credential\nsudo jellyfin-initial-credential USERNAME",
+      "detail": "Retrieve only the intended user's root-only initial credential, hand it over securely, and require an immediate password change."
+    },
+    {
       "title": "Manage Kanidm entity removal explicitly",
       "command": "$EDITOR modules/Core_Modules/kanidm/provision.nix",
       "detail": "Kanidm autoremove is disabled, so deleted module groups/users are kept for rescue safety. Mark stale provision entries intentionally before retiring a module or host."
@@ -128,7 +187,21 @@
   ],
   "offlineMedia": {
     "enabled": true,
-    "connectionAddresses": ["tcp://server.internal:22000"],
+    "requiredAnyGroups": ["users"],
+    "connectionAddresses": [
+      {
+        "address": "tcp://server.internal:22000",
+        "label": "Recommended server address"
+      },
+      {
+        "address": "tcp://192.168.8.12:22000",
+        "label": "At home (LAN)"
+      },
+      {
+        "address": "tcp://100.72.113.237:22000",
+        "label": "Away from home (NetBird)"
+      }
+    ],
     "folders": [
       {
         "key": "music",

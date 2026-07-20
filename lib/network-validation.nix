@@ -43,22 +43,28 @@ rec {
     in
     builtins.foldl' (total: octet: total * 256 + octet) 0 octets;
 
-  sameUsableSubnet = address: gateway: prefixLength:
+  usableIPv4InSubnet = address: subnetMember: prefixLength:
     let
-      blockSize = if prefixLength >= 0 && prefixLength <= 32 then pow2 (32 - prefixLength) else 0;
+      validPrefixLength =
+        builtins.isInt prefixLength
+        && prefixLength >= 1
+        && prefixLength <= 30;
+      blockSize = if validPrefixLength then pow2 (32 - prefixLength) else 1;
       addressInt = if validIPv4 address then ipv4ToInt address else 0;
-      gatewayInt = if validIPv4 gateway then ipv4ToInt gateway else 0;
-      usable = value: value - (builtins.div value blockSize) * blockSize;
+      subnetMemberInt = if validIPv4 subnetMember then ipv4ToInt subnetMember else 0;
+      hostOffset = addressInt - (builtins.div addressInt blockSize) * blockSize;
     in
     validIPv4 address
-    && validIPv4 gateway
-    && prefixLength >= 1
-    && prefixLength <= 30
-    && builtins.div addressInt blockSize == builtins.div gatewayInt blockSize
-    && usable addressInt != 0
-    && usable addressInt != blockSize - 1
-    && usable gatewayInt != 0
-    && usable gatewayInt != blockSize - 1;
+    && validIPv4 subnetMember
+    && validPrefixLength
+    && builtins.div addressInt blockSize == builtins.div subnetMemberInt blockSize
+    && hostOffset != 0
+    && hostOffset != blockSize - 1;
+
+  sameUsableSubnet = address: gateway: prefixLength:
+    usableIPv4InSubnet address gateway prefixLength
+    && usableIPv4InSubnet gateway address prefixLength
+    && address != gateway;
 
   cidrContains = address: cidr:
     let

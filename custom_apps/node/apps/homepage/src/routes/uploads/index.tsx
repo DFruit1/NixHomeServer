@@ -14,7 +14,7 @@ export default component$(() => {
   const activeGuide = guide?.id ?? requestedGuide;
   const username = data?.user.username ?? '{username}';
   const domain = data?.domain ?? 'example.test';
-  const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
+  const filesWebAvailable = data?.services.some((service) => service.id === 'files' && service.enabled) ?? false;
 
   return (
     <>
@@ -35,9 +35,14 @@ export default component$(() => {
         {guide && <GuidePanel guide={guide} username={username} />}
       </section>
 
-      <section class="section two-column">
-        <SftpSetup username={username} domain={domain} serverHost={serverHost} />
-      </section>
+      {data?.sftp?.allowed && (
+        <section class="section two-column">
+          <SftpSetup username={username} domain={domain} sftp={data.sftp} filesWebAvailable={filesWebAvailable} />
+        </section>
+      )}
+      {data?.sftp?.enabled && !data.sftp.allowed && (
+        <section class="section"><p class="notice">Your account does not have SFTP/SSHFS access. Use an authorised web app above, or ask an administrator if you need file-transfer access.</p></section>
+      )}
     </>
   );
 });

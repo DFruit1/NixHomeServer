@@ -2,8 +2,11 @@
 
 let
   loopback = vars.networking.loopbackIPv4;
-  kopiaPort = vars.networking.ports.kopia;
-  kopiaAuthProxyPort = kopiaPort + 1;
+  kopiaPortRaw = vars.networking.ports.kopia;
+  kopiaPort = if builtins.isInt kopiaPortRaw then kopiaPortRaw else -1;
+  # Keep module evaluation total for malformed user input so the central
+  # validation module can report the actionable port-range/type assertion.
+  kopiaAuthProxyPort = if builtins.isInt kopiaPortRaw then kopiaPortRaw + 1 else -1;
   oauth2Port = vars.networking.ports.oauth2ProxyKopia;
   host = vars.kopiaDomain;
   stateDir = "/persist/appdata/kopia";
@@ -13,7 +16,11 @@ let
   uiPreferencesFile = "${stateDir}/ui-preferences.json";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
   repositoryPath = "${backupRoot}/kopia";
+  repositoryOwnershipMarker = "${backupRoot}/.nixhomeserver-kopia-repository.json";
   snapshotSuccessMarker = "${backupRoot}/.kopia-last-snapshot-success.json";
+  snapshotHealthMaxAgeSeconds = config.repo.backups.kopiaSnapshotHealthMaxAgeSeconds;
+  freshnessMarkerCheck = pkgs.writeShellScript "check-freshness-marker"
+    (builtins.readFile ../../../scripts/helpers/check-freshness-marker.sh);
   maintenanceLock = config.repo.backups.maintenanceLock;
   snapshotRoots = config.repo.backups.snapshotRoots;
   snapshotCommands = lib.concatMapStringsSep "\n"
@@ -25,7 +32,7 @@ let
         ${lib.escapeShellArg root}
     '')
     snapshotRoots;
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
+  backupStorageAccessGroup = vars.backupStorageGroup;
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   credentials = {
     serverPassword = "kopia-server-password";
@@ -38,6 +45,28 @@ let
     kopia
     util-linux
   ];
+  kopiaCliWrapper = pkgs.writeShellScript "nixhomeserver-kopia" ''
+    set -euo pipefail
+
+    if (( EUID != 0 )); then
+      echo "nixhomeserver-kopia must be run as root (for example, with sudo)." >&2
+      exit 77
+    fi
+
+    secret_file=${lib.escapeShellArg config.age.secrets.kopiaServerPassword.path}
+    config_file=${lib.escapeShellArg configFile}
+    cache_dir=${lib.escapeShellArg cacheDir}
+    [[ -r "$secret_file" ]] || { echo "Kopia password secret is unavailable at $secret_file" >&2; exit 1; }
+    [[ -s "$config_file" ]] || { echo "Managed Kopia repository config is unavailable at $config_file" >&2; exit 1; }
+
+    umask 0077
+    export KOPIA_CHECK_FOR_UPDATES=false
+    KOPIA_PASSWORD="$(tr -d '\r\n' < "$secret_file")"
+    export KOPIA_PASSWORD
+    export KOPIA_CONFIG_PATH="$config_file"
+    export KOPIA_CACHE_DIRECTORY="$cache_dir"
+    exec ${pkgs.kopia}/bin/kopia "$@"
+  '';
   requireDataRoot = lib.optionalString vars.dataRootIsMountPoint ''
     if ! ${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg vars.dataRoot}; then
       echo "Refusing backup operation because ${vars.dataRoot} is not a mounted data pool" >&2
@@ -59,8 +88,21 @@ let
   '';
 in
 {
+  options.repo.backups.kopiaSnapshotHealthMaxAgeSeconds = lib.mkOption {
+    type = lib.types.ints.positive;
+    default = 36 * 60 * 60;
+    description = "Maximum age of the last successful encrypted Kopia snapshot before health checks fail.";
+  };
+
   config = lib.mkMerge [
     {
+      security.wrappers.nixhomeserver-kopia = {
+        source = kopiaCliWrapper;
+        owner = "root";
+        group = "root";
+        permissions = "0500";
+      };
+
       systemd.tmpfiles.rules = [
         "d ${stateDir} 0700 root root -"
         "d ${cacheDir} 0700 root root -"
@@ -113,7 +155,6 @@ in
                 --path=${lib.escapeShellArg repositoryPath} \
                 --config-file=${lib.escapeShellArg configFile} \
                 --cache-directory=${lib.escapeShellArg cacheDir} \
-                --password="$password" \
                 --persist-credentials \
                 --no-use-keyring
             else
@@ -121,7 +162,6 @@ in
                 --path=${lib.escapeShellArg repositoryPath} \
                 --config-file=${lib.escapeShellArg configFile} \
                 --cache-directory=${lib.escapeShellArg cacheDir} \
-                --password="$password" \
                 --persist-credentials \
                 --no-use-keyring \
                 --description="NixHomeServer /persist backup repository" \
@@ -135,6 +175,17 @@ in
           chown root:${lib.escapeShellArg (toString backupStorageAccessGid)} ${lib.escapeShellArg backupRoot} ${lib.escapeShellArg repositoryPath}
           chmod 0750 ${lib.escapeShellArg backupRoot} ${lib.escapeShellArg repositoryPath}
           setfacl -m g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-x,d:g:${lib.escapeShellArg (toString backupStorageAccessGid)}:r-x ${lib.escapeShellArg backupRoot} ${lib.escapeShellArg repositoryPath}
+
+          ownership_marker_tmp=${lib.escapeShellArg repositoryOwnershipMarker}.tmp
+          repository_fingerprint="$(sha256sum ${lib.escapeShellArg "${repositoryPath}/kopia.repository.f"} | cut -d ' ' -f 1)"
+          jq -n \
+            --arg repositoryFingerprint "$repository_fingerprint" \
+            --arg repositoryPath ${lib.escapeShellArg repositoryPath} \
+            '{schemaVersion: 1, repositoryFingerprint: $repositoryFingerprint, repositoryPath: $repositoryPath}' \
+            > "$ownership_marker_tmp"
+          chown root:${lib.escapeShellArg (toString backupStorageAccessGid)} "$ownership_marker_tmp"
+          chmod 0640 "$ownership_marker_tmp"
+          mv -f "$ownership_marker_tmp" ${lib.escapeShellArg repositoryOwnershipMarker}
 
           kopia policy set --global \
             --keep-latest=7 \
@@ -258,11 +309,85 @@ in
           manifest=${lib.escapeShellArg config.repo.backups.successfulStagingRoot}/metadata/manifest.json
           [[ -s "$manifest" ]] || { echo "Backup preparation manifest is missing" >&2; exit 1; }
           ${snapshotCommands}
-          printf '{"completedAt":"%s"}\n' "$(date --utc --iso-8601=seconds)" \
-            > ${lib.escapeShellArg snapshotSuccessMarker}
-          chown root:${lib.escapeShellArg (toString backupStorageAccessGid)} ${lib.escapeShellArg snapshotSuccessMarker}
-          chmod 0640 ${lib.escapeShellArg snapshotSuccessMarker}
+          snapshot_marker_tmp="$(mktemp ${lib.escapeShellArg "${snapshotSuccessMarker}.XXXXXX"})"
+          trap 'rm -f "$snapshot_marker_tmp"' EXIT
+          jq -n --arg completedAt "$(date --utc --iso-8601=seconds)" \
+            '{schemaVersion:1,completedAt:$completedAt}' > "$snapshot_marker_tmp"
+          chown root:${lib.escapeShellArg (toString backupStorageAccessGid)} "$snapshot_marker_tmp"
+          chmod 0640 "$snapshot_marker_tmp"
+          mv -f "$snapshot_marker_tmp" ${lib.escapeShellArg snapshotSuccessMarker}
+          trap - EXIT
         '';
+      };
+
+      systemd.services.kopia-snapshot-health = {
+        description = "Verify encrypted Kopia snapshot freshness";
+        requires = [
+          "data-pool-layout.service"
+          "kopia-repository-bootstrap.service"
+        ];
+        after = [
+          "data-pool-layout.service"
+          "kopia-persist-snapshot.service"
+          "kopia-repository-bootstrap.service"
+        ];
+        unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        };
+        path = [ pkgs.coreutils pkgs.jq ];
+        serviceConfig.Type = "oneshot";
+        script = ''
+          set -euo pipefail
+          ${requireDataRoot}
+          now="$(date +%s)"
+          marker=${lib.escapeShellArg snapshotSuccessMarker}
+          repository_config=${lib.escapeShellArg configFile}
+          age=-1
+          state=missing
+          fresh=false
+
+          if [[ -s "$marker" ]]; then
+            marker_health="$(
+              FRESHNESS_MARKER_JQ_BIN=${lib.escapeShellArg "${pkgs.jq}/bin/jq"} \
+                FRESHNESS_MARKER_DATE_BIN=${lib.escapeShellArg "${pkgs.coreutils}/bin/date"} \
+                ${freshnessMarkerCheck} \
+                  --marker "$marker" \
+                  --max-age-seconds ${toString snapshotHealthMaxAgeSeconds}
+            )" || {
+              echo "Kopia snapshot success marker is invalid, stale, or future-dated: $marker" >&2
+              exit 1
+            }
+            age="$(jq -er '.ageSeconds' <<<"$marker_health")"
+            state=fresh
+            fresh=true
+          elif [[ -s "$repository_config" ]]; then
+            repository_age=$((now - $(stat -c %Y "$repository_config")))
+            if ((repository_age >= 0 && repository_age <= ${toString snapshotHealthMaxAgeSeconds})); then
+              state=initializing
+              fresh=true
+            fi
+          fi
+
+          jq -n \
+            --arg state "$state" \
+            --arg marker "$marker" \
+            --argjson ageSeconds "$age" \
+            --argjson maxAgeSeconds ${toString snapshotHealthMaxAgeSeconds} \
+            --argjson fresh "$fresh" \
+            '{state:$state,marker:$marker,ageSeconds:$ageSeconds,maxAgeSeconds:$maxAgeSeconds,fresh:$fresh}'
+          [[ "$fresh" == true ]]
+        '';
+      };
+
+      systemd.timers.kopia-snapshot-health = {
+        description = "Regularly verify encrypted Kopia snapshot freshness";
+        wantedBy = [ "timers.target" ];
+        timerConfig = {
+          OnBootSec = "20min";
+          OnUnitActiveSec = "1h";
+          Persistent = true;
+          Unit = "kopia-snapshot-health.service";
+        };
       };
 
       systemd.services.kopia-full-maintenance = {
@@ -363,7 +488,7 @@ in
       domain = host;
       port = oauth2Port;
       upstream = "http://${loopback}:${toString kopiaAuthProxyPort}";
-      allowedGroups = [ vars.backupAccess.adminGroup ];
+      allowedGroups = [ vars.backupAdminGroup ];
       serviceDependencies = [
         "caddy.service"
         "kopia.service"

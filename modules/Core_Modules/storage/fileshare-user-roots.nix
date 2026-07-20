@@ -2,13 +2,14 @@
 
 let
   cfg = config.repo.storage.userRoots;
+  storageValidation = import ../../../lib/storage-validation.nix { inherit lib; };
   kanidmPort = vars.networking.ports.kanidm;
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
+  backupStorageAccessGroup = vars.backupStorageGroup;
   sharedAccessGid = vars.fileAccessPosixGids.${sharedAccessGroup};
   usbAccessGid = vars.fileAccessPosixGids.${usbAccessGroup};
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
@@ -18,6 +19,19 @@ let
   sftpChrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
   externalUsbMountRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
+  invalidTopLevelNames = lib.filter
+    (name: !storageValidation.validPathComponent name)
+    (cfg.contentSubdirs ++ cfg.bookSubdirs ++ cfg.videoSubdirs);
+  perUserRelativePaths = map (entry: entry.relativePath) cfg.perUserDirectories;
+  recursiveGrantRelativePaths = lib.concatMap
+    (grant: grant.relativePaths)
+    (cfg.recursiveWritableGrants ++ cfg.recursiveReadonlyGrants ++ cfg.recursiveDirectoryNoAccessGrants);
+  invalidRelativePaths = lib.filter
+    (path: path != "" && !storageValidation.validRelativePath path)
+    (perUserRelativePaths ++ recursiveGrantRelativePaths);
+  invalidPerUserRoots = lib.filter
+    (root: !(builtins.elem root [ vars.usersRoot vars.sharedRoot ]))
+    (map (entry: entry.root) cfg.perUserDirectories);
   memberGroups = lib.unique (cfg.memberGroups ++ [
     webAccessGroup
     sftpAccessGroup
@@ -374,6 +388,9 @@ let
       {
         printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg webAccessGroup}]}"
         printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg sftpAccessGroup}]}"
+        printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg sharedAccessGroup}]}"
+        printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg usbAccessGroup}]}"
+        printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg backupStorageAccessGroup}]}"
       } | ${pkgs.coreutils}/bin/sort -u
     )"
 
@@ -580,6 +597,41 @@ in
   };
 
   config = {
+    assertions = [
+      {
+        assertion = storageValidation.validPathComponent sharedMountName;
+        message = "fileAccess.sharedMountName must be one safe path component using only letters, digits, dot, underscore, and hyphen (not '.' or '..').";
+      }
+      {
+        assertion = storageValidation.validPathComponent usbMountName;
+        message = "fileAccess.usbMountName must be one safe path component using only letters, digits, dot, underscore, and hyphen (not '.' or '..').";
+      }
+      {
+        assertion = storageValidation.validPathComponent backupStorageMountName;
+        message = "backupAccess.storageMountName must be one safe path component using only letters, digits, dot, underscore, and hyphen (not '.' or '..').";
+      }
+      {
+        assertion = storageValidation.validAbsolutePath sftpChrootBase && lib.hasPrefix "/srv/" sftpChrootBase;
+        message = "fileAccess.sftpChrootBase must be a normalized absolute path below /srv using only safe path components.";
+      }
+      {
+        assertion = storageValidation.validAbsolutePath externalUsbMountRoot && lib.hasPrefix "/mnt/" externalUsbMountRoot;
+        message = "externalUsbMountRoot must be a normalized absolute path below /mnt using only safe path components.";
+      }
+      {
+        assertion = invalidTopLevelNames == [ ];
+        message = "repo.storage.userRoots top-level directory names must be single safe path components: ${lib.concatStringsSep ", " invalidTopLevelNames}";
+      }
+      {
+        assertion = invalidRelativePaths == [ ];
+        message = "repo.storage.userRoots relative paths must be normalized safe relative paths without traversal, empty components, whitespace, or control characters: ${lib.concatStringsSep ", " invalidRelativePaths}";
+      }
+      {
+        assertion = invalidPerUserRoots == [ ];
+        message = "repo.storage.userRoots.perUserDirectories roots must be the managed usersRoot or sharedRoot: ${lib.concatStringsSep ", " invalidPerUserRoots}";
+      }
+    ];
+
     programs.fuse.userAllowOther = true;
 
     environment.systemPackages = [

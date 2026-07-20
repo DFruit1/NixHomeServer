@@ -28,7 +28,7 @@ let
     (vars.kanidmAppUsers or [ ])
     ++ (vars.filesSftpUsers or [ ])
     ++ (vars.kanidmBackupUsers or [ ])
-    ++ (vars.fileAccess.usbUsers or [ ])
+    ++ (vars.fileAccessUsbUsers or [ ])
   );
   sftpLoginUserEmailEntries =
     lib.flatten (map
@@ -383,6 +383,9 @@ in
           "filestash-secret-materialize.service"
           "network-online.target"
         ];
+        unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        };
         preStart = lib.mkAfter ''
           chmod 0640 "$RUNTIME_DIRECTORY"/config.json
         '';

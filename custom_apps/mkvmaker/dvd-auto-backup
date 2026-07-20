@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+
+# Watch an optical drive and make a decrypted DVD ISO with MakeMKV.
+
+set -uo pipefail
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+BACKUP_DIR=$SCRIPT_DIR
+DEVICE=/dev/sr0
+MAX_ATTEMPTS=3
+RETRY_DELAY=10
+POLL_SECONDS=2
+EJECT_AFTER_SUCCESS=0
+RUN_ONCE=0
+DOCTOR_ONLY=0
+CURRENT_PARTIAL=
+LOG_FILE=
+MAKEMKV=()
+
+usage() {
+    cat <<'EOF'
+Usage: ./dvd-auto-backup [options]
+
+Wait for a DVD, back it up as a decrypted ISO, retry failures, and then wait
+for the disc to be removed before processing another one.
+
+Options:
+  --device PATH       Optical drive (default: /dev/sr0)
+  --backup-dir DIR    ISO destination (default: directory containing script)
+  --attempts N        Total attempts per insertion (default: 3)
+  --retry-delay N     Seconds between attempts (default: 10)
+  --poll-seconds N    Seconds between drive checks (default: 2)
+  --eject             Eject after a successful backup
+  --once              Process one inserted disc and exit
+  --doctor            Check the runtime without waiting for a disc
+  -h, --help          Show this help
+
+Examples:
+  ./dvd-auto-backup
+  ./dvd-auto-backup --attempts 4 --eject
+EOF
+}
+
+die() {
+    printf 'Error: %s\n' "$*" >&2
+    exit 1
+}
+
+is_positive_integer() {
+    [[ $1 =~ ^[1-9][0-9]*$ ]]
+}
+
+while (($#)); do
+    case $1 in
+        --device)
+            (($# >= 2)) || die "--device requires a path"
+            DEVICE=$2
+            shift 2
+            ;;
+        --backup-dir)
+            (($# >= 2)) || die "--backup-dir requires a directory"
+            BACKUP_DIR=$2
+            shift 2
+            ;;
+        --attempts)
+            (($# >= 2)) || die "--attempts requires a number"
+            is_positive_integer "$2" || die "--attempts must be a positive integer"
+            MAX_ATTEMPTS=$2
+            shift 2
+            ;;
+        --retry-delay)
+            (($# >= 2)) || die "--retry-delay requires a number"
+            is_positive_integer "$2" || die "--retry-delay must be a positive integer"
+            RETRY_DELAY=$2
+            shift 2
+            ;;
+        --poll-seconds)
+            (($# >= 2)) || die "--poll-seconds requires a number"
+            is_positive_integer "$2" || die "--poll-seconds must be a positive integer"
+            POLL_SECONDS=$2
+            shift 2
+            ;;
+        --eject)
+            EJECT_AFTER_SUCCESS=1
+            shift
+            ;;
+        --once)
+            RUN_ONCE=1
+            shift
+            ;;
+        --doctor)
+            DOCTOR_ONLY=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1 (try --help)"
+            ;;
+    esac
+done
+
+mkdir -p -- "$BACKUP_DIR" || die "cannot create backup directory: $BACKUP_DIR"
+BACKUP_DIR=$(CDPATH= cd -- "$BACKUP_DIR" && pwd -P) || die "cannot open backup directory"
+LOG_FILE=$BACKUP_DIR/dvd-auto-backup.log
+
+log() {
+    local line
+    line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    printf '%s\n' "$line"
+    printf '%s\n' "$line" >>"$LOG_FILE"
+}
+
+cleanup_partial() {
+    local attempt_log
+    [[ -n $CURRENT_PARTIAL ]] || return 0
+
+    # Only remove the exact hidden working path created by this process.
+    case $CURRENT_PARTIAL in
+        "$BACKUP_DIR"/.*."$$".*.partial.iso)
+            attempt_log=${CURRENT_PARTIAL%.iso}.log
+            if [[ -d $CURRENT_PARTIAL ]]; then
+                rm -rf -- "$CURRENT_PARTIAL"
+            else
+                rm -f -- "$CURRENT_PARTIAL"
+            fi
+            rm -f -- "$attempt_log"
+            ;;
+    esac
+    CURRENT_PARTIAL=
+}
+
+on_signal() {
+    printf '\n' >&2
+    log "Stopped; removing the incomplete ISO."
+    exit 130
+}
+
+trap cleanup_partial EXIT
+trap on_signal INT TERM
+
+find_makemkv() {
+    if command -v makemkvcon >/dev/null 2>&1; then
+        MAKEMKV=(makemkvcon)
+        return 0
+    fi
+
+    if command -v flatpak >/dev/null 2>&1 \
+        && flatpak info com.makemkv.MakeMKV >/dev/null 2>&1; then
+        MAKEMKV=(flatpak run --command=makemkvcon com.makemkv.MakeMKV)
+        return 0
+    fi
+
+    return 1
+}
+
+find_makemkv || die "makemkvcon was not found (including the MakeMKV Flatpak)"
+command -v blockdev >/dev/null 2>&1 || die "blockdev is required"
+command -v isoinfo >/dev/null 2>&1 || die "isoinfo is required"
+command -v timeout >/dev/null 2>&1 || die "timeout is required"
+command -v tee >/dev/null 2>&1 || die "tee is required"
+if ((EJECT_AFTER_SUCCESS)); then
+    command -v eject >/dev/null 2>&1 || die "eject is required when --eject is used"
+fi
+[[ -b $DEVICE ]] || die "optical device does not exist: $DEVICE"
+[[ -r $DEVICE ]] || die "optical device is not readable by this user: $DEVICE"
+[[ -w $BACKUP_DIR ]] || die "backup directory is not writable: $BACKUP_DIR"
+
+if ((DOCTOR_ONLY)); then
+    printf 'DVD auto-backup runtime is ready.\n'
+    printf '  Device:     %s\n' "$DEVICE"
+    printf '  Destination: %s\n' "$BACKUP_DIR"
+    printf '  MakeMKV:    %s\n' "${MAKEMKV[*]}"
+    if timeout 5 blockdev --getsize64 "$DEVICE" >/dev/null 2>&1; then
+        printf '  Disc:       inserted\n'
+    else
+        printf '  Disc:       none (this is OK)\n'
+    fi
+    exit 0
+fi
+
+media_size() {
+    local size
+    size=$(timeout 5 blockdev --getsize64 "$DEVICE" 2>/dev/null) || return 1
+    [[ $size =~ ^[1-9][0-9]*$ ]] || return 1
+    printf '%s\n' "$size"
+}
+
+medium_present() {
+    media_size >/dev/null
+}
+
+is_dvd() {
+    local properties
+    properties=$(udevadm info --query=property --name="$DEVICE" 2>/dev/null || true)
+    if grep -q '^ID_CDROM_MEDIA_DVD=1$' <<<"$properties"; then
+        return 0
+    fi
+
+    # Some udev configurations omit media properties. A VIDEO_TS directory is
+    # an equally useful indication that this is a DVD-Video disc.
+    timeout 15 isoinfo -i "$DEVICE" -f 2>/dev/null \
+        | grep -Eqi '^/VIDEO_TS/VIDEO_TS\.IFO(;1)?$'
+}
+
+disc_label() {
+    local raw label
+    raw=$(timeout 10 blkid -p -o value -s LABEL "$DEVICE" 2>/dev/null || true)
+    if [[ -z $raw ]]; then
+        raw=$(timeout 10 isoinfo -d -i "$DEVICE" 2>/dev/null \
+            | sed -n 's/^Volume id: *//p' | head -n 1)
+    fi
+    [[ -n $raw ]] || raw="DVD_$(date '+%Y%m%d_%H%M%S')"
+
+    label=$(LC_ALL=C printf '%s' "$raw" \
+        | tr '[:lower:]' '[:upper:]' \
+        | sed -E 's/[^A-Z0-9]+/_/g; s/^_+//; s/_+$//' \
+        | cut -c 1-64)
+    [[ -n $label ]] || label="DVD_$(date '+%Y%m%d_%H%M%S')"
+    printf '%s\n' "$label"
+}
+
+next_output_path() {
+    local label=$1 candidate number=2
+    candidate=$BACKUP_DIR/$label.iso
+    while [[ -e $candidate || -L $candidate ]]; do
+        candidate=$BACKUP_DIR/${label}_$number.iso
+        ((number++))
+    done
+    printf '%s\n' "$candidate"
+}
+
+enough_space() {
+    local disc_bytes=$1 available required
+    available=$(df -P -B1 --output=avail "$BACKUP_DIR" 2>/dev/null | tail -n 1)
+    [[ $available =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || return 1
+    available=${available//[[:space:]]/}
+    required=$((disc_bytes + 536870912))
+    ((available >= required))
+}
+
+verify_iso() {
+    local iso=$1 details blocks block_size expected actual
+    [[ -f $iso ]] || return 1
+    actual=$(stat -c %s -- "$iso" 2>/dev/null) || return 1
+    ((actual >= 1048576)) || return 1
+
+    details=$(isoinfo -d -i "$iso" 2>/dev/null) || return 1
+    blocks=$(awk -F': *' '/^Volume size is:/ {print $2; exit}' <<<"$details")
+    block_size=$(awk -F': *' '/^Logical block size is:/ {print $2; exit}' <<<"$details")
+    [[ $blocks =~ ^[0-9]+$ && $block_size =~ ^[0-9]+$ ]] || return 1
+    expected=$((blocks * block_size))
+    ((actual >= expected)) || return 1
+
+    isoinfo -i "$iso" -f 2>/dev/null \
+        | grep -Eqi '^/VIDEO_TS/VIDEO_TS\.IFO(;1)?$'
+}
+
+run_backup() {
+    local label=$1 destination=$2 attempt status attempt_log reported_failure
+
+    for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+        CURRENT_PARTIAL=$BACKUP_DIR/.${label}.$$.$attempt.partial.iso
+        cleanup_partial
+        CURRENT_PARTIAL=$BACKUP_DIR/.${label}.$$.$attempt.partial.iso
+        attempt_log=${CURRENT_PARTIAL%.iso}.log
+
+        log "Attempt $attempt/$MAX_ATTEMPTS: backing up $label"
+        "${MAKEMKV[@]}" backup --decrypt --cache=64 --noscan \
+            --progress=-same "dev:$DEVICE" "$CURRENT_PARTIAL" 2>&1 \
+            | tee -a "$LOG_FILE" "$attempt_log"
+        status=${PIPESTATUS[0]}
+        reported_failure=0
+        if grep -Eqi 'Backup failed|Failed to open disc' "$attempt_log"; then
+            reported_failure=1
+        fi
+
+        if ((status == 0 && reported_failure == 0)) && verify_iso "$CURRENT_PARTIAL"; then
+            if [[ -e $destination || -L $destination ]]; then
+                log "Cannot publish: destination appeared while ripping: $destination"
+                cleanup_partial
+                return 1
+            fi
+            sync -f "$CURRENT_PARTIAL" 2>/dev/null || true
+            if mv -- "$CURRENT_PARTIAL" "$destination"; then
+                rm -f -- "$attempt_log"
+                CURRENT_PARTIAL=
+                log "Success: $destination"
+                return 0
+            fi
+        fi
+
+        if ((reported_failure)); then
+            log "Attempt $attempt failed according to MakeMKV."
+        elif ((status != 0)); then
+            log "Attempt $attempt failed (MakeMKV exit status $status)."
+        else
+            log "Attempt $attempt failed ISO verification."
+        fi
+        cleanup_partial
+
+        if ((attempt < MAX_ATTEMPTS)); then
+            if ! medium_present; then
+                log "The disc was removed; cancelling retries."
+                return 1
+            fi
+            log "Retrying in $RETRY_DELAY seconds..."
+            sleep "$RETRY_DELAY"
+        fi
+    done
+
+    log "All $MAX_ATTEMPTS attempts failed. Remove and reinsert the disc to try again."
+    return 1
+}
+
+process_inserted_disc() {
+    local size label destination
+
+    log "Disc detected; waiting for the drive to settle..."
+    sleep 3
+    size=$(media_size) || {
+        log "The disc was removed before it became ready."
+        return 1
+    }
+
+    if ! is_dvd; then
+        log "This medium does not appear to be a DVD-Video disc; ignoring it."
+        return 1
+    fi
+
+    label=$(disc_label)
+    destination=$(next_output_path "$label")
+    log "DVD label: $label"
+    log "Output: $destination"
+
+    if ! enough_space "$size"; then
+        log "Not enough free space. At least one disc size plus 512 MiB is required."
+        return 1
+    fi
+
+    run_backup "$label" "$destination"
+}
+
+log "Watching $DEVICE for DVDs (Ctrl-C to stop)."
+log "ISOs will be written to $BACKUP_DIR"
+
+while true; do
+    until medium_present; do
+        sleep "$POLL_SECONDS"
+    done
+
+    result=0
+    process_inserted_disc || result=$?
+
+    if ((result == 0 && EJECT_AFTER_SUCCESS)); then
+        log "Ejecting $DEVICE"
+        eject "$DEVICE" || log "Could not eject $DEVICE; please remove the disc manually."
+    fi
+
+    if ((RUN_ONCE)); then
+        exit "$result"
+    fi
+
+    if medium_present; then
+        log "Remove the disc before inserting the next one."
+    fi
+    while medium_present; do
+        sleep "$POLL_SECONDS"
+    done
+    log "Drive is empty; waiting for the next DVD."
+done

@@ -13,7 +13,14 @@ let
   lanPrefixLength = vars.networking.lan.prefixLength;
   lanIface = vars.networking.interfaces.lan;
   lanDnsDomain = vars.networking.dns.lanDomain;
-  lanDnsHosts = vars.networking.dns.lanHosts;
+  lanDnsHostsRaw = vars.networking.dns.lanHosts or { };
+  # Keep record rendering total so central validation can report mistyped
+  # lanHosts with an actionable assertion instead of failing in interpolation.
+  lanDnsHosts =
+    if builtins.isAttrs lanDnsHostsRaw then
+      lib.mapAttrs (_: address: if builtins.isString address then address else "0.0.0.0") lanDnsHostsRaw
+    else
+      { };
   netbirdIp = vars.networking.netbird.ip;
   netbirdIface = vars.networking.interfaces.netbird;
   netbirdCidr = vars.networking.netbird.cidr;

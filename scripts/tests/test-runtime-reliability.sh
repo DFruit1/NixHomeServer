@@ -144,9 +144,11 @@ require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix '${sftpChroo
   "SFTP chroot paths must use systemd's unescaped instance name."
 require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix 'getfacl -cp "$path"' \
   "New user roots must detect and apply missing application ACL grants."
-require_fixed modules/offline-music/services.nix '/rest/db/scan?folder=$folder_id' \
+require_fixed modules/offline-music/services.nix 'exec ${../../scripts/helpers/offline-media-reconcile.sh}' \
+  "Offline media must execute the reviewed reconciliation helper from its systemd service."
+require_fixed scripts/helpers/offline-media-reconcile.sh '/rest/db/scan?folder=$folder_id' \
   "Offline media must force periodic Syncthing scans so missed filesystem events self-heal."
-require_fixed modules/offline-music/services.nix '! -readable -print -quit' \
+require_fixed scripts/helpers/offline-media-reconcile.sh '! -readable -print -quit' \
   "Offline media health checks must detect files Syncthing cannot read."
 require_fixed modules/homepage/services.nix '/rest/db/completion?device=$enrolled_device_id&folder=$folder_id' \
   "The homepage must expose per-device sync backlog instead of treating enrollment as health."

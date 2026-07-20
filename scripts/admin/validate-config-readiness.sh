@@ -7,7 +7,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 usage() {
   cat <<'EOF'
 Usage: scripts/admin/validate-config-readiness.sh [--host <flake-hostname>] [--identity <age-key>]
-       [--require-local-hardware] [--allow-unverified-secrets]
+       [--require-local-hardware] [--allow-host-platform-mismatch]
+       [--allow-unverified-secrets]
 
 Validate evaluated settings, required secrets, and local bootstrap/deploy
 preconditions without changing the system.
@@ -18,6 +19,7 @@ host=""
 identity_file=""
 require_local_hardware=0
 allow_unverified_secrets=0
+allow_host_platform_mismatch=0
 while (($# > 0)); do
   case "$1" in
     --host)
@@ -32,6 +34,10 @@ while (($# > 0)); do
       ;;
     --require-local-hardware)
       require_local_hardware=1
+      shift
+      ;;
+    --allow-host-platform-mismatch)
+      allow_host_platform_mismatch=1
       shift
       ;;
     --allow-unverified-secrets)
@@ -61,7 +67,7 @@ echo "NixHomeServer config readiness validation"
 echo "host: ${host}"
 echo
 
-need age age-keygen awk bash find git ip jq mktemp nix paste python3 readlink rg sed ssh ssh-keygen tr
+need age age-keygen awk bash find git ip jq mktemp nix paste python3 readlink rg sed ssh ssh-keygen tr uname
 if ((status_blocked > 0)); then
   finish_report
 fi
@@ -95,6 +101,7 @@ active_secret_names_json="$(nix_json_for_host "$host" "builtins.attrNames cfg.ag
 
 domain="$(jq -r '.domain' <<<"$settings_json")"
 admin_user="$(jq -r '.kanidmAdminUser' <<<"$settings_json")"
+admin_email="$(jq -r '.kanidmAdminEmail' <<<"$settings_json")"
 local_admin_user="$(jq -r '.localAdminUser' <<<"$settings_json")"
 ssh_key="$(jq -r '.serverSSHPubKey' <<<"$settings_json")"
 lan_iface="$(jq -r '.netIface' <<<"$settings_json")"
@@ -119,6 +126,23 @@ case "$host_platform" in
     block "vars.nix -> system.hostPlatform must be x86_64-linux or aarch64-linux, got ${host_platform}"
     ;;
 esac
+
+if ((require_local_hardware == 1)); then
+  case "$(uname -m)" in
+    x86_64) local_host_platform="x86_64-linux" ;;
+    aarch64|arm64) local_host_platform="aarch64-linux" ;;
+    *) local_host_platform="unsupported-$(uname -m)" ;;
+  esac
+  if [[ "$local_host_platform" == "$host_platform" ]]; then
+    ready "installer/target architecture matches system.hostPlatform: ${host_platform}"
+  elif ((allow_host_platform_mismatch == 1)); then
+    warn "EXPERT OVERRIDE: installer/target architecture ${local_host_platform} does not match ${host_platform}; destructive bootstrap may require a configured remote builder or emulation"
+  else
+    block "installer/target architecture ${local_host_platform} does not match system.hostPlatform ${host_platform}; correct vars.nix or explicitly pass --allow-host-platform-mismatch only with a working cross-build strategy"
+  fi
+elif ((allow_host_platform_mismatch == 1)); then
+  block "--allow-host-platform-mismatch is only meaningful with --require-local-hardware"
+fi
 
 case "$hardware_profile" in
   generated|existing-server|generic-uefi)
@@ -165,6 +189,22 @@ else
   ready "vars.nix -> identity.adminUser is separate from local admin ${local_admin_user}"
 fi
 
+mapfile -t configured_emails < <(jq -r '
+  ([.kanidmAdminEmail] + (.kanidmAdminMailAddresses // []) + ((.kanidmAppUserEmails // {}) | to_entries | map(.value)))
+  | unique[]
+' <<<"$settings_json")
+for configured_email in "${configured_emails[@]}"; do
+  if [[ "$configured_email" == *CHANGE_ME* \
+    || "$configured_email" == *@example.* \
+    || "$configured_email" == *.test ]]; then
+    block "vars.nix -> identity email is still a reserved/template value: ${configured_email}"
+  elif [[ ! "$configured_email" =~ ^[A-Za-z0-9][A-Za-z0-9._%+-]*@[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+    block "vars.nix -> identity email is not a valid user@public-domain address: ${configured_email}"
+  else
+    ready "vars.nix -> identity email is configured: ${configured_email}"
+  fi
+done
+
 ssh_key_file="$readiness_tmpdir/server-ssh-key.pub"
 : >"$ssh_key_file"
 chmod 0600 "$ssh_key_file"
@@ -189,12 +229,46 @@ case "$dns_mode" in
     ;;
 esac
 
+lan_iface_exists=0
 if ip link show "$lan_iface" >/dev/null 2>&1; then
+  lan_iface_exists=1
   ready "vars.nix -> network.lanInterface exists locally: ${lan_iface}"
 elif ((require_local_hardware == 1)); then
   block "vars.nix -> network.lanInterface '${lan_iface}' is absent on this installer/target host"
 else
   warn "vars.nix -> network.lanInterface '${lan_iface}' is not present on this workstation; verify it on the target server"
+fi
+
+if ((require_local_hardware == 1 && lan_iface_exists == 1)); then
+  carrier_path="/sys/class/net/${lan_iface}/carrier"
+  if [[ -r "$carrier_path" && "$(<"$carrier_path")" == "1" ]]; then
+    ready "target LAN interface has carrier: ${lan_iface}"
+  elif [[ -r "$carrier_path" ]]; then
+    block "target LAN interface has no carrier: ${lan_iface}; connect the intended cable/switch port before installation"
+  else
+    warn "could not read carrier state for target LAN interface ${lan_iface}"
+  fi
+
+  if ip route get "$lan_gateway" oif "$lan_iface" >/dev/null 2>&1; then
+    ready "installer can route to the configured LAN gateway through ${lan_iface}"
+  else
+    block "installer has no route to configured gateway ${lan_gateway} through ${lan_iface}"
+  fi
+
+  if ip -4 -o address show dev "$lan_iface" | awk '{print $4}' | awk -F/ -v ip="$lan_ip" '$1 == ip { found=1 } END { exit !found }'; then
+    ready "configured LAN address is already assigned locally to ${lan_iface}; a peer-conflict probe is still required"
+  fi
+  if [[ "$EUID" -eq 0 ]] && command -v arping >/dev/null 2>&1; then
+    arping_log="$readiness_tmpdir/arping-duplicate.log"
+    if arping -D -q -c 2 -w 3 -I "$lan_iface" "$lan_ip" >"$arping_log" 2>&1; then
+      ready "no host answered duplicate-address probes for ${lan_ip} on ${lan_iface}"
+    else
+      block "configured LAN address ${lan_ip} appears to be in use on ${lan_iface}; inspect with arping before installation"
+      sed 's/^/  /' "$arping_log" >&2
+    fi
+  else
+    warn "duplicate-address probing for ${lan_ip} was skipped; rerun readiness as root with arping available before destructive bootstrap"
+  fi
 fi
 
 if network_error="$(python3 - "$lan_ip" "$lan_prefix" "$lan_gateway" "$netbird_ip" "$netbird_cidr" <<'PY'
@@ -214,6 +288,8 @@ try:
         raise ValueError("LAN IP cannot be the subnet network or broadcast address")
     if gateway not in lan_network or gateway in (lan_network.network_address, lan_network.broadcast_address):
         raise ValueError("LAN gateway must be a usable address in the configured LAN subnet")
+    if lan_ip == gateway:
+        raise ValueError("LAN IP must not equal the LAN gateway")
     if netbird_ip not in netbird_network:
         raise ValueError("NetBird IP must belong to network.netbirdCidr")
 except (ValueError, ipaddress.AddressValueError, ipaddress.NetmaskValueError) as error:
@@ -370,15 +446,33 @@ else
 fi
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git_status="$(git status --porcelain --untracked-files=all)"
-  untracked="$(awk '$1 == "??" {print $2; count++; if (count >= 10) exit}' <<<"$git_status")"
-  if [[ -n "$untracked" ]]; then
-    warn "untracked files exist; add intended new files before rebuilds: $(tr '\n' ' ' <<<"$untracked")"
+  git_author_name="$(git config --local --get user.name 2>/dev/null || true)"
+  git_author_email="$(git config --local --get user.email 2>/dev/null || true)"
+  if [[ "$git_author_name" =~ [^[:space:]] && "$git_author_email" =~ [^[:space:]] ]]; then
+    ready "repository-local Git author identity is configured: ${git_author_name} <${git_author_email}>"
+  elif ((require_local_hardware == 1)); then
+    block "repository-local Git author identity is incomplete; before recording target hardware, run: git config --local user.name '${admin_user}' && git config --local user.email '${admin_email}'"
   else
-    ready "no untracked files are visible to git"
+    warn "repository-local Git author identity is incomplete; configure git config --local user.name and user.email before the next required commit"
+  fi
+
+  git_status="$(git status --porcelain=v1 --untracked-files=all)"
+  if [[ -n "$git_status" ]]; then
+    worktree_preview="$(awk 'NR <= 10 { printf "%s%s", separator, $0; separator=" | " }' <<<"$git_status")"
+    if ((require_local_hardware == 1)); then
+      block "repository worktree is not clean; commit or remove every staged, unstaged, and untracked change before destructive bootstrap: ${worktree_preview}"
+    else
+      warn "repository worktree has staged, unstaged, or untracked changes; commit intended configuration before bootstrap or deploy: ${worktree_preview}"
+    fi
+  else
+    ready "repository worktree is clean"
   fi
 else
-  warn "not running inside a git worktree"
+  if ((require_local_hardware == 1)); then
+    block "not running inside a Git worktree; target hardware and storage identity changes must be committed before installation"
+  else
+    warn "not running inside a git worktree"
+  fi
 fi
 
 finish_report

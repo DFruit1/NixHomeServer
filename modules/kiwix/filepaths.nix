@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, ... }:
+{ config, lib, pkgs, ... }:
 
 let
   cfg = config.repo.kiwix;
@@ -14,6 +14,13 @@ let
 in
 {
   config = lib.mkIf cfg.enable {
+    repo.storage.dataPool.guardedServices = [
+      "kiwix-library-root-layout-v1"
+      "kiwix-library-sync"
+      "kiwix-library-watch"
+      "kiwix-serve"
+    ];
+
     repo.storage.sharedRoots.contentSubdirs = [ "_Kiwix" ];
 
     systemd.tmpfiles.rules = [
@@ -26,9 +33,6 @@ in
       wants = [ "data-pool-layout.service" "local-fs.target" ];
       after = [ "data-pool-layout.service" "local-fs.target" ];
       before = [ "kiwix-library-sync.service" ];
-      unitConfig = lib.mkIf vars.dataRootIsMountPoint {
-        ConditionPathIsMountPoint = vars.dataRoot;
-      };
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

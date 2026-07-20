@@ -3,7 +3,7 @@
 let
   externalUsbMountRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
-  backupStorageAccessGroup = vars.backupAccess.storageGroup or "backup-admin";
+  backupStorageAccessGroup = vars.backupStorageGroup;
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   stagingRoot = "/persist/appdata/backup-metadata";
   metadataRoot = "${stagingRoot}/metadata";
@@ -14,6 +14,7 @@ let
   successfulCurrentPath = "${stagingRoot}/current";
   repositoryPath = "${backupRoot}/kopia";
   maintenanceLock = "/run/lock/nixhomeserver-maintenance.lock";
+  maintenanceGroup = "nixhomeserver-maintenance";
   fsPackages =
     (with pkgs; [
       e2fsprogs
@@ -186,6 +187,13 @@ in
       description = "Host-wide lock used to serialize storage-intensive maintenance jobs.";
     };
 
+    maintenanceGroup = lib.mkOption {
+      type = lib.types.str;
+      readOnly = true;
+      default = maintenanceGroup;
+      description = "Local system group allowed to serialize non-root maintenance jobs.";
+    };
+
     pathInventories = lib.mkOption {
       type = lib.types.listOf (lib.types.submodule {
         options = {
@@ -287,6 +295,8 @@ in
       ++ lib.optional (vars.storageProfile == "zfs-mirror") "btrfs";
     system.fsPackages = fsPackages;
 
+    users.groups.${maintenanceGroup} = { };
+
     systemd.tmpfiles.rules = [
       "d ${externalUsbMountRoot} 0755 root root -"
       "d ${backupRoot} 0750 root ${toString backupStorageAccessGid} -"
@@ -295,13 +305,19 @@ in
       "d ${dumpsRoot} 0700 root root -"
       "d ${inventoryRoot} 0700 root root -"
       "d ${successfulGenerationRoot} 0700 root root -"
-      "f ${maintenanceLock} 0660 root ${toString backupStorageAccessGid} -"
+      # Repository readers never need to acquire or hold the host-wide job
+      # lock. Only root and explicitly managed maintenance services may use it.
+      "f ${maintenanceLock} 0660 root ${maintenanceGroup} -"
     ];
 
     assertions = [
       {
         assertion = builtins.length dumpOutputNames == builtins.length (lib.unique dumpOutputNames);
         message = "nixhomeserver: logical backup dump output names must be unique across enabled modules.";
+      }
+      {
+        assertion = !(builtins.hasAttr maintenanceGroup config.services.kanidm.provision.groups);
+        message = "nixhomeserver: Kanidm access groups must not reuse the reserved local maintenance group '${maintenanceGroup}'.";
       }
     ] ++ map
       (root: {

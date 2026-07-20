@@ -168,7 +168,7 @@ lib.mkMerge [
     domain = vars.monitorDomain;
     port = vars.networking.ports.oauth2ProxyMonitor;
     upstream = "http://${loopback}:${toString hubPort}";
-    allowedGroups = [ vars.monitoringAccess.group ];
+    allowedGroups = [ vars.monitoringAccessGroup ];
     serviceDependencies = [ "beszel-hub.service" "caddy.service" ];
     upstreamCheck = {
       displayName = "Beszel hub";

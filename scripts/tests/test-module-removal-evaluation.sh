@@ -61,6 +61,8 @@ for ((offset = 0; offset < ${#variants[@]}; offset += batch_size)); do
       (.value.drvPath | startswith("/nix/store/"))
       and .value.valid
       and .value.removedOwnedSecretsAbsent
+      and .value.guardedServicesValid
+      and .value.removedGuardedServicesAbsent
       and (.value.registry == (.value.selected | map({ key: ., value: true }) | from_entries))
       and (.value.caddyHostCount >= 3)
       and (.value.oauthClientCount >= 3)
@@ -96,9 +98,13 @@ for ((offset = 0; offset < ${#variants[@]}; offset += batch_size)); do
     jq -e '."without-offline-music".offlineMediaSurface == {
       syncthingEnabled: false,
       gatewayRegistered: false,
-      homepageEnvironmentPresent: false
+      homepageEnvironmentPresent: false,
+      disabledCleanupPresent: true,
+      dedicatedAccessGroupPresent: false,
+      dedicatedGatewayScopePresent: false,
+      dedicatedHomepageScopePresent: false
     }' <<<"$matrix_json" >/dev/null || {
-      echo "❌ Removing offline-music left Syncthing or Homepage enrollment surfaces enabled."
+      echo "❌ Removing offline-music left active surfaces enabled or omitted the safe persistent-config cleanup."
       jq '."without-offline-music".offlineMediaSurface' <<<"$matrix_json"
       exit 1
     }

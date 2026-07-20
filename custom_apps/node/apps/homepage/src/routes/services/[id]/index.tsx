@@ -9,7 +9,8 @@ export default component$(() => {
   const data = homepage.data;
   const serviceId = location.params.id ? decodeURIComponent(location.params.id) : '';
   const service = data?.services.find((item) => item.enabled && item.id === serviceId);
-  const serverHost = data?.sshfsHost ?? data?.serverLanHost ?? 'server';
+  const serverHost = data?.sftp?.host ?? data?.serverLanHost ?? 'server';
+  const serverPort = data?.sftp?.port ?? 22;
 
   if (!service) {
     return (
@@ -31,6 +32,7 @@ export default component$(() => {
       offlineMedia={data?.offlineMedia}
       username={data?.user.username}
       serverHost={serverHost}
+      serverPort={serverPort}
     />
   );
 });

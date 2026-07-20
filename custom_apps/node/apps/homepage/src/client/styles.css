@@ -747,6 +747,12 @@ h4 {
   background: #fff;
 }
 
+.setup-status.available {
+  border-color: #bed4ed;
+  background: #edf5ff;
+  color: #245b9f;
+}
+
 .setup-status.unavailable {
   background: #f3f6fa;
   color: #607086;
@@ -2026,6 +2032,13 @@ dd {
 
 .group-picker__option input {
   margin: 0;
+}
+
+.group-picker__option small {
+  margin-left: auto;
+  color: #607086;
+  font-size: 10px;
+  text-align: right;
 }
 
 .group-name {

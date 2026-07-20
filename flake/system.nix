@@ -31,29 +31,36 @@ let
       };
     };
   };
+  bootstrapBaseModules = [
+    { nixpkgs.hostPlatform = system; }
+    ({ lib, ... }: {
+      # This output is primarily a Disko target, but it is exported as a
+      # NixOS configuration and must pass ordinary flake checks as a complete
+      # host too.
+      networking.hostId = vars.hostId;
+      system.stateVersion = "25.05";
+      boot.loader.grub = {
+        enable = true;
+        efiSupport = true;
+        efiInstallAsRemovable = true;
+        device = "nodev";
+      };
+      boot.loader.systemd-boot.enable = lib.mkForce false;
+      boot.loader.efi.canTouchEfiVariables = false;
+      boot.zfs.forceImportRoot = false;
+    })
+    inputs.disko.nixosModules.disko
+    ../bootstrap/disko-system.nix
+  ];
   bootstrapHost = lib.nixosSystem {
-    modules = [
-      { nixpkgs.hostPlatform = system; }
-      ({ lib, ... }: {
-        # This output is primarily a Disko target, but it is exported as a
-        # NixOS configuration and must pass ordinary flake checks as a complete
-        # host too.
-        networking.hostId = vars.hostId;
-        system.stateVersion = "25.05";
-        boot.loader.grub = {
-          enable = true;
-          efiSupport = true;
-          efiInstallAsRemovable = true;
-          device = "nodev";
-        };
-        boot.loader.systemd-boot.enable = lib.mkForce false;
-        boot.loader.efi.canTouchEfiVariables = false;
-        boot.zfs.forceImportRoot = false;
-      })
-      inputs.disko.nixosModules.disko
-      ../bootstrap/disko-system.nix
-      ../bootstrap/disko-data.nix
-    ];
+    modules = bootstrapBaseModules ++ [ ../bootstrap/disko-data.nix ];
+    specialArgs = { inherit vars; };
+  };
+  systemRecoveryHost = lib.nixosSystem {
+    # This deliberately contains only the system-disk layout. It is the sole
+    # Disko output permitted for a system-SSD recovery that preserves the
+    # separately configured ZFS data-pool members.
+    modules = bootstrapBaseModules;
     specialArgs = { inherit vars; };
   };
 in
@@ -66,6 +73,7 @@ in
   # the disk layout module. The disko CLI targets this explicit suffix only.
   bootstrapConfigurations = {
     "${vars.hostname}-bootstrap" = bootstrapHost;
+    "${vars.hostname}-system-recovery" = systemRecoveryHost;
   };
 
   nixhomeserverSettings = {
