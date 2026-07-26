@@ -91,14 +91,10 @@ require_fixed documentation/quickstart.md '`storage.dataPool.expectedGuid = null
 require_fixed documentation/restore-and-recovery.md 'must contain a non-null numeric' \
   "System-disk recovery guidance must require the preserved pool's pinned GUID."
 
-for guidance_file in documentation/quickstart.md README.md; do
-  if [[ "$guidance_file" == documentation/quickstart.md ]]; then
-    require_fixed "$guidance_file" 'Run this first check without `--expected-guid`' \
-      "${guidance_file} must describe topology-only verification for the newly created pool."
-  else
-    require_fixed "$guidance_file" 'Run the identity helper without `--expected-guid`' \
-      "${guidance_file} must describe topology-only verification for the newly created pool."
-  fi
+zfs_guidance_files=(documentation/quickstart.md)
+for guidance_file in "${zfs_guidance_files[@]}"; do
+  require_fixed "$guidance_file" 'Run this first check without `--expected-guid`' \
+    "${guidance_file} must describe topology-only verification for the newly created pool."
   require_fixed "$guidance_file" 'new_pool_guid="$(sudo zpool get -H -o value guid' \
     "${guidance_file} must capture the GUID only after pool topology verification."
   require_fixed "$guidance_file" 'git commit -m "Pin newly created ZFS pool identity"' \
@@ -136,5 +132,7 @@ for guidance_file in documentation/quickstart.md README.md; do
     exit 1
   fi
 done
+require_fixed README.md '[First installation](documentation/quickstart.md)' \
+  "README must route ZFS bootstrap operators to the authoritative Quickstart."
 
 echo "✅ Blank-pool creation and pinned-pool system recovery GUID modes are guarded."

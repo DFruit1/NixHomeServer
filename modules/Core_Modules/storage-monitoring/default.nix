@@ -38,6 +38,10 @@ in
     systemd.services = {
       storage-smart-short = {
         description = "Run SMART short self-test sweep across monitored storage";
+        unitConfig = {
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
+        };
         path = smartSweepPath;
         script = ''
           exec ${pkgs.bash}/bin/bash ${smartSweepScript} \
@@ -49,6 +53,10 @@ in
 
       storage-smart-long = {
         description = "Run SMART long self-test sweep across monitored storage";
+        unitConfig = {
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
+        };
         path = smartSweepPath;
         script = ''
           exec ${pkgs.bash}/bin/bash ${smartSweepScript} \
@@ -60,6 +68,10 @@ in
 
       zfs-snapshot-health = lib.mkIf vars.enableZfsDataPool {
         description = "Report ZFS pool and automatic snapshot health";
+        unitConfig = {
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
+        };
         path = [ config.boot.zfs.package pkgs.coreutils pkgs.gawk pkgs.jq ];
         serviceConfig.Type = "oneshot";
         script = ''
@@ -74,6 +86,7 @@ in
 
           while IFS=$'\t' read -r dataset snapshot_enabled; do
             [[ "$snapshot_enabled" == true ]] || continue
+            [[ "$(zfs get -H -o value mounted "$dataset")" == yes ]] || continue
             managed_count=$((managed_count + 1))
             snapshot_rows="$(zfs list -H -p -d 1 -t snapshot -o creation,name -s creation "$dataset" 2>/dev/null \
               | awk '$2 ~ /@zfs-auto-snap_/ { print }')"

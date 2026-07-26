@@ -16,9 +16,11 @@ After the first guarded deploy succeeds, use [Operations](./operations.md) and
 the homepage "For Admins" page for normal app configuration, user onboarding,
 runtime checks, and rebuilds.
 
-For a first Jellyfin login, list the root-only one-time credentials created for
-managed users, retrieve the intended account, and change its password after
-sign-in:
+Jellyfin browser users should choose **Sign in with Kanidm**. On a TV or native
+client, start the normal Jellyfin Quick Connect flow and authorize the displayed
+code at `https://videos.<domain>/sso/OIDC/QuickConnect/kanidm`. The existing
+native password remains a deliberate compatibility fallback. To retrieve it,
+list the root-only one-time credentials created for managed users:
 
 ```bash
 sudo jellyfin-initial-credential
@@ -38,7 +40,7 @@ Prepare these before touching disks:
 - A Cloudflare DNS API token for `cfAPIToken`.
 - A NetBird setup key for `netbirdSetupKey`.
 - A MEGA password for `rcloneMegaPassword` only if you choose to enable the
-  optional `rcloneMega` offsite mirror.
+  optional `offsiteBackup` mirror.
 - Exact target disk IDs from `/dev/disk/by-id`, not kernel names such as `/dev/sda`.
 
 ## Prepare `vars.nix`
@@ -57,6 +59,8 @@ Set the operator-facing block first:
 - `identity.sshPublicKey`: the public SSH key for root and the local admin.
 - `network`: hostname, domain, LAN interface, LAN IP, prefix, gateway, and NetBird IP.
 - `system.timeZone`.
+- `system.buildMode`: where deploy builds run; keep `"remote"` initially or
+  choose a mode from [Build Allocation](operations.md#build-allocation).
 - `system.hostId`: a stable 8-character lowercase hexadecimal value. It is
   required for `zfs-mirror`; `single-disk-ext4` may keep `00000000`, but setting
   a real value keeps later ZFS migration straightforward.

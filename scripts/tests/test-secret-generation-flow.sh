@@ -89,6 +89,18 @@ done
   echo "❌ Fresh generation omitted serverBootstrapSudoPassword."
   exit 1
 }
+attic_server_env="$(
+  age --decrypt --identity "$old_identity" "$test_repo/secrets/atticServerEnv.age"
+)"
+if [[ "$attic_server_env" != ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64=* ]]; then
+  echo "❌ Fresh generation did not produce Attic's required environment variable."
+  exit 1
+fi
+attic_token_base64="${attic_server_env#ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64=}"
+if [[ "$(printf '%s' "$attic_token_base64" | openssl base64 -d -A | wc -c)" -ne 64 ]]; then
+  echo "❌ Fresh generation did not produce a 64-byte Attic JWT signing secret."
+  exit 1
+fi
 [[ ! -e "$test_repo/secrets/rcloneMegaPassword.age" ]] || {
   echo "❌ Fresh generation created a disabled optional MEGA credential."
   exit 1

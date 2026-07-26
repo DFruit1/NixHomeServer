@@ -51,6 +51,7 @@ export type AppConfig = {
   canaryAdminUser?: string;
   canaryStateDir?: string;
   canaryTriggerCommand?: string;
+  mkvmakerProgressFile?: string;
   homepage: HomepageConfig;
 };
 
@@ -158,5 +159,6 @@ export const loadConfig = (): AppConfig => ({
   canaryAdminUser: process.env.HOMEPAGE_CANARY_ADMIN_USER,
   canaryStateDir: process.env.HOMEPAGE_CANARY_STATE_DIR,
   canaryTriggerCommand: process.env.HOMEPAGE_CANARY_TRIGGER_COMMAND,
+  mkvmakerProgressFile: process.env.HOMEPAGE_MKVMAKER_PROGRESS_FILE,
   homepage: loadHomepageConfig(process.env.HOMEPAGE_CONFIG_FILE),
 });

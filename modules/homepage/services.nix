@@ -67,6 +67,7 @@ let
   offlineMediaEnabled =
     (config.nixhomeserver.modules."offline-music" or false)
     && (offlineMediaCfg.enable or false);
+  mkvmakerEnabled = config.nixhomeserver.modules.mkvmaker or false;
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaStateFile = "${offlineMediaStateDir}/devices.json";
   offlineMediaModel = (import ../../lib/offline-media.nix { inherit lib; }) offlineMediaCfg;
@@ -853,7 +854,7 @@ let
       description = "Photo and video library with private login and public share-link support.";
       loginNotes = "Use Kanidm. Public shares use https://${sharePhotosHost}.";
       projectUrl = "https://immich.app";
-      logoUrl = "/logos/photos.svg";
+      logoUrl = "/logos/immich.svg";
       appName = "immich";
       uploadNotes = "Upload through Immich web or the mobile app.";
       requiredAnyGroups = [ "immich-users" ];
@@ -867,7 +868,7 @@ let
       description = "Paperless document archive with OCR, search, tags, and exports.";
       loginNotes = "Use Kanidm; first login creates the local account.";
       projectUrl = "https://docs.paperless-ngx.com";
-      logoUrl = "/logos/documents.svg";
+      logoUrl = "/logos/paperless-ngx.svg";
       appName = "paperless-ngx";
       uploadNotes = "Upload PDFs and image documents through Paperless or the consume inbox.";
       requiredAnyGroups = [ "paperless-users" ];
@@ -881,7 +882,7 @@ let
       description = "Browser file workspace backed by each user's restricted SFTP root.";
       loginNotes = "Requires ${filesWebAccessGroup} for browser access.";
       projectUrl = "https://www.filestash.app";
-      logoUrl = "/logos/files.svg";
+      logoUrl = "/logos/filestash.svg";
       appName = "filestash";
       uploadNotes = "Use Files for general uploads and app-specific media folders.";
       requiredAnyGroups = [ filesWebAccessGroup ];
@@ -895,7 +896,7 @@ let
       description = "Audiobooks and long-form audio libraries.";
       loginNotes = "Use Kanidm. The configured server operator owns the Audiobookshelf root account; app-admin does not grant Audiobookshelf administrator rights.";
       projectUrl = "https://www.audiobookshelf.org";
-      logoUrl = "/logos/audiobooks.svg";
+      logoUrl = "/logos/audiobookshelf.svg";
       appName = "audiobookshelf";
       uploadNotes = "Place audiobook folders under _Audiobooks.";
       requiredAnyGroups = [ "audiobookshelf-users" ];
@@ -907,9 +908,9 @@ let
       enabled = jellyfinEnabled;
       category = "media";
       description = "Metadata-rich movie and show libraries.";
-      loginNotes = "Jellyfin uses a generated local password, not Kanidm SSO. Ask an administrator for your initial password, sign in with your Kanidm username, then change the password immediately.";
+      loginNotes = "In a browser, choose “Sign in with Kanidm”. For a TV or native app, use its normal Quick Connect screen and authorize the six-digit code at this service’s “Sign in a device with Kanidm (Quick Connect)” page. A generated local password remains available when a client supports neither flow.";
       projectUrl = "https://jellyfin.org";
-      logoUrl = "/logos/videos.svg";
+      logoUrl = "/logos/jellyfin.svg";
       appName = "jellyfin";
       uploadNotes = "Place movies under _Videos/_Movies and series under _Videos/_Shows.";
       requiredAnyGroups = [ "jellyfin-users" ];
@@ -937,6 +938,7 @@ let
       description = "TV show monitoring and legal download automation.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://sonarr.tv";
+      logoUrl = "/logos/sonarr.svg";
       appName = "sonarr";
       uploadNotes = "Imported shows land in shared _Videos/_Shows.";
       requiredAnyGroups = [ "media-automation-users" ];
@@ -950,6 +952,7 @@ let
       description = "Movie monitoring and legal download automation.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://radarr.video";
+      logoUrl = "/logos/radarr.svg";
       appName = "radarr";
       uploadNotes = "Imported movies land in shared _Videos/_Movies.";
       requiredAnyGroups = [ "media-automation-users" ];
@@ -963,6 +966,7 @@ let
       description = "Indexer manager for Sonarr and Radarr.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://prowlarr.com";
+      logoUrl = "/logos/prowlarr.svg";
       appName = "prowlarr";
       uploadNotes = "Add only legal indexers and sources.";
       requiredAnyGroups = [ "media-automation-users" ];
@@ -976,6 +980,7 @@ let
       description = "qBittorrent download client for legally sourced media.";
       loginNotes = "Requires media-automation-users through Kanidm.";
       projectUrl = "https://www.qbittorrent.org";
+      logoUrl = "/logos/qbittorrent.svg";
       appName = "qbittorrent";
       uploadNotes = "Completed downloads are staged under shared _Downloads.";
       requiredAnyGroups = [ "media-automation-users" ];
@@ -989,6 +994,7 @@ let
       description = "Automatically keep copies of your server music and videos on a computer or phone.";
       loginNotes = offlineMediaLoginNotes;
       projectUrl = "https://syncthing.net";
+      logoUrl = "/logos/syncthing.svg";
       appName = "syncthing";
       uploadNotes = "Add media with the Files app first; this service then copies it to your connected devices.";
       requiredAllGroups = offlineMediaRequiredAllGroups;
@@ -1003,7 +1009,7 @@ let
       description = "Ebooks, comics, and manga in Kavita.";
       loginNotes = "Use Kanidm; first login provisions the local account.";
       projectUrl = "https://www.kavitareader.com";
-      logoUrl = "/logos/books.svg";
+      logoUrl = "/logos/kavita.svg";
       appName = "kavita";
       uploadNotes = "Place books under _Books/_Ebooks, _Comics, or _Manga.";
       requiredAnyGroups = [ "kavita-users" ];
@@ -1017,6 +1023,7 @@ let
       description = "Kiwix ZIM library for offline reference material.";
       loginNotes = "Use Kanidm with kiwix-users membership.";
       projectUrl = "https://kiwix.org";
+      logoUrl = "/logos/kiwix.svg";
       appName = "kiwix";
       uploadNotes = "Operators upload .zim files to the configured Kiwix library root.";
       requiredAnyGroups = [ "kiwix-users" ];
@@ -1029,7 +1036,7 @@ let
       category = "knowledge";
       description = "Private mail search, attachment export, and Paperless handoff.";
       loginNotes = "Requires mail-archive-users.";
-      logoUrl = "/logos/mail-archive.svg";
+      logoUrl = "/logos/mail-archive-ui.svg";
       appName = "custom app with notmuch / maildir";
       uploadNotes = "Synced mail appears as visible .eml mirrors under _Emails.";
       requiredAnyGroups = [ "mail-archive-users" ];
@@ -1043,6 +1050,7 @@ let
       description = "Authenticated yt-dlp queue for audio and video downloads.";
       loginNotes = "Requires downloads-users.";
       projectUrl = "https://github.com/yt-dlp/yt-dlp";
+      logoUrl = "/logos/youtube.svg";
       appName = "custom app with yt-dlp";
       uploadNotes = "Downloads land in personal or shared media folders.";
       requiredAnyGroups = [ "downloads-users" ];
@@ -1056,7 +1064,7 @@ let
       description = "Shared password manager for server and account credentials.";
       loginNotes = "Vaultwarden is self-service: open the signup page on first visit and register with your local account email.";
       projectUrl = "https://github.com/dani-garcia/vaultwarden";
-      logoUrl = "/logos/passwords.svg";
+      logoUrl = "/logos/vaultwarden.svg";
       appName = "vaultwarden";
       uploadNotes = "Store Kanidm credentials, recovery codes, and app-local passwords here.";
     }
@@ -1069,6 +1077,7 @@ let
       description = "Kopia backup management for critical state, Paperless data, and consistent database dumps.";
       loginNotes = "Requires ${vars.backupAdminGroup} plus the native Kopia password.";
       projectUrl = "https://kopia.io";
+      logoUrl = "/logos/kopia.svg";
       appName = "kopia";
       uploadNotes = "Backup repository files are managed by Kopia.";
       requiredAnyGroups = [ vars.backupAdminGroup ];
@@ -1082,6 +1091,7 @@ let
       description = "Beszel monitoring dashboard for host resources, app units, storage, and disk health.";
       loginNotes = "Requires ${vars.monitoringAccessGroup} through Kanidm, then the native Beszel login.";
       projectUrl = "https://beszel.dev";
+      logoUrl = "/logos/beszel.svg";
       appName = "beszel";
       uploadNotes = "Monitoring state is managed by Beszel.";
       requiredAnyGroups = [ vars.monitoringAccessGroup ];
@@ -1407,14 +1417,26 @@ let
   ]
   ++ lib.optionals jellyfinEnabled [
     {
+      title = "Re-run Jellyfin OIDC bootstrap";
+      command = "sudo systemctl start jellyfin-oidc-bootstrap-v1.service";
+      detail = "Reconcile the pinned OIDC provider, Quick Connect setting, rollback-safe login branding, and private plugin configuration-file permissions. The service reads its client secret through a systemd credential and does not log provider JSON.";
+    }
+    {
       title = "Retrieve Jellyfin initial password";
       command = "sudo jellyfin-initial-credential\nsudo jellyfin-initial-credential USERNAME";
-      detail = "List users whose root-only initial credential is still stored, then retrieve only the intended username. Treat the printed password as a secret, hand it to that user through a trusted channel, and require them to change it after their first Jellyfin login. The stored credential can be stale after that change; reconciliation does not overwrite the replacement password.";
+      detail = "Compatibility fallback for native clients that cannot use OIDC or Quick Connect. List users whose root-only initial credential is still stored, then retrieve only the intended username. Treat the printed password as a secret and hand it over through a trusted channel. The stored credential can be stale after a password change; reconciliation does not overwrite the replacement password.";
     }
     {
       title = "Re-run Jellyfin library sync";
       command = "sudo systemctl start jellyfin-library-sync.service";
       detail = "Refresh Jellyfin libraries after media folders are created, repaired, or populated.";
+    }
+  ]
+  ++ lib.optionals kopiaEnabled [
+    {
+      title = "Retrieve Kopia browser credential";
+      command = "sudo nixhomeserver-kopia-browser-credential";
+      detail = "Run only on the server when onboarding or recovering an intended backup administrator. The command prints the active shared Kopia browser credential to your terminal; hand it over through a trusted channel and never paste it into shell history, logs, tickets, screenshots, or chat. The backup-admin group is still required at the Kanidm gateway, and backup-storage-users alone grants only read-only repository browsing.";
     }
   ]
   ++ lib.optionals kiwixEnabled [
@@ -1726,6 +1748,8 @@ in
           HOMEPAGE_OFFLINE_MEDIA_STATUS_COMMAND = offlineMediaStatus;
           HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND = offlineMediaEnroll;
           HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND = offlineMediaRemove;
+        } // lib.optionalAttrs mkvmakerEnabled {
+          HOMEPAGE_MKVMAKER_PROGRESS_FILE = "/run/mkvmaker/progress.json";
         };
         serviceConfig = {
           Type = "simple";
@@ -1737,6 +1761,22 @@ in
           PrivateTmp = true;
           ProtectSystem = "strict";
           ProtectHome = true;
+          ProtectClock = true;
+          ProtectControlGroups = true;
+          ProtectHostname = true;
+          ProtectKernelLogs = true;
+          ProtectKernelModules = true;
+          ProtectKernelTunables = true;
+          LockPersonality = true;
+          RestrictAddressFamilies = [
+            "AF_INET"
+            "AF_INET6"
+            "AF_UNIX"
+          ];
+          SystemCallArchitectures = "native";
+          # NoNewPrivileges/RestrictSUIDSGID cannot be enabled here: the
+          # narrowly-scoped offline-media and SFTP helpers intentionally use
+          # the sudo rules declared below.
           ReadWritePaths = [ sftpAuthorizedKeysDir ]
             ++ lib.optional offlineMediaEnabledForHomepage offlineMediaStateDir
             # The sudo helpers inherit homepage.service's mount namespace, so

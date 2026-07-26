@@ -6,6 +6,41 @@ let
   vars = builtins.getAttr hostName flake.lib.nixhomeserverSettings;
 
   cases = {
+    attic = {
+      disable = { repo.attic.enable = lib.mkForce false; };
+      registryName = "attic";
+      services = [
+        "attic-cache-bootstrap"
+        "attic-watch-store"
+      ];
+      timers = [ ];
+      hosts = [ ];
+      gatewayApps = [ ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "atticd" ];
+      groups = [ "atticd" ];
+      secrets = [ "atticServerEnv" ];
+      backupApps = [ ];
+      guardedServices = [ ];
+      persistencePaths = [ "/var/lib/atticd" ];
+    };
+    bonsai = {
+      disable = { repo.bonsai.enable = lib.mkForce false; };
+      registryName = "bonsai";
+      services = [ "bonsai-llama" "bonsai-model-prepare" ];
+      timers = [ ];
+      hosts = [ ];
+      gatewayApps = [ ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "bonsai" ];
+      groups = [ "bonsai" ];
+      secrets = [ ];
+      backupApps = [ ];
+      guardedServices = [ ];
+      persistencePaths = [ "/var/lib/bonsai" ];
+    };
     groundwater-logger = {
       disable = { repo.groundwaterLogger.enable = lib.mkForce false; };
       registryName = "groundwater-logger";
@@ -30,10 +65,14 @@ let
         "mail-archive-paperless-tasks"
         "mail-archive-sync"
         "mail-archive-ui"
-        "mail-archive-ui-paperless-db-acl"
+        "mail-archive-ui-paperless-db-snapshot"
         "mail-archive-ui-storage-layout-v1"
       ];
-      timers = [ "mail-archive-paperless-tasks" "mail-archive-sync" ];
+      timers = [
+        "mail-archive-paperless-tasks"
+        "mail-archive-sync"
+        "mail-archive-ui-paperless-db-snapshot"
+      ];
       hosts = [ "emails" ];
       gatewayApps = [ "mail" ];
       oauthClients = [ "mail-archive-web" ];

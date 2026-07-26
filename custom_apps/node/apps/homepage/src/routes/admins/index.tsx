@@ -73,20 +73,21 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'Restart homepage': { category: 'apps' },
   'Check OAuth proxy logs': { category: 'apps' },
   'List storage layout services': { category: 'apps' },
-  'Re-run Immich OIDC reconcile': { category: 'apps', displayTitle: 'Update Immich accounts from Kanidm' },
-  'Re-run Paperless OIDC reconcile': { category: 'apps', displayTitle: 'Update Paperless accounts from Kanidm' },
+  'Re-run Immich OIDC reconcile': { category: 'apps', intents: ['add-user', 'manage-user'], displayTitle: 'Update Immich accounts from Kanidm' },
+  'Re-run Paperless OIDC reconcile': { category: 'apps', intents: ['add-user', 'manage-user'], displayTitle: 'Update Paperless accounts from Kanidm' },
   'Retrieve Jellyfin initial password': { category: 'apps', intents: ['add-user', 'manage-user'], displayTitle: 'Give a user their initial Jellyfin password' },
+  'Retrieve Kopia browser credential': { category: 'apps', intents: ['add-user', 'manage-user', 'manage-secrets'], displayTitle: 'Give a backup admin the Kopia browser credential' },
   'Re-run Jellyfin library sync': { category: 'apps' },
   'Re-run Kiwix library sync': { category: 'apps' },
   'Check Kanidm health': { category: 'identity' },
   'Bootstrap or recover operator credential': { category: 'identity', intents: ['manage-secrets'] },
-  'Authenticate Kanidm CLI': { category: 'identity' },
+  'Authenticate Kanidm CLI': { category: 'identity', intents: ['add-user', 'manage-user', 'manage-secrets'] },
   'List Kanidm people': { category: 'identity', intents: ['manage-user'] },
   'List Kanidm groups': { category: 'identity' },
   'Inspect Kanidm group': { category: 'identity', intents: ['manage-user'] },
   'Remove user from access group': { category: 'identity', intents: ['manage-user'] },
   'Revoke offline-media device access': { category: 'identity', intents: ['manage-user'] },
-  'Restart identity reconciliation': { category: 'identity', displayTitle: 'Apply Kanidm account and file-access changes' },
+  'Restart identity reconciliation': { category: 'identity', intents: ['manage-user'], displayTitle: 'Apply Kanidm account and file-access changes' },
   'Manage Kanidm entity removal explicitly': { category: 'identity', intents: ['manage-user'], displayTitle: 'Remove a managed Kanidm user or group' },
   'Show mounted filesystems': { category: 'storageBackups' },
   'Show disk layout': { category: 'storageBackups' },
@@ -150,10 +151,12 @@ const buildUserArg = (username: string): string =>
 const buildEmailArg = (email: string): string =>
   email.trim() ? shellSingleQuote(email.trim()) : '"$EMAIL"';
 
-const buildDisplayNameArg = (username: string): string => {
-  const trimmed = username.trim();
+const buildDisplayNameArg = (displayName: string): string => {
+  const trimmed = displayName.trim();
   return trimmed ? shellSingleQuote(trimmed) : '"$DISPLAY_NAME"';
 };
+
+const validUsername = (username: string): boolean => /^[a-z][a-z0-9._-]{0,63}$/.test(username);
 
 const adminIntents: { id: AdminModeId; label: string }[] = [
   { id: 'add-user', label: 'Add a user' },
@@ -265,12 +268,19 @@ export default component$(() => {
   const currentUser = homepage.data?.user;
   const operatorArg = shellSingleQuote(homepage.data?.canaryAdminUser?.trim() || 'idm_admin');
   const username = useSignal('');
+  const displayName = useSignal('');
   const email = useSignal('');
   const selectedMode = useSignal<AdminModeId | ''>('');
   const searchQuery = useSignal('');
   const groupDescriptions = homepage.data?.kanidmGroupDescriptions ?? {};
   const groupManagement = homepage.data?.kanidmGroupManagement ?? {};
+  const services = homepage.data?.services ?? [];
   const passwordsEnabled = homepage.data?.services.some((service) => service.id === 'passwords' && service.enabled) ?? false;
+  const audiobooksEnabled = services.some((service) => service.id === 'audiobooks' && service.enabled);
+  const backupsService = services.find((service) => service.id === 'backups' && service.enabled);
+  const monitorService = services.find((service) => service.id === 'monitor' && service.enabled);
+  const filesService = services.find((service) => service.id === 'files' && service.enabled);
+  const offlineMediaService = services.find((service) => service.id === 'offline-media' && service.enabled);
   const accessGroups = (homepage.data?.kanidmGroups ?? [])
     .filter((group) => !isProtectedGroup(group))
     .sort((a, b) => a.localeCompare(b));
@@ -280,7 +290,7 @@ export default component$(() => {
 
   const userArg = buildUserArg(username.value);
   const emailArg = buildEmailArg(email.value);
-  const displayNameArg = buildDisplayNameArg(username.value);
+  const displayNameArg = buildDisplayNameArg(displayName.value);
 
   const liveManagedGroups = selectedGroups.value.filter((group) => !groupManagement[group] || groupManagement[group] === 'manual');
   const configuredGroups = selectedGroups.value.filter((group) => groupManagement[group] && groupManagement[group] !== 'manual');
@@ -330,19 +340,27 @@ export default component$(() => {
   const showUserManagement = searchIsActive
     ? hasMatchingUserTasks
     : activeIntent === '' || ['add-user', 'manage-user', 'manage-secrets'].includes(activeIntent);
-  const showCheckUser = searchIsActive ? userTaskSearchMatches.checkUser : shouldShowForIntent(activeIntent, ['add-user', 'manage-user']);
+  const showCheckUser = searchIsActive ? userTaskSearchMatches.checkUser : shouldShowForIntent(activeIntent, ['add-user', 'manage-user', 'manage-secrets']);
   const showCreateAccount = searchIsActive ? userTaskSearchMatches.createAccount : shouldShowForIntent(activeIntent, ['add-user']);
   const showGrantBaseline = searchIsActive ? userTaskSearchMatches.grantBaseline : shouldShowForIntent(activeIntent, ['add-user']);
   const showGrantAccess = searchIsActive ? userTaskSearchMatches.grantAccess : shouldShowForIntent(activeIntent, ['add-user', 'manage-user']);
   const showVaultwardenSignup = passwordsEnabled
-    && (searchIsActive ? userTaskSearchMatches.vaultwardenSignup : shouldShowForIntent(activeIntent, ['add-user', 'manage-secrets']));
+    && (searchIsActive ? userTaskSearchMatches.vaultwardenSignup : shouldShowForIntent(activeIntent, ['add-user']));
   const showVaultwardenUnavailable = !passwordsEnabled
     && !searchIsActive
-    && shouldShowForIntent(activeIntent, ['add-user', 'manage-secrets']);
+    && shouldShowForIntent(activeIntent, ['add-user']);
   const showSignInLink = searchIsActive
     ? userTaskSearchMatches.signInLink
-    : shouldShowForIntent(activeIntent, ['add-user', 'manage-user', 'manage-secrets']);
+    : shouldShowForIntent(activeIntent, ['add-user', 'manage-secrets']);
   const showHandoff = searchIsActive ? userTaskSearchMatches.handoff : shouldShowForIntent(activeIntent, ['add-user']);
+  const showNewUserIdentityFields = activeIntent === 'add-user'
+    || (searchIsActive && userTaskSearchMatches.createAccount);
+  const signInLinkTitle = activeIntent === 'add-user'
+    ? 'Create first sign-in link'
+    : 'Create account recovery link';
+  const signInLinkDescription = activeIntent === 'add-user'
+    ? 'Generate the one-hour, single-use Kanidm link only after the new account and access are ready.'
+    : 'Generate a one-hour, single-use Kanidm link so the existing user can recover their sign-in methods.';
   const visibleAdminSections = (hasSelectedMode ? adminSections : [])
     .map((section) => ({
       ...section,
@@ -354,6 +372,7 @@ export default component$(() => {
     }))
     .filter((section) => section.steps.length > 0 || (section.id === 'identity' && showUserManagement));
   const typedUsername = username.value.trim();
+  const usernameIsInvalid = typedUsername.length > 0 && !validUsername(typedUsername);
   const membershipIsKnown = Boolean(currentUser && typedUsername === currentUser.username);
   const targetIsConfiguredOperator = Boolean(
     homepage.data?.canaryAdminUser && typedUsername === homepage.data.canaryAdminUser,
@@ -372,6 +391,9 @@ export default component$(() => {
 
   const setUsername = $((event: Event) => {
     const input = event.target as HTMLInputElement;
+    if (username.value !== input.value) {
+      selectedGroups.value = [];
+    }
     username.value = input.value;
   });
 
@@ -380,8 +402,14 @@ export default component$(() => {
     email.value = input.value;
   });
 
+  const setDisplayName = $((event: Event) => {
+    const input = event.target as HTMLInputElement;
+    displayName.value = input.value;
+  });
+
   const fillMe = $(() => {
     username.value = currentUser?.username ?? '';
+    displayName.value = currentUser?.username ?? '';
     email.value = currentUser?.email ?? '';
   });
 
@@ -408,10 +436,23 @@ export default component$(() => {
   });
 
   const selectMode = $((mode: AdminModeId) => {
-    selectedMode.value = selectedMode.value === mode ? '' : mode;
+    const nextMode = selectedMode.value === mode ? '' : mode;
+    selectedMode.value = nextMode;
+    selectedGroups.value = [];
+    accessAction.value = 'grant';
+    if (nextMode === 'add-user') {
+      username.value = '';
+      displayName.value = '';
+      email.value = '';
+    }
     if (mode !== 'other') {
       searchQuery.value = '';
     }
+  });
+
+  const openCommandSearch = $((query: string) => {
+    selectedMode.value = 'other';
+    searchQuery.value = query;
   });
 
   const setSearchQuery = $((event: Event) => {
@@ -436,7 +477,7 @@ export default component$(() => {
         <header class="admin-page-header">
           <span class="eyebrow">Server administration</span>
           <h1>Admin tools</h1>
-          <p>Choose a task to see the relevant steps, or search all commands. Each command shows where to run it and what it does.</p>
+          <p>Choose an outcome to see the relevant steps, or search all commands. Guidance is generated from the deployed configuration, but command output is the source of truth for current runtime state.</p>
         </header>
         <details class="admin-safety-guide">
           <summary>
@@ -446,9 +487,13 @@ export default component$(() => {
             </span>
           </summary>
           <div>
+            <p><strong>Confirm scope first.</strong> Check the target host, repository revision, working tree, and the command’s “where to run” label. A test deployment still changes running services.</p>
             <p><strong>Test before switching.</strong> Run the deployment test first. Check failed systemd units before making the new version permanent.</p>
             <p><strong>Change one thing at a time.</strong> Start with service status and logs, then change only the affected service.</p>
             <p><strong>Replace example values.</strong> APP, USERNAME, and disk IDs must refer to the real service, user, or disk.</p>
+            <p><strong>Preserve evidence.</strong> Record the failure time and inspect logs before restarting a service. A restart can hide the first useful error.</p>
+            <p><strong>Restore into a separate path.</strong> Never test a backup by overwriting live data. Follow the restore guide and compare the restored fixture first.</p>
+            <p><strong>Keep secrets out of commands and records.</strong> Do not paste passwords, reset URLs, tokens, recovery codes, or decrypted secret values into shell history, tickets, screenshots, or chat.</p>
           </div>
         </details>
         <div class={{ 'admin-intent-hero': true, 'is-compact': hasSelectedMode }}>
@@ -476,6 +521,30 @@ export default component$(() => {
             </label>
           )}
         </div>
+        {!hasSelectedMode && (
+          <div class="choice-grid" aria-label="Common administrator runbooks">
+            <article>
+              <strong>Something is down</strong>
+              <span>Start with failed units and current-boot warnings before restarting anything.</span>
+              <button type="button" class="secondary-link" onClick$={() => openCommandSearch('service health')}>Open health checks</button>
+            </article>
+            <article>
+              <strong>Deploy a change</strong>
+              <span>Validate, test-activate, verify, then switch the exact tested closure.</span>
+              <button type="button" class="secondary-link" onClick$={() => openCommandSearch('guarded deploy')}>Open deploy steps</button>
+            </article>
+            <article>
+              <strong>Check backups</strong>
+              <span>Confirm snapshot freshness and repository health before you need a restore.</span>
+              <button type="button" class="secondary-link" onClick$={() => openCommandSearch('backup')}>Open backup checks</button>
+            </article>
+            <article>
+              <strong>Investigate one app</strong>
+              <span>Check its unit, recent logs, route, and identity reconciliation in that order.</span>
+              <button type="button" class="secondary-link" onClick$={() => openCommandSearch('app')}>Open app checks</button>
+            </article>
+          </div>
+        )}
         {!hasSelectedMode && <p class="admin-selection-hint">Choose a task to see its checklist.</p>}
         {searchIsActive && searchQuery.value.trim() === '' && <p class="admin-selection-hint">Search for a service, problem, or action.</p>}
         {visibleAdminSections.length > 0 && (
@@ -507,21 +576,63 @@ export default component$(() => {
                 )}
                 {section.id === 'identity' && showUserManagement && (
                   <div class="admin-command-category__content">
+                    {activeIntent === 'add-user' && !searchIsActive && (
+                      <div class="guide-callout neutral">
+                        <strong>New-user handoff order</strong>
+                        <ol>
+                          <li>Confirm the stable lower-case username, human-readable display name, primary email, and least-privilege app, file, backup, and admin roles before creating anything.</li>
+                          <li>Run “Find user account.” If the username already exists, stop and use the access-change workflow; do not create a duplicate identity.</li>
+                          <li>Create the Kanidm person, add baseline and app access, then deploy any repository-managed memberships.</li>
+                          <li>Verify the final groups with <code>kanidm person get</code>. Re-run the relevant app reconciliation if an existing app has not caught up.</li>
+                          <li>Create the one-time account link last. It expires after one hour and works once; send it through a trusted channel and never put it in a ticket or shared log.</li>
+                          <li>Give the user the Homepage Getting Started link. If Videos access was granted, send the separate Jellyfin initial password independently and require an immediate change. If SFTP was granted, provide the server host-key fingerprint independently.</li>
+                          <li>Have the user confirm sign-in, a second sign-in method, expected apps, and—only if file access was granted—one small test upload. Never ask them to send you a password, reset URL, or recovery code.</li>
+                        </ol>
+                      </div>
+                    )}
+                    {activeIntent === 'manage-user' && !searchIsActive && (
+                      <div class="guide-callout neutral">
+                        <strong>Access changes and offboarding</strong>
+                        <p>Verify the target person and live groups before editing anything, then check <code>vars.nix</code> for repository-managed membership. Removing a Kanidm group may require a deploy and a fresh user session, and it does not by itself delete app-local accounts, shares, files, vaults, native passwords, or enrolled devices. Revoke those separately according to the retention decision; remove Offline Media devices and SFTP access promptly for a lost or retired device.</p>
+                      </div>
+                    )}
+                    {activeIntent === 'manage-secrets' && !searchIsActive && (
+                      <div class="guide-callout neutral">
+                        <strong>Recover the correct sign-in boundary</strong>
+                        <p>A Kanidm recovery link restores Kanidm and SSO access only. It does not reset a Vaultwarden master password, Jellyfin password, or Kopia’s native password. Confirm which login failed before changing credentials. If a reset link expired, was used, was interrupted, or may have been exposed, stop using it and create a fresh link through a trusted channel.</p>
+                      </div>
+                    )}
                     <div class="admin-input-grid">
                       <label>
                         Username
                         <input type="text" value={username.value} onInput$={setUsername} placeholder="alice" />
                       </label>
-                      <label>
-                        Email
-                        <input type="email" value={email.value} onInput$={setEmail} placeholder="alice@example.com" />
-                      </label>
+                      {showNewUserIdentityFields && (
+                        <>
+                          <label>
+                            Display name
+                            <input type="text" value={displayName.value} onInput$={setDisplayName} placeholder="Alice Example" />
+                          </label>
+                          <label>
+                            Email
+                            <input type="email" value={email.value} onInput$={setEmail} placeholder="alice@example.com" />
+                          </label>
+                        </>
+                      )}
                     </div>
                     <div class="admin-fill-row">
-                      <button type="button" class="admin-fill-btn" onClick$={fillMe}>
-                        Use my account details
-                      </button>
+                      {activeIntent !== 'add-user' && (
+                        <button type="button" class="admin-fill-btn" onClick$={fillMe}>
+                          Use my account details
+                        </button>
+                      )}
                     </div>
+                    {usernameIsInvalid && (
+                      <p class="hint">Stop before copying commands: usernames must start with a lower-case letter and contain no more than 64 lower-case letters, numbers, dots, underscores, or hyphens.</p>
+                    )}
+                    {activeIntent === 'add-user' && (!username.value.trim() || !displayName.value.trim() || !email.value.trim()) && (
+                      <p class="hint">Enter all three values before copying commands. Usernames should be stable, lower-case account identifiers; display names may contain spaces; use the person’s real primary email so OIDC apps can match the same account.</p>
+                    )}
                     <div class="admin-task-list">
                       {showCheckUser && (
                         <AdminTask
@@ -530,7 +641,7 @@ export default component$(() => {
                           activeIntent={activeIntent}
                           context="Admin terminal"
                           forceOpen={searchIsActive}
-                          intents={['add-user', 'manage-user']}
+                          intents={['add-user', 'manage-user', 'manage-secrets']}
                         >
                           <AdminCommand command={`kanidm person get ${userArg}`} />
                         </AdminTask>
@@ -591,6 +702,18 @@ export default component$(() => {
                             <>
                               {appBundleAccessGroups.length > 0 && (
                                 <p class="hint"><strong>Default app bundle:</strong> groups marked <code>identity.appUsers</code> cannot be changed independently by this configuration. Selecting any one selects the whole enabled-app bundle. This grants every enabled default app group above, not only one app. Granting <code>app-admin</code> also grants that bundle; revoking the bundle also revokes <code>app-admin</code> so an administrator is not left without access to the apps they manage.</p>
+                              )}
+                              {(audiobooksEnabled || backupsService || monitorService || (filesService && homepage.data?.sftp?.enabled) || offlineMediaService?.requiredAnyGroups?.includes('users')) && (
+                                <div class="guide-callout neutral">
+                                  <strong>Configured access boundaries and exceptions</strong>
+                                  <ul>
+                                    {audiobooksEnabled && <li><code>app-admin</code> is not universal: Audiobookshelf’s root account remains with the configured server operator. Grant ordinary Audiobooks access separately; do not promise its admin console to another app administrator.</li>}
+                                    {backupsService && <li><code>{backupsService.requiredAnyGroups?.join(' or ')}</code> passes the Kanidm gateway for Local Backups, but Kopia then requires the shared native <code>kopia-admin</code> credential. Repository browsing alone is a different, read-only role.</li>}
+                                    {monitorService && <li><code>{monitorService.requiredAnyGroups?.join(' or ')}</code> passes the Kanidm gateway for Monitor, but Beszel then requires its own native login. Kanidm recovery does not reset that account.</li>}
+                                    {filesService && homepage.data?.sftp?.enabled && <li>Browser Files access (<code>{filesService.requiredAnyGroups?.join(' or ')}</code>) and SFTP/SSHFS access use separate file-transfer roles. Grant only the transfer path the user needs; the group descriptions in this picker identify the available SFTP roles.</li>}
+                                    {offlineMediaService?.requiredAnyGroups?.includes('users') && <li>Offline Media currently inherits baseline <code>users</code>. Do not revoke that baseline role just to stop one device; remove the enrolled device in Offline Media. A dedicated access group is required for central role-based revocation.</li>}
+                                  </ul>
+                                </div>
                               )}
                               <div class="group-picker-section">
                                 <h4>{membershipIsKnown
@@ -653,7 +776,7 @@ export default component$(() => {
                           activeIntent={activeIntent}
                           context="User instructions"
                           forceOpen={searchIsActive}
-                          intents={['add-user', 'manage-secrets']}
+                          intents={['add-user']}
                         >
                           <p>Have them open this URL and register with the same email used in Kanidm:</p>
                           <AdminCommand command={`https://passwords.${domain}/#/signup`} />
@@ -667,15 +790,15 @@ export default component$(() => {
                       )}
                       {showSignInLink && (
                         <AdminTask
-                          title="Create account recovery link"
-                          description="Generate a single-use Kanidm link that is valid for one hour. The user opens it to set a password and review other sign-in methods."
+                          title={signInLinkTitle}
+                          description={signInLinkDescription}
                           activeIntent={activeIntent}
                           context="Admin terminal"
                           forceOpen={searchIsActive}
-                          intents={['add-user', 'manage-user', 'manage-secrets']}
+                          intents={['add-user', 'manage-secrets']}
                         >
                           <AdminCommand command={`kanidm person credential create-reset-token ${userArg} --name ${operatorArg}`} />
-                          <p>Send the generated URL to the user through a trusted channel. The link is single-use and should not be posted in tickets or shared logs.</p>
+                          <p>Send the generated URL to the user through a trusted channel only after access is ready. It expires after one hour and works once. If the user reports that it expired, was already used, or setup was interrupted, create a new link; never ask them to send the old link back.</p>
                         </AdminTask>
                       )}
                       {showHandoff && (
@@ -687,7 +810,7 @@ export default component$(() => {
                           forceOpen={searchIsActive}
                           intents={['add-user']}
                         >
-                          <p>Confirm the user can sign in, open their apps, add a second sign-in method, save recovery details, and see the expected apps on the homepage.</p>
+                          <p>Send the user <code>https://homepage.{domain}/getting-started</code>. Confirm they can sign in, open their expected apps, add a second sign-in method, and save recovery details. If file access was granted, have them complete one small test upload. Ask them to report errors with the app name, time, network path, and exact message—never with credentials.</p>
                         </AdminTask>
                       )}
                     </div>

@@ -1312,7 +1312,7 @@ in
         MemoryHigh = "768M";
         MemoryMax = "1G";
         TasksMax = 128;
-        RuntimeMaxSec = "2h";
+        TimeoutStartSec = "2h";
         LimitFSIZE = toString cfg.maximumExpandedBytes;
         NoNewPrivileges = true;
         PrivateDevices = true;

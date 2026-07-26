@@ -1,6 +1,7 @@
-{ lib, pkgs, ... }:
+{ config, lib, pkgs, unstablePkgs, ... }:
 
 let
+  cfg = config.repo.paperless;
   patchedPaperlessFetchFromGitHubNativeBuildInputs = with pkgs; [
     jq
     perl
@@ -153,9 +154,49 @@ let
     fetchFromGitHub = patchedPaperlessFetchFromGitHub;
     nodejs = pkgs.nodejs_24;
   };
+  paperlessV3CandidatePackage =
+    unstablePkgs.callPackage
+      (unstablePkgs.path + "/pkgs/by-name/pa/paperless-ngx/package.nix")
+      {
+        fetchFromGitHub = patchedPaperlessFetchFromGitHub;
+      };
 in
 {
+  options.repo.paperless.v3 = {
+    enable = lib.mkEnableOption "the guarded Paperless-ngx v3 migration using nixpkgs unstable";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = paperlessV3CandidatePackage;
+      defaultText = lib.literalExpression "nixpkgs-unstable#paperless-ngx with the repository OIDC patch";
+      description = "Paperless-ngx v3 candidate. The default tracks the separately pinned nixpkgs unstable input.";
+    };
+
+    candidateVersion = lib.mkOption {
+      type = lib.types.str;
+      default = paperlessV3CandidatePackage.version;
+      readOnly = true;
+      description = "Version currently offered by the pinned nixpkgs unstable Paperless package.";
+    };
+  };
+
   config = {
-    services.paperless.package = paperlessPackage;
+    services.paperless.package =
+      if cfg.v3.enable then cfg.v3.package else paperlessPackage;
+
+    assertions = lib.optionals cfg.v3.enable [
+      {
+        assertion = lib.versionAtLeast cfg.v3.package.version "3.0.0";
+        message = "repo.paperless.v3.enable requires nixpkgs unstable to provide Paperless-ngx 3.0.0 or newer; the pinned candidate is ${cfg.v3.package.version}.";
+      }
+      {
+        assertion = lib.versionOlder cfg.v3.package.version "4.0.0";
+        message = "The prepared migration path is only validated for Paperless-ngx v3, not ${cfg.v3.package.version}.";
+      }
+      {
+        assertion = paperlessPackage.version == "2.20.15";
+        message = "Paperless-ngx v3 can only migrate from 2.20.15; the active stable package is ${paperlessPackage.version}.";
+      }
+    ];
   };
 }

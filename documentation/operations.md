@@ -28,9 +28,11 @@ No browser enrollment or reset-token handoff is required.
 
 The suite verifies unauthenticated blocking, Kanidm login, expected application
 content, and visually blank pages even when the server returned HTTP 200.
-Jellyfin and Vaultwarden have native logins; Kopia and Beszel add native login
-after SSO. Those are reported as boundary-only checks and no app-local
-credentials are stored.
+Jellyfin is checked through native OIDC plus a separate Quick Connect exchange
+that verifies the expected user and revokes the canary token. Vaultwarden has a
+native login; Kopia and Beszel add native login after SSO. Those remaining
+services are reported as boundary-only checks and no app-local credentials are
+stored.
 
 Guarded deploys run the suite after public-route checks and return nonzero on a
 failure. A failing health gate immediately restores the previous live
@@ -75,14 +77,50 @@ Once homepage and SSO are reachable, use the homepage "For Admins" page for
 live app configuration, user onboarding commands, and common server-management
 reminders.
 
+## Failure Alerts
+
+Important backup, snapshot-freshness, SMART, offsite-sync, and authenticated
+canary failures always create a `daemon.alert` journal event through
+`nixhomeserver-failure-alert@.service`.
+
+To deliver those events externally, stage and encrypt the optional manifest
+secret containing the full HTTPS webhook URL:
+
+```bash
+install -d -m 0700 secrets/unencrypted
+install -m 0600 /path/to/webhook-url secrets/unencrypted/failureAlertWebhookUrl
+nix run .#generate-secrets -- \
+--replace-external failureAlertWebhookUrl \
+--identity /path/to/current/age.key
+rm -f secrets/unencrypted/failureAlertWebhookUrl
+rmdir secrets/unencrypted 2>/dev/null || true
+git add secrets/failureAlertWebhookUrl.age
+```
+
+The default webhook body is JSON. For a full ntfy topic URL, set this in host
+configuration and deploy:
+
+```nix
+repo.monitoring.failureAlerts.format = "ntfy";
+```
+
+Test the local delivery path without breaking a production service:
+
+```bash
+sudo systemd-run --unit=nixhomeserver-alert-test \
+--property='OnFailure=nixhomeserver-failure-alert@%n.service' \
+/bin/false
+sudo journalctl -t nixhomeserver-failure-alert -n 20 --no-pager
+```
+
 ## Disabling Optional Applications
 
-Imported application modules are independent of one another. Removing an
-application import from `configuration.nix` is the strongest disabled state and
-is appropriate for applications with no enable switch. Keep the Core and
-Integration imports: integrations detect absent application options and become
-no-ops. The repository regression suite evaluates Core-only, every optional
-module removed independently, and a targeted single-app topology.
+Application modules are independent of one another. Removing an application's
+entry from `modules/catalog.nix` is the strongest disabled state and is
+appropriate for applications with no enable switch. Integrations are cataloged
+separately and detect absent application options as no-ops. The repository
+regression suite evaluates Core-only, every optional module removed
+independently, and a targeted single-app topology.
 
 The following imported modules also have a convenient active-feature switch.
 Setting one to `false` removes its services, routes, DNS, configured identity
@@ -91,6 +129,7 @@ and integrations while leaving centrally managed persistence in place:
 
 ```nix
 repo.groundwaterLogger.enable = false;
+repo.bonsai.enable = false;
 repo.kiwix.enable = false;
 repo.prowlarr.enable = false;
 repo.qbittorrent.enable = false;
@@ -122,7 +161,7 @@ recovery value and use it only at the server's physical or virtual console:
 
 ```bash
 age --decrypt --identity /path/to/age.key \
-  secrets/serverBootstrapSudoPassword.age
+secrets/serverBootstrapSudoPassword.age
 ```
 
 On the running server, root can read the same value from
@@ -145,9 +184,40 @@ command arguments, or shell history.
 - Server-side secret verification: `ssh <admin>@<hostname> 'cd /path/to/repo && nix run .#generate-secrets -- --identity /persist/etc/agenix/age.key'`
 - Service health: `sudo systemctl --failed --no-pager`
 - List/retrieve one-time Jellyfin credentials: `sudo jellyfin-initial-credential [USERNAME]`
+- Reconcile Jellyfin OIDC and Quick Connect: `sudo systemctl start jellyfin-oidc-bootstrap-v1.service`
 - SMART sweep: `sudo systemctl start storage-smart-short.service`
 - Local encrypted backup repository: `/mnt/data/backups/kopia`
 - Manual external USB media root for operators: `/mnt/external-usb/`
+
+## Nix Store Capacity Garbage Collection
+
+`nixhomeserver-nix-gc.timer` checks the Nix store hourly. It starts collection
+when `/nix/store` reaches 90% of `system.nixStoreMaxSizeGiB` or when the
+filesystem containing the store reaches 90% usage. The shared maintenance lock
+prevents it from overlapping Nix store optimisation.
+
+`system.nixGcRetentionDays` defaults to 45. The collector passes that value to
+`nix-collect-garbage --delete-older-than`, which deletes profile generations
+older than the retention period before collecting all unreachable store paths.
+The active generation is retained, but deleted generations can no longer be
+used for rollback. Unreachable paths themselves are not filtered by age.
+
+Every check emits a structured `nix_store_gc_check` journal event containing
+the measured store bytes, exact filesystem used/total bytes, threshold,
+decision, and trigger reason. A pressured check that cannot obtain the shared
+maintenance lock emits `nix_store_gc_deferred`; the next hourly run checks
+again. Collection adds `nix_store_gc_recheck`, `nix_store_gc_started`, and
+`nix_store_gc_completed`; completion records before/after sizes and freed
+bytes. Failures emit `nix_store_gc_failed` and use the normal systemd failure
+alert path. Collector failures include the final 8 KiB of diagnostic output as
+base64 in `collector_output_base64`; decode it with
+`jq -r .collector_output_base64 | base64 -d`.
+
+```bash
+systemctl status nixhomeserver-nix-gc.timer
+journalctl -u nixhomeserver-nix-gc.service --output=cat
+sudo systemctl start nixhomeserver-nix-gc.service
+```
 
 `/mnt/data` is the configured data root for both storage profiles. On
 `zfs-mirror` it is a ZFS pool mountpoint; on `single-disk-ext4` it is a normal
@@ -169,12 +239,57 @@ Use the private photos hostname for the owner's normal Immich login on LAN or
 NetBird. Use the public share hostname only for public album or photo links sent
 to other people.
 
-Declaratively managed Jellyfin users receive a one-time random native password.
-List available usernames with `sudo jellyfin-initial-credential`, retrieve one
-with `sudo jellyfin-initial-credential USERNAME`, then change it after the first
-login. The root-only handoff files live under
+### Jellyfin login paths
+
+Jellyfin keeps its existing accounts authoritative, so watch history, personal
+preferences, administrator state, and repository-managed library policies stay
+attached to the same exact username.
+
+1. In a browser, choose **Sign in with Kanidm**. The confidential `jellyfin-web`
+   client permits only members of `jellyfin-users`, and the plugin matches the
+   validated `preferred_username` to an existing Jellyfin account. It does not
+   create users or apply role mappings.
+2. On a TV or native app, initiate ordinary Jellyfin Quick Connect. Authorize
+   the six-digit code from an existing Jellyfin browser session or open
+   `https://videos.<domain>/sso/OIDC/QuickConnect/kanidm` and sign in to Kanidm.
+3. If a client cannot use either path, use the native username/password
+   fallback. List available usernames with `sudo jellyfin-initial-credential`,
+   retrieve one with `sudo jellyfin-initial-credential USERNAME`, then change it
+   after the first login.
+
+The root-only password handoff files live under
 `/var/lib/jellyfin/.nixos-managed/initial-credentials/`; reconciliation never
 overwrites a password after its durable initialization marker is recorded.
+Native password authentication is intentionally enabled for client
+compatibility.
+
+Jellyfin OIDC is pinned to locally built `jellyfin-plugin-oidc` 1.0.8.0 with
+automatic plugin updates disabled. Its immutable assemblies are read-only bound
+into Jellyfin from the Nix store. The provider uses
+`https://videos.<domain>` only for OIDC redirects; Jellyfin has no global
+published-server URL override, so LAN discovery continues advertising its
+direct address on TCP 8096 after a UDP 7359 discovery response.
+
+Useful diagnostics:
+
+```bash
+sudo systemctl status jellyfin.service jellyfin-oidc-bootstrap-v1.service --no-pager
+sudo journalctl -u jellyfin.service -u jellyfin-oidc-bootstrap-v1.service --since today
+curl -fsS https://videos.<domain>/QuickConnect/Enabled
+curl -fsS https://videos.<domain>/sso/OIDC/Providers
+sudo stat -c '%U:%G %a %n' /var/lib/jellyfin/plugins/configurations/Jellyfin.Plugin.OIDC.xml
+```
+
+The bootstrap journal deliberately omits API keys, tokens, client secrets, and
+complete provider JSON. A malformed managed branding marker makes
+reconciliation fail closed instead of overwriting unrelated administrator
+branding.
+
+To roll back, use the guarded deployment helper to select the previous NixOS
+generation. The plugin bind mount then disappears. The persistent CSS hides the
+manual web form only while the plugin adds the
+`nixhomeserver-oidc-ready` root class, so a missing or rolled-back plugin
+automatically exposes the normal password login again.
 
 Use the files hostname for browser access. For large transfers, use the
 dedicated OpenSSH SFTP endpoint on the configured `filesSftp` port over LAN.
@@ -184,10 +299,9 @@ workflow for invites, break-glass local admin handling, and the standard
 credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 
 Use the kopia hostname for local Kopia backup management. Browser access is gated by
-Kanidm through OAuth2 Proxy and requires membership in the configured
-`backupAccess.adminGroup` (`backup-admin` by default). Repository browsing is a
-separate permission granted by `backupAccess.storageGroup`
-(`backup-storage-users` by default). Backup admins inherit storage membership;
+Kanidm through OAuth2 Proxy and requires membership in the fixed `backup-admin`
+group. Repository browsing is a separate permission granted by the fixed
+`backup-storage-users` group. Backup admins inherit storage membership;
 users listed only in `backupAccess.storageUsers` never receive Kopia admin access.
 After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
 from the generated `kopiaServerPassword` secret. The managed repository is a
@@ -204,43 +318,43 @@ or offsite backup remains important.
 The MEGA remote and regular Kopia offsite sync are managed declaratively; there
 is no persistent Rclone web service:
 
-1. Set `rcloneMega.enable = true` and set `rcloneMega.email` in `vars.nix`.
+1. Set `offsiteBackup.enable = true` and set `offsiteBackup.email` in `vars.nix`.
 2. From the repository, evaluate and confirm the exact destination:
-   ```bash
-   mega_destination="$(nix eval --raw \
+```bash
+mega_destination="$(nix eval --raw \
      ".#lib.nixhomeserverSettings.<vars.hostname>.rcloneMega.destination")"
-   printf 'MEGA mirror destination: %s\n' "$mega_destination"
-   ```
-   Never point it at an unverified or shared remote directory: the job is a
-   mirror and intentionally deletes remote files that are absent locally.
+printf 'MEGA mirror destination: %s\n' "$mega_destination"
+```
+Never point it at an unverified or shared remote directory: the job is a
+mirror and intentionally deletes remote files that are absent locally.
 3. Stage the MEGA password locally:
-   ```bash
-   install -d -m 0700 secrets/unencrypted
-   install -m 0600 /path/to/mega-password-file secrets/unencrypted/rcloneMegaPassword
-   nix run .#generate-secrets -- \
-     --replace-external rcloneMegaPassword \
-     --identity /path/to/current/age.key
-   rm -f secrets/unencrypted/rcloneMegaPassword
-   rmdir secrets/unencrypted 2>/dev/null || true
-   ```
+```bash
+install -d -m 0700 secrets/unencrypted
+install -m 0600 /path/to/mega-password-file secrets/unencrypted/rcloneMegaPassword
+nix run .#generate-secrets -- \
+--replace-external rcloneMegaPassword \
+--identity /path/to/current/age.key
+rm -f secrets/unencrypted/rcloneMegaPassword
+rmdir secrets/unencrypted 2>/dev/null || true
+```
 4. Deploy the host. Activation renders `/run/rclone/rclone.conf` from the
-   agenix secret and keeps the plaintext password out of the Nix store and repo.
+agenix secret and keeps the plaintext password out of the Nix store and repo.
 5. Confirm the timer is enabled, then start an immediate upload and wait for it:
-   ```bash
-   sudo systemctl is-enabled rclone-mega-kopia-sync.timer
-   sudo systemctl start rclone-mega-kopia-sync.service
-   sudo systemctl status rclone-mega-kopia-sync.service --no-pager
-   ```
+```bash
+sudo systemctl is-enabled rclone-mega-kopia-sync.timer
+sudo systemctl start rclone-mega-kopia-sync.service
+sudo systemctl status rclone-mega-kopia-sync.service --no-pager
+```
 6. Do not treat an upload attempt as a backup. The service independently runs
-   `rclone check` after the mirror completes and publishes
-   `/var/lib/rclone/last-mega-sync-success.json` only after verification:
-   ```bash
-   mega_destination="$(nix eval --raw \
+`rclone check` after the mirror completes and publishes
+`/var/lib/rclone/last-mega-sync-success.json` only after verification:
+```bash
+mega_destination="$(nix eval --raw \
      ".#lib.nixhomeserverSettings.<vars.hostname>.rcloneMega.destination")"
-   sudo jq . /var/lib/rclone/last-mega-sync-success.json
-   sudo -u rclone rclone lsf --config /run/rclone/rclone.conf \
-     --max-depth 2 "$mega_destination"
-   ```
+sudo jq . /var/lib/rclone/last-mega-sync-success.json
+sudo -u rclone rclone lsf --config /run/rclone/rclone.conf \
+--max-depth 2 "$mega_destination"
+```
 
 The scheduled oneshot job syncs `/mnt/data/backups/kopia` directly to the
 configured MEGA destination. No Rclone daemon or web UI remains running between
@@ -256,22 +370,22 @@ Filestash and SFTP file roots:
 
 - Filestash authenticates through OAuth2 Proxy and connects to the local SFTP endpoint as that Unix user with the managed Filestash SFTP key.
 - `files-personal-users` is the base browser-workspace grant. Membership in
-  `usb-access`, `files-shared-users`, or `backup-storage-users` only adds a view to an
-  existing workspace and does not independently grant Filestash login.
+`usb-access`, `files-shared-users`, or `backup-storage-users` only adds a view to an
+existing workspace and does not independently grant Filestash login.
 - Filestash opens a single normal-user source, `Files`, rooted at the user's SFTP chroot.
 - Direct SFTP opens the same personal root at `sftp://<username>@server.internal:<filesSftp-port>/`, currently port `2222`, and authenticates with the user's SSH key. Grant `files-sftp-users` for direct-only access; browser users receive the same chroot because Filestash itself uses SFTP as its backend.
 - Direct SFTP password and keyboard-interactive login are disabled. Eligible
-  users add a device public key from Homepage's SFTP setup page; the root-owned
-  files under `/persist/appdata/files-sftp-authorized-keys/<username>` are the
-  administrator recovery/audit surface, not something users edit directly.
+users add a device public key from Homepage's SFTP setup page; the root-owned
+files under `/persist/appdata/files-sftp-authorized-keys/<username>` are the
+administrator recovery/audit surface, not something users edit directly.
 - Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
 - Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB filesystems are mounted manually by an operator under that root.
 - Users in `backup-storage-users` also see read-only `_Backups`, backed by
-  `/mnt/data/backups`. Members of `backup-admin` inherit this storage group.
-- `backupAccess.storageGid` is the stable on-disk identity of that storage
-  group. Keep it unique in the range 1000-59999 and do not change it after data
-  exists without deliberately migrating ownership and ACLs.
+`/mnt/data/backups`. Members of `backup-admin` inherit this storage group.
+- GID `2005` is the fixed on-disk identity of `backup-storage-users`. It is
+  intentionally derived outside `vars.nix`; changing it requires a deliberate
+  ownership and ACL migration.
 - `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
 
 Useful file-access checks:
@@ -298,6 +412,39 @@ sudo rm /mnt/data/shared/.write-probe
 ```
 
 The `rm` through `_Shared` is expected to fail with permission denied. The final admin delete against the real shared path should remove the probe from every `_Shared` view.
+
+### Automatic DVD ISO conversion
+
+Every personal file root and the shared file root contain an `_ISO` directory.
+Only ISOs placed in `_Shared/_ISO/_DVDs` are watched; personal `_ISO` folders
+are storage only. An unchanged `.iso` is picked up after approximately one
+minute and converted serially into the shared Jellyfin `_Movies` or `_Shows`
+library with the balanced H.264/AAC-plus-original-audio profile.
+
+The converter uses the ISO label for its initial media name and performs a
+conservative TVmaze lookup for series and episode names. If metadata is
+unavailable or the match is weak, conversion continues with safe names derived
+from the ISO and DVD title numbers. Name TV images descriptively, for example
+`The_Wire_S03_Disc_2.iso`, to improve automatic season, disc, and metadata
+matching.
+
+If one title accounts for at least 85% of the substantial runtime, only that
+feature is converted. Otherwise every title of at least five minutes is
+converted, excluding an obvious play-all duplicate. Completed source ISOs are
+preserved in `_Shared/_ISO/_DVDs/_Processed`. After three failed attempts an ISO
+is preserved in `_Failed` beside an `.error.txt` file.
+
+Useful checks and controls:
+
+```bash
+systemctl status mkvmaker-import.timer mkvmaker-import.service
+journalctl -u mkvmaker-import.service
+sudo systemctl start mkvmaker-import.service
+```
+
+The queue and detailed HandBrake job logs live under `/var/lib/mkvmaker`.
+Change `repo.mkvmaker.dominantTitleRatio`, `minimumTitleSeconds`, `audioProfile`,
+or `videoPreset` declaratively if the defaults need adjustment.
 
 Kavita-managed book roots are aligned to the same simpler taxonomy used by
 the rest of the stack: `_Ebooks`, `_Comics`, and `_Manga`. The old `other`
@@ -384,14 +531,14 @@ To verify attachment backup readiness manually:
 
 ```bash
 sudo -u mail-archive-ui env \
-  MAIL_ARCHIVE_UI_DATA_DIR=/persist/appdata/mail-archive-ui \
-  MAIL_ARCHIVE_UI_STORE_ROOT=/mnt/data/users \
-  MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT=/persist/appdata/mail-archive-ui/accounts \
-  MAIL_ARCHIVE_UI_RUNTIME_DIR=/run/mail-archive-ui \
-  MAIL_ARCHIVE_UI_LOCK_DIR=/persist/appdata/mail-archive-ui/locks \
-  TMPDIR=/run/mail-archive-ui \
-  SQLITE_TMPDIR=/run/mail-archive-ui \
-  mail-archive-ui verify-attachments --repair --report /tmp/mail-archive-attachments.json
+MAIL_ARCHIVE_UI_DATA_DIR=/persist/appdata/mail-archive-ui \
+MAIL_ARCHIVE_UI_STORE_ROOT=/mnt/data/users \
+MAIL_ARCHIVE_UI_ACCOUNT_STATE_ROOT=/persist/appdata/mail-archive-ui/accounts \
+MAIL_ARCHIVE_UI_RUNTIME_DIR=/run/mail-archive-ui \
+MAIL_ARCHIVE_UI_LOCK_DIR=/persist/appdata/mail-archive-ui/locks \
+TMPDIR=/run/mail-archive-ui \
+SQLITE_TMPDIR=/run/mail-archive-ui \
+mail-archive-ui verify-attachments --repair --report /tmp/mail-archive-attachments.json
 ```
 
 This repair command is intentionally manual and is not run by routine backup
@@ -529,12 +676,57 @@ validation gate before rebuilding. Use it for broad changes or suspicious
 failures; routine deploys can use the focused fast path.
 
 The regular deploy path stays intentionally focused. It evaluates the target,
-checks build and target capacity, rebuilds remotely, and runs the runtime health
-gates described above.
+checks build and target capacity, uses the build allocation selected in
+`vars.nix`, and runs the runtime health gates described above.
+
+## Build Allocation
+
+Set `system.buildMode` in `vars.nix` to choose where guarded test deployments
+build:
+
+| Value | Workstation slots | Server slots | Cores requested per job |
+| --- | ---: | ---: | ---: |
+| `"local"` | all available (`auto`) | 0 | all available (`0`) |
+| `"remote"` | 0 | all available (`auto`) | all available (`0`) |
+| `"balanced"` | 2 | 2 | 1 |
+| `"maximum-effort"` | all available (`auto`) | all available | all available (`0`) |
+
+The deployed server limit is written through the native
+`nix.settings.max-jobs` NixOS option. In `local` mode the server daemon remains
+build-capable so a later mode change cannot deadlock, but the deploy omits it
+from the builders list and therefore sends it no build work. For `balanced` and
+`maximum-effort`, the workstation coordinates a native Nix distributed build
+and registers the target server as an `ssh-ng` builder. The server's processor
+count and advertised Nix system features are detected over the same SSH
+connection used by the guarded deploy.
+
+Because the workstation's multi-user Nix daemon opens the builder connection as
+root, combined modes require a passphrase-free private key file in the
+workstation user's effective SSH `IdentityFile` list. Its public key must match
+`identity.sshPublicKey` in `vars.nix`. The deploy helper passes that exact
+identity path to Nix and pins the server's Ed25519 host key after retrieving it
+through the already-authenticated operator SSH connection. Agent-only or
+passphrase-protected identities cannot be used by the daemon; the helper fails
+before building with an actionable diagnostic instead of silently falling back
+to one host.
+
+`balanced` sets Nix's advisory `cores = 1` hint as well as limiting each host to
+two simultaneous jobs. Nixpkgs builders that honor `NIX_BUILD_CORES` therefore
+stay near two busy cores per host; derivations that ignore the hint may still
+use more CPU.
+
+Preview a configured allocation without building:
+
+```bash
+DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test
+```
+
+Use `--build-mode <value>` for a one-shot override. The older
+`--build-locally` flag remains an alias for `--build-mode local`.
 
 ## Fast Remote Deploy
 
-For normal remote deploys:
+With `system.buildMode = "remote"`, run:
 
 ```bash
 ./scripts/deploy.sh
@@ -555,18 +747,53 @@ changes and you want to commit that exact tested closure as the boot default:
 ./scripts/deploy.sh --action switch
 ```
 
-Use `--build-locally` when you intentionally want the workstation to perform the
-Nix build and then activate the evaluated target over SSH:
+Use `--build-locally` when you intentionally want a one-shot workstation-only
+build and then activate the evaluated target over SSH:
 
 ```bash
 ./scripts/deploy.sh --build-locally --action test
 ```
 
+## Local Attic Build Cache
+
+The optional Attic module is enabled by default and listens only on
+`127.0.0.1:8080`. It is not opened in the firewall or published through Caddy.
+The server's Nix daemon uses the public `nixhomeserver` cache at that loopback
+endpoint, while a root-only Attic client token permits the store watcher to
+upload newly built paths. Attic's default upstream filter avoids duplicating
+paths already signed by `cache.nixos.org`.
+
+On first activation, `attic-cache-bootstrap.service` creates or reconciles the
+cache, sets a six-month retention period, learns the cache signing public key,
+and restarts the Nix daemon only when that key changes. The client token lives
+under `/run`; Attic's database and cache live under `/var/lib/atticd`.
+Impermanence retains that directory across root rollback and module removal,
+but Kopia deliberately excludes it because all cached content is reproducible.
+
+Check the service chain and cache:
+
+```bash
+systemctl status atticd.service attic-cache-bootstrap.service attic-watch-store.service
+sudo env XDG_CONFIG_HOME=/run/attic-client attic cache info nixhomeserver
+curl --fail http://127.0.0.1:8080/nixhomeserver/nix-cache-info
+journalctl -u attic-watch-store.service -n 100 --no-pager
+sudo du -sh /var/lib/atticd/storage
+```
+
+To stop caching without deleting retained cache data, set:
+
+```nix
+repo.attic.enable = false;
+```
+
+The watcher only sees builds that complete in the server's Nix store. Local
+workstation builds are not uploaded to this loopback-only cache.
+
 For server-side secrets generation after local staging or edits:
 
 ```bash
 ssh <admin>@<hostname> \
-  'cd /path/to/repo && nix run .#generate-secrets -- --identity /persist/etc/agenix/age.key'
+'cd /path/to/repo && nix run .#generate-secrets -- --identity /persist/etc/agenix/age.key'
 ```
 
 ## Service Validation

@@ -11,16 +11,18 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/deploy.sh [--target <user@host>] [--build-host <user@host>] [--build-locally] [--action test|switch] [--hostname <flake-hostname>] [--debug]
+Usage: scripts/deploy.sh [--target <user@host>] [--build-mode local|remote|balanced|maximum-effort] [--build-host <user@host>] [--build-locally] [--action test|switch] [--hostname <flake-hostname>] [--debug]
 
 Stage the current repo and run a NixOS rebuild.
 
 Run this helper from a Git checkout. Copied directories and source ZIPs are
 rejected because they do not provide a safe tracked-file deployment manifest.
 
-By default, the target is vars.localAdminUser@vars.serverLanIP and the target host
-also performs the build. Use --build-locally to build on this workstation and
-activate the default target over SSH.
+By default, the target is vars.localAdminUser@vars.serverLanIP and the build
+allocation comes from vars.system.buildMode. Local and remote use all available
+slots on one machine, balanced uses two slots on each, and maximum-effort uses
+all available slots on both. --build-mode overrides the configured mode for one invocation.
+--build-locally remains an alias for --build-mode local.
 
 Fast mode performs high-value checks: host evaluation, build and target
 free-space checks, a live test activation, failed-unit and route checks, and the
@@ -40,6 +42,7 @@ EOF
 target_host=""
 build_host=""
 build_locally=false
+build_mode_override=""
 action="test"
 hostname=""
 debug=false
@@ -56,6 +59,11 @@ while (($# > 0)); do
     --build-host)
       [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --build-host requires user@host" >&2; exit 1; }
       build_host="${2:-}"
+      shift 2
+      ;;
+    --build-mode)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "blocked: --build-mode requires local, remote, balanced, or maximum-effort" >&2; exit 1; }
+      build_mode_override="${2:-}"
       shift 2
       ;;
     --build-locally)
@@ -96,8 +104,83 @@ if [[ "$build_locally" == "true" && -n "$build_host" ]]; then
   echo "blocked: --build-locally cannot be combined with --build-host" >&2
   exit 1
 fi
+if [[ "$build_locally" == "true" && -n "$build_mode_override" ]]; then
+  echo "blocked: --build-locally cannot be combined with --build-mode" >&2
+  exit 1
+fi
 
 need nix
+
+configured_build_mode="$(nix_flake_var 'vars.buildMode')"
+if [[ -n "$build_mode_override" ]]; then
+  build_mode="$build_mode_override"
+elif [[ "$build_locally" == "true" ]]; then
+  build_mode="local"
+elif [[ -n "$build_host" ]]; then
+  build_mode="remote"
+else
+  build_mode="$configured_build_mode"
+fi
+
+case "$build_mode" in
+  local)
+    build_locally=true
+    if [[ -n "$build_host" ]]; then
+      echo "blocked: --build-host can only be combined with --build-mode remote" >&2
+      exit 1
+    fi
+    ;;
+  remote)
+    build_locally=false
+    ;;
+  balanced|maximum-effort)
+    build_locally=true
+    if [[ -n "$build_host" ]]; then
+      echo "blocked: --build-host can only be combined with --build-mode remote" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "blocked: build mode must be local, remote, balanced, or maximum-effort" >&2
+    exit 1
+    ;;
+esac
+
+local_build_slots="$(nix_flake_var 'toString vars.buildSlots.local')"
+remote_build_slots="$(nix_flake_var 'toString vars.buildSlots.remote')"
+local_build_cores="$(nix_flake_var 'toString vars.buildCores.local')"
+remote_build_cores="$(nix_flake_var 'toString vars.buildCores.remote')"
+host_platform="$(nix_flake_var 'vars.hostPlatform')"
+builder_ssh_public_key="$(nix_flake_var 'vars.serverSSHPubKey')"
+
+# A one-shot mode override must carry its own native Nix slot mapping rather
+# than reusing the slots derived from the persistent vars.system.buildMode.
+case "$build_mode" in
+  local)
+    local_build_slots="auto"
+    remote_build_slots="0"
+    local_build_cores="0"
+    remote_build_cores="0"
+    ;;
+  remote)
+    local_build_slots="0"
+    remote_build_slots="auto"
+    local_build_cores="0"
+    remote_build_cores="0"
+    ;;
+  balanced)
+    local_build_slots="2"
+    remote_build_slots="2"
+    local_build_cores="1"
+    remote_build_cores="1"
+    ;;
+  maximum-effort)
+    local_build_slots="auto"
+    remote_build_slots="auto"
+    local_build_cores="0"
+    remote_build_cores="0"
+    ;;
+esac
 
 if [[ -z "$hostname" ]]; then
   hostname="$(nix_flake_var 'vars.hostname')"
@@ -125,9 +208,15 @@ print_quoted_command() {
 }
 
 if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
-  echo "mode=$([[ "$build_locally" == "true" ]] && echo local || echo remote)"
+  echo "mode=${build_mode}"
+  echo "build_slots=local:${local_build_slots},remote:${remote_build_slots}"
+  echo "build_cores=local:${local_build_cores},remote:${remote_build_cores}"
   echo "target_host=${target_host}"
-  echo "build_host=$([[ "$build_locally" == "true" ]] && echo local || echo "$build_host")"
+  if [[ "$build_mode" == "balanced" || "$build_mode" == "maximum-effort" ]]; then
+    echo "build_host=local+${target_host}"
+  else
+    echo "build_host=$([[ "$build_locally" == "true" ]] && echo local || echo "$build_host")"
+  fi
   echo "hostname=${hostname}"
   echo "action=${action}"
   echo "debug=${debug}"
@@ -175,6 +264,13 @@ if [[ "$build_locally" == "true" ]]; then
     HOSTNAME_ARG="$hostname" \
     DEBUG_MODE="$debug" \
     BUILD_LOCALLY="$build_locally" \
+    BUILD_MODE="$build_mode" \
+    LOCAL_BUILD_SLOTS="$local_build_slots" \
+    REMOTE_BUILD_SLOTS="$remote_build_slots" \
+    LOCAL_BUILD_CORES="$local_build_cores" \
+    REMOTE_BUILD_CORES="$remote_build_cores" \
+    HOST_PLATFORM="$host_platform" \
+    BUILDER_SSH_PUBLIC_KEY="$builder_ssh_public_key" \
     bash ./scripts/helpers/deploy-executor.sh
   echo "Deploy ${action} completed."
   exit 0
@@ -190,6 +286,13 @@ remote_env=(
   "HOSTNAME_ARG=$(printf '%q' "$hostname")"
   "DEBUG_MODE=$(printf '%q' "$debug")"
   "BUILD_LOCALLY=false"
+  "BUILD_MODE=$(printf '%q' "$build_mode")"
+  "LOCAL_BUILD_SLOTS=$(printf '%q' "$local_build_slots")"
+  "REMOTE_BUILD_SLOTS=$(printf '%q' "$remote_build_slots")"
+  "LOCAL_BUILD_CORES=$(printf '%q' "$local_build_cores")"
+  "REMOTE_BUILD_CORES=$(printf '%q' "$remote_build_cores")"
+  "HOST_PLATFORM=$(printf '%q' "$host_platform")"
+  "BUILDER_SSH_PUBLIC_KEY=$(printf '%q' "$builder_ssh_public_key")"
 )
 remote_command="$(printf '%s ' "${remote_env[@]}")bash -s"
 

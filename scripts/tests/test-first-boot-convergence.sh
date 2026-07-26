@@ -24,6 +24,7 @@ let
     "jellyfin-network-config-v1"
     "jellyfin-library-monitor-v1"
     "jellyfin-library-bootstrap-v1"
+    "jellyfin-oidc-bootstrap-v1"
     "kavita-oidc-bootstrap"
     "kavita-library-watch-config-v1"
     "kopia-repository-bootstrap"
@@ -45,6 +46,7 @@ let
     "jellyfin-network-config-v1"
     "jellyfin-library-monitor-v1"
     "jellyfin-library-bootstrap-v1"
+    "jellyfin-oidc-bootstrap-v1"
     "kavita-oidc-bootstrap"
     "kavita-library-watch-config-v1"
     "kopia-repository-bootstrap"
@@ -72,7 +74,7 @@ in
 ')"
 
 jq -e '
-  length == 21
+  length == 22
   and all(
     to_entries[];
     .value.restart == "on-failure"

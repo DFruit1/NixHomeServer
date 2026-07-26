@@ -147,7 +147,8 @@ fi
   exit 1
 }
 
-for guide in README.md documentation/quickstart.md; do
+install_guides=(documentation/quickstart.md)
+for guide in "${install_guides[@]}"; do
   rg -Fq 'sudo -i' "$guide" || {
     echo "❌ $guide does not establish the installer root-shell boundary."
     exit 1
@@ -161,5 +162,9 @@ for guide in README.md documentation/quickstart.md; do
     exit 1
   fi
 done
+rg -Fq '[First installation](documentation/quickstart.md)' README.md || {
+  echo "❌ README does not route installation to the authoritative Quickstart."
+  exit 1
+}
 
 echo "✅ Controlled installation repository seeding and refusal tests passed."

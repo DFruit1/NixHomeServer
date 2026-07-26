@@ -625,7 +625,8 @@ require_fixed documentation/restore-and-recovery.md 'backup_root="$(jq -er' \
   "Recovery guidance must derive the configured backup root from evaluated settings."
 forbid_match documentation/restore-and-recovery.md 'zpool (status|replace|scrub).* data([[:space:]]|$)' \
   "Recovery commands must not hard-code the default ZFS pool name."
-for guidance_file in README.md documentation/quickstart.md; do
+bootstrap_guidance_files=(documentation/quickstart.md)
+for guidance_file in "${bootstrap_guidance_files[@]}"; do
   local_name_guidance_count="$(rg -Fc 'git config --local user.name' "$guidance_file" || true)"
   local_email_guidance_count="$(rg -Fc 'git config --local user.email' "$guidance_file" || true)"
   if (( ${local_name_guidance_count:-0} < 2 )) \
@@ -634,6 +635,8 @@ for guidance_file in README.md documentation/quickstart.md; do
     exit 1
   fi
 done
+require_fixed README.md '[First installation](documentation/quickstart.md)' \
+  "README must route bootstrap operators to the authoritative Quickstart."
 require_fixed scripts/admin/validate-config-readiness.sh 'plaintext_staging_is_empty "$repo_root/secrets/unencrypted"' \
   "Readiness validation must block copying a repository with staged plaintext secrets."
 require_fixed modules/Core_Modules/impermanence/default.nix "rotation_second=\"''\${rotation_name%%.*}\"" \

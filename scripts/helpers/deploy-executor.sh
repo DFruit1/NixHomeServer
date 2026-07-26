@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -25,6 +25,13 @@ accept-flake-config = true}"
 : "${HOSTNAME_ARG:?missing HOSTNAME_ARG}"
 : "${DEBUG_MODE:=false}"
 : "${BUILD_LOCALLY:=false}"
+: "${BUILD_MODE:?missing BUILD_MODE}"
+: "${LOCAL_BUILD_SLOTS:?missing LOCAL_BUILD_SLOTS}"
+: "${REMOTE_BUILD_SLOTS:?missing REMOTE_BUILD_SLOTS}"
+: "${LOCAL_BUILD_CORES:?missing LOCAL_BUILD_CORES}"
+: "${REMOTE_BUILD_CORES:?missing REMOTE_BUILD_CORES}"
+: "${HOST_PLATFORM:?missing HOST_PLATFORM}"
+: "${BUILDER_SSH_PUBLIC_KEY:?missing BUILDER_SSH_PUBLIC_KEY}"
 
 min_build_host_free_bytes=$((10 * 1024 * 1024 * 1024))
 min_target_nix_free_bytes=$((5 * 1024 * 1024 * 1024))
@@ -71,6 +78,179 @@ target_command() {
   fi
 }
 
+normalize_ssh_public_key() {
+  awk 'NF >= 2 { print $1 " " $2; exit }'
+}
+
+resolve_builder_ssh_identity() {
+  local expected_public_key identity_setting identity_path derived_public_key
+
+  expected_public_key="$(normalize_ssh_public_key <<<"$BUILDER_SSH_PUBLIC_KEY")"
+  if [[ ! "$expected_public_key" =~ ^[A-Za-z0-9@._+-]+[[:space:]][A-Za-z0-9+/]+={0,3}$ ]]; then
+    echo "blocked: configured builder SSH public key is invalid" >&2
+    return 1
+  fi
+
+  while IFS= read -r identity_setting; do
+    identity_path="${identity_setting#identityfile }"
+    case "$identity_path" in
+      "~/"*) identity_path="${HOME}/${identity_path#\~/}" ;;
+      /*) ;;
+      *) continue ;;
+    esac
+    [[ "$identity_path" != *[[:space:]]* \
+      && "$identity_path" != *";"* \
+      && -f "$identity_path" \
+      && -r "$identity_path" ]] || continue
+
+    derived_public_key="$(
+      ssh-keygen -y -P '' -f "$identity_path" </dev/null 2>/dev/null \
+        | normalize_ssh_public_key \
+        || true
+    )"
+    if [[ "$derived_public_key" == "$expected_public_key" ]]; then
+      printf '%s\n' "$identity_path"
+      return 0
+    fi
+  done < <(ssh -G "$TARGET_HOST" 2>/dev/null | sed -n 's/^identityfile /identityfile /p')
+
+  echo "blocked: combined build mode could not find a passphrase-free SSH IdentityFile matching vars.identity.sshPublicKey" >&2
+  echo "Add the matching absolute IdentityFile to SSH config for ${TARGET_HOST}, then retry." >&2
+  return 1
+}
+
+resolve_remote_builder_host_key() {
+  local remote_public_key normalized_public_key encoded_public_key
+
+  remote_public_key="$(
+    ssh "$TARGET_HOST" \
+      'test -r /etc/ssh/ssh_host_ed25519_key.pub && cat /etc/ssh/ssh_host_ed25519_key.pub'
+  )"
+  if [[ "$remote_public_key" == *$'\n'* ]]; then
+    echo "blocked: remote builder returned more than one SSH host-key line" >&2
+    return 1
+  fi
+  normalized_public_key="$(normalize_ssh_public_key <<<"$remote_public_key")"
+  if [[ ! "$normalized_public_key" =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/]+={0,3}$ ]]; then
+    echo "blocked: remote builder returned an invalid Ed25519 SSH host key" >&2
+    return 1
+  fi
+  # Nix expects base64 of the complete OpenSSH public-key file, including its
+  # key type and trailing newline, rather than only the file's second field.
+  # Source: https://nix.dev/manual/nix/2.33/command-ref/conf-file#conf-builders
+  encoded_public_key="$(printf '%s\n' "$remote_public_key" | base64 | tr -d '\r\n')"
+  if [[ ! "$encoded_public_key" =~ ^[A-Za-z0-9+/]+={0,3}$ ]]; then
+    echo "blocked: remote builder SSH host key could not be encoded safely" >&2
+    return 1
+  fi
+  printf '%s\n' "$encoded_public_key"
+}
+
+configure_nix_build_allocation() {
+  local coordinator_slots="$REMOTE_BUILD_SLOTS"
+  local coordinator_cores="$REMOTE_BUILD_CORES"
+  local builders_setting=""
+  local remote_slots="$REMOTE_BUILD_SLOTS"
+  local remote_processor_count=""
+  local remote_system_features=""
+  local remote_features_csv="-"
+  local builder_ssh_identity=""
+  local remote_builder_host_key=""
+  local required_command=""
+
+  case "$BUILD_MODE" in
+    remote)
+      ;;
+    local)
+      coordinator_slots="$LOCAL_BUILD_SLOTS"
+      coordinator_cores="$LOCAL_BUILD_CORES"
+      ;;
+    balanced|maximum-effort)
+      coordinator_slots="$LOCAL_BUILD_SLOTS"
+      coordinator_cores="$LOCAL_BUILD_CORES"
+      for required_command in base64 ssh-keygen; do
+        if ! command -v "$required_command" >/dev/null 2>&1; then
+          echo "blocked: combined build mode requires ${required_command} on the workstation" >&2
+          return 1
+        fi
+      done
+      builder_ssh_identity="$(resolve_builder_ssh_identity)" || return 1
+      remote_builder_host_key="$(resolve_remote_builder_host_key)" || return 1
+      if [[ "$REMOTE_BUILD_SLOTS" == "auto" ]]; then
+        remote_processor_count="$(
+          ssh "$TARGET_HOST" \
+            'getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null'
+        )" || {
+          echo "blocked: remote builder processor-count query failed" >&2
+          return 1
+        }
+        if [[ ! "$remote_processor_count" =~ ^[1-9][0-9]*$ ]]; then
+          echo "blocked: could not resolve the remote builder processor count" >&2
+          return 1
+        fi
+        remote_slots="$remote_processor_count"
+      fi
+
+      remote_system_features="$(
+        ssh "$TARGET_HOST" \
+          "nix config show 2>/dev/null | sed -n 's/^system-features = //p' | head -n 1"
+      )" || {
+        echo "blocked: remote builder Nix system-feature query failed" >&2
+        return 1
+      }
+      if [[ -n "$remote_system_features" ]]; then
+        if [[ ! "$remote_system_features" =~ ^[A-Za-z0-9.+_-]+([[:space:]][A-Za-z0-9.+_-]+)*$ ]]; then
+          echo "blocked: remote builder returned invalid Nix system features" >&2
+          return 1
+        fi
+        remote_features_csv="${remote_system_features// /,}"
+      fi
+
+      if [[ "$TARGET_HOST" =~ [[:space:]] \
+        || "$TARGET_HOST" == *";"* \
+        || "$HOST_PLATFORM" =~ [[:space:]] \
+        || "$HOST_PLATFORM" == *";"* ]]; then
+        echo "blocked: distributed builder fields contain a Nix builder-list delimiter" >&2
+        return 1
+      fi
+      # Multi-user Nix opens this connection as the local daemon's root user,
+      # so both an explicit identity and host-key pin must be in the builder
+      # record instead of relying on the invoking user's SSH defaults.
+      # Source: https://nix.dev/manual/nix/2.33/command-ref/conf-file#conf-builders
+      builders_setting="ssh-ng://${TARGET_HOST} ${HOST_PLATFORM} ${builder_ssh_identity} ${remote_slots} 1 ${remote_features_csv} - ${remote_builder_host_key}"
+      ;;
+    *)
+      echo "blocked: unsupported build mode ${BUILD_MODE}" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ ! "$coordinator_slots" =~ ^([1-9][0-9]*|auto)$ ]]; then
+    echo "blocked: invalid coordinator build-slot value ${coordinator_slots}" >&2
+    return 1
+  fi
+  if [[ ! "$coordinator_cores" =~ ^[0-9]+$ ]]; then
+    echo "blocked: invalid coordinator build-core value ${coordinator_cores}" >&2
+    return 1
+  fi
+  if [[ -n "$builders_setting" && ! "$remote_slots" =~ ^[1-9][0-9]*$ ]]; then
+    echo "blocked: invalid remote builder slot value ${remote_slots}" >&2
+    return 1
+  fi
+
+  NIX_CONFIG="${NIX_CONFIG}"$'\n'"max-jobs = ${coordinator_slots}"$'\n'"cores = ${coordinator_cores}"$'\n'"builders = ${builders_setting}"$'\n'"builders-use-substitutes = true"
+  export NIX_CONFIG
+  echo "build allocation: mode=${BUILD_MODE}, local=${LOCAL_BUILD_SLOTS}x${LOCAL_BUILD_CORES}, remote=${REMOTE_BUILD_SLOTS}x${REMOTE_BUILD_CORES}"
+}
+
+configure_nix_build_allocation_for_action() {
+  if [[ "$ACTION" == "test" ]]; then
+    configure_nix_build_allocation
+  else
+    echo "skipping build allocation setup: switch reuses the exact tested closure"
+  fi
+}
+
 check_free_space() {
   local sandbox_build_dir build_backing_path build_available_bytes tmp_available_bytes
 
@@ -105,6 +285,8 @@ check_target_free_space() {
 
   if [[ "$ACTION" == "switch" ]]; then
     required_nix_free_bytes="$min_switch_target_nix_free_bytes"
+  elif [[ "$BUILD_MODE" == "balanced" || "$BUILD_MODE" == "maximum-effort" ]]; then
+    required_nix_free_bytes="$min_build_host_free_bytes"
   else
     required_nix_free_bytes="$min_target_nix_free_bytes"
   fi
@@ -168,7 +350,32 @@ target_readlink() {
 capture_previous_state() {
   previous_current="$(target_readlink /run/current-system)"
   previous_boot="$(target_readlink /nix/var/nix/profiles/system)"
-  target_nix_env="$(target_command "readlink -f \"\$(command -v nix-env)\"")"
+  # Keep the immutable nix-env entry as the rollback command instead of fully
+  # dereferencing it.  Recent Nix releases implement nix-env as a multicall
+  # symlink to `nix`; invoking the fully resolved endpoint loses the nix-env
+  # argv[0] dispatch name and also fails the safety check below.  Follow only
+  # profile/system links until the command reaches an immutable store entry.
+  # shellcheck disable=SC2016 # This script is intentionally evaluated on the target.
+  target_nix_env="$(target_command '
+    nix_env_path="$(command -v nix-env)" || exit 1
+    link_count=0
+    while :; do
+      case "$nix_env_path" in
+        /nix/store/*/bin/nix-env)
+          printf "%s\n" "$nix_env_path"
+          exit 0
+          ;;
+      esac
+      test -L "$nix_env_path" || exit 1
+      nix_env_link="$(readlink "$nix_env_path")" || exit 1
+      case "$nix_env_link" in
+        /*) nix_env_path="$nix_env_link" ;;
+        *) nix_env_path="$(dirname "$nix_env_path")/$nix_env_link" ;;
+      esac
+      link_count=$((link_count + 1))
+      test "$link_count" -le 40 || exit 1
+    done
+  ')"
   deploy_validate_toplevel_path "$previous_current" || {
     echo "blocked: current target generation is not a valid Nix store path" >&2
     return 1
@@ -216,7 +423,7 @@ render_lock_expiry_script() {
   # or superseded by a later, successful recovery rather than silently unlocked
   # by the ordinary stale-lock timer.
   # shellcheck disable=SC2034 # Assigned through the caller-provided nameref.
-  output_script="if test -e $(printf '%q' "$recovery_marker"); then echo 'blocked: retaining deploy lock after failed delayed recovery' >&2; exit 1; elif test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") && rmdir $(printf '%q' "$deploy_lock_dir"); elif ! test -e $(printf '%q' "$owner_path"); then rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi"
+  output_script="PATH=/run/current-system/sw/bin:/usr/bin:/bin; export PATH; if test -e $(printf '%q' "$recovery_marker"); then echo 'blocked: retaining deploy lock after failed delayed recovery' >&2; exit 1; elif test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") && rmdir $(printf '%q' "$deploy_lock_dir"); elif ! test -e $(printf '%q' "$owner_path"); then rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi"
 }
 
 deploy_lock_token_owned() {
@@ -376,7 +583,7 @@ schedule_rollback() {
   recovery_complete_marker="$(deploy_recovery_complete_marker_path)"
   failure_marker_quoted="$(printf '%q' "$recovery_marker")"
   complete_marker_quoted="$(printf '%q' "$recovery_complete_marker")"
-  rollback_script="if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token") && ! test -e ${failure_marker_quoted}; then status=0; $(printf '%q' "$previous_current/bin/switch-to-configuration") test || status=1; $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") || status=1; $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot || status=1; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then umask 077; if test \"\$status\" -eq 0; then rm -f ${failure_marker_quoted}; printf '%s\\n' 'delayed rollback completed; stale executor remains blocked until it exits or the lock expires' > ${complete_marker_quoted}; else rm -f ${complete_marker_quoted}; printf '%s\\n' 'delayed rollback failed; inspect the rollback service before clearing this lock' > ${failure_marker_quoted}; fi; fi; exit \$status; else echo 'stale deploy rollback no longer owns its transaction lock; skipping generation changes' >&2; exit 0; fi"
+  rollback_script="PATH=/run/current-system/sw/bin:/usr/bin:/bin; export PATH; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token") && ! test -e ${failure_marker_quoted}; then status=0; $(printf '%q' "$previous_current/bin/switch-to-configuration") test || status=1; $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") || status=1; $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot || status=1; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then umask 077; if test \"\$status\" -eq 0; then rm -f ${failure_marker_quoted}; printf '%s\\n' 'delayed rollback completed; stale executor remains blocked until it exits or the lock expires' > ${complete_marker_quoted}; else rm -f ${complete_marker_quoted}; printf '%s\\n' 'delayed rollback failed; inspect the rollback service before clearing this lock' > ${failure_marker_quoted}; fi; fi; exit \$status; else echo 'stale deploy rollback no longer owns its transaction lock; skipping generation changes' >&2; exit 0; fi"
   scheduled_unit="nixhomeserver-deploy-rollback-${HOSTNAME_ARG}-$(date +%s%N)-$$"
   target_command "sudo /bin/sh -c $(printf '%q' "test -f ${owner_path} && test \"\$(cat ${owner_path})\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && exec systemd-run --quiet --unit=$(printf '%q' "$scheduled_unit") --on-active=$(printf '%q' "$delay") --description='NixHomeServer interrupted deploy rollback' /bin/sh -c $(printf '%q' "$rollback_script")")"
   rollback_unit="$scheduled_unit"
@@ -399,8 +606,10 @@ cancel_scheduled_rollback() {
   else
     marker_guard="test ! -e $(deploy_recovery_marker_path) && test ! -e $(deploy_recovery_complete_marker_path)"
   fi
-  cancel_script="set -e; test -f $(printf '%q' "$deploy_lock_dir/owner"); test \"\$(cat $(printf '%q' "$deploy_lock_dir/owner"))\" = $(printf '%q' "$deploy_lock_token"); ${marker_guard}; sudo systemctl stop $(printf '%q' "$rollback_timer") >/dev/null 2>&1 || true; for unit in $(printf '%q' "$rollback_timer") $(printf '%q' "$rollback_service"); do state=\$(sudo systemctl show -P ActiveState \"\$unit\"); case \"\$state\" in inactive|failed) ;; *) echo \"blocked: rollback unit \$unit remained in unsafe state: \$state\" >&2; exit 1 ;; esac; done; ${marker_guard}; sudo systemctl reset-failed $(printf '%q' "$rollback_service") >/dev/null 2>&1 || true"
-  target_command "$cancel_script" || return
+  cancel_script="set -e; test -f $(printf '%q' "$deploy_lock_dir/owner"); test \"\$(cat $(printf '%q' "$deploy_lock_dir/owner"))\" = $(printf '%q' "$deploy_lock_token"); ${marker_guard}; sudo systemctl stop $(printf '%q' "$rollback_timer") >/dev/null 2>&1 || true; for unit in $(printf '%q' "$rollback_timer") $(printf '%q' "$rollback_service"); do state=\$(sudo systemctl show -P ActiveState \"\$unit\" 2>/dev/null || true); case \"\$state\" in inactive|failed) ;; *) echo \"blocked: rollback unit \$unit remained in unsafe state: \$state\" >&2; exit 1 ;; esac; done; ${marker_guard}; sudo systemctl reset-failed $(printf '%q' "$rollback_service") >/dev/null 2>&1 || true"
+  # The transaction lock is root-only, so cancellation and its ownership
+  # checks must execute in one privileged shell just like acquisition/release.
+  target_command "sudo /bin/sh -c $(printf '%q' "$cancel_script")" || return
   rollback_unit=""
 }
 
@@ -555,6 +764,7 @@ local built_toplevel=""
 local -a cmd=()
 
 arm_deploy_transaction_traps
+configure_nix_build_allocation_for_action
 
 if [[ "$ACTION" == "test" ]]; then
   check_free_space

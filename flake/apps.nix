@@ -146,6 +146,12 @@ let
       meta.description = "Run Kopia against the deployed managed repository without exposing its password in argv";
     };
 
+  gitleaksApp = {
+    type = "app";
+    program = "${pkgs.gitleaks}/bin/gitleaks";
+    meta.description = "Scan the repository for committed secrets";
+  };
+
   scriptApps = {
     generate-secrets = {
       description = "Generate, verify, replace, or rekey all manifest-managed age secrets";
@@ -284,4 +290,7 @@ let
 in
 (pkgs.lib.mapAttrs scriptApp scriptApps)
 // (pkgs.lib.mapAttrs maintenanceApp maintenanceApps)
-  // { kopia-managed = managedKopiaApp; }
+  // {
+    gitleaks = gitleaksApp;
+    kopia-managed = managedKopiaApp;
+  }

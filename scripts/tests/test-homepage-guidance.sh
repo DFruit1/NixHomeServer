@@ -35,6 +35,15 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
     and ($files.loginNotes | contains($files.requiredAnyGroups[0])))
   and ([.services[] | select(.id != "passwords") | (.requiredAnyGroups // []) | length > 0] | all)
   and ([.services[] | select(.logoUrl != null) | .logoUrl | startswith("/logos/")] | all)
+  and ([.services[] | select(.enabled) | (.logoUrl // "") | startswith("/logos/")] | all)
+  and (.services[] | select(.id == "photos") | .logoUrl == "/logos/immich.svg")
+  and (.services[] | select(.id == "documents") | .logoUrl == "/logos/paperless-ngx.svg")
+  and (.services[] | select(.id == "files") | .logoUrl == "/logos/filestash.svg")
+  and (.services[] | select(.id == "audiobooks") | .logoUrl == "/logos/audiobookshelf.svg")
+  and (.services[] | select(.id == "videos") | .logoUrl == "/logos/jellyfin.svg")
+  and (.services[] | select(.id == "books") | .logoUrl == "/logos/kavita.svg")
+  and (.services[] | select(.id == "emails") | .logoUrl == "/logos/mail-archive-ui.svg")
+  and (.services[] | select(.id == "passwords") | .logoUrl == "/logos/vaultwarden.svg")
   and ([.folderGuides[] | .personalPath?, .sharedPath? | select(. != null) | startswith("/mnt/data") | not] | all)
   and ([.adminGuide[].title] | index("List storage layout services") != null)
   and ([.adminGuide[].title] | index("Re-run storage layout services") == null)
@@ -42,6 +51,9 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   and (.adminGuide[] | select(.title == "Restart homepage") | .detail | contains("require a guarded deploy"))
   and (.adminGuide[] | select(.title == "Authenticate Kanidm CLI") | .command | contains("kanidm self whoami"))
   and (.adminGuide[] | select(.title == "Bootstrap or recover operator credential") | .command | contains("kanidm-operator-bootstrap status"))
+  and (.adminGuide[] | select(.title == "Retrieve Kopia browser credential")
+    | (.command == "sudo nixhomeserver-kopia-browser-credential")
+    and (.detail | contains("backup-storage-users alone grants only read-only repository browsing")))
 ' "$homepage_config" >/dev/null || {
     echo "Homepage evaluated guidance/access contract regressed." >&2
     jq . "$homepage_config" >&2
@@ -101,6 +113,7 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
 without-immich	Re-run Immich OIDC reconcile
 without-paperless	Re-run Paperless OIDC reconcile
 without-jellyfin	Re-run Jellyfin library sync
+without-jellyfin	Re-run Jellyfin OIDC bootstrap
 EOF
 
   without_files_drv="$(jq -er '."without-files".homepageConfigDrv' <<<"$removal_matrix")"
@@ -118,6 +131,12 @@ if rg -n 'logoUrl = "https?://' modules/homepage/services.nix; then
   echo "Homepage service logos must be packaged locally rather than fetched during page views." >&2
   exit 1
 fi
+while IFS= read -r logo_path; do
+  if [[ ! -f "custom_apps/node/apps/homepage/public${logo_path}" ]]; then
+    echo "Homepage service logo is referenced but not packaged: ${logo_path}" >&2
+    exit 1
+  fi
+done < <(rg -o -N 'logoUrl = "(/logos/[^"]+)"' modules/homepage/services.nix -r '$1' | sort -u)
 
 if rg -n 'shows live groups|live group catalog' documentation/kanidm.md; then
   echo "Kanidm documentation must not describe evaluated groups as live membership." >&2
@@ -150,6 +169,8 @@ require_fixed modules/homepage/services.nix '++ lib.optionals paperlessEnabled [
   "Homepage must omit Paperless reconciliation commands when Paperless is disabled."
 require_fixed modules/homepage/services.nix '++ lib.optionals jellyfinEnabled [' \
   "Homepage must omit Jellyfin synchronization commands when Jellyfin is disabled."
+require_fixed modules/homepage/services.nix '++ lib.optionals kopiaEnabled [' \
+  "Homepage must omit Kopia credential guidance when Kopia is disabled."
 require_fixed modules/homepage/services.nix 'command = "sudo systemctl start storage-smart-short.service";' \
   "SMART guidance must invoke the installed server-side service instead of a workstation repository script."
 require_fixed modules/homepage/services.nix 'command = "sudo nixhomeserver-storage-inventory --format text";' \
@@ -158,8 +179,52 @@ require_fixed custom_apps/node/apps/homepage/src/components/SftpSetup.tsx 'SFTP/
   "SFTP guidance must not promise browser uploads to accounts without the separate Files permission."
 require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'This grants every enabled default app group above, not only one app.' \
   "Homepage admin guidance must explain the shared identity.appUsers access bundle."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'New-user handoff order' \
+  "Homepage admin guidance must provide an ordered new-user handoff checklist."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Create the one-time account link last' \
+  "Homepage admin guidance must delay credential-link creation until access is ready."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Display name' \
+  "Homepage user creation must collect the human-readable display name separately from the username."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Recover the correct sign-in boundary' \
+  "Homepage admin guidance must distinguish Kanidm recovery from app-local credentials."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Access changes and offboarding' \
+  "Homepage admin guidance must explain retained app data and device access during offboarding."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx "'Authenticate Kanidm CLI': { category: 'identity', intents: ['add-user', 'manage-user', 'manage-secrets'] }" \
+  "Homepage account workflows must surface the required Kanidm CLI authentication step."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'usernames must start with a lower-case letter' \
+  "Homepage account workflows must stop admins from copying commands with invalid usernames."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'selectedGroups.value = [];' \
+  "Homepage access selections must be cleared when their target or workflow changes."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Never send an admin your password' \
+  "New-user guidance must clearly identify credentials that support requests must never include."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Use a trusted network path' \
+  "New-user guidance must explain the private LAN or NetBird access requirement."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \
+  "New-user guidance must not imply that checklist progress is stored server-side."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \
+  "New-user guidance must explain the separate browser and direct-file-transfer permissions."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Local Backups has two sign-in gates.' \
+  "New-user guidance must distinguish Kanidm gateway access from the native Kopia login."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Some app accounts are created on first sign-in.' \
+  "New-user guidance must explain first-login provisioning for apps that keep local accounts."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Do not use a public photo-share link or the public share hostname' \
+  "Mobile Photos guidance must distinguish the private app URL from public share links."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'Syncthing-Fork is the supported app.' \
+  "Offline Media guidance must name the single supported mobile app."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'iPhone and iPad are not supported.' \
+  "Offline Media guidance must state the unsupported iOS boundary."
+require_fixed custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx 'offline-media-status-column' \
+  "Offline Media must keep the server QR code and connection status in the dedicated layout column."
+if rg -Fq 'Möbius Sync' custom_apps/node/apps/homepage/src/components/OfflineMediaSetup.tsx; then
+  echo "Offline Media must not advertise an unsupported iOS client." >&2
+  exit 1
+fi
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'No enabled apps are currently assigned to this account' \
+  "New-user guidance must make an empty app assignment a skippable state."
 require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx "group === 'app-admin'" \
   "Selecting app-admin must automatically include the normal application-access bundle."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Configured access boundaries and exceptions' \
+  "Admin access guidance must surface configured native-login, file-role, and app-admin exceptions."
 require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx "'Revoke offline-media device access': { category: 'identity', intents: ['manage-user'] }" \
   "Offline-media offboarding must surface under user-access administration."
 require_fixed custom_apps/node/apps/homepage/src/shared/admin-access.ts 'This grants read-only backup repository access, not Kopia administration.' \

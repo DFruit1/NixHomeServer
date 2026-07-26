@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools find rg sed sort
+ensure_tools find jq nix rg sed sort
 
 required_app_files=(
   backups.nix
@@ -59,15 +59,12 @@ expected_app_names="$(
   done <<<"$module_dirs"
 )"
 configured_app_names="$(
-  while IFS= read -r module_name; do
-    is_app_module_dir "$module_name" && printf '%s\n' "$module_name"
-  done < <(
-    sed -n -E 's#^[[:space:]]*\./modules/([^/[:space:]]+)[[:space:]]*$#\1#p' configuration.nix \
-      | sort
-  )
+  nix eval --impure --json --expr 'builtins.attrNames (import ./modules/catalog.nix).apps' \
+    | jq -r '.[]' \
+    | sort
 )"
 if [[ "$expected_app_names" != "$configured_app_names" ]]; then
-  echo "❌ configuration.nix app imports do not exactly match the application module directories."
+  echo "❌ modules/catalog.nix apps do not exactly match the application module directories."
   diff -u <(printf '%s\n' "$expected_app_names") <(printf '%s\n' "$configured_app_names") || true
   exit 1
 fi
@@ -106,13 +103,12 @@ expected_integration_names="$(
     | sort
 )"
 configured_integration_names="$(
-  sed -n -E \
-    's#^[[:space:]]*\./modules/Integrations/([^/[:space:]]+[.]nix)[[:space:]]*$#\1#p' \
-    configuration.nix \
+  nix eval --impure --json --expr 'map builtins.baseNameOf (import ./modules/catalog.nix).integrations' \
+    | jq -r '.[]' \
     | sort
 )"
 if [[ "$expected_integration_names" != "$configured_integration_names" ]]; then
-  echo "❌ configuration.nix integration imports do not exactly match modules/Integrations."
+  echo "❌ modules/catalog.nix integration imports do not exactly match modules/Integrations."
   diff -u \
     <(printf '%s\n' "$expected_integration_names") \
     <(printf '%s\n' "$configured_integration_names") || true

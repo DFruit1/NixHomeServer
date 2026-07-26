@@ -17,6 +17,10 @@ let
   groundwaterEnabled =
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
+  atticEnabled =
+    moduleEnabled "attic"
+    && config.repo.attic.enable;
+  failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
 in
 {
   imports = [
@@ -48,11 +52,17 @@ in
     kopiaOauth2ProxyCookieSecret = { file = secretFile "kopiaOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
     serverBootstrapSudoPassword = { file = secretFile "serverBootstrapSudoPassword"; owner = "root"; mode = "0400"; };
   }
+  // lib.optionalAttrs atticEnabled {
+    atticServerEnv = { file = secretFile "atticServerEnv"; owner = "root"; mode = "0400"; };
+  }
   // lib.optionalAttrs megaEnabled {
     rcloneMegaPassword = { file = secretFile "rcloneMegaPassword"; owner = "root"; mode = "0400"; };
   }
   // lib.optionalAttrs (moduleEnabled "immich") {
     immichClientSecret = { file = secretFile "immichClientSecret"; owner = "kanidm"; group = "immich"; mode = "0440"; };
+  }
+  // lib.optionalAttrs (moduleEnabled "jellyfin") {
+    jellyfinOidcClientSecret = { file = secretFile "jellyfinOidcClientSecret"; owner = "kanidm"; group = "jellyfin"; mode = "0440"; };
   }
   // lib.optionalAttrs (moduleEnabled "paperless") {
     paperlessClientSecret = { file = secretFile "paperlessClientSecret"; owner = "kanidm"; group = "paperless"; mode = "0440"; };
@@ -108,6 +118,9 @@ in
   // lib.optionalAttrs groundwaterEnabled {
     groundwaterAppMqttPassword = { file = secretFile "groundwaterAppMqttPassword"; owner = "groundwater-logger"; group = "groundwater-logger"; mode = "0400"; };
     groundwaterLoggerMqttPassword = { file = secretFile "groundwaterLoggerMqttPassword"; owner = "root"; mode = "0400"; };
+  }
+  // lib.optionalAttrs (builtins.pathExists failureAlertWebhookFile) {
+    failureAlertWebhookUrl = { file = failureAlertWebhookFile; owner = "root"; mode = "0400"; };
   };
 
   systemd.tmpfiles.rules = [

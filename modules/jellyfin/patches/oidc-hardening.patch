@@ -1,0 +1,372 @@
+diff --git a/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs b/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs
+index 77a696d..e87f7d2 100644
+--- a/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs
++++ b/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs
+@@ -59,6 +59,7 @@ public class LoginButtonController : ControllerBase
+         sb.AppendLine("    sep.textContent = '— or sign in with password —';");
+         sb.AppendLine("    container.appendChild(sep);");
+         sb.AppendLine("    form.parentNode.insertBefore(container, form);");
++        sb.AppendLine("    document.documentElement.classList.add('nixhomeserver-oidc-ready');");
+         sb.AppendLine("  }");
+         sb.AppendLine("  var observer = new MutationObserver(addButtons);");
+         sb.AppendLine("  observer.observe(document.body, { childList: true, subtree: true });");
+diff --git a/Jellyfin.Plugin.OIDC/Api/OidcController.cs b/Jellyfin.Plugin.OIDC/Api/OidcController.cs
+index 15b96d5..8a7368a 100644
+--- a/Jellyfin.Plugin.OIDC/Api/OidcController.cs
++++ b/Jellyfin.Plugin.OIDC/Api/OidcController.cs
+@@ -1,9 +1,9 @@
+ using System;
+ using System.Collections.Generic;
+-using System.IdentityModel.Tokens.Jwt;
+ using System.Linq;
+ using System.Net.Http;
++using System.Security.Claims;
+ using System.Security.Cryptography;
+ using System.Text;
+ using System.Threading;
+ using System.Threading.Tasks;
+@@ -167,25 +167,31 @@ public class OidcController : ControllerBase
+             return BadRequest("Token exchange failed. Check plugin logs for details.");
+         }
+ 
+-        var handler = new JwtSecurityTokenHandler();
+-        if (!handler.CanReadToken(tokenResponse.IdentityToken ?? tokenResponse.AccessToken))
++        ClaimsPrincipal principal;
++        try
+         {
+-            return BadRequest("Could not read identity token");
++            principal = await ValidateIdentityTokenAsync(
++                provider,
++                disco,
++                tokenResponse.IdentityToken,
++                oidcState.Nonce,
++                HttpContext.RequestAborted).ConfigureAwait(false);
+         }
+-
+-        var idToken = handler.ReadJwtToken(tokenResponse.IdentityToken ?? tokenResponse.AccessToken);
+-
+-        var nonceClaim = idToken.Claims.FirstOrDefault(c => c.Type == "nonce")?.Value;
+-        if (!string.IsNullOrEmpty(oidcState.Nonce) && nonceClaim != oidcState.Nonce)
++        catch (SecurityTokenException ex)
+         {
+-            _logger.LogWarning("Nonce mismatch in OIDC callback");
+-            return BadRequest("Token validation failed: nonce mismatch");
++            _logger.LogWarning(ex, "ID-token validation failed for provider {Provider}", providerId);
++            return BadRequest("Token validation failed.");
++        }
++        catch (Exception ex) when (ex is HttpRequestException or ArgumentException)
++        {
++            _logger.LogError(ex, "Unable to retrieve or parse signing keys for provider {Provider}", providerId);
++            return StatusCode(502, "Failed to validate the identity provider response.");
+         }
+ 
+-        var username = ClaimParser.ExtractClaim(idToken, provider.UsernameClaim);
++        var username = ClaimParser.ExtractClaim(principal, provider.UsernameClaim);
+         if (string.IsNullOrEmpty(username))
+         {
+-            username = ClaimParser.ExtractClaim(idToken, "sub");
++            username = ClaimParser.ExtractClaim(principal, "sub");
+         }
+ 
+         if (string.IsNullOrEmpty(username))
+@@ -193,34 +199,15 @@ public class OidcController : ControllerBase
+             return BadRequest("Could not determine username from token");
+         }
+ 
+-        var displayName = ClaimParser.ExtractClaim(idToken, provider.DisplayNameClaim);
+-
+-        // Extract roles from both the ID token and the access token, then union them.
+-        // Providers differ in which token carries which claims (e.g. an admin group may
+-        // land only in the access token), so relying on one token can silently drop roles.
+-        var roles = ClaimParser.ExtractRoles(idToken, provider.RoleClaim);
+-        if (handler.CanReadToken(tokenResponse.AccessToken))
+-        {
+-            var accessToken = handler.ReadJwtToken(tokenResponse.AccessToken);
+-            var accessRoles = ClaimParser.ExtractRoles(accessToken, provider.RoleClaim);
+-            roles = roles
+-                .Concat(accessRoles)
+-                .Distinct(StringComparer.OrdinalIgnoreCase)
+-                .ToArray();
+-        }
++        var displayName = ClaimParser.ExtractClaim(principal, provider.DisplayNameClaim);
++        var roles = ClaimParser.ExtractRoles(principal, provider.RoleClaim);
+ 
+-        // Optionally extract the profile-image URL (standard OIDC "picture" claim). Like roles,
+-        // check the ID token first and fall back to the access token, since providers differ
+-        // in which token carries the claim.
++        // Use only the validated ID-token principal for local claims. Userinfo remains an
++        // authenticated fallback for the optional profile image.
+         string? pictureUrl = null;
+         if (provider.SyncProfileImage && !string.IsNullOrWhiteSpace(provider.PictureClaim))
+         {
+-            pictureUrl = ClaimParser.ExtractClaim(idToken, provider.PictureClaim);
+-            if (string.IsNullOrEmpty(pictureUrl) && handler.CanReadToken(tokenResponse.AccessToken))
+-            {
+-                pictureUrl = ClaimParser.ExtractClaim(
+-                    handler.ReadJwtToken(tokenResponse.AccessToken), provider.PictureClaim);
+-            }
++            pictureUrl = ClaimParser.ExtractClaim(principal, provider.PictureClaim);
+ 
+             // Many providers (e.g. Authentik) expose the picture only via the userinfo
+             // endpoint, not in the tokens. Fall back to userinfo when it's in neither token.
+@@ -426,6 +415,56 @@ public class OidcController : ControllerBase
+                                  && p.Enabled);
+     }
+ 
++    private async Task<ClaimsPrincipal> ValidateIdentityTokenAsync(
++        OidcProviderConfig provider,
++        DiscoveryDocumentResponse discovery,
++        string? identityToken,
++        string expectedNonce,
++        CancellationToken cancellationToken)
++    {
++        var issuer = discovery.Issuer
++            ?? throw new SecurityTokenException("OIDC discovery did not return an issuer.");
++        var signingKeys = await GetSigningKeysAsync(discovery, cancellationToken).ConfigureAwait(false);
++
++        return await OidcTokenValidator.ValidateWithKeyRefreshAsync(
++            identityToken ?? string.Empty,
++            issuer,
++            provider.ClientId,
++            signingKeys,
++            expectedNonce,
++            async token =>
++            {
++                _logger.LogInformation(
++                    "OIDC signing key was not found for provider {Provider}; refreshing discovery once",
++                    provider.ProviderId);
++                var refreshedDiscovery = await GetDiscoveryDocumentAsync(provider).ConfigureAwait(false);
++                if (refreshedDiscovery.IsError
++                    || !string.Equals(refreshedDiscovery.Issuer, issuer, StringComparison.Ordinal))
++                {
++                    throw new SecurityTokenException("OIDC discovery refresh failed or changed issuer.");
++                }
++
++                return await GetSigningKeysAsync(refreshedDiscovery, token).ConfigureAwait(false);
++            },
++            cancellationToken).ConfigureAwait(false);
++    }
++
++    private async Task<IEnumerable<SecurityKey>> GetSigningKeysAsync(
++        DiscoveryDocumentResponse discovery,
++        CancellationToken cancellationToken)
++    {
++        if (string.IsNullOrWhiteSpace(discovery.Issuer)
++            || !Uri.TryCreate(discovery.JwksUri, UriKind.Absolute, out var jwksUri)
++            || !string.Equals(jwksUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
++        {
++            throw new SecurityTokenException("OIDC discovery did not return a valid HTTPS JWKS endpoint.");
++        }
++
++        var httpClient = _httpClientFactory.CreateClient("OidcPlugin");
++        var jwksJson = await httpClient.GetStringAsync(jwksUri, cancellationToken).ConfigureAwait(false);
++        return JsonWebKeySet.Create(jwksJson).GetSigningKeys();
++    }
++
+     private async Task<DiscoveryDocumentResponse> GetDiscoveryDocumentAsync(OidcProviderConfig provider)
+     {
+         var httpClient = _httpClientFactory.CreateClient("OidcPlugin");
+diff --git a/Jellyfin.Plugin.OIDC/Services/ClaimParser.cs b/Jellyfin.Plugin.OIDC/Services/ClaimParser.cs
+index 412ed3a..37d64d1 100644
+--- a/Jellyfin.Plugin.OIDC/Services/ClaimParser.cs
++++ b/Jellyfin.Plugin.OIDC/Services/ClaimParser.cs
+@@ -1,7 +1,7 @@
+ using System;
+ using System.Collections.Generic;
+-using System.IdentityModel.Tokens.Jwt;
+ using System.Linq;
++using System.Security.Claims;
+ using System.Text.Json;
+ 
+ namespace Jellyfin.Plugin.OIDC.Services;
+@@ -12,7 +12,7 @@ public static class ClaimParser
+     /// Extracts roles from a JWT using a dot-separated claim path.
+     /// Supports nested JSON objects (e.g. "realm_access.roles") and flat claim arrays.
+     /// </summary>
+-    public static string[] ExtractRoles(JwtSecurityToken token, string roleClaim)
++    public static string[] ExtractRoles(ClaimsPrincipal principal, string roleClaim)
+     {
+         if (string.IsNullOrWhiteSpace(roleClaim))
+         {
+@@ -24,53 +24,41 @@ public static class ClaimParser
+         // Try flat claim first (single segment like "roles" or "groups")
+         if (parts.Length == 1)
+         {
+-            return ExtractFromFlatClaim(token, roleClaim);
++            return ExtractFromFlatClaim(principal, roleClaim);
+         }
+ 
+         // Nested path: walk the JSON payload
+-        return ExtractFromNestedClaim(token, parts);
++        return ExtractFromNestedClaim(principal, parts);
+     }
+ 
+-    public static string ExtractClaim(JwtSecurityToken token, string claimType)
++    public static string ExtractClaim(ClaimsPrincipal principal, string claimType)
+     {
+-        return token.Claims.FirstOrDefault(c => c.Type == claimType)?.Value ?? string.Empty;
++        return principal.Claims.FirstOrDefault(c => c.Type == claimType)?.Value ?? string.Empty;
+     }
+ 
+-    private static string[] ExtractFromFlatClaim(JwtSecurityToken token, string claimType)
++    private static string[] ExtractFromFlatClaim(ClaimsPrincipal principal, string claimType)
+     {
+-        var claims = token.Claims.Where(c => c.Type == claimType).Select(c => c.Value).ToArray();
+-        if (claims.Length > 0)
++        var claims = principal.Claims.Where(c => c.Type == claimType).Select(c => c.Value).ToArray();
++        if (claims.Length > 1)
+         {
+             return claims;
+         }
+ 
+-        // Try parsing the single claim value as a JSON array
+-        var singleClaim = token.Claims.FirstOrDefault(c => c.Type == claimType)?.Value;
++        var singleClaim = claims.FirstOrDefault();
+         if (singleClaim != null && singleClaim.TrimStart().StartsWith('['))
+         {
+             return ParseJsonStringArray(singleClaim);
+         }
+ 
+-        return Array.Empty<string>();
++        return singleClaim == null ? Array.Empty<string>() : new[] { singleClaim };
+     }
+ 
+-    private static string[] ExtractFromNestedClaim(JwtSecurityToken token, string[] pathParts)
++    private static string[] ExtractFromNestedClaim(ClaimsPrincipal principal, string[] pathParts)
+     {
+-        // The root claim is the first segment
+-        var rootClaim = token.Claims.FirstOrDefault(c => c.Type == pathParts[0])?.Value;
++        var rootClaim = principal.Claims.FirstOrDefault(c => c.Type == pathParts[0])?.Value;
+         if (string.IsNullOrEmpty(rootClaim))
+         {
+-            // Try to reconstruct from the raw payload
+-            try
+-            {
+-                using var doc = JsonDocument.Parse(
+-                    Base64UrlDecode(token.RawPayload));
+-                return WalkJsonPath(doc.RootElement, pathParts);
+-            }
+-            catch
+-            {
+-                return Array.Empty<string>();
+-            }
++            return Array.Empty<string>();
+         }
+ 
+         // If root claim is JSON, parse and walk
+@@ -137,17 +125,4 @@ public static class ClaimParser
+ 
+         return Array.Empty<string>();
+     }
+-
+-    private static string Base64UrlDecode(string input)
+-    {
+-        var padded = input.Replace('-', '+').Replace('_', '/');
+-        switch (padded.Length % 4)
+-        {
+-            case 2: padded += "=="; break;
+-            case 3: padded += "="; break;
+-        }
+-
+-        var bytes = Convert.FromBase64String(padded);
+-        return System.Text.Encoding.UTF8.GetString(bytes);
+-    }
+ }
+diff --git a/Jellyfin.Plugin.OIDC/Services/OidcTokenValidator.cs b/Jellyfin.Plugin.OIDC/Services/OidcTokenValidator.cs
+new file mode 100644
+index 0000000..15908c5
+--- /dev/null
++++ b/Jellyfin.Plugin.OIDC/Services/OidcTokenValidator.cs
+@@ -0,0 +1,92 @@
++using System;
++using System.Collections.Generic;
++using System.IdentityModel.Tokens.Jwt;
++using System.Security.Claims;
++using System.Security.Cryptography;
++using System.Text;
++using System.Threading;
++using System.Threading.Tasks;
++using Microsoft.IdentityModel.Tokens;
++
++namespace Jellyfin.Plugin.OIDC.Services;
++
++public static class OidcTokenValidator
++{
++    private static readonly TimeSpan AllowedClockSkew = TimeSpan.FromMinutes(2);
++
++    public static async Task<ClaimsPrincipal> ValidateWithKeyRefreshAsync(
++        string identityToken,
++        string issuer,
++        string clientId,
++        IEnumerable<SecurityKey> signingKeys,
++        string expectedNonce,
++        Func<CancellationToken, Task<IEnumerable<SecurityKey>>> refreshSigningKeys,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Validate(identityToken, issuer, clientId, signingKeys, expectedNonce);
++        }
++        catch (SecurityTokenSignatureKeyNotFoundException)
++        {
++            var refreshedKeys = await refreshSigningKeys(cancellationToken).ConfigureAwait(false);
++            return Validate(identityToken, issuer, clientId, refreshedKeys, expectedNonce);
++        }
++    }
++
++    public static ClaimsPrincipal Validate(
++        string identityToken,
++        string issuer,
++        string clientId,
++        IEnumerable<SecurityKey> signingKeys,
++        string expectedNonce)
++    {
++        if (string.IsNullOrWhiteSpace(identityToken))
++        {
++            throw new SecurityTokenException("The token endpoint did not return an ID token.");
++        }
++
++        var handler = new JwtSecurityTokenHandler
++        {
++            MapInboundClaims = false
++        };
++        var principal = handler.ValidateToken(
++            identityToken,
++            new TokenValidationParameters
++            {
++                ValidateIssuer = true,
++                ValidIssuer = issuer,
++                ValidateAudience = true,
++                ValidAudience = clientId,
++                RequireAudience = true,
++                ValidateLifetime = true,
++                RequireExpirationTime = true,
++                RequireSignedTokens = true,
++                ValidateIssuerSigningKey = true,
++                IssuerSigningKeys = signingKeys,
++                ClockSkew = AllowedClockSkew
++            },
++            out _);
++
++        var actualNonce = principal.FindFirst("nonce")?.Value;
++        if (!FixedTimeEquals(expectedNonce, actualNonce))
++        {
++            throw new SecurityTokenValidationException("The ID-token nonce did not match the authentication request.");
++        }
++
++        return principal;
++    }
++
++    private static bool FixedTimeEquals(string expected, string? actual)
++    {
++        if (string.IsNullOrEmpty(expected) || string.IsNullOrEmpty(actual))
++        {
++            return false;
++        }
++
++        var expectedBytes = Encoding.UTF8.GetBytes(expected);
++        var actualBytes = Encoding.UTF8.GetBytes(actual);
++        return expectedBytes.Length == actualBytes.Length
++            && CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes);
++    }
++}

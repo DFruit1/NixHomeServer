@@ -124,6 +124,21 @@ in
           PrivateTmp = true;
           ProtectSystem = "strict";
           ProtectHome = true;
+          ProtectClock = true;
+          ProtectControlGroups = true;
+          ProtectHostname = true;
+          ProtectKernelLogs = true;
+          ProtectKernelModules = true;
+          ProtectKernelTunables = true;
+          LockPersonality = true;
+          RestrictSUIDSGID = true;
+          RestrictNamespaces = true;
+          RestrictAddressFamilies = [
+            "AF_INET"
+            "AF_INET6"
+            "AF_UNIX"
+          ];
+          SystemCallArchitectures = "native";
           ReadWritePaths = [
             paths.stateRoot
             paths.cacheRoot

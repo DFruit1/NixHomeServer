@@ -120,10 +120,12 @@ let
   offlineInputSourcesFile = pkgs.writeText
     "nixhomeserver-offline-flake-inputs.json"
     (builtins.toJSON offlineInputSources);
+  nixosTests = import ./nixos-tests.nix { inherit lib pkgs; };
 in
 {
   groundwater-logger = nodeApps.groundwater-logger;
   homepage = nodeApps.homepage;
+  mkvmaker-package = rustApps.mkvmaker.package;
   youtube-downloader = nodeApps.youtube-downloader;
 
   shellcheck = pkgs.runCommand "shellcheck"
@@ -197,10 +199,19 @@ in
     bash scripts/tests/run-script-tests.sh
     touch "$out"
   '';
+
+  kopia-restore-roundtrip = pkgs.runCommand "kopia-restore-roundtrip"
+    {
+      nativeBuildInputs = with pkgs; [ bash coreutils diffutils jq kopia ];
+    } ''
+    bash ${../scripts/tests/test-kopia-restore-roundtrip.sh}
+    touch "$out"
+  '';
 }
   // lib.optionalAttrs (pkgs.system == hostSettings.hostPlatform) {
   # Keep the destructive layout fully evaluable/buildable in ordinary CI.
   # Running this derivation never touches disks; only `disko --mode disko` does.
   bootstrap-disko = bootstrapConfigurations."${hostName}-bootstrap".config.system.build.diskoScript;
   }
+  // nixosTests
   // rustChecks

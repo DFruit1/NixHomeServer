@@ -105,6 +105,10 @@ run_full_derivation_checks() {
   while IFS= read -r check_name; do
     [[ -n "$check_name" ]] || continue
     [[ "$check_name" != "repo-policy" ]] || continue
+    if [[ "$check_name" =~ ^(failure-alert|jellyfin-oidc)$ && ! -c /dev/kvm ]]; then
+      echo "ℹ️ Skipping ${check_name} VM execution because /dev/kvm is unavailable; flake evaluation still checks the test definition."
+      continue
+    fi
     echo "ℹ️ Running ${check_name} derivation…"
     nix build ".#checks.${system}.${check_name}" --no-link --print-build-logs
   done <<<"$check_names"

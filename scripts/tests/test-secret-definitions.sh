@@ -84,6 +84,7 @@ references_file="${tmpdir}/references.txt"
 defined_age_files="${tmpdir}/defined-age-files.txt"
 tracked_age_files="${tmpdir}/tracked-age-files.txt"
 manifest_names="${tmpdir}/manifest-names.txt"
+optional_manifest_names="${tmpdir}/optional-manifest-names.txt"
 
 rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' modules/Core_Modules/age/default.nix -r '$1' \
   | sort -u >"$definitions_file"
@@ -91,6 +92,9 @@ rg --no-filename -o -N '^\s*([A-Za-z0-9]+)\s*=\s*\{' modules/Core_Modules/age/de
 nix eval --json --file secrets/manifest.nix \
   | jq -r '(.generatedSecrets + .externalSecrets) | keys[]' \
   | sort -u >"$manifest_names"
+nix eval --json --file secrets/manifest.nix \
+  | jq -r '.externalSecrets | to_entries[] | select(.value.required == false) | .key' \
+  | sort -u >"$optional_manifest_names"
 
 missing_manifest_definitions="$(comm -23 "$manifest_names" "$definitions_file" || true)"
 if [[ -n "$missing_manifest_definitions" ]]; then
@@ -123,7 +127,7 @@ if [[ -n "$missing_refs" ]]; then
   exit 1
 fi
 
-if rg -n 'config\.age\.secrets\s+\?' modules --glob '!*/bootstrap.nix'; then
+if rg -n 'config\.age\.secrets\s+\?' modules --glob '!**/bootstrap.nix'; then
   echo "❌ Secret availability assertions must live in bootstrap.nix, not identity or service modules."
   exit 1
 fi
@@ -145,7 +149,7 @@ while IFS=$'\t' read -r ref_file secret_name; do
     exit 1
   fi
 
-  if ! rg -q "\"${secret_name}\"" "$bootstrap_file"; then
+  if ! rg -q "(\"${secret_name}\"|config\\.age\\.secrets\\s+\\?\\s+${secret_name})" "$bootstrap_file"; then
     echo "❌ ${ref_file} references ${secret_name}, but ${bootstrap_file} does not assert it."
     exit 1
   fi
@@ -162,6 +166,11 @@ done < <(
 while IFS= read -r age_file; do
   [[ -n "$age_file" ]] || continue
   if [[ ! -f "$age_file" ]]; then
+    secret_name="${age_file#secrets/}"
+    secret_name="${secret_name%.age}"
+    if grep -Fxq "$secret_name" "$optional_manifest_names"; then
+      continue
+    fi
     echo "❌ Secret definition points at a missing encrypted file: $age_file"
     exit 1
   fi
@@ -188,7 +197,18 @@ printf 'do-not-archive\n' >"${archive_cache_probe_dir}/cache-file"
 
 archive_file="${tmpdir}/deploy-repo.tar"
 archive_listing="${tmpdir}/deploy-repo-files.txt"
-create_deploy_repo_archive "$archive_file"
+if git -C "$TESTS_REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  create_deploy_repo_archive "$archive_file"
+else
+  # Debug deployment validation runs from a manifest-filtered archive without
+  # .git. Build an isolated index over that tree so this test can still prove
+  # ignored secret/cache probes are excluded without modifying the source.
+  archive_manifest_git_dir="${tmpdir}/archive-manifest.git"
+  git init --bare -q "$archive_manifest_git_dir"
+  GIT_DIR="$archive_manifest_git_dir" GIT_WORK_TREE="$TESTS_REPO_ROOT" git add -A
+  GIT_DIR="$archive_manifest_git_dir" GIT_WORK_TREE="$TESTS_REPO_ROOT" \
+    create_deploy_repo_archive "$archive_file"
+fi
 tar -tf "$archive_file" >"$archive_listing"
 
 if rg -q '(^|/)secrets/unencrypted/|(^|/)\.cache/|(^|/)SensitivePrivateSecrets(/|$)' "$archive_listing"; then

@@ -67,6 +67,21 @@ let
     export KOPIA_CACHE_DIRECTORY="$cache_dir"
     exec ${pkgs.kopia}/bin/kopia "$@"
   '';
+  kopiaBrowserCredential = pkgs.writeShellScript "nixhomeserver-kopia-browser-credential" ''
+    set -euo pipefail
+
+    if (( EUID != 0 )); then
+      echo "nixhomeserver-kopia-browser-credential must be run as root (for example, with sudo)." >&2
+      exit 77
+    fi
+
+    secret_file=${lib.escapeShellArg config.age.secrets.kopiaServerPassword.path}
+    [[ -r "$secret_file" ]] || { echo "Kopia password secret is unavailable at $secret_file" >&2; exit 1; }
+    password="$(tr -d '\r\n' < "$secret_file")"
+    [[ -n "$password" ]] || { echo "Kopia password secret is empty." >&2; exit 1; }
+
+    printf 'Username: kopia-admin\nPassword: %s\n' "$password"
+  '';
   requireDataRoot = lib.optionalString vars.dataRootIsMountPoint ''
     if ! ${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg vars.dataRoot}; then
       echo "Refusing backup operation because ${vars.dataRoot} is not a mounted data pool" >&2
@@ -100,7 +115,15 @@ in
         source = kopiaCliWrapper;
         owner = "root";
         group = "root";
-        permissions = "0500";
+        # The wrapper module combines this with symbolic setuid/setgid
+        # clauses, so keep the permission clause symbolic as well.
+        permissions = "u=rx,g=,o=";
+      };
+      security.wrappers.nixhomeserver-kopia-browser-credential = {
+        source = kopiaBrowserCredential;
+        owner = "root";
+        group = "root";
+        permissions = "u=rx,g=,o=";
       };
 
       systemd.tmpfiles.rules = [
@@ -276,6 +299,8 @@ in
         unitConfig = {
           StartLimitIntervalSec = "2h";
           StartLimitBurst = 3;
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
         };
         path = commonPath;
         serviceConfig = {
@@ -331,7 +356,10 @@ in
           "kopia-persist-snapshot.service"
           "kopia-repository-bootstrap.service"
         ];
-        unitConfig = lib.mkIf vars.dataRootIsMountPoint {
+        unitConfig = {
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
+        } // lib.optionalAttrs vars.dataRootIsMountPoint {
           ConditionPathIsMountPoint = vars.dataRoot;
         };
         path = [ pkgs.coreutils pkgs.jq ];

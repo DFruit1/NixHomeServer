@@ -1,0 +1,58 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /custom_apps/rust/apps/mail-archive-ui
+    schedule:
+      interval: monthly
+    groups:
+      mail-archive-rust:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /custom_apps/rust/apps/kanidm-canary-bootstrap
+    schedule:
+      interval: monthly
+    groups:
+      canary-rust:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /custom_apps/node/apps/homepage
+    schedule:
+      interval: monthly
+    groups:
+      homepage:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /custom_apps/node/apps/groundwater-logger
+    schedule:
+      interval: monthly
+    groups:
+      groundwater-logger:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /custom_apps/node/apps/youtube-downloader
+    schedule:
+      interval: monthly
+    groups:
+      youtube-downloader:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /custom_apps/rust/apps/mail-archive-ui/frontend
+    schedule:
+      interval: monthly
+    groups:
+      mail-archive-frontend:
+        patterns: ["*"]

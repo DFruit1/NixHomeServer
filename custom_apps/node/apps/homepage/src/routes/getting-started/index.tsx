@@ -23,6 +23,7 @@ export default component$(() => {
   const data = homepage.data;
   const domain = data?.domain ?? 'example.test';
   const username = data?.user.username ?? '{username}';
+  const serverLanHost = data?.serverLanHost;
   const manualCheckStorageKey = `homepage.gettingStartedChecks.${username}`;
   const services = data?.services ?? [];
   const enabledServices = services.filter((service) => service.enabled);
@@ -36,6 +37,10 @@ export default component$(() => {
   const filesStatus = serviceStatus(serviceById('files'));
   const photosStatus = serviceStatus(serviceById('photos'));
   const videosStatus = serviceStatus(serviceById('videos'));
+  const documentsStatus = serviceStatus(serviceById('documents'));
+  const booksStatus = serviceStatus(serviceById('books'));
+  const backupsStatus = serviceStatus(serviceById('backups'));
+  const monitorStatus = serviceStatus(serviceById('monitor'));
   const offlineMediaStatus = serviceStatus(serviceById('offline-media'));
   const filesWebAvailable = filesStatus === 'available';
   const sftpAvailable = data?.sftp?.allowed === true;
@@ -79,7 +84,7 @@ export default component$(() => {
   const statusLabel = (status: SetupStatus): string => {
     if (status === 'verified' || status === 'manual') return 'Done';
     if (status === 'available') return 'Available — not yet checked';
-    if (status === 'unavailable') return 'Skip — this app is not available';
+    if (status === 'unavailable') return 'Skip — not available for this account';
     return 'Not done';
   };
 
@@ -114,14 +119,16 @@ export default component$(() => {
     },
     {
       id: 'recovery-saved',
-      label: 'Created and tested a recovery backup',
+      label: passwordsStatus === 'available'
+        ? 'Created and tested a Passwords recovery backup'
+        : 'Stored account recovery details outside this server',
       status: manualChecks['recovery-saved'] ? 'manual' : 'pending',
       manual: true,
     },
     {
       id: 'services-opened',
       label: 'Opened the apps I plan to use',
-      status: manualChecks['services-opened'] ? 'manual' : 'pending',
+      status: enabledServices.length > 0 ? (manualChecks['services-opened'] ? 'manual' : 'pending') : 'unavailable',
       manual: true,
     },
     {
@@ -182,13 +189,16 @@ export default component$(() => {
           <p class="step-lead">Kanidm is where you manage the account used by most apps. Check that you can sign in and that you have another way in if you lose your phone or computer.</p>
           <ul class="setup-list">{['signed-in', 'account-secured'].map(renderSetupItem)}</ul>
           <ol class="steps">
-            <li>Open Kanidm. Check that your name and email address are correct.</li>
-            <li>Check that losing one device would not remove every way you can sign in.</li>
+            <li>Open Kanidm. Check that your name and primary email address are correct before registering for other apps. Ask an admin to correct them if they are wrong.</li>
+            <li>If an admin sent you a one-time account link, open it only on a trusted device. It works once and expires after one hour, so set your password and finish the sign-in-method review in the same session.</li>
+            <li>Add a second sign-in method, such as a passkey on another device or an authenticator code. Check that losing one device would not remove every way you can sign in.</li>
+            <li>Sign out and back in once. This catches an incomplete first-time setup before you depend on the account.</li>
           </ol>
           <div class="getting-started-actions compact">
             <a class="primary-link" href={kanidmUrl} target="_blank" rel="noreferrer">Open Kanidm</a>
           </div>
-          <aside class="guide-callout">If you cannot sign in to Kanidm, stop here and ask an admin for a temporary account recovery link.</aside>
+          <aside class="guide-callout">If the one-time link says it is expired or already used, or setup was interrupted, stop and ask an admin for a new link. Never send an admin your password, authenticator code, passkey, recovery code, or the link itself.</aside>
+          <aside class="guide-callout neutral"><strong>Use a trusted network path.</strong> Open private apps while connected to your home network or NetBird. {serverLanHost ? <>If names do not resolve at home, tell the admin you are trying to reach the server at <code>{serverLanHost}</code>.</> : 'If an app name does not resolve, tell the admin which network you are using.'} Do not bypass browser certificate warnings.</aside>
         </>
       ),
     },
@@ -209,6 +219,36 @@ export default component$(() => {
             <li>Keep recovery codes in a second secure place that does not rely on this server.</li>
             <li>If an app gives you its own password, save that too. It may be different from your Kanidm password.</li>
           </ol>
+          <div class="choice-grid" aria-label="Account types">
+            <article>
+              <strong>Kanidm sign-in</strong>
+              <span>Used by Homepage and most apps. Protect it with more than one sign-in method.</span>
+            </article>
+            {passwordsStatus === 'available' && (
+              <article>
+                <strong>Passwords master password</strong>
+                <span>Separate from Kanidm. The server cannot recover it for you, so save it and the vault recovery details immediately.</span>
+              </article>
+            )}
+            {videosStatus === 'available' && (
+              <article>
+                <strong>Videos password</strong>
+                <span>Jellyfin uses a separate initial password. Change it on first sign-in and save the replacement.</span>
+              </article>
+            )}
+            {backupsStatus === 'available' && (
+              <article>
+                <strong>Local Backups password</strong>
+                <span>After the Kanidm gateway, Kopia asks for the shared native <code>kopia-admin</code> credential. Get it from an administrator through a trusted channel; do not try your Kanidm password.</span>
+              </article>
+            )}
+            {monitorStatus === 'available' && (
+              <article>
+                <strong>Monitor login</strong>
+                <span>After the Kanidm gateway, Beszel uses its own native account. A Kanidm reset does not reset that second login.</span>
+              </article>
+            )}
+          </div>
           {passwordsStatus === 'available' ? (
             <div class="getting-started-actions compact">
               <a class="primary-link" href={passwordsUrl} target="_blank" rel="noreferrer">Open Passwords</a>
@@ -216,7 +256,14 @@ export default component$(() => {
           ) : (
             <aside class="guide-callout neutral">The Passwords app is not available to you. Use another password manager, or ask an admin whether you should have access.</aside>
           )}
-          <CredentialBackupGuide />
+          {passwordsStatus === 'available' && (
+            <>
+              <aside class="guide-callout neutral">
+                <strong>If Passwords says the email is already registered, do not create a second vault.</strong> Return to its login page and use the Vaultwarden master password, not your Kanidm password. If that master password is lost, an admin cannot reveal it; use your personal recovery copy and ask for help before deleting or recreating anything.
+              </aside>
+              <CredentialBackupGuide />
+            </>
+          )}
         </>
       ),
     },
@@ -238,16 +285,38 @@ export default component$(() => {
               ))}
             </div>
           )}
-          <ol class="steps">
-            <li>Open each app you plan to use. Complete any setup questions it shows.</li>
-            <li>If an app creates a separate password, save it in your password manager.</li>
-            <li>If an app is missing, ask an admin to check your access. If an app will not open, tell the admin its name and copy the error message.</li>
-          </ol>
+          {enabledServices.length > 0 ? (
+            <ol class="steps">
+              <li>Open each app you plan to use. Complete any setup questions it shows.</li>
+              <li>If an app creates a separate password, save it in your password manager.</li>
+              <li>If an app is missing, ask an admin to check your access. If an app will not open, send the admin the app name, the time it failed, whether you were on the home network or NetBird, and the exact error message.</li>
+            </ol>
+          ) : (
+            <aside class="guide-callout neutral">No enabled apps are currently assigned to this account, so there is nothing to check here. If you expected an app, sign out and back in once, then ask an admin to verify your access.</aside>
+          )}
           {videosStatus === 'available' && (
             <aside class="guide-callout neutral">
               <strong>Videos uses a separate Jellyfin password.</strong> Before your first login, ask an administrator for the generated initial password. Sign in with your Kanidm username, change that password immediately, and save the replacement in your password manager.
             </aside>
           )}
+          {(documentsStatus === 'available' || booksStatus === 'available') && (
+            <aside class="guide-callout neutral">
+              <strong>Some app accounts are created on first sign-in.</strong> {documentsStatus === 'available' && 'Documents'}{documentsStatus === 'available' && booksStatus === 'available' && ' and '}{booksStatus === 'available' && 'Books'} may take a moment to create or provision a local profile after Kanidm accepts you. Complete the first sign-in once before reporting a missing account. If it still fails, do not create a second local account; ask an admin to run that app’s reconciliation.
+            </aside>
+          )}
+          {backupsStatus === 'available' && (
+            <aside class="guide-callout neutral">
+              <strong>Local Backups has two sign-in gates.</strong> Kanidm first checks the <code>backup-admin</code> role, then Kopia asks for the shared native <code>kopia-admin</code> credential. If the first gate denies access, ask an admin to check your group. If the second gate rejects the password, ask them to verify the Kopia credential instead of resetting Kanidm.
+            </aside>
+          )}
+          {monitorStatus === 'available' && (
+            <aside class="guide-callout neutral">
+              <strong>Monitor also has two sign-in gates.</strong> Kanidm first checks monitoring access, then Beszel asks for its native login. A failure at the second prompt belongs to Beszel and will not be fixed by changing your Kanidm password.
+            </aside>
+          )}
+          <aside class="guide-callout neutral">
+            <strong>If access was just changed, refresh your sign-in first.</strong> Sign out of Homepage and the affected app, then sign back in so a new session can receive your current groups. If the app is still missing or denies access, ask an admin to verify the live membership and app reconciliation; do not repeatedly reset your password.
+          </aside>
           <div class="getting-started-actions compact">
             <Link class="primary-link" href="/">Open Services</Link>
           </div>
@@ -269,9 +338,14 @@ export default component$(() => {
             <>
               <div class="choice-grid">
                 {filesWebAvailable && <article><strong>Upload in your browser</strong><span>Best for a few files. Open Files, choose the folder for that type of content, then drag your files into it.</span></article>}
-                {sftpAvailable && <article><strong>Connect Files to your computer</strong><span>Best for regular or large transfers. Follow the LAN-only guide for Windows, macOS, or Linux.</span></article>}
+                {sftpAvailable && <article><strong>Connect Files to your computer</strong><span>Best for regular or large transfers. Follow the home-network-only SFTP/SSHFS guide for Windows, macOS, or Linux.</span></article>}
               </div>
-              <aside class="guide-callout neutral">Check the upload guide before choosing a folder. Each app imports files from a specific folder. Using the wrong one can stop the file from appearing or create a duplicate later.</aside>
+              <ol class="steps">
+                <li>Check the upload guide before choosing a folder. Each app watches a specific location.</li>
+                <li>Upload one small test file, wait for the transfer to finish, then confirm it appears in the intended app before copying a large library.</li>
+                <li>Do not upload or move the same file into several watched folders to make it appear faster; that can create duplicates. If a completed file does not appear, report its destination folder and upload time.</li>
+              </ol>
+              <aside class="guide-callout neutral">Browser Files and SFTP/SSHFS are separate permissions. SFTP also uses a device key and is exposed only on the home network; public Homepage or NetBird access does not make the SFTP port reachable.</aside>
               <div class="getting-started-actions compact">
                 {filesWebAvailable && <a class="primary-link" href={filesUrl} target="_blank" rel="noreferrer">Open Files</a>}
                 <Link class="secondary-link" href="/uploads">See where and how to upload</Link>
@@ -298,18 +372,21 @@ export default component$(() => {
             {photosStatus === 'available' && (
               <article>
                 <div><span class="eyebrow">Phone backup</span><h3>Photos</h3></div>
-                <p>Install the Immich app and enter <strong>{photosUrl}</strong> when it asks for the server address. Sign in, choose the phone albums to back up, and keep the app open for the first upload. Then check that a new photo appears in Photos.</p>
+                <p>Install the Immich app and enter the private Photos address <strong>{photosUrl}</strong> when it asks for the server address. Do not use a public photo-share link or the public share hostname: those links are for viewing selected albums and cannot sign the mobile app in. Choose the phone albums to back up, allow the requested photo and background permissions, and keep the app open and powered for the first upload. Then take a test photo and check that it appears before relying on background backup.</p>
                 <a class="secondary-link" href={photosUrl} target="_blank" rel="noreferrer">Open Photos</a>
               </article>
             )}
             {offlineMediaStatus === 'available' && (
               <article>
                 <div><span class="eyebrow">Offline access</span><h3>Offline Media</h3></div>
-                <p>Install Syncthing, the app used to copy media to this device. Copy the device ID it shows, then open the Offline Media setup page and follow the steps. Check that your device appears before waiting for files to download.</p>
+                <p>Install Syncthing-Fork on an Android phone or tablet. iPhone and iPad are not supported. Copy the device ID it shows, then open the Offline Media setup page and follow the steps. Accept offered folders as <strong>Receive Only</strong> and check that the device connects before waiting for files to download.</p>
                 <Link class="secondary-link" href="/services/offline-media">Set up Offline Media</Link>
               </article>
             )}
           </div>
+          {offlineMediaStatus === 'available' && (
+            <aside class="guide-callout neutral">Offline Media copies from the server to your device; add new media through Files. Reinstalling Syncthing creates a new device ID, so remove the old device entry and enroll the new one. Remove lost or retired devices promptly.</aside>
+          )}
           {photosStatus === 'unavailable' && offlineMediaStatus === 'unavailable' && (
             <aside class="guide-callout neutral">Photo backup and Offline Media are not available to you. You can skip this step.</aside>
           )}
@@ -329,11 +406,15 @@ export default component$(() => {
           <ul class="setup-list">{['signed-in', 'account-secured', 'recovery-saved', 'services-opened', 'upload-ready', 'photos-ready', 'offline-ready', 'setup-reviewed'].map(renderSetupItem)}</ul>
           <div class="finish-next-steps">
             <h3>Where to go next</h3>
-            <p><strong>Services</strong> opens your apps and their help pages. <strong>How to Upload Files</strong> shows which folder to use and how to connect Files to your computer. Ask an admin about a missing app, account recovery, or an app that will not open.</p>
+            <p><strong>Services</strong> opens your apps and their help pages. {fileTransferAvailable && <><strong>How to Upload Files</strong> shows which folder to use and how to connect Files to your computer. </>}Ask an admin about a missing app, account recovery, or an app that will not open.</p>
           </div>
+          <aside class="guide-callout neutral">
+            <strong>What to include when asking for help</strong>
+            <p>Send your username, the app name, the approximate time, your network path (home network or NetBird), and the exact error text. A screenshot is useful after removing private document names. Never include passwords, one-time account links, recovery codes, API tokens, or authenticator codes.</p>
+          </aside>
           <div class="getting-started-actions compact">
             <Link class="primary-link" href="/">Go to Services</Link>
-            <Link class="secondary-link" href="/uploads">Open Upload Guide</Link>
+            {fileTransferAvailable && <Link class="secondary-link" href="/uploads">Open Upload Guide</Link>}
           </div>
         </>
       ),
@@ -352,9 +433,9 @@ export default component$(() => {
     <section id="guide" class="getting-started-guide">
       <header class="getting-started-header">
         <div>
-          <span class="eyebrow">First-time setup · your progress is saved on this device</span>
+          <span class="eyebrow">First-time setup · progress is saved only in this browser profile</span>
           <h1>Set up your account</h1>
-          <p>Start by protecting the account for {username}. Then set up only the apps and devices you plan to use.</p>
+          <p>Start by protecting the account for {username}. Then set up only the apps and devices you plan to use. These checkboxes are reminders, not server-side verification; private browsing, another device, or cleared site data will show a separate checklist.</p>
         </div>
         <div class="setup-progress" aria-label={`${progress}% of setup complete`}>
           <div><strong>{completeItems.length} of {relevantItems.length}</strong><span>tasks done</span></div>

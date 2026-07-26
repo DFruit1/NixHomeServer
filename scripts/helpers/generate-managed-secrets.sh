@@ -22,6 +22,9 @@ generate_secret_value() {
 
   if [[ "$name" == *Oauth2ProxyCookieSecret || "$name" == "oauth2ProxyCookieSecret" ]]; then
     openssl rand -hex 16
+  elif [[ "$name" == "atticServerEnv" ]]; then
+    printf 'ATTIC_SERVER_TOKEN_HS256_SECRET_BASE64=%s\n' \
+      "$(openssl rand -base64 "$bytes" | tr -d '[:cntrl:]')"
   elif [[ "$name" == "beszelHubEnv" ]]; then
     printf 'USER_PASSWORD=%s\n' "$(openssl rand -base64 "$bytes" | tr -d '=+/[:cntrl:]' | head -c "$((bytes * 4 / 3))")"
   else

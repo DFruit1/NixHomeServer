@@ -15,6 +15,7 @@ let
   reconcile = pkgs.writeShellApplication {
     name = "offline-media-reconcile";
     runtimeInputs = with pkgs; [
+      bash
       coreutils
       curl
       findutils

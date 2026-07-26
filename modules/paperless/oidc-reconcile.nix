@@ -1,4 +1,4 @@
-{ lib, pkgs, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   kanidmDb = "/var/lib/kanidm/kanidm.db";
@@ -299,6 +299,10 @@ in
          );
         COMMIT;
         SQL
+
+        ${lib.optionalString config.repo.paperless.v3.enable ''
+          ${config.services.paperless.manage}/bin/paperless-manage invalidate_cachalot
+        ''}
       '';
     };
 

@@ -29,13 +29,16 @@ done
 
 test_scripts=(
   scripts/tests/test-app-module-structure.sh
+  scripts/tests/test-attic-cache.sh
   scripts/tests/test-module-boundaries.sh
   scripts/tests/test-module-removal-evaluation.sh
   scripts/tests/test-module-disable-evaluation.sh
   scripts/tests/test-netbird-login-convergence.sh
+  scripts/tests/test-nix-store-capacity-gc.sh
   scripts/tests/test-offline-media-reliability.sh
   scripts/tests/test-deploy-cli.sh
   scripts/tests/test-deploy-transaction-runtime.sh
+  scripts/tests/test-evaluated-service-hardening.sh
   scripts/tests/test-data-pool-consumers.sh
   scripts/tests/test-public-route-check.sh
   scripts/tests/test-canary-render-check.sh
@@ -50,17 +53,23 @@ test_scripts=(
   scripts/tests/test-bootstrap-safety.sh
   scripts/tests/test-core-runtime-safety.sh
   scripts/tests/test-config-input-validation.sh
+  scripts/tests/test-opinionated-vars.sh
   scripts/tests/test-decrypt-age-secrets.sh
   scripts/tests/test-export-inventory.sh
   scripts/tests/test-first-boot-convergence.sh
   scripts/tests/test-file-access-identity-derivation.sh
+  scripts/tests/test-failure-alert-delivery.sh
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh
   scripts/tests/test-install-repository-seeding.sh
+  scripts/tests/test-jellyfin-oidc.sh
   scripts/tests/test-kanidm-provision-validation.sh
   scripts/tests/test-kiwix-disable-evaluation.sh
   scripts/tests/test-kopia-cli-wrapper.sh
+  scripts/tests/test-mail-archive-paperless-reliability.sh
+  scripts/tests/test-paperless-v3-readiness.sh
+  scripts/tests/test-mkvmaker-automation.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
   scripts/tests/test-rclone-safety.sh

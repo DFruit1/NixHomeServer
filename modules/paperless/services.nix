@@ -62,6 +62,7 @@ in
 
   imports = [
     ./package.nix
+    ./v3.nix
   ];
 
   config = {
@@ -93,6 +94,10 @@ in
         PAPERLESS_OCR_LANGUAGE = "eng";
         PAPERLESS_OCR_CLEAN = "clean";
         PAPERLESS_OCR_OUTPUT_TYPE = "pdfa";
+      }
+      // lib.optionalAttrs (!config.repo.paperless.v3.enable) {
+        # Paperless-ngx v2 settings. Keep these intact until the guarded v3
+        # package switch is explicitly enabled.
         PAPERLESS_CONSUMER_INOTIFY_DELAY = "2";
         PAPERLESS_CONSUMER_POLLING = "60";
         PAPERLESS_CONSUMER_IGNORE_PATTERNS = paperlessConsumerIgnorePatterns;

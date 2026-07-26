@@ -142,10 +142,10 @@ const elements = [...document.body?.querySelectorAll('*') ?? []].filter(visible)
 const rich = elements.filter((element) => /^(A|BUTTON|INPUT|SELECT|TEXTAREA|IMG|SVG|CANVAS|VIDEO|MAIN|NAV)$/.test(element.tagName));
 const text = (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim();
 const loginControls = elements.filter((element) => {
-  if (element.matches('input[type="password"], input[autocomplete="current-password"], input[autocomplete="one-time-code"]')) return true;
+  if (element.matches('input[type="password"], input[type="email"], input[autocomplete="username"], input[autocomplete="current-password"], input[autocomplete="one-time-code"]')) return true;
   if (element.matches('form[action*="login" i], form[action*="auth" i]')) return true;
   if (!element.matches('button, input[type="submit"], a, [role="button"]')) return false;
-  return /^(sign in|log in|login|authenticate|continue with (kanidm|openid|sso))$/i
+  return /^(sign in|log in|login|authenticate|manual login|use quick connect|forgot password|continue with (kanidm|openid|sso))$/i
     .test((element.innerText || element.value || element.textContent || '').replace(/\s+/g, ' ').trim());
 }).length;
 const navigation = performance.getEntriesByType('navigation')[0];
@@ -168,6 +168,8 @@ export const hasAuthenticationBoundary = ({ url = '', text = '', title = '', log
   [authHost, kanidmHost].filter(Boolean).includes(hostOf(url))
   || loginControls > 0
   || /(?:sign in|log in|authenticate|continue)\s+(?:to|with|using)\s+(?:kanidm|openid|oauth|single sign-on|sso)\b/i.test(`${title}\n${text}`);
+export const isAccessDeniedResponse = ({ responseStatus = 0 } = {}) =>
+  responseStatus === 401 || responseStatus === 403;
 const visibleElement = (sessionId, selectors) => execute(sessionId, String.raw`
 const selectors = arguments[0];
 for (const selector of selectors) {
@@ -314,6 +316,96 @@ const failureResult = (target, phase, error, startedAt) => ({
   metrics: error?.metrics,
 });
 
+const jellyfinRequest = async (baseUrl, path, method = 'GET', body, accessToken) => {
+  const authorization = [
+    'MediaBrowser Client="NixHomeServer Canary"',
+    'Device="Headless Canary"',
+    'DeviceId="nixhomeserver-homepage-canary"',
+    'Version="1.0.0"',
+    accessToken ? `Token="${accessToken}"` : '',
+  ].filter(Boolean).join(', ');
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      authorization,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(35_000),
+  });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : undefined;
+  if (!response.ok) throw new Error(`Jellyfin ${method} ${path} returned HTTP ${response.status}`);
+  return payload;
+};
+
+const checkJellyfinQuickConnect = async (sessionId, target, expectedUsername) => {
+  const startedAt = Date.now();
+  const baseUrl = new URL(target.url).origin;
+  let accessToken;
+  try {
+    const enabled = await jellyfinRequest(baseUrl, '/QuickConnect/Enabled');
+    if (enabled !== true) throw Object.assign(new Error('Jellyfin Quick Connect is disabled'), { code: 'quick-connect-disabled' });
+
+    const initiated = await jellyfinRequest(baseUrl, '/QuickConnect/Initiate', 'POST');
+    if (!/^[0-9]{6}$/.test(initiated?.Code ?? '')) {
+      throw Object.assign(new Error('Jellyfin did not return a six-digit Quick Connect code'), { code: 'quick-connect-invalid-code' });
+    }
+    if (!initiated?.Secret) {
+      throw Object.assign(new Error('Jellyfin did not return a Quick Connect secret'), { code: 'quick-connect-invalid-secret' });
+    }
+
+    await navigate(sessionId, `${baseUrl}/sso/OIDC/QuickConnect/kanidm`);
+    await waitFor(async () => {
+      const input = await visibleElement(sessionId, ['#code', 'input[aria-label="Quick Connect code"]']);
+      return input || false;
+    }, 45_000);
+    await execute(sessionId, String.raw`
+      const input = document.querySelector('#code, input[aria-label="Quick Connect code"]');
+      if (!input) return false;
+      input.value = arguments[0];
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#submit, button')?.click();
+      return true;`, [initiated.Code]);
+    await waitFor(async () => {
+      const message = await execute(sessionId, 'return document.querySelector("#msg")?.textContent ?? "";');
+      return /approved|success/i.test(message);
+    }, 30_000);
+
+    const authentication = await jellyfinRequest(
+      baseUrl,
+      '/Users/AuthenticateWithQuickConnect',
+      'POST',
+      { Secret: initiated.Secret },
+    );
+    accessToken = authentication?.AccessToken;
+    const username = authentication?.User?.Name;
+    if (!accessToken || username !== expectedUsername) {
+      throw Object.assign(new Error('Quick Connect returned the wrong Jellyfin user or no access token'), { code: 'quick-connect-wrong-user' });
+    }
+
+    return {
+      id: `${target.id}-quick-connect`,
+      name: `${target.name} Quick Connect`,
+      coverageMode: 'native-oidc',
+      status: 'passed',
+      phase: 'quick-connect',
+      durationMs: Date.now() - startedAt,
+    };
+  } catch (error) {
+    return failureResult(
+      { ...target, id: `${target.id}-quick-connect`, name: `${target.name} Quick Connect` },
+      'quick-connect',
+      error,
+      startedAt,
+    );
+  } finally {
+    if (accessToken) {
+      await jellyfinRequest(baseUrl, '/Sessions/Logout', 'POST', undefined, accessToken).catch(() => undefined);
+    }
+  }
+};
+
 const checkUnauthenticated = async (target) => {
   const startedAt = Date.now();
   const sessionId = await createSession();
@@ -376,6 +468,19 @@ const checkAuthenticated = async (sessionId, target) => {
         await waitFor(async () => hostOf(await currentUrl(sessionId)) !== target.kanidmHost);
       }
     }
+    if (target.expectAccessDenied) {
+      const page = await metrics(sessionId);
+      const finalUrl = await currentUrl(sessionId);
+      if (!isAccessDeniedResponse(page)) {
+        throw Object.assign(new Error(`expected HTTP 401 or 403, received HTTP ${page.responseStatus}`), {
+          code: 'unauthorized-content-exposed', metrics: page,
+        });
+      }
+      return {
+        id: target.id, name: target.name, coverageMode: target.coverageMode, status: 'passed', phase: 'authenticated',
+        finalUrl, durationMs: Date.now() - startedAt, metrics: { ...page, text: undefined, expectedAccessDenied: true },
+      };
+    }
     const boundaryOnly = target.coverageMode === 'local-boundary' || target.coverageMode === 'gateway-boundary';
     const page = await renderCheck(sessionId, target, boundaryOnly);
     const finalUrl = await currentUrl(sessionId);
@@ -433,6 +538,9 @@ const main = async () => {
       for (const target of config.targets) {
         if (unauthFailures.has(target.id)) continue;
         results.push(await checkAuthenticated(authSession, { ...target, kanidmHost: hostOf(config.kanidmUrl) }));
+        if (target.quickConnectCheck) {
+          results.push(await checkJellyfinQuickConnect(authSession, target, config.username));
+        }
       }
     } catch (error) {
       for (const target of config.targets.filter((candidate) => !unauthFailures.has(candidate.id))) {

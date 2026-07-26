@@ -27,7 +27,9 @@ let
   appPersistenceDirectories = [
     "/var/cache/filestash"
     "/var/cache/immich"
+    "/var/lib/atticd"
     "/var/lib/audiobookshelf"
+    "/var/lib/bonsai"
     "/var/lib/filestash"
     "/var/lib/groundwater-logger"
     "/var/lib/groundwater-mosquitto"
@@ -38,6 +40,7 @@ let
     "/var/lib/jellyfin"
     "/var/lib/kavita"
     "/var/lib/kiwix"
+    "/var/lib/mkvmaker"
     "/var/lib/paperless"
     "/var/lib/postgresql"
     "/var/lib/prowlarr"
@@ -261,12 +264,46 @@ in
           fi
         }
 
+        adopt_seeded_file() {
+          source_path="$1"
+          persistent_path="/persist$source_path"
+
+          [ -f "$persistent_path" ] || {
+            echo "Persistent file was not seeded: $persistent_path" >&2
+            return 1
+          }
+          # Impermanence deliberately refuses to replace a non-empty file.
+          # Bind the freshly seeded copy during first live adoption so both
+          # its activation snippet and systemd unit see an existing mount.
+          # switch-to-configuration may temporarily remove generated /etc
+          # entries before this snippet runs, so recreate a regular-file
+          # mountpoint with the persisted copy's ownership and mode first.
+          if [ ! -e "$source_path" ]; then
+            ${pkgs.coreutils}/bin/install \
+              -D \
+              -m "$(${pkgs.coreutils}/bin/stat -c '%a' "$persistent_path")" \
+              -o "$(${pkgs.coreutils}/bin/stat -c '%u' "$persistent_path")" \
+              -g "$(${pkgs.coreutils}/bin/stat -c '%g' "$persistent_path")" \
+              /dev/null \
+              "$source_path"
+          fi
+          [ -f "$source_path" ] || {
+            echo "Refusing to bind a persistent file over a non-file path: $source_path" >&2
+            return 1
+          }
+          if ! ${pkgs.util-linux}/bin/findmnt "$source_path" >/dev/null 2>&1; then
+            ${pkgs.util-linux}/bin/mount --bind "$persistent_path" "$source_path"
+          fi
+        }
+
         seed_directory /etc/nixos
         seed_directory /home/${lib.escapeShellArg vars.localAdminUser}
         seed_directory /var/lib/postgresql
         seed_directory /var/log/caddy
         seed_file /etc/machine-id
         seed_file /var/lib/systemd/random-seed
+        adopt_seeded_file /etc/machine-id
+        adopt_seeded_file /var/lib/systemd/random-seed
       '';
     };
     system.activationScripts.createPersistentStorageDirs.deps =

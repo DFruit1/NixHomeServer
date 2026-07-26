@@ -187,6 +187,8 @@ in
         description = "Sync encrypted Kopia repository to MEGA with Rclone";
         unitConfig = {
           OnSuccess = [ "rclone-mega-capacity-check.service" ];
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
           StartLimitIntervalSec = "6h";
           StartLimitBurst = 6;
         };
@@ -359,6 +361,10 @@ in
 
       systemd.services.rclone-mega-capacity-check = {
         description = "Check MEGA quota and local Kopia repository budget";
+        unitConfig = {
+          OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+          OnFailureJobMode = "replace-irreversibly";
+        };
         requires = [ "rclone-mega-config.service" ];
         after = [ "rclone-mega-config.service" "rclone-mega-kopia-sync.service" ];
         path = with pkgs; [ coreutils jq rclone systemd ];

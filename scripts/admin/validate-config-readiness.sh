@@ -367,9 +367,9 @@ fi
 
 port_duplicates="$(jq -r '.networking.ports | to_entries | map(select(.key | endswith("Container") | not)) | group_by(.value)[] | select(length > 1) | map(.key + "=" + (.value|tostring)) | join(", ")' <<<"$settings_json")"
 if [[ -n "$port_duplicates" ]]; then
-  block "vars.nix -> advanced.ports has duplicate assignments: ${port_duplicates}"
+  block "derived service ports have duplicate assignments: ${port_duplicates}"
 else
-  ready "vars.nix -> advanced.ports assignments are unique"
+  ready "derived service port assignments are unique"
 fi
 
 if [[ -s secrets/pubkeys/age.pub ]] && [[ "$(tr -d '\r\n' <secrets/pubkeys/age.pub)" =~ ^age1[023456789acdefghjklmnpqrstuvwxyz]+$ ]]; then

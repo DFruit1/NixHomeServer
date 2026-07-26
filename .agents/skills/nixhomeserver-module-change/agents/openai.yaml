@@ -1,0 +1,4 @@
+interface:
+  display_name: "NixHomeServer Module Change"
+  short_description: "Safely add, remove, or restructure app modules"
+  default_prompt: "Use $nixhomeserver-module-change to make this application-module change without breaking removal safety or persistence."

@@ -21,7 +21,9 @@ let
       secretNames;
   dataDir = "/var/lib/paperless";
   paperlessOidcEnvPath = with pkgs; [
+    coreutils
     jq
+    openssl
   ];
   paperlessPermissionsBootstrapPath = with pkgs; [
     coreutils
@@ -96,7 +98,7 @@ in
     systemd.services =
       {
         paperless-oidc-env = {
-          description = "Generate Paperless OIDC environment";
+          description = "Generate Paperless secret-key and OIDC environment";
           wantedBy = [ "multi-user.target" ];
           before = map (service: "${service}.service") paperlessRuntimeServices;
           path = paperlessOidcEnvPath;
@@ -107,11 +109,31 @@ in
           script = ''
             set -euo pipefail
 
+            ${lib.optionalString config.repo.paperless.v3.enable ''
+              install -d -m 0750 -o paperless -g paperless ${lib.escapeShellArg dataDir}
+              secret_key_file=${lib.escapeShellArg "${dataDir}/secret-key"}
+              if [[ ! -s "$secret_key_file" ]]; then
+                temporary="$(mktemp "${dataDir}/.secret-key.XXXXXX")"
+                trap 'rm -f -- "$temporary"' EXIT
+                openssl rand -base64 64 | tr -d '\r\n' > "$temporary"
+                chown paperless:paperless "$temporary"
+                chmod 0400 "$temporary"
+                mv -f -- "$temporary" "$secret_key_file"
+                trap - EXIT
+              fi
+
+              secret_key="$(tr -d '\r\n' < "$secret_key_file")"
+              [[ -n "$secret_key" ]] || {
+                echo "Paperless secret key is empty: $secret_key_file" >&2
+                exit 1
+              }
+            ''}
             secret="$(< ${config.age.secrets.paperlessClientSecret.path})"
             providers_json="$(${pkgs.jq}/bin/jq -cn \
               --arg clientId "paperless-web" \
               --arg secret "$secret" \
               --arg discoveryUrl "${vars.kanidmDiscoveryUrl "paperless-web"}" \
+              --argjson paperlessV3 ${lib.boolToString config.repo.paperless.v3.enable} \
               '{
                 openid_connect: {
                   SCOPE: ["openid", "profile", "email", "groups_name"],
@@ -124,14 +146,21 @@ in
                       settings: {
                         server_url: $discoveryUrl,
                         oauth_pkce_enabled: true
-                      }
+                      } + (if $paperlessV3 then {
+                        token_auth_method: "client_secret_basic"
+                      } else {} end)
                     }
                   ]
                 }
               }')"
 
             umask 0077
-            printf 'PAPERLESS_SOCIALACCOUNT_PROVIDERS=%s\n' "$providers_json" > /run/paperless-oidc.env
+            {
+              printf 'PAPERLESS_SOCIALACCOUNT_PROVIDERS=%s\n' "$providers_json"
+              ${lib.optionalString config.repo.paperless.v3.enable ''
+                printf 'PAPERLESS_SECRET_KEY=%s\n' "$secret_key"
+              ''}
+            } > /run/paperless-oidc.env
           '';
         };
 
@@ -273,6 +302,9 @@ in
             COMMIT;
             SQL
               then
+                ${lib.optionalString config.repo.paperless.v3.enable ''
+                  ${config.services.paperless.manage}/bin/paperless-manage invalidate_cachalot
+                ''}
                 exit 0
               else
                 rc=$?

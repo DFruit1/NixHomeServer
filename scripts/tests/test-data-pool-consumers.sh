@@ -15,6 +15,7 @@ let
     "kavita-storage-layout-v1" "kavita" "kavita-stale-reference-cleanup"
     "kiwix-library-root-layout-v1" "kiwix-library-sync" "kiwix-library-watch" "kiwix-serve"
     "mail-archive-ui-storage-layout-v1" "mail-archive-ui" "mail-archive-sync" "mail-archive-paperless-tasks"
+    "mkvmaker-storage-layout-v1" "mkvmaker-import"
     "media-automation-storage-layout-v1" "qbittorrent" "sonarr" "radarr"
     "offline-media-reconcile"
     "audiobookshelf-storage-layout-v1" "audiobookshelf"

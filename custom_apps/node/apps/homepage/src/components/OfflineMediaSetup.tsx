@@ -133,128 +133,122 @@ export const OfflineMediaSetupPanel = component$(
     if (!offlineMedia?.enabled) {
       return (
         <section class="detail-block">
-          <h3>Keep media on your device</h3>
           <p class="hint">Automatic offline copies are not available on this server.</p>
         </section>
       );
     }
 
     return (
-      <section class="detail-block">
-        <h3>Keep media on your device</h3>
-        <p>
-          Connect a computer or phone once and it will automatically download your music and selected videos from the
-          server. New files added to the server will appear on the device when Syncthing is running.
-        </p>
-        <aside class="guide-callout neutral">
-          This sync goes from the server to your device. To add new media to the server, upload it with the Files app
-          first. Deleting a synced copy from your device will not delete the server copy.
-        </aside>
-        {runtimeError.value && (
-          <aside class="guide-callout">The server cannot check sync status right now: {runtimeError.value}</aside>
-        )}
+      <section class="detail-block offline-media-setup">
+        <div class="offline-media-layout">
+          <div class="offline-media-setup-main">
+            <h3>Set up Syncthing-Fork</h3>
+            <p class="hint"><strong>Syncthing-Fork is the supported app.</strong> Install it on an Android phone or tablet. iPhone and iPad are not supported.</p>
+            <ol class="steps">
+              <li>In Syncthing-Fork, choose <strong>Add device</strong>, then scan or paste the server ID shown on the right.</li>
+              <li>
+                Add the at-home or away-from-home address shown under <strong>Connection help</strong>. This keeps the
+                connection reliable when automatic discovery is unavailable.
+              </li>
+              <li>
+                Copy your device ID from Syncthing-Fork, paste it below, give the device a name, and select{' '}
+                <strong>Connect device</strong>.
+              </li>
+              <li>Back in Syncthing-Fork, accept the shared folders and choose <strong>Receive Only</strong>.</li>
+            </ol>
 
-        <h4>Set up a computer or phone</h4>
-        <ol class="steps">
-          <li>
-            Install Syncthing on a computer, a Syncthing-compatible app on Android, or Möbius Sync on iPhone and iPad.
-          </li>
-          <li>
-            In the app, choose <strong>Add device</strong>, scan or paste the server ID below, then add the at-home or
-            away-from-home address shown under <strong>Connection help</strong>. This keeps the connection reliable when
-            automatic discovery is unavailable.
-          </li>
-          <li>
-            Copy your device's ID from the app, paste it below, give the device a name, and select{' '}
-            <strong>Connect device</strong>.
-          </li>
-          <li>Back in the app, accept the shared folders and choose <strong>Receive Only</strong> when asked.</li>
-        </ol>
-
-        <div class="qr-grid">
-          {offlineMedia.serverDeviceId ? (
-            <QrValue label="Server ID — scan or paste this in your app" value={offlineMedia.serverDeviceId} />
-          ) : (
-            <div class="qr-card unavailable">
-              <h4>Server ID</h4>
-              <p>{offlineMedia.serverDeviceIdError || 'The server ID is not available yet.'}</p>
+            <div class="key-form compact-form offline-media-enroll-form">
+              <h4>Connect your device</h4>
+              <label class="offline-media-device-id-field">
+                Your device ID (copy this from Syncthing-Fork)
+                <input
+                  id="offline-media-device-id"
+                  type="text"
+                  value={deviceId.value}
+                  placeholder="AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
+                  onInput$={(_, target) => {
+                    deviceId.value = target.value;
+                  }}
+                />
+              </label>
+              <label>
+                Device name
+                <input
+                  id="offline-media-device-name"
+                  type="text"
+                  value={deviceName.value}
+                  onInput$={(_, target) => {
+                    deviceName.value = target.value;
+                  }}
+                />
+              </label>
+              <button id="save-offline-media-device" type="button" disabled={submitting.value} onClick$={saveDevice}>
+                {submitting.value ? 'Connecting...' : 'Connect device'}
+              </button>
+              {status.value && <p class={{ 'key-status': true, error: statusKind.value === 'error' }}>{status.value}</p>}
             </div>
-          )}
-        </div>
 
-        <div class="key-form compact-form offline-media-enroll-form">
-          <h4>Connect your device</h4>
-          <label class="offline-media-device-id-field">
-            Your device ID (copy this from the app)
-            <input
-              id="offline-media-device-id"
-              type="text"
-              value={deviceId.value}
-              placeholder="AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH"
-              onInput$={(_, target) => {
-                deviceId.value = target.value;
-              }}
-            />
-          </label>
-          <label>
-            Device name
-            <input
-              id="offline-media-device-name"
-              type="text"
-              value={deviceName.value}
-              onInput$={(_, target) => {
-                deviceName.value = target.value;
-              }}
-            />
-          </label>
-          <button id="save-offline-media-device" type="button" disabled={submitting.value} onClick$={saveDevice}>
-            {submitting.value ? 'Connecting...' : 'Connect device'}
-          </button>
-          {status.value && <p class={{ 'key-status': true, error: statusKind.value === 'error' }}>{status.value}</p>}
-        </div>
-
-        <section class="detail-block compact">
-          <h4>Connected devices</h4>
-          {devices.value.length > 0 ? (
-            <div class="device-list">
-              {devices.value.map((device) => (
-                <div class="device-row" key={device.deviceId}>
-                  <div>
-                    <strong>{device.deviceName}</strong>
-                    <p class="hint">{deviceSyncSummary(device)}</p>
-                    <span>{device.deviceId}</span>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={removingDeviceId.value === device.deviceId}
-                    onClick$={() => removeDevice(device.deviceId)}
-                  >
-                    {removingDeviceId.value === device.deviceId ? 'Removing...' : 'Remove'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p class="hint">No devices are connected yet.</p>
-          )}
-        </section>
-
-        <details class="detail-block compact">
-          <summary>Connection help</summary>
-          <p>If the app cannot find the server automatically, add one of these addresses to the server device:</p>
-          <div class="qr-grid">
-            {offlineMedia.connectionAddresses.map((connection) => (
-              <QrValue
-                key={`${connection.address}:${connection.label}`}
-                label={connection.label}
-                value={connection.address}
-              />
-            ))}
+            <details class="detail-block compact">
+              <summary>Connection help</summary>
+              <p>If Syncthing-Fork cannot find the server automatically, add one of these addresses to the server device:</p>
+              <div class="qr-grid">
+                {offlineMedia.connectionAddresses.map((connection) => (
+                  <QrValue
+                    key={`${connection.address}:${connection.label}`}
+                    label={connection.label}
+                    value={connection.address}
+                  />
+                ))}
+              </div>
+              {folders.length > 0 && (
+                <p class="hint">Folders you will be offered: {folders.map((folder) => folder.label).join(', ')}.</p>
+              )}
+            </details>
           </div>
-          {folders.length > 0 && (
-            <p class="hint">Folders you will be offered: {folders.map((folder) => folder.label).join(', ')}.</p>
-          )}
-        </details>
+
+          <aside class="offline-media-status-column" aria-label="Server connection and sync status">
+            <div class="qr-grid offline-media-server-id">
+              {offlineMedia.serverDeviceId ? (
+                <QrValue label="Server ID — scan this in Syncthing-Fork" value={offlineMedia.serverDeviceId} />
+              ) : (
+                <div class="qr-card unavailable">
+                  <h4>Server ID</h4>
+                  <p>{offlineMedia.serverDeviceIdError || 'The server ID is not available yet.'}</p>
+                </div>
+              )}
+            </div>
+
+            {runtimeError.value && (
+              <aside class="guide-callout">The server cannot check sync status right now: {runtimeError.value}</aside>
+            )}
+
+            <section class="detail-block compact offline-media-connection-status">
+              <h4>Connection status</h4>
+              {devices.value.length > 0 ? (
+                <div class="device-list">
+                  {devices.value.map((device) => (
+                    <div class="device-row" key={device.deviceId}>
+                      <div>
+                        <strong>{device.deviceName}</strong>
+                        <p class="hint">{deviceSyncSummary(device)}</p>
+                        <span>{device.deviceId}</span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={removingDeviceId.value === device.deviceId}
+                        onClick$={() => removeDevice(device.deviceId)}
+                      >
+                        {removingDeviceId.value === device.deviceId ? 'Removing...' : 'Remove'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p class="hint">No devices are connected yet.</p>
+              )}
+            </section>
+          </aside>
+        </div>
       </section>
     );
   },

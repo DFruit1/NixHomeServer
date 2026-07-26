@@ -1,0 +1,4 @@
+interface:
+  display_name: "NixHomeServer Safe Change"
+  short_description: "Validate and deploy NixHomeServer changes safely"
+  default_prompt: "Use $nixhomeserver-safe-change to choose and run the correct validation or guarded deployment workflow for this change."

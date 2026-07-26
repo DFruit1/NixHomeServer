@@ -146,6 +146,10 @@ require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix 'getfacl -cp
   "New user roots must detect and apply missing application ACL grants."
 require_fixed modules/offline-music/services.nix 'exec ${../../scripts/helpers/offline-media-reconcile.sh}' \
   "Offline media must execute the reviewed reconciliation helper from its systemd service."
+require_fixed modules/offline-music/services.nix 'runtimeInputs = with pkgs; [' \
+  "Offline media reconciliation must declare its runtime command dependencies."
+require_fixed modules/offline-music/services.nix '      bash' \
+  "Offline media reconciliation must put Bash on PATH for the reviewed env-based helper."
 require_fixed scripts/helpers/offline-media-reconcile.sh '/rest/db/scan?folder=$folder_id' \
   "Offline media must force periodic Syncthing scans so missed filesystem events self-heal."
 require_fixed scripts/helpers/offline-media-reconcile.sh '! -readable -print -quit' \

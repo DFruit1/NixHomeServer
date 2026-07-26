@@ -5,6 +5,26 @@ This repo has two browser custom app surfaces:
 - `mail-archive-ui`: Rust/Axum server-rendered pages with Qwik islands for browser interactivity.
 - `youtube-downloader`: Qwik/Vite client app with a Node server.
 
+## Server Build Cache
+
+Attic watches the server's Nix store and uploads newly built paths to the
+loopback-only `nixhomeserver` cache. The cache skips paths already signed by
+`cache.nixos.org`, so it concentrates on custom applications and other outputs
+that are not available from the upstream cache. Guarded deploys using the
+default remote build mode benefit automatically on later builds.
+
+Inspect the initialized cache and watcher:
+
+```bash
+sudo env XDG_CONFIG_HOME=/run/attic-client attic cache info nixhomeserver
+systemctl status atticd.service attic-cache-bootstrap.service attic-watch-store.service
+journalctl -u attic-watch-store.service -n 100 --no-pager
+```
+
+Only builds performed on the server are observed. A one-shot
+`--build-mode local` build remains in the workstation's store and is not
+uploaded to this loopback-only cache.
+
 ## Mail Archive UI
 
 Production deploys build the Qwik/Vite frontend and copy the output into the

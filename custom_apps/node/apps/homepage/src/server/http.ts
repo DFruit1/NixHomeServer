@@ -8,6 +8,7 @@ import { enrollOfflineMediaDevice, getOfflineMediaSetup, OfflineMediaInputError,
 import { installSftpPublicKey, normalisePublicKey } from './sftpKey.js';
 import { assertFeatureAccess, buildHomepageData } from './homepageData.js';
 import { getCanaryFailure, getCanaryStatus, triggerCanary } from './canary.js';
+import { getMkvProgress } from './mkvmaker.js';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -49,6 +50,11 @@ export const handleApiRequest = async (config: AppConfig, request: IncomingMessa
 
     if (request.method === 'GET' && url.pathname === '/api/canary') {
       sendJson(response, 200, await getCanaryStatus(config, request.headers));
+      return true;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/mkvmaker/progress') {
+      sendJson(response, 200, await getMkvProgress(config, request.headers));
       return true;
     }
 

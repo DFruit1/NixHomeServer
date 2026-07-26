@@ -122,6 +122,7 @@ in
     environment.systemPackages = [ showInitialCredential ];
 
     assertions = (mkSecretAssertions [
+      "jellyfinOidcClientSecret"
       "kanidmAdminPass"
     ]) ++ [
       {
@@ -520,22 +521,17 @@ in
           local user_id="$1"
           local password="$2"
 
-          # Reset first so this also recovers users created by the former bootstrap,
-          # whose randomly generated password was never handed to the operator.
-          jq -n '{ResetPassword: true}' \
-            | curl_jellyfin \
-              -X POST \
-              -H "Content-Type: application/json" \
-              --data-binary @- \
-              "$base_url/Users/$user_id/Password" \
-              >/dev/null
+          # An administrator may directly replace another user's password.
+          # Jellyfin 10.11 rejects ResetPassword for the sole administrator
+          # because that operation would temporarily make its password empty.
           jq -n --arg password "$password" \
-            '{CurrentPw: "", NewPw: $password, ResetPassword: false}' \
+            '{NewPw: $password, ResetPassword: false}' \
             | curl_jellyfin \
               -X POST \
+              --url-query "userId=$user_id" \
               -H "Content-Type: application/json" \
               --data-binary @- \
-              "$base_url/Users/$user_id/Password" \
+              "$base_url/Users/Password" \
               >/dev/null
         }
 

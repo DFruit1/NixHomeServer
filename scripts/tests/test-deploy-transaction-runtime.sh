@@ -23,10 +23,153 @@ export ACTION="test"
 export HOSTNAME_ARG="test-host"
 export DEBUG_MODE="false"
 export BUILD_LOCALLY="false"
+export BUILD_MODE="remote"
+export LOCAL_BUILD_SLOTS="0"
+export REMOTE_BUILD_SLOTS="auto"
+export LOCAL_BUILD_CORES="0"
+export REMOTE_BUILD_CORES="0"
+export HOST_PLATFORM="x86_64-linux"
+export BUILDER_SSH_PUBLIC_KEY="ssh-ed25519 AAAATESTBUILDERKEY builder@test"
 
 # Sourcing the executor must define the transaction without executing it.
 source scripts/helpers/deploy-executor.sh
 declare -F deploy_main >/dev/null
+if ! shopt -qo errtrace; then
+  echo "❌ Deploy transaction failures inside health-gate functions would bypass the rollback trap."
+  exit 1
+fi
+
+if ! declare -f capture_previous_state | rg -Fq '/nix/store/*/bin/nix-env)'; then
+  echo "❌ The deploy rollback command no longer preserves the immutable nix-env multicall entry."
+  exit 1
+fi
+if declare -f capture_previous_state | rg -Fq 'readlink -f \"\$(command -v nix-env)\"'; then
+  echo "❌ The deploy rollback command still fully dereferences the nix-env multicall symlink."
+  exit 1
+fi
+
+base_nix_config="$NIX_CONFIG"
+test_remote_host_key='ssh-ed25519 AAAATESTREMOTEHOSTKEY remote@test'
+test_remote_host_key_encoded="$(printf '%s\n' "$test_remote_host_key" | base64 -w0)"
+ssh() {
+  if [[ "${1:-}" == "-G" ]]; then
+    printf 'identityfile %s\n' "$TESTS_REPO_ROOT/scripts/tests/test-deploy-transaction-runtime.sh"
+  elif [[ "$*" == *"_NPROCESSORS_ONLN"* ]]; then
+    printf '8\n'
+  elif [[ "$*" == *"system-features"* ]]; then
+    printf 'benchmark big-parallel nixos-test\n'
+  elif [[ "$*" == *"ssh_host_ed25519_key.pub"* ]]; then
+    printf '%s\n' "$test_remote_host_key"
+  else
+    echo "unexpected distributed-builder query: $*" >&2
+    return 1
+  fi
+}
+ssh-keygen() {
+  printf 'ssh-ed25519 AAAATESTBUILDERKEY builder@test\n'
+}
+
+BUILD_MODE="local"
+LOCAL_BUILD_SLOTS="auto"
+REMOTE_BUILD_SLOTS="0"
+LOCAL_BUILD_CORES="0"
+REMOTE_BUILD_CORES="0"
+configure_nix_build_allocation >/dev/null
+if ! rg -Fq 'max-jobs = auto' <<<"$NIX_CONFIG" \
+  || ! rg -Fq 'cores = 0' <<<"$NIX_CONFIG" \
+  || ! rg -Fxq 'builders = ' <<<"$NIX_CONFIG"; then
+  echo "❌ Local allocation did not enable all workstation slots and disable remote builders."
+  exit 1
+fi
+
+NIX_CONFIG="$base_nix_config"
+BUILD_MODE="remote"
+LOCAL_BUILD_SLOTS="0"
+REMOTE_BUILD_SLOTS="auto"
+LOCAL_BUILD_CORES="0"
+REMOTE_BUILD_CORES="0"
+configure_nix_build_allocation >/dev/null
+if ! rg -Fq 'max-jobs = auto' <<<"$NIX_CONFIG" \
+  || ! rg -Fq 'cores = 0' <<<"$NIX_CONFIG" \
+  || ! rg -Fxq 'builders = ' <<<"$NIX_CONFIG"; then
+  echo "❌ Remote allocation did not enable all server slots without adding a second builder."
+  exit 1
+fi
+
+NIX_CONFIG="$base_nix_config"
+BUILD_MODE="balanced"
+LOCAL_BUILD_SLOTS="2"
+REMOTE_BUILD_SLOTS="2"
+LOCAL_BUILD_CORES="1"
+REMOTE_BUILD_CORES="1"
+configure_nix_build_allocation >/dev/null
+if ! rg -Fq 'max-jobs = 2' <<<"$NIX_CONFIG" \
+  || ! rg -Fq 'cores = 1' <<<"$NIX_CONFIG" \
+  || ! rg -Fq "ssh-ng://admin@test.invalid x86_64-linux $TESTS_REPO_ROOT/scripts/tests/test-deploy-transaction-runtime.sh 2 1 benchmark,big-parallel,nixos-test - $test_remote_host_key_encoded" <<<"$NIX_CONFIG"; then
+  echo "❌ Balanced allocation did not configure two native Nix slots on each builder."
+  exit 1
+fi
+
+NIX_CONFIG="$base_nix_config"
+BUILD_MODE="maximum-effort"
+LOCAL_BUILD_SLOTS="auto"
+REMOTE_BUILD_SLOTS="auto"
+LOCAL_BUILD_CORES="0"
+REMOTE_BUILD_CORES="0"
+configure_nix_build_allocation >/dev/null
+if ! rg -Fq 'max-jobs = auto' <<<"$NIX_CONFIG" \
+  || ! rg -Fq 'cores = 0' <<<"$NIX_CONFIG" \
+  || ! rg -Fq "ssh-ng://admin@test.invalid x86_64-linux $TESTS_REPO_ROOT/scripts/tests/test-deploy-transaction-runtime.sh 8 1 benchmark,big-parallel,nixos-test - $test_remote_host_key_encoded" <<<"$NIX_CONFIG"; then
+  echo "❌ Maximum-effort allocation did not use all available native Nix slots on both builders."
+  exit 1
+fi
+
+NIX_CONFIG="$base_nix_config"
+BUILDER_SSH_PUBLIC_KEY="ssh-ed25519 AAAADIFFERENTKEY builder@test"
+if identity_error="$(configure_nix_build_allocation 2>&1)"; then
+  echo "❌ Combined allocation accepted an SSH identity that did not match vars.nix."
+  exit 1
+fi
+if ! rg -Fq 'could not find a passphrase-free SSH IdentityFile matching vars.identity.sshPublicKey' <<<"$identity_error"; then
+  echo "❌ A mismatched builder identity did not produce an actionable error."
+  echo "$identity_error"
+  exit 1
+fi
+BUILDER_SSH_PUBLIC_KEY="ssh-ed25519 AAAATESTBUILDERKEY builder@test"
+
+NIX_CONFIG="$base_nix_config"
+test_remote_host_key='malformed-host-key'
+if host_key_error="$(configure_nix_build_allocation 2>&1)"; then
+  echo "❌ Combined allocation accepted a malformed remote SSH host key."
+  exit 1
+fi
+if ! rg -Fq 'remote builder returned an invalid Ed25519 SSH host key' <<<"$host_key_error"; then
+  echo "❌ A malformed remote host key did not produce an actionable error."
+  echo "$host_key_error"
+  exit 1
+fi
+test_remote_host_key='ssh-ed25519 AAAATESTREMOTEHOSTKEY remote@test'
+
+ssh() {
+  echo "unexpected builder probe during switch: $*" >&2
+  return 1
+}
+NIX_CONFIG="$base_nix_config"
+ACTION="switch"
+configure_nix_build_allocation_for_action >/dev/null
+if [[ "$NIX_CONFIG" != "$base_nix_config" ]]; then
+  echo "❌ Switch changed build allocation even though it reuses an existing closure."
+  exit 1
+fi
+ACTION="test"
+
+unset -f ssh ssh-keygen
+NIX_CONFIG="$base_nix_config"
+BUILD_MODE="remote"
+LOCAL_BUILD_SLOTS="0"
+REMOTE_BUILD_SLOTS="auto"
+LOCAL_BUILD_CORES="0"
+REMOTE_BUILD_CORES="0"
 
 tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
@@ -240,6 +383,7 @@ rollback_script=""
 eval "rollback_script=${encoded_rollback}"
 
 for required in \
+  "PATH=/run/current-system/sw/bin:/usr/bin:/bin; export PATH" \
   "$previous_current/bin/switch-to-configuration test" \
   "$target_nix_env --profile /nix/var/nix/profiles/system --set $previous_boot" \
   "$previous_boot/bin/switch-to-configuration boot" \
@@ -450,6 +594,10 @@ EOF
 make_test_executable "$cancel_mock_bin/sudo" "$cancel_mock_bin/systemctl"
 export TEST_ROLLBACK_CANCEL_LOG="$cancel_mock_log"
 target_command() {
+  if [[ "$1" != sudo\ /bin/sh\ -c\ * ]]; then
+    echo "rollback cancellation did not enter a privileged ownership-check shell" >&2
+    return 97
+  fi
   PATH="$cancel_mock_bin:$PATH" bash -c "$1"
 }
 

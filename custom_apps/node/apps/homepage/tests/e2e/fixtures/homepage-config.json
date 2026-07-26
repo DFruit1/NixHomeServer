@@ -57,6 +57,7 @@
       "description": "Photo and video library with private login and public share-link support.",
       "loginNotes": "Use Kanidm.",
       "projectUrl": "https://immich.app",
+      "logoUrl": "/logos/immich.svg",
       "uploadNotes": "Upload through Immich web or the mobile app.",
       "requiredAnyGroups": ["photos-users"]
     },
@@ -68,6 +69,7 @@
       "category": "files",
       "description": "Browser file workspace backed by each user's restricted SFTP root.",
       "loginNotes": "Requires files-personal-users for browser access.",
+      "logoUrl": "/logos/filestash.svg",
       "uploadNotes": "Use Files for general uploads and app-specific media folders.",
       "requiredAnyGroups": ["files-personal-users"]
     },
@@ -79,6 +81,7 @@
       "category": "media",
       "description": "Metadata-rich movie and show libraries.",
       "loginNotes": "Jellyfin uses a generated local password. Ask an administrator for the initial password and change it after first login.",
+      "logoUrl": "/logos/jellyfin.svg",
       "uploadNotes": "Place movies under _Videos/_Movies and series under _Videos/_Shows.",
       "requiredAnyGroups": ["jellyfin-users"]
     },
@@ -90,6 +93,7 @@
       "category": "identity",
       "description": "Shared password manager for server and account credentials.",
       "loginNotes": "Register with your local account email on first visit.",
+      "logoUrl": "/logos/vaultwarden.svg",
       "uploadNotes": "Store Kanidm credentials, recovery codes, and app-local passwords here."
     },
     {
@@ -100,6 +104,7 @@
       "category": "operations",
       "description": "Kopia local backup management for system state and encrypted repositories.",
       "loginNotes": "Requires backup-admin plus the native Kopia password.",
+      "logoUrl": "/logos/kopia.svg",
       "uploadNotes": "Backup repository files are managed by Kopia.",
       "requiredAnyGroups": ["backup-admin"]
     },
@@ -109,8 +114,9 @@
       "url": "/services/offline-media",
       "enabled": true,
       "category": "media",
-      "description": "Personal music and selected video folders synced offline to enrolled devices with Syncthing.",
+      "description": "Automatically keep copies of your server music and videos on a computer or phone.",
       "loginNotes": "Use Kanidm on the homepage, then enroll your Syncthing device ID.",
+      "logoUrl": "/logos/syncthing.svg",
       "uploadNotes": "Use _Music, _Videos/_YouTube, and _Videos/_Other in your personal files root.",
       "requiredAnyGroups": ["users"]
     }

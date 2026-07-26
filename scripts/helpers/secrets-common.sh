@@ -202,6 +202,7 @@ validator_function() {
     netbird-setup-key) printf '%s\n' validate_netbird ;;
     cloudflared-credentials-json) printf '%s\n' validate_cf ;;
     cloudflare-api-token) printf '%s\n' validate_cf_api_token ;;
+    https-url) printf '%s\n' validate_https_url ;;
     nonempty) printf '%s\n' validate_nonempty_secret ;;
     *)
       echo "❌ Unknown external-secret validator '$1' in secrets/manifest.nix" >&2
@@ -280,6 +281,15 @@ validate_nonempty_secret() {
 
   value="$(tr -d '\r\n' <"$1")"
   [[ -n "$value" ]] && [[ "$value" != REPLACE_ME* ]]
+}
+
+validate_https_url() {
+  local value
+
+  value="$(tr -d '\r\n' <"$1")"
+  [[ "$value" =~ ^https://[^[:space:]]+$ ]] \
+    && [[ "$value" != *CHANGE_ME* ]] \
+    && [[ "$value" != *REPLACE_ME* ]]
 }
 
 normalize_cf_api_token() {

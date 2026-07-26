@@ -69,7 +69,10 @@ let
     else
       "";
 
-  blockerUnits = lib.escapeShellArgs power.blockerUnits;
+  blockerUnits = lib.escapeShellArgs (
+    power.blockerUnits
+    ++ lib.optionals (hasModule "mkvmaker") [ "mkvmaker-import.service" ]
+  );
   wakeTime = lib.escapeShellArg nightlySuspend.wakeTime;
   nightlySuspendPath = with pkgs; [
     coreutils

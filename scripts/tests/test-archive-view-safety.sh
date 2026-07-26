@@ -6,7 +6,18 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 
-ensure_tools nix nix-store python3 sha256sum tar unshare
+ensure_tools jq nix nix-store python3 sha256sum tar unshare
+
+archive_service_limits="$(nix eval --json '.#nixosConfigurations.server.config.systemd.services.files-archives-sync.serviceConfig' \
+  --apply 'service: {
+    timeoutStart = service.TimeoutStartSec or null;
+    hasRuntimeMax = service ? RuntimeMaxSec;
+  }')"
+jq -e '.timeoutStart == "2h" and (.hasRuntimeMax | not)' <<<"$archive_service_limits" >/dev/null || {
+  echo "❌ Archive reconciliation must use the effective oneshot start timeout." >&2
+  jq . <<<"$archive_service_limits"
+  exit 1
+}
 
 run_behavior=1
 if [[ -z "${NIXHOMESERVER_ARCHIVE_VIEW_HELPER:-}" \

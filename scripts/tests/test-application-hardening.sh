@@ -69,6 +69,16 @@ forbid_match "$canary_module" 'SuccessExitStatus[[:space:]]*=[[:space:]]*\[[[:sp
   "failed canary runs must fail their systemd unit"
 require_fixed "$canary_runner" 'loginControls' \
   "the canary must inspect concrete login controls"
+require_fixed "$canary_runner" 'target.expectAccessDenied' \
+  "the canary must verify intentional least-privilege denials without treating them as blank pages"
+require_fixed "$canary_module" 'expectAccessDenied = true' \
+  "the general canary user must remain denied from backup administration"
+require_fixed "$canary_module" 'quickConnectCheck = true' \
+  "Jellyfin must retain a dedicated Quick Connect runtime canary"
+require_fixed "$canary_runner" '/Users/AuthenticateWithQuickConnect' \
+  "the Quick Connect canary must exchange the authorized device secret"
+require_fixed "$canary_runner" '/Sessions/Logout' \
+  "the Quick Connect canary must revoke its temporary Jellyfin token"
 forbid_match "$canary_runner" 'run[.]lock' \
   "canary locking must not use a crash-persistent sentinel file"
 require_fixed "$canary_module" '/run/homepage-canary/run.lock' \
@@ -87,6 +97,10 @@ require_fixed "$jellyfin_bootstrap" 'install -m 0600 -o root -g root "$temporary
   "Jellyfin initial credentials must be root-only"
 require_fixed "$jellyfin_bootstrap" 'set_initial_password "$user_id" "$password"' \
   "legacy Jellyfin managed users must receive a recoverable initial credential"
+require_fixed "$jellyfin_bootstrap" '"$base_url/Users/Password"' \
+  "Jellyfin password convergence must use the current password API endpoint"
+forbid_match "$jellyfin_bootstrap" 'ResetPassword: true' \
+  "Jellyfin bootstrap must not temporarily clear the sole administrator password"
 require_fixed "$jellyfin_bootstrap" 'sharedVideoLibraries ++ sharedMusicLibraries' \
   "configured Jellyfin shared music libraries must be provisioned"
 require_fixed modules/jellyfin/filepaths.nix 'cfg.paths.sharedMusicRoot' \

@@ -11,19 +11,11 @@
 
 let
   repo = sourcePath;
-
-  appNames = lib.sort builtins.lessThan (builtins.attrNames (lib.filterAttrs
-    (name: type:
-      type == "directory"
-      && !(builtins.elem name [ "Core_Modules" "Integrations" "power-management" ]))
-    (builtins.readDir (repo + "/modules"))));
-
-  integrationNames = lib.sort builtins.lessThan (builtins.attrNames (lib.filterAttrs
-    (name: type: type == "regular" && lib.hasSuffix ".nix" name)
-    (builtins.readDir (repo + "/modules/Integrations"))));
-  integrationModules = map
-    (name: repo + "/modules/Integrations/${name}")
-    integrationNames;
+  catalog = import (repo + "/modules/catalog.nix");
+  appNames = builtins.attrNames catalog.apps;
+  coreApps = [ "homepage" ];
+  optionalAppNames = builtins.filter (name: !(builtins.elem name coreApps)) appNames;
+  integrationModules = catalog.integrations;
 
   hardwareModule =
     if builtins.elem vars.hardwareProfile [ "generated" "existing-server" ] then
@@ -55,45 +47,10 @@ let
       };
     };
 
-  moduleSecrets = {
-    audiobookshelf = [ "absBootstrapPass" "absClientSecret" ];
-    groundwater-logger = [ "groundwaterAppMqttPassword" "groundwaterLoggerMqttPassword" ];
-    homepage = [ "canaryUserPassword" "homepageOauth2ProxyClientSecret" "homepageOauth2ProxyCookieSecret" ];
-    immich = [ "immichClientSecret" ];
-    kavita = [ "kavitaClientSecret" "kavitaTokenKey" ];
-    kiwix = [ "kiwixOauth2ProxyClientSecret" "kiwixOauth2ProxyCookieSecret" ];
-    mail-archive-ui = [ "mailArchiveOauth2ProxyClientSecret" "mailArchiveOauth2ProxyCookieSecret" ];
-    paperless = [ "paperlessClientSecret" ];
-    prowlarr = [ "prowlarrOauth2ProxyClientSecret" "prowlarrOauth2ProxyCookieSecret" ];
-    qbittorrent = [ "qbittorrentOauth2ProxyClientSecret" "qbittorrentOauth2ProxyCookieSecret" ];
-    radarr = [ "radarrOauth2ProxyClientSecret" "radarrOauth2ProxyCookieSecret" ];
-    seerr = [ "seerrOauth2ProxyClientSecret" "seerrOauth2ProxyCookieSecret" ];
-    sonarr = [ "sonarrOauth2ProxyClientSecret" "sonarrOauth2ProxyCookieSecret" ];
-    vaultwarden = [ "vaultwardenAdminToken" ];
-    youtube-downloader = [ "youtubeDownloaderOauth2ProxyClientSecret" "youtubeDownloaderOauth2ProxyCookieSecret" ];
-  };
+  moduleSecrets = lib.mapAttrs (_: spec: spec.secrets) catalog.apps;
+  moduleGuardedServices = lib.mapAttrs (_: spec: spec.guardedServices) catalog.apps;
 
-  moduleGuardedServices = {
-    immich = [ "immich-storage-layout-v1" "immich-server" ];
-    kavita = [ "kavita-storage-layout-v1" "kavita" "kavita-stale-reference-cleanup" ];
-    kiwix = [ "kiwix-library-root-layout-v1" "kiwix-library-sync" "kiwix-library-watch" "kiwix-serve" ];
-    mail-archive-ui = [ "mail-archive-ui-storage-layout-v1" "mail-archive-ui" "mail-archive-sync" "mail-archive-paperless-tasks" ];
-    offline-music = [ "offline-media-reconcile" ];
-    paperless = [
-      "paperless-storage-layout-v1"
-      "paperless-consumer"
-      "paperless-scheduler"
-      "paperless-task-queue"
-      "paperless-web"
-      "paperless-exporter"
-      "paperless-stale-reference-check"
-    ];
-    qbittorrent = [ "qbittorrent" "media-automation-bootstrap-qbittorrent" ];
-    radarr = [ "radarr" "media-automation-bootstrap-radarr" ];
-    sonarr = [ "sonarr" "media-automation-bootstrap-sonarr" ];
-  };
-
-  allVariants = [ "core-only" "prowlarr-only" ] ++ map (name: "without-${name}") appNames;
+  allVariants = [ "core-only" "prowlarr-only" ] ++ map (name: "without-${name}") optionalAppNames;
   variants = requestedVariants;
 
   matrix = lib.genAttrs variants
@@ -102,9 +59,9 @@ let
         removed = lib.removePrefix "without-" variant;
         selectedApps =
           if variant == "core-only" then
-            [ ]
+            coreApps
           else if variant == "prowlarr-only" then
-            [ "prowlarr" ]
+            coreApps ++ [ "prowlarr" ]
           else
             builtins.filter (name: name != removed) appNames;
         host = mkHost selectedApps;
@@ -241,7 +198,7 @@ let
         valid =
           lib.hasPrefix "/nix/store/" host.config.system.build.toplevel.drvPath
           && registry == expectedRegistry
-          && (variant != "core-only" || (selectedApps == [ ] && registry == { }))
+          && (variant != "core-only" || (selectedApps == coreApps && registry == { homepage = true; }))
           && removedOwnedSecretsAbsent
           && guardedServicesValid
           && removedGuardedServicesAbsent

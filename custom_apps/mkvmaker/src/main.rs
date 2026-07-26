@@ -51,6 +51,18 @@ struct Args {
     /// Optional Jellyfin provider tag, e.g. tmdbid-1234 or imdbid-tt1234
     #[arg(long)]
     provider_id: Option<String>,
+    /// TV season number (non-interactive automation)
+    #[arg(long)]
+    season: Option<u32>,
+    /// First TV episode number represented by the selected titles
+    #[arg(long)]
+    first_episode: Option<u32>,
+    /// TV episode name in selected-title order; repeat for multiple episodes
+    #[arg(long = "episode-name")]
+    episode_names: Vec<String>,
+    /// Movie disc number used for a separately queued multi-disc ISO
+    #[arg(long)]
+    movie_disc: Option<usize>,
     #[arg(long, default_value_t = 300)]
     min_duration: u64,
     #[arg(long, value_enum)]
@@ -71,6 +83,9 @@ struct Args {
     /// Verify the packaged HandBrake/FFprobe runtime and writable state directories
     #[arg(long)]
     doctor: bool,
+    /// Publish a redacted, machine-readable snapshot of the active encode
+    #[arg(long, hide = true)]
+    progress_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -181,8 +196,54 @@ struct Job {
     preset: String,
 }
 
+struct PlanOptions<'a> {
+    yes: bool,
+    all_titles: bool,
+    season: Option<u32>,
+    first_episode: Option<u32>,
+    episode_names: &'a [String],
+    movie_disc: Option<usize>,
+}
+
+#[derive(Clone)]
+struct ProgressContext {
+    path: PathBuf,
+    title: String,
+    kind: MediaKind,
+    item_index: usize,
+    item_count: usize,
+    item_name: String,
+    completed_seconds: u64,
+    item_seconds: u64,
+    total_seconds: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicProgress<'a> {
+    schema_version: u32,
+    state: &'static str,
+    updated_at: u64,
+    conversions: [PublicConversion<'a>; 1],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicConversion<'a> {
+    title: &'a str,
+    media_kind: &'static str,
+    item_name: &'a str,
+    item_index: usize,
+    item_count: usize,
+    percent: f64,
+    item_percent: f64,
+    eta_seconds: Option<u64>,
+    rate_fps: Option<f64>,
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    let progress_file = args.progress_file.clone();
     if args.doctor {
         return doctor();
     }
@@ -241,6 +302,20 @@ fn main() -> Result<()> {
             _ => MediaKind::Tv,
         }
     });
+    if kind != MediaKind::Tv
+        && (args.season.is_some() || args.first_episode.is_some() || !args.episode_names.is_empty())
+    {
+        bail!("--season, --first-episode, and --episode-name require --kind tv");
+    }
+    if kind != MediaKind::Movie && args.movie_disc.is_some() {
+        bail!("--movie-disc requires --kind movie");
+    }
+    if args.movie_disc == Some(0) {
+        bail!("movie disc number must be at least 1");
+    }
+    if args.season == Some(0) || args.first_episode == Some(0) {
+        bail!("season and first episode numbers must be at least 1");
+    }
     let raw_name = match args.name {
         Some(n) => n,
         None if args.yes => iso_stem(&isos[0]),
@@ -382,8 +457,14 @@ fn main() -> Result<()> {
         kind,
         &media_name,
         &config,
-        args.yes,
-        all_titles,
+        PlanOptions {
+            yes: args.yes,
+            all_titles,
+            season: args.season,
+            first_episode: args.first_episode,
+            episode_names: &args.episode_names,
+            movie_disc: args.movie_disc,
+        },
     )?;
     validate_job_paths(&jobs)?;
     show_plan(&jobs)?;
@@ -402,18 +483,37 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let total_seconds = jobs
+        .iter()
+        .map(|job| job.source.title.as_ref().map_or(0, |title| title.seconds))
+        .sum::<u64>();
+    let mut completed_seconds = 0_u64;
     let mut failures = Vec::new();
     for (i, job) in jobs.iter().enumerate() {
         if cancelled.load(AtomicOrdering::SeqCst) {
             break;
         }
         println!("\n[{}/{}] {}", i + 1, jobs.len(), job.output.display());
-        if let Err(e) = encode(job, &cancelled) {
+        let item_seconds = job.source.title.as_ref().map_or(0, |title| title.seconds);
+        let progress = progress_file.as_ref().map(|path| ProgressContext {
+            path: path.clone(),
+            title: media_name.clone(),
+            kind,
+            item_index: i + 1,
+            item_count: jobs.len(),
+            item_name: file_name(&job.output),
+            completed_seconds,
+            item_seconds,
+            total_seconds,
+        });
+        if let Err(e) = encode(job, &cancelled, progress) {
             eprintln!("ERROR: {e:#}");
             failures.push((job.output.clone(), format!("{e:#}")));
             if cancelled.load(AtomicOrdering::SeqCst) {
                 break;
             }
+        } else {
+            completed_seconds = completed_seconds.saturating_add(item_seconds);
         }
     }
     if cancelled.load(AtomicOrdering::SeqCst) {
@@ -983,12 +1083,19 @@ fn plan_jobs(
     kind: MediaKind,
     name: &str,
     config: &Config,
-    yes: bool,
-    all_titles: bool,
+    options: PlanOptions<'_>,
 ) -> Result<Vec<Job>> {
     match kind {
-        MediaKind::Movie => plan_movie(theme, sources, name, config, yes, all_titles),
-        MediaKind::Tv => plan_tv(theme, sources, name, config, yes),
+        MediaKind::Movie => plan_movie(
+            theme,
+            sources,
+            name,
+            config,
+            options.yes,
+            options.all_titles,
+            options.movie_disc,
+        ),
+        MediaKind::Tv => plan_tv(theme, sources, name, config, &options),
     }
 }
 
@@ -999,6 +1106,7 @@ fn plan_movie(
     config: &Config,
     yes: bool,
     all_titles: bool,
+    requested_disc: Option<usize>,
 ) -> Result<Vec<Job>> {
     let movie_dir = config.output_root.join(name);
     if !all_titles {
@@ -1007,7 +1115,9 @@ fn plan_movie(
             .into_iter()
             .enumerate()
             .map(|(index, source)| {
-                let output = if source_count == 1 {
+                let output = if let Some(disc) = requested_disc {
+                    movie_dir.join(format!("{name}-disc{disc}.mkv"))
+                } else if source_count == 1 {
                     movie_dir.join(format!("{name}.mkv"))
                 } else {
                     movie_dir.join(format!("{name}-disc{}.mkv", index + 1))
@@ -1061,15 +1171,20 @@ fn plan_movie(
     let mut extra = 1;
     for (source_index, source) in sources.into_iter().enumerate() {
         let output = if let Some(disc_index) = primary_indices.get(&source_index) {
-            if discs.len() == 1 {
+            if let Some(disc) = requested_disc {
+                movie_dir.join(format!("{name}-disc{disc}.mkv"))
+            } else if discs.len() == 1 {
                 movie_dir.join(format!("{name}.mkv"))
             } else {
                 movie_dir.join(format!("{name}-disc{}.mkv", disc_index + 1))
             }
         } else {
-            let output = movie_dir
-                .join("extras")
-                .join(format!("{name} - extra{extra:02}.mkv"));
+            let extra_name = if let Some(disc) = requested_disc {
+                format!("{name} - disc{disc}-extra{extra:02}.mkv")
+            } else {
+                format!("{name} - extra{extra:02}.mkv")
+            };
+            let output = movie_dir.join("extras").join(extra_name);
             extra += 1;
             output
         };
@@ -1083,19 +1198,28 @@ fn plan_tv(
     sources: Vec<SourceTitle>,
     name: &str,
     config: &Config,
-    yes: bool,
+    options: &PlanOptions<'_>,
 ) -> Result<Vec<Job>> {
+    if options.episode_names.len() > sources.len() {
+        bail!(
+            "received {} episode names for only {} selected titles",
+            options.episode_names.len(),
+            sources.len()
+        );
+    }
     let mut next_episode = std::collections::HashMap::<u32, u32>::new();
     let mut jobs = Vec::new();
     let mut pos = 0;
+    let mut episode_name_index = 0;
+    let mut first_disc = true;
     while pos < sources.len() {
         let iso = sources[pos].iso.clone();
         let start = pos;
         while pos < sources.len() && sources[pos].iso == iso {
             pos += 1;
         }
-        let season = if yes {
-            1
+        let season = if options.yes {
+            options.season.unwrap_or(1)
         } else {
             Input::with_theme(theme)
                 .with_prompt(format!("Season for {}", file_name(&iso)))
@@ -1103,15 +1227,19 @@ fn plan_tv(
                 .interact_text()?
         };
         let suggested_first = *next_episode.get(&season).unwrap_or(&1);
-        let first = if yes {
-            suggested_first
+        let first = if options.yes {
+            if first_disc {
+                options.first_episode.unwrap_or(suggested_first)
+            } else {
+                suggested_first
+            }
         } else {
             Input::with_theme(theme)
                 .with_prompt("First episode number on this disc")
                 .default(suggested_first)
                 .interact_text()?
         };
-        let add_titles = !yes
+        let add_titles = !options.yes
             && Confirm::with_theme(theme)
                 .with_prompt("Enter episode names for this disc?")
                 .default(false)
@@ -1120,7 +1248,18 @@ fn plan_tv(
             let ep = first
                 .checked_add(u32::try_from(offset).context("too many episodes")?)
                 .context("episode number overflow")?;
-            let suffix = if add_titles {
+            let suffix = if options.yes {
+                let title = options
+                    .episode_names
+                    .get(episode_name_index)
+                    .map_or("", String::as_str)
+                    .trim();
+                if title.is_empty() {
+                    String::new()
+                } else {
+                    format!(" - {}", safe_name(title))
+                }
+            } else if add_titles {
                 let title: String = Input::with_theme(theme)
                     .with_prompt(format!("S{season:02}E{ep:02} title (optional)"))
                     .allow_empty(true)
@@ -1139,6 +1278,7 @@ fn plan_tv(
                 .join(format!("Season {season:02}"))
                 .join(format!("{name} S{season:02}E{ep:02}{suffix}.mkv"));
             jobs.push(make_job(source, output, config));
+            episode_name_index += 1;
         }
         let count = u32::try_from(pos - start).context("too many episodes")?;
         next_episode.insert(
@@ -1147,6 +1287,7 @@ fn plan_tv(
                 .checked_add(count)
                 .context("episode number overflow")?,
         );
+        first_disc = false;
     }
     Ok(jobs)
 }
@@ -1223,7 +1364,7 @@ fn show_commands(jobs: &[Job]) {
     }
 }
 
-fn encode(job: &Job, cancelled: &AtomicBool) -> Result<()> {
+fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) -> Result<()> {
     let manifest_path = job_state_path(&job.output, "job.json");
     fs::create_dir_all(job.output.parent().context("output has no parent")?)?;
     fs::create_dir_all(manifest_path.parent().context("state path has no parent")?)?;
@@ -1275,6 +1416,11 @@ fn encode(job: &Job, cancelled: &AtomicBool) -> Result<()> {
     writeln!(&mut log, "Command: {}", display_command(&cmd))?;
     log.flush()?;
     let log = Arc::new(Mutex::new(log));
+    if let Some(context) = progress.as_ref()
+        && let Err(error) = write_public_progress(context, 0.0, None, None)
+    {
+        eprintln!("Warning: could not publish encode progress: {error:#}");
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1290,7 +1436,7 @@ fn encode(job: &Job, cancelled: &AtomicBool) -> Result<()> {
         .take()
         .context("could not capture HandBrake log")?;
     let progress_log = Arc::clone(&log);
-    let progress_thread = thread::spawn(move || relay_progress(stdout, progress_log));
+    let progress_thread = thread::spawn(move || relay_progress(stdout, progress_log, progress));
     let error_log = Arc::clone(&log);
     let error_thread = thread::spawn(move || relay_log(stderr, error_log));
     println!("HandBrake output is being saved to {}", log_path.display());
@@ -1567,7 +1713,50 @@ fn relay_log<R: std::io::Read>(reader: R, log: Arc<Mutex<fs::File>>) -> Result<(
     Ok(())
 }
 
-fn relay_progress<R: std::io::Read>(reader: R, log: Arc<Mutex<fs::File>>) -> Result<()> {
+fn write_public_progress(
+    context: &ProgressContext,
+    item_percent: f64,
+    eta_seconds: Option<u64>,
+    rate_fps: Option<f64>,
+) -> Result<()> {
+    let completed = context.completed_seconds as f64;
+    let current = context.item_seconds as f64 * (item_percent / 100.0);
+    let percent = if context.total_seconds > 0 {
+        ((completed + current) / context.total_seconds as f64 * 100.0).clamp(0.0, 100.0)
+    } else {
+        ((context.item_index - 1) as f64 + item_percent / 100.0) / context.item_count.max(1) as f64
+            * 100.0
+    };
+    let status = PublicProgress {
+        schema_version: 1,
+        state: "converting",
+        updated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        conversions: [PublicConversion {
+            title: &context.title,
+            media_kind: match context.kind {
+                MediaKind::Movie => "movie",
+                MediaKind::Tv => "tv",
+            },
+            item_name: &context.item_name,
+            item_index: context.item_index,
+            item_count: context.item_count,
+            percent,
+            item_percent,
+            eta_seconds,
+            rate_fps: rate_fps.filter(|value| value.is_finite() && *value >= 0.0),
+        }],
+    };
+    atomic_write(&context.path, &serde_json::to_vec_pretty(&status)?)
+}
+
+fn relay_progress<R: std::io::Read>(
+    reader: R,
+    log: Arc<Mutex<fs::File>>,
+    progress: Option<ProgressContext>,
+) -> Result<()> {
     let mut eta = None::<u64>;
     let mut rate = None::<f64>;
     let mut last_percent = -1.0_f64;
@@ -1596,6 +1785,9 @@ fn relay_progress<R: std::io::Read>(reader: R, log: Arc<Mutex<fs::File>>) -> Res
                 .unwrap_or_default();
             eprint!("\r  Encoding {percent:5.1}%  ETA {eta_text}{rate_text}   ");
             std::io::stderr().flush().ok();
+            if let Some(context) = progress.as_ref() {
+                let _ = write_public_progress(context, percent, eta, rate);
+            }
         }
     }
     Ok(())
@@ -1893,6 +2085,7 @@ mod tests {
             &config,
             true,
             false,
+            None,
         )
         .unwrap();
         assert!(jobs[0].output.ends_with("Film (2000)-disc1.mkv"));
@@ -1912,6 +2105,7 @@ mod tests {
             &config,
             true,
             true,
+            None,
         )
         .unwrap();
         assert!(jobs[0].output.ends_with("Film/Film.mkv"));
@@ -1933,6 +2127,7 @@ mod tests {
             &config,
             true,
             true,
+            None,
         )
         .unwrap();
         assert!(
@@ -1948,6 +2143,39 @@ mod tests {
                 .filter(|job| job.output.to_string_lossy().contains("/extras/"))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn automated_tv_plan_uses_requested_numbering_and_names() {
+        let config = Config::default();
+        let jobs = plan_tv(
+            &ColorfulTheme::default(),
+            vec![
+                test_source("show-s2.iso", Some(1)),
+                test_source("show-s2.iso", Some(2)),
+            ],
+            "A Show (2001) [tvdbid-42]",
+            &config,
+            &PlanOptions {
+                yes: true,
+                all_titles: true,
+                season: Some(2),
+                first_episode: Some(5),
+                episode_names: &["The Beginning".into(), "A/B: Story".into()],
+                movie_disc: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            jobs[0]
+                .output
+                .ends_with("A Show (2001) [tvdbid-42] S02E05 - The Beginning.mkv")
+        );
+        assert!(
+            jobs[1]
+                .output
+                .ends_with("A Show (2001) [tvdbid-42] S02E06 - A_B_ Story.mkv")
         );
     }
 
@@ -1985,5 +2213,38 @@ Progress: {"State":"SCANDONE"}"#;
             make_job(source, PathBuf::from("same.mkv"), &config),
         ];
         assert!(validate_job_paths(&jobs).is_err());
+    }
+
+    #[test]
+    fn public_progress_is_redacted_and_runtime_weighted() {
+        let path = env::temp_dir().join(format!(
+            "disc-to-jellyfin-progress-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let context = ProgressContext {
+            path: path.clone(),
+            title: "Example Film (2001)".into(),
+            kind: MediaKind::Movie,
+            item_index: 2,
+            item_count: 3,
+            item_name: "Example Film - extra01.mkv".into(),
+            completed_seconds: 5_400,
+            item_seconds: 600,
+            total_seconds: 6_600,
+        };
+        write_public_progress(&context, 50.0, Some(120), Some(24.5)).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["state"], "converting");
+        assert_eq!(value["conversions"][0]["title"], "Example Film (2001)");
+        assert_eq!(value["conversions"][0]["itemIndex"], 2);
+        assert_eq!(value["conversions"][0]["etaSeconds"], 120);
+        assert!((value["conversions"][0]["percent"].as_f64().unwrap() - 86.3636).abs() < 0.001);
+        assert!(value["conversions"][0].get("path").is_none());
     }
 }

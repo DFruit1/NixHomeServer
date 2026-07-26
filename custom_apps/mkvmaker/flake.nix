@@ -29,7 +29,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "disc-to-jellyfin";
-          version = "0.2.0";
+          version = "0.3.0";
           src = source;
           cargoLock.lockFile = ./Cargo.lock;
           strictDeps = true;

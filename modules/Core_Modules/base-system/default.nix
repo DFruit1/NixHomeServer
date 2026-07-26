@@ -32,6 +32,31 @@ let
     "i686-linux"
     "x86_64-linux"
   ];
+  nixStoreCapacityGc = pkgs.writeShellApplication {
+    name = "nixhomeserver-nix-store-capacity-gc";
+    runtimeInputs = [
+      pkgs.coreutils
+      config.nix.package
+      pkgs.util-linux
+    ];
+    text = builtins.readFile ../../../scripts/helpers/nix-store-capacity-gc.sh;
+  };
+  nixStoreCapacityGcStopPost = pkgs.writeShellScript "nix_store_gc_failed-stop-post" ''
+    failure_marker=/run/nixhomeserver-nix-gc/helper-failure-reported
+    if [[ "''${SERVICE_RESULT:-success}" == success || -e "$failure_marker" ]]; then
+      exit 0
+    fi
+    invocation_id="''${INVOCATION_ID:-manual}"
+    if [[ ! "$invocation_id" =~ ^[A-Fa-f0-9]{16,64}$ ]]; then
+      invocation_id=manual
+    fi
+    printf >&2 \
+      '{"event":"nix_store_gc_failed","invocation_id":"%s","stage":"systemd","service_result":"%s","exit_code":"%s","exit_status":"%s"}\n' \
+      "$invocation_id" \
+      "''${SERVICE_RESULT:-unknown}" \
+      "''${EXIT_CODE:-unknown}" \
+      "''${EXIT_STATUS:-unknown}"
+  '';
 in
 {
   system.stateVersion = "25.05";
@@ -179,6 +204,13 @@ in
       trusted-users = [ "root" localAdminUser ];
       auto-optimise-store = false;
       builders-use-substitutes = true;
+      # Keep the daemon capable of accepting a later one-shot or newly selected
+      # distributed build even when the current deploy allocation is local-only.
+      # The deploy helper omits this host from its builders list in local mode.
+      max-jobs =
+        if vars.buildSlots.remote == 0 then "auto"
+        else vars.buildSlots.remote;
+      cores = vars.buildCores.remote;
     };
   };
 
@@ -186,14 +218,21 @@ in
   nix.optimise.automatic = false;
 
   systemd.services.nixhomeserver-nix-gc = {
-    description = "Low-priority weekly Nix garbage collection";
-    path = [ pkgs.nix pkgs.util-linux ];
+    description = "Capacity-triggered Nix store garbage collection";
+    environment = {
+      NIX_STORE_MAX_GIB = toString vars.nixStoreMaxSizeGiB;
+      NIX_GC_RETENTION_DAYS = toString vars.nixGcRetentionDays;
+      NIX_GC_FAILURE_MARKER = "/run/nixhomeserver-nix-gc/helper-failure-reported";
+    };
     unitConfig = {
-      StartLimitIntervalSec = "4h";
-      StartLimitBurst = 2;
+      OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+      OnFailureJobMode = "replace-irreversibly";
     };
     serviceConfig = {
       Type = "oneshot";
+      ExecStartPre = "${pkgs.coreutils}/bin/rm -f /run/nixhomeserver-nix-gc/helper-failure-reported";
+      ExecStart = "${nixStoreCapacityGc}/bin/nixhomeserver-nix-store-capacity-gc";
+      ExecStopPost = nixStoreCapacityGcStopPost;
       Nice = 15;
       CPUWeight = 10;
       IOWeight = 10;
@@ -201,24 +240,20 @@ in
       IOSchedulingPriority = 7;
       MemoryHigh = "1G";
       MemoryMax = "2G";
+      PrivateTmp = true;
+      RuntimeDirectory = "nixhomeserver-nix-gc";
       TimeoutStartSec = "4h";
-      Restart = "on-failure";
-      RestartSec = "30min";
+      SuccessExitStatus = [ 75 ];
+      UMask = "0077";
     };
-    script = ''
-      set -euo pipefail
-      exec 9>/run/lock/nixhomeserver-maintenance.lock
-      flock -n 9 || { echo "Another maintenance job is active" >&2; exit 75; }
-      exec nix-collect-garbage --delete-older-than 30d
-    '';
   };
 
   systemd.timers.nixhomeserver-nix-gc = {
     wantedBy = [ "timers.target" ];
     timerConfig = {
-      OnCalendar = "Sun *-*-* 05:30:00";
+      OnCalendar = "hourly";
       Persistent = true;
-      RandomizedDelaySec = "45m";
+      RandomizedDelaySec = "10m";
     };
   };
 
@@ -241,6 +276,7 @@ in
       TimeoutStartSec = "6h";
       Restart = "on-failure";
       RestartSec = "30min";
+      SuccessExitStatus = [ 75 ];
     };
     script = ''
       set -euo pipefail

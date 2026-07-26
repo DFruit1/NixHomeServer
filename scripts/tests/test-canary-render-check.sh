@@ -8,7 +8,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools node
 
 CANARY_RUNNER_TEST_MODE=1 node --input-type=module <<'EOF'
-const { generateTotp, hasAuthenticationBoundary, isBlankRender } = await import('./modules/homepage/canary-runner.mjs');
+const { generateTotp, hasAuthenticationBoundary, isAccessDeniedResponse, isBlankRender } = await import('./modules/homepage/canary-runner.mjs');
 const cases = [
   [{ textLength: 0, visibleElements: 0, richElements: 0 }, true, 'empty HTTP 200 body'],
   [{ textLength: 12, visibleElements: 3, richElements: 0 }, true, 'near-empty visible text'],
@@ -33,6 +33,9 @@ if (hasAuthenticationBoundary({ url: 'https://homepage.example.test/', title: 'H
 }
 if (!hasAuthenticationBoundary({ url: 'https://videos.example.test/', title: 'Jellyfin', text: '', loginControls: 1 })) {
   throw new Error('a visible application login control was not recognised as an authentication boundary');
+}
+if (!isAccessDeniedResponse({ responseStatus: 403 }) || isAccessDeniedResponse({ responseStatus: 200 })) {
+  throw new Error('role-denied canary targets did not distinguish access denial from exposed content');
 }
 // RFC 6238 Appendix B SHA-256 vector: ASCII seed "12345678901234567890123456789012".
 const rfcSeed = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA';

@@ -116,6 +116,26 @@ export type HomepageData = {
   canaryAdminUser?: string;
 };
 
+export type MkvConversionProgress = {
+  title: string;
+  mediaKind: 'movie' | 'tv';
+  itemName: string;
+  itemIndex: number;
+  itemCount: number;
+  percent: number;
+  itemPercent: number;
+  etaSeconds?: number;
+  rateFps?: number;
+};
+
+export type MkvProgressResponse = {
+  enabled: boolean;
+  available: boolean;
+  state: 'idle' | 'converting';
+  updatedAt?: string;
+  conversions: MkvConversionProgress[];
+};
+
 export type SftpKeyResponse = {
   ok: boolean;
   message: string;

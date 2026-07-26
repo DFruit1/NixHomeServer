@@ -6,6 +6,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
+require_fixed modules/Core_Modules/kopia/service.nix 'permissions = "u=rx,g=,o=";' \
+  "The Kopia security wrapper must use a chmod-compatible symbolic permission clause."
+
 source scripts/helpers/kopia-managed-common.sh
 recovery_test_root="$(mktemp -d)"
 cleanup() { rm -rf "$recovery_test_root"; }
@@ -58,12 +61,31 @@ wrapper_json="$(nix eval --json '.#nixosConfigurations.server.config.security.wr
 jq -e '
   .owner == "root"
   and .group == "root"
-  and .permissions == "0500"
+  and .permissions == "u=rx,g=,o="
   and (.setuid | not)
   and (.source | contains("nixhomeserver-kopia"))
 ' <<<"$wrapper_json" >/dev/null || {
   echo "Managed Kopia CLI is not installed as a non-setuid root-only wrapper." >&2
   jq . <<<"$wrapper_json"
+  exit 1
+}
+
+credential_wrapper_json="$(nix eval --json '.#nixosConfigurations.server.config.security.wrappers.nixhomeserver-kopia-browser-credential' \
+  --apply 'wrapper: {
+    source = toString wrapper.source;
+    inherit (wrapper) owner group permissions;
+    setuid = wrapper.setuid or false;
+  }')"
+
+jq -e '
+  .owner == "root"
+  and .group == "root"
+  and .permissions == "u=rx,g=,o="
+  and (.setuid | not)
+  and (.source | contains("nixhomeserver-kopia-browser-credential"))
+' <<<"$credential_wrapper_json" >/dev/null || {
+  echo "Kopia browser credential helper is not installed as a non-setuid root-only wrapper." >&2
+  jq . <<<"$credential_wrapper_json"
   exit 1
 }
 
@@ -80,6 +102,21 @@ rg -Fq 'KOPIA_CONFIG_PATH="$config_file"' "$wrapper_path"
 rg -Fq 'KOPIA_CACHE_DIRECTORY="$cache_dir"' "$wrapper_path"
 if rg -q -- '--password=' "$wrapper_path"; then
   echo "Managed Kopia CLI exposes its repository password in argv." >&2
+  exit 1
+fi
+
+credential_wrapper_path="$(nix build --impure --no-link --print-out-paths --expr '
+let
+  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+  host = builtins.head (builtins.attrNames f.nixosConfigurations);
+in (builtins.getAttr host f.nixosConfigurations).config.security.wrappers.nixhomeserver-kopia-browser-credential.source
+')"
+
+rg -q 'EUID != 0' "$credential_wrapper_path"
+rg -Fq 'Username: kopia-admin' "$credential_wrapper_path"
+rg -Fq 'password="$(tr -d '\''\r\n'\'' < "$secret_file")"' "$credential_wrapper_path"
+if rg -q -- '--password=' "$credential_wrapper_path"; then
+  echo "Kopia browser credential helper exposes the password in argv." >&2
   exit 1
 fi
 

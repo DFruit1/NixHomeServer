@@ -1,5 +1,9 @@
 {
   generatedSecrets = {
+    atticServerEnv = {
+      description = "Systemd environment containing Attic's JWT signing secret.";
+      bytes = 64;
+    };
     serverBootstrapSudoPassword = {
       description = "Bootstrap sudo password retained for guarded recovery and deployment prompts.";
       bytes = 32;
@@ -14,6 +18,10 @@
     };
     immichClientSecret = {
       description = "OIDC client secret for Immich.";
+      bytes = 32;
+    };
+    jellyfinOidcClientSecret = {
+      description = "OIDC client secret for Jellyfin.";
       bytes = 32;
     };
     paperlessClientSecret = {
@@ -182,6 +190,13 @@
       format = "plain text MEGA password";
       settingPath = "secrets/unencrypted/rcloneMegaPassword";
       validator = "nonempty";
+      required = false;
+    };
+    failureAlertWebhookUrl = {
+      description = "HTTPS webhook or ntfy topic URL used for important systemd failure alerts.";
+      format = "full HTTPS URL";
+      settingPath = "secrets/unencrypted/failureAlertWebhookUrl";
+      validator = "https-url";
       required = false;
     };
   };

@@ -334,6 +334,8 @@ in
       unitConfig = {
         StartLimitIntervalSec = "2h";
         StartLimitBurst = 3;
+        OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+        OnFailureJobMode = "replace-irreversibly";
       };
       path = with pkgs; [ coreutils findutils jq postgresql sqlite util-linux ];
       serviceConfig = {

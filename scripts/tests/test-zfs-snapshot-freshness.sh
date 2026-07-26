@@ -28,12 +28,21 @@ case "$1 $2" in
   "get -H")
     if [[ "$*" == *"com.sun:auto-snapshot"* ]]; then
       printf 'data\ttrue\n'
+      if [[ "${TEST_INCLUDE_UNMOUNTED:-0}" == 1 ]]; then
+        printf 'data/legacy\ttrue\n'
+      fi
+    elif [[ "$*" == *" mounted "* ]]; then
+      if [[ "${*: -1}" == "data/legacy" ]]; then
+        printf 'no\n'
+      else
+        printf 'yes\n'
+      fi
     else
       printf '%s\n' "${TEST_DATASET_CREATED:?}"
     fi
     ;;
   "list -H")
-    if [[ -n "${TEST_NEWEST_EPOCH:-}" ]]; then
+    if [[ "${*: -1}" != "data/legacy" && -n "${TEST_NEWEST_EPOCH:-}" ]]; then
       printf '%s\tdata@zfs-auto-snap_hourly-fixture\n' "$TEST_NEWEST_EPOCH"
     fi
     ;;
@@ -52,6 +61,18 @@ PATH="$tmpdir:$PATH" \
   bash "$health_script" >"$output"
 jq -e '.health == "ONLINE" and .datasets[0].state == "fresh" and .datasets[0].fresh' \
   "$output" >/dev/null
+
+PATH="$tmpdir:$PATH" \
+  TEST_DATASET_CREATED="$((now - 86400))" \
+  TEST_INCLUDE_UNMOUNTED=1 \
+  TEST_NEWEST_EPOCH="$((now - 60))" \
+  bash "$health_script" >"$output"
+jq -e '
+  .health == "ONLINE"
+  and (.datasets | length) == 1
+  and .datasets[0].dataset == "data"
+  and .datasets[0].fresh
+' "$output" >/dev/null
 
 if PATH="$tmpdir:$PATH" \
   TEST_DATASET_CREATED="$((now - 86400))" \

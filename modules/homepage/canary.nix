@@ -11,8 +11,8 @@ let
     (config.nixhomeserver.modules."offline-music" or false)
     && (vars.offlineMedia.enable or false);
   hostEnabled = host: builtins.hasAttr host caddyHosts;
-  mkTarget = { id, name, host, path ? "", coverageMode, expectedPattern, active ? hostEnabled host }: {
-    inherit id name host coverageMode expectedPattern active;
+  mkTarget = { id, name, host, path ? "", coverageMode, expectedPattern, expectAccessDenied ? false, quickConnectCheck ? false, active ? hostEnabled host }: {
+    inherit id name host coverageMode expectedPattern expectAccessDenied quickConnectCheck active;
     url = "https://${host}${path}";
   };
   allTargets = [
@@ -22,7 +22,7 @@ let
     (mkTarget { id = "documents"; name = "Documents"; host = "paperless.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Paperless|Documents"; })
     (mkTarget { id = "files"; name = "Files"; host = "files.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Filestash|Files"; })
     (mkTarget { id = "audiobooks"; name = "Audiobooks"; host = "audiobooks.${vars.domain}"; path = "/audiobookshelf/"; coverageMode = "native-oidc"; expectedPattern = "Audiobookshelf|Audiobooks"; })
-    (mkTarget { id = "videos"; name = "Videos"; host = "videos.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Jellyfin|Videos"; })
+    (mkTarget { id = "videos"; name = "Videos"; host = "videos.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Jellyfin|Videos"; quickConnectCheck = true; })
     (mkTarget { id = "requests"; name = "Requests"; host = "requests.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Seerr|Jellyseerr|Requests"; })
     (mkTarget { id = "sonarr"; name = "TV Show Downloads"; host = "sonarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Sonarr|TV Show"; })
     (mkTarget { id = "radarr"; name = "Movie Downloads"; host = "radarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Radarr|Movie"; })
@@ -33,7 +33,7 @@ let
     (mkTarget { id = "emails"; name = "Mail Archive"; host = "emails.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Mail Archive|Emails"; })
     (mkTarget { id = "downloads"; name = "YouTube Downloads"; host = "ytdownload.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "YouTube|Downloads"; })
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })
-    (mkTarget { id = "backups"; name = "Local Backups"; host = vars.kopiaDomain; coverageMode = "gateway-boundary"; expectedPattern = "Kopia|Backups"; })
+    (mkTarget { id = "backups"; name = "Local Backups"; host = vars.kopiaDomain; coverageMode = "gateway-boundary"; expectedPattern = "Kopia|Backups"; expectAccessDenied = true; })
     (mkTarget { id = "monitor"; name = "Monitor"; host = vars.monitorDomain; coverageMode = "gateway-boundary"; expectedPattern = "Beszel|Monitor"; })
   ];
   targets = map (target: removeAttrs target [ "host" "active" ]) (builtins.filter (target: target.active && hostEnabled target.host) allTargets);
@@ -134,6 +134,10 @@ in
 
   systemd.services.homepage-canary = {
     description = "Headless browser service-access canary";
+    unitConfig = {
+      OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+      OnFailureJobMode = "replace-irreversibly";
+    };
     after = [ "network-online.target" "kanidm-canary-bootstrap.service" "caddy.service" "homepage.service" ];
     wants = [ "network-online.target" "caddy.service" "homepage.service" ];
     requires = [ "kanidm-canary-bootstrap.service" ];

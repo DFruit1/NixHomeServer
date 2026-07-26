@@ -7,6 +7,9 @@
   mail-archive-ui = import ./mail-archive-ui/default.nix {
     inherit lib pkgs rustLib;
   };
+  mkvmaker = import ../../mkvmaker/default.nix {
+    inherit lib pkgs rustLib;
+  };
   # kanidm-admin is archived in _archive/ and intentionally not packaged in the active app set.
   # Use native `kanidm` CLI commands for identity operations while the archived flow is removed.
 }

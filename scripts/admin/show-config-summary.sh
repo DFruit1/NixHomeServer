@@ -63,6 +63,14 @@ echo "  LAN:      $(jq -r '.netIface' <<<"$settings_json") at $(jq -r '.serverLa
 echo "  DNS mode: $(jq -r '.dnsMode' <<<"$settings_json")"
 echo
 
+echo "Build allocation"
+echo "  mode:         $(jq -r '.buildMode' <<<"$settings_json")"
+echo "  local slots:  $(jq -r '.buildSlots.local' <<<"$settings_json")"
+echo "  server slots: $(jq -r '.buildSlots.remote' <<<"$settings_json")"
+echo "  local cores/job:  $(jq -r '.buildCores.local' <<<"$settings_json")"
+echo "  server cores/job: $(jq -r '.buildCores.remote' <<<"$settings_json")"
+echo
+
 echo "Enabled apps"
 jq -r --arg domain "$(jq -r '.domain' <<<"$settings_json")" '
   .[]

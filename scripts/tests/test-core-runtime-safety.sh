@@ -71,6 +71,13 @@ in {
     backupServiceHasStartLimit = cfg.systemd.services.backup-prepare.serviceConfig ? StartLimitIntervalSec;
     kopiaSnapshotUnit = cfg.systemd.services.kopia-persist-snapshot.unitConfig;
     gcUnit = cfg.systemd.services.nixhomeserver-nix-gc.unitConfig;
+    gcService = {
+      restart = cfg.systemd.services.nixhomeserver-nix-gc.serviceConfig.Restart or null;
+      successExitStatus = cfg.systemd.services.nixhomeserver-nix-gc.serviceConfig.SuccessExitStatus;
+    };
+    gcTimer = cfg.systemd.timers.nixhomeserver-nix-gc.timerConfig;
+    optimiseSuccessExitStatus =
+      cfg.systemd.services.nixhomeserver-nix-optimise.serviceConfig.SuccessExitStatus;
   };
   persistence = {
     directories = cfg.repo.impermanence.inventory.persistenceDirectories;
@@ -135,7 +142,11 @@ jq -e '
   and (.maintenance.backupUnit.StartLimitIntervalSec == "2h")
   and (.maintenance.backupServiceHasStartLimit == false)
   and (.maintenance.kopiaSnapshotUnit.StartLimitIntervalSec == "2h")
-  and (.maintenance.gcUnit.StartLimitIntervalSec == "4h")
+  and (.maintenance.gcUnit.OnFailure == ["nixhomeserver-failure-alert@%n.service"])
+  and (.maintenance.gcService.restart == null)
+  and (.maintenance.gcService.successExitStatus | index(75) != null)
+  and (.maintenance.gcTimer.OnCalendar == "hourly")
+  and (.maintenance.optimiseSuccessExitStatus | index(75) != null)
   and (.localAdminPassword.wantedBy | index("multi-user.target") != null)
   and (.localAdminPassword.before | index("systemd-user-sessions.service") != null)
   and (.localAdminPassword.credentials | index("bootstrap-password:/run/agenix/serverBootstrapSudoPassword") != null)
@@ -195,7 +206,7 @@ require_fixed modules/Core_Modules/rclone/service.nix '${pkgs.rclone}/bin/rclone
   "Offsite sync must independently verify the uploaded repository."
 require_fixed modules/Core_Modules/rclone/service.nix 'last-mega-sync-success.json' \
   "Offsite verification must publish an operator-visible success marker."
-require_fixed documentation/operations.md 'rcloneMega.enable = true' \
+require_fixed documentation/operations.md 'offsiteBackup.enable = true' \
   "Offsite setup documentation must explicitly enable the declarative service."
 require_fixed documentation/restore-and-recovery.md 'Use `rclone copy`, never reverse `rclone sync`' \
   "Recovery documentation must guard the only offsite copy from reverse-sync deletion."
@@ -203,6 +214,12 @@ require_fixed documentation/quickstart.md 'mount --bind /mnt/persist/etc/nixos /
   "Fresh installs must seed the on-host repository into persisted storage before first rollback."
 require_fixed modules/Core_Modules/impermanence/default.nix 'system.activationScripts.seedCorePersistence' \
   "Existing hosts must migrate newly centralized core persistence before bind mounts hide live state."
+require_fixed modules/Core_Modules/impermanence/default.nix 'mount --bind "$persistent_path" "$source_path"' \
+  "Existing core files must be safely adopted during a live impermanence activation."
+require_fixed modules/Core_Modules/impermanence/default.nix 'if [ ! -e "$source_path" ]; then' \
+  "Live adoption must recreate file mountpoints removed while switch-to-configuration rebuilds /etc."
+require_fixed modules/Core_Modules/impermanence/default.nix '/dev/null' \
+  "Live adoption must create an empty regular-file mountpoint before binding persisted state."
 forbid_match modules/Core_Modules/monitoring/services.nix 'TRUSTED_AUTH_HEADER' \
   "Beszel must not trust a forgeable header from arbitrary local processes."
 require_fixed scripts/test-homepage-ui.sh '--inputs-from "$repo_root"' \

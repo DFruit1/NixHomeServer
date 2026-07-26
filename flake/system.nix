@@ -29,6 +29,7 @@ let
       oauth2Proxy = import ../modules/Core_Modules/oauth2-proxy {
         inherit lib pkgs vars;
       };
+      unstablePkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
     };
   };
   bootstrapBaseModules = [

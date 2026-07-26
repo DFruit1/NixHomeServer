@@ -11,6 +11,11 @@ ensure_tools bash git mktemp nix rg tar
 expected_hostname="$(nix_flake_var 'vars.hostname')"
 expected_lan_ip="$(nix_flake_var 'vars.serverLanIP')"
 expected_local_admin="$(nix_flake_var 'vars.localAdminUser')"
+expected_build_mode="$(nix_flake_var 'vars.buildMode')"
+expected_local_slots="$(nix_flake_var 'toString vars.buildSlots.local')"
+expected_remote_slots="$(nix_flake_var 'toString vars.buildSlots.remote')"
+expected_local_cores="$(nix_flake_var 'toString vars.buildCores.local')"
+expected_remote_cores="$(nix_flake_var 'toString vars.buildCores.remote')"
 expected_target="${expected_local_admin}@${expected_lan_ip}"
 
 archive_test_dir="$(mktemp -d '/tmp/nixhomeserver deploy.XXXXXX')"
@@ -18,9 +23,16 @@ cleanup() { rm -rf "$archive_test_dir"; }
 trap cleanup EXIT
 archive_path="$archive_test_dir/repository.tar"
 archive_root="$archive_test_dir/extracted repository"
-mkdir -p "$archive_root"
-create_deploy_repo_archive "$archive_path"
-tar -xf "$archive_path" -C "$archive_root"
+if git -C "$TESTS_REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  mkdir -p "$archive_root"
+  create_deploy_repo_archive "$archive_path"
+  tar -xf "$archive_path" -C "$archive_root"
+else
+  # Debug deployment validation runs from the already manifest-filtered
+  # archive on the build host. Reuse that extracted tree to exercise path
+  # flake evaluation without incorrectly requiring a nested Git checkout.
+  archive_root="$TESTS_REPO_ROOT"
+fi
 (
   cd "$archive_root"
   unset NIXHOMESERVER_REPO_ROOT_FOR_EVAL NIXHOMESERVER_FLAKE_REF_FOR_EVAL
@@ -84,8 +96,10 @@ if ! rg -Fq 'Refusing to create a deployment archive outside a Git worktree' "$a
 fi
 
 default_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --action test)"
-if ! rg -Fq "mode=remote" <<<"$default_output"; then
-  echo "❌ Deploy default should build remotely on the target host."
+if ! rg -Fq "mode=${expected_build_mode}" <<<"$default_output" \
+  || ! rg -Fq "build_slots=local:${expected_local_slots},remote:${expected_remote_slots}" <<<"$default_output" \
+  || ! rg -Fq "build_cores=local:${expected_local_cores},remote:${expected_remote_cores}" <<<"$default_output"; then
+  echo "❌ Deploy default did not use the allocation selected in vars.nix."
   echo "$default_output"
   exit 1
 fi
@@ -94,16 +108,32 @@ if ! rg -Fq "target_host=${expected_target}" <<<"$default_output"; then
   echo "$default_output"
   exit 1
 fi
-if ! rg -Fq "build_host=${expected_target}" <<<"$default_output"; then
-  echo "❌ Deploy default build host should be the target host."
-  echo "$default_output"
-  exit 1
-fi
-if rg -Fq -- "--target-host" <<<"$default_output"; then
-  echo "❌ Default same-host rebuild should not pass --target-host from inside the target shell."
-  echo "$default_output"
-  exit 1
-fi
+case "$expected_build_mode" in
+  remote)
+    if ! rg -Fq "build_host=${expected_target}" <<<"$default_output" \
+      || rg -Fq -- "--target-host" <<<"$default_output"; then
+      echo "❌ Remote mode should run on the target without a redundant --target-host."
+      echo "$default_output"
+      exit 1
+    fi
+    ;;
+  local)
+    if ! rg -Fq 'build_host=local' <<<"$default_output" \
+      || ! rg -Fq -- "--target-host ${expected_target}" <<<"$default_output"; then
+      echo "❌ Local mode should build on the workstation and copy to the target."
+      echo "$default_output"
+      exit 1
+    fi
+    ;;
+  balanced|maximum-effort)
+    if ! rg -Fq "build_host=local+${expected_target}" <<<"$default_output" \
+      || ! rg -Fq -- "--target-host ${expected_target}" <<<"$default_output"; then
+      echo "❌ Combined build mode should coordinate the workstation and target server."
+      echo "$default_output"
+      exit 1
+    fi
+    ;;
+esac
 if ! rg -Fq "rebuild_command=nix run --inputs-from . nixpkgs#nixos-rebuild" <<<"$default_output"; then
   echo "❌ Deploy should resolve nixos-rebuild from the repo flake inputs."
   echo "$default_output"
@@ -145,6 +175,27 @@ if rg -Fq 'nixos-rebuild -- boot' <<<"$local_output"; then
   exit 1
 fi
 
+balanced_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-mode balanced --action test)"
+if ! rg -Fq 'mode=balanced' <<<"$balanced_output" \
+  || ! rg -Fq 'build_slots=local:2,remote:2' <<<"$balanced_output" \
+  || ! rg -Fq 'build_cores=local:1,remote:1' <<<"$balanced_output" \
+  || ! rg -Fq "build_host=local+${expected_target}" <<<"$balanced_output" \
+  || ! rg -Fq -- "--target-host ${expected_target}" <<<"$balanced_output"; then
+  echo "❌ Balanced mode should allocate two slots to the workstation and server."
+  echo "$balanced_output"
+  exit 1
+fi
+
+maximum_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-mode maximum-effort --action test)"
+if ! rg -Fq 'mode=maximum-effort' <<<"$maximum_output" \
+  || ! rg -Fq 'build_slots=local:auto,remote:auto' <<<"$maximum_output" \
+  || ! rg -Fq 'build_cores=local:0,remote:0' <<<"$maximum_output" \
+  || ! rg -Fq "build_host=local+${expected_target}" <<<"$maximum_output"; then
+  echo "❌ Maximum-effort mode should allocate all available slots to the workstation and server."
+  echo "$maximum_output"
+  exit 1
+fi
+
 if conflict_output="$(DEPLOY_DRY_RUN=1 bash scripts/deploy.sh --build-locally --build-host "$expected_target" 2>&1)"; then
   echo "❌ Conflicting deploy build modes returned success."
   exit 1
@@ -166,8 +217,9 @@ if ! rg -Fq 'blocked: --hostname requires a flake hostname' <<<"$missing_value_o
 fi
 
 help_output="$(bash scripts/deploy.sh --help)"
-if ! rg -Fq -- "--build-locally" <<<"$help_output"; then
-  echo "❌ Deploy help should document --build-locally."
+if ! rg -Fq -- "--build-locally" <<<"$help_output" \
+  || ! rg -Fq 'maximum-effort' <<<"$help_output"; then
+  echo "❌ Deploy help should document configured and one-shot build modes."
   echo "$help_output"
   exit 1
 fi
@@ -210,6 +262,8 @@ require_fixed scripts/helpers/deploy-executor.sh 'run_detached_activation "$buil
   "Test deploy must activate the built closure through the marker-guarded target unit."
 require_fixed scripts/deploy.sh 'need git ssh tar' \
   "Deploy source creation must require Git rather than broad-archiving a copied tree."
+require_fixed modules/Core_Modules/base-system/default.nix 'if vars.buildSlots.remote == 0 then "auto"' \
+  "The deployed server must remain able to accept a build when changing away from local-only mode."
 forbid_match scripts/helpers/deploy-executor.sh 'nixos-rebuild boot' \
   "Deploy must not commit a boot generation before the health gates."
 
