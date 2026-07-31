@@ -25,8 +25,6 @@ let
     sqlite
     usbutils
   ];
-  extraBinaryCacheUrls = map (cache: cache.url) vars.binaryCaches;
-  extraBinaryCachePublicKeys = map (cache: cache.publicKey) vars.binaryCaches;
   localAdminUser = vars.localAdminUser;
   isX86 = builtins.elem pkgs.stdenv.hostPlatform.system [
     "i686-linux"
@@ -196,11 +194,11 @@ in
       substituters = [
         "https://cache.nixos.org"
         "https://nix-community.cachix.org"
-      ] ++ extraBinaryCacheUrls;
+      ];
       experimental-features = [ "nix-command" "flakes" ];
       trusted-public-keys = [
         "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      ] ++ extraBinaryCachePublicKeys;
+      ];
       trusted-users = [ "root" localAdminUser ];
       auto-optimise-store = false;
       builders-use-substitutes = true;

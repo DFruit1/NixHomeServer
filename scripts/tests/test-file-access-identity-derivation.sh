@@ -92,22 +92,15 @@ behavior_json="$(nix eval --impure --json --expr '
       usbAccessGroup = "custom-usb-users";
     };
     fileAccessGidModel = import ./lib/file-access-gids.nix { inherit fileAccess; };
-    backupAccessModel = (import ./lib/backup-access.nix { inherit lib; }) {
-      inherit (base) backupAccess identity;
+    backupAccessModel = import ./lib/backup-access.nix {
+      inherit (base) backupAccess;
       basePosixGids = fileAccessGidModel.posixGids;
     };
     customVars = base // {
       inherit fileAccess fileAccessGidModel backupAccessModel;
-      configuredBackupAdminUsers = backupAccessModel.configuredAdminUsers;
-      configuredBackupStorageUsers = backupAccessModel.configuredStorageUsers;
-      backupAdminUsers = backupAccessModel.adminUsers;
-      backupStorageUsers = backupAccessModel.storageUsers;
       backupAdminGroup = backupAccessModel.adminGroup;
       backupStorageGroup = backupAccessModel.storageGroup;
       backupStorageGid = backupAccessModel.storageGid;
-      kanidmBackupAdminUsers = backupAccessModel.adminMembers;
-      kanidmBackupStorageUsers = backupAccessModel.storageMembers;
-      kanidmBackupUsers = backupAccessModel.allUsers;
       fileAccessPosixGids = backupAccessModel.fileAccessPosixGids;
     };
     customCfg = mkConfig customVars;
@@ -118,7 +111,7 @@ behavior_json="$(nix eval --impure --json --expr '
     };
     identityAccessModel = (import ./lib/identity-access.nix { inherit lib; }) {
       inherit identity;
-      inherit (base) fileAccess monitoringAccess seerrAccess;
+      inherit (base) monitoringAccess;
     };
     identityVars = base // {
       inherit identity identityAccessModel;
@@ -133,8 +126,6 @@ behavior_json="$(nix eval --impure --json --expr '
     identityGroups = identityCfg.services.kanidm.provision.groups;
     normalAppGroups = [
       "users"
-      identityVars.fileAccess.webAccessGroup
-      identityVars.fileAccess.sftpAccessGroup
       "audiobookshelf-users"
       "downloads-users"
       "immich-users"
@@ -144,6 +135,12 @@ behavior_json="$(nix eval --impure --json --expr '
       "mail-archive-users"
       "media-automation-users"
       "paperless-users"
+    ];
+    fileAccessGroups = [
+      identityVars.fileAccess.webAccessGroup
+      identityVars.fileAccess.sftpAccessGroup
+      identityVars.fileAccess.sharedAccessGroup
+      identityVars.fileAccess.usbAccessGroup
     ];
   in {
     customToplevel = customCfg.system.build.toplevel.drvPath;
@@ -162,6 +159,9 @@ behavior_json="$(nix eval --impure --json --expr '
       (group: builtins.elem "app-admin-only" (identityGroups.${group}.members or []))
       normalAppGroups;
     appAdminHasAdminGroup = builtins.elem "app-admin-only" identityGroups.app-admin.members;
+    appAdminHasNoImplicitFileAccess = builtins.all
+      (group: !(builtins.elem "app-admin-only" (identityGroups.${group}.members or [])))
+      fileAccessGroups;
     canaryHasNoAdminGroup = !(builtins.elem identity.canaryUser identityGroups.app-admin.members);
   }
 ')"
@@ -178,6 +178,7 @@ if ! jq -e '
   and .customLocalGids == {"web": 2001, "sftp": 2002, "shared": 2003, "usb": 2004}
   and .appAdminHasEveryNormalAppGroup
   and .appAdminHasAdminGroup
+  and .appAdminHasNoImplicitFileAccess
   and .canaryHasNoAdminGroup
 ' <<<"$behavior_json" >/dev/null; then
   echo "❌ Custom file-access names or app-admin access inheritance failed full host evaluation." >&2
@@ -231,22 +232,15 @@ evaluate_invalid_file_access() {
           throw "unsupported file-access validation test case"
       );
       fileAccessGidModel = import ./lib/file-access-gids.nix { inherit fileAccess; };
-      backupAccessModel = (import ./lib/backup-access.nix { inherit lib; }) {
-        inherit (base) backupAccess identity;
+      backupAccessModel = import ./lib/backup-access.nix {
+        inherit (base) backupAccess;
         basePosixGids = fileAccessGidModel.posixGids;
       };
       vars = base // {
         inherit fileAccess fileAccessGidModel backupAccessModel;
-        configuredBackupAdminUsers = backupAccessModel.configuredAdminUsers;
-        configuredBackupStorageUsers = backupAccessModel.configuredStorageUsers;
-        backupAdminUsers = backupAccessModel.adminUsers;
-        backupStorageUsers = backupAccessModel.storageUsers;
         backupAdminGroup = backupAccessModel.adminGroup;
         backupStorageGroup = backupAccessModel.storageGroup;
         backupStorageGid = backupAccessModel.storageGid;
-        kanidmBackupAdminUsers = backupAccessModel.adminMembers;
-        kanidmBackupStorageUsers = backupAccessModel.storageMembers;
-        kanidmBackupUsers = backupAccessModel.allUsers;
         fileAccessPosixGids = backupAccessModel.fileAccessPosixGids;
       };
       pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};

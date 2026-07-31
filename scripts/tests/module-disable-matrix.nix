@@ -6,25 +6,6 @@ let
   vars = builtins.getAttr hostName flake.lib.nixhomeserverSettings;
 
   cases = {
-    attic = {
-      disable = { repo.attic.enable = lib.mkForce false; };
-      registryName = "attic";
-      services = [
-        "attic-cache-bootstrap"
-        "attic-watch-store"
-      ];
-      timers = [ ];
-      hosts = [ ];
-      gatewayApps = [ ];
-      oauthClients = [ ];
-      kanidmGroups = [ ];
-      users = [ "atticd" ];
-      groups = [ "atticd" ];
-      secrets = [ "atticServerEnv" ];
-      backupApps = [ ];
-      guardedServices = [ ];
-      persistencePaths = [ "/var/lib/atticd" ];
-    };
     bonsai = {
       disable = { repo.bonsai.enable = lib.mkForce false; };
       registryName = "bonsai";

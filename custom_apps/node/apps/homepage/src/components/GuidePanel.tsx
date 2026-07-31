@@ -5,11 +5,15 @@ export const GuidePanel = component$(({ guide, username }: { guide: FolderGuide;
   const personal = guide.personalPath?.replaceAll('{username}', username);
 
   return (
-    <article class="guide-panel">
+    <article id="guide-detail" class="guide-panel">
       <div>
-        <span class={{ state: true, off: !guide.enabled }}>{guide.enabled ? 'Enabled' : 'Not enabled'}</span>
         <h2>{guide.title}</h2>
       </div>
+      {!guide.enabled && (
+        <aside class="guide-callout neutral">
+          This file workflow is not currently enabled. Its guidance is shown because “Show unused apps in Detailed Guide” is on.
+        </aside>
+      )}
       <p class="filetypes">{guide.fileTypes.join(', ')}</p>
       <dl>
         {personal && (

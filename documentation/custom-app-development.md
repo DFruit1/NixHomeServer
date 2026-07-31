@@ -7,23 +7,23 @@ This repo has two browser custom app surfaces:
 
 ## Server Build Cache
 
-Attic watches the server's Nix store and uploads newly built paths to the
-loopback-only `nixhomeserver` cache. The cache skips paths already signed by
-`cache.nixos.org`, so it concentrates on custom applications and other outputs
-that are not available from the upstream cache. Guarded deploys using the
-default remote build mode benefit automatically on later builds.
+The server's bounded Nix post-build hook uploads newly built outputs to the
+loopback-only `nixhomeserver` Attic cache. The cache skips paths already signed
+by `cache.nixos.org`, so it concentrates on custom applications and other
+outputs that are not available from the upstream cache. Guarded deploys using
+the default remote build mode benefit automatically on later builds.
 
-Inspect the initialized cache and watcher:
+Inspect the initialized cache and service:
 
 ```bash
 sudo env XDG_CONFIG_HOME=/run/attic-client attic cache info nixhomeserver
-systemctl status atticd.service attic-cache-bootstrap.service attic-watch-store.service
-journalctl -u attic-watch-store.service -n 100 --no-pager
+systemctl status atticd.service attic-cache-bootstrap.service
+journalctl -u atticd.service -n 100 --no-pager
 ```
 
-Only builds performed on the server are observed. A one-shot
-`--build-mode local` build remains in the workstation's store and is not
-uploaded to this loopback-only cache.
+Workstations can use the same bounded post-build approach through an SSH
+tunnel, as documented in the operations guide, without publishing the cache on
+the LAN or keeping a store watcher resident.
 
 ## Mail Archive UI
 

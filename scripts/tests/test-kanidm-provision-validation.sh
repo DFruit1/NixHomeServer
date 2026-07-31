@@ -32,9 +32,6 @@ identity_json="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --json --impure --expr
     invalidMemberships = builtins.filter
       (membership: !validation.validKanidmEntryName membership.memberName)
       memberships;
-    missingUsbPersons = builtins.filter
-      (name: !(builtins.hasAttr name provision.persons))
-      (vars.fileAccess.usbUsers or [ ]);
     missingMonitoringPersons = builtins.filter
       (name: !(builtins.hasAttr name provision.persons))
       (vars.monitoringAccess.users or [ ]);
@@ -44,7 +41,6 @@ jq -e '
   .invalidPersons == []
   and .invalidGroups == []
   and .invalidMemberships == []
-  and .missingUsbPersons == []
   and .missingMonitoringPersons == []
 ' <<<"$identity_json" >/dev/null || {
   echo "❌ Evaluated Kanidm provisioning contains invalid or unprovisioned identity names."
@@ -53,7 +49,7 @@ jq -e '
 }
 
 # Use distinct names here so this test catches a future regression even when
-# the real usb/monitoring/SFTP users also happen to be ordinary app users.
+# the real monitoring/SFTP users also happen to be ordinary app users.
 projected_people="$(nix eval --json --impure --expr '
   let
     f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
@@ -62,12 +58,9 @@ projected_people="$(nix eval --json --impure --expr '
     vars = base // {
       kanidmAppUsers = [ ];
       kanidmAppAdminUsers = [ ];
-      kanidmBackupUsers = [ ];
       filesSftpUsers = [ "sftp-only" ];
       monitoringAccess = base.monitoringAccess // { users = [ "monitor-only" ]; };
       monitoringAccessUsers = [ "monitor-only" ];
-      fileAccess = base.fileAccess // { usbUsers = [ "usb-only" ]; };
-      fileAccessUsbUsers = [ "usb-only" ];
       kanidmAdminUser = "admin-only";
       kanidmAppUserEmails = { };
       kanidmAdminMailAddresses = [ ];
@@ -84,7 +77,6 @@ jq -e '
   index("admin-only") != null
   and index("monitor-only") != null
   and index("sftp-only") != null
-  and index("usb-only") != null
 ' <<<"$projected_people" >/dev/null || {
   echo "❌ Special-purpose Kanidm users were not included in person provisioning."
   jq . <<<"$projected_people"

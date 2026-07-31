@@ -6,7 +6,7 @@ Use this as the maintained day-2 operations guide for validation, guarded deploy
 
 `canary-user` is a non-privileged Kanidm person used by the Homepage admin
 service-access test. It belongs to normal application groups plus monitoring
-access, but never to the exactly reconciled backup groups, `app-admin`,
+access, but never to the backup groups, `app-admin`,
 `domain_admins`, `system_admins`, or delegated `idm_*` groups.
 
 `kanidm-canary-bootstrap.service` automatically provisions the generated
@@ -301,8 +301,8 @@ credential-item pattern lives in [Vaultwarden Guide](./vaultwarden.md).
 Use the kopia hostname for local Kopia backup management. Browser access is gated by
 Kanidm through OAuth2 Proxy and requires membership in the fixed `backup-admin`
 group. Repository browsing is a separate permission granted by the fixed
-`backup-storage-users` group. Backup admins inherit storage membership;
-users listed only in `backupAccess.storageUsers` never receive Kopia admin access.
+`backup-storage-users` group. Both memberships are managed directly in Kanidm;
+add an administrator to both groups when they also need repository browsing.
 After OAuth2 succeeds, Kopia still requires its native `kopia-admin` password
 from the generated `kopiaServerPassword` secret. The managed repository is a
 local encrypted Kopia filesystem repository at `/mnt/data/backups/kopia`.
@@ -382,7 +382,7 @@ administrator recovery/audit surface, not something users edit directly.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
 - Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB filesystems are mounted manually by an operator under that root.
 - Users in `backup-storage-users` also see read-only `_Backups`, backed by
-`/mnt/data/backups`. Members of `backup-admin` inherit this storage group.
+`/mnt/data/backups`. This role is independent of `backup-admin`.
 - GID `2005` is the fixed on-disk identity of `backup-storage-users`. It is
   intentionally derived outside `vars.nix`; changing it requires a deliberate
   ownership and ACL migration.
@@ -754,14 +754,19 @@ build and then activate the evaluated target over SSH:
 ./scripts/deploy.sh --build-locally --action test
 ```
 
-## Local Attic Build Cache
+## Attic Build Cache
 
-The optional Attic module is enabled by default and listens only on
+Attic is fixed platform behavior whenever its application module is present and
+listens only on
 `127.0.0.1:8080`. It is not opened in the firewall or published through Caddy.
 The server's Nix daemon uses the public `nixhomeserver` cache at that loopback
-endpoint, while a root-only Attic client token permits the store watcher to
-upload newly built paths. Attic's default upstream filter avoids duplicating
-paths already signed by `cache.nixos.org`.
+endpoint, while a root-only Attic client token permits a bounded Nix post-build
+hook to upload newly built outputs. Attic's default upstream filter avoids
+duplicating paths already signed by `cache.nixos.org`.
+
+The Nix daemon also always uses the official `cache.nixos.org` cache and the
+community `nix-community.cachix.org` cache. These are platform defaults rather
+than `vars.nix` settings.
 
 On first activation, `attic-cache-bootstrap.service` creates or reconciles the
 cache, sets a six-month retention period, learns the cache signing public key,
@@ -773,21 +778,39 @@ but Kopia deliberately excludes it because all cached content is reproducible.
 Check the service chain and cache:
 
 ```bash
-systemctl status atticd.service attic-cache-bootstrap.service attic-watch-store.service
+systemctl status atticd.service attic-cache-bootstrap.service
 sudo env XDG_CONFIG_HOME=/run/attic-client attic cache info nixhomeserver
 curl --fail http://127.0.0.1:8080/nixhomeserver/nix-cache-info
-journalctl -u attic-watch-store.service -n 100 --no-pager
+journalctl -u atticd.service -n 100 --no-pager
 sudo du -sh /var/lib/atticd/storage
 ```
 
-To stop caching without deleting retained cache data, set:
+The server Nix daemon uses a serialized `attic push --no-closure --jobs 1`
+post-build hook with a five-minute timeout. Failures are logged without failing
+the completed Nix build. This avoids the known unbounded memory growth of a
+long-lived `attic watch-store` process. `atticd` uses conservative glibc
+allocator thresholds and systemd memory/swap limits so upload buffers are
+returned promptly and a cache fault cannot exhaust the host.
 
-```nix
-repo.attic.enable = false;
+The administrator's Void desktop is also configured with an XDG-autostarted,
+user-level SSH tunnel from local port 8080 to the server's loopback port, the
+cache public key in `~/.config/nix/nix.conf`, and a Nix post-build hook that
+runs a serialized `attic push --no-closure --jobs 1`. Consequently, local build
+outputs are uploaded without exposing Attic on the LAN or keeping a
+memory-intensive desktop store watcher resident. Upload failures are logged but
+do not fail an otherwise successful build. The desktop token is a
+pull/push-only token stored with mode `0600`; it cannot create or reconfigure
+caches. If the tunnel is unavailable, Nix falls back to the official and
+community caches.
+
+Desktop-side checks:
+
+```bash
+curl --fail http://127.0.0.1:8080/nixhomeserver/nix-cache-info
+attic cache info nixhomeserver
+pgrep -af 'nixhomeserver-attic-tunnel'
+nix config show | grep -E '^(substituters|trusted-public-keys|post-build-hook) ='
 ```
-
-The watcher only sees builds that complete in the server's Nix store. Local
-workstation builds are not uploaded to this loopback-only cache.
 
 For server-side secrets generation after local staging or edits:
 

@@ -38,8 +38,8 @@
   },
   "kanidmGroupManagement": {
     "app-admin": "manual",
-    "backup-admin": "backupAccess.adminUsers",
-    "backup-storage-users": "backupAccess.storageUsers",
+    "backup-admin": "manual",
+    "backup-storage-users": "manual",
     "documents-users": "identity.appUsers",
     "files-personal-users": "manual",
     "files-sftp-users": "manual",

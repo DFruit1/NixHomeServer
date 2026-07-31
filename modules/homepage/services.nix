@@ -101,13 +101,9 @@ let
   );
   kanidmGroupDescriptions = (config.nixhomeserver or { }).kanidmGroupDescriptions or { };
   kanidmGroupManagement = lib.mapAttrs
-    (name: group:
+    (_: group:
       if !(group.overwriteMembers or true) then
         "manual"
-      else if name == vars.backupAdminGroup then
-        "backupAccess.adminUsers"
-      else if name == vars.backupStorageGroup then
-        "backupAccess.storageUsers"
       else
         "identity.appUsers")
     (config.services.kanidm.provision.groups or { });
@@ -1492,12 +1488,12 @@ let
     {
       title = "Remove user from access group";
       command = "kanidm group remove-members app-admin USERNAME";
-      detail = "Use this live command only for a manual/additive group such as app-admin or a file-access role, after verifying membership. First search vars.nix for the username: configured seed members must also be removed from their source list and deployed or provisioning can add them again. Application bundles and backup roles reconcile exactly and must be changed in vars.nix.";
+      detail = "Use this live command for manual groups such as app-admin, file-access roles, backup roles, or seerr-request-managers after verifying membership. Default application bundles still come from identity.appUsers and identity.appAdminUsers in vars.nix.";
     }
     {
       title = "Restart identity reconciliation";
       command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
-      detail = "Refresh configured display names and mail addresses for Kanidm people that already exist, then refresh POSIX file-group mappings and per-user roots. This does not create a missing person or change repository-managed group membership; edit vars.nix and deploy for those changes.";
+      detail = "Refresh configured display names and mail addresses for Kanidm people that already exist, then refresh POSIX file-group mappings and per-user roots. File and backup role membership remains managed directly in Kanidm.";
     }
     {
       title = "Manage Kanidm entity removal explicitly";

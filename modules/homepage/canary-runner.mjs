@@ -164,6 +164,16 @@ const metrics = async (sessionId) => {
   return { ...value, blank: isBlankRender(value) };
 };
 const hostOf = (url) => { try { return new URL(url).host; } catch { return ''; } };
+export const nativeOidcEntryUrl = ({ url = '', oidcLoginPath = '' } = {}) => {
+  if (!oidcLoginPath) return '';
+  try {
+    return new URL(oidcLoginPath, url).toString();
+  } catch {
+    return '';
+  }
+};
+export const hasNativeOidcLoginEntry = ({ text = '' } = {}) =>
+  /\bsign in with kanidm\b/i.test(text);
 export const hasAuthenticationBoundary = ({ url = '', text = '', title = '', loginControls = 0, authHost = '', kanidmHost = '' } = {}) =>
   [authHost, kanidmHost].filter(Boolean).includes(hostOf(url))
   || loginControls > 0
@@ -414,22 +424,34 @@ const checkUnauthenticated = async (target) => {
     await sleep(750);
     let page;
     let finalUrl;
-    await waitFor(async () => {
-      page = await metrics(sessionId);
-      finalUrl = await currentUrl(sessionId);
-      if (page.blank) return false;
-      return hasAuthenticationBoundary({
-        url: finalUrl,
-        text: page.text,
-        title: page.title,
-        loginControls: page.loginControls,
-        authHost: target.authHost,
-        kanidmHost: target.kanidmHost,
-      });
-    }, 10_000).catch(() => undefined);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await waitFor(async () => {
+        page = await metrics(sessionId);
+        finalUrl = await currentUrl(sessionId);
+        if (page.blank) return false;
+        return hasAuthenticationBoundary({
+          url: finalUrl,
+          text: page.text,
+          title: page.title,
+          loginControls: page.loginControls,
+          authHost: target.authHost,
+          kanidmHost: target.kanidmHost,
+        });
+      }, 10_000).catch(() => undefined);
+      page ??= await metrics(sessionId);
+      finalUrl ??= await currentUrl(sessionId);
+      if (!page.blank || attempt > 0) break;
+      await reload(sessionId);
+      await sleep(2_000);
+    }
     page ??= await metrics(sessionId);
     finalUrl ??= await currentUrl(sessionId);
     if (page.responseStatus >= 500) throw Object.assign(new Error(`HTTP ${page.responseStatus}`), { code: 'http-error', metrics: page });
+    if (page.blank) {
+      throw Object.assign(new Error('unauthenticated page remained visually blank after reload'), {
+        code: 'blank-page', metrics: page,
+      });
+    }
     if (!hasAuthenticationBoundary({
       url: finalUrl,
       text: page.text,
@@ -455,18 +477,76 @@ const checkUnauthenticated = async (target) => {
 
 const checkAuthenticated = async (sessionId, target) => {
   const startedAt = Date.now();
+  const oidcTrace = [];
+  const traceOidcPage = async (stage) => {
+    const url = await currentUrl(sessionId);
+    const page = await metrics(sessionId);
+    let redactedUrl = url;
+    try {
+      const parsed = new URL(url);
+      redactedUrl = `${parsed.origin}${parsed.pathname}${parsed.hash}`;
+    } catch {
+      // Keep the WebDriver value when it is not an absolute URL.
+    }
+    oidcTrace.push({
+      stage,
+      url: redactedUrl,
+      title: page.title,
+      text: page.text.slice(0, 300),
+    });
+  };
   try {
     await navigate(sessionId, target.url);
     await sleep(750);
     if (target.coverageMode === 'native-oidc') {
-      const current = await metrics(sessionId);
+      const current = await waitFor(async () => {
+        const page = await metrics(sessionId);
+        return page.blank ? false : page;
+      }, 15_000).catch(() => metrics(sessionId));
       if (/sign in|log in|login|openid|oauth|kanidm/i.test(current.text)) {
-        const clicked = await clickMatching(sessionId, 'kanidm|openid|oauth|single sign|sso');
-        if (clicked) await sleep(750);
+        const oidcEntryUrl = nativeOidcEntryUrl(target);
+        if (oidcEntryUrl) {
+          if (!hasNativeOidcLoginEntry(current)) {
+            throw Object.assign(new Error('native OIDC login action is missing from the application login page'), {
+              code: 'oidc-entry-missing',
+              metrics: current,
+            });
+          }
+          await navigate(sessionId, oidcEntryUrl);
+          await sleep(750);
+          await traceOidcPage('provider-start');
+        } else {
+          const clicked = await waitFor(
+            async () => clickMatching(sessionId, 'kanidm|openid|oauth|single sign|sso'),
+            15_000,
+          ).catch(() => false);
+          if (clicked) await sleep(750);
+        }
       }
       if (hostOf(await currentUrl(sessionId)) === target.kanidmHost) {
         await waitFor(async () => hostOf(await currentUrl(sessionId)) !== target.kanidmHost);
       }
+      if (oidcTrace.length > 0) await traceOidcPage('provider-return');
+      const callbackResult = await waitFor(async () => {
+        const url = await currentUrl(sessionId);
+        let path = '';
+        try {
+          path = new URL(url).pathname;
+        } catch {
+          return { leftCallback: true };
+        }
+        if (!path.includes('/sso/OIDC/Callback/')) return { leftCallback: true };
+        const page = await metrics(sessionId);
+        if (/\bError:/i.test(page.text)) return { leftCallback: false, page };
+        return false;
+      }, 15_000);
+      if (!callbackResult.leftCallback) {
+        throw Object.assign(new Error('native OIDC callback reported an authentication error'), {
+          code: 'oidc-callback-error',
+          metrics: callbackResult.page,
+        });
+      }
+      if (oidcTrace.length > 0) await traceOidcPage('callback-complete');
     }
     if (target.expectAccessDenied) {
       const page = await metrics(sessionId);
@@ -493,6 +573,9 @@ const checkAuthenticated = async (sessionId, target) => {
       finalUrl, durationMs: Date.now() - startedAt, metrics: { ...page, text: undefined },
     };
   } catch (error) {
+    if (oidcTrace.length > 0) {
+      error.metrics = { ...(error.metrics ?? {}), oidcTrace };
+    }
     return failureResult(target, 'authenticated', error, startedAt);
   }
 };

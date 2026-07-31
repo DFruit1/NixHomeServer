@@ -15,6 +15,7 @@ export const ProfileMenu = component$(
   }) => {
     const menuRef = useSignal<HTMLDetailsElement>();
     const showUnusedApps = useSignal(false);
+    const showUnusedAppsInDetailedGuide = useSignal(false);
     const clickServiceCardsToOpen = useSignal(false);
     const closeMenu = $(() => {
       if (menuRef.value) {
@@ -24,6 +25,7 @@ export const ProfileMenu = component$(
 
     useVisibleTask$(({ cleanup }) => {
       showUnusedApps.value = window.localStorage.getItem('homepage.showUnusedApps') === 'true';
+      showUnusedAppsInDetailedGuide.value = window.localStorage.getItem('homepage.showUnusedAppsInDetailedGuide') === 'true';
       clickServiceCardsToOpen.value = window.localStorage.getItem('homepage.clickServiceCardsToOpen') === 'true';
 
       const onPointerDown = (event: PointerEvent) => {
@@ -56,6 +58,12 @@ export const ProfileMenu = component$(
       clickServiceCardsToOpen.value = target.checked;
       window.localStorage.setItem('homepage.clickServiceCardsToOpen', String(target.checked));
       document.dispatchEvent(new CustomEvent('homepage-click-service-cards-change', { detail: { open: target.checked } }));
+    });
+
+    const updateShowUnusedAppsInDetailedGuide = $((_event: Event, target: HTMLInputElement) => {
+      showUnusedAppsInDetailedGuide.value = target.checked;
+      window.localStorage.setItem('homepage.showUnusedAppsInDetailedGuide', String(target.checked));
+      document.dispatchEvent(new CustomEvent('homepage-show-unused-detailed-guide-change', { detail: { show: target.checked } }));
     });
 
     return (
@@ -91,7 +99,11 @@ export const ProfileMenu = component$(
             <h3>Preferences</h3>
             <label>
               <input type="checkbox" checked={showUnusedApps.value} onChange$={updateShowUnusedApps} />
-              <span>Show unused apps</span>
+              <span>Show unused apps in Services</span>
+            </label>
+            <label>
+              <input type="checkbox" checked={showUnusedAppsInDetailedGuide.value} onChange$={updateShowUnusedAppsInDetailedGuide} />
+              <span>Show unused apps in Detailed Guide</span>
             </label>
             <label>
               <input type="checkbox" checked={clickServiceCardsToOpen.value} onChange$={updateClickServiceCardsToOpen} />

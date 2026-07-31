@@ -6,7 +6,6 @@ let
   dataDir = "/var/lib/jellyfin";
   pluginMountDir = "${dataDir}/plugins/OIDC RBAC_${pluginVersion}";
   pluginSourceDir = "${jellyfinOidcPlugin}/lib/jellyfin-plugin-oidc";
-  pluginRuntimeDir = "/run/jellyfin-oidc-plugin";
   pluginConfigFile = "${dataDir}/plugins/configurations/Jellyfin.Plugin.OIDC.xml";
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
   jellyfinUrl = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}";
@@ -32,8 +31,8 @@ let
         ${lib.escapeShellArg "${pluginSourceDir}/meta.json"} \
         ${lib.escapeShellArg "${pluginMountDir}/meta.json"}
       ${lib.concatMapStringsSep "\n" (assembly: ''
-        ln -sfn \
-          ${lib.escapeShellArg "${pluginRuntimeDir}/${assembly}"} \
+        install -m 0444 \
+          ${lib.escapeShellArg "${pluginSourceDir}/${assembly}"} \
           ${lib.escapeShellArg "${pluginMountDir}/${assembly}"}
       '') pluginAssemblies}
     '';
@@ -57,24 +56,15 @@ in
         user = "jellyfin";
         group = "jellyfin";
       };
-      "${pluginRuntimeDir}".d = {
-        mode = "0750";
-        user = "jellyfin";
-        group = "jellyfin";
-      };
     };
 
     systemd.services.jellyfin = {
       restartTriggers = [ jellyfinOidcPlugin ];
       serviceConfig = {
-        # Jellyfin 10.11 rewrites meta.json while activating a plugin. Keep that
-        # non-secret manifest in state, but expose every executable assembly
-        # through symlinks into this immutable runtime bind.
+        # Keep local copies so a rollback to a generation without this module
+        # cannot leave Jellyfin pointing into a vanished /run bind mount.
         ExecStartPre = lib.mkAfter [
           "${pluginManifestInstaller}/bin/jellyfin-oidc-manifest-install"
-        ];
-        BindReadOnlyPaths = lib.mkAfter [
-          "${pluginSourceDir}:${pluginRuntimeDir}"
         ];
       };
     };

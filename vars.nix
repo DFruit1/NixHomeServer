@@ -69,24 +69,9 @@ let
       };
     };
 
-    fileAccess = {
-      usbUsers = [ "dsaw" ]; # Kanidm users allowed to see _USB inside their personal file root.
-    };
-
-    backupAccess = {
-      adminUsers = [ "dsaw" ]; # Extra existing Kanidm users allowed to manage backups.
-      storageUsers = [ ]; # Storage-only users. Backup admins inherit storage access and should not be repeated here.
-    };
-
-    seerrAccess = {
-      requestManagers = [ "dsaw" ]; # Extra request approvers; the dedicated Kanidm admin is always included.
-    };
-
     offlineMedia = {
       enable = true; # Whether to provision Syncthing-backed offline media folders and enrollment tools.
     };
-
-    binaryCaches = [ ]; # Optional extra binary caches: [{ url = "https://example.cachix.org"; publicKey = "example.cachix.org-1:..."; }].
 
     offsiteBackup = {
       enable = true; # Whether to mirror the encrypted Kopia repository to the opinionated MEGA destination.

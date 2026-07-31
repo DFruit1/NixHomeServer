@@ -2078,6 +2078,144 @@ dd {
   padding: 18px;
 }
 
+.detailed-guide-page {
+  padding: 24px;
+}
+
+.detailed-guide-heading {
+  max-width: 780px;
+  margin-bottom: 22px;
+}
+
+.detailed-guide-heading h1 {
+  margin-bottom: 0;
+  text-wrap: balance;
+}
+
+.detailed-guide-heading p,
+.detailed-guide-content p,
+.detailed-guide-content li {
+  text-wrap: pretty;
+}
+
+.detailed-guide-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  gap: 24px;
+}
+
+.detailed-guide-toc {
+  align-self: start;
+  min-width: 0;
+  border-right: 1px solid #dfe5ee;
+  padding-right: 24px;
+}
+
+.detailed-guide-toc h2 {
+  margin: 0 0 14px;
+  font-size: 18px;
+}
+
+.detailed-guide-toc section + section {
+  margin-top: 18px;
+}
+
+.detailed-guide-toc h3 {
+  margin: 0 0 6px;
+  color: #607086;
+  font-size: 12px;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.detailed-guide-toc ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  border-left: 1px solid #d6dde8;
+  padding: 0 0 0 8px;
+  list-style: none;
+}
+
+.detailed-guide-toc a {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  border-radius: 5px;
+  color: #334155;
+  padding: 7px 10px;
+  text-decoration: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.detailed-guide-toc a:hover,
+.detailed-guide-toc a:focus-visible {
+  background: #eef4f8;
+  color: #1f2a38;
+  outline: none;
+}
+
+.detailed-guide-toc a.selected {
+  background: #245b9f;
+  color: #fff;
+  font-weight: 800;
+}
+
+.detailed-guide-content {
+  min-width: 0;
+}
+
+.detailed-guide-content .guide-panel {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.detailed-guide-content .guide-panel > section {
+  margin-top: 28px;
+}
+
+.detailed-guide-content .guide-panel h2 {
+  margin-top: 4px;
+  font-size: 30px;
+  text-wrap: balance;
+}
+
+.detailed-guide-content .guide-panel h3 {
+  margin-bottom: 10px;
+  text-wrap: balance;
+}
+
+.guide-lead {
+  color: #44546a;
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.guide-app-name {
+  color: #607086;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.guide-checklist,
+.related-guide-links {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.guide-checklist li,
+.related-guide-links li {
+  line-height: 1.55;
+}
+
+.related-guide-links a {
+  color: #245b9f;
+  font-weight: 800;
+}
+
 .filetypes {
   color: #44546a;
   font-weight: 700;
@@ -2604,8 +2742,20 @@ textarea {
 
   .two-column,
   .upload-layout,
+  .detailed-guide-layout,
   .getting-started-guide {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detailed-guide-page {
+    padding: 20px 18px;
+  }
+
+  .detailed-guide-toc {
+    border-right: 0;
+    border-bottom: 1px solid #dfe5ee;
+    padding-right: 0;
+    padding-bottom: 20px;
   }
 
   .getting-started-guide,

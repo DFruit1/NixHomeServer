@@ -8,7 +8,6 @@ ensure_tools jq nix
 
 host="$(test_default_host)"
 cases=(
-  attic
   bonsai
   groundwater-logger
   mail-archive-ui

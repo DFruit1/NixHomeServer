@@ -150,6 +150,7 @@ if ! rg -Fq 'remote builder returned an invalid Ed25519 SSH host key' <<<"$host_
 fi
 test_remote_host_key='ssh-ed25519 AAAATESTREMOTEHOSTKEY remote@test'
 
+# shellcheck disable=SC2329 # Invoked indirectly by configure_nix_build_allocation_for_action.
 ssh() {
   echo "unexpected builder probe during switch: $*" >&2
   return 1

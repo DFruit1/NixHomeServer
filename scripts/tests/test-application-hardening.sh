@@ -10,6 +10,17 @@ ensure_tools rg
 require_match modules/seerr/bootstrap.nix \
   'config\.assertions = lib\.mkIf config\.repo\.seerr\.enable' \
   "disabled Seerr must not require Seerr-only secrets"
+require_fixed modules/seerr/bootstrap.nix '"kanidmAdminPass"' \
+  "Seerr must assert the Kanidm administrator credential it consumes"
+require_fixed modules/seerr/permissions.nix \
+  '"idm-admin-password:${config.age.secrets.kanidmAdminPass.path}"' \
+  "Seerr reconciliation must receive the root-owned Kanidm credential through systemd"
+require_fixed modules/seerr/permissions.nix \
+  '$CREDENTIALS_DIRECTORY/idm-admin-password' \
+  "Seerr reconciliation must read its private systemd credential"
+forbid_match modules/seerr/permissions.nix \
+  'KANIDM_PASSWORD=.*config\.age\.secrets\.kanidmAdminPass\.path' \
+  "the unprivileged Seerr service must not read the root-owned agenix path directly"
 
 for identity_file in \
   modules/immich/identity.nix \
@@ -75,6 +86,18 @@ require_fixed "$canary_module" 'expectAccessDenied = true' \
   "the general canary user must remain denied from backup administration"
 require_fixed "$canary_module" 'quickConnectCheck = true' \
   "Jellyfin must retain a dedicated Quick Connect runtime canary"
+require_fixed "$canary_module" 'oidcLoginPath = "/sso/OIDC/Start/kanidm"' \
+  "Jellyfin must use the provider-discovered native OIDC start route"
+require_fixed "$canary_module" 'expectedPattern = "Jellyfin|Videos|My Media"' \
+  "Jellyfin must recognise its authenticated media navigation"
+require_fixed "$canary_runner" 'async () => clickMatching' \
+  "native OIDC canaries must wait for client-rendered provider buttons"
+require_fixed "$canary_runner" '15_000' \
+  "native OIDC button discovery must have a bounded client-render timeout"
+require_fixed "$canary_runner" 'const current = await waitFor(async () => {' \
+  "native OIDC discovery must wait for the client-rendered login surface"
+require_fixed "$canary_runner" "path.includes('/sso/OIDC/Callback/')" \
+  "native OIDC canaries must not reload a one-time callback while authentication completes"
 require_fixed "$canary_runner" '/Users/AuthenticateWithQuickConnect' \
   "the Quick Connect canary must exchange the authorized device secret"
 require_fixed "$canary_runner" '/Sessions/Logout' \

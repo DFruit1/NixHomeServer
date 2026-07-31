@@ -17,9 +17,7 @@ let
   groundwaterEnabled =
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
-  atticEnabled =
-    moduleEnabled "attic"
-    && config.repo.attic.enable;
+  atticEnabled = moduleEnabled "attic";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
 in
 {

@@ -2,6 +2,16 @@
 
 let
   pluginVersion = "1.0.8.0";
+  jellyfinOidcWeb = pkgs.jellyfin-web.overrideAttrs (old: {
+    postInstall = (old.postInstall or "") + ''
+      substituteInPlace "$out/share/jellyfin-web/index.html" \
+        --replace-fail '</head>' \
+        '<script defer="defer" src="/sso/OIDC/LoginButtons"></script></head>'
+    '';
+  });
+  jellyfinWithOidcWeb = pkgs.jellyfin.override {
+    jellyfin-web = jellyfinOidcWeb;
+  };
   localManifest = pkgs.writeText "jellyfin-oidc-meta.json" ''
     {
       "category": "Authentication",
@@ -59,6 +69,8 @@ let
   };
 in
 {
+  services.jellyfin.package = jellyfinWithOidcWeb;
+
   # The runtime facet consumes this package without adding it system-wide.
   _module.args = { inherit jellyfinOidcPlugin; };
 }

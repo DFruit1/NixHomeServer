@@ -674,7 +674,7 @@ export default component$(() => {
                       {showGrantAccess && (
                         <AdminTask
                           title="Choose app and admin access"
-                          description="Choose whether to grant or revoke access, then select the groups involved. Homepage separates live manual groups from memberships that must be changed in vars.nix."
+                          description="Choose whether to grant or revoke access, then select the groups involved. File, backup, and Seerr roles are managed live in Kanidm; the default app bundle remains configured in vars.nix."
                           activeIntent={activeIntent}
                           context="Admin terminal"
                           forceOpen={searchIsActive}
@@ -731,7 +731,7 @@ export default component$(() => {
                               {accessAction.value === 'revoke' && targetIsConfiguredOperator && (
                                 <div class="guide-callout">
                                   <strong>The configured operator has inherited access</strong>
-                                  <p><code>identity.adminUser</code> deliberately inherits the default app bundle, <code>app-admin</code>, and both backup roles. Those groups are hidden from this revocation picker because removing the operator from the ordinary user lists will not revoke them. Treat changing the operator as a planned identity migration, not routine access removal.</p>
+                                  <p><code>identity.adminUser</code> deliberately inherits the default app bundle and <code>app-admin</code>. Those configured groups are hidden from this revocation picker. File and backup roles are independent manual Kanidm groups and can be changed here like other manual roles.</p>
                                 </div>
                               )}
                             </>
@@ -742,7 +742,7 @@ export default component$(() => {
                             <>
                               <p class="hint"><strong>Manual/additive membership:</strong> run this {accessAction.value === 'grant' ? 'grant' : 'revocation'} command in an authenticated admin terminal. {accessAction.value === 'grant'
                                 ? 'Extra members are preserved when this additive group is provisioned again.'
-                                : <>Before relying on the revocation, search <code>vars.nix</code> for the username: a member seeded by configuration must also be removed from its source list and deployed, or provisioning can add it again.</>}</p>
+                                : 'The revocation is preserved when this manual group is provisioned again.'}</p>
                               <AdminCommand command={membershipCommand} />
                               <p class="hint">Run <code>kanidm person get {userArg}</code> afterward and have the user sign out and back in before checking the result.</p>
                             </>

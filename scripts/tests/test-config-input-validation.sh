@@ -23,9 +23,6 @@ validation_json="$(nix eval --impure --json --expr '
         appAdminUsers = [];
         appUserEmails = {};
       };
-      backupAccess = { adminUsers = []; storageUsers = []; };
-      fileAccess.usbUsers = [];
-      seerrAccess.requestManagers = [];
     };
     allIdentityCollisions = identityFixture // {
       identity = identityFixture.identity // {
@@ -35,9 +32,6 @@ validation_json="$(nix eval --impure --json --expr '
         appAdminUsers = ["canary-user"];
         appUserEmails.canary-user = "person@example.test";
       };
-      backupAccess = { adminUsers = ["canary-user"]; storageUsers = ["canary-user"]; };
-      fileAccess.usbUsers = ["canary-user"];
-      seerrAccess.requestManagers = ["canary-user"];
     };
   in {
     acceptsIPv4 = network.validIPv4 "192.168.50.10";
@@ -91,10 +85,6 @@ validation_json="$(nix eval --impure --json --expr '
         "identity.appUsers"
         "identity.appAdminUsers"
         "identity.appUserEmails"
-        "backupAccess.adminUsers"
-        "backupAccess.storageUsers"
-        "fileAccess.usbUsers"
-        "seerrAccess.requestManagers"
       ];
   }
 ')"
@@ -304,8 +294,6 @@ identity_input_model_json="$(nix eval --impure --json --expr '
         adminMailAddresses = "admin@example.org";
       };
       monitoringAccess.users = "monitor-only";
-      seerrAccess.requestManagers = { mistaken = true; };
-      fileAccess.usbUsers = "usb-only";
     };
   in {
     appUsers = model.appUsers;
@@ -313,15 +301,11 @@ identity_input_model_json="$(nix eval --impure --json --expr '
     appUserEmails = model.appUserEmails;
     adminMailAddresses = model.adminMailAddresses;
     monitoringUsers = model.monitoringUsers;
-    seerrRequestManagers = model.seerrRequestManagers;
-    usbUsers = model.usbUsers;
     preservesAppUsers = builtins.isString model.configuredAppUsers;
     preservesAppAdminUsers = builtins.isAttrs model.configuredAppAdminUsers;
     preservesAppUserEmails = builtins.isList model.configuredAppUserEmails;
     preservesAdminMailAddresses = builtins.isString model.configuredAdminMailAddresses;
     preservesMonitoringUsers = builtins.isString model.configuredMonitoringUsers;
-    preservesSeerrManagers = builtins.isAttrs model.configuredSeerrRequestManagers;
-    preservesUsbUsers = builtins.isString model.configuredUsbUsers;
   }
 ')"
 if ! jq -e '
@@ -330,15 +314,11 @@ if ! jq -e '
   and .appUserEmails == {}
   and .adminMailAddresses == []
   and .monitoringUsers == []
-  and .seerrRequestManagers == []
-  and .usbUsers == []
   and .preservesAppUsers
   and .preservesAppAdminUsers
   and .preservesAppUserEmails
   and .preservesAdminMailAddresses
   and .preservesMonitoringUsers
-  and .preservesSeerrManagers
-  and .preservesUsbUsers
 ' <<<"$identity_input_model_json" >/dev/null; then
   echo "❌ Identity/access derivation did not remain total while preserving malformed operator inputs."
   jq . <<<"$identity_input_model_json"
@@ -362,24 +342,16 @@ mistyped_identity_collections_expr='
     monitoringAccess = base.monitoringAccess // {
       users = if invalidValues then [ "Invalid Monitor" ] else "monitor-only";
     };
-    seerrAccess = base.seerrAccess // {
-      requestManagers = if invalidValues then [ "Invalid Manager" ] else "request-manager";
-    };
-    fileAccess = base.fileAccess // {
-      usbUsers = if invalidValues then [ "Invalid USB" ] else "usb-only";
-    };
     identityAccessModel = (import ./lib/identity-access.nix { inherit lib; }) {
-      inherit fileAccess identity monitoringAccess seerrAccess;
+      inherit identity monitoringAccess;
     };
     vars = base // {
-      inherit fileAccess identity identityAccessModel monitoringAccess seerrAccess;
+      inherit identity identityAccessModel monitoringAccess;
       configuredIdentityAppUsers = identityAccessModel.configuredAppUsers;
       configuredIdentityAppAdminUsers = identityAccessModel.configuredAppAdminUsers;
       configuredIdentityAppUserEmails = identityAccessModel.configuredAppUserEmails;
       configuredIdentityAdminMailAddresses = identityAccessModel.configuredAdminMailAddresses;
       configuredMonitoringAccessUsers = identityAccessModel.configuredMonitoringUsers;
-      configuredSeerrRequestManagers = identityAccessModel.configuredSeerrRequestManagers;
-      configuredFileAccessUsbUsers = identityAccessModel.configuredUsbUsers;
       kanidmAppUsers = identityAccessModel.appUsers;
       kanidmAppAdminUsers = identityAccessModel.appAdminUsers;
       kanidmAppUserEmails = identityAccessModel.appUserEmails // {
@@ -387,8 +359,6 @@ mistyped_identity_collections_expr='
       };
       kanidmAdminMailAddresses = identityAccessModel.adminMailAddresses;
       monitoringAccessUsers = identityAccessModel.monitoringUsers;
-      seerrRequestManagers = identityAccessModel.seerrRequestManagers;
-      fileAccessUsbUsers = identityAccessModel.usbUsers;
       filesSftpUsers = identityAccessModel.appUsers;
       jellyfinAdminUsers = identityAccessModel.appAdminUsers;
     };
@@ -413,8 +383,6 @@ for expected_message in \
   'identity.appUsers must be a list of Kanidm usernames' \
   'identity.appAdminUsers must be a list of Kanidm usernames' \
   'monitoringAccess.users must be a list of Kanidm usernames' \
-  'seerrAccess.requestManagers must be a list of Kanidm usernames' \
-  'fileAccess.usbUsers must be a list of Kanidm usernames' \
   'identity.appUserEmails must be an attribute set mapping Kanidm usernames to email addresses' \
   'identity.adminMailAddresses must be a list of email address strings'; do
   if ! rg -Fq "$expected_message" "$invalid_filesystem_log"; then
@@ -433,8 +401,6 @@ for expected_message in \
   'identity.appUsers entries must be canonical Kanidm usernames' \
   'identity.appAdminUsers entries must be canonical Kanidm usernames' \
   'monitoringAccess.users entries must be canonical Kanidm usernames' \
-  'seerrAccess.requestManagers entries must be canonical Kanidm usernames' \
-  'fileAccess.usbUsers entries must be canonical Kanidm usernames' \
   'identity.appUserEmails keys must be canonical Kanidm usernames' \
   'identity.appUserEmails values must be ordinary user@public-domain email address strings' \
   'identity.adminMailAddresses entries must be ordinary user@public-domain email address strings'; do

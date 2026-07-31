@@ -57,7 +57,7 @@ export default component$(() => {
         {!showUnusedApps.value && disabledServices.length > 0 && (
           <div class="disabled-list">
             <h3>Not enabled</h3>
-            <p>Open the profile menu and turn on Show unused apps to see inactive app cards.</p>
+            <p>Open the profile menu and turn on Show unused apps in Services to see inactive app cards.</p>
           </div>
         )}
       </section>

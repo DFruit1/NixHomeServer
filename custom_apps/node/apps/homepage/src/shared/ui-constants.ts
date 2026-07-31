@@ -79,6 +79,105 @@ export const serviceTips: Record<string, string[]> = {
   ],
 };
 
+export const detailedServiceTips: Record<string, string[]> = {
+  photos: [
+    ...serviceTips.photos!,
+    'In the mobile app, use the private Photos URL shown here as the server address and allow background photo access.',
+    'Confirm a new test photo appears before relying on automatic backup, especially after changing phones.',
+  ],
+  documents: [
+    ...serviceTips.documents!,
+    'Add correspondents, document types, tags, and dates so OCR results remain easy to find later.',
+    'Keep your own export of irreplaceable originals; searchable document storage does not replace personal recovery planning.',
+  ],
+  files: [
+    ...serviceTips.files!,
+    'Use personal folders for your own content and _Shared only when everyone with shared-file access should see it.',
+    'Upload one test item first and confirm the destination app recognises it before copying a large library.',
+  ],
+  audiobooks: [
+    ...serviceTips.audiobooks!,
+    'Use consistent author and series names so Audiobookshelf can group related titles.',
+    'Check the scanner result after moving or renaming a library folder.',
+  ],
+  videos: [
+    ...serviceTips.videos!,
+    'Use the browser’s Kanidm button when available; TV and native clients can use Jellyfin Quick Connect.',
+    'Name folders and files consistently so movies and episodes receive the right metadata.',
+  ],
+  requests: [
+    'Search for a movie or show, choose the correct result and quality profile, then submit one request.',
+    'Check the request status before submitting it again; duplicate requests do not make a download finish sooner.',
+    'Requests appear in Videos only after download, import, and library scanning finish.',
+    'Use only sources and media that you are legally allowed to obtain.',
+  ],
+  sonarr: [
+    'Use TV Show Downloads to monitor series and episodes; ordinary viewers should normally submit through Requests.',
+    'Choose the shared Shows root and confirm the series type before enabling monitoring.',
+    'A queued download is not complete until qBittorrent finishes and Sonarr imports it into the library.',
+    'Investigate a failed import instead of manually duplicating the file into the library.',
+  ],
+  radarr: [
+    'Use Movie Downloads to monitor films; ordinary viewers should normally submit through Requests.',
+    'Choose the shared Movies root and check the release profile before enabling monitoring.',
+    'A queued download is not complete until qBittorrent finishes and Radarr imports it into the library.',
+    'Investigate a failed import instead of manually duplicating the file into the library.',
+  ],
+  prowlarr: [
+    'Prowlarr supplies legal indexer configuration to Sonarr and Radarr.',
+    'Test an indexer in Prowlarr before expecting it to work in the connected applications.',
+    'Keep credentials and API keys inside the managed configuration; do not paste them into support messages.',
+    'Removing an indexer can affect both TV and movie searches, so review the connected applications first.',
+  ],
+  torrents: [
+    'Use qBittorrent only for legally sourced content and let Sonarr or Radarr manage automation downloads.',
+    'Completed automation downloads are imported from the shared download staging area into the media library.',
+    'Do not move an active download by hand; use the application’s location controls if intervention is required.',
+    'A completed torrent can remain seeding after the library copy has been imported.',
+  ],
+  'offline-media': [
+    ...serviceTips['offline-media']!,
+    'Remove a lost or retired device from Homepage so it no longer receives updates.',
+    'A reinstalled Syncthing client has a new device ID and must be enrolled again.',
+  ],
+  books: [
+    ...serviceTips.books!,
+    'Keep series and volume names consistent, then allow Kavita to finish scanning before correcting metadata.',
+    'Use Kanidm for sign-in; do not create a second local account if first-login provisioning takes a moment.',
+  ],
+  wiki: [
+    ...serviceTips.wiki!,
+    'Library uploads are operator-managed and are not exposed in an ordinary user’s Files root.',
+    'A large ZIM may take time to copy and index; do not publish a partial file.',
+  ],
+  emails: [
+    ...serviceTips.emails!,
+    'Visible .eml files are browsing mirrors; changing them does not edit the source mailbox.',
+    'Send document attachments to Paperless from the archive UI when they should become searchable documents.',
+  ],
+  downloads: [
+    ...serviceTips.downloads!,
+    'Check the title and output format before starting a download, then follow progress in the queue.',
+    'Do not submit the same URL repeatedly when a job is already queued or processing.',
+  ],
+  passwords: [
+    ...serviceTips.passwords!,
+    'The Vaultwarden master password is separate from Kanidm and cannot be revealed by the server administrator.',
+    'Export the vault and attachments periodically, protect the export as plaintext secret data, and verify that it can be opened.',
+  ],
+  backups: [
+    ...serviceTips.backups!,
+    'Kanidm controls the outer gateway, while Kopia uses a separate native credential inside it.',
+    'Check snapshot freshness and perform a test restore before treating a backup as reliable.',
+  ],
+  monitor: [
+    'Use Monitor to review CPU, memory, disk, filesystem, and service health over time.',
+    'Kanidm controls the outer gateway, while Beszel uses a separate native login inside it.',
+    'Correlate a resource spike with the time and affected service before restarting anything.',
+    'Include the time range and metric when asking an administrator for help.',
+  ],
+};
+
 export const sftpOsLabels = {
   windows: 'Windows',
   macos: 'macOS',

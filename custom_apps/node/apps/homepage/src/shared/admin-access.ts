@@ -10,8 +10,6 @@ export type ConfiguredMembershipSelection = {
 
 const configuredMembershipSources: ConfiguredMembershipSource[] = [
   'identity.appUsers',
-  'backupAccess.adminUsers',
-  'backupAccess.storageUsers',
 ];
 
 export const buildMembershipCommands = (
@@ -59,17 +57,7 @@ export const configuredMembershipEffect = (
   source: ConfiguredMembershipSource,
   action: AccessChangeAction,
 ): string => {
-  if (source === 'identity.appUsers') {
-    return action === 'grant'
-      ? 'This grants every enabled default app group above, not only one app.'
-      : 'This revokes the enabled default app bundle; removing identity.appAdminUsers also removes configured application-admin access.';
-  }
-  if (source === 'backupAccess.adminUsers') {
-    return action === 'grant'
-      ? 'This grants Kopia administration and automatically includes backup storage access.'
-      : 'This revokes Kopia administration and its inherited backup storage access.';
-  }
   return action === 'grant'
-    ? 'This grants read-only backup repository access, not Kopia administration.'
-    : 'This revokes read-only backup repository access without changing Kopia administration.';
+    ? 'This grants every enabled default app group above, not only one app.'
+    : 'This revokes the enabled default app bundle; removing identity.appAdminUsers also removes configured application-admin access.';
 };

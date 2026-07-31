@@ -22,6 +22,7 @@ let
 in
 {
   config.assertions = lib.mkIf config.repo.seerr.enable (mkSecretAssertions [
+    "kanidmAdminPass"
     "seerrOauth2ProxyClientSecret"
     "seerrOauth2ProxyCookieSecret"
   ]);

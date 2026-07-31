@@ -142,7 +142,7 @@ if rg -n 'shows live groups|live group catalog' documentation/kanidm.md; then
   echo "Kanidm documentation must not describe evaluated groups as live membership." >&2
   exit 1
 fi
-require_fixed documentation/operations.md 'never to the exactly reconciled backup groups' \
+require_fixed documentation/operations.md 'never to the backup groups' \
   "Operations guidance must not claim that the non-privileged canary has backup access."
 
 require_fixed modules/homepage/services.nix '++ lib.optionals megaEnabled [' \
@@ -199,6 +199,8 @@ require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.ts
   "New-user guidance must clearly identify credentials that support requests must never include."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Use a trusted network path' \
   "New-user guidance must explain the private LAN or NetBird access requirement."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'What this server is for' \
+  "New-user guidance must explain the server purpose before account setup."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \
   "New-user guidance must not imply that checklist progress is stored server-side."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \
@@ -227,10 +229,10 @@ require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Config
   "Admin access guidance must surface configured native-login, file-role, and app-admin exceptions."
 require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx "'Revoke offline-media device access': { category: 'identity', intents: ['manage-user'] }" \
   "Offline-media offboarding must surface under user-access administration."
-require_fixed custom_apps/node/apps/homepage/src/shared/admin-access.ts 'This grants read-only backup repository access, not Kopia administration.' \
-  "Homepage admin guidance must keep backup storage-only users out of the Kopia administrator group."
-require_fixed modules/homepage/services.nix '"backupAccess.storageUsers"' \
-  "Homepage group metadata must identify the exact backup storage membership source."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'File and backup roles are independent manual Kanidm groups' \
+  "Homepage admin guidance must keep backup roles independently Kanidm-managed."
+require_fixed modules/homepage/services.nix '"manual"' \
+  "Homepage group metadata must identify Kanidm-managed membership."
 require_fixed custom_apps/node/apps/homepage/src/components/CredentialBackupGuide.tsx '.zip (with attachments)' \
   "Vault recovery guidance must explain the separate attachment export."
 require_fixed custom_apps/node/apps/homepage/src/components/CredentialBackupGuide.tsx 'Treat that archive as plaintext vault data' \

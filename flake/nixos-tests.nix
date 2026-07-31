@@ -79,7 +79,6 @@
 
         services.jellyfin = {
           enable = true;
-          package = pkgs.jellyfin;
           openFirewall = false;
         };
 
@@ -116,6 +115,7 @@
       };
 
       client = { pkgs, ... }: {
+        networking.firewall.allowedUDPPorts = [ 7358 ];
         environment.systemPackages = with pkgs; [ curl jq python3 ];
       };
     };
@@ -129,6 +129,10 @@
 
       server.wait_until_succeeds(
           "curl -fsS http://127.0.0.1:8096/System/Info/Public | jq -e '.ServerName'"
+      )
+      server.succeed(
+          "curl -fsS http://127.0.0.1:8096/web/index.html "
+          "| grep -F '<script defer=\"defer\" src=\"/sso/OIDC/LoginButtons\"></script>'"
       )
       server.succeed(
           """curl -fsS -X POST -H 'Content-Type: application/json' \
@@ -189,7 +193,7 @@
       )
 
       discovery = client.succeed(
-          """python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5); s.sendto(b"who is JellyfinServer?", ("server", 7359)); print(s.recv(4096).decode())'"""
+          """python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1); s.bind(("0.0.0.0", 7358)); s.settimeout(5); s.sendto(b"who is JellyfinServer?", ("255.255.255.255", 7359)); print(s.recv(4096).decode())'"""
       )
       discovered = json.loads(discovery)
       assert discovered["Address"].startswith("http://")

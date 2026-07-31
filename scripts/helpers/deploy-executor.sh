@@ -94,7 +94,7 @@ resolve_builder_ssh_identity() {
   while IFS= read -r identity_setting; do
     identity_path="${identity_setting#identityfile }"
     case "$identity_path" in
-      "~/"*) identity_path="${HOME}/${identity_path#\~/}" ;;
+      \~/*) identity_path="${HOME}/${identity_path#\~/}" ;;
       /*) ;;
       *) continue ;;
     esac

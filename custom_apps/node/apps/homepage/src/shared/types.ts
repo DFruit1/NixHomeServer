@@ -95,9 +95,7 @@ export type SftpAccess = {
 
 export type KanidmGroupManagementSource =
   | 'manual'
-  | 'identity.appUsers'
-  | 'backupAccess.adminUsers'
-  | 'backupAccess.storageUsers';
+  | 'identity.appUsers';
 
 export type HomepageData = {
   brandName: string;

@@ -8,7 +8,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools node
 
 CANARY_RUNNER_TEST_MODE=1 node --input-type=module <<'EOF'
-const { generateTotp, hasAuthenticationBoundary, isAccessDeniedResponse, isBlankRender } = await import('./modules/homepage/canary-runner.mjs');
+const { generateTotp, hasAuthenticationBoundary, hasNativeOidcLoginEntry, isAccessDeniedResponse, isBlankRender, nativeOidcEntryUrl } = await import('./modules/homepage/canary-runner.mjs');
 const cases = [
   [{ textLength: 0, visibleElements: 0, richElements: 0 }, true, 'empty HTTP 200 body'],
   [{ textLength: 12, visibleElements: 3, richElements: 0 }, true, 'near-empty visible text'],
@@ -36,6 +36,22 @@ if (!hasAuthenticationBoundary({ url: 'https://videos.example.test/', title: 'Je
 }
 if (!isAccessDeniedResponse({ responseStatus: 403 }) || isAccessDeniedResponse({ responseStatus: 200 })) {
   throw new Error('role-denied canary targets did not distinguish access denial from exposed content');
+}
+const jellyfinOidcUrl = nativeOidcEntryUrl({
+  url: 'https://videos.example.test/',
+  oidcLoginPath: '/sso/OIDC/Start/kanidm',
+});
+if (jellyfinOidcUrl !== 'https://videos.example.test/sso/OIDC/Start/kanidm') {
+  throw new Error(`Jellyfin native OIDC entry URL was not resolved deterministically: ${jellyfinOidcUrl}`);
+}
+if (nativeOidcEntryUrl({ url: 'https://books.example.test/' }) !== '') {
+  throw new Error('native OIDC targets without a dedicated entry path must retain button discovery');
+}
+if (!hasNativeOidcLoginEntry({ text: 'Sign in with Kanidm' })) {
+  throw new Error('the rendered Jellyfin OIDC action should be accepted');
+}
+if (hasNativeOidcLoginEntry({ text: 'Manual Login Use Quick Connect' })) {
+  throw new Error('a Jellyfin page without its OIDC action must be rejected');
 }
 // RFC 6238 Appendix B SHA-256 vector: ASCII seed "12345678901234567890123456789012".
 const rfcSeed = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA';

@@ -4,15 +4,37 @@ let
   cfg = config.repo.attic;
   endpoint = "http://${cfg.listenAddress}:${toString cfg.port}/";
   cacheEndpoint = "${lib.removeSuffix "/" endpoint}/${cfg.cacheName}";
+  atticPostBuildHook = pkgs.writeShellScript "nixhomeserver-attic-post-build" ''
+    set -uo pipefail
+    set -f
+
+    export XDG_CONFIG_HOME=/run/attic-client
+    runtime_dir=/run/attic-client
+    lock_file="$runtime_dir/post-build-push.lock"
+
+    [[ -d "$runtime_dir" ]] || exit 0
+    [[ -n "''${OUT_PATHS:-}" ]] || exit 0
+
+    exec 9>"$lock_file" || exit 0
+    if ! ${pkgs.util-linux}/bin/flock -w 300 9; then
+      ${pkgs.util-linux}/bin/logger --tag nixhomeserver-attic-post-build \
+        "Skipped cache upload after waiting five minutes for another push"
+      exit 0
+    fi
+
+    read -r -a output_paths <<<"$OUT_PATHS"
+    if ! ${pkgs.coreutils}/bin/timeout 300 \
+      ${pkgs.attic-client}/bin/attic push --no-closure --jobs 1 \
+      ${lib.escapeShellArg cfg.cacheName} "''${output_paths[@]}"; then
+      ${pkgs.util-linux}/bin/logger --tag nixhomeserver-attic-post-build \
+        "Cache upload failed or timed out; the completed Nix build remains successful"
+    fi
+
+    exit 0
+  '';
 in
 {
   options.repo.attic = {
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Run a loopback-only Attic cache and capture new local Nix build outputs.";
-    };
-
     listenAddress = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1";
@@ -38,14 +60,9 @@ in
       description = "Attic LRU retention period applied to cached store paths.";
     };
 
-    watchJobs = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 2;
-      description = "Maximum parallel uploads performed by attic watch-store.";
-    };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = {
     assertions = [
       {
         assertion = builtins.elem cfg.listenAddress [ "127.0.0.1" "::1" ];
@@ -71,6 +88,7 @@ in
     environment.systemPackages = [ pkgs.attic-client ];
 
     nix.settings.substituters = lib.mkAfter [ cacheEndpoint ];
+    nix.settings.post-build-hook = atticPostBuildHook;
     nix.extraOptions = ''
       !include /var/lib/atticd/nix.conf
     '';
@@ -80,52 +98,17 @@ in
       OnFailureJobMode = "replace-irreversibly";
     };
 
-    systemd.services.attic-watch-store = {
-      description = "Upload new local Nix build outputs to Attic";
-      wantedBy = [ "multi-user.target" ];
-      after = [
-        "attic-cache-bootstrap.service"
-        "nix-daemon.service"
+    systemd.services.atticd.serviceConfig = {
+      Environment = [
+        "MALLOC_ARENA_MAX=2"
+        "MALLOC_MMAP_THRESHOLD_=131072"
+        "MALLOC_TRIM_THRESHOLD_=131072"
       ];
-      requires = [ "attic-cache-bootstrap.service" ];
-      wants = [ "nix-daemon.service" ];
-      unitConfig = {
-        StartLimitIntervalSec = "15min";
-        StartLimitBurst = 5;
-        OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
-        OnFailureJobMode = "replace-irreversibly";
-      };
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${pkgs.attic-client}/bin/attic watch-store --jobs ${toString cfg.watchJobs} ${cfg.cacheName}";
-        Restart = "always";
-        RestartSec = "15s";
-        Environment = [ "XDG_CONFIG_HOME=/run/attic-client" ];
-        NoNewPrivileges = true;
-        PrivateDevices = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectHostname = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        LockPersonality = true;
-        RestrictSUIDSGID = true;
-        RestrictNamespaces = true;
-        RestrictAddressFamilies = [
-          "AF_INET"
-          "AF_INET6"
-          "AF_UNIX"
-        ];
-        SystemCallArchitectures = "native";
-        ReadOnlyPaths = [
-          "/nix/store"
-          "/run/attic-client"
-        ];
-      };
+      MemoryHigh = "1G";
+      MemoryMax = "2G";
+      MemorySwapMax = "256M";
+      Restart = "on-failure";
+      RestartSec = lib.mkForce "15s";
     };
   };
 }

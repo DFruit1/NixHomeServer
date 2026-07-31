@@ -56,22 +56,6 @@ in
           name = "identity.appUserEmails";
           users = attrNamesOrEmpty (vars.identity.appUserEmails or { });
         }
-        {
-          name = "backupAccess.adminUsers";
-          users = listOrEmpty (vars.backupAccess.adminUsers or [ ]);
-        }
-        {
-          name = "backupAccess.storageUsers";
-          users = listOrEmpty (vars.backupAccess.storageUsers or [ ]);
-        }
-        {
-          name = "fileAccess.usbUsers";
-          users = listOrEmpty (vars.fileAccess.usbUsers or [ ]);
-        }
-        {
-          name = "seerrAccess.requestManagers";
-          users = listOrEmpty (vars.seerrAccess.requestManagers or [ ]);
-        }
       ];
     in
     map (source: source.name) (

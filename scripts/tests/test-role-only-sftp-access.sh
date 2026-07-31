@@ -11,35 +11,7 @@ let
   f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   lib = f.inputs.nixpkgs.lib;
   base = import ./vars.nix { inherit lib; };
-  backupAccess = base.backupAccess // {
-    adminUsers = [];
-    storageUsers = ["backup-storage-only"];
-  };
-  fileAccess = base.fileAccess // {
-    usbUsers = ["usb-only"];
-  };
-  model = (import ./lib/backup-access.nix { inherit lib; }) {
-    inherit backupAccess;
-    identity = base.identity;
-    basePosixGids = builtins.removeAttrs base.fileAccessPosixGids [base.backupStorageGroup];
-  };
-  vars = base // {
-    inherit backupAccess fileAccess;
-    configuredFileAccessUsbUsers = fileAccess.usbUsers;
-    fileAccessUsbUsers = fileAccess.usbUsers;
-    backupAccessModel = model;
-    configuredBackupAdminUsers = model.configuredAdminUsers;
-    configuredBackupStorageUsers = model.configuredStorageUsers;
-    backupAdminUsers = model.adminUsers;
-    backupStorageUsers = model.storageUsers;
-    backupAdminGroup = model.adminGroup;
-    backupStorageGroup = model.storageGroup;
-    backupStorageGid = model.storageGid;
-    kanidmBackupAdminUsers = model.adminMembers;
-    kanidmBackupStorageUsers = model.storageMembers;
-    kanidmBackupUsers = model.allUsers;
-    fileAccessPosixGids = model.fileAccessPosixGids;
-  };
+  vars = base;
   pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
   packages = import ./flake/packages.nix { inherit lib pkgs; crane = f.inputs.crane; };
   system = import ./flake/system.nix {
@@ -71,20 +43,12 @@ in {
 ')"
 
 if ! jq -e '
-  (.persons | index("backup-storage-only") != null)
-  and (.persons | index("usb-only") != null)
-  and (.storageMembers | index("backup-storage-only") != null)
-  and (.adminMembers | index("backup-storage-only") == null)
-  and (.usbMembers | index("backup-storage-only") == null)
-  and (.webMembers | index("backup-storage-only") == null)
-  and (.directSftpMembers | index("backup-storage-only") == null)
-  and (.baselineMembers | index("backup-storage-only") == null)
-  and (.usbMembers | index("usb-only") != null)
-  and (.adminMembers | index("usb-only") == null)
-  and (.storageMembers | index("usb-only") == null)
-  and (.webMembers | index("usb-only") == null)
-  and (.directSftpMembers | index("usb-only") == null)
-  and (.baselineMembers | index("usb-only") == null)
+  .adminMembers == []
+  and .storageMembers == []
+  and .usbMembers == []
+  and .webMembers == []
+  and .directSftpMembers == []
+  and .sharedMembers == []
   and .kopiaScopeGroups == ["backup-admin"]
   and (.homepageScopeGroups | index("usb-access") != null)
   and (.homepageScopeGroups | index("backup-storage-users") != null)

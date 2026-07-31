@@ -36,25 +36,20 @@ let
       ];
     };
   };
-  configuredFileAccess = settings.fileAccess or { };
   fileAccess = {
     webAccessGroup = "files-personal-users";
     sftpAccessGroup = "files-sftp-users";
     localSftpAccessGroup = "files-local-sftp-users";
     sharedAccessGroup = "files-shared-users";
     usbAccessGroup = "usb-access";
-    usbUsers = configuredFileAccess.usbUsers or [ ];
     sharedMountName = "_Shared";
     usbMountName = "_USB";
     sftpChrootBase = "/srv/files-sftp/chroots";
   };
-  configuredBackupAccess = settings.backupAccess or { };
   backupAccess = {
     adminGroup = "backup-admin";
-    adminUsers = configuredBackupAccess.adminUsers or [ ];
     storageGroup = "backup-storage-users";
     storageGid = 2005;
-    storageUsers = configuredBackupAccess.storageUsers or [ ];
     storageMountName = "_Backups";
   };
   monitoringAccess = {
@@ -64,15 +59,8 @@ let
       identity.canaryUser
     ];
   };
-  configuredSeerrAccess = settings.seerrAccess or { };
-  configuredSeerrRequestManagers = configuredSeerrAccess.requestManagers or [ ];
   seerrAccess = {
     requestManagerGroup = "seerr-request-managers";
-    requestManagers =
-      if builtins.isList configuredSeerrRequestManagers then
-        lib.unique ([ identity.adminUser ] ++ configuredSeerrRequestManagers)
-      else
-        configuredSeerrRequestManagers;
   };
   configuredOfflineMedia = settings.offlineMedia or { };
   offlineMedia = {
@@ -146,7 +134,6 @@ let
         port = ports.dns;
       }
     ];
-    binaryCaches = settings.binaryCaches or [ ];
   };
   configuredOffsiteBackup = settings.offsiteBackup or { };
 in
@@ -195,41 +182,30 @@ rec {
   monitoringAccessGroup = authorizationGroupModel.monitoringGroup;
   configuredSeerrRequestManagerGroup = authorizationGroupModel.configuredSeerrRequestManagerGroup;
   identityAccessModel = (import ./identity-access.nix { inherit lib; }) {
-    inherit fileAccess identity monitoringAccess seerrAccess;
+    inherit identity monitoringAccess;
   };
   configuredIdentityAppUsers = identityAccessModel.configuredAppUsers;
   configuredIdentityAppAdminUsers = identityAccessModel.configuredAppAdminUsers;
   configuredIdentityAppUserEmails = identityAccessModel.configuredAppUserEmails;
   configuredIdentityAdminMailAddresses = identityAccessModel.configuredAdminMailAddresses;
   configuredMonitoringAccessUsers = identityAccessModel.configuredMonitoringUsers;
-  configuredSeerrRequestManagers = identityAccessModel.configuredSeerrRequestManagers;
-  configuredFileAccessUsbUsers = identityAccessModel.configuredUsbUsers;
   kanidmAppUsers = identityAccessModel.appUsers;
   kanidmAppAdminUsers = identityAccessModel.appAdminUsers;
   monitoringAccessUsers = identityAccessModel.monitoringUsers;
-  fileAccessUsbUsers = identityAccessModel.usbUsers;
   fileAccessGidModel = import ./file-access-gids.nix { inherit fileAccess; };
-  backupAccessModel = (import ./backup-access.nix { inherit lib; }) {
-    inherit backupAccess identity;
+  backupAccessModel = import ./backup-access.nix {
+    inherit backupAccess;
     basePosixGids = fileAccessGidModel.posixGids;
   };
-  configuredBackupAdminUsers = backupAccessModel.configuredAdminUsers;
-  configuredBackupStorageUsers = backupAccessModel.configuredStorageUsers;
-  backupAdminUsers = backupAccessModel.adminUsers;
-  backupStorageUsers = backupAccessModel.storageUsers;
   backupAdminGroup = backupAccessModel.adminGroup;
   backupStorageGroup = backupAccessModel.storageGroup;
   backupStorageGid = backupAccessModel.storageGid;
-  kanidmBackupAdminUsers = backupAccessModel.adminMembers;
-  kanidmBackupStorageUsers = backupAccessModel.storageMembers;
-  kanidmBackupUsers = backupAccessModel.allUsers;
   kanidmAppUserEmails = identityAccessModel.appUserEmails // {
     ${identity.canaryUser} = "${identity.canaryUser}@${network.domain}";
   };
   kanidmAdminMailAddresses = identityAccessModel.adminMailAddresses;
   kanidmAdminEmail = identity.adminEmail;
   seerrRequestManagerGroup = authorizationGroupModel.seerrRequestManagerGroup;
-  seerrRequestManagers = identityAccessModel.seerrRequestManagers;
   serverSSHPubKey = identity.sshPublicKey;
   localAdminUser = identity.localAdminUser;
 
@@ -293,8 +269,6 @@ rec {
   };
 
   cloudflareTunnelName = edge.cloudflareTunnelName;
-  binaryCaches = advanced.binaryCaches;
-
   zfsDataPoolDiskIds = lib.flatten zfsDataPool.mirrorPairs; # Bootstrap-era pool member IDs retained for blank-machine provisioning metadata.
 
   dataRoot = zfsDataPool.mountPoint;

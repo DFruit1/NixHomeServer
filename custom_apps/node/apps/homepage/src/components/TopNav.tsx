@@ -22,7 +22,7 @@ export const TopNav = component$(() => {
     },
     {
       href: '/uploads',
-      label: 'How to Upload Files',
+      label: 'Detailed Guide',
       selected: isUploads,
     },
     ...(homepage.data?.isAdmin ? [{
@@ -30,7 +30,7 @@ export const TopNav = component$(() => {
       label: 'For Admins',
       selected: isAdmins,
     }] : []),
-  ].sort((a, b) => Number(b.selected) - Number(a.selected));
+  ];
 
   return (
     <nav class="tabs" aria-label="Homepage sections">

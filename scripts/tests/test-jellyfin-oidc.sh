@@ -33,6 +33,12 @@ require_fixed modules/jellyfin/package.nix \
 require_fixed modules/jellyfin/package.nix \
   '"autoUpdate": false' \
   "Jellyfin OIDC updates must remain Nix-managed"
+require_fixed modules/jellyfin/package.nix \
+  'jellyfinOidcWeb = pkgs.jellyfin-web.overrideAttrs' \
+  "Jellyfin OIDC must use an immutable web package with the login script injected"
+require_fixed modules/jellyfin/package.nix \
+  '<script defer="defer" src="/sso/OIDC/LoginButtons"></script>' \
+  "Jellyfin Web must load the OIDC login script outside the sanitized branding disclaimer"
 
 for validation_fragment in \
   'ValidateIssuer = true' \
@@ -43,10 +49,24 @@ for validation_fragment in \
   'RequireSignedTokens = true' \
   'SecurityTokenSignatureKeyNotFoundException' \
   'TimeSpan.FromMinutes(2)' \
+  "document.querySelector('#loginPage:not(.hide)')" \
+  "page.querySelector('.readOnlyContent')" \
+  '__nixhomeserverOidcLoginInitialized' \
+  'nixhomeserver-login-view' \
+  'history.pushState' \
+  'window.location.reload()' \
+  'existing.remove()' \
+  "classList.remove('nixhomeserver-oidc-ready')" \
   'nixhomeserver-oidc-ready'; do
   require_fixed modules/jellyfin/patches/oidc-hardening.patch "$validation_fragment" \
     "OIDC hardening patch is missing: $validation_fragment"
 done
+forbid_match modules/jellyfin/patches/oidc-hardening.patch \
+  "document.querySelector('.readOnlyContent')" \
+  "Jellyfin OIDC controls must never target read-only content outside the active login page"
+forbid_match modules/jellyfin/patches/oidc-hardening.patch \
+  '^\+.*\[data-role=\\"page\\"\] form' \
+  "Jellyfin OIDC controls must never use a generic page-form fallback"
 
 host="$(test_default_host)"
 oidc_json="$(
@@ -73,6 +93,7 @@ oidc_json="$(
         execStartPre = map toString (cfg.systemd.services.jellyfin.serviceConfig.ExecStartPre or []);
         restartTriggers = map toString cfg.systemd.services.jellyfin.restartTriggers;
       };
+      libraryBootstrapScript = cfg.systemd.services.jellyfin-library-bootstrap-v1.script;
       pluginDirs = cfg.systemd.tmpfiles.settings.jellyfinOidcDirs;
       firewall = cfg.networking.firewall.interfaces;
     }'
@@ -110,11 +131,12 @@ jq -e '
   and (.bootstrap.script | contains("nixhomeserver:jellyfin-oidc:start"))
   and (.bootstrap.script | contains("html.nixhomeserver-oidc-ready form.manualLoginForm"))
   and (.bootstrap.script | contains("/sso/OIDC/LoginButtons"))
-  and (.jellyfin.bindReadOnlyPaths | length == 1)
-  and (.jellyfin.bindReadOnlyPaths[0] | startswith("/nix/store/"))
-  and (.jellyfin.bindReadOnlyPaths[0] | endswith(":/run/jellyfin-oidc-plugin"))
+  and (.jellyfin.bindReadOnlyPaths | length == 0)
   and any(.jellyfin.execStartPre[]; contains("jellyfin-oidc-manifest-install"))
   and (.jellyfin.restartTriggers | length > 0)
+  and (.libraryBootstrapScript | contains("jellyfin_canary_user="))
+  and (.libraryBootstrapScript | contains("--argjson isHidden"))
+  and (.libraryBootstrapScript | contains(".IsHidden = $isHidden"))
   and (.pluginDirs."/var/lib/jellyfin/plugins".d.mode == "0700")
   and (.pluginDirs."/var/lib/jellyfin/plugins".d.user == "jellyfin")
   and (.pluginDirs."/var/lib/jellyfin/plugins".d.group == "jellyfin")
@@ -133,8 +155,11 @@ require_fixed modules/jellyfin/oidc.nix \
   'install -m 0600 -o jellyfin -g jellyfin' \
   "Jellyfin OIDC configuration must remain readable only by Jellyfin"
 require_fixed modules/jellyfin/oidc.nix \
-  'ln -sfn' \
-  "Jellyfin OIDC assemblies must resolve through the rollback-scoped runtime bind"
+  'install -m 0444' \
+  "Jellyfin OIDC assemblies must remain available after a generation rollback"
+forbid_match modules/jellyfin/oidc.nix \
+  'pluginRuntimeDir|ln -sfn' \
+  "Jellyfin OIDC must not persist links into an ephemeral runtime bind"
 require_fixed modules/jellyfin/oidc.nix \
   'if $text == "" then 0' \
   "Jellyfin OIDC branding reconciliation must treat empty branding fields as having no managed markers"
@@ -147,5 +172,11 @@ require_fixed modules/jellyfin/networking.nix \
 require_fixed modules/jellyfin/networking.nix \
   'allowedTCPPorts = [ ports.jellyfin ];' \
   "Jellyfin native clients must retain direct LAN access"
+require_fixed flake/nixos-tests.nix \
+  'SO_BROADCAST' \
+  "The Jellyfin VM test must exercise LAN broadcast discovery rather than unicast only"
+require_fixed flake/nixos-tests.nix \
+  '("255.255.255.255", 7359)' \
+  "The Jellyfin VM test must send the discovery probe to the limited broadcast address"
 
 echo "✅ Jellyfin OIDC, native fallback, discovery, and Quick Connect checks passed."

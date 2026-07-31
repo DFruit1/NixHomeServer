@@ -11,10 +11,10 @@ let
     (config.nixhomeserver.modules."offline-music" or false)
     && (vars.offlineMedia.enable or false);
   hostEnabled = host: builtins.hasAttr host caddyHosts;
-  mkTarget = { id, name, host, path ? "", coverageMode, expectedPattern, expectAccessDenied ? false, quickConnectCheck ? false, active ? hostEnabled host }: {
+  mkTarget = { id, name, host, path ? "", coverageMode, expectedPattern, expectAccessDenied ? false, quickConnectCheck ? false, oidcLoginPath ? null, active ? hostEnabled host }: {
     inherit id name host coverageMode expectedPattern expectAccessDenied quickConnectCheck active;
     url = "https://${host}${path}";
-  };
+  } // lib.optionalAttrs (oidcLoginPath != null) { inherit oidcLoginPath; };
   allTargets = [
     (mkTarget { id = "homepage"; name = "Homepage"; host = "homepage.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "${lib.escapeRegex vars.brandName}|Homepage sections"; })
     (mkTarget { id = "offline-media"; name = "Offline Media"; host = "homepage.${vars.domain}"; path = "/services/offline-media"; coverageMode = "gateway"; expectedPattern = "Offline Media"; active = offlineMediaEnabled; })
@@ -22,7 +22,7 @@ let
     (mkTarget { id = "documents"; name = "Documents"; host = "paperless.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Paperless|Documents"; })
     (mkTarget { id = "files"; name = "Files"; host = "files.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Filestash|Files"; })
     (mkTarget { id = "audiobooks"; name = "Audiobooks"; host = "audiobooks.${vars.domain}"; path = "/audiobookshelf/"; coverageMode = "native-oidc"; expectedPattern = "Audiobookshelf|Audiobooks"; })
-    (mkTarget { id = "videos"; name = "Videos"; host = "videos.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Jellyfin|Videos"; quickConnectCheck = true; })
+    (mkTarget { id = "videos"; name = "Videos"; host = "videos.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Jellyfin|Videos|My Media"; oidcLoginPath = "/sso/OIDC/Start/kanidm"; quickConnectCheck = true; })
     (mkTarget { id = "requests"; name = "Requests"; host = "requests.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Seerr|Jellyseerr|Requests"; })
     (mkTarget { id = "sonarr"; name = "TV Show Downloads"; host = "sonarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Sonarr|TV Show"; })
     (mkTarget { id = "radarr"; name = "Movie Downloads"; host = "radarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Radarr|Movie"; })

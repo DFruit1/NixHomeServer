@@ -46,6 +46,16 @@ for vars_file in vars.nix vars.example.nix; do
     "$vars_file" \
     '^[[:space:]]+advanced[[:space:]]*=' \
     "${vars_file} should not expose fixed loopback, port, or resolver settings."
+  for kanidm_managed_access in fileAccess backupAccess seerrAccess; do
+    forbid_match \
+      "$vars_file" \
+      "^[[:space:]]+${kanidm_managed_access}[[:space:]]*=" \
+      "${vars_file} should leave ${kanidm_managed_access} membership to Kanidm groups."
+  done
+  forbid_match \
+    "$vars_file" \
+    '^[[:space:]]+binaryCaches[[:space:]]*=' \
+    "${vars_file} should not expose the fixed official and community binary caches."
   for storage_constant in name mountPoint datasets; do
     forbid_match \
       "$vars_file" \
@@ -84,7 +94,6 @@ for vars_file in vars.nix vars.example.nix; do
     netbirdIp \
     netbirdCidr \
     expectedGuid \
-    binaryCaches \
     enable \
     email \
     syncOnCalendar \
@@ -115,7 +124,7 @@ defaults_json="$(nix eval --impure --json --expr '
       adminEmail = vars.identity.adminEmail;
       inherit (vars) domain;
       dns = vars.networking.dns;
-      inherit (vars) binaryCaches kopiaDomain rcloneMega zfsDataPool;
+      inherit (vars) kopiaDomain rcloneMega zfsDataPool;
       ports = vars.networking.ports;
     };
   in {
@@ -164,16 +173,8 @@ if ! jq -e '
 
   (.actual | stable)
   and (.example | stable)
-  and .actual.fileAccess.usbUsers == ["dsaw"]
-  and .actual.backupAccess.adminUsers == ["dsaw"]
-  and .actual.backupAccess.storageUsers == []
   and .actual.monitoringAccess.users == ["admindsaw", "canary-user"]
-  and .actual.seerrAccess.requestManagers == ["admindsaw", "dsaw"]
-  and .example.fileAccess.usbUsers == []
-  and .example.backupAccess.adminUsers == []
-  and .example.backupAccess.storageUsers == []
   and .example.monitoringAccess.users == ["kanidm-admin", "canary-user"]
-  and .example.seerrAccess.requestManagers == ["kanidm-admin"]
 ' <<<"$defaults_json" >/dev/null; then
   echo "❌ Opinionated vars defaults or operator-specific access policy regressed." >&2
   jq . <<<"$defaults_json" >&2

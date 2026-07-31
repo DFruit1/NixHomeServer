@@ -1,4 +1,5 @@
 import { $, component$, useSignal } from '@builder.io/qwik';
+import { Link } from '@builder.io/qwik-city';
 import { sftpKeygenCommands, sftpOsLabels } from '../shared/ui-constants.js';
 import type { SftpAccess, SftpKeyResponse } from '../shared/types.js';
 import { CommandSnippet } from './CommandSnippet.js';
@@ -52,8 +53,9 @@ export const SftpSetup = component$(({
   });
 
   return (
-    <article class="sftp-os-card sftp-setup-card">
+    <article id="sshfs-setup" class="sftp-os-card sftp-setup-card">
       <h2>SSHFS Mount Setup</h2>
+      <p>Use these steps on the computer you want to connect. For permissions, folder behavior, security, and troubleshooting, <Link href="/uploads?guide=sshfs#guide-detail">read the detailed SSHFS guide</Link>.</p>
       <aside class="guide-callout neutral"><strong>Network:</strong> {sftp.networkNote} Connect to <code>{sftp.host}:{sftp.port}</code>.</aside>
       {sftp.accessNotes.map((note) => (
         <aside class="guide-callout neutral" key={note}>{note}</aside>

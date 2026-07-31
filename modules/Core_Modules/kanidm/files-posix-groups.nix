@@ -12,8 +12,6 @@ let
     [ vars.kanidmAdminUser ]
     ++ (vars.filesSftpUsers or [ ])
     ++ (vars.kanidmAppUsers or [ ])
-    ++ (vars.kanidmBackupUsers or [ ])
-    ++ (vars.fileAccessUsbUsers or [ ])
   );
   kanidmFilesPosixGroupsPath = with pkgs; [
     coreutils

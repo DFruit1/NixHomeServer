@@ -27,8 +27,6 @@ let
   filestashLoginUsers = lib.unique (
     (vars.kanidmAppUsers or [ ])
     ++ (vars.filesSftpUsers or [ ])
-    ++ (vars.kanidmBackupUsers or [ ])
-    ++ (vars.fileAccessUsbUsers or [ ])
   );
   sftpLoginUserEmailEntries =
     lib.flatten (map

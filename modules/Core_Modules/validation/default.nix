@@ -8,15 +8,11 @@ let
   backupAdminGroupRaw = vars.backupAccess.adminGroup or null;
   backupStorageGroupRaw = vars.backupAccess.storageGroup or null;
   backupStorageGidRaw = vars.backupAccess.storageGid or null;
-  backupAdminUsersRaw = vars.backupAccess.adminUsers or [ ];
-  backupStorageUsersRaw = vars.backupAccess.storageUsers or [ ];
   identityAppUsersRaw = vars.identity.appUsers or [ ];
   identityAppAdminUsersRaw = vars.identity.appAdminUsers or [ ];
   identityAppUserEmailsRaw = vars.identity.appUserEmails or { };
   identityAdminMailAddressesRaw = vars.identity.adminMailAddresses or [ ];
   monitoringAccessUsersRaw = vars.monitoringAccess.users or [ ];
-  seerrRequestManagersRaw = vars.seerrAccess.requestManagers or [ ];
-  fileAccessUsbUsersRaw = vars.fileAccess.usbUsers or [ ];
   configuredKanidmUserLists = [
     {
       field = "identity.appUsers";
@@ -29,14 +25,6 @@ let
     {
       field = "monitoringAccess.users";
       value = monitoringAccessUsersRaw;
-    }
-    {
-      field = "seerrAccess.requestManagers";
-      value = seerrRequestManagersRaw;
-    }
-    {
-      field = "fileAccess.usbUsers";
-      value = fileAccessUsbUsersRaw;
     }
   ];
   invalidConfiguredKanidmUserLists = map
@@ -74,13 +62,6 @@ let
       builtins.filter (email: !identityValidation.validEmail email) identityAdminMailAddressesRaw
     else
       [ ];
-  validBackupAdminUsers =
-    builtins.isList backupAdminUsersRaw
-    && lib.all nameValidation.validKanidmUser backupAdminUsersRaw;
-  validBackupStorageUsers =
-    builtins.isList backupStorageUsersRaw
-    && lib.all nameValidation.validKanidmUser backupStorageUsersRaw;
-  overlappingBackupAccessUsers = lib.intersectLists vars.backupAdminUsers vars.backupStorageUsers;
   allowPlaceholders = vars.validation.allowPlaceholders or false;
   containsChangeMe = value: lib.hasInfix "CHANGE_ME" (toString value);
   externallyBoundPorts = lib.filterAttrs (name: _: !(lib.hasSuffix "Container" name)) vars.networking.ports;
@@ -457,12 +438,6 @@ let
       [ ];
   backupAdminProvision = config.services.kanidm.provision.groups.${vars.backupAdminGroup};
   backupStorageProvision = config.services.kanidm.provision.groups.${vars.backupStorageGroup};
-  storageOnlyUsersInAdminGroup = lib.intersectLists
-    vars.backupStorageUsers
-    (backupAdminProvision.members or [ ]);
-  backupAdminsMissingStorageGroup = lib.filter
-    (user: !(builtins.elem user (backupStorageProvision.members or [ ])))
-    vars.kanidmBackupAdminUsers;
   sharedMountName = vars.fileAccess.sharedMountName or "";
   filestashEnabled = config.services.filestash.enable or false;
   filestashPackageHasProxyPasswordAuth =
@@ -957,24 +932,12 @@ in
       message = "nixhomeserver: backup admin/storage and file-access group names must all be distinct; duplicates: ${builtins.toJSON duplicateManagedFileAccessGroupNames}";
     }
     {
-      assertion = validBackupAdminUsers;
-      message = "nixhomeserver: backupAccess.adminUsers must be a list of valid Kanidm user names.";
-    }
-    {
-      assertion = validBackupStorageUsers;
-      message = "nixhomeserver: backupAccess.storageUsers must be a list of valid Kanidm user names.";
-    }
-    {
-      assertion = overlappingBackupAccessUsers == [ ];
-      message = "nixhomeserver: backupAccess.adminUsers and backupAccess.storageUsers must not overlap; admins inherit storage membership automatically.";
-    }
-    {
       assertion =
-        (backupAdminProvision.overwriteMembers or false)
-          && (backupStorageProvision.overwriteMembers or false)
-          && storageOnlyUsersInAdminGroup == [ ]
-          && backupAdminsMissingStorageGroup == [ ];
-      message = "nixhomeserver: backup groups must reconcile exactly, exclude storage-only users from administration, and grant storage membership to every backup admin.";
+        !(backupAdminProvision.overwriteMembers or false)
+          && !(backupStorageProvision.overwriteMembers or false)
+          && (backupAdminProvision.members or [ ]) == [ ]
+          && (backupStorageProvision.members or [ ]) == [ ];
+      message = "nixhomeserver: backup group membership must be managed in Kanidm rather than reconciled from Nix.";
     }
     {
       assertion = sharedMountName != "" && !(lib.hasInfix "/" sharedMountName);

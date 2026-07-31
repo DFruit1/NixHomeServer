@@ -1,9 +1,7 @@
 { lib }:
 
 { identity
-, fileAccess ? { }
 , monitoringAccess ? { }
-, seerrAccess ? { }
 ,
 }:
 
@@ -16,8 +14,6 @@ let
   configuredAppUserEmails = identity.appUserEmails or { };
   configuredAdminMailAddresses = identity.adminMailAddresses or [ ];
   configuredMonitoringUsers = monitoringAccess.users or [ ];
-  configuredSeerrRequestManagers = seerrAccess.requestManagers or [ ];
-  configuredUsbUsers = fileAccess.usbUsers or [ ];
 
   renderableUsers = value:
     if builtins.isList value then
@@ -32,8 +28,6 @@ in
     configuredAppUserEmails
     configuredAppUsers
     configuredMonitoringUsers
-    configuredSeerrRequestManagers
-    configuredUsbUsers
     ;
 
   # Only validated values reach dynamic provision attributes and generated
@@ -63,6 +57,4 @@ in
   adminMailAddresses = builtins.filter identityValidation.validEmail
     (if builtins.isList configuredAdminMailAddresses then configuredAdminMailAddresses else [ ]);
   monitoringUsers = renderableUsers configuredMonitoringUsers;
-  seerrRequestManagers = renderableUsers configuredSeerrRequestManagers;
-  usbUsers = renderableUsers configuredUsbUsers;
 }

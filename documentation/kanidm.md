@@ -99,12 +99,11 @@ kanidm group add-members "$GROUP" "$USER"
 kanidm group remove-members "$GROUP" "$USER"
 ```
 
-Use those live commands only for groups whose Homepage admin catalog labels as
-`manual`. Default application groups and both backup roles are reconciled from
-`vars.nix`; edit `identity.appUsers`, `identity.appAdminUsers`,
-`backupAccess.adminUsers`, or `backupAccess.storageUsers` as appropriate and run
-a guarded deploy. A live-only change to a repository-managed group will be
-restored by reconciliation.
+File access, backup access, and Seerr request management are manual Kanidm
+groups. Manage their membership directly with `kanidm group add-members` and
+`kanidm group remove-members`; a guarded deploy preserves those memberships.
+Default application bundles remain derived from `identity.appUsers` and
+`identity.appAdminUsers` in `vars.nix`.
 
 Inspect group membership state:
 
@@ -134,11 +133,13 @@ secret.
 - `files-sftp-users` enables SFTP access on the dedicated SFTP endpoint.
 - `files-shared-users` adds `_Shared` inside each user personal root.
 - `usb-access` adds `_USB` view from the mounted external USB storage path.
-- `backup-admin` grants Kopia backup-management access and automatically inherits
-  the separate `backup-storage-users` membership.
+- `backup-admin` grants Kopia backup-management access.
 - `backup-storage-users` grants the read-only `_Backups` view without granting
-  access to the Kopia administration UI. Configure storage-only people through
-  `backupAccess.storageUsers`, never by adding them to `backupAccess.adminUsers`.
+  access to the Kopia administration UI. Add a backup administrator to both
+  groups when they also need direct repository-file access.
+- `seerr-request-managers` grants Seerr request approval and rejection
+  permissions. The periodic Seerr reconciler reads this group directly from
+  Kanidm.
 - `kiwix-users` grants access to the Kiwix offline wiki service.
 - Keep protected groups like `system_admins`, `domain_admins`, and `idm_*` from routine selection unless a hard admin procedure is being executed.
 

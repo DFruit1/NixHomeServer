@@ -8,25 +8,19 @@ ensure_tools jq nix rg
 
 model_json="$(nix eval --impure --json --expr '
 let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-  derive = import ./lib/backup-access.nix { lib = f.inputs.nixpkgs.lib; };
+  derive = import ./lib/backup-access.nix;
   malformed = derive {
-    identity.adminUser = "primary-admin";
     basePosixGids.files = 2001;
     backupAccess = {
       adminGroup = {};
-      adminUsers = "not-a-list";
       storageGroup = [];
       storageGid = "2005";
-      storageUsers = ["storage-reader" {}];
     };
   };
 in {
   safeAdminGroup = malformed.adminGroup == "invalid-backup-admin-group";
   safeStorageGroup = malformed.storageGroup == "invalid-backup-storage-group";
   safeStorageGid = malformed.storageGid == 2005;
-  safeAdminMembers = malformed.adminMembers == ["primary-admin"];
-  filtersMalformedStorageMember = malformed.storageMembers == ["primary-admin" "storage-reader"];
   deterministicFallbackMapping = malformed.fileAccessPosixGids.invalid-backup-storage-group == 2005;
 }
 ')"
@@ -45,29 +39,19 @@ let
   base = import ./vars.nix { inherit lib; };
   backupAccess = base.backupAccess // {
     adminGroup = "custom-backup-admins";
-    adminUsers = ["backup-admin-only"];
     storageGroup = "custom-backup-readers";
     storageGid = 23456;
-    storageUsers = ["backup-reader-only"];
   };
-  model = (import ./lib/backup-access.nix { inherit lib; }) {
+  model = import ./lib/backup-access.nix {
     inherit backupAccess;
-    identity = base.identity;
     basePosixGids = builtins.removeAttrs base.fileAccessPosixGids [base.backupStorageGroup];
   };
   vars = base // {
     inherit backupAccess;
     backupAccessModel = model;
-    configuredBackupAdminUsers = model.configuredAdminUsers;
-    configuredBackupStorageUsers = model.configuredStorageUsers;
-    backupAdminUsers = model.adminUsers;
-    backupStorageUsers = model.storageUsers;
     backupAdminGroup = model.adminGroup;
     backupStorageGroup = model.storageGroup;
     backupStorageGid = model.storageGid;
-    kanidmBackupAdminUsers = model.adminMembers;
-    kanidmBackupStorageUsers = model.storageMembers;
-    kanidmBackupUsers = model.allUsers;
     fileAccessPosixGids = model.fileAccessPosixGids;
   };
   pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
@@ -96,14 +80,10 @@ in {
 ')"
 
 if ! jq -e '
-  (.admin.members | sort) == (["admindsaw", "backup-admin-only"] | sort)
-  and .admin.overwriteMembers
-  and (.storage.members | sort) == (["admindsaw", "backup-admin-only", "backup-reader-only"] | sort)
-  and .storage.overwriteMembers
-  and (.admin.members | index("backup-reader-only") == null)
-  and (.storage.members | index("backup-admin-only") != null)
-  and (.admin.members | index("canary-user") == null)
-  and (.storage.members | index("canary-user") == null)
+  .admin.members == []
+  and (.admin.overwriteMembers | not)
+  and .storage.members == []
+  and (.storage.overwriteMembers | not)
   and .storageGid == 23456
   and .localStorageGid == 23456
   and .kopiaScopeGroups == ["custom-backup-admins"]
@@ -141,30 +121,20 @@ let
       storageGroup = "caddy";
     } else {
       adminGroup = {};
-      adminUsers = ["reader" {}];
       storageGroup = [];
       storageGid = "2005";
-      storageUsers = ["reader" {}];
     }
   );
-  model = (import ./lib/backup-access.nix { inherit lib; }) {
+  model = import ./lib/backup-access.nix {
     inherit backupAccess;
-    identity = base.identity;
     basePosixGids = builtins.removeAttrs base.fileAccessPosixGids [base.backupStorageGroup];
   };
   vars = base // {
     inherit backupAccess;
     backupAccessModel = model;
-    configuredBackupAdminUsers = model.configuredAdminUsers;
-    configuredBackupStorageUsers = model.configuredStorageUsers;
-    backupAdminUsers = model.adminUsers;
-    backupStorageUsers = model.storageUsers;
     backupAdminGroup = model.adminGroup;
     backupStorageGroup = model.storageGroup;
     backupStorageGid = model.storageGid;
-    kanidmBackupAdminUsers = model.adminMembers;
-    kanidmBackupStorageUsers = model.storageMembers;
-    kanidmBackupUsers = model.allUsers;
     fileAccessPosixGids = model.fileAccessPosixGids;
   };
   pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
@@ -184,10 +154,7 @@ fi
 for expected_message in \
   'backupAccess.adminGroup must be a valid Kanidm group name' \
   'backupAccess.storageGroup must be a valid Kanidm group name' \
-  'backupAccess.storageGid must be an integer from 1000 through 59999' \
-  'backupAccess.adminUsers must be a list of valid Kanidm user names' \
-  'backupAccess.storageUsers must be a list of valid Kanidm user names' \
-  'backupAccess.adminUsers and backupAccess.storageUsers must not overlap'; do
+  'backupAccess.storageGid must be an integer from 1000 through 59999'; do
   if ! rg -Fq "$expected_message" "$malformed_log"; then
     echo "Malformed backup access failed without the actionable assertion: $expected_message" >&2
     cat "$malformed_log" >&2

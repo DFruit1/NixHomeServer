@@ -1,18 +1,6 @@
-{ lib }:
-
-{ backupAccess, identity, basePosixGids }:
+{ backupAccess, basePosixGids }:
 
 let
-  configuredAdminUsers = backupAccess.adminUsers or [ ];
-  configuredStorageUsers = backupAccess.storageUsers or [ ];
-  adminUsers =
-    if builtins.isList configuredAdminUsers
-    then builtins.filter builtins.isString configuredAdminUsers
-    else [ ];
-  storageUsers =
-    if builtins.isList configuredStorageUsers
-    then builtins.filter builtins.isString configuredStorageUsers
-    else [ ];
   validGroupForRendering = value:
     builtins.isString value
     && builtins.stringLength value <= 64
@@ -34,23 +22,14 @@ let
       && configuredStorageGid <= 59999
     then configuredStorageGid
     else 2005;
-  adminMembers = lib.unique ([ identity.adminUser ] ++ adminUsers);
-  storageMembers = lib.unique (adminMembers ++ storageUsers);
 in
 {
   inherit
     adminGroup
-    adminMembers
-    adminUsers
-    configuredAdminUsers
-    configuredStorageUsers
     storageGid
     storageGroup
-    storageMembers
-    storageUsers
     ;
 
-  allUsers = lib.unique (adminMembers ++ storageMembers);
   fileAccessPosixGids = basePosixGids // {
     ${storageGroup} = storageGid;
   };

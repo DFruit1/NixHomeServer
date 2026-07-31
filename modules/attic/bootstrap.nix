@@ -12,7 +12,7 @@ let
   nixConfigFile = "${stateDir}/nix.conf";
 in
 {
-  config = lib.mkIf cfg.enable {
+  config = {
     assertions = [
       {
         assertion =
@@ -115,7 +115,7 @@ in
           --retention-period "$retention_period"
 
         /run/current-system/sw/bin/atticd-atticadm make-token \
-          --sub nixhomeserver-store-watcher \
+          --sub nixhomeserver-post-build-hook \
           --validity '10 years' \
           --pull "$cache_name" \
           --push "$cache_name" \
@@ -141,7 +141,7 @@ in
         chmod 0644 "$temporary"
         chown root:root "$temporary"
 
-        if [[ -f "$nix_config_file" ]] && cmp --silent "$temporary" "$nix_config_file"; then
+        if [[ -f "$nix_config_file" ]] && ${pkgs.diffutils}/bin/cmp --silent "$temporary" "$nix_config_file"; then
           exit 0
         fi
         mv --force --no-target-directory "$temporary" "$nix_config_file"

@@ -15,11 +15,8 @@ let
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
-    ++ vars.kanidmBackupUsers
     ++ (vars.monitoringAccessUsers or [ ])
     ++ (vars.filesSftpUsers or [ ])
-    ++ lib.optionals seerrEnabled (vars.seerrRequestManagers or [ ])
-    ++ (vars.fileAccessUsbUsers or [ ])
   );
   adminMailAddresses =
     if vars.kanidmAdminMailAddresses != [ ] then
@@ -37,16 +34,10 @@ let
       inherit members;
       overwriteMembers = false;
     };
-  mkManagedAccessGroup = members: {
-    inherit members;
-    # Backup authorization is a security boundary. Exact reconciliation also
-    # removes storage-only users left in the admin group by older releases.
-    overwriteMembers = true;
-  };
   backupAccessGroups = {
-    ${vars.backupAdminGroup} = mkManagedAccessGroup vars.kanidmBackupAdminUsers;
+    ${vars.backupAdminGroup} = mkManualGroup [ ];
   } // {
-    ${vars.backupStorageGroup} = mkManagedAccessGroup vars.kanidmBackupStorageUsers;
+    ${vars.backupStorageGroup} = mkManualGroup [ ];
   };
   delegatedOperatorGroups = [
     "idm_account_policy_admins"
@@ -150,11 +141,11 @@ let
   fileAccessGroups = builtins.listToAttrs [
     {
       name = vars.fileAccess.webAccessGroup;
-      value = mkManualGroup vars.kanidmAppUsers;
+      value = mkManualGroup [ ];
     }
     {
       name = vars.fileAccess.sftpAccessGroup;
-      value = mkManualGroup (vars.filesSftpUsers or [ ]);
+      value = mkManualGroup [ ];
     }
     {
       name = vars.fileAccess.sharedAccessGroup;
@@ -162,7 +153,7 @@ let
     }
     {
       name = vars.fileAccess.usbAccessGroup;
-      value = mkManualGroup (vars.fileAccessUsbUsers or [ ]);
+      value = mkManualGroup [ ];
     }
   ];
   mkMailArgs = mailAddresses:
@@ -218,7 +209,7 @@ in
       } // {
         ${vars.monitoringAccessGroup} = mkManualGroup (vars.monitoringAccessUsers or [ ]);
       } // fileAccessGroups // backupAccessGroups // lib.optionalAttrs seerrEnabled {
-        ${vars.seerrRequestManagerGroup} = mkManualGroup vars.seerrRequestManagers;
+        ${vars.seerrRequestManagerGroup} = mkManualGroup [ ];
       };
 
       systems.oauth2.auth-gateway-web = {

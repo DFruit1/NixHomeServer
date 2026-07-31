@@ -30,6 +30,7 @@ done
 test_scripts=(
   scripts/tests/test-app-module-structure.sh
   scripts/tests/test-attic-cache.sh
+  scripts/tests/test-kanidm-group-owned-access.sh
   scripts/tests/test-module-boundaries.sh
   scripts/tests/test-module-removal-evaluation.sh
   scripts/tests/test-module-disable-evaluation.sh

@@ -107,6 +107,7 @@ let
   ];
   jellyfinAdminUsersJson = builtins.toJSON (vars.jellyfinAdminUsers or vars.kanidmAppAdminUsers);
   jellyfinAdminOwnerUser = vars.kanidmAdminUser;
+  jellyfinCanaryUser = vars.kanidmCanaryUser;
   jellyfinLibraryBootstrapPath = with pkgs; [
     coreutils
     curl
@@ -311,6 +312,7 @@ in
         api_key_file=${lib.escapeShellArg apiKeyFile}
         api_key_name=${lib.escapeShellArg apiKeyName}
         jellyfin_admin_owner_user=${lib.escapeShellArg jellyfinAdminOwnerUser}
+        jellyfin_canary_user=${lib.escapeShellArg jellyfinCanaryUser}
         base_url="http://${loopback}:${toString jellyfinPort}"
         api_keys_table=""
         api_key=""
@@ -756,6 +758,10 @@ in
           if [[ "$username" == "$jellyfin_admin_owner_user" ]]; then
             is_admin=true
           fi
+          is_hidden=false
+          if [[ "$username" == "$jellyfin_canary_user" ]]; then
+            is_hidden=true
+          fi
 
           if [[ "$current_is_admin" == "true" && "$is_admin" != "true" ]]; then
             current_admin_count="$(jq 'map(select((.Policy // {}).IsAdministrator == true)) | length' <<<"$jellyfin_users")"
@@ -785,9 +791,12 @@ in
           fi
 
           desired_policy="$(
-            jq -c --argjson isAdmin "$is_admin" --argjson folderIds "$folder_ids" '
+            jq -c \
+              --argjson isAdmin "$is_admin" \
+              --argjson isHidden "$is_hidden" \
+              --argjson folderIds "$folder_ids" '
               .IsAdministrator = $isAdmin
-              | .IsHidden = false
+              | .IsHidden = $isHidden
               | .IsDisabled = false
               | .EnableAllFolders = false
               | .EnabledFolders = $folderIds

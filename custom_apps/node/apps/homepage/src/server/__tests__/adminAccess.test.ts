@@ -20,11 +20,11 @@ describe('Homepage admin access guidance', () => {
     ]);
   });
 
-  it('groups repository-managed memberships by their actual vars.nix source', () => {
+  it('keeps only the default app bundle repository-managed', () => {
     const management = {
       'photos-users': 'identity.appUsers',
       'documents-users': 'identity.appUsers',
-      'backup-admin': 'backupAccess.adminUsers',
+      'backup-admin': 'manual',
       'files-sftp-users': 'manual',
     } as const;
     expect(configuredMembershipSelections(
@@ -32,16 +32,13 @@ describe('Homepage admin access guidance', () => {
       management,
     )).toEqual([
       { source: 'identity.appUsers', groups: ['documents-users', 'photos-users'] },
-      { source: 'backupAccess.adminUsers', groups: ['backup-admin'] },
     ]);
   });
 
-  it('explains safe repository-managed revocation, including inherited app admins', () => {
+  it('explains safe default-app-bundle revocation, including inherited app admins', () => {
     expect(configuredMembershipEdit('identity.appUsers', 'revoke', '"alice"')).toBe(
       'remove "alice" from identity.appUsers and identity.appAdminUsers wherever present',
     );
     expect(configuredMembershipEffect('identity.appUsers', 'revoke')).toMatch(/revokes the enabled default app bundle/);
-    expect(configuredMembershipEffect('backupAccess.adminUsers', 'revoke')).toMatch(/inherited backup storage access/);
-    expect(configuredMembershipEffect('backupAccess.storageUsers', 'revoke')).toMatch(/without changing Kopia administration/);
   });
 });

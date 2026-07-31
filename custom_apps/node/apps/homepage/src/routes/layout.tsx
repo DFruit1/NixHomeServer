@@ -92,7 +92,7 @@ export const head: DocumentHead = ({ resolveValue, url }) => ({
 const pageNameForPath = (pathname: string): string | undefined => {
   if (pathname === '/') return undefined;
   if (pathname === '/getting-started') return 'Getting Started';
-  if (pathname === '/uploads') return 'How to Upload Files';
+  if (pathname === '/uploads') return 'Detailed Guide';
   if (pathname === '/admins') return 'For Admins';
   if (pathname.startsWith('/services/')) return 'Service';
   return 'Page Not Found';

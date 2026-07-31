@@ -1,15 +1,75 @@
 diff --git a/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs b/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs
-index 77a696d..e87f7d2 100644
+index 77a696d..f80a3da 100644
 --- a/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs
 +++ b/Jellyfin.Plugin.OIDC/Api/LoginButtonController.cs
-@@ -59,6 +59,7 @@ public class LoginButtonController : ControllerBase
+@@ -26,12 +26,52 @@ public class LoginButtonController : ControllerBase
+         var sb = new StringBuilder();
+         sb.AppendLine("(function() {");
++        sb.AppendLine("  if (window.__nixhomeserverOidcLoginInitialized) return;");
++        sb.AppendLine("  window.__nixhomeserverOidcLoginInitialized = true;");
+         // Jellyfin may run under a base path (Networking > Base URL). The web client is served
+         // under '<basePath>/web/', so derive the prefix from the login page URL. Empty when unset.
+         sb.AppendLine("  var _p = window.location.pathname.split('/web/');");
+         sb.AppendLine("  var basePath = _p.length > 1 ? _p[0] : '';");
++        sb.AppendLine("  var loginHistoryKey = 'nixhomeserver-login-view';");
++        sb.AppendLine("  function activeLoginPage() {");
++        sb.AppendLine("    return document.querySelector('#loginPage:not(.hide)');");
++        sb.AppendLine("  }");
++        sb.AppendLine("  function removeButtons() {");
++        sb.AppendLine("    var existing = document.getElementById('oidc-sso-buttons');");
++        sb.AppendLine("    if (existing) existing.remove();");
++        sb.AppendLine("    document.documentElement.classList.remove('nixhomeserver-oidc-ready');");
++        sb.AppendLine("  }");
++        sb.AppendLine("  function rememberUserSelection(event) {");
++        sb.AppendLine("    var target = event.target;");
++        sb.AppendLine("    if (!(target instanceof Element)) return;");
++        sb.AppendLine("    var portrait = target.closest('#loginPage:not(.hide) .cardContent[data-userid]');");
++        sb.AppendLine("    if (!portrait) return;");
++        sb.AppendLine("    var state = history.state && typeof history.state === 'object' ? history.state : {};");
++        sb.AppendLine("    if (state[loginHistoryKey] === 'user') return;");
++        sb.AppendLine("    var usersState = Object.assign({}, state);");
++        sb.AppendLine("    usersState[loginHistoryKey] = 'users';");
++        sb.AppendLine("    history.replaceState(usersState, '', window.location.href);");
++        sb.AppendLine("    var userState = Object.assign({}, state);");
++        sb.AppendLine("    userState[loginHistoryKey] = 'user';");
++        sb.AppendLine("    history.pushState(userState, '', window.location.href);");
++        sb.AppendLine("  }");
++        sb.AppendLine("  function restoreUserList(event) {");
++        sb.AppendLine("    if (event.state && event.state[loginHistoryKey] === 'users' && activeLoginPage()) {");
++        sb.AppendLine("      window.location.reload();");
++        sb.AppendLine("    }");
++        sb.AppendLine("  }");
+         sb.AppendLine("  function addButtons() {");
+-        sb.AppendLine("    var form = document.querySelector('.manualLoginForm, #loginPage form, [data-role=\"page\"] form');");
+-        sb.AppendLine("    if (!form || document.getElementById('oidc-sso-buttons')) return;");
++        sb.AppendLine("    var page = activeLoginPage();");
++        sb.AppendLine("    if (!page) { removeButtons(); return; }");
++        sb.AppendLine("    var host = page.querySelector('.readOnlyContent');");
++        sb.AppendLine("    var form = page.querySelector('form.manualLoginForm');");
++        sb.AppendLine("    if (!host && form) host = form.parentNode;");
++        sb.AppendLine("    if (!host) { removeButtons(); return; }");
++        sb.AppendLine("    var existing = document.getElementById('oidc-sso-buttons');");
++        sb.AppendLine("    if (existing && page.contains(existing)) {");
++        sb.AppendLine("      document.documentElement.classList.add('nixhomeserver-oidc-ready');");
++        sb.AppendLine("      return;");
++        sb.AppendLine("    }");
++        sb.AppendLine("    if (existing) existing.remove();");
+         sb.AppendLine("    var container = document.createElement('div');");
+         sb.AppendLine("    container.id = 'oidc-sso-buttons';");
+         sb.AppendLine("    container.style.cssText = 'margin:1em 0;text-align:center;';");
+@@ -58,8 +98,11 @@ public class LoginButtonController : ControllerBase
+         sb.AppendLine("    sep.style.cssText = 'margin:1em 0;text-align:center;color:#888;';");
          sb.AppendLine("    sep.textContent = '— or sign in with password —';");
          sb.AppendLine("    container.appendChild(sep);");
-         sb.AppendLine("    form.parentNode.insertBefore(container, form);");
+-        sb.AppendLine("    form.parentNode.insertBefore(container, form);");
++        sb.AppendLine("    host.insertBefore(container, host.firstChild);");
 +        sb.AppendLine("    document.documentElement.classList.add('nixhomeserver-oidc-ready');");
          sb.AppendLine("  }");
++        sb.AppendLine("  document.addEventListener('click', rememberUserSelection, true);");
++        sb.AppendLine("  window.addEventListener('popstate', restoreUserList);");
          sb.AppendLine("  var observer = new MutationObserver(addButtons);");
          sb.AppendLine("  observer.observe(document.body, { childList: true, subtree: true });");
+         sb.AppendLine("  addButtons();");
 diff --git a/Jellyfin.Plugin.OIDC/Api/OidcController.cs b/Jellyfin.Plugin.OIDC/Api/OidcController.cs
 index 15b96d5..8a7368a 100644
 --- a/Jellyfin.Plugin.OIDC/Api/OidcController.cs
