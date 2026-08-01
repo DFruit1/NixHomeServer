@@ -13,8 +13,8 @@ in
   };
   users.users.media-manager-broker = {
     isSystemUser = true;
-    group = "media-manager-broker";
-    extraGroups = [ "media-manager" ];
+    group = "media-manager";
+    extraGroups = [ "media-manager-broker" ];
     home = cfg.stateDir;
   };
 

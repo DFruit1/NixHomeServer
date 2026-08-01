@@ -179,8 +179,8 @@ in
     serviceConfig = {
       Type = "oneshot";
       User = "media-manager-broker";
-      Group = "media-manager-broker";
-      SupplementaryGroups = [ "media-manager" ];
+      Group = "media-manager";
+      SupplementaryGroups = [ "media-manager-broker" ];
       ExecStart = lib.getExe' cfg.package "media-manager-broker";
       UMask = "0007";
       NoNewPrivileges = true;

@@ -17,7 +17,9 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   sqliteSources = map (dump: dump.source) cfg.repo.backups.sqliteDumps;
   service = cfg.systemd.services.media-manager.serviceConfig;
   serviceEnvironment = cfg.systemd.services.media-manager.environment;
+  brokerUserGroup = cfg.users.users.media-manager-broker.group;
   brokerUserExtraGroups = cfg.users.users.media-manager-broker.extraGroups;
+  stateTmpfiles = cfg.systemd.tmpfiles.rules;
   ageSecretNames = builtins.attrNames cfg.age.secrets;
   broker = cfg.systemd.services.media-manager-broker.serviceConfig;
   brokerTimer = cfg.systemd.timers.media-manager-broker.timerConfig;
@@ -67,10 +69,11 @@ jq -e '
   and (.service.ReadWritePaths == ["/var/lib/media-manager"])
   and (.serviceEnvironment.MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE == null)
   and (.ageSecretNames | index("openSubtitlesCredentials") == null)
-  and (.brokerUserExtraGroups == ["media-manager"])
+  and (.brokerUserGroup == "media-manager")
+  and (.brokerUserExtraGroups == ["media-manager-broker"])
   and (.broker.User == "media-manager-broker")
-  and (.broker.Group == "media-manager-broker")
-  and (.broker.SupplementaryGroups == ["media-manager"])
+  and (.broker.Group == "media-manager")
+  and (.broker.SupplementaryGroups == ["media-manager-broker"])
   and (.broker.PrivateNetwork == true)
   and (.broker.NoNewPrivileges == true)
   and (.broker.CapabilityBoundingSet == [])
@@ -80,6 +83,10 @@ jq -e '
     "/mnt/data/shared",
     "/mnt/data/users"
   ])
+  and (.stateTmpfiles | index("d /var/lib/media-manager 0770 media-manager media-manager -") != null)
+  and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3 0660 media-manager media-manager -") != null)
+  and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3-wal 0660 media-manager media-manager -") != null)
+  and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3-shm 0660 media-manager media-manager -") != null)
   and (.brokerTimer.OnBootSec == "20s")
   and (.brokerTimer.OnUnitInactiveSec == "10s")
   and (.integrations.jellyfin.capabilities == ["library-refresh"])

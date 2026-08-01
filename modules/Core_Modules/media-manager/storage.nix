@@ -77,6 +77,11 @@ in
   };
 
   systemd.tmpfiles.rules = [
-    "d ${cfg.stateDir} 0750 media-manager media-manager -"
+    "d ${cfg.stateDir} 0770 media-manager media-manager -"
+    # SQLite WAL mode is three-file state. Repair legacy modes before either
+    # writer starts: https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html#z
+    "z ${cfg.stateDir}/control.sqlite3 0660 media-manager media-manager -"
+    "z ${cfg.stateDir}/control.sqlite3-wal 0660 media-manager media-manager -"
+    "z ${cfg.stateDir}/control.sqlite3-shm 0660 media-manager media-manager -"
   ];
 }
