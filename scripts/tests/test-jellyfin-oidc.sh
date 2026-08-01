@@ -130,7 +130,9 @@ jq -e '
   and (.bootstrap.script | contains(".QuickConnectAvailable = true"))
   and (.bootstrap.script | contains("nixhomeserver:jellyfin-oidc:start"))
   and (.bootstrap.script | contains("html.nixhomeserver-oidc-ready form.manualLoginForm"))
-  and (.bootstrap.script | contains("/sso/OIDC/LoginButtons"))
+  and (.bootstrap.script | contains("/sso/OIDC/QuickConnect/kanidm"))
+  and (.bootstrap.script | contains("Kanidm password is not a Jellyfin password"))
+  and ((.bootstrap.script | contains("/sso/OIDC/LoginButtons")) | not)
   and (.jellyfin.bindReadOnlyPaths | length == 0)
   and any(.jellyfin.execStartPre[]; contains("jellyfin-oidc-manifest-install"))
   and (.jellyfin.restartTriggers | length > 0)
@@ -163,6 +165,21 @@ forbid_match modules/jellyfin/oidc.nix \
 require_fixed modules/jellyfin/oidc.nix \
   'if $text == "" then 0' \
   "Jellyfin OIDC branding reconciliation must treat empty branding fields as having no managed markers"
+require_fixed modules/jellyfin/oidc.nix \
+  'Kanidm password is not a Jellyfin password' \
+  "Native Jellyfin clients must explain that their password box does not accept Kanidm credentials"
+require_fixed modules/jellyfin/oidc.nix \
+  '/sso/OIDC/QuickConnect/kanidm' \
+  "Native Jellyfin clients must receive the browser URL used to authorize Quick Connect"
+require_fixed modules/jellyfin/oidc.nix \
+  'def remove_managed($text; $start; $end):' \
+  "Jellyfin branding reconciliation must remove the legacy browser script from native disclaimers"
+require_fixed modules/jellyfin/oidc.nix \
+  'if contains($nativeDisclaimer) then .' \
+  "Native Jellyfin Quick Connect instructions must reconcile idempotently"
+forbid_match modules/jellyfin/oidc.nix \
+  '/sso/OIDC/LoginButtons' \
+  "Executable Jellyfin Web markup must never be stored in the native-client LoginDisclaimer"
 forbid_match modules/jellyfin/oidc.nix \
   'published-server-url|oauth2-proxy' \
   "Jellyfin OIDC must not override discovery or add an auth proxy"
@@ -175,6 +192,15 @@ require_fixed modules/jellyfin/networking.nix \
 require_fixed flake/nixos-tests.nix \
   'SO_BROADCAST' \
   "The Jellyfin VM test must exercise LAN broadcast discovery rather than unicast only"
+require_fixed flake/nixos-tests.nix \
+  'SO_BINDTODEVICE, b"eth1"' \
+  "The multi-homed Jellyfin VM client must send discovery through the shared test LAN"
+require_fixed flake/nixos-tests.nix \
+  'client.wait_for_unit("multi-user.target")' \
+  "The Jellyfin VM discovery probe must wait for the client network before broadcasting"
+require_fixed flake/nixos-tests.nix \
+  'b"Who is JellyfinServer?"' \
+  "The Jellyfin VM test must use Fladder's discovery request payload"
 require_fixed flake/nixos-tests.nix \
   '("255.255.255.255", 7359)' \
   "The Jellyfin VM test must send the discovery probe to the limited broadcast address"

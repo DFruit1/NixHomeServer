@@ -559,11 +559,13 @@ fn save_config(config: &Config) -> Result<()> {
 fn require_handbrake() -> Result<()> {
     if !program_succeeds(&handbrake_program(), "--version")
         || !program_succeeds(&ffprobe_program(), "-version")
+        || !program_succeeds(&mkvpropedit_program(), "--version")
     {
         bail!(
-            "HandBrakeCLI and ffprobe are required. On NixOS: nix shell \
+            "HandBrakeCLI, ffprobe, and mkvpropedit are required. On NixOS: nix shell \
 github:NixOS/nixpkgs/nixos-25.11#handbrake \
-github:NixOS/nixpkgs/nixos-25.11#ffmpeg"
+github:NixOS/nixpkgs/nixos-25.11#ffmpeg \
+github:NixOS/nixpkgs/nixos-25.11#mkvtoolnix-cli"
         );
     }
     Ok(())
@@ -585,6 +587,10 @@ fn handbrake_program() -> OsString {
 
 fn ffprobe_program() -> OsString {
     env::var_os("DISC_TO_JELLYFIN_FFPROBE").unwrap_or_else(|| "ffprobe".into())
+}
+
+fn mkvpropedit_program() -> OsString {
+    env::var_os("DISC_TO_JELLYFIN_MKVPROPEDIT").unwrap_or_else(|| "mkvpropedit".into())
 }
 
 fn doctor() -> Result<()> {
@@ -629,6 +635,22 @@ fn doctor() -> Result<()> {
             .lines()
             .next()
             .unwrap_or("ffprobe")
+    );
+    let mkvpropedit = mkvpropedit_program();
+    println!("MKVPropEdit: {}", Path::new(&mkvpropedit).display());
+    let mkv = Command::new(&mkvpropedit)
+        .arg("--version")
+        .output()
+        .context("mkvpropedit could not be started")?;
+    if !mkv.status.success() {
+        bail!("mkvpropedit --version failed");
+    }
+    println!(
+        "{}",
+        String::from_utf8_lossy(&mkv.stdout)
+            .lines()
+            .next()
+            .unwrap_or("mkvpropedit")
     );
     let probe_path = job_state_path(Path::new("doctor.mkv"), "write-test");
     let parent = probe_path.parent().context("invalid state directory")?;
@@ -1465,6 +1487,10 @@ fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) 
         let _ = fs::remove_file(&partial);
         bail!("HandBrake failed; see {}", log_path.display());
     }
+    if let Err(error) = remove_container_muxing_date(&partial) {
+        let _ = fs::remove_file(&partial);
+        return Err(error).context("could not remove the encode date from the Matroska output");
+    }
     if !validate_output(&partial, job)? {
         let _ = fs::remove_file(&partial);
         bail!("output validation failed; see {}", log_path.display());
@@ -1701,6 +1727,31 @@ fn handbrake_command(job: &Job, output: &Path) -> Command {
     cmd
 }
 
+fn container_date_cleanup_command(path: &Path) -> Command {
+    let mut cmd = Command::new(mkvpropedit_program());
+    cmd.arg(path).args(["--edit", "info", "--delete", "date"]);
+    cmd
+}
+
+fn remove_container_muxing_date(path: &Path) -> Result<()> {
+    let output = container_date_cleanup_command(path)
+        .output()
+        .with_context(|| format!("could not update {}", path.display()))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(if output.stderr.is_empty() {
+            &output.stdout
+        } else {
+            &output.stderr
+        });
+        bail!(
+            "mkvpropedit failed for {}: {}",
+            path.display(),
+            detail.trim()
+        );
+    }
+    Ok(())
+}
+
 fn relay_log<R: std::io::Read>(reader: R, log: Arc<Mutex<fs::File>>) -> Result<()> {
     for line in BufReader::new(reader).lines() {
         let line = line?;
@@ -1839,7 +1890,7 @@ fn validate_output(path: &Path, job: &Job) -> Result<bool> {
             "-v",
             "error",
             "-show_entries",
-            "format=format_name,duration:stream=codec_type,codec_name:chapter=start_time",
+            "format=format_name,duration:format_tags=creation_time:stream=codec_type,codec_name:chapter=start_time",
             "-of",
             "json",
         ])
@@ -1853,6 +1904,13 @@ fn validate_output(path: &Path, job: &Job) -> Result<bool> {
         .pointer("/format/format_name")
         .and_then(Value::as_str)
         .is_some_and(|name| name.split(',').any(|format| format == "matroska"))
+    {
+        return Ok(false);
+    }
+    if probe
+        .pointer("/format/tags/creation_time")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
     {
         return Ok(false);
     }
@@ -2189,9 +2247,16 @@ mod tests {
         let command = display_command(&handbrake_command(&job, Path::new("out.mkv")));
         assert!(command.contains("--audio 1,1,2,2"));
         assert!(command.contains("--aencoder av_aac,copy,av_aac,copy"));
+        assert!(command.contains("--all-subtitles"));
         assert!(command.contains("--subtitle-burned=none"));
         assert!(command.contains("--subtitle-default=none"));
         assert!(!command.contains("--all-audio"));
+    }
+
+    #[test]
+    fn container_date_cleanup_removes_the_matroska_muxing_date() {
+        let command = display_command(&container_date_cleanup_command(Path::new("out.mkv")));
+        assert!(command.contains("--edit info --delete date"));
     }
 
     #[test]

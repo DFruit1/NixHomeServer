@@ -140,6 +140,12 @@ in
       description = "Content roots actually snapshotted by Kopia.";
     };
 
+    rebuildableSnapshotPaths = lib.mkOption {
+      type = lib.types.listOf (lib.types.strMatching "[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*");
+      default = [ ];
+      description = "Paths relative to /persist containing reproducible application artifacts that Kopia must exclude.";
+    };
+
     repositoryPath = lib.mkOption {
       type = lib.types.str;
       readOnly = true;

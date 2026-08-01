@@ -41,6 +41,9 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   and (.services[] | select(.id == "files") | .logoUrl == "/logos/filestash.svg")
   and (.services[] | select(.id == "audiobooks") | .logoUrl == "/logos/audiobookshelf.svg")
   and (.services[] | select(.id == "videos") | .logoUrl == "/logos/jellyfin.svg")
+  and (.services[] | select(.id == "videos")
+    | (.loginNotes | contains("Kanidm password"))
+    and (.loginNotes | contains("/sso/OIDC/QuickConnect/kanidm")))
   and (.services[] | select(.id == "books") | .logoUrl == "/logos/kavita.svg")
   and (.services[] | select(.id == "emails") | .logoUrl == "/logos/mail-archive-ui.svg")
   and (.services[] | select(.id == "passwords") | .logoUrl == "/logos/vaultwarden.svg")
@@ -54,6 +57,25 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   and (.adminGuide[] | select(.title == "Retrieve Kopia browser credential")
     | (.command == "sudo nixhomeserver-kopia-browser-credential")
     and (.detail | contains("backup-storage-users alone grants only read-only repository browsing")))
+  and (.adminGuide[] | select(.title == "Troubleshoot Jellyfin LAN discovery")
+    | (.detail | contains("same IPv4 broadcast network"))
+    and (.detail | contains("client isolation"))
+    and (.detail | contains("UDP source port 7359")))
+  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with nftables")
+    | (.command | contains("udp sport 7359"))
+    and (.command | test("ip saddr [0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+")))
+  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with UFW")
+    | (.command | contains("proto udp"))
+    and (.command | contains("port 7359")))
+  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies with firewalld")
+    | (.command | contains("source-port port=\"7359\"")))
+  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery replies on Windows")
+    | (.command | contains("New-NetFirewallRule"))
+    and (.command | contains("-RemotePort 7359"))
+    and (.command | contains("-Profile Private")))
+  and (.adminGuide[] | select(.title == "Allow Jellyfin discovery on Apple devices")
+    | (.detail | contains("Local Network"))
+    and (.detail | contains("Block all incoming connections")))
 ' "$homepage_config" >/dev/null || {
     echo "Homepage evaluated guidance/access contract regressed." >&2
     jq . "$homepage_config" >&2
@@ -114,6 +136,12 @@ without-immich	Re-run Immich OIDC reconcile
 without-paperless	Re-run Paperless OIDC reconcile
 without-jellyfin	Re-run Jellyfin library sync
 without-jellyfin	Re-run Jellyfin OIDC bootstrap
+without-jellyfin	Troubleshoot Jellyfin LAN discovery
+without-jellyfin	Allow Jellyfin discovery replies with nftables
+without-jellyfin	Allow Jellyfin discovery replies with UFW
+without-jellyfin	Allow Jellyfin discovery replies with firewalld
+without-jellyfin	Allow Jellyfin discovery replies on Windows
+without-jellyfin	Allow Jellyfin discovery on Apple devices
 EOF
 
   without_files_drv="$(jq -er '."without-files".homepageConfigDrv' <<<"$removal_matrix")"
@@ -169,6 +197,18 @@ require_fixed modules/homepage/services.nix '++ lib.optionals paperlessEnabled [
   "Homepage must omit Paperless reconciliation commands when Paperless is disabled."
 require_fixed modules/homepage/services.nix '++ lib.optionals jellyfinEnabled [' \
   "Homepage must omit Jellyfin synchronization commands when Jellyfin is disabled."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
+  "'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' }" \
+  "Homepage must label nftables discovery changes as client-side rather than server-side commands."
+require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
+  "'Allow Jellyfin discovery replies on Windows': { category: 'network', executionContext: 'Windows client (Administrator PowerShell)' }" \
+  "Homepage must label the Windows discovery rule with its required client and shell context."
+require_fixed documentation/operations.md 'UDP source port `7359` to the client' \
+  "Jellyfin discovery guidance must describe the reply direction that stateful client firewalls can misclassify."
+require_fixed documentation/operations.md 'New-NetFirewallRule' \
+  "Jellyfin discovery guidance must include a narrow Windows Firewall example."
+require_fixed documentation/operations.md 'System Settings → Privacy & Security → Local Network' \
+  "Jellyfin discovery guidance must cover Apple local-network privacy permission."
 require_fixed modules/homepage/services.nix '++ lib.optionals kopiaEnabled [' \
   "Homepage must omit Kopia credential guidance when Kopia is disabled."
 require_fixed modules/homepage/services.nix 'command = "sudo systemctl start storage-smart-short.service";' \

@@ -202,6 +202,7 @@ validator_function() {
     netbird-setup-key) printf '%s\n' validate_netbird ;;
     cloudflared-credentials-json) printf '%s\n' validate_cf ;;
     cloudflare-api-token) printf '%s\n' validate_cf_api_token ;;
+    opensubtitles-credentials-json) printf '%s\n' validate_opensubtitles_credentials ;;
     https-url) printf '%s\n' validate_https_url ;;
     nonempty) printf '%s\n' validate_nonempty_secret ;;
     *)
@@ -290,6 +291,18 @@ validate_https_url() {
   [[ "$value" =~ ^https://[^[:space:]]+$ ]] \
     && [[ "$value" != *CHANGE_ME* ]] \
     && [[ "$value" != *REPLACE_ME* ]]
+}
+
+validate_opensubtitles_credentials() {
+  jq -e '
+    type == "object"
+    and ((keys - ["apiKey", "username", "password", "userAgent"]) | length == 0)
+    and (.apiKey | type == "string" and length >= 16 and test("^[A-Za-z0-9_-]+$"))
+    and (.username | type == "string" and length > 0)
+    and (.password | type == "string" and length > 0)
+    and ((has("userAgent") | not) or (.userAgent | type == "string" and length > 0))
+    and ([.apiKey, .username, .password] | all(. != "REPLACE_ME" and . != "CHANGE_ME"))
+  ' "$1" >/dev/null 2>&1
 }
 
 normalize_cf_api_token() {

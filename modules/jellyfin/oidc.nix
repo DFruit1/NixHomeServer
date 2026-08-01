@@ -10,6 +10,9 @@ let
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
   jellyfinUrl = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}";
   publicBaseUrl = "https://videos.${vars.domain}";
+  # Native clients render LoginDisclaimer as text instead of browser HTML. Keep
+  # this marker-free; Jellyfin Web loads LoginButtons from its packaged index.
+  nativeLoginDisclaimer = "Native app sign-in: choose Using quick connect, note the six-digit code, then open ${publicBaseUrl}/sso/OIDC/QuickConnect/kanidm in a browser and sign in with Kanidm. The password box accepts only a Jellyfin local password; your Kanidm password is not a Jellyfin password.";
   authority = vars.kanidmIssuer "jellyfin-web";
   pluginAssemblies = [
     "IdentityModel.dll"
@@ -217,9 +220,6 @@ in
           echo "Jellyfin Quick Connect already enabled."
         fi
 
-        login_fragment='<!-- nixhomeserver:jellyfin-oidc:start -->
-        <script src="/sso/OIDC/LoginButtons"></script>
-        <!-- nixhomeserver:jellyfin-oidc:end -->'
         css_fragment='/* nixhomeserver:jellyfin-oidc:start */
         html.nixhomeserver-oidc-ready form.manualLoginForm,
         html.nixhomeserver-oidc-ready button.btnForgotPassword {
@@ -231,7 +231,7 @@ in
         branding_desired="$work_dir/desired-branding.json"
         api_get "$branding_config_url" >"$branding_current"
         if ! jq \
-          --arg loginFragment "$login_fragment" \
+          --arg nativeDisclaimer ${lib.escapeShellArg nativeLoginDisclaimer} \
           --arg cssFragment "$css_fragment" '
           def count($text; $marker):
             if $text == "" then 0
@@ -252,11 +252,30 @@ in
                   end
               else error("Jellyfin OIDC branding markers are malformed or partially paired")
               end;
-          .LoginDisclaimer = upsert(
-            (.LoginDisclaimer // "");
-            "<!-- nixhomeserver:jellyfin-oidc:start -->";
-            "<!-- nixhomeserver:jellyfin-oidc:end -->";
-            $loginFragment
+          def remove_managed($text; $start; $end):
+            (count($text; $start)) as $starts
+            | (count($text; $end)) as $ends
+            | if $starts == 0 and $ends == 0 then $text
+              elif $starts == 1 and $ends == 1 then
+                ($text | index($start)) as $startAt
+                | ($text | index($end)) as $endAt
+                | if $startAt < $endAt then
+                    $text[0:$startAt] + $text[($endAt + ($end | length)):]
+                  else error("Jellyfin OIDC branding markers are out of order")
+                  end
+              else error("Jellyfin OIDC branding markers are malformed or partially paired")
+              end;
+          .LoginDisclaimer = (
+            remove_managed(
+              (.LoginDisclaimer // "");
+              "<!-- nixhomeserver:jellyfin-oidc:start -->";
+              "<!-- nixhomeserver:jellyfin-oidc:end -->"
+            )
+            | if test("^\\s*$") then "" else . end
+            | if contains($nativeDisclaimer) then .
+              elif . == "" then $nativeDisclaimer
+              else . + "\n\n" + $nativeDisclaimer
+              end
           )
           | .CustomCss = upsert(
             (.CustomCss // "");

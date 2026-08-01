@@ -19,13 +19,20 @@ runtime checks, and rebuilds.
 Jellyfin browser users should choose **Sign in with Kanidm**. On a TV or native
 client, start the normal Jellyfin Quick Connect flow and authorize the displayed
 code at `https://videos.<domain>/sso/OIDC/QuickConnect/kanidm`. The existing
-native password remains a deliberate compatibility fallback. To retrieve it,
-list the root-only one-time credentials created for managed users:
+native password remains a deliberate compatibility fallback. A native client's
+password box does not accept the Kanidm password. To retrieve the separate
+Jellyfin credential, list the root-only one-time credentials created for
+managed users:
 
 ```bash
 sudo jellyfin-initial-credential
 sudo jellyfin-initial-credential USERNAME
 ```
+
+If a native client cannot discover the server, keep it on the same non-isolated
+IPv4 LAN and check its firewall before entering the server's direct
+`http://<SERVER_LAN_IP>:8096` address. Platform-specific rules are in
+[Jellyfin and Fladder LAN discovery](operations.md#jellyfin-and-fladder-lan-discovery).
 
 ## Prerequisites
 
@@ -150,6 +157,10 @@ Stage these files:
   required by ACME's `CF_DNS_API_TOKEN_FILE` credential.
 - Optional: `secrets/unencrypted/rcloneMegaPassword`, only when enabling the
   configured MEGA offsite copy target.
+- Optional: `secrets/unencrypted/openSubtitlesCredentials`, a JSON object with
+  `apiKey`, `username`, `password`, and optional `userAgent` strings. Omit it
+  to keep Media Manager's provider search disabled while retaining subtitle
+  file uploads and every other Media Manager feature.
 
 Generate repo-managed secrets and encrypt all staged external inputs:
 

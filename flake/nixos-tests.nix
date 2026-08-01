@@ -124,6 +124,7 @@
       import json
 
       start_all()
+      client.wait_for_unit("multi-user.target")
       server.wait_for_unit("jellyfin.service")
       server.wait_for_open_port(8096)
 
@@ -193,7 +194,7 @@
       )
 
       discovery = client.succeed(
-          """python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1); s.bind(("0.0.0.0", 7358)); s.settimeout(5); s.sendto(b"who is JellyfinServer?", ("255.255.255.255", 7359)); print(s.recv(4096).decode())'"""
+          """python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1); s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"eth1"); s.bind(("0.0.0.0", 7358)); s.settimeout(5); s.sendto(b"Who is JellyfinServer?", ("255.255.255.255", 7359)); print(s.recv(4096).decode())'"""
       )
       discovered = json.loads(discovery)
       assert discovered["Address"].startswith("http://")

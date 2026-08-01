@@ -23,6 +23,57 @@ let
     (builtins.readFile ../../../scripts/helpers/check-freshness-marker.sh);
   maintenanceLock = config.repo.backups.maintenanceLock;
   snapshotRoots = config.repo.backups.snapshotRoots;
+  rebuildableSnapshotIgnoreFlags = lib.concatMapStrings
+    (path: " \\\n            --add-ignore=${lib.escapeShellArg path}")
+    (lib.unique config.repo.backups.rebuildableSnapshotPaths);
+  policyReconcileScript = ''
+    set -euo pipefail
+    ${requireDataRoot}
+
+    export KOPIA_CHECK_FOR_UPDATES=false
+    export KOPIA_PASSWORD="$(tr -d '\r\n' < "$CREDENTIALS_DIRECTORY/${credentials.serverPassword}")"
+    export KOPIA_CONFIG_PATH=${lib.escapeShellArg configFile}
+    export KOPIA_CACHE_DIRECTORY=${lib.escapeShellArg cacheDir}
+
+    # A configuration switch may reconcile policy while another repository
+    # operation is active. Wait for the same lock used by snapshots,
+    # maintenance, and the offsite mirror so the source never changes beneath
+    # an rclone transfer.
+    exec 9>${lib.escapeShellArg maintenanceLock}
+    flock 9
+
+    kopia policy set --global \
+      --clear-ignore \
+      --keep-latest=7 \
+      --keep-hourly=0 \
+      --keep-daily=14 \
+      --keep-weekly=4 \
+      --keep-monthly=2 \
+      --keep-annual=0 \
+      --ignore-cache-dirs=true
+
+    # Kopia applies --clear-ignore after additions when both are supplied in
+    # one invocation. Keep clearing and rebuilding as two ordered mutations so
+    # module disable/removal/re-addition converges without erasing the new set.
+    kopia policy set /persist --clear-ignore
+
+    # These patterns are relative only to /persist.
+    kopia policy set /persist \
+      --add-ignore='appdata/kopia/cache' \
+      --add-ignore='appdata/kopia/logs' \
+      --add-ignore='appdata/system-state-backup' \
+      --add-ignore='backups/pool-migration' \
+      --add-ignore='backups/restic' \
+      --add-ignore='home/*/.cache' \
+      --add-ignore='var/cache' \
+      --add-ignore='var/lib/immich-public-proxy' \
+      --add-ignore='var/lib/jellyfin/log' \
+      --add-ignore='var/lib/kavita/config/logs' \
+      --add-ignore='var/lib/metube' \
+      --add-ignore='var/lib/paperless/log' \
+      --add-ignore='var/lib/seerr/logs' \
+      --add-ignore='var/log'${rebuildableSnapshotIgnoreFlags}
+  '';
   snapshotCommands = lib.concatMapStringsSep "\n"
     (root: ''
       kopia snapshot create \
@@ -210,29 +261,26 @@ in
           chmod 0640 "$ownership_marker_tmp"
           mv -f "$ownership_marker_tmp" ${lib.escapeShellArg repositoryOwnershipMarker}
 
-          kopia policy set --global \
-            --keep-latest=7 \
-            --keep-hourly=0 \
-            --keep-daily=14 \
-            --keep-weekly=4 \
-            --keep-monthly=2 \
-            --keep-annual=0 \
-            --ignore-cache-dirs=true \
-            --add-ignore='appdata/kopia/cache' \
-            --add-ignore='appdata/kopia/logs' \
-            --add-ignore='appdata/system-state-backup' \
-            --add-ignore='backups/pool-migration' \
-            --add-ignore='backups/restic' \
-            --add-ignore='home/*/.cache' \
-            --add-ignore='var/cache' \
-            --add-ignore='var/lib/immich-public-proxy' \
-            --add-ignore='var/lib/jellyfin/log' \
-            --add-ignore='var/lib/kavita/config/logs' \
-            --add-ignore='var/lib/metube' \
-            --add-ignore='var/lib/paperless/log' \
-            --add-ignore='var/lib/seerr/logs' \
-            --add-ignore='var/log'
         '';
+      };
+
+      systemd.services.kopia-policy-reconcile = {
+        description = "Reconcile managed Kopia retention and exclusion policy";
+        wantedBy = [ "multi-user.target" ];
+        requires = [ "kopia-repository-bootstrap.service" ];
+        after = [ "kopia-repository-bootstrap.service" ];
+        restartIfChanged = true;
+        path = commonPath;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          Restart = "on-failure";
+          RestartSec = "30s";
+          LoadCredential = [
+            "${credentials.serverPassword}:${config.age.secrets.kopiaServerPassword.path}"
+          ];
+        };
+        script = policyReconcileScript;
       };
 
       systemd.services.kopia = {
@@ -240,10 +288,12 @@ in
         wantedBy = [ "multi-user.target" ];
         requires = [ "kopia-repository-bootstrap.service" ];
         wants = [
+          "kopia-policy-reconcile.service"
           "kopia-repository-bootstrap.service"
           "network-online.target"
         ];
         after = [
+          "kopia-policy-reconcile.service"
           "kopia-repository-bootstrap.service"
           "network-online.target"
         ];
@@ -290,11 +340,13 @@ in
           "backup-prepare.service"
           "data-pool-layout.service"
           "kopia-repository-bootstrap.service"
+          "kopia-policy-reconcile.service"
         ];
         after = [
           "backup-prepare.service"
           "data-pool-layout.service"
           "kopia-repository-bootstrap.service"
+          "kopia-policy-reconcile.service"
         ];
         unitConfig = {
           StartLimitIntervalSec = "2h";
@@ -419,9 +471,15 @@ in
       };
 
       systemd.services.kopia-full-maintenance = {
-        description = "Run weekly full Kopia repository maintenance";
-        requires = [ "kopia-repository-bootstrap.service" ];
-        after = [ "kopia-repository-bootstrap.service" ];
+        description = "Run full Kopia repository maintenance";
+        requires = [
+          "kopia-policy-reconcile.service"
+          "kopia-repository-bootstrap.service"
+        ];
+        after = [
+          "kopia-policy-reconcile.service"
+          "kopia-repository-bootstrap.service"
+        ];
         unitConfig = {
           StartLimitIntervalSec = "4h";
           StartLimitBurst = 3;
@@ -455,9 +513,10 @@ in
       };
 
       systemd.timers.kopia-full-maintenance = {
+        description = "Daily overnight full Kopia repository maintenance";
         wantedBy = [ "timers.target" ];
         timerConfig = {
-          OnCalendar = "Sun *-*-* 01:00:00";
+          OnCalendar = "*-*-* 01:00:00";
           Persistent = true;
           RandomizedDelaySec = "1h";
           Unit = "kopia-full-maintenance.service";

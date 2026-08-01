@@ -116,7 +116,10 @@ Run `./disc-to-jellyfin --help` for every option.
 - Every ISO is scanned, even in main-feature mode, so title selection and
   completion validation are deterministic.
 - Encodes use a same-filesystem partial file and an atomic no-clobber publish.
-- FFprobe verifies Matroska/H.264, duration, audio, subtitles, and chapters.
+- MKVPropEdit removes HandBrake's encode-time Matroska date so Jellyfin cannot
+  mistake the conversion year for the release year.
+- FFprobe verifies Matroska/H.264, duration, audio, subtitles, chapters, and
+  the absence of that misleading encode date.
 - Resume only skips an output whose completed manifest exactly matches its ISO,
   title, HandBrake version, audio profile, RF, and x264 preset.
 - Per-output locks prevent two instances from corrupting the same job.

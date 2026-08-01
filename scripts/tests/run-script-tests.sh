@@ -69,11 +69,15 @@ test_scripts=(
   scripts/tests/test-kiwix-disable-evaluation.sh
   scripts/tests/test-kopia-cli-wrapper.sh
   scripts/tests/test-mail-archive-paperless-reliability.sh
+  scripts/tests/test-media-manager-core.sh
   scripts/tests/test-paperless-v3-readiness.sh
   scripts/tests/test-mkvmaker-automation.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
   scripts/tests/test-rclone-safety.sh
+  scripts/tests/test-rclone-mega-capacity-check.sh
+  scripts/tests/test-rclone-mega-preflight.sh
+  scripts/tests/test-rclone-mega-status-event.sh
   scripts/tests/test-smart-sweep-runtime.sh
   scripts/tests/test-storage-path-validation.sh
   scripts/tests/test-zfs-pool-identity.sh

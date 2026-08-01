@@ -76,8 +76,8 @@ let
     offsiteBackup = {
       enable = true; # Whether to mirror the encrypted Kopia repository to the opinionated MEGA destination.
       email = "dsaw@tuta.io"; # MEGA account email; required only when offsite backup is enabled.
-      syncOnCalendar = "*-*-* 04:30:00"; # systemd calendar expression controlling when the daily mirror starts.
-      repositoryLimitBytes = 19327352832; # Maximum remote repository size in bytes; 18 GiB preserves 2 GiB of MEGA headroom.
+      syncOnCalendar = "*-*-* 04,16:30:00"; # Check and repair the MEGA mirror once overnight and once during the day.
+      repositoryLimitBytes = 19 * 1024 * 1024 * 1024; # 19 GiB preserves 1 GiB of headroom within MEGA's reported 20 GiB quota.
     };
 
     staleReferenceCleanup = {

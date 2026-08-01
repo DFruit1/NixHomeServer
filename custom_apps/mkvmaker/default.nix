@@ -26,7 +26,8 @@ app // {
       cp ${./auto_import.py} "$out/libexec/mkvmaker/auto_import.py"
       wrapProgram "$out/bin/disc-to-jellyfin" \
         --set-default DISC_TO_JELLYFIN_HANDBRAKE "${handbrakeCli}/bin/HandBrakeCLI" \
-        --set-default DISC_TO_JELLYFIN_FFPROBE "${pkgs.handbrake.ffmpeg-hb}/bin/ffprobe"
+        --set-default DISC_TO_JELLYFIN_FFPROBE "${pkgs.handbrake.ffmpeg-hb}/bin/ffprobe" \
+        --set-default DISC_TO_JELLYFIN_MKVPROPEDIT "${pkgs.mkvtoolnix-cli}/bin/mkvpropedit"
       makeWrapper ${pkgs.python3}/bin/python3 "$out/bin/mkvmaker-auto-import" \
         --add-flags "$out/libexec/mkvmaker/auto_import.py" \
         --set-default DISC_TO_JELLYFIN_HANDBRAKE "${handbrakeCli}/bin/HandBrakeCLI" \

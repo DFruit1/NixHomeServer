@@ -14,6 +14,7 @@ let
     "/var/lib/acme"
     "/var/lib/beszel-hub"
     "/var/lib/kanidm"
+    "/var/lib/media-manager"
     "/var/lib/netbird-main"
     "/var/lib/nixos"
     "/var/lib/rclone"

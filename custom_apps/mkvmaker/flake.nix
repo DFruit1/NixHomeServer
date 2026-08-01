@@ -37,7 +37,8 @@
           postInstall = ''
             wrapProgram "$out/bin/disc-to-jellyfin" \
               --set-default DISC_TO_JELLYFIN_HANDBRAKE "${handbrakeCli}/bin/HandBrakeCLI" \
-              --set-default DISC_TO_JELLYFIN_FFPROBE "${pkgs.handbrake.ffmpeg-hb}/bin/ffprobe"
+              --set-default DISC_TO_JELLYFIN_FFPROBE "${pkgs.handbrake.ffmpeg-hb}/bin/ffprobe" \
+              --set-default DISC_TO_JELLYFIN_MKVPROPEDIT "${pkgs.mkvtoolnix-cli}/bin/mkvpropedit"
           '';
           meta = {
             description = "Convert DVD ISOs into efficient Jellyfin-ready H.264 MKVs";
@@ -81,9 +82,10 @@
         let pkgs = nixpkgs.legacyPackages.${system};
         in {
           default = pkgs.mkShell {
-            packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.handbrake pkgs.handbrake.ffmpeg-hb ];
+            packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.handbrake pkgs.handbrake.ffmpeg-hb pkgs.mkvtoolnix-cli ];
             DISC_TO_JELLYFIN_HANDBRAKE = "${pkgs.handbrake}/bin/HandBrakeCLI";
             DISC_TO_JELLYFIN_FFPROBE = "${pkgs.handbrake.ffmpeg-hb}/bin/ffprobe";
+            DISC_TO_JELLYFIN_MKVPROPEDIT = "${pkgs.mkvtoolnix-cli}/bin/mkvpropedit";
           };
         });
     };

@@ -199,5 +199,12 @@
       validator = "https-url";
       required = false;
     };
+    openSubtitlesCredentials = {
+      description = "OpenSubtitles.com REST API application key and server account credentials for Media Manager.";
+      format = "JSON object with apiKey, username, password, and optional userAgent strings";
+      settingPath = "secrets/unencrypted/openSubtitlesCredentials";
+      validator = "opensubtitles-credentials-json";
+      required = false;
+    };
   };
 }

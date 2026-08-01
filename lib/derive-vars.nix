@@ -93,6 +93,7 @@ let
     groundwaterMqtt = 1883;
     homepage = 8084;
     bonsai = 8086;
+    mediaManager = 8087;
     paperless = 8000;
     audiobookshelf = 13378;
     filestash = 8334;
@@ -281,13 +282,13 @@ rec {
     email = configuredOffsiteBackup.email or "";
     sourcePath = "${backupRoot}/kopia";
     destination = "mega:NixHomeServer/kopia";
-    syncOnCalendar = configuredOffsiteBackup.syncOnCalendar or "*-*-* 04:30:00";
+    syncOnCalendar = configuredOffsiteBackup.syncOnCalendar or "*-*-* 04,16:30:00";
     randomizedDelaySec = "30m";
     transfers = 4;
     checkers = 8;
     warnPercent = 80;
     criticalPercent = 90;
-    repositoryLimitBytes = configuredOffsiteBackup.repositoryLimitBytes or 19327352832;
+    repositoryLimitBytes = configuredOffsiteBackup.repositoryLimitBytes or (19 * 1024 * 1024 * 1024);
   };
   externalUsbMountRoot = "/mnt/external-usb";
   staleReferenceCleanup = settings.staleReferenceCleanup;

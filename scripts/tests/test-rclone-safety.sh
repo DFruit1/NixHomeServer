@@ -43,7 +43,7 @@ let
   vars = base // {
     rcloneMega = base.rcloneMega // {
       enable = true;
-      email = [];
+      email = "operator@example.invalid\nbackend = local";
       remoteName = {};
       destination = [];
       transfers = "4";
@@ -71,7 +71,7 @@ if nix eval --impure --raw --expr "$malformed_expr" >"$malformed_log" 2>&1; then
   exit 1
 fi
 for expected_message in \
-  'vars.rcloneMega.email must be set' \
+  'vars.rcloneMega.email must be a single-line email address' \
   'vars.rcloneMega.remoteName must be a simple Rclone remote name' \
   'vars.rcloneMega.destination must be a non-root path' \
   'vars.rcloneMega transfers/checkers must be positive' \
@@ -86,25 +86,62 @@ done
 runtime_json="$(nix eval --json '.#nixosConfigurations.server.config.systemd.services.rclone-mega-kopia-sync' \
   --apply 'service: {
     script = service.script;
+    type = service.serviceConfig.Type;
     restart = service.serviceConfig.Restart;
     restartSec = service.serviceConfig.RestartSec;
+    restartMode = service.serviceConfig.RestartMode;
+    successExitStatus = service.serviceConfig.SuccessExitStatus;
+    restartPreventExitStatus = service.serviceConfig.RestartPreventExitStatus;
     startLimit = service.unitConfig.StartLimitIntervalSec;
   }')"
 
 jq -e '
-  .restart == "on-failure"
+  .type == "exec"
+  and .restart == "on-failure"
   and .restartSec == "30min"
+  and .restartMode == "direct"
+  and (.successExitStatus | index(76) != null)
+  and (.restartPreventExitStatus | sort == [64,76,77,78])
   and .startLimit == "6h"
   and (.script | contains("Kopia ownership marker is missing"))
   and (.script | contains("check-freshness-marker"))
   and (.script | contains("invalid, stale, or future-dated"))
-  and (.script | contains("verifying its immutable Kopia repository identity before one-time adoption"))
-  and (.script | contains("belongs to a different Kopia repository"))
+  and (.script | contains("rclone-mega-preflight"))
+  and (.script | contains("--source /mnt/data/backups/kopia"))
+  and (.script | contains("--control-reserve-bytes 1048576"))
+  and (.script | contains("--result-file"))
+  and (.script | contains("rclone-mega-status-event"))
+  and (.script | contains("last-mega-sync-status.json"))
+  and (.script | contains("--identifier=backup-offsite"))
+  and (.script | contains("run_rclone_phase"))
+  and (.script | contains("3|4|5"))
+  and (.script | contains("data_root_unmounted"))
+  and (.script | contains("preflight_helper_failed"))
+  and (.script | contains("exit 64"))
+  and (.script | contains("--always-transfer-from"))
+  and (.script | contains("--check-first"))
+  and (.script | contains("copy") and contains("--ignore-times"))
+  and (.script | contains("check") and contains("--download"))
   and (.script | contains("rclone-owner.json"))
   and (.script | contains("--exclude /.nixhomeserver-rclone-owner.json"))
 ' <<<"$runtime_json" >/dev/null || {
   echo "Rclone destructive-sync safety configuration regressed." >&2
   jq . <<<"$runtime_json"
+  exit 1
+}
+
+capacity_json="$(nix eval --json '.#nixosConfigurations.server.config.systemd.services.rclone-mega-capacity-check' \
+  --apply 'service: {
+    execStart = service.serviceConfig.ExecStart;
+    onFailure = service.unitConfig.OnFailure;
+  }')"
+
+jq -e '
+  (.execStart | contains("rclone-mega-capacity-check"))
+  and (.onFailure | length > 0)
+' <<<"$capacity_json" >/dev/null || {
+  echo "Rclone capacity warning and alert configuration regressed." >&2
+  jq . <<<"$capacity_json"
   exit 1
 }
 

@@ -1,6 +1,7 @@
 { ... }:
 
 {
-  # Attic contains reproducible Nix build outputs. Persist it across root
-  # rollbacks, but do not copy the potentially large cache into Kopia.
+  # Preserve Attic's database, cache metadata, key material, and generated Nix
+  # configuration while excluding only the reproducible NAR object storage.
+  repo.backups.rebuildableSnapshotPaths = [ "var/lib/atticd/storage" ];
 }

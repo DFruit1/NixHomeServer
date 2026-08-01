@@ -7,6 +7,9 @@
   mail-archive-ui = import ./mail-archive-ui/default.nix {
     inherit lib pkgs rustLib;
   };
+  media-manager = import ./media-manager/default.nix {
+    inherit lib pkgs rustLib;
+  };
   mkvmaker = import ../../mkvmaker/default.nix {
     inherit lib pkgs rustLib;
   };

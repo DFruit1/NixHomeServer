@@ -216,7 +216,7 @@ let
   requestedCaseNames = lib.splitString "," (builtins.getEnv "NIXHOMESERVER_DISABLE_CASES");
   selectedCases = lib.filterAttrs (name: _: builtins.elem name requestedCaseNames) cases;
 
-  evaluate = _name: case:
+  evaluate = name: case:
     let
       host = baseHost.extendModules { modules = [ case.disable ]; };
       cfg = host.config;
@@ -246,12 +246,16 @@ let
       missingPersistence = builtins.filter
         (path: !(builtins.elem path cfg.repo.impermanence.inventory.persistenceDirectories))
         case.persistencePaths;
+      disabledBackupExclusionsValid =
+        name != "bonsai"
+        || builtins.elem "var/lib/bonsai/models" cfg.repo.backups.rebuildableSnapshotPaths;
     in
     {
       drvPath = cfg.system.build.toplevel.drvPath;
       registryPresent = cfg.nixhomeserver.modules.${case.registryName} or false;
       inherit
         missingPersistence
+        disabledBackupExclusionsValid
         presentBackupApps
         presentCaddyHosts
         presentGatewayApps
@@ -280,7 +284,8 @@ let
         && presentSecrets == [ ]
         && presentBackupApps == [ ]
         && presentGuardedServices == [ ]
-        && missingPersistence == [ ];
+        && missingPersistence == [ ]
+        && disabledBackupExclusionsValid;
     };
 in
 assert requestedCaseNames != [ "" ];

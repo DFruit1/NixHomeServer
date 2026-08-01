@@ -158,6 +158,15 @@ def select_titles(titles: list[Title], minimum: int, dominant_ratio: float) -> t
     return selected, False, ratio
 
 
+def looks_like_episode_set(titles: list[Title]) -> bool:
+    if len(titles) < 3:
+        return False
+    durations = [title.seconds for title in titles]
+    shortest = min(durations)
+    longest = max(durations)
+    return 8 * 60 <= shortest and longest <= 75 * 60 and longest / shortest <= 1.5
+
+
 def source_hints(path: Path) -> SourceHints:
     stem = path.stem
     year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", stem)
@@ -282,8 +291,8 @@ def build_plan(args: argparse.Namespace, source: Path) -> dict[str, Any]:
     selected, dominant, ratio = select_titles(titles, args.min_duration, args.dominant_ratio)
     hints = source_hints(source)
     metadata = tvmaze_match(hints, len(selected), args.metadata_timeout)
-    episode_like = len(selected) > 1 and all(8 * 60 <= title.seconds <= 75 * 60 for title in selected)
-    is_tv = hints.season is not None or (not dominant and metadata is not None and episode_like)
+    episode_like = looks_like_episode_set(selected)
+    is_tv = hints.season is not None or (not dominant and episode_like)
 
     if is_tv:
         show = metadata["show"] if metadata else {}
@@ -538,6 +547,10 @@ def self_test() -> None:
     assert not dominant and [title.index for title in selected] == [1, 2]
     selected, dominant, ratio = select_titles([Title(1, 5400, True), Title(2, 500, False)], 300, 0.85)
     assert dominant and selected[0].index == 1 and ratio > 0.9
+    assert looks_like_episode_set(
+        [Title(2, 1326, True), Title(3, 1705, False), Title(4, 1638, False), Title(5, 1523, False)]
+    )
+    assert not looks_like_episode_set([Title(1, 5400, True), Title(2, 1200, False), Title(3, 900, False)])
     assert match_score("The Wire", "The Wire") == 1.0
     assert natural_key("disc2.iso") < natural_key("disc10.iso")
     print("mkvmaker auto-import self-tests passed")

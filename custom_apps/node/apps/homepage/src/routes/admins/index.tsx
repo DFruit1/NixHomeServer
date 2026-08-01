@@ -18,6 +18,7 @@ type AdminStepMeta = {
   category: AdminCategoryId;
   intents?: AdminIntentId[];
   displayTitle?: string;
+  executionContext?: string;
 };
 
 const adminCategories: { id: AdminCategoryId; title: string; description: string }[] = [
@@ -76,6 +77,12 @@ const adminStepMeta: Record<string, AdminStepMeta> = {
   'Re-run Immich OIDC reconcile': { category: 'apps', intents: ['add-user', 'manage-user'], displayTitle: 'Update Immich accounts from Kanidm' },
   'Re-run Paperless OIDC reconcile': { category: 'apps', intents: ['add-user', 'manage-user'], displayTitle: 'Update Paperless accounts from Kanidm' },
   'Retrieve Jellyfin initial password': { category: 'apps', intents: ['add-user', 'manage-user'], displayTitle: 'Give a user their initial Jellyfin password' },
+  'Troubleshoot Jellyfin LAN discovery': { category: 'network', executionContext: 'Client network' },
+  'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' },
+  'Allow Jellyfin discovery replies with UFW': { category: 'network', executionContext: 'Linux client' },
+  'Allow Jellyfin discovery replies with firewalld': { category: 'network', executionContext: 'Linux client' },
+  'Allow Jellyfin discovery replies on Windows': { category: 'network', executionContext: 'Windows client (Administrator PowerShell)' },
+  'Allow Jellyfin discovery on Apple devices': { category: 'network', executionContext: 'Apple client settings' },
   'Retrieve Kopia browser credential': { category: 'apps', intents: ['add-user', 'manage-user', 'manage-secrets'], displayTitle: 'Give a backup admin the Kopia browser credential' },
   'Re-run Jellyfin library sync': { category: 'apps' },
   'Re-run Kiwix library sync': { category: 'apps' },
@@ -564,7 +571,7 @@ export default component$(() => {
                         title={titleForStep(step)}
                         description={step.detail}
                         activeIntent={activeIntent}
-                        context={executionContext(step.command)}
+                        context={metaForStep(step).executionContext ?? executionContext(step.command)}
                         forceOpen={searchIsActive}
                         intents={metaForStep(step).intents}
                         key={step.title}

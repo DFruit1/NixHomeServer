@@ -167,8 +167,8 @@ if ! jq -e '
     and .ports.filesSftp == 2222
     and .rcloneMega.remoteName == "mega"
     and .rcloneMega.destination == "mega:NixHomeServer/kopia"
-    and .rcloneMega.syncOnCalendar == "*-*-* 04:30:00"
-    and .rcloneMega.repositoryLimitBytes == 19327352832
+    and .rcloneMega.syncOnCalendar == "*-*-* 04,16:30:00"
+    and .rcloneMega.repositoryLimitBytes == 20401094656
     and .kopiaDomain == ("kopia." + .domain);
 
   (.actual | stable)

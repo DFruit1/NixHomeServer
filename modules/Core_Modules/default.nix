@@ -12,6 +12,7 @@
     ./impermanence
     ./kanidm
     ./kopia
+    ./media-manager
     ./monitoring
     ./module-registry.nix
     ./netbird

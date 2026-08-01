@@ -38,8 +38,9 @@ jq -e '
   and (.secrets.ageSecretNames | type == "array" and length > 0)
   and (.secrets.externalSecretNames | type == "array" and length > 0)
   and (.secrets.requiredExternalSecretNames | type == "array" and length > 0)
-  and (.secrets.optionalExternalSecretNames == ["failureAlertWebhookUrl", "rcloneMegaPassword"])
+  and (.secrets.optionalExternalSecretNames == ["failureAlertWebhookUrl", "openSubtitlesCredentials", "rcloneMegaPassword"])
   and (.secrets.requiredExternalSecretNames | index("failureAlertWebhookUrl") == null)
+  and (.secrets.requiredExternalSecretNames | index("openSubtitlesCredentials") == null)
   and (.secrets.requiredExternalSecretNames | index("rcloneMegaPassword") == null)
   and ((.secrets.requiredExternalSecretNames + .secrets.optionalExternalSecretNames | sort) == (.secrets.externalSecretNames | sort))
 ' <<<"$inventory_json" >/dev/null || {

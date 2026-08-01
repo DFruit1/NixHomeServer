@@ -904,7 +904,7 @@ let
       enabled = jellyfinEnabled;
       category = "media";
       description = "Metadata-rich movie and show libraries.";
-      loginNotes = "In a browser, choose “Sign in with Kanidm”. For a TV or native app, use its normal Quick Connect screen and authorize the six-digit code at this service’s “Sign in a device with Kanidm (Quick Connect)” page. A generated local password remains available when a client supports neither flow.";
+      loginNotes = "In a browser, choose “Sign in with Kanidm”. In a TV or native app, choose Quick Connect, note the six-digit code, then authorize it at https://${videosHost}/sso/OIDC/QuickConnect/kanidm in any browser. A native app’s password box accepts only the separate Jellyfin local password; the Kanidm password will not work there. If discovery finds nothing, keep the client on the same IPv4 LAN, disable Wi-Fi client isolation, and check the client firewall guidance in Admin tools.";
       projectUrl = "https://jellyfin.org";
       logoUrl = "/logos/jellyfin.svg";
       appName = "jellyfin";
@@ -1421,6 +1421,34 @@ let
       title = "Retrieve Jellyfin initial password";
       command = "sudo jellyfin-initial-credential\nsudo jellyfin-initial-credential USERNAME";
       detail = "Compatibility fallback for native clients that cannot use OIDC or Quick Connect. List users whose root-only initial credential is still stored, then retrieve only the intended username. Treat the printed password as a secret and hand it over through a trusted channel. The stored credential can be stale after a password change; reconciliation does not overwrite the replacement password.";
+    }
+    {
+      title = "Troubleshoot Jellyfin LAN discovery";
+      detail = "Keep the client and server on the same IPv4 broadcast network; Fladder sends a limited broadcast that routers and VLANs do not forward. Disable guest-network, AP, or client isolation. The server accepts the probe on UDP 7359 and returns a unicast reply from UDP source port 7359 to the client’s temporary UDP port, so a default-drop client firewall may need a reply rule even when ordinary established traffic is allowed. TCP 8096 must also be reachable after discovery.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies with nftables";
+      command = "sudo nft insert rule inet filter input iifname \"CLIENT_LAN_INTERFACE\" ip saddr ${vars.networking.lan.ip} udp sport ${toString vars.networking.ports.jellyfinDiscovery} counter accept comment \"Jellyfin discovery replies\"";
+      detail = "Run on the Linux client only after inspecting `sudo nft list ruleset`. Replace CLIENT_LAN_INTERFACE and adapt the table or chain if it is not `inet filter input`. This narrow example accepts only replies from this Jellyfin server and source port; persist the equivalent rule in the client’s firewall configuration after testing.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies with UFW";
+      command = "sudo ufw allow in on CLIENT_LAN_INTERFACE proto udp from ${vars.networking.lan.ip} port ${toString vars.networking.ports.jellyfinDiscovery} to any comment 'Jellyfin discovery replies'";
+      detail = "Run on a UFW-managed Linux client after replacing CLIENT_LAN_INTERFACE. Check `sudo ufw status verbose` first. The rule is limited to UDP replies from this server’s discovery source port rather than opening a fixed client destination port.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies with firewalld";
+      command = "sudo firewall-cmd --permanent --zone=home --add-rich-rule='rule family=\"ipv4\" source address=\"${vars.networking.lan.ip}/32\" source-port port=\"${toString vars.networking.ports.jellyfinDiscovery}\" protocol=\"udp\" accept'\nsudo firewall-cmd --reload";
+      detail = "Run on a firewalld-managed Linux client only if its LAN interface uses the `home` zone; confirm with `firewall-cmd --get-active-zones` and change the zone if necessary. The rich rule accepts only discovery replies from this Jellyfin server and UDP source port.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies on Windows";
+      command = "New-NetFirewallRule -DisplayName \"Jellyfin discovery replies\" -Direction Inbound -Action Allow -Protocol UDP -RemoteAddress ${vars.networking.lan.ip} -RemotePort ${toString vars.networking.ports.jellyfinDiscovery} -Profile Private";
+      detail = "Run in Administrator PowerShell on the client after confirming the LAN is classified Private. This limits the inbound exception to this Jellyfin server and its UDP discovery source port; it does not expose a fixed local port.";
+    }
+    {
+      title = "Allow Jellyfin discovery on Apple devices";
+      detail = "On macOS, open System Settings → Privacy & Security → Local Network and allow Fladder. Then open Network → Firewall → Options, ensure Block all incoming connections is off, and allow incoming connections for Fladder if it is listed. On iPhone or iPad, enable Fladder under Settings → Privacy & Security → Local Network. Keep the device off guest Wi-Fi or any SSID with client isolation.";
     }
     {
       title = "Re-run Jellyfin library sync";

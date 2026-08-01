@@ -12,12 +12,31 @@ let
   f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
   host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   cfg = (builtins.getAttr host f.nixosConfigurations).config;
+  disabledBonsaiCfg = ((builtins.getAttr host f.nixosConfigurations).extendModules {
+    modules = [ { repo.bonsai.enable = f.inputs.nixpkgs.lib.mkForce false; } ];
+  }).config;
+  policyReconcileService =
+    if cfg.systemd.services ? kopia-policy-reconcile
+    then cfg.systemd.services.kopia-policy-reconcile
+    else null;
   settings = builtins.getAttr host f.lib.nixhomeserverSettings;
   kiwixHost = "wiki.${settings.domain}";
   seerrHost = "requests.${settings.domain}";
 in {
   snapshotRoots = cfg.repo.backups.snapshotRoots;
+  rebuildableSnapshotPaths = cfg.repo.backups.rebuildableSnapshotPaths;
+  disabledBonsaiRebuildableSnapshotPaths = disabledBonsaiCfg.repo.backups.rebuildableSnapshotPaths;
   repositoryPath = cfg.repo.backups.repositoryPath;
+  kopiaBootstrapScript = cfg.systemd.services.kopia-repository-bootstrap.script;
+  kopiaPolicyReconcile =
+    if policyReconcileService == null
+    then null
+    else {
+      script = policyReconcileService.script;
+      remainAfterExit = policyReconcileService.serviceConfig.RemainAfterExit or false;
+      restartIfChanged = policyReconcileService.restartIfChanged;
+    };
+  kopiaServiceAfter = cfg.systemd.services.kopia.after;
   expectedPaperlessRoot = "${settings.dataRoot}/paperless";
   zfsEnabled = settings.enableZfsDataPool;
   sqliteDumpOutputs = map (dump: dump.outputName) cfg.repo.backups.sqliteDumps;
@@ -56,6 +75,12 @@ in {
   rcloneStopsKopia = builtins.match
     ".*systemctl stop kopia[.]service.*"
     (toString cfg.systemd.services.rclone-mega-kopia-sync.serviceConfig.ExecStartPre) != null;
+  backupSchedule = {
+    fullMaintenanceCalendar = cfg.systemd.timers.kopia-full-maintenance.timerConfig.OnCalendar;
+    fullMaintenanceRandomDelay = cfg.systemd.timers.kopia-full-maintenance.timerConfig.RandomizedDelaySec;
+    fullMaintenanceScript = cfg.systemd.services.kopia-full-maintenance.script;
+    megaSyncCalendar = cfg.systemd.timers.rclone-mega-kopia-sync.timerConfig.OnCalendar;
+  };
   offlineMedia = {
     reconcileRequires = cfg.systemd.services.offline-media-reconcile.requires;
     reconcileAfter = cfg.systemd.services.offline-media-reconcile.after;
@@ -73,6 +98,21 @@ jq -e '
   and (.snapshotRoots | index($paperless) != null)
   and (.snapshotRoots | length == (unique | length))
   and (.snapshotRoots | all(startswith("/")))
+  and (.rebuildableSnapshotPaths | sort == ["var/lib/atticd/storage", "var/lib/bonsai/models"])
+  and (.disabledBonsaiRebuildableSnapshotPaths | index("var/lib/bonsai/models") != null)
+  and (.kopiaBootstrapScript | contains("policy set") | not)
+  and (.kopiaPolicyReconcile != null)
+  and (.kopiaPolicyReconcile.remainAfterExit == true)
+  and (.kopiaPolicyReconcile.restartIfChanged == true)
+  and (.kopiaPolicyReconcile.script | contains("nixhomeserver-maintenance.lock"))
+  and (.kopiaPolicyReconcile.script | contains("policy set --global") and contains("--clear-ignore"))
+  and (.kopiaPolicyReconcile.script | split("policy set /persist")[0] | contains("var/lib/bonsai/models") | not)
+  and (.kopiaPolicyReconcile.script | split("policy set /persist") | length == 3)
+  and (.kopiaPolicyReconcile.script | split("policy set /persist")[1] | contains("--clear-ignore") and (contains("--add-ignore") | not))
+  and (.kopiaPolicyReconcile.script | split("policy set /persist")[2] | (contains("--clear-ignore") | not) and contains("--add-ignore=var/lib/atticd/storage"))
+  and (.kopiaPolicyReconcile.script | split("policy set /persist")[2] | contains("--add-ignore=var/lib/bonsai/models"))
+  and (.kopiaPolicyReconcile.script | contains("+            --add-ignore") | not)
+  and (.kopiaServiceAfter | index("kopia-policy-reconcile.service") != null)
   and (.repositoryPath as $repo | .snapshotRoots | all(. as $root | ($repo != $root and ($repo | startswith($root + "/") | not))))
   and (.sqliteDumpOutputs | index("beszel.sqlite") != null)
   and (.postgresqlDumpOutputs | index("immich.pgdump") != null)
@@ -107,6 +147,11 @@ jq -e '
   and (.canary.credentialStatePersisted == true)
   and (.allCaddyVhostLogsDisabled == true)
   and (.rcloneStopsKopia == true)
+  and (.backupSchedule.fullMaintenanceCalendar == "*-*-* 01:00:00")
+  and (.backupSchedule.fullMaintenanceRandomDelay == "1h")
+  and (.backupSchedule.fullMaintenanceScript | contains("kopia maintenance run --full --no-progress"))
+  and (.backupSchedule.fullMaintenanceScript | contains("--safety=none") | not)
+  and (.backupSchedule.megaSyncCalendar == "*-*-* 04,16:30:00")
   and (.offlineMedia.reconcileRequires | index("syncthing.service") != null)
   and (.offlineMedia.reconcileAfter | index("data-pool-layout.service") != null)
   and (.offlineMedia.reconcileExecStart | contains("offline-media-reconcile"))
@@ -134,8 +179,8 @@ require_fixed modules/Core_Modules/rclone/service.nix '--mega-hard-delete' \
   "MEGA mirror deletions must not accumulate in the remote rubbish bin."
 require_fixed modules/Core_Modules/rclone/service.nix '--delete-before' \
   "MEGA mirror deletions must free quota before new packs are uploaded."
-require_fixed modules/Core_Modules/rclone/service.nix 'refusing MEGA upload' \
-  "MEGA uploads must stop before consuming the reserved quota headroom."
+require_fixed modules/Core_Modules/rclone/service.nix 'rclone-mega-preflight' \
+  "MEGA uploads must run the behavior-tested live quota and identity preflight."
 require_fixed modules/Core_Modules/kopia/service.nix '--keep-monthly=2' \
   "Kopia retention must remain explicitly bounded for the 20 GiB offsite mirror."
 require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix '${vars.usersRoot}/%I' \

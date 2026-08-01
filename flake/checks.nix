@@ -125,6 +125,7 @@ in
 {
   groundwater-logger = nodeApps.groundwater-logger;
   homepage = nodeApps.homepage;
+  media-manager-package = rustApps.media-manager.package;
   mkvmaker-package = rustApps.mkvmaker.package;
   youtube-downloader = nodeApps.youtube-downloader;
 

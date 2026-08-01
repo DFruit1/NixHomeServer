@@ -252,10 +252,13 @@ attached to the same exact username.
 2. On a TV or native app, initiate ordinary Jellyfin Quick Connect. Authorize
    the six-digit code from an existing Jellyfin browser session or open
    `https://videos.<domain>/sso/OIDC/QuickConnect/kanidm` and sign in to Kanidm.
+   The server publishes this instruction as a plain-text login disclaimer so
+   clients such as Fladder can display it without leaking browser-only HTML.
 3. If a client cannot use either path, use the native username/password
    fallback. List available usernames with `sudo jellyfin-initial-credential`,
    retrieve one with `sudo jellyfin-initial-credential USERNAME`, then change it
-   after the first login.
+   after the first login. A native client password field accepts this Jellyfin
+   password, not the user's Kanidm password.
 
 The root-only password handoff files live under
 `/var/lib/jellyfin/.nixos-managed/initial-credentials/`; reconciliation never
@@ -279,6 +282,80 @@ curl -fsS https://videos.<domain>/QuickConnect/Enabled
 curl -fsS https://videos.<domain>/sso/OIDC/Providers
 sudo stat -c '%U:%G %a %n' /var/lib/jellyfin/plugins/configurations/Jellyfin.Plugin.OIDC.xml
 ```
+
+### Jellyfin and Fladder LAN discovery
+
+Fladder binds a temporary IPv4 UDP port, broadcasts `Who is JellyfinServer?` to
+`255.255.255.255:7359`, and waits for replies. Jellyfin returns a unicast packet
+from UDP source port `7359` to the client’s temporary UDP port, followed by a
+normal connection to the advertised TCP 8096 address. This limited broadcast
+does not cross routers or VLANs. Keep the client on the same IPv4 broadcast
+network as the server and disable guest-Wi-Fi, AP, or client isolation. These
+details follow [Fladder's discovery implementation](https://github.com/DonutWare/Fladder/blob/ffe16aac73db1fdc41c8badea5c7e70b4c44be58/lib/providers/discovery_provider.dart)
+and [Jellyfin's documented UDP 7359 discovery port](https://jellyfin.org/docs/general/installation/container/?method=docker-compose).
+
+Before adding a rule, reproduce the problem while watching the client firewall
+log or a packet capture. If the reply reaches the client interface but the app
+does not receive it, allow only UDP packets from `<SERVER_LAN_IP>` source port
+7359; do not open a fixed destination port because the client chooses a new
+temporary port for each probe. The examples below are alternatives—use only the
+firewall manager that owns the client ruleset.
+
+On a raw nftables client, inspect the live table and chain names first. The
+example assumes `inet filter input`; adapt it and persist the equivalent in the
+distribution's ruleset:
+
+```bash
+sudo nft list ruleset
+sudo nft insert rule inet filter input \
+  iifname "<CLIENT_LAN_INTERFACE>" ip saddr <SERVER_LAN_IP> \
+  udp sport 7359 counter accept comment "Jellyfin discovery replies"
+```
+
+For UFW or firewalld clients, use one of these narrower persistent rules. Check
+that the firewalld LAN interface is actually assigned to the `home` zone before
+using that example:
+
+```bash
+sudo ufw allow in on <CLIENT_LAN_INTERFACE> proto udp \
+  from <SERVER_LAN_IP> port 7359 to any comment 'Jellyfin discovery replies'
+
+sudo firewall-cmd --get-active-zones
+sudo firewall-cmd --permanent --zone=home \
+  --add-rich-rule='rule family="ipv4" source address="<SERVER_LAN_IP>/32" source-port port="7359" protocol="udp" accept'
+sudo firewall-cmd --reload
+```
+
+The syntax and rule placement are documented by the
+[nftables rule guide](https://wiki.nftables.org/wiki-nftables/index.php/Simple_rule_management),
+[Ubuntu's UFW guide](https://documentation.ubuntu.com/server/how-to/security/firewalls/),
+and [firewalld's rich-rule reference](https://firewalld.org/documentation/man-pages/firewalld.richlanguage.html).
+
+On a Windows client whose LAN is classified **Private**, run Administrator
+PowerShell:
+
+```powershell
+New-NetFirewallRule -DisplayName "Jellyfin discovery replies" `
+  -Direction Inbound -Action Allow -Protocol UDP `
+  -RemoteAddress <SERVER_LAN_IP> -RemotePort 7359 -Profile Private
+```
+
+`RemoteAddress` and `RemotePort` match the Jellyfin server side of the inbound
+packet; see Microsoft's
+[`New-NetFirewallRule` reference](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule?view=windowsserver2025-ps).
+
+On macOS, open **System Settings → Privacy & Security → Local Network** and
+allow Fladder. Then open **Network → Firewall → Options**, ensure **Block all
+incoming connections** is off, and allow incoming connections for Fladder if
+it is listed. On iPhone or iPad, enable Fladder under **Settings → Privacy &
+Security → Local Network**. Apple documents the
+[local-network privacy control](https://support.apple.com/en-au/guide/mac-help/mchla4f49138/mac)
+and [macOS application firewall options](https://support.apple.com/guide/mac-help/change-firewall-settings-on-mac-mh11783/mac).
+
+If the broadcast remains unavailable because the client is on another VLAN or
+an isolated SSID, enter `http://<SERVER_LAN_IP>:8096` manually. Do not set a
+global Jellyfin published-server URL merely to work around discovery: that can
+cause every client to receive an address inappropriate for its current network.
 
 The bootstrap journal deliberately omits API keys, tokens, client secrets, and
 complete provider JSON. A malformed managed branding marker makes
@@ -422,11 +499,17 @@ minute and converted serially into the shared Jellyfin `_Movies` or `_Shows`
 library with the balanced H.264/AAC-plus-original-audio profile.
 
 The converter uses the ISO label for its initial media name and performs a
-conservative TVmaze lookup for series and episode names. If metadata is
-unavailable or the match is weak, conversion continues with safe names derived
-from the ISO and DVD title numbers. Name TV images descriptively, for example
-`The_Wire_S03_Disc_2.iso`, to improve automatic season, disc, and metadata
-matching.
+conservative TVmaze lookup for series and episode names. A uniform set of at
+least three episode-length titles is treated as TV even when TVmaze has no
+listing. If metadata is unavailable or the match is weak, conversion continues
+with safe names derived from the ISO and DVD title numbers. Name TV images
+descriptively, for example `The_Wire_S03_Disc_2.iso`, to improve automatic
+season, disc, and metadata matching.
+
+The final MKV does not retain HandBrake's encode timestamp as a media release
+date. Jellyfin can still use a year returned by its metadata providers or a
+year supplied in a descriptive ISO name, but an unmatched title remains without
+a release year instead of being labelled with the conversion year.
 
 If one title accounts for at least 85% of the substantial runtime, only that
 feature is converted. Otherwise every title of at least five minutes is
@@ -445,6 +528,68 @@ sudo systemctl start mkvmaker-import.service
 The queue and detailed HandBrake job logs live under `/var/lib/mkvmaker`.
 Change `repo.mkvmaker.dominantTitleRatio`, `minimumTitleSeconds`, `audioProfile`,
 or `videoPreset` declaratively if the defaults need adjustment.
+
+### Media Manager
+
+Media Manager is an always-present core application at
+`https://media.<domain>`. It is private-DNS-only and uses the shared OAuth2
+Proxy gateway. Every authenticated `users` member can inspect registered
+shared and personal libraries and conversion progress. Only members of
+`media-manager-editors` can scan, preview, or confirm changes:
+
+```bash
+kanidm group get media-manager-editors
+kanidm group add-members media-manager-editors USERNAME
+kanidm group remove-members media-manager-editors USERNAME
+```
+
+The library organizer constructs destinations from typed movie, TV, music,
+audiobook, and book fields. It does not accept arbitrary paths. Every change
+shows the exact source and destination, expires after 30 minutes, verifies the
+original fingerprint, and is applied by a network-isolated broker with
+no-overwrite semantics. Movie and TV years remain absent when unknown; the
+current/conversion year is never substituted.
+
+Metadata is initially written as Jellyfin NFO or book/audiobook OPF sidecars;
+media streams are not rewritten. Subtitle uploads accept UTF-8 SRT, WebVTT,
+and ASS files. OpenSubtitles search is optional. It calculates the provider's
+movie hash locally and asks for an exact file match before falling back to a
+title search; the media file itself is not uploaded. To enable it, obtain an
+OpenSubtitles.com REST API consumer key, prepare a mode-0600 JSON file such as:
+
+```json
+{
+  "apiKey": "application key",
+  "username": "account username",
+  "password": "account password",
+  "userAgent": "NixHomeServer Media Manager"
+}
+```
+
+Then stage and encrypt it without committing plaintext:
+
+```bash
+install -d -m 0700 secrets/unencrypted
+install -m 0600 /path/to/credentials.json secrets/unencrypted/openSubtitlesCredentials
+nix run .#generate-secrets -- \
+  --replace-external openSubtitlesCredentials \
+  --identity /path/to/current/age.key
+rm -f secrets/unencrypted/openSubtitlesCredentials
+rmdir secrets/unencrypted 2>/dev/null || true
+git add secrets/openSubtitlesCredentials.age
+```
+
+Manual refresh adapters are registered only for installed applications.
+Jellyfin, Audiobookshelf, and Syncthing have explicit adapters; Kavita is
+reported as available but remains observation-only until a safe authenticated
+scan API is available. Application-owned watchers and timers continue to run
+independently.
+
+```bash
+systemctl status media-manager.service media-manager-broker.timer
+journalctl -u media-manager.service -u media-manager-broker.service
+systemctl status media-manager-refresh-dispatch.service
+```
 
 Kavita-managed book roots are aligned to the same simpler taxonomy used by
 the rest of the stack: `_Ebooks`, `_Comics`, and `_Manga`. The old `other`
@@ -851,26 +996,92 @@ Kopia uses a managed encrypted filesystem repository at
 snapshots of `/persist` and `/mnt/data/paperless` after consistent logical
 database preparation.
 
-Rclone is an on-demand oneshot synchronizer for offsite copies of that encrypted
-repository. The MEGA remote is rendered from `vars.rcloneMega` and the
-`rcloneMegaPassword` agenix secret at activation time, and
-`rclone-mega-kopia-sync.timer` regularly syncs the local encrypted Kopia
-repository to MEGA.
+Rclone is a scheduled, short-lived synchronizer for offsite copies of that
+encrypted repository. The MEGA remote is rendered from `vars.rcloneMega` and the
+`rcloneMegaPassword` agenix secret at activation time. Full Kopia maintenance
+runs daily between 01:00 and 02:00, and `rclone-mega-kopia-sync.timer` checks
+and repairs the encrypted MEGA mirror at approximately 04:30 and 16:30.
+
+Deleting individual repository objects or the entire dedicated destination on
+MEGA is repaired from the authoritative local repository on the next sync. A
+non-empty destination whose ownership marker was deleted is adopted only when
+its immutable Kopia repository identity still matches; ambiguous or mismatched
+remote content fails closed. Before any destructive sync, a read-only rclone
+plan measures missing/changed uploads and destination-only packs, then checks
+that both the final projected account usage and the temporary replacement space
+fit the live MEGA quota below the 19 GiB safety ceiling.
+
+Each mirror attempt atomically updates
+`/var/lib/rclone/last-mega-sync-status.json` and emits the same structured event
+under the `backup-offsite` journal identifier. The state distinguishes normal
+completion from a capacity block, a retryable transport problem, an unsafe
+remote identity, and a broken local repository prerequisite:
+
+- Exit 75 is transient. Systemd retries after 30 minutes, up to six attempts in
+  six hours, without sending an alert for every intermediate attempt.
+- Exit 76 is a capacity block. It is recorded as `blocked`, does not retry, and
+  does not trigger the generic service-failure alert; the capacity checker owns
+  its rate-limited warning path.
+- Exit 77 is a safety or identity mismatch. It stops immediately and alerts.
+- Exit 78 is a non-retryable repository or remote failure. It stops immediately
+  and alerts.
+- Exit 64 means a managed helper, its arguments, or structured status
+  persistence failed. It stops immediately and alerts rather than reporting an
+  unobservable success.
+
+The Kopia UI is restarted after every attempt, including retryable and blocked
+ones, so the retry delay does not leave local backup administration offline.
+Inspect the latest decision and its stable reason code with:
+
+```bash
+sudo jq . /var/lib/rclone/last-mega-sync-status.json
+sudo journalctl -t backup-offsite -n 50 --output=cat --no-pager
+sudo systemctl status rclone-mega-kopia-sync.service --no-pager
+```
+
+MEGA does not expose modification times or server-side hashes to rclone, so
+equal-sized files cannot be distinguished by the normal sync comparison. Kopia
+uses unique immutable names for bulk packs and indexes; the small fixed-name
+repository control objects are therefore force-copied on every run and then
+byte-compared by downloading only that control set. This avoids a full
+multi-gigabyte verification download while still refreshing mutable maintenance
+state.
+
+Kopia's safe full maintenance may need multiple cycles before unreachable packs
+are physically deleted. Do not automate `--safety=none`; it disables Kopia's
+concurrency and storage-consistency safeguards. See
+[Kopia maintenance safety](https://kopia.io/docs/advanced/maintenance/#maintenance-safety).
 
 The Kopia policy is deliberately bounded to 7 latest, 14 daily, 4 weekly, and
 2 monthly snapshots (with no hourly or annual tier). Runtime caches, application
 logs, retired Restic/pool-migration copies, and reproducible download/cache data
-under `/persist` are excluded from the offsite snapshot.
+under `/persist` are excluded from the offsite snapshot. In particular, only
+`/persist/var/lib/bonsai/models` and `/persist/var/lib/atticd/storage` are
+excluded for Bonsai and Attic; their databases, metadata, configuration, and key
+material remain backed up. The managed `/persist` policy is cleared and rebuilt
+by an active-exited reconciliation unit on activation. Because NixOS restarts
+that unit when its generated policy changes, enabling, disabling, removing, or
+re-adding a module cannot leave a stale exclusion behind.
 
 MEGA synchronization uses permanent, delete-before semantics for this dedicated
 Kopia mirror. This is important because the MEGA backend otherwise puts deleted
 packs in its rubbish bin, where they continue consuming quota. A six-hourly
-capacity check journals a warning at 80% and fails visibly at 90%, or when the
-local repository reaches 18 GiB. Inspect it with:
+capacity check evaluates live MEGA usage against MEGA's reported account total
+and the local repository against its 19 GiB ceiling. It journals a warning at
+80%, marks the state critical at 90%, and marks local usage at or above 19 GiB
+as blocked. It also carries forward a projected/transient-space block from the
+latest mirror preflight, even when the raw percentages have not yet crossed a
+threshold.
+Critical, blocked, and quota-query failures trigger the external failure path at
+most once per 24 hours while the condition persists; returning below the
+critical threshold rearms the alert immediately. Every check still writes its
+current state to `/var/lib/rclone/last-mega-capacity.json`, including whether an
+external alert was required or suppressed. Inspect it with:
 
 ```bash
 sudo systemctl status rclone-mega-capacity-check.service --no-pager
 sudo journalctl -t backup-capacity -n 50 --no-pager
+sudo jq . /var/lib/rclone/last-mega-capacity.json
 ```
 
 `--mega-hard-delete` only affects future deletions made by this sync. Emptying
