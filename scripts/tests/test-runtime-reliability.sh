@@ -187,6 +187,8 @@ require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix '${vars.user
   "Per-user files paths must use systemd's unescaped instance name so hyphenated Kanidm usernames work."
 require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix '${sftpChrootBase}/%I' \
   "SFTP chroot paths must use systemd's unescaped instance name."
+require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix '${sftpChrootBase}/%I@${vars.domain}' \
+  "SFTP chroots must also mount the canonical Kanidm user@domain name used by OpenSSH."
 require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix 'getfacl -cp "$path"' \
   "New user roots must detect and apply missing application ACL grants."
 require_fixed modules/offline-music/services.nix 'exec ${../../scripts/helpers/offline-media-reconcile.sh}' \

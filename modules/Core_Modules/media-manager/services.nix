@@ -34,41 +34,170 @@ let
   syncthingRefreshAvailable = refreshAvailable "syncthing";
   refreshDispatcher = pkgs.writeShellApplication {
     name = "media-manager-refresh-dispatch";
-    runtimeInputs = [ pkgs.coreutils pkgs.systemd ];
+    runtimeInputs = [ pkgs.coreutils pkgs.jq pkgs.systemd ];
     text = ''
       set -euo pipefail
       shopt -s nullglob
 
       request_dir=${lib.escapeShellArg "${cfg.stateDir}/refresh-requests"}
-      install -d -m 0750 -o media-manager -g media-manager "$request_dir"
-      for marker in "$request_dir"/*.request; do
+      result_dir=${lib.escapeShellArg "${cfg.stateDir}/refresh-results"}
+      had_failure=0
+      while true; do
+        markers=("$request_dir"/*.request)
+        (( ''${#markers[@]} > 0 )) || break
+        for marker in "''${markers[@]}"; do
         if [[ ! -f "$marker" || -L "$marker" ]]; then
           rm -f -- "$marker"
           continue
         fi
         integration="$(basename "$marker" .request)"
+        request_id="$(jq -er \
+          --arg integration "$integration" \
+          'select(.schemaVersion == 1 and .integrationId == $integration and .state == "queued") | .requestId' \
+          "$marker" 2>/dev/null || true)"
+        queued_at="$(jq -er '.queuedAt | select(type == "number")' "$marker" 2>/dev/null || true)"
+        if [[ ! "$request_id" =~ ^r[0-9a-f]+-[0-9a-f]+$ || ! "$queued_at" =~ ^[0-9]+$ ]]; then
+          jq -cn \
+            --arg integrationId "$integration" \
+            '{level:"error",service:"media-manager-refresh-dispatch",event:"integration_refresh_marker_invalid",integrationId:$integrationId}' >&2
+          rm -f -- "$marker"
+          had_failure=1
+          continue
+        fi
+
         case "$integration" in
           ${lib.optionalString jellyfinRefreshAvailable ''
           jellyfin)
-            systemctl start --no-block jellyfin-library-sync.service
+            unit=media-manager-refresh-jellyfin.service
+            success_message="Jellyfin library scan completed."
+            failure_message="Jellyfin library scan failed. Check the adapter service log."
             ;;
           ''}
           ${lib.optionalString audiobookshelfRefreshAvailable ''
           audiobookshelf)
-            systemctl start --no-block media-manager-refresh-audiobookshelf.service
+            unit=media-manager-refresh-audiobookshelf.service
+            success_message="Audiobookshelf library scans completed."
+            failure_message="Audiobookshelf library scans failed. Check the adapter service log."
             ;;
           ''}
           ${lib.optionalString syncthingRefreshAvailable ''
           syncthing)
-            systemctl start --no-block media-manager-refresh-syncthing.service
+            unit=media-manager-refresh-syncthing.service
+            success_message="Syncthing folder scan completed."
+            failure_message="Syncthing folder scan failed. Check the adapter service log."
             ;;
           ''}
           *)
-            echo "Ignoring unavailable Media Manager refresh adapter: $integration" >&2
+            jq -cn \
+              --arg integrationId "$integration" \
+              --arg requestId "$request_id" \
+              '{level:"error",service:"media-manager-refresh-dispatch",event:"integration_refresh_adapter_unavailable",integrationId:$integrationId,requestId:$requestId}' >&2
+            rm -f -- "$marker"
+            had_failure=1
+            continue
             ;;
         esac
+
+        started_at="$(date +%s)"
+        running_tmp="$(mktemp "$request_dir/.running.XXXXXX")"
+        jq --argjson startedAt "$started_at" \
+          '.state = "running" | .startedAt = $startedAt' \
+          "$marker" >"$running_tmp"
+        chmod 0640 "$running_tmp"
+        mv -f -- "$running_tmp" "$marker"
+
+        if systemctl start --wait "$unit"; then
+          terminal_state=succeeded
+          message="$success_message"
+          level=info
+          event=integration_refresh_succeeded
+        else
+          terminal_state=failed
+          message="$failure_message"
+          level=error
+          event=integration_refresh_failed
+          had_failure=1
+        fi
+        finished_at="$(date +%s)"
+        result_tmp="$(mktemp "$result_dir/.result.XXXXXX")"
+        jq -cn \
+          --arg integrationId "$integration" \
+          --arg state "$terminal_state" \
+          --arg requestId "$request_id" \
+          --arg message "$message" \
+          --argjson queuedAt "$queued_at" \
+          --argjson startedAt "$started_at" \
+          --argjson finishedAt "$finished_at" \
+          '{schemaVersion:1,integrationId:$integrationId,state:$state,requestId:$requestId,queuedAt:$queuedAt,startedAt:$startedAt,finishedAt:$finishedAt,message:$message}' \
+          >"$result_tmp"
+        chmod 0640 "$result_tmp"
+        mv -f -- "$result_tmp" "$result_dir/$integration.json"
         rm -f -- "$marker"
+
+        jq -cn \
+          --arg level "$level" \
+          --arg event "$event" \
+          --arg integrationId "$integration" \
+          --arg requestId "$request_id" \
+          --argjson durationSeconds "$((finished_at - started_at))" \
+          '{level:$level,service:"media-manager-refresh-dispatch",event:$event,integrationId:$integrationId,requestId:$requestId,durationSeconds:$durationSeconds}' \
+          >&2
+        done
       done
+      exit "$had_failure"
+    '';
+  };
+  jellyfinRefresh = pkgs.writeShellApplication {
+    name = "media-manager-refresh-jellyfin";
+    runtimeInputs = [ pkgs.coreutils pkgs.curl pkgs.jq ];
+    text = ''
+      set -euo pipefail
+      base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}"
+      api_key_file=/var/lib/jellyfin/data/library-sync.api-key
+      [[ -f "$api_key_file" && ! -L "$api_key_file" ]] || {
+        echo "Jellyfin library-sync API key is unavailable" >&2
+        exit 1
+      }
+      api_key="$(tr -d '\r\n' <"$api_key_file")"
+      [[ "$api_key" =~ ^[A-Za-z0-9._~-]+$ ]] || {
+        echo "Jellyfin library-sync API key is malformed" >&2
+        exit 1
+      }
+      jellyfin_curl() {
+        printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
+          | curl --config - --fail --silent --show-error --max-time 30 "$@"
+      }
+
+      tasks="$(jellyfin_curl "$base_url/ScheduledTasks")"
+      task_id="$(jq -er '
+        map(select((.Key // .key) == "RefreshLibrary"))
+        | first
+        | (.Id // .id)
+        | select(type == "string" and test("^[A-Fa-f0-9-]+$"))
+      ' <<<"$tasks")"
+      previous_finished="$(jq -r \
+        --arg taskId "$task_id" \
+        'map(select((.Id // .id) == $taskId)) | first | (.LastExecutionResult.EndTimeUtc // .lastExecutionResult.endTimeUtc // "")' \
+        <<<"$tasks")"
+      jellyfin_curl -X POST "$base_url/ScheduledTasks/Running/$task_id" >/dev/null
+
+      saw_running=false
+      for _ in $(seq 1 3600); do
+        task="$(jellyfin_curl "$base_url/ScheduledTasks/$task_id")"
+        state="$(jq -r '.State // .state // empty' <<<"$task")"
+        finished="$(jq -r '.LastExecutionResult.EndTimeUtc // .lastExecutionResult.endTimeUtc // ""' <<<"$task")"
+        if [[ "$state" == "Running" || "$state" == "Cancelling" ]]; then
+          saw_running=true
+        elif [[ "$state" == "Idle" && ( "$saw_running" == "true" || ( -n "$finished" && "$finished" != "$previous_finished" ) ) ]]; then
+          status="$(jq -r '.LastExecutionResult.Status // .lastExecutionResult.status // empty' <<<"$task")"
+          [[ "$status" == "Completed" ]] && exit 0
+          echo "Jellyfin scheduled task ended with status: ''${status:-unknown}" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+      echo "Timed out waiting for the Jellyfin library scan" >&2
+      exit 1
     '';
   };
   audiobookshelfRefresh = pkgs.writeShellApplication {
@@ -93,12 +222,45 @@ let
       libraries="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
         | curl --config - --fail --silent --show-error --max-time 60 \
           "$base_url/api/libraries")"
+      library_ids="$(jq -c '[((.libraries // .)[]?.id // empty)]' <<<"$libraries")"
+      library_count="$(jq 'length' <<<"$library_ids")"
+      (( library_count > 0 )) || {
+        echo "Audiobookshelf has no libraries to scan" >&2
+        exit 1
+      }
+      started_at_ms="$(date +%s%3N)"
       while IFS= read -r library_id; do
         [[ -n "$library_id" ]] || continue
         printf 'header = "Authorization: Bearer %s"\n' "$token" \
           | curl --config - --fail --silent --show-error --max-time 300 -X POST \
             "$base_url/api/libraries/$library_id/scan" >/dev/null
-      done < <(jq -r '(.libraries // .)[]?.id // empty' <<<"$libraries")
+      done < <(jq -r '.[]' <<<"$library_ids")
+
+      for attempt in $(seq 1 3600); do
+        tasks="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+          | curl --config - --fail --silent --show-error --max-time 30 \
+            "$base_url/api/tasks")"
+        libraries="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+          | curl --config - --fail --silent --show-error --max-time 30 \
+            "$base_url/api/libraries")"
+        completed_count="$(jq \
+          --argjson ids "$library_ids" \
+          --argjson startedAt "$started_at_ms" \
+          '[((.libraries // .)[]?) | select((.id as $id | $ids | index($id)) != null and (.lastScan // 0) >= $startedAt)] | length' \
+          <<<"$libraries")"
+        active_count="$(jq \
+          --argjson ids "$library_ids" \
+          '[.tasks[]? | select(.action == "library-scan" and (.data.libraryId as $id | $ids | index($id)) != null)] | length' \
+          <<<"$tasks")"
+        (( completed_count == library_count )) && exit 0
+        if (( active_count == 0 && completed_count < library_count && attempt > 5 )); then
+          echo "An Audiobookshelf library scan ended without updating lastScan" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+      echo "Timed out waiting for Audiobookshelf library scans" >&2
+      exit 1
     '';
   };
   syncthingRefresh = pkgs.writeShellApplication {
@@ -236,7 +398,7 @@ in
     serviceConfig = {
       Type = "oneshot";
       User = "root";
-      Group = "root";
+      Group = "media-manager";
       ExecStart = lib.getExe refreshDispatcher;
       UMask = "0027";
       NoNewPrivileges = true;
@@ -259,6 +421,42 @@ in
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
       ReadWritePaths = [ cfg.stateDir ];
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+    };
+  };
+
+  systemd.services.media-manager-refresh-jellyfin = lib.mkIf jellyfinRefreshAvailable {
+    description = "Run and follow the Jellyfin media-library scan task";
+    after = [ "jellyfin.service" ];
+    wants = [ "jellyfin.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "root";
+      Group = "root";
+      ExecStart = lib.getExe jellyfinRefresh;
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectKernelLogs = true;
+      ProtectControlGroups = true;
+      ProtectProc = "invisible";
+      ProcSubset = "pid";
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      RestrictSUIDSGID = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      CapabilityBoundingSet = [ ];
+      AmbientCapabilities = [ ];
+      ReadOnlyPaths = [ "/var/lib/jellyfin/data/library-sync.api-key" ];
+      IPAddressDeny = "any";
+      IPAddressAllow = [ "localhost" ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
     };

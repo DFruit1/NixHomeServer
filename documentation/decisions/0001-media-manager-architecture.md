@@ -64,9 +64,12 @@ first/last-64-KiB movie hash. Exact file matches are returned first; only an
 empty exact search falls back to the derived or editor-supplied title. Media
 contents are never uploaded during this lookup.
 
-Manual refresh is a closed adapter surface. The unprivileged web process may
-only enqueue fixed integration identifiers. A separate hardened dispatcher can
-start the registered Jellyfin, Audiobookshelf, or Syncthing refresh unit; it
+Manual refresh is a closed, coalescing adapter surface available to every
+authenticated user. The unprivileged web process may only enqueue fixed
+integration identifiers and exposes the request's durable queued, running,
+succeeded, or failed state. A separate hardened dispatcher follows the current
+Jellyfin scheduled-task result, Audiobookshelf scan tasks and `lastScan`
+timestamps, or Syncthing scan response before recording a terminal result. It
 cannot execute user-supplied commands. Kavita is observed but has no manual
 refresh capability until a safe authenticated adapter is available.
 
@@ -78,6 +81,9 @@ refresh capability until a safe authenticated adapter is available.
   report instead of path manipulation.
 - The dedicated mutation broker can be disabled without affecting conversion
   visibility or catalog inspection.
+- Application refreshes remain usable from a viewer session without granting
+  staged filesystem mutation rights, and duplicate in-flight requests for the
+  same application are coalesced.
 - The broker expires abandoned previews and deletes only fingerprint-bound
   private staging files, making cleanup retryable after a process interruption.
 - State is centrally persisted and included in logical SQLite backups.

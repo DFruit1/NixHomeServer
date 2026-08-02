@@ -1,6 +1,7 @@
 import {
   $,
   component$,
+  type QRL,
   useSignal,
   useStore,
   useTask$,
@@ -46,6 +47,67 @@ interface Integration {
   label: string;
   available: boolean;
   capabilities: string[];
+}
+
+export interface IntegrationRefresh {
+  integrationId: string;
+  state: "idle" | "queued" | "running" | "succeeded" | "failed";
+  requestId?: string;
+  queuedAt?: number;
+  startedAt?: number;
+  finishedAt?: number;
+  message?: string;
+}
+
+export function refreshPresentation(status?: IntegrationRefresh): {
+  label: string;
+  detail: string;
+  action: string;
+  busy: boolean;
+  tone: "idle" | "pending" | "success" | "error";
+} {
+  switch (status?.state) {
+    case "queued":
+      return {
+        label: "Queued",
+        detail: "Waiting for the refresh adapter to start.",
+        action: "Queued",
+        busy: true,
+        tone: "pending",
+      };
+    case "running":
+      return {
+        label: "Refreshing…",
+        detail: "The application is scanning its registered libraries.",
+        action: "Working…",
+        busy: true,
+        tone: "pending",
+      };
+    case "succeeded":
+      return {
+        label: "Succeeded",
+        detail: status.message ?? "The refresh completed successfully.",
+        action: "Refresh again",
+        busy: false,
+        tone: "success",
+      };
+    case "failed":
+      return {
+        label: "Failed",
+        detail: status.message ?? "The refresh did not complete.",
+        action: "Retry",
+        busy: false,
+        tone: "error",
+      };
+    default:
+      return {
+        label: "Ready",
+        detail: "No refresh is currently running.",
+        action: "Refresh",
+        busy: false,
+        tone: "idle",
+      };
+  }
 }
 
 interface Status {
@@ -445,16 +507,7 @@ export default component$((props: RootProps) => {
 
       <main class="main-content">
         <header class="topbar">
-          <div>
-            <span class="eyebrow">Sydney Basiniot Media Server</span>
-            <h1>{NAV_ITEMS.find((item) => item.id === view.value)?.label}</h1>
-          </div>
-          <div class="mode-pill">
-            <Icon name="shield" size={18} />
-            {state.status?.mutationMode === "enabled"
-              ? "Staged changes enabled"
-              : "Read-only safety mode"}
-          </div>
+          <h1>{NAV_ITEMS.find((item) => item.id === view.value)?.label}</h1>
         </header>
 
         {state.error && (
@@ -494,7 +547,6 @@ export default component$((props: RootProps) => {
                 label="Available roots"
                 value={availableRoots}
                 detail={`${state.roots.length} registered`}
-                icon="folder"
               />
               <StatCard
                 label="Active conversions"
@@ -504,13 +556,11 @@ export default component$((props: RootProps) => {
                     ? "MKVMaker connected"
                     : "MKVMaker idle or absent"
                 }
-                icon="disc"
               />
               <StatCard
                 label="Connected apps"
                 value={availableIntegrations}
                 detail={`${state.status?.integrations.length ?? 0} adapters registered`}
-                icon="refresh"
               />
             </div>
             <section class="panel wide-panel">
@@ -553,7 +603,6 @@ export default component$((props: RootProps) => {
         ) : view.value === "library" ? (
           <LibraryView
             state={state}
-            loadItems$={loadItems}
             scanRoot$={scanRoot}
             selectItem$={selectItem}
             previewRename$={previewRename}
@@ -601,12 +650,8 @@ const StatCard = component$<{
   label: string;
   value: number;
   detail: string;
-  icon: IconName;
 }>((props) => (
   <article class="stat-card">
-    <div class="stat-icon">
-      <Icon name={props.icon} size={21} />
-    </div>
     <span>{props.label}</span>
     <strong class="tabular">{props.value}</strong>
     <small>{props.detail}</small>
@@ -638,11 +683,10 @@ const RootRow = component$<{
 
 const LibraryView = component$<{
   state: DashboardState;
-  loadItems$: (rootId: string) => void;
-  scanRoot$: () => void;
-  selectItem$: (item: CatalogItem) => void;
-  previewRename$: () => void;
-  confirmRename$: () => void;
+  scanRoot$: QRL<() => Promise<void>>;
+  selectItem$: QRL<(item: CatalogItem) => void>;
+  previewRename$: QRL<() => Promise<void>>;
+  confirmRename$: QRL<() => Promise<void>>;
 }>((props) => {
   const selected = props.state.roots.find(
     (root) => root.id === props.state.selectedRootId,
@@ -658,14 +702,16 @@ const LibraryView = component$<{
         </div>
         <div class="root-list">
           {props.state.roots.map((root) => (
-            <button
+            <a
               class={{
                 "root-choice": true,
                 selected: root.id === props.state.selectedRootId,
               }}
-              type="button"
+              href={`?view=library&root=${encodeURIComponent(root.id)}`}
+              aria-current={
+                root.id === props.state.selectedRootId ? "true" : undefined
+              }
               key={root.id}
-              onClick$={() => props.loadItems$(root.id)}
             >
               <Icon name="folder" size={18} />
               <span>
@@ -675,7 +721,7 @@ const LibraryView = component$<{
               <span
                 class={{ "availability-dot": true, available: root.available }}
               />
-            </button>
+            </a>
           ))}
         </div>
       </aside>
@@ -1896,24 +1942,109 @@ const WorkflowPlaceholder = component$<{
 ));
 
 const RefreshView = component$<{ integrations: Integration[] }>((props) => {
-  const refresh = useStore({ busyId: "", notice: "", error: "" });
+  const refresh = useStore<{
+    statuses: Record<string, IntegrationRefresh>;
+    error: string;
+    active: boolean;
+  }>({ statuses: {}, error: "", active: true });
+
+  useVisibleTask$(({ cleanup }) => {
+    refresh.active = true;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refreshable = props.integrations.filter(
+      (integration) =>
+        integration.available &&
+        integration.capabilities.some((capability) =>
+          ["library-refresh", "folder-rescan"].includes(capability),
+        ),
+    );
+    const poll = async () => {
+      try {
+        const statuses = await Promise.all(
+          refreshable.map((integration) =>
+            api<IntegrationRefresh>(
+              `/integrations/${encodeURIComponent(integration.id)}/refresh`,
+            ),
+          ),
+        );
+        if (stopped) return;
+        refresh.error = "";
+        for (const status of statuses) {
+          refresh.statuses[status.integrationId] = status;
+        }
+        if (
+          statuses.some((status) =>
+            ["queued", "running"].includes(status.state),
+          )
+        ) {
+          timer = setTimeout(poll, 1000);
+        }
+      } catch (error) {
+        if (!stopped) {
+          refresh.error = readableError(error);
+          timer = setTimeout(poll, 2000);
+        }
+      }
+    };
+    void poll();
+    cleanup(() => {
+      stopped = true;
+      refresh.active = false;
+      if (timer) clearTimeout(timer);
+    });
+  });
+
+  const followRefresh = $(async (integrationId: string) => {
+    for (let attempt = 0; attempt < 7200; attempt += 1) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, attempt === 0 ? 250 : 1000),
+      );
+      if (!refresh.active) return;
+      try {
+        const status = await api<IntegrationRefresh>(
+          `/integrations/${encodeURIComponent(integrationId)}/refresh`,
+        );
+        refresh.error = "";
+        refresh.statuses[integrationId] = status;
+        if (["idle", "succeeded", "failed"].includes(status.state)) return;
+      } catch (error) {
+        refresh.error = readableError(error);
+      }
+    }
+    if (!refresh.active) return;
+    refresh.statuses[integrationId] = {
+      integrationId,
+      state: "failed",
+      message: "Timed out waiting for the refresh adapter to finish.",
+    };
+  });
+
   const triggerRefresh = $(async (integration: Integration) => {
-    if (refresh.busyId) return;
-    refresh.busyId = integration.id;
-    refresh.notice = "";
+    if (refreshPresentation(refresh.statuses[integration.id]).busy) return;
     refresh.error = "";
     try {
-      const result = await api<{ alreadyQueued: boolean }>(
-        `/integrations/${encodeURIComponent(integration.id)}/refresh`,
-        { method: "POST" },
-      );
-      refresh.notice = result.alreadyQueued
-        ? `${integration.label} already has a refresh waiting to be dispatched.`
-        : `${integration.label} refresh was queued.`;
+      const result = await api<{
+        alreadyQueued: boolean;
+        requestId: string;
+      }>(`/integrations/${encodeURIComponent(integration.id)}/refresh`, {
+        method: "POST",
+      });
+      refresh.statuses[integration.id] = {
+        integrationId: integration.id,
+        state: "queued",
+        requestId: result.requestId,
+        message: result.alreadyQueued
+          ? "This refresh was already waiting to run."
+          : "The refresh request is waiting to run.",
+      };
+      await followRefresh(integration.id);
     } catch (error) {
-      refresh.error = readableError(error);
-    } finally {
-      refresh.busyId = "";
+      refresh.statuses[integration.id] = {
+        integrationId: integration.id,
+        state: "failed",
+        message: readableError(error),
+      };
     }
   });
   return (
@@ -1935,37 +2066,64 @@ const RefreshView = component$<{ integrations: Integration[] }>((props) => {
           </button>
         </div>
       )}
-      {refresh.notice && (
-        <div class="message success" role="status">
-          <Icon name="check" size={18} />
-          <span>{refresh.notice}</span>
-        </div>
-      )}
       <div class="integration-grid">
         {props.integrations.map((integration) => {
           const canRefresh = integration.capabilities.some((capability) =>
             ["library-refresh", "folder-rescan"].includes(capability),
           );
+          const status = refresh.statuses[integration.id];
+          const presentation = refreshPresentation(status);
+          const stateIcon: IconName =
+            status?.state === "succeeded"
+              ? "check"
+              : status?.state === "failed"
+                ? "alert"
+                : "refresh";
           return (
-            <article class="integration-card" key={integration.id}>
-              <div class="integration-icon">
-                <Icon name="refresh" size={20} />
+            <article
+              class={{
+                "integration-card": true,
+                [presentation.tone]: canRefresh && integration.available,
+              }}
+              aria-busy={presentation.busy ? "true" : undefined}
+              key={integration.id}
+            >
+              <div
+                class={{
+                  "integration-icon": true,
+                  spinning: status?.state === "running",
+                }}
+              >
+                <Icon name={stateIcon} size={20} />
               </div>
-              <div>
+              <div class="integration-copy">
                 <h3>{integration.label}</h3>
-                <p>
+                <p class="integration-capabilities">
                   {integration.capabilities.join(" · ") ||
                     "No manual adapter registered"}
                 </p>
+                {canRefresh && integration.available && (
+                  <div
+                    class={{
+                      "refresh-feedback": true,
+                      [presentation.tone]: true,
+                    }}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <strong>{presentation.label}</strong>
+                    <span>{presentation.detail}</span>
+                  </div>
+                )}
               </div>
               {canRefresh ? (
                 <button
                   class="secondary-button compact-action"
                   type="button"
-                  disabled={!integration.available || Boolean(refresh.busyId)}
+                  disabled={!integration.available || presentation.busy}
                   onClick$={() => triggerRefresh(integration)}
                 >
-                  {refresh.busyId === integration.id ? "Queuing…" : "Refresh"}
+                  {presentation.action}
                 </button>
               ) : (
                 <span

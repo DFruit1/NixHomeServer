@@ -111,6 +111,15 @@ fi
 
 need nix
 
+local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
+if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cache"; then
+  need curl nohup
+  ensure_local_attic_tunnel \
+    "$local_attic_cache/nix-cache-info" \
+    "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
+    "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
+fi
+
 configured_build_mode="$(nix_flake_var 'vars.buildMode')"
 if [[ -n "$build_mode_override" ]]; then
   build_mode="$build_mode_override"

@@ -230,6 +230,8 @@ require_fixed scripts/helpers/deploy-executor.sh 'skipping authenticated service
   "Guarded deploy must succeed when Homepage is removed."
 require_fixed scripts/deploy.sh 'source "$script_dir/helpers/deploy-command.sh"' \
   "Deploy dry-runs and real execution must share command construction."
+require_fixed scripts/deploy.sh 'ensure_local_attic_tunnel' \
+  "Real deploys must recover the workstation Attic tunnel before evaluating or building."
 require_fixed scripts/helpers/deploy-executor.sh 'nixpkgs#nodejs' \
   "Remote debug validation must provide its Node runtime from pinned nixpkgs."
 require_fixed scripts/helpers/deploy-executor.sh 'date +%s%N' \
@@ -266,6 +268,14 @@ require_fixed modules/Core_Modules/base-system/default.nix 'if vars.buildSlots.r
   "The deployed server must remain able to accept a build when changing away from local-only mode."
 forbid_match scripts/helpers/deploy-executor.sh 'nixos-rebuild boot' \
   "Deploy must not commit a boot generation before the health gates."
+
+attic_preflight_line="$(rg -n '^  ensure_local_attic_tunnel' scripts/deploy.sh | cut -d: -f1)"
+first_eval_line="$(rg -n '^configured_build_mode=' scripts/deploy.sh | cut -d: -f1)"
+if [[ ! "$attic_preflight_line" =~ ^[0-9]+$ || ! "$first_eval_line" =~ ^[0-9]+$ ]] \
+  || ((attic_preflight_line >= first_eval_line)); then
+  echo "❌ Deploy must recover its local Attic tunnel before the first Nix evaluation."
+  exit 1
+fi
 
 acquire_line="$(rg -n '^acquire_deploy_lock$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
 capture_line="$(rg -n '^capture_previous_state$' scripts/helpers/deploy-executor.sh | cut -d: -f1)"
@@ -313,6 +323,50 @@ fi
 ln -s "$stamp_path" "$archive_test_dir/symlink.stamp"
 if deploy_read_test_stamp "$archive_test_dir/symlink.stamp" parsed_hash parsed_toplevel >/dev/null 2>&1; then
   echo "❌ Deployment stamp parser followed a symlink."
+  exit 1
+fi
+
+attic_test_dir="$archive_test_dir/attic-tunnel"
+attic_mock_bin="$attic_test_dir/bin"
+attic_ready_marker="$attic_test_dir/ready"
+attic_started_marker="$attic_test_dir/started"
+attic_log="$attic_test_dir/tunnel.log"
+mkdir -p "$attic_mock_bin"
+
+cat >"$attic_mock_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+[[ -f "$ATTIC_TEST_READY_MARKER" ]]
+EOF
+chmod +x "$attic_mock_bin/curl"
+
+cat >"$attic_test_dir/tunnel" <<'EOF'
+#!/usr/bin/env bash
+touch "$ATTIC_TEST_STARTED_MARKER" "$ATTIC_TEST_READY_MARKER"
+EOF
+chmod +x "$attic_test_dir/tunnel"
+
+export ATTIC_TEST_READY_MARKER="$attic_ready_marker"
+export ATTIC_TEST_STARTED_MARKER="$attic_started_marker"
+export NIXHOMESERVER_ATTIC_WAIT_ATTEMPTS=5
+export NIXHOMESERVER_ATTIC_WAIT_DELAY=0.01
+
+touch "$attic_ready_marker"
+PATH="$attic_mock_bin:$PATH" ensure_local_attic_tunnel \
+  'http://127.0.0.1:8080/nixhomeserver/nix-cache-info' \
+  "$attic_test_dir/tunnel" \
+  "$attic_log"
+if [[ -e "$attic_started_marker" ]]; then
+  echo "❌ Deploy preflight relaunched an already healthy Attic tunnel."
+  exit 1
+fi
+
+rm -f "$attic_ready_marker"
+PATH="$attic_mock_bin:$PATH" ensure_local_attic_tunnel \
+  'http://127.0.0.1:8080/nixhomeserver/nix-cache-info' \
+  "$attic_test_dir/tunnel" \
+  "$attic_log"
+if [[ ! -e "$attic_started_marker" || ! -e "$attic_ready_marker" ]]; then
+  echo "❌ Deploy preflight did not recover the unavailable Attic tunnel."
   exit 1
 fi
 

@@ -543,6 +543,23 @@ kanidm group add-members media-manager-editors USERNAME
 kanidm group remove-members media-manager-editors USERNAME
 ```
 
+Every authenticated user can request one of the fixed application refresh
+adapters from **App refresh**. The page follows each request from queued to
+running and then to a durable success or failure result; an in-flight request
+for the same application is coalesced. The adapters follow Jellyfin's media
+scan scheduled task, Audiobookshelf's library scan tasks and `lastScan`
+timestamps, and Syncthing's folder scan response.
+
+Useful refresh checks are:
+
+```bash
+systemctl status media-manager-refresh-dispatch.service
+systemctl status media-manager-refresh-jellyfin.service
+systemctl status media-manager-refresh-audiobookshelf.service
+systemctl status media-manager-refresh-syncthing.service
+journalctl -u 'media-manager-refresh-*' -n 100 --no-pager
+```
+
 The library organizer constructs destinations from typed movie, TV, music,
 audiobook, and book fields. It does not accept arbitrary paths. Every change
 shows the exact source and destination, expires after 30 minutes, verifies the

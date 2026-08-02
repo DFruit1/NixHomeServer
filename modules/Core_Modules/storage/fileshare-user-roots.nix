@@ -492,8 +492,14 @@ let
     done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name ${lib.escapeShellArg backupStorageMountName} -print0)
 
     if [[ -d ${lib.escapeShellArg sftpChrootBase} ]]; then
+      canonical_suffix=${lib.escapeShellArg "@${vars.domain}"}
       while IFS= read -r -d "" chroot_path; do
-        username="$(basename "$chroot_path")"
+        chroot_name="$(basename "$chroot_path")"
+        if [[ "$chroot_name" == *"$canonical_suffix" ]]; then
+          username="''${chroot_name%"$canonical_suffix"}"
+        else
+          username="$chroot_name"
+        fi
         if [[ -z "''${sftp_members[$username]:-}" ]]; then
           ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-sftp-user-root@.service "$username")" || true
         fi
@@ -810,21 +816,35 @@ in
           ${dataRootGuard}
           username="$1"
           chroot=${lib.escapeShellArg sftpChrootBase}/"$username"
-          old_mount="$chroot/files"
+          canonical_chroot=${lib.escapeShellArg sftpChrootBase}/"$username"@${lib.escapeShellArg vars.domain}
 
-          ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$chroot"
+          prepare_chroot() {
+            local path="$1"
+            local old_mount="$path/files"
 
-          if ${pkgs.util-linux}/bin/mountpoint -q "$old_mount"; then
-            ${pkgs.util-linux}/bin/umount -l "$old_mount"
-          fi
-          ${pkgs.coreutils}/bin/rmdir "$old_mount" 2>/dev/null || true
+            ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$path"
 
-          if ${pkgs.util-linux}/bin/mountpoint -q "$chroot"; then
-            ${pkgs.util-linux}/bin/umount -l "$chroot"
-          fi
+            if ${pkgs.util-linux}/bin/mountpoint -q "$old_mount"; then
+              ${pkgs.util-linux}/bin/umount -l "$old_mount"
+            fi
+            ${pkgs.coreutils}/bin/rmdir "$old_mount" 2>/dev/null || true
+
+            if ${pkgs.util-linux}/bin/mountpoint -q "$path"; then
+              ${pkgs.util-linux}/bin/umount -l "$path"
+            fi
+          }
+
+          prepare_chroot "$canonical_chroot"
+          prepare_chroot "$chroot"
         ''} %I";
-        ExecStart = "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%I ${sftpChrootBase}/%I";
-        ExecStop = "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I";
+        ExecStart = [
+          "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%I ${sftpChrootBase}/%I"
+          "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%I ${sftpChrootBase}/%I@${vars.domain}"
+        ];
+        ExecStop = [
+          "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I@${vars.domain}"
+          "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I"
+        ];
       };
     };
   };

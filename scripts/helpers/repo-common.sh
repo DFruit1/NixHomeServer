@@ -60,6 +60,51 @@ need() {
   done
 }
 
+nix_uses_substituter() {
+  local expected="$1"
+  local substituters
+
+  substituters="$(nix config show substituters 2>/dev/null)" || return 1
+  [[ " $substituters " == *" $expected "* ]]
+}
+
+ensure_local_attic_tunnel() {
+  local health_endpoint="$1"
+  local tunnel_script="$2"
+  local log_file="$3"
+  local wait_attempts="${NIXHOMESERVER_ATTIC_WAIT_ATTEMPTS:-20}"
+  local wait_delay="${NIXHOMESERVER_ATTIC_WAIT_DELAY:-0.5}"
+  local attempt
+
+  if curl --fail --silent --show-error --max-time 2 \
+    --output /dev/null "$health_endpoint"; then
+    return 0
+  fi
+
+  if [[ ! -x "$tunnel_script" ]]; then
+    echo "blocked: local Attic cache is configured but its tunnel is unavailable" >&2
+    echo "   Missing executable tunnel helper: $tunnel_script" >&2
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$log_file")"
+  echo "local Attic cache is unavailable; starting its SSH tunnel"
+  nohup "$tunnel_script" >>"$log_file" 2>&1 </dev/null &
+
+  for ((attempt = 1; attempt <= wait_attempts; attempt++)); do
+    sleep "$wait_delay"
+    if curl --fail --silent --show-error --max-time 2 \
+      --output /dev/null "$health_endpoint"; then
+      echo "local Attic cache tunnel is ready"
+      return 0
+    fi
+  done
+
+  echo "blocked: local Attic cache tunnel did not become ready at $health_endpoint" >&2
+  echo "   Inspect: $log_file" >&2
+  return 1
+}
+
 nix_cache_hash() {
   local payload="$1"
 

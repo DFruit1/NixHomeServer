@@ -26,6 +26,7 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   integrations = cfg.repo.mediaManager.integrations;
   refreshPath = cfg.systemd.paths.media-manager-refresh-requests.pathConfig;
   refreshDispatcher = cfg.systemd.services.media-manager-refresh-dispatch.serviceConfig;
+  jellyfinRefresh = cfg.systemd.services.media-manager-refresh-jellyfin.serviceConfig;
   audiobookshelfRefresh = cfg.systemd.services.media-manager-refresh-audiobookshelf.serviceConfig;
   syncthingRefresh = cfg.systemd.services.media-manager-refresh-syncthing.serviceConfig;
   storageAccessScript = cfg.systemd.services.media-manager-storage-access.script;
@@ -84,6 +85,8 @@ jq -e '
     "/mnt/data/users"
   ])
   and (.stateTmpfiles | index("d /var/lib/media-manager 0770 media-manager media-manager -") != null)
+  and (.stateTmpfiles | index("d /var/lib/media-manager/refresh-requests 0750 media-manager media-manager -") != null)
+  and (.stateTmpfiles | index("d /var/lib/media-manager/refresh-results 0750 media-manager media-manager -") != null)
   and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3 0660 media-manager media-manager -") != null)
   and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3-wal 0660 media-manager media-manager -") != null)
   and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3-shm 0660 media-manager media-manager -") != null)
@@ -96,9 +99,13 @@ jq -e '
   and (.refreshPath.PathChanged == "/var/lib/media-manager/refresh-requests")
   and (.refreshPath.Unit == "media-manager-refresh-dispatch.service")
   and (.refreshDispatcher.User == "root")
+  and (.refreshDispatcher.Group == "media-manager")
   and (.refreshDispatcher.PrivateNetwork == true)
   and (.refreshDispatcher.RestrictAddressFamilies == ["AF_UNIX"])
   and (.refreshDispatcher.CapabilityBoundingSet == [])
+  and (.jellyfinRefresh.IPAddressDeny == "any")
+  and (.jellyfinRefresh.IPAddressAllow == ["localhost"])
+  and (.jellyfinRefresh.ProtectProc == "invisible")
   and (.audiobookshelfRefresh.IPAddressDeny == "any")
   and (.audiobookshelfRefresh.IPAddressAllow == ["localhost"])
   and (.audiobookshelfRefresh.ProtectProc == "invisible")
@@ -126,6 +133,21 @@ require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
   '/integrations/{integrationId}/refresh:' \
   "Manual application refresh must remain a closed API contract."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'systemctl start --wait "$unit"' \
+  "Refresh dispatch must wait for each adapter's eventual result."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'markers=("$request_dir"/*.request)' \
+  "Refresh dispatch must drain requests that arrive while another adapter is running."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'result_dir=' \
+  "Refresh dispatch must persist terminal results for browser polling."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'ScheduledTasks/Running/$task_id' \
+  "Jellyfin refresh must use the current scheduled-task completion API."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  '$base_url/api/tasks' \
+  "Audiobookshelf refresh must follow current library-scan task results."
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
   'Omit when the actual release year is unknown.' \
   "Unknown years must remain omitted from guided naming."

@@ -4,6 +4,7 @@ import { createDOM } from "@builder.io/qwik/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Root, {
   initialRouteFromSearch,
+  refreshPresentation,
   rootFromSearch,
   viewFromSearch,
 } from "./root";
@@ -77,11 +78,14 @@ describe("Media Manager navigation", () => {
     );
   });
 
-  it("renders a section selected by the current URL", async () => {
+  it("renders a section selected by the current URL without server or mode banners", async () => {
     const { render, screen } = await createDOM();
     await render(<Root initialView="metadata" />);
 
     expect(screen.querySelector("h1")?.textContent).toBe("Metadata");
+    expect(screen.textContent).not.toContain("Sydney Basiniot Media Server");
+    expect(screen.textContent).not.toContain("Staged changes enabled");
+    expect(screen.querySelector(".mode-pill")).toBeUndefined();
   });
 
   it("loads a media root selected by a native root-row URL", async () => {
@@ -115,6 +119,166 @@ describe("Media Manager navigation", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/items?rootId=shared-videos",
       expect.objectContaining({ credentials: "same-origin" }),
+    );
+  });
+
+  it("exposes every library choice as a native selected-route link", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? [
+                  {
+                    id: "shared-videos",
+                    label: "Shared videos",
+                    category: "videos",
+                    scope: "shared",
+                    available: true,
+                  },
+                  {
+                    id: "shared-music",
+                    label: "Shared music",
+                    category: "music",
+                    scope: "shared",
+                    available: true,
+                  },
+                ]
+              : path.includes("/items?rootId=shared-videos")
+                ? { items: [] }
+                : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    const choices = Array.from(screen.querySelectorAll("a.root-choice"));
+    expect(choices.map((choice) => choice.getAttribute("href"))).toEqual([
+      "?view=library&root=shared-videos",
+      "?view=library&root=shared-music",
+    ]);
+    expect(choices[0]?.getAttribute("aria-current")).toBe("true");
+    expect(choices[1]?.getAttribute("aria-current")).toBeNull();
+  });
+});
+
+describe("Media Manager refresh feedback", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("distinguishes queued, running, successful, and failed refresh states", () => {
+    expect(
+      refreshPresentation({ integrationId: "jellyfin", state: "queued" }),
+    ).toMatchObject({ label: "Queued", busy: true, tone: "pending" });
+    expect(
+      refreshPresentation({ integrationId: "jellyfin", state: "running" }),
+    ).toMatchObject({ label: "Refreshing…", busy: true, tone: "pending" });
+    expect(
+      refreshPresentation({
+        integrationId: "jellyfin",
+        state: "succeeded",
+        message: "Jellyfin library scan completed.",
+      }),
+    ).toMatchObject({
+      label: "Succeeded",
+      detail: "Jellyfin library scan completed.",
+      busy: false,
+      tone: "success",
+    });
+    expect(
+      refreshPresentation({
+        integrationId: "jellyfin",
+        state: "failed",
+        message: "Jellyfin library scan failed.",
+      }),
+    ).toMatchObject({
+      label: "Failed",
+      detail: "Jellyfin library scan failed.",
+      busy: false,
+      tone: "error",
+    });
+  });
+
+  it("lets an authenticated viewer request a refresh and follows it to completion", async () => {
+    let refreshQueued = false;
+    let refreshStatusReads = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (
+          path.endsWith("/integrations/jellyfin/refresh") &&
+          init?.method !== "POST" &&
+          refreshQueued &&
+          refreshStatusReads++ === 0
+        ) {
+          return new Response(
+            JSON.stringify({
+              error: { code: "temporarily_unavailable", message: "Try again." },
+            }),
+            { status: 503 },
+          );
+        }
+        const payload = path.endsWith("/status")
+          ? {
+              mutationMode: "enabled",
+              integrations: [
+                {
+                  id: "jellyfin",
+                  label: "Jellyfin",
+                  available: true,
+                  capabilities: ["library-refresh"],
+                },
+              ],
+            }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : path.endsWith("/conversions")
+                ? { available: false, progress: {} }
+                : path.endsWith("/integrations/jellyfin/refresh") &&
+                    init?.method === "POST"
+                  ? ((refreshQueued = true),
+                    {
+                      integrationId: "jellyfin",
+                      state: "queued",
+                      alreadyQueued: false,
+                      requestId: "r123-1",
+                    })
+                  : path.endsWith("/integrations/jellyfin/refresh")
+                    ? refreshQueued
+                      ? {
+                          integrationId: "jellyfin",
+                          state: "succeeded",
+                          requestId: "r123-1",
+                          message: "Jellyfin library scan completed.",
+                        }
+                      : { integrationId: "jellyfin", state: "idle" }
+                    : {};
+        return new Response(JSON.stringify(payload));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="refresh" />);
+    const refreshButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Refresh",
+    );
+    expect(refreshButton).toBeDefined();
+
+    await userEvent(refreshButton ?? null, "click");
+    expect(screen.textContent).toContain("Succeeded");
+    expect(screen.textContent).toContain("Jellyfin library scan completed.");
+    expect(refreshStatusReads).toBeGreaterThanOrEqual(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/integrations/jellyfin/refresh",
+      expect.objectContaining({ method: "POST", credentials: "same-origin" }),
     );
   });
 });

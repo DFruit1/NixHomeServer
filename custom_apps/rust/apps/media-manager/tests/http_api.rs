@@ -654,7 +654,7 @@ async fn metadata_fields_create_an_opf_sidecar_preview_without_a_default_year() 
 }
 
 #[tokio::test]
-async fn manual_refresh_queues_only_a_registered_available_adapter() {
+async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let mut config = AppConfig::for_test(
         temp.path().join("shared").to_str().expect("shared path"),
@@ -674,7 +674,8 @@ async fn manual_refresh_queues_only_a_registered_available_adapter() {
         catalog: CatalogHandle::new(database),
     });
     let response = app
-        .oneshot(editor_post_request(
+        .clone()
+        .oneshot(viewer_post_request(
             "/api/v1/integrations/jellyfin/refresh",
             Body::empty(),
         ))
@@ -685,6 +686,91 @@ async fn manual_refresh_queues_only_a_registered_available_adapter() {
         .path()
         .join("state/refresh-requests/jellyfin.request")
         .is_file());
+
+    let response = app
+        .oneshot(viewer_get_request("/api/v1/integrations/jellyfin/refresh"))
+        .await
+        .expect("refresh status response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("refresh status body");
+    let value: Value = serde_json::from_slice(&body).expect("refresh status JSON");
+    assert_eq!(value["integrationId"], "jellyfin");
+    assert_eq!(value["state"], "queued");
+    assert!(value["requestId"].as_str().is_some_and(|id| !id.is_empty()));
+}
+
+#[tokio::test]
+async fn refresh_status_returns_the_durable_terminal_result() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.integrations = vec![IntegrationCapability {
+        id: "jellyfin".to_string(),
+        label: "Jellyfin".to_string(),
+        available: true,
+        capabilities: vec!["library-refresh".to_string()],
+    }];
+    std::fs::create_dir_all(config.state_dir.join("refresh-results"))
+        .expect("refresh results directory");
+    std::fs::write(
+        config.state_dir.join("refresh-results/jellyfin.json"),
+        serde_json::json!({
+            "schemaVersion": 1,
+            "integrationId": "jellyfin",
+            "state": "succeeded",
+            "requestId": "r123-1",
+            "queuedAt": 1,
+            "startedAt": 2,
+            "finishedAt": 3,
+            "message": "Jellyfin library scan completed."
+        })
+        .to_string(),
+    )
+    .expect("refresh result");
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+
+    let response = app
+        .oneshot(viewer_get_request("/api/v1/integrations/jellyfin/refresh"))
+        .await
+        .expect("refresh status response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("refresh status body");
+    let value: Value = serde_json::from_slice(&body).expect("refresh status JSON");
+    assert_eq!(value["state"], "succeeded");
+    assert_eq!(value["finishedAt"], 3);
+    assert_eq!(value["message"], "Jellyfin library scan completed.");
+}
+
+fn viewer_get_request(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("x-forwarded-user", "viewer")
+        .header("x-forwarded-groups", "users")
+        .body(Body::empty())
+        .expect("viewer request")
+}
+
+fn viewer_post_request(uri: &str, body: Body) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-forwarded-user", "viewer")
+        .header("x-forwarded-groups", "users")
+        .body(body)
+        .expect("viewer request")
 }
 
 fn editor_get_request(uri: &str) -> Request<Body> {

@@ -15,36 +15,36 @@ paths:
     get:
       operationId: getStatus
       responses:
-        '200':
+        "200":
           description: Runtime health and registered integration availability.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Status'
+                $ref: "#/components/schemas/Status"
   /session:
     get:
       operationId: getSession
       responses:
-        '200':
+        "200":
           description: Authenticated identity and permissions.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Session'
-        '401':
-          $ref: '#/components/responses/Error'
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Error"
   /roots:
     get:
       operationId: listRoots
       responses:
-        '200':
+        "200":
           description: Server-defined roots visible to the caller.
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Root'
+                  $ref: "#/components/schemas/Root"
   /items:
     get:
       operationId: listItems
@@ -59,15 +59,15 @@ paths:
           schema:
             type: string
       responses:
-        '200':
+        "200":
           description: Catalog items scoped to one visible root.
-        '403':
-          $ref: '#/components/responses/Error'
+        "403":
+          $ref: "#/components/responses/Error"
   /conversions:
     get:
       operationId: listConversions
       responses:
-        '200':
+        "200":
           description: MKVMaker progress, or an unavailable state.
   /items/{itemId}/subtitles/search:
     get:
@@ -85,19 +85,19 @@ paths:
         - in: query
           name: languages
           required: true
-          schema: { type: string, example: en,fr }
+          schema: { type: string, example: en, fr }
         - in: query
           name: query
           schema: { type: string, maxLength: 200 }
       responses:
-        '200':
+        "200":
           description: >-
             Downloadable subtitle file matches, release details, hash-match
             flags, and the movie-hash or title-fallback matching method.
-        '403':
-          $ref: '#/components/responses/Error'
-        '503':
-          $ref: '#/components/responses/Error'
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /items/{itemId}/subtitles/provider:
     post:
       operationId: previewOpenSubtitlesInstall
@@ -120,12 +120,12 @@ paths:
                 language: { type: string }
                 hearingImpaired: { type: boolean, default: false }
       responses:
-        '201':
+        "201":
           description: Digest-bound subtitle install preview.
-        '403':
-          $ref: '#/components/responses/Error'
-        '503':
-          $ref: '#/components/responses/Error'
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /items/{itemId}/subtitles/upload:
     post:
       operationId: previewUploadedSubtitleInstall
@@ -155,12 +155,12 @@ paths:
           application/x-ass:
             schema: { type: string, format: binary, maxLength: 10485760 }
       responses:
-        '201':
+        "201":
           description: Digest-bound subtitle install preview.
-        '403':
-          $ref: '#/components/responses/Error'
-        '415':
-          $ref: '#/components/responses/Error'
+        "403":
+          $ref: "#/components/responses/Error"
+        "415":
+          $ref: "#/components/responses/Error"
   /items/{itemId}/metadata/sidecar:
     post:
       operationId: previewMetadataSidecar
@@ -192,21 +192,36 @@ paths:
                 volumeNumber: { type: string, maxLength: 32 }
                 isbn: { type: string, maxLength: 64 }
                 language: { type: string, maxLength: 15 }
-                authors: { type: array, maxItems: 32, items: { type: string, maxLength: 500 } }
-                narrators: { type: array, maxItems: 32, items: { type: string, maxLength: 500 } }
-                genres: { type: array, maxItems: 64, items: { type: string, maxLength: 500 } }
+                authors:
+                  {
+                    type: array,
+                    maxItems: 32,
+                    items: { type: string, maxLength: 500 },
+                  }
+                narrators:
+                  {
+                    type: array,
+                    maxItems: 32,
+                    items: { type: string, maxLength: 500 },
+                  }
+                genres:
+                  {
+                    type: array,
+                    maxItems: 64,
+                    items: { type: string, maxLength: 500 },
+                  }
       responses:
-        '201':
+        "201":
           description: Digest-bound no-overwrite metadata sidecar preview.
-        '403':
-          $ref: '#/components/responses/Error'
+        "403":
+          $ref: "#/components/responses/Error"
   /integrations/{integrationId}/refresh:
-    post:
-      operationId: queueIntegrationRefresh
+    get:
+      operationId: getIntegrationRefresh
       description: >-
-        Queues a request for one available, server-registered refresh adapter.
-        The integration identifier is checked against a closed allowlist and
-        the request is dispatched out of process. Requires an editor.
+        Returns the latest durable refresh state for one available,
+        server-registered adapter. Queued and running requests retain their
+        request ID so the browser can follow them through completion.
       parameters:
         - in: path
           name: integrationId
@@ -215,24 +230,50 @@ paths:
             type: string
             enum: [jellyfin, audiobookshelf, syncthing]
       responses:
-        '202':
+        "200":
+          description: Latest refresh state, or idle when none has run yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrationRefresh"
+        "401":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: queueIntegrationRefresh
+      description: >-
+        Queues a request for one available, server-registered refresh adapter.
+        The integration identifier is checked against a closed allowlist and
+        the request is dispatched out of process. Any authenticated user may
+        request this closed, coalescing operation.
+      parameters:
+        - in: path
+          name: integrationId
+          required: true
+          schema:
+            type: string
+            enum: [jellyfin, audiobookshelf, syncthing]
+      responses:
+        "202":
           description: Refresh queued, or already waiting for dispatch.
           content:
             application/json:
               schema:
                 type: object
-                required: [integrationId, state, alreadyQueued]
+                required: [integrationId, state, alreadyQueued, requestId]
                 additionalProperties: false
                 properties:
                   integrationId: { type: string }
                   state: { type: string, const: queued }
                   alreadyQueued: { type: boolean }
-        '403':
-          $ref: '#/components/responses/Error'
-        '404':
-          $ref: '#/components/responses/Error'
-        '503':
-          $ref: '#/components/responses/Error'
+                  requestId: { type: string }
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /scans:
     post:
       operationId: scanRoot
@@ -248,10 +289,10 @@ paths:
               properties:
                 rootId: { type: string }
       responses:
-        '200':
+        "200":
           description: Synchronous scan summary.
-        '403':
-          $ref: '#/components/responses/Error'
+        "403":
+          $ref: "#/components/responses/Error"
   /plans:
     post:
       operationId: previewMutationPlan
@@ -263,14 +304,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PlanRequest'
+              $ref: "#/components/schemas/PlanRequest"
       responses:
-        '201':
+        "201":
           description: Previewed plan including its digest and warnings.
-        '403':
-          $ref: '#/components/responses/Error'
-        '503':
-          $ref: '#/components/responses/Error'
+        "403":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
   /plans/{planId}/confirm:
     post:
       operationId: confirmMutationPlan
@@ -288,14 +329,14 @@ paths:
           schema:
             type: string
       responses:
-        '202':
+        "202":
           description: Mutation job durably queued.
-        '409':
-          $ref: '#/components/responses/Error'
-        '412':
-          $ref: '#/components/responses/Error'
-        '503':
-          $ref: '#/components/responses/Error'
+        "409":
+          $ref: "#/components/responses/Error"
+        "412":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
 components:
   securitySchemes:
     forwardedIdentity:
@@ -309,7 +350,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: "#/components/schemas/Error"
   schemas:
     Status:
       type: object
@@ -341,6 +382,20 @@ components:
         label: { type: string }
         category: { type: string }
         scope: { type: string, enum: [shared, personal] }
+    IntegrationRefresh:
+      type: object
+      required: [integrationId, state]
+      additionalProperties: false
+      properties:
+        integrationId: { type: string }
+        state:
+          type: string
+          enum: [idle, queued, running, succeeded, failed]
+        requestId: { type: string }
+        queuedAt: { type: integer }
+        startedAt: { type: integer }
+        finishedAt: { type: integer }
+        message: { type: string }
     PlanRequest:
       type: object
       required: [operation, itemIds]
@@ -348,8 +403,8 @@ components:
       properties:
         operation:
           oneOf:
-            - $ref: '#/components/schemas/CanonicalizeNames'
-            - $ref: '#/components/schemas/SemanticMove'
+            - $ref: "#/components/schemas/CanonicalizeNames"
+            - $ref: "#/components/schemas/SemanticMove"
         itemIds:
           type: array
           minItems: 1
