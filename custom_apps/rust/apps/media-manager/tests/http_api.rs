@@ -58,6 +58,134 @@ async fn api_rejects_missing_forwarded_identity() {
 }
 
 #[tokio::test]
+async fn session_prefers_the_canonical_forwarded_username_over_the_oidc_subject() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let response = test_app(&temp)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .header("x-forwarded-user", "4689a2b2-62ba-4131-bc32-4cca2ca7859c")
+                .header("x-forwarded-preferred-username", "dsaw")
+                .header("x-forwarded-groups", "users,media-manager-editors")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(value["username"], "dsaw");
+    assert_eq!(value["canEdit"], true);
+}
+
+#[tokio::test]
+async fn preferred_username_owns_personal_roots_and_audit_events() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("users/dsaw/_Videos")).expect("personal videos root");
+    let (app, database) = test_app_with_mode(&temp, MutationMode::ReadOnly);
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("shared video");
+
+    let roots = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/roots")
+                .header("x-forwarded-user", "4689a2b2-62ba-4131-bc32-4cca2ca7859c")
+                .header("x-forwarded-preferred-username", "dsaw")
+                .header("x-forwarded-groups", "users,media-manager-editors")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("roots response");
+    let body = to_bytes(roots.into_body(), 64 * 1024)
+        .await
+        .expect("roots body");
+    let value: Value = serde_json::from_slice(&body).expect("roots json");
+    let personal_videos = value
+        .as_array()
+        .expect("roots array")
+        .iter()
+        .find(|root| root["id"] == "personal-videos")
+        .expect("personal videos root");
+    assert_eq!(personal_videos["available"], true);
+
+    let scan = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scans")
+                .header("content-type", "application/json")
+                .header("x-forwarded-user", "4689a2b2-62ba-4131-bc32-4cca2ca7859c")
+                .header("x-forwarded-preferred-username", "dsaw")
+                .header("x-forwarded-groups", "users,media-manager-editors")
+                .body(Body::from(r#"{"rootId":"shared-videos"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("scan response");
+    assert_eq!(scan.status(), StatusCode::OK);
+
+    let connection = rusqlite::Connection::open(database).expect("catalog database");
+    let actor: String = connection
+        .query_row(
+            "SELECT actor_username FROM audit_events WHERE event_kind = 'catalog_root_scanned'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("scan audit actor");
+    assert_eq!(actor, "dsaw");
+}
+
+#[tokio::test]
+async fn malformed_preferred_username_is_rejected_instead_of_falling_back() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let malformed = axum::http::HeaderValue::from_bytes(&[0xff]).expect("opaque header value");
+    let response = test_app(&temp)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .header("x-forwarded-user", "fallback-user")
+                .header("x-forwarded-preferred-username", malformed)
+                .header("x-forwarded-groups", "users")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn empty_preferred_username_uses_the_legacy_forwarded_user() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let response = test_app(&temp)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .header("x-forwarded-user", "legacy-user")
+                .header("x-forwarded-preferred-username", "  ")
+                .header("x-forwarded-groups", "users")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(value["username"], "legacy-user");
+}
+
+#[tokio::test]
 async fn viewer_can_read_roots_but_cannot_start_a_scan() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);

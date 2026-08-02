@@ -150,6 +150,7 @@ nav {
   background: transparent;
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
   transition-property: background-color, color, scale;
   transition-duration: 120ms;
   transition-timing-function: ease-out;
@@ -171,6 +172,8 @@ nav {
   scale: 0.96;
 }
 .nav-item:focus-visible,
+.text-button:focus-visible,
+.root-row:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -398,6 +401,7 @@ button:focus-visible {
   color: var(--accent);
   background: transparent;
   font-size: 11px;
+  text-decoration: none;
 }
 .text-button:hover {
   color: var(--accent-strong);
@@ -438,6 +442,7 @@ button:focus-visible {
   background: transparent;
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
   transition-property: background-color, scale;
   transition-duration: 110ms;
   transition-timing-function: ease-out;

@@ -1260,11 +1260,28 @@ async fn not_found() -> Response {
 }
 
 fn identity_from_headers(headers: &HeaderMap, request_id: &str) -> Result<Identity, ApiError> {
-    let username = headers
-        .get("x-forwarded-user")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .trim();
+    let preferred_username = match headers.get("x-forwarded-preferred-username") {
+        Some(value) => Some(value.to_str().map_err(|_| {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "identity_required",
+                "A valid authenticated identity is required.",
+                request_id.to_string(),
+            )
+        })?),
+        None => None,
+    };
+    let username = preferred_username
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            headers
+                .get("x-forwarded-user")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_default();
     let groups = headers
         .get("x-forwarded-groups")
         .and_then(|value| value.to_str().ok())

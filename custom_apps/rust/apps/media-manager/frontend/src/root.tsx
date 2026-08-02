@@ -3,17 +3,43 @@ import {
   component$,
   useSignal,
   useStore,
+  useTask$,
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, ApiError } from "./api";
 
-type View =
+export type View =
   | "overview"
   | "library"
   | "conversions"
   | "subtitles"
   | "metadata"
   | "refresh";
+
+const VIEWS = new Set<View>([
+  "overview",
+  "library",
+  "conversions",
+  "subtitles",
+  "metadata",
+  "refresh",
+]);
+
+export function viewFromSearch(search: string): View {
+  const view = new URLSearchParams(search).get("view") as View | null;
+  return view && VIEWS.has(view) ? view : "overview";
+}
+
+export function rootFromSearch(search: string): string {
+  return new URLSearchParams(search).get("root") ?? "";
+}
+
+export function initialRouteFromSearch(search: string): RootProps {
+  return {
+    initialView: viewFromSearch(search),
+    initialRootId: rootFromSearch(search),
+  };
+}
 
 interface Integration {
   id: string;
@@ -91,6 +117,11 @@ interface DashboardState {
   planning: boolean;
   confirming: boolean;
   preview?: MutationPreview;
+}
+
+export interface RootProps {
+  initialView?: View;
+  initialRootId?: string;
 }
 
 type NamingProfile =
@@ -188,8 +219,8 @@ const Icon = component$<{ name: IconName; size?: number }>((props) => {
   );
 });
 
-export default component$(() => {
-  const view = useSignal<View>("overview");
+export default component$((props: RootProps) => {
+  const view = useSignal<View>(props.initialView ?? "overview");
   const state = useStore<DashboardState>({
     roots: [],
     items: [],
@@ -213,7 +244,7 @@ export default component$(() => {
     confirming: false,
   });
 
-  useVisibleTask$(async () => {
+  useTask$(async () => {
     try {
       const [status, session, roots, conversions] = await Promise.all([
         api<Status>("/status"),
@@ -225,7 +256,16 @@ export default component$(() => {
       state.session = session;
       state.roots = roots;
       state.conversions = conversions;
-      state.selectedRootId = roots[0]?.id ?? "";
+      const requestedRoot = roots.find(
+        (root) => root.id === props.initialRootId,
+      );
+      state.selectedRootId = requestedRoot?.id ?? roots[0]?.id ?? "";
+      if (requestedRoot) {
+        const result = await api<{ items: CatalogItem[] }>(
+          `/items?rootId=${encodeURIComponent(requestedRoot.id)}`,
+        );
+        state.items = result.items;
+      }
     } catch (error) {
       state.error = readableError(error);
     } finally {
@@ -376,16 +416,15 @@ export default component$(() => {
 
         <nav aria-label="Media Manager sections">
           {NAV_ITEMS.map((item) => (
-            <button
+            <a
               key={item.id}
-              type="button"
+              href={`?view=${item.id}`}
               class={{ "nav-item": true, active: view.value === item.id }}
               aria-current={view.value === item.id ? "page" : undefined}
-              onClick$={() => (view.value = item.id)}
             >
               <Icon name={item.icon} />
               <span>{item.label}</span>
-            </button>
+            </a>
           ))}
         </nav>
 
@@ -480,24 +519,13 @@ export default component$(() => {
                   <span class="section-label">Library map</span>
                   <h3>Registered media roots</h3>
                 </div>
-                <button
-                  class="text-button"
-                  type="button"
-                  onClick$={() => (view.value = "library")}
-                >
+                <a class="text-button" href="?view=library">
                   Browse libraries <Icon name="arrow" size={17} />
-                </button>
+                </a>
               </div>
               <div class="root-list compact">
                 {state.roots.slice(0, 5).map((root) => (
-                  <RootRow
-                    root={root}
-                    key={root.id}
-                    onOpen$={() => {
-                      view.value = "library";
-                      loadItems(root.id);
-                    }}
-                  />
+                  <RootRow root={root} key={root.id} />
                 ))}
               </div>
             </section>
@@ -587,9 +615,11 @@ const StatCard = component$<{
 
 const RootRow = component$<{
   root: MediaRoot;
-  onOpen$: () => void;
 }>((props) => (
-  <button class="root-row" type="button" onClick$={props.onOpen$}>
+  <a
+    class="root-row"
+    href={`?view=library&root=${encodeURIComponent(props.root.id)}`}
+  >
     <span class="root-icon">
       <Icon name="folder" size={19} />
     </span>
@@ -603,7 +633,7 @@ const RootRow = component$<{
       class={{ "availability-dot": true, available: props.root.available }}
     />
     <Icon name="arrow" size={17} />
-  </button>
+  </a>
 ));
 
 const LibraryView = component$<{
