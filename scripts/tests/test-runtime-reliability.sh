@@ -7,9 +7,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 host="$(test_default_host)"
 
-runtime_json="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
-let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+runtime_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
   host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   cfg = (builtins.getAttr host f.nixosConfigurations).config;
   disabledBonsaiCfg = ((builtins.getAttr host f.nixosConfigurations).extendModules {

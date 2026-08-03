@@ -6,9 +6,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools bash jq nix rg
 host="$(test_default_host)"
-invalid_log="$(mktemp)"
 snapshot_test_dir="$(mktemp -d)"
-cleanup() { rm -f "$invalid_log"; rm -rf "$snapshot_test_dir"; }
+cleanup() { rm -rf "$snapshot_test_dir"; }
 trap cleanup EXIT
 
 source scripts/helpers/kopia-managed-common.sh
@@ -143,21 +142,18 @@ for invalid_state in ambiguous wrong-vg fail; do
 done
 unset BOOTSTRAP_SAFETY_PVS_BIN BOOTSTRAP_SAFETY_LVS_BIN NIXHOMESERVER_TEST_LV_STATE
 
-bootstrap_json="$(nix eval --json --impure --expr "
-  let
-    f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
-    cfg = f.nixosConfigurations.${host}-bootstrap.config;
-    devices = cfg.disko.devices;
-  in {
-    systemDevice = devices.disk.system.device;
-    bootFormat = devices.disk.system.content.partitions.boot.content.format;
-    rootSize = devices.disk.system.content.partitions.root.size;
-    hostId = cfg.networking.hostId;
-    forceImportRoot = cfg.boot.zfs.forceImportRoot;
-    grubEnabled = cfg.boot.loader.grub.enable;
-    removableEfi = cfg.boot.loader.grub.efiInstallAsRemovable;
-  }
-")"
+bootstrap_json="$(flake_eval_json "
+  cfg = f.nixosConfigurations.${host}-bootstrap.config;
+  devices = cfg.disko.devices;
+in {
+  systemDevice = devices.disk.system.device;
+  bootFormat = devices.disk.system.content.partitions.boot.content.format;
+  rootSize = devices.disk.system.content.partitions.root.size;
+  hostId = cfg.networking.hostId;
+  forceImportRoot = cfg.boot.zfs.forceImportRoot;
+  grubEnabled = cfg.boot.loader.grub.enable;
+  removableEfi = cfg.boot.loader.grub.efiInstallAsRemovable;
+}")"
 jq -e '
   (.systemDevice | startswith("/dev/disk/by-id/"))
   and (.bootFormat == "vfat")
@@ -172,15 +168,12 @@ jq -e '
   exit 1
 }
 
-recovery_json="$(nix eval --json --impure --expr "
-  let
-    f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
-    cfg = f.nixosConfigurations.${host}-system-recovery.config;
-  in {
-    diskNames = builtins.attrNames cfg.disko.devices.disk;
-    systemDevice = cfg.disko.devices.disk.system.device;
-  }
-")"
+recovery_json="$(flake_eval_json "
+  cfg = f.nixosConfigurations.${host}-system-recovery.config;
+in {
+  diskNames = builtins.attrNames cfg.disko.devices.disk;
+  systemDevice = cfg.disko.devices.disk.system.device;
+}")"
 jq -e '
   .diskNames == ["system"]
   and (.systemDevice | startswith("/dev/disk/by-id/"))
@@ -304,35 +297,31 @@ if ! rg -Fxq "eval|path:${snapshot_path}|${snapshot_path}" "$mock_command_log" \
   exit 1
 fi
 
-rollback_host_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    base = import ./vars.nix { inherit lib; };
-    vars = base // {
-      storage = base.storage // { enableRootRollback = true; };
-      enableRootRollback = true;
-    };
-    pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
-    packages = import ./flake/packages.nix {
-      inherit lib pkgs;
-      crane = f.inputs.crane;
-    };
-    system = import ./flake/system.nix {
-      inputs = f.inputs;
-      inherit lib vars pkgs;
-      system = base.hostPlatform;
-      appPackages = packages.appPackages;
-    };
-    host = system.nixosConfigurations.${base.hostname};
-    bootstrap = system.bootstrapConfigurations."${base.hostname}-bootstrap";
-  in {
-    hostDrv = host.config.system.build.toplevel.drvPath;
-    diskoDrv = bootstrap.config.system.build.diskoScript.drvPath;
-    rollbackBefore = host.config.boot.initrd.systemd.services.nixhomeserver-root-rollback.before;
-    legacyPostResumeEmpty = host.config.boot.initrd.postResumeCommands == "";
-  }
-')"
+rollback_host_json="$(flake_eval_json '
+  base = import ./vars.nix { inherit lib; };
+  vars = base // {
+    storage = base.storage // { enableRootRollback = true; };
+    enableRootRollback = true;
+  };
+  pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
+  packages = import ./flake/packages.nix {
+    inherit lib pkgs;
+    crane = f.inputs.crane;
+  };
+  system = import ./flake/system.nix {
+    inputs = f.inputs;
+    inherit lib vars pkgs;
+    system = base.hostPlatform;
+    appPackages = packages.appPackages;
+  };
+  host = system.nixosConfigurations.${base.hostname};
+  bootstrap = system.bootstrapConfigurations."${base.hostname}-bootstrap";
+in {
+  hostDrv = host.config.system.build.toplevel.drvPath;
+  diskoDrv = bootstrap.config.system.build.diskoScript.drvPath;
+  rollbackBefore = host.config.boot.initrd.systemd.services.nixhomeserver-root-rollback.before;
+  legacyPostResumeEmpty = host.config.boot.initrd.postResumeCommands == "";
+}')"
 jq -e '
   (.hostDrv | type == "string" and length > 0)
   and (.diskoDrv | type == "string" and length > 0)
@@ -344,20 +333,16 @@ jq -e '
   exit 1
 }
 
-invalid_rollback_name_expr='let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+invalid_rollback_name_body='
   hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   host = (builtins.getAttr hostName f.nixosConfigurations).extendModules {
     modules = [{ repo.impermanence.rootSubvolume = "different-root"; }];
   };
 in host.config.system.build.toplevel.drvPath'
-if NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --raw --expr "$invalid_rollback_name_expr" >"$invalid_log" 2>&1; then
-  echo "❌ Runtime rollback accepted a subvolume name that Disko never creates."
-  exit 1
-fi
-if ! rg -q 'rootSubvolume.*read-only|read-only.*rootSubvolume' "$invalid_log"; then
+invalid_log="$(NIXHOMESERVER_TEST_HOST="$host" capture_eval_failure "$invalid_rollback_name_body")"
+if ! rg -q 'rootSubvolume.*read-only|read-only.*rootSubvolume' <<<"$invalid_log"; then
   echo "❌ Invalid rollback subvolume override failed without the expected read-only option error."
-  cat "$invalid_log"
+  printf '%s\n' "$invalid_log" >&2
   exit 1
 fi
 nix eval --raw ".#nixosConfigurations.${host}-bootstrap.config.system.build.toplevel.drvPath" >/dev/null
@@ -365,9 +350,7 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   nix build --no-link ".#nixosConfigurations.${host}-bootstrap.config.system.build.diskoScript"
 fi
 
-invalid_topology_expr='let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-  lib = f.inputs.nixpkgs.lib;
+invalid_topology_body='
   base = import ./vars.nix { inherit lib; };
   vars = base // {
     mainDisk = "duplicate-disk";
@@ -387,20 +370,14 @@ invalid_topology_expr='let
     specialArgs = { inherit vars; };
   };
 in cfg.config.system.build.diskoScript.drvPath'
-
-if nix eval --impure --raw --expr "$invalid_topology_expr" >"$invalid_log" 2>&1; then
-  echo "❌ Disk bootstrap accepted the same disk as system and ZFS data storage."
-  exit 1
-fi
-if ! rg -Fq 'storage.systemDisk must not also appear' "$invalid_log"; then
+invalid_log="$(capture_eval_failure "$invalid_topology_body")"
+if ! rg -Fq 'storage.systemDisk must not also appear' <<<"$invalid_log"; then
   echo "❌ Invalid topology failed without the expected safety assertion."
-  cat "$invalid_log"
+  printf '%s\n' "$invalid_log" >&2
   exit 1
 fi
 
-invalid_data_layout_expr='let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-  lib = f.inputs.nixpkgs.lib;
+invalid_data_layout_body='
   base = import ./vars.nix { inherit lib; };
   vars = base // {
     enableZfsDataPool = true;
@@ -419,31 +396,23 @@ invalid_data_layout_expr='let
     specialArgs = { inherit vars; };
   };
 in cfg.config.system.build.diskoScript.drvPath'
-
-if nix eval --impure --raw --expr "$invalid_data_layout_expr" >"$invalid_log" 2>&1; then
-  echo "❌ Disk bootstrap accepted a non-canonical data mount and dataset set."
-  exit 1
-fi
-if ! rg -q 'storage[.]dataPool[.](mountPoint|datasets)' "$invalid_log"; then
+invalid_log="$(capture_eval_failure "$invalid_data_layout_body")"
+if ! rg -q 'storage[.]dataPool[.](mountPoint|datasets)' <<<"$invalid_log"; then
   echo "❌ Invalid data layout failed without the expected safety assertion."
-  cat "$invalid_log"
+  printf '%s\n' "$invalid_log" >&2
   exit 1
 fi
 
-rollback_layout_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    base = import ./vars.nix { inherit lib; };
-    vars = base // { enableRootRollback = true; };
-    module = import ./bootstrap/disko-system.nix { inherit lib vars; };
-    root = module.disko.devices.disk.system.content.partitions.root.content;
-  in {
-    rootMountpoint = root.subvolumes."/root".mountpoint;
-    blankExists = builtins.hasAttr "/root-blank" root.subvolumes;
-    protectsBlank = lib.hasInfix "btrfs property set -ts" root.postCreateHook;
-  }
-')"
+rollback_layout_json="$(flake_eval_json '
+  base = import ./vars.nix { inherit lib; };
+  vars = base // { enableRootRollback = true; };
+  module = import ./bootstrap/disko-system.nix { inherit lib vars; };
+  root = module.disko.devices.disk.system.content.partitions.root.content;
+in {
+  rootMountpoint = root.subvolumes."/root".mountpoint;
+  blankExists = builtins.hasAttr "/root-blank" root.subvolumes;
+  protectsBlank = lib.hasInfix "btrfs property set -ts" root.postCreateHook;
+}')"
 jq -e '
   .rootMountpoint == "/"
   and .blankExists == true
@@ -454,21 +423,17 @@ jq -e '
   exit 1
 }
 
-ext4_layout_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    base = import ./vars.nix { inherit lib; };
-    vars = base // {
-      storageProfile = "single-disk-ext4";
-      enableRootRollback = false;
-    };
-    module = import ./bootstrap/disko-system.nix { inherit lib vars; };
-    root = module.disko.devices.disk.system.content.partitions.root.content;
-  in {
-    inherit (root) format mountpoint postCreateHook;
-  }
-')"
+ext4_layout_json="$(flake_eval_json '
+  base = import ./vars.nix { inherit lib; };
+  vars = base // {
+    storageProfile = "single-disk-ext4";
+    enableRootRollback = false;
+  };
+  module = import ./bootstrap/disko-system.nix { inherit lib vars; };
+  root = module.disko.devices.disk.system.content.partitions.root.content;
+in {
+  inherit (root) format mountpoint postCreateHook;
+}')"
 jq -e '
   .format == "ext4"
   and .mountpoint == "/"

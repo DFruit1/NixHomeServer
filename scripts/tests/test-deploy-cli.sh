@@ -16,6 +16,7 @@ expected_local_slots="$(nix_flake_var 'toString vars.buildSlots.local')"
 expected_remote_slots="$(nix_flake_var 'toString vars.buildSlots.remote')"
 expected_local_cores="$(nix_flake_var 'toString vars.buildCores.local')"
 expected_remote_cores="$(nix_flake_var 'toString vars.buildCores.remote')"
+expected_local_gc="$(nix_flake_var 'if vars.localNixGC then "true" else "false"')"
 expected_target="${expected_local_admin}@${expected_lan_ip}"
 
 archive_test_dir="$(mktemp -d '/tmp/nixhomeserver deploy.XXXXXX')"
@@ -105,6 +106,17 @@ if ! rg -Fq "mode=${expected_build_mode}" <<<"$default_output" \
 fi
 if ! rg -Fq "target_host=${expected_target}" <<<"$default_output"; then
   echo "❌ Deploy default target should use the local admin and LAN IP for first-boot reachability."
+  echo "$default_output"
+  exit 1
+fi
+if [[ "$expected_local_gc" == "true" ]]; then
+  if ! rg -Fq 'local_gc=would run nix-store --gc on the workstation before staging' <<<"$default_output"; then
+    echo "❌ Deploy with localNixGC enabled must report the planned workstation store GC."
+    echo "$default_output"
+    exit 1
+  fi
+elif rg -Fq 'local_gc=' <<<"$default_output"; then
+  echo "❌ Deploy with localNixGC disabled must not report a workstation store GC."
   echo "$default_output"
   exit 1
 fi
@@ -232,6 +244,10 @@ require_fixed scripts/deploy.sh 'source "$script_dir/helpers/deploy-command.sh"'
   "Deploy dry-runs and real execution must share command construction."
 require_fixed scripts/deploy.sh 'ensure_local_attic_tunnel' \
   "Real deploys must recover the workstation Attic tunnel before evaluating or building."
+require_fixed scripts/deploy.sh 'nix-store --gc' \
+  "Workstation store GC must run a real Nix garbage collection before staging the deploy."
+require_fixed scripts/deploy.sh 'local_gc=would run nix-store --gc on the workstation before staging' \
+  "Deploy dry-runs must report the planned workstation store GC without running it."
 require_fixed scripts/helpers/deploy-executor.sh 'nixpkgs#nodejs' \
   "Remote debug validation must provide its Node runtime from pinned nixpkgs."
 require_fixed scripts/helpers/deploy-executor.sh 'date +%s%N' \

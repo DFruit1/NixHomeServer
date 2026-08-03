@@ -45,6 +45,7 @@ test_scripts=(
   scripts/tests/test-canary-render-check.sh
   scripts/tests/test-application-hardening.sh
   scripts/tests/test-archive-view-safety.sh
+  scripts/tests/test-auth-gateway-logout.sh
   scripts/tests/test-authorization-group-validation.sh
   scripts/tests/test-backup-access-separation.sh
   scripts/tests/test-role-only-sftp-access.sh

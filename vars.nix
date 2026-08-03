@@ -43,6 +43,7 @@ let
       buildMode = "maximum-effort"; # Build allocation: "local", "remote", "balanced" (2 slots each with 1 requested core/job), or "maximum-effort" (all slots on both).
       nixStoreMaxSizeGiB = 80; # Soft Nix store cap in GiB; collection starts at 90% of this size or 90% usage on the filesystem containing /nix/store.
       nixGcRetentionDays = 45; # Delete profile generations older than this many days, sacrificing older rollback points.
+      localNixGC = true; # Run nix-store --gc on the local workstation before each deploy to reclaim unreferenced build output.
     };
 
     dnsSettings = {

@@ -23,9 +23,7 @@ jq -e --arg host "$host_name" '
   exit 1
 }
 
-runtime_json="$(NIXHOMESERVER_TEST_HOST="$host_name" nix eval --impure --json --expr '
-let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+runtime_json="$(NIXHOMESERVER_TEST_HOST="$host_name" flake_eval_json '
   hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   cfg = (builtins.getAttr hostName f.nixosConfigurations).config;
 in {

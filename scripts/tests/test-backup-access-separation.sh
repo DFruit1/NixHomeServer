@@ -6,8 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
-model_json="$(nix eval --impure --json --expr '
-let
+model_json="$(flake_eval_json '
   derive = import ./lib/backup-access.nix;
   malformed = derive {
     basePosixGids.files = 2001;
@@ -32,10 +31,7 @@ if ! jq -e '[to_entries[] | select(.value != true)] | length == 0' \
   exit 1
 fi
 
-behavior_json="$(nix eval --impure --json --expr '
-let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-  lib = f.inputs.nixpkgs.lib;
+behavior_json="$(flake_eval_json '
   base = import ./vars.nix { inherit lib; };
   backupAccess = base.backupAccess // {
     adminGroup = "custom-backup-admins";
@@ -98,15 +94,7 @@ if ! jq -e '
   exit 1
 fi
 
-malformed_log="$(mktemp)"
-gid_collision_log="$(mktemp)"
-reserved_name_collision_log="$(mktemp)"
-service_name_collision_log="$(mktemp)"
-trap 'rm -f "$malformed_log" "$gid_collision_log" "$reserved_name_collision_log" "$service_name_collision_log"' EXIT
-malformed_expr='
-let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-  lib = f.inputs.nixpkgs.lib;
+malformed_body='
   base = import ./vars.nix { inherit lib; };
   testCase = builtins.getEnv "NIXHOMESERVER_BACKUP_ACCESS_CASE";
   backupAccess = base.backupAccess // (
@@ -147,58 +135,29 @@ let
   };
 in system.nixosConfigurations.${base.hostname}.config.system.build.toplevel.drvPath
 '
-if nix eval --impure --raw --expr "$malformed_expr" >"$malformed_log" 2>&1; then
-  echo "Malformed backup access configuration unexpectedly passed evaluation." >&2
-  exit 1
-fi
+
+malformed_log="$(capture_eval_failure "$malformed_body")"
 for expected_message in \
   'backupAccess.adminGroup must be a valid Kanidm group name' \
   'backupAccess.storageGroup must be a valid Kanidm group name' \
   'backupAccess.storageGid must be an integer from 1000 through 59999'; do
-  if ! rg -Fq "$expected_message" "$malformed_log"; then
+  if ! rg -Fq "$expected_message" <<<"$malformed_log"; then
     echo "Malformed backup access failed without the actionable assertion: $expected_message" >&2
-    cat "$malformed_log" >&2
+    printf '%s\n' "$malformed_log" >&2
     exit 1
   fi
 done
 
-if NIXHOMESERVER_BACKUP_ACCESS_CASE=gid-collision \
-  nix eval --impure --raw --expr "$malformed_expr" >"$gid_collision_log" 2>&1; then
-  echo "Backup storage GID collision with the local nixbld group unexpectedly passed evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq \
+NIXHOMESERVER_BACKUP_ACCESS_CASE=gid-collision eval_fails_with \
   'backupAccess.storageGid must not reuse an explicit local system or service group GID; colliding groups: ["nixbld"]' \
-  "$gid_collision_log"; then
-  echo "Backup storage GID collision failed without the actionable local-group assertion." >&2
-  cat "$gid_collision_log" >&2
-  exit 1
-fi
+  "$malformed_body"
 
-if NIXHOMESERVER_BACKUP_ACCESS_CASE=reserved-name-collisions \
-  nix eval --impure --raw --expr "$malformed_expr" >"$reserved_name_collision_log" 2>&1; then
-  echo "Backup group-name collisions with application groups unexpectedly passed evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq \
+NIXHOMESERVER_BACKUP_ACCESS_CASE=reserved-name-collisions eval_fails_with \
   'backupAccess adminGroup and storageGroup must not reuse file-access, local bridge, maintenance, core identity, or application group names: {"adminGroup":"app-admin","storageGroup":"paperless-users"}' \
-  "$reserved_name_collision_log"; then
-  echo "Backup application-group name collisions failed without the actionable field mapping." >&2
-  cat "$reserved_name_collision_log" >&2
-  exit 1
-fi
+  "$malformed_body"
 
-if NIXHOMESERVER_BACKUP_ACCESS_CASE=service-name-collision \
-  nix eval --impure --raw --expr "$malformed_expr" >"$service_name_collision_log" 2>&1; then
-  echo "Backup storage name collision with the local caddy service group unexpectedly passed evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq \
+NIXHOMESERVER_BACKUP_ACCESS_CASE=service-name-collision eval_fails_with \
   'backupAccess.storageGroup must not reuse a local built-in or service group: ["caddy"]' \
-  "$service_name_collision_log"; then
-  echo "Backup storage service-group name collision failed without the actionable assertion." >&2
-  cat "$service_name_collision_log" >&2
-  exit 1
-fi
+  "$malformed_body"
 
 echo "✅ Backup administration, storage access, and POSIX GID separation tests passed."

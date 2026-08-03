@@ -158,6 +158,7 @@ rec {
   buildMode = system.buildMode or "remote";
   nixStoreMaxSizeGiB = system.nixStoreMaxSizeGiB or 80;
   nixGcRetentionDays = system.nixGcRetentionDays or 45;
+  localNixGC = system.localNixGC or false;
   buildSlots = {
     local =
       if buildMode == "local" || buildMode == "maximum-effort" then "auto"

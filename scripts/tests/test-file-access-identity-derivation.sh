@@ -6,38 +6,35 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
-derivation_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    deriveGids = fileAccess: import ./lib/file-access-gids.nix { inherit fileAccess; };
-    custom = deriveGids {
-      webAccessGroup = "custom-web-users";
-      sftpAccessGroup = "custom-sftp-users";
-      sharedAccessGroup = "custom-shared-users";
-      usbAccessGroup = "custom-usb-users";
+derivation_json="$(flake_eval_json '
+  deriveGids = fileAccess: import ./lib/file-access-gids.nix { inherit fileAccess; };
+  custom = deriveGids {
+    webAccessGroup = "custom-web-users";
+    sftpAccessGroup = "custom-sftp-users";
+    sharedAccessGroup = "custom-shared-users";
+    usbAccessGroup = "custom-usb-users";
+  };
+  collision = deriveGids {
+    webAccessGroup = "same-group";
+    sftpAccessGroup = "same-group";
+    sharedAccessGroup = "other-shared-group";
+    usbAccessGroup = "other-usb-group";
+  };
+  malformed = deriveGids {
+    webAccessGroup = {};
+    sftpAccessGroup = [];
+    sharedAccessGroup = null;
+    usbAccessGroup = 42;
+  };
+  identity = (import ./lib/identity-access.nix { inherit lib; }) {
+    identity = {
+      adminUser = "identity-admin";
+      canaryUser = "canary-user";
+      appUsers = ["ordinary-user"];
+      appAdminUsers = ["app-admin-only" "ordinary-user"];
     };
-    collision = deriveGids {
-      webAccessGroup = "same-group";
-      sftpAccessGroup = "same-group";
-      sharedAccessGroup = "other-shared-group";
-      usbAccessGroup = "other-usb-group";
-    };
-    malformed = deriveGids {
-      webAccessGroup = {};
-      sftpAccessGroup = [];
-      sharedAccessGroup = null;
-      usbAccessGroup = 42;
-    };
-    identity = (import ./lib/identity-access.nix { inherit lib; }) {
-      identity = {
-        adminUser = "identity-admin";
-        canaryUser = "canary-user";
-        appUsers = ["ordinary-user"];
-        appAdminUsers = ["app-admin-only" "ordinary-user"];
-      };
-    };
-  in {
+  };
+in {
     customStableGids = custom.posixGids == {
       custom-web-users = 2001;
       custom-sftp-users = 2002;
@@ -68,22 +65,19 @@ if ! jq -e '[to_entries[] | select(.value != true)] | length == 0' <<<"$derivati
   exit 1
 fi
 
-behavior_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    base = import ./vars.nix { inherit lib; };
-    pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
-    packages = import ./flake/packages.nix {
-      inherit lib pkgs;
-      crane = f.inputs.crane;
-    };
-    mkConfig = vars: (import ./flake/system.nix {
-      inputs = f.inputs;
-      inherit lib vars pkgs;
-      system = base.hostPlatform;
-      appPackages = packages.appPackages;
-    }).nixosConfigurations.${base.hostname}.config;
+behavior_json="$(flake_eval_json '
+  base = import ./vars.nix { inherit lib; };
+  pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
+  packages = import ./flake/packages.nix {
+    inherit lib pkgs;
+    crane = f.inputs.crane;
+  };
+  mkConfig = vars: (import ./flake/system.nix {
+    inputs = f.inputs;
+    inherit lib vars pkgs;
+    system = base.hostPlatform;
+    appPackages = packages.appPackages;
+  }).nixosConfigurations.${base.hostname}.config;
 
     fileAccess = base.fileAccess // {
       webAccessGroup = "custom-web-users";
@@ -186,163 +180,87 @@ if ! jq -e '
   exit 1
 fi
 
-invalid_log="$(mktemp)"
-collision_log="$(mktemp)"
-local_invalid_log="$(mktemp)"
-local_reserved_log="$(mktemp)"
-local_service_log="$(mktemp)"
-file_service_log="$(mktemp)"
-local_gid_log="$(mktemp)"
-cleanup() {
-  rm -f \
-    "$invalid_log" \
-    "$collision_log" \
-    "$local_invalid_log" \
-    "$local_reserved_log" \
-    "$local_service_log" \
-    "$file_service_log" \
-    "$local_gid_log"
-}
-trap cleanup EXIT
+file_access_body='
+  base = import ./vars.nix { inherit lib; };
+  mode = builtins.getEnv "NIXHOMESERVER_FILE_ACCESS_CASE";
+  fileAccess = base.fileAccess // (
+    if mode == "invalid" then {
+      webAccessGroup = "Invalid Group";
+    } else if mode == "collision" then {
+      sftpAccessGroup = base.fileAccess.webAccessGroup;
+    } else if mode == "local-invalid" then {
+      localSftpAccessGroup = "Invalid Group";
+    } else if mode == "local-reserved" then {
+      localSftpAccessGroup = "wheel";
+    } else if mode == "local-service" then {
+      localSftpAccessGroup = "caddy";
+    } else if mode == "file-service" then {
+      webAccessGroup = "caddy";
+    } else if mode == "local-gid" then {
+    } else
+      throw "unsupported file-access validation test case"
+  );
+  fileAccessGidModel = import ./lib/file-access-gids.nix { inherit fileAccess; };
+  backupAccessModel = import ./lib/backup-access.nix {
+    inherit (base) backupAccess;
+    basePosixGids = fileAccessGidModel.posixGids;
+  };
+  vars = base // {
+    inherit fileAccess fileAccessGidModel backupAccessModel;
+    backupAdminGroup = backupAccessModel.adminGroup;
+    backupStorageGroup = backupAccessModel.storageGroup;
+    backupStorageGid = backupAccessModel.storageGid;
+    fileAccessPosixGids = backupAccessModel.fileAccessPosixGids;
+  };
+  pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
+  packages = import ./flake/packages.nix {
+    inherit lib pkgs;
+    crane = f.inputs.crane;
+  };
+  system = import ./flake/system.nix {
+    inputs = f.inputs;
+    inherit lib vars pkgs;
+    system = base.hostPlatform;
+    appPackages = packages.appPackages;
+  };
+  host = system.nixosConfigurations.${base.hostname};
+  evaluatedHost =
+    if mode == "local-gid" then
+      host.extendModules {
+        modules = [
+          { users.groups."injected-file-gid".gid = 2001; }
+        ];
+      }
+    else
+      host;
+in evaluatedHost.config.system.build.toplevel.drvPath'
 
-evaluate_invalid_file_access() {
-  local mode="$1"
-  local output_file="$2"
-  NIXHOMESERVER_FILE_ACCESS_CASE="$mode" nix eval --impure --raw --expr '
-    let
-      f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-      lib = f.inputs.nixpkgs.lib;
-      base = import ./vars.nix { inherit lib; };
-      mode = builtins.getEnv "NIXHOMESERVER_FILE_ACCESS_CASE";
-      fileAccess = base.fileAccess // (
-        if mode == "invalid" then {
-          webAccessGroup = "Invalid Group";
-        } else if mode == "collision" then {
-          sftpAccessGroup = base.fileAccess.webAccessGroup;
-        } else if mode == "local-invalid" then {
-          localSftpAccessGroup = "Invalid Group";
-        } else if mode == "local-reserved" then {
-          localSftpAccessGroup = "wheel";
-        } else if mode == "local-service" then {
-          localSftpAccessGroup = "caddy";
-        } else if mode == "file-service" then {
-          webAccessGroup = "caddy";
-        } else if mode == "local-gid" then {
-        } else
-          throw "unsupported file-access validation test case"
-      );
-      fileAccessGidModel = import ./lib/file-access-gids.nix { inherit fileAccess; };
-      backupAccessModel = import ./lib/backup-access.nix {
-        inherit (base) backupAccess;
-        basePosixGids = fileAccessGidModel.posixGids;
-      };
-      vars = base // {
-        inherit fileAccess fileAccessGidModel backupAccessModel;
-        backupAdminGroup = backupAccessModel.adminGroup;
-        backupStorageGroup = backupAccessModel.storageGroup;
-        backupStorageGid = backupAccessModel.storageGid;
-        fileAccessPosixGids = backupAccessModel.fileAccessPosixGids;
-      };
-      pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};
-      packages = import ./flake/packages.nix {
-        inherit lib pkgs;
-        crane = f.inputs.crane;
-      };
-      system = import ./flake/system.nix {
-        inputs = f.inputs;
-        inherit lib vars pkgs;
-        system = base.hostPlatform;
-        appPackages = packages.appPackages;
-      };
-      host = system.nixosConfigurations.${base.hostname};
-      evaluatedHost =
-        if mode == "local-gid" then
-          host.extendModules {
-            modules = [
-              { users.groups."injected-file-gid".gid = 2001; }
-            ];
-          }
-        else
-          host;
-    in evaluatedHost.config.system.build.toplevel.drvPath
-  ' >"$output_file" 2>&1
-}
+NIXHOMESERVER_FILE_ACCESS_CASE=invalid eval_fails_with \
+  'fileAccess webAccessGroup, sftpAccessGroup, sharedAccessGroup, and usbAccessGroup must be valid Kanidm group names; invalid fields: ["webAccessGroup"]' \
+  "$file_access_body"
 
-if evaluate_invalid_file_access invalid "$invalid_log"; then
-  echo "❌ Invalid fileAccess group name unexpectedly passed host evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq 'fileAccess webAccessGroup, sftpAccessGroup, sharedAccessGroup, and usbAccessGroup must be valid Kanidm group names; invalid fields: ["webAccessGroup"]' "$invalid_log"; then
-  echo "❌ Invalid fileAccess group name failed without its actionable field-specific assertion." >&2
-  cat "$invalid_log" >&2
-  exit 1
-fi
+NIXHOMESERVER_FILE_ACCESS_CASE=collision eval_fails_with \
+  'backup admin/storage and file-access group names must all be distinct; duplicates: ["files-personal-users"]' \
+  "$file_access_body"
 
-if evaluate_invalid_file_access collision "$collision_log"; then
-  echo "❌ Colliding fileAccess group names unexpectedly passed host evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq 'backup admin/storage and file-access group names must all be distinct; duplicates: ["files-personal-users"]' "$collision_log"; then
-  echo "❌ Colliding fileAccess group names failed without the actionable duplicate-name assertion." >&2
-  cat "$collision_log" >&2
-  exit 1
-fi
-
-if evaluate_invalid_file_access local-invalid "$local_invalid_log"; then
-  echo "❌ Invalid local SFTP bridge group name unexpectedly passed host evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq \
+NIXHOMESERVER_FILE_ACCESS_CASE=local-invalid eval_fails_with \
   'fileAccess.localSftpAccessGroup must be a lowercase local Unix group name of at most 31 characters' \
-  "$local_invalid_log"; then
-  echo "❌ Invalid local SFTP bridge group failed without its actionable syntax assertion." >&2
-  cat "$local_invalid_log" >&2
-  exit 1
-fi
+  "$file_access_body"
 
-for collision_case in local-reserved local-service; do
-  if [[ "$collision_case" == "local-reserved" ]]; then
-    collision_group=wheel
-    collision_output="$local_reserved_log"
-  else
-    collision_group=caddy
-    collision_output="$local_service_log"
-  fi
-  if evaluate_invalid_file_access "$collision_case" "$collision_output"; then
-    echo "❌ Local SFTP bridge group collision with ${collision_group} unexpectedly passed host evaluation." >&2
-    exit 1
-  fi
-  if ! rg -Fq \
+for collision in "local-reserved:wheel" "local-service:caddy"; do
+  case_name="${collision%%:*}"
+  collision_group="${collision##*:}"
+  NIXHOMESERVER_FILE_ACCESS_CASE="$case_name" eval_fails_with \
     "fileAccess.localSftpAccessGroup must be a dedicated local bridge group and must not reuse a file-access, backup, identity, application, maintenance, built-in, or service group: [\"${collision_group}\"]" \
-    "$collision_output"; then
-    echo "❌ Local SFTP bridge collision with ${collision_group} failed without its actionable assertion." >&2
-    cat "$collision_output" >&2
-    exit 1
-  fi
+    "$file_access_body"
 done
 
-if evaluate_invalid_file_access file-service "$file_service_log"; then
-  echo "❌ File-access group collision with the local caddy service group unexpectedly passed host evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq \
+NIXHOMESERVER_FILE_ACCESS_CASE=file-service eval_fails_with \
   'fileAccess groups must not reuse local built-in or service group names; colliding fields: {"webAccessGroup":"caddy"}' \
-  "$file_service_log"; then
-  echo "❌ File-access service-group collision failed without its actionable field mapping." >&2
-  cat "$file_service_log" >&2
-  exit 1
-fi
+  "$file_access_body"
 
-if evaluate_invalid_file_access local-gid "$local_gid_log"; then
-  echo "❌ File-access GID collision with an explicit local group unexpectedly passed host evaluation." >&2
-  exit 1
-fi
-if ! rg -Fq \
+NIXHOMESERVER_FILE_ACCESS_CASE=local-gid eval_fails_with \
   'fileAccess POSIX GIDs 2001 through 2004 must not reuse explicit local system or service group GIDs; colliding fields and groups: {"webAccessGroup":["injected-file-gid"]}' \
-  "$local_gid_log"; then
-  echo "❌ File-access local GID collision failed without its actionable field/group mapping." >&2
-  cat "$local_gid_log" >&2
-  exit 1
-fi
+  "$file_access_body"
 
 echo "✅ Configurable file-access GIDs and app-admin access inheritance tests passed."

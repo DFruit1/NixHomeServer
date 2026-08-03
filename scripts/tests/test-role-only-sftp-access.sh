@@ -6,10 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
-role_json="$(nix eval --impure --json --expr '
-let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-  lib = f.inputs.nixpkgs.lib;
+role_json="$(flake_eval_json '
   base = import ./vars.nix { inherit lib; };
   vars = base;
   pkgs = f.inputs.nixpkgs.legacyPackages.${base.hostPlatform};

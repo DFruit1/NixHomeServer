@@ -9,37 +9,34 @@ ensure_tools jq nix rg
 host="$(test_default_host)"
 
 alert_json="$(
-  NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
-    let
-      flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-      host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
-      cfg = (builtins.getAttr host flake.nixosConfigurations).config;
-      monitored = [
-        "backup-prepare"
-        "homepage-canary"
-        "kopia-persist-snapshot"
-        "kopia-snapshot-health"
-        "nixhomeserver-nix-gc"
-        "rclone-mega-capacity-check"
-        "rclone-mega-kopia-sync"
-        "storage-smart-long"
-        "storage-smart-short"
-        "zfs-snapshot-health"
-      ];
-    in {
-      inherit (cfg.repo.monitoring.failureAlerts) enable format targetUnit webhookUrlFile;
-      handler = cfg.systemd.services."nixhomeserver-failure-alert@".serviceConfig;
-      targets = builtins.listToAttrs (map
-        (name: {
-          inherit name;
-          value = {
-            onFailure = cfg.systemd.services.${name}.unitConfig.OnFailure;
-            mode = cfg.systemd.services.${name}.unitConfig.OnFailureJobMode;
-          };
-        }) monitored);
-    }
-  '
-)"
+  NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
+    host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+    cfg = (builtins.getAttr host f.nixosConfigurations).config;
+    monitored = [
+      "backup-prepare"
+      "homepage-canary"
+      "kopia-persist-snapshot"
+      "kopia-snapshot-health"
+      "nixhomeserver-nix-gc"
+      "rclone-mega-capacity-check"
+      "rclone-mega-kopia-sync"
+      "storage-smart-long"
+      "storage-smart-short"
+      "zfs-snapshot-health"
+    ];
+  in {
+    inherit (cfg.repo.monitoring.failureAlerts) enable format targetUnit webhookUrlFile;
+    handler = cfg.systemd.services."nixhomeserver-failure-alert@".serviceConfig;
+    targets = builtins.listToAttrs (map
+      (name: {
+        inherit name;
+        value = {
+          onFailure = cfg.systemd.services.${name}.unitConfig.OnFailure;
+          mode = cfg.systemd.services.${name}.unitConfig.OnFailureJobMode;
+        };
+      }) monitored);
+  }
+')"
 
 jq -e '
   .enable == true

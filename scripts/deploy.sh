@@ -120,6 +120,12 @@ if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cach
     "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
 fi
 
+local_nix_gc="$(nix_flake_var 'if vars.localNixGC then "true" else "false"')"
+if [[ "$local_nix_gc" != "true" && "$local_nix_gc" != "false" ]]; then
+  echo "blocked: vars.localNixGC must be true or false" >&2
+  exit 1
+fi
+
 configured_build_mode="$(nix_flake_var 'vars.buildMode')"
 if [[ -n "$build_mode_override" ]]; then
   build_mode="$build_mode_override"
@@ -229,6 +235,9 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   echo "hostname=${hostname}"
   echo "action=${action}"
   echo "debug=${debug}"
+  if [[ "$local_nix_gc" == "true" ]]; then
+    echo "local_gc=would run nix-store --gc on the workstation before staging"
+  fi
   if [[ "$action" == "test" ]]; then
     dry_run_rebuild_command=()
     build_nixos_rebuild_command dry_run_rebuild_command \
@@ -244,6 +253,11 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   fi
   echo "rollback=restore previous live and boot generations on failure"
   exit 0
+fi
+
+if [[ "$local_nix_gc" == "true" ]]; then
+  echo "collecting unreferenced local Nix store paths"
+  nix-store --gc
 fi
 
 need git ssh tar

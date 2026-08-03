@@ -36,6 +36,10 @@ let
       message = "system.nixGcRetentionDays must be an integer from 1 through 36500";
     }
     {
+      valid = builtins.isBool settings.localNixGC;
+      message = "system.localNixGC must be a boolean";
+    }
+    {
       valid = builtins.elem settings.storageProfile [ "zfs-mirror" "single-disk-ext4" ];
       message = "storage.profile must be zfs-mirror or single-disk-ext4";
     }

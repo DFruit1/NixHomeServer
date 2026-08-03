@@ -219,6 +219,21 @@ journalctl -u nixhomeserver-nix-gc.service --output=cat
 sudo systemctl start nixhomeserver-nix-gc.service
 ```
 
+## Workstation Nix Store Garbage Collection
+
+The capacity collector above only covers the deployed server; the workstation
+that evaluates and builds deploys has no equivalent timer. Set
+`system.localNixGC = true` in `vars.nix` to run `nix-store --gc` on the local
+machine at the start of every deploy, before the repository archive is staged.
+This reclaims unreferenced build output left behind by earlier local and
+combined builds without touching any profile generation or rollback point.
+Generation-based cleanup on the workstation remains the responsibility of the
+workstation's own Nix configuration.
+
+```bash
+nix-store --gc
+```
+
 `/mnt/data` is the configured data root for both storage profiles. On
 `zfs-mirror` it is a ZFS pool mountpoint; on `single-disk-ext4` it is a normal
 directory on the root filesystem.

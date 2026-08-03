@@ -7,9 +7,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools bash jq mktemp nix
 
 host="$(test_default_host)"
-services_json="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
-let
-  f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+services_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
   host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   base = builtins.getAttr host f.nixosConfigurations;
   cfg = base.config;

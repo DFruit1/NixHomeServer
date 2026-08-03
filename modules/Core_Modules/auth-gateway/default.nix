@@ -197,6 +197,13 @@ let
     ${commonAccessLog}
     route {
       ${stripSpoofableHeaders}
+      @logout_${matcherName name} {
+        method GET HEAD
+        path /oauth2/sign_out
+      }
+      handle @logout_${matcherName name} {
+        redir * https://${authHost}/oauth2/sign_out?rd=%2Fsigned-out 302
+      }
       ${lib.optionalString app.skipAuthPreflight ''
         @preflight_${matcherName name} method OPTIONS
         handle @preflight_${matcherName name} {
@@ -223,11 +230,66 @@ let
       }
     }
   '';
-  authProxyConfig = ''
-    ${commonAccessLog}
+  authGatewayProxy = ''
     reverse_proxy http://${loopback}:${toString cfg.port} {
       header_up X-Forwarded-Proto https
       header_up X-Forwarded-Host {host}
+    }
+  '';
+  authProxyConfig = ''
+    ${commonAccessLog}
+    @auth_logout {
+      method GET HEAD
+      path /oauth2/sign_out
+    }
+    handle @auth_logout {
+      uri query rd /signed-out
+      ${authGatewayProxy}
+    }
+    @signed_out {
+      method GET HEAD
+      path /signed-out
+    }
+    handle @signed_out {
+      header {
+        Cache-Control "no-store"
+        Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+        Content-Type "text/html; charset=utf-8"
+        Referrer-Policy "no-referrer"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+      }
+      respond <<HTML
+        <!doctype html>
+        <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Signed out of shared apps</title>
+            <style>
+              :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+              body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: #f4f7fb; color: #1f2937; }
+              main { width: min(32rem, calc(100% - 3rem)); padding: 2rem; border: 1px solid #cad5e2; border-radius: 0.75rem; background: #fff; box-shadow: 0 1rem 3rem rgb(15 23 42 / 12%); }
+              h1 { margin: 0 0 0.75rem; font-size: 1.75rem; }
+              p { margin: 0; color: #526177; line-height: 1.6; }
+              @media (prefers-color-scheme: dark) {
+                body { background: #111827; color: #f8fafc; }
+                main { border-color: #334155; background: #1e293b; }
+                p { color: #cbd5e1; }
+              }
+            </style>
+          </head>
+          <body>
+            <main>
+              <h1>Signed out of shared apps</h1>
+              <p>If you arrived here after choosing Sign out, the shared application session was cleared. Close this tab, or return to an app when you are ready to sign in again.</p>
+            </main>
+          </body>
+        </html>
+        HTML 200
+    }
+    handle {
+      ${authGatewayProxy}
     }
   '';
 in
