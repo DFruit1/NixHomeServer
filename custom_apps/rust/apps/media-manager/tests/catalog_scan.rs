@@ -1,7 +1,7 @@
 use media_manager::{
-    catalog::Catalog,
+    catalog::{Catalog, CatalogHandle},
     naming::{canonical_movie_directory, canonical_tv_episode},
-    scanner::{scan_root, ScanRoot},
+    scanner::{scan_root, scan_root_if_needed, ScanRoot},
 };
 
 #[test]
@@ -91,4 +91,40 @@ fn scanner_removes_catalog_rows_for_files_that_disappeared() {
         .list_items("shared-books", None, 100)
         .expect("catalog items")
         .is_empty());
+}
+
+#[test]
+fn concurrent_initial_scans_reconcile_a_root_only_once() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let library = dir.path().join("library");
+    std::fs::create_dir_all(&library).expect("library");
+    std::fs::write(library.join("Book.epub"), b"book").expect("book");
+    let handle = CatalogHandle::new(dir.path().join("control.sqlite3"));
+    handle.open().expect("initialize catalog");
+    let root = ScanRoot {
+        id: "shared-books-concurrent".to_string(),
+        owner_username: None,
+        path: library,
+        category: "books".to_string(),
+    };
+
+    let first_handle = handle.clone();
+    let first_root = root.clone();
+    let first = std::thread::spawn(move || scan_root_if_needed(&first_handle, &first_root));
+    let second_handle = handle.clone();
+    let second_root = root.clone();
+    let second = std::thread::spawn(move || scan_root_if_needed(&second_handle, &second_root));
+    let outcomes = [
+        first
+            .join()
+            .expect("first scan thread")
+            .expect("first scan"),
+        second
+            .join()
+            .expect("second scan thread")
+            .expect("second scan"),
+    ];
+
+    assert_eq!(outcomes.iter().filter(|result| result.is_some()).count(), 1);
+    assert_eq!(outcomes.iter().filter(|result| result.is_none()).count(), 1);
 }

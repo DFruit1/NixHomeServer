@@ -28,6 +28,7 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   refreshDispatcher = cfg.systemd.services.media-manager-refresh-dispatch.serviceConfig;
   jellyfinRefresh = cfg.systemd.services.media-manager-refresh-jellyfin.serviceConfig;
   audiobookshelfRefresh = cfg.systemd.services.media-manager-refresh-audiobookshelf.serviceConfig;
+  kavitaRefresh = cfg.systemd.services.media-manager-refresh-kavita.serviceConfig;
   syncthingRefresh = cfg.systemd.services.media-manager-refresh-syncthing.serviceConfig;
   storageAccessScript = cfg.systemd.services.media-manager-storage-access.script;
   wantedBy = cfg.systemd.services.media-manager.wantedBy;
@@ -44,7 +45,6 @@ jq -e '
     "shared-music",
     "shared-audiobooks",
     "shared-books",
-    "shared-dvd-inbox",
     "personal-videos",
     "personal-music",
     "personal-audiobooks",
@@ -94,7 +94,7 @@ jq -e '
   and (.brokerTimer.OnUnitInactiveSec == "10s")
   and (.integrations.jellyfin.capabilities == ["library-refresh"])
   and (.integrations.audiobookshelf.capabilities == ["library-refresh"])
-  and (.integrations.kavita.capabilities == [])
+  and (.integrations.kavita.capabilities == ["library-refresh"])
   and (.integrations.syncthing.capabilities == ["folder-rescan"])
   and (.refreshPath.PathChanged == "/var/lib/media-manager/refresh-requests")
   and (.refreshPath.Unit == "media-manager-refresh-dispatch.service")
@@ -109,6 +109,13 @@ jq -e '
   and (.audiobookshelfRefresh.IPAddressDeny == "any")
   and (.audiobookshelfRefresh.IPAddressAllow == ["localhost"])
   and (.audiobookshelfRefresh.ProtectProc == "invisible")
+  and (.kavitaRefresh.IPAddressDeny == "any")
+  and (.kavitaRefresh.IPAddressAllow == ["localhost"])
+  and (.kavitaRefresh.ProtectProc == "invisible")
+  and (.kavitaRefresh.User == "kavita")
+  and (.kavitaRefresh.Group == "kavita")
+  and (.kavitaRefresh.ReadOnlyPaths == ["/var/lib/kavita/config/kavita.db", "/run/agenix/kavitaTokenKey"])
+  and (.kavitaRefresh.SystemCallFilter == ["@system-service", "~@privileged", "~@resources", "fchown"])
   and (.syncthingRefresh.IPAddressDeny == "any")
   and (.syncthingRefresh.IPAddressAllow == ["localhost"])
   and (.syncthingRefresh.ProtectProc == "invisible")
@@ -148,6 +155,21 @@ require_fixed modules/Core_Modules/media-manager/services.nix \
 require_fixed modules/Core_Modules/media-manager/services.nix \
   '$base_url/api/tasks' \
   "Audiobookshelf refresh must follow current library-scan task results."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  '$base_url/api/library/scan-all?force=false' \
+  "Kavita refresh must use the authenticated scan-all API."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'Authorization: Bearer' \
+  "Kavita refresh must use a short-lived server-local bearer token."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  '"exp": now + 300' \
+  "Kavita refresh bearer tokens must remain short-lived."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'A Kavita library was removed while its scan was running' \
+  "Kavita refresh must fail promptly when a baseline library disappears."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'Kavita admin username is malformed' \
+  "Kavita refresh must validate the configured username before using it in SQL."
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
   'Omit when the actual release year is unknown.' \
   "Unknown years must remain omitted from guided naming."
@@ -157,5 +179,26 @@ require_fixed custom_apps/rust/apps/media-manager/src/bin/media-manager-broker.r
 require_fixed secrets/manifest.nix \
   'openSubtitlesCredentials = {' \
   "OpenSubtitles credentials must remain an optional encrypted external secret."
+
+kavita_baseline='[{"id":1,"lastScanned":"before-1"},{"id":2,"lastScanned":"before-2"}]'
+kavita_complete='[{"id":1,"lastScanned":"after-1"},{"id":2,"lastScanned":"after-2"}]'
+kavita_missing='[{"id":1,"lastScanned":"after-1"}]'
+kavita_unchanged='[{"id":1,"lastScanned":"after-1"},{"id":2,"lastScanned":"before-2"}]'
+kavita_all_present_filter='. as $current
+  | all($before[]; . as $previous
+    | any($current[]; .id == $previous.id))'
+kavita_all_advanced_filter='. as $current
+  | all($before[]; . as $previous
+    | any($current[];
+      .id == $previous.id and .lastScanned != $previous.lastScanned))'
+
+jq -e --argjson before "$kavita_baseline" "$kavita_all_present_filter" \
+  <<<"$kavita_complete" >/dev/null
+! jq -e --argjson before "$kavita_baseline" "$kavita_all_present_filter" \
+  <<<"$kavita_missing" >/dev/null
+jq -e --argjson before "$kavita_baseline" "$kavita_all_advanced_filter" \
+  <<<"$kavita_complete" >/dev/null
+! jq -e --argjson before "$kavita_baseline" "$kavita_all_advanced_filter" \
+  <<<"$kavita_unchanged" >/dev/null
 
 echo "✅ Media Manager core boundary, identity, persistence, and API contract are valid."

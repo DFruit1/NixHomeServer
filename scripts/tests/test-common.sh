@@ -100,3 +100,57 @@ require_json_equal() {
     exit 1
   fi
 }
+
+# Evaluate a Nix expression body against the repository flake with `f` (the
+# flake) and `lib` (nixpkgs.lib) already bound. The argument is everything that
+# belongs inside the enclosing `let`, up to and including `in ...`. Raw output
+# (drvPath and other single strings) is printed to stdout.
+flake_eval() {
+  local body="$1"
+  nix eval --impure --raw --expr "
+    let
+      f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+      lib = f.inputs.nixpkgs.lib;
+      ${body}
+    "
+}
+
+# JSON variant of flake_eval.
+flake_eval_json() {
+  local body="$1"
+  nix eval --impure --json --expr "
+    let
+      f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+      lib = f.inputs.nixpkgs.lib;
+      ${body}
+    "
+}
+
+# Evaluate a body that is expected to fail. Prints the captured output to stdout
+# and exits non-zero if the evaluation unexpectedly succeeds.
+capture_eval_failure() {
+  local body="$1"
+  local log
+  log="$(mktemp)"
+  if flake_eval "$body" >"$log" 2>&1; then
+    echo "❌ Host evaluation unexpectedly succeeded." >&2
+    cat "$log" >&2
+    rm -f "$log"
+    exit 1
+  fi
+  cat "$log"
+  rm -f "$log"
+}
+
+# Assert that evaluating <body> fails with a specific actionable message.
+eval_fails_with() {
+  local expected_message="$1"
+  local body="$2"
+  local log
+  log="$(capture_eval_failure "$body")"
+  if ! rg -Fq "$expected_message" <<<"$log"; then
+    echo "❌ Evaluation failed without the actionable message: ${expected_message}" >&2
+    printf '%s\n' "$log" >&2
+    exit 1
+  fi
+}

@@ -556,6 +556,7 @@ Useful refresh checks are:
 systemctl status media-manager-refresh-dispatch.service
 systemctl status media-manager-refresh-jellyfin.service
 systemctl status media-manager-refresh-audiobookshelf.service
+systemctl status media-manager-refresh-kavita.service
 systemctl status media-manager-refresh-syncthing.service
 journalctl -u 'media-manager-refresh-*' -n 100 --no-pager
 ```
@@ -597,10 +598,29 @@ git add secrets/openSubtitlesCredentials.age
 ```
 
 Manual refresh adapters are registered only for installed applications.
-Jellyfin, Audiobookshelf, and Syncthing have explicit adapters; Kavita is
-reported as available but remains observation-only until a safe authenticated
-scan API is available. Application-owned watchers and timers continue to run
+Jellyfin, Audiobookshelf, Kavita, and Syncthing have explicit adapters. The
+Kavita adapter runs as the unprivileged `kavita` account and mints a five-minute
+HS512 service token from Kavita's existing application token key. It sends that
+token only to the loopback scan API and follows each registered library's
+persisted scan timestamp to completion. This is necessary because OIDC admin
+roles are not attached to Kavita auth keys. Kavita does not expose a public
+scan-job status endpoint, so the adapter treats those timestamp advances as the
+authoritative completion boundary and fails immediately if a library present at
+the start disappears. Application-owned watchers and timers continue to run
 independently.
+
+Opening a shared or personal library root performs its first catalog scan
+automatically, including for viewers. Media Manager records that the root was
+scanned even when it was empty, so subsequent reads use SQLite immediately.
+Concurrent first reads of the same root share one serialized scan. The
+**Conversions** page lists the shared DVD ISO inbox itself: waiting ISOs with
+their disc volume labels, sizes, and timestamps beside the `_Processed` and
+`_Failed` results, next to the converter's setup steps and live status. The
+**Subtitles** page shows the same kind of setup guidance and status for the
+optional OpenSubtitles search provider, so neither appears under **App
+refresh**. Selecting a file or folder in **Libraries** or an item in
+**Metadata** shows its cataloged cover artwork when a sibling image such as
+`cover.jpg` is present.
 
 ```bash
 systemctl status media-manager.service media-manager-broker.timer

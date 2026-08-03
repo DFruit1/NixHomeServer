@@ -31,6 +31,7 @@ let
       (cfg.integrations.${id}.capabilities or [ ]);
   jellyfinRefreshAvailable = refreshAvailable "jellyfin";
   audiobookshelfRefreshAvailable = refreshAvailable "audiobookshelf";
+  kavitaRefreshAvailable = refreshAvailable "kavita";
   syncthingRefreshAvailable = refreshAvailable "syncthing";
   refreshDispatcher = pkgs.writeShellApplication {
     name = "media-manager-refresh-dispatch";
@@ -78,6 +79,13 @@ let
             unit=media-manager-refresh-audiobookshelf.service
             success_message="Audiobookshelf library scans completed."
             failure_message="Audiobookshelf library scans failed. Check the adapter service log."
+            ;;
+          ''}
+          ${lib.optionalString kavitaRefreshAvailable ''
+          kavita)
+            unit=media-manager-refresh-kavita.service
+            success_message="Kavita library scans completed."
+            failure_message="Kavita library scans failed. Check the adapter service log."
             ;;
           ''}
           ${lib.optionalString syncthingRefreshAvailable ''
@@ -260,6 +268,111 @@ let
         sleep 2
       done
       echo "Timed out waiting for Audiobookshelf library scans" >&2
+      exit 1
+    '';
+  };
+  kavitaRefresh = pkgs.writeShellApplication {
+    name = "media-manager-refresh-kavita";
+    runtimeInputs = [ pkgs.coreutils pkgs.curl pkgs.jq pkgs.python3 pkgs.sqlite ];
+    text = ''
+      set -euo pipefail
+      base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.kavita}"
+      db=/var/lib/kavita/config/kavita.db
+      token_key_file=${lib.escapeShellArg config.age.secrets.kavitaTokenKey.path}
+      admin_username=${lib.escapeShellArg vars.kanidmAdminUser}
+
+      [[ "$admin_username" =~ ^[a-z][a-z0-9._-]{0,63}$ ]] || {
+        echo "Kavita admin username is malformed" >&2
+        exit 1
+      }
+      [[ -f "$db" && ! -L "$db" ]] || {
+        echo "Kavita database is unavailable" >&2
+        exit 1
+      }
+      [[ -f "$token_key_file" && ! -L "$token_key_file" ]] || {
+        echo "Kavita token key is unavailable" >&2
+        exit 1
+      }
+
+      admin_token="$(python3 - "$token_key_file" "$db" "$admin_username" <<'PY'
+import base64
+import hashlib
+import hmac
+import json
+import sqlite3
+import sys
+import time
+
+def encode(value):
+    return base64.urlsafe_b64encode(value).rstrip(b"=")
+
+token_key_path, database_path, username = sys.argv[1:]
+with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5) as database:
+    row = database.execute(
+        "select Id, UserName from AspNetUsers where UserName = ? limit 1",
+        (username,),
+    ).fetchone()
+if row is None:
+    raise SystemExit("Kavita admin identity is unavailable")
+token_key = open(token_key_path, "rb").read().strip()
+if len(token_key) < 32:
+    raise SystemExit("Kavita token key is malformed")
+now = int(time.time())
+header = encode(json.dumps(
+    {"alg": "HS512", "typ": "JWT"}, separators=(",", ":")
+).encode())
+payload = encode(json.dumps({
+    "name": row[1],
+    "nameid": str(row[0]),
+    "role": ["Admin", "Login"],
+    "nbf": now,
+    "iat": now,
+    "exp": now + 300,
+}, separators=(",", ":")).encode())
+unsigned = header + b"." + payload
+signature = encode(hmac.new(token_key, unsigned, hashlib.sha512).digest())
+print((unsigned + b"." + signature).decode())
+PY
+)"
+      kavita_curl() {
+        printf 'header = "Authorization: Bearer %s"\n' "$admin_token" \
+          | curl --config - --fail --silent --show-error --max-time 60 "$@"
+      }
+
+      baseline="$(sqlite3 -readonly -json -cmd '.timeout 5000' "$db" \
+        'select Id as id, LastScanned as lastScanned from Library order by Id;')"
+      library_count="$(jq 'length' <<<"$baseline")"
+      if (( library_count == 0 )); then
+        echo "Kavita has no libraries to scan"
+        exit 0
+      fi
+
+      kavita_curl -X POST "$base_url/api/library/scan-all?force=false" >/dev/null
+      unset admin_token
+      # Kavita has no public scan-job status endpoint. LastScanned is persisted
+      # after the library data update, so every baseline timestamp must advance.
+      for _ in $(seq 1 3600); do
+        current="$(sqlite3 -readonly -json -cmd '.timeout 5000' "$db" \
+          'select Id as id, LastScanned as lastScanned from Library order by Id;')"
+        if ! jq -e --argjson before "$baseline" \
+          '. as $current
+           | all($before[]; . as $previous
+             | any($current[]; .id == $previous.id))' \
+          <<<"$current" >/dev/null; then
+          echo "A Kavita library was removed while its scan was running" >&2
+          exit 1
+        fi
+        if jq -e --argjson before "$baseline" \
+          '. as $current
+           | all($before[]; . as $previous
+             | any($current[];
+               .id == $previous.id and .lastScanned != $previous.lastScanned))' \
+          <<<"$current" >/dev/null; then
+          exit 0
+        fi
+        sleep 2
+      done
+      echo "Timed out waiting for Kavita library scans" >&2
       exit 1
     '';
   };
@@ -494,6 +607,46 @@ in
       IPAddressAllow = [ "localhost" ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+    };
+  };
+
+  systemd.services.media-manager-refresh-kavita = lib.mkIf kavitaRefreshAvailable {
+    description = "Request and follow Kavita library scans";
+    after = [ "kavita.service" "kavita-oidc-bootstrap.service" ];
+    wants = [ "kavita.service" "kavita-oidc-bootstrap.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "kavita";
+      Group = "kavita";
+      ExecStart = lib.getExe kavitaRefresh;
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectKernelLogs = true;
+      ProtectControlGroups = true;
+      ProtectProc = "invisible";
+      ProcSubset = "pid";
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      RestrictSUIDSGID = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      TimeoutStartSec = "2h5m";
+      CapabilityBoundingSet = [ ];
+      AmbientCapabilities = [ ];
+      ReadOnlyPaths = [
+        "/var/lib/kavita/config/kavita.db"
+        config.age.secrets.kavitaTokenKey.path
+      ];
+      IPAddressDeny = "any";
+      IPAddressAllow = [ "localhost" ];
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" "fchown" ];
     };
   };
 

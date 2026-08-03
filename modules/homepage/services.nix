@@ -866,7 +866,7 @@ let
       projectUrl = "https://docs.paperless-ngx.com";
       logoUrl = "/logos/paperless-ngx.svg";
       appName = "paperless-ngx";
-      uploadNotes = "Upload PDFs and image documents through Paperless or the consume inbox.";
+      uploadNotes = "Upload PDFs and image documents through Paperless.";
       requiredAnyGroups = [ "paperless-users" ];
     }
     {
@@ -1039,7 +1039,7 @@ let
     }
     {
       id = "downloads";
-      name = "Youtube Downloads";
+      name = "YouTube Downloads";
       url = "https://${downloadsHost}";
       enabled = youtubeDownloaderEnabled;
       category = "media";
@@ -1141,7 +1141,7 @@ let
       instructions = [
         "Keep each audiobook in its own folder with cover art and metadata beside the audio files."
         "Use _Audiobooks/_YouTube for audio produced by the downloader."
-        "Pure audio with thumbnails belongs in Audiobookshelf, not Jellyfin."
+        "Audiobook audio with its cover art belongs in Audiobookshelf, not Jellyfin."
       ];
     }
     {
@@ -1230,456 +1230,165 @@ let
     }
   ];
 
-  zfsStorageAdminGuide = lib.optionals vars.enableZfsDataPool [
-    {
-      title = "Check ZFS pool status";
-      command = "zpool status -v ${vars.zfsDataPool.name}";
-      detail = "Inspect data pool health, mirror state, scrub history, checksums, and device errors.";
-    }
-    {
-      title = "Start ZFS scrub";
-      command = "sudo zpool scrub ${vars.zfsDataPool.name}";
-      detail = "Start a scrub for the mirrored data pool. Monitor progress and any repaired errors with the ZFS pool status command.";
-    }
-    {
-      title = "Show Btrfs filesystem usage";
-      command = "sudo btrfs filesystem usage /persist";
-      detail = "Check Btrfs allocation and data/metadata usage for persistent state on the system SSD.";
-    }
-    {
-      title = "Check Btrfs scrub status";
-      command = "sudo btrfs scrub status /persist";
-      detail = "Review the latest Btrfs scrub result for persistent state on the system SSD.";
-    }
-  ];
-  singleDiskStorageAdminGuide = lib.optionals (!vars.enableZfsDataPool) [
-    {
-      title = "Check root filesystem usage";
-      command = "df -hT / ${vars.dataRoot} /persist";
-      detail = "Check free space and filesystem types for the single-disk root, data root directory, and persistent state directory.";
-    }
-    {
-      title = "Inspect root mount options";
-      command = "findmnt -no SOURCE,FSTYPE,OPTIONS /";
-      detail = "Confirm the root device, filesystem type, and active mount options on the single-disk ext4 profile.";
-    }
-    {
-      title = "Check storage layout logs";
-      command = "sudo journalctl -u data-pool-layout.service -n 100 --no-pager";
-      detail = "Review creation and repair logs for data, appdata, shared, backup, and user-root directories.";
-    }
-    {
-      title = "Inspect system disk with SMART";
-      command = "sudo smartctl -a /dev/disk/by-id/${vars.mainDisk}";
-      detail = "Read SMART attributes, self-test history, and error logs for the single system disk.";
-    }
-  ];
-
   adminGuide = [
     {
-      title = "Review evaluated config";
-      command = "nix run .#show-config-summary";
-      detail = "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets. Start here before changing config.";
+      title = "Validate config & prerequisites";
+      command = "nix run .#validate-config-readiness -- --identity /path/to/age.key";
+      detail = "Check decryptability and deploy prerequisites. Replace the identity path.";
     }
     {
-      title = "Validate config readiness";
-      command = "nix run .#validate-config-readiness -- --identity /secure/path/to/age.key";
-      detail = "From the repository, preflight evaluated settings, decryptability of required secrets, and bootstrap/deploy prerequisites. Replace the identity path first. This check does not prove SSH or network reachability.";
-    }
-    {
-      title = "Export operations inventory";
-      command = "nix run .#export-inventory -- --format text";
-      detail = "Print the evaluated inventory for hostnames, identity, storage, backups, impermanence, secrets, and systemd units. Use this for audits or handoff notes.";
-    }
-    {
-      title = "Check git worktree";
+      title = "Check git is clean";
       command = "git status --short";
-      detail = "Confirm modified, staged, and untracked files before the guarded deploy packages the repo archive. New Nix files must be tracked to reach the server.";
+      detail = "Confirm all new Nix files are tracked before deploying.";
     }
     {
-      title = "Check service health";
-      command = "sudo systemctl --failed --no-pager";
-      detail = "List failed units after deploys or incidents. Follow up with status and logs for each named unit.";
-    }
-    {
-      title = "List scheduled timers";
-      command = "systemctl list-timers --all --no-pager";
-      detail = "Review backup, sync, reconciliation, scrub, and maintenance timers, including missed or inactive schedules.";
-    }
-    {
-      title = "Review current boot warnings";
-      command = "journalctl -b -p warning..alert --no-pager";
-      detail = "Scan current-boot warnings and errors to spot host-level failures before narrowing to one app.";
-    }
-    {
-      title = "Show resource snapshot";
-      command = "systemctl status --no-pager";
-      detail = "Get a quick systemd snapshot showing degraded state, queued jobs, failed units, and resource summary.";
-    }
-    {
-      title = "Validate broad changes";
-      command = "./scripts/deploy.sh --debug --action test";
-      detail = "Run the broad validation gate and test-activate the candidate on the live server after a significant change. Test activation changes running services, but does not make the generation the next boot default.";
-    }
-    {
-      title = "Run lean repo validation";
+      title = "Quick repo checks";
       command = "./scripts/validate-repo.sh";
-      detail = "Run fast repository policy and script tests before routine edits. This avoids Nix builds unless extra flags are used.";
+      detail = "Run fast policy and script tests before deploying.";
     }
     {
-      title = "Run full repo validation";
-      command = "./scripts/validate-repo.sh --full";
-      detail = "Run flake evaluation, repository policy tests, and buildable check derivations before broad or risky changes.";
-    }
-    {
-      title = "Evaluate flake without building";
-      command = "nix flake check --no-build";
-      detail = "Catch flake evaluation errors, missing imports, and option assertion failures without building packages or switching the host.";
-    }
-    {
-      title = "Dry-run deploy target resolution";
-      command = "DEPLOY_DRY_RUN=1 ./scripts/deploy.sh --action test";
-      detail = "Print the target host, build host, flake host, action, debug mode, and rebuild command the guarded deploy helper would use.";
-    }
-    {
-      title = "Run routine guarded deploy";
+      title = "Test deploy";
       command = "./scripts/deploy.sh --action test";
-      detail = "Stage the repo archive and test-activate it on the live server. Running services can restart or change; the candidate is not made the next boot default.";
+      detail = "Test-activate the repo on the live server. Services may restart; the boot default is unchanged.";
     }
     {
-      title = "Run guarded deploy with local build";
-      command = "./scripts/deploy.sh --build-locally --action test";
-      detail = "Build on the admin workstation and test-activate the live server over SSH. Running services can restart or change, even though the boot default is unchanged.";
-    }
-    {
-      title = "Switch after a passing test";
+      title = "Make permanent";
       command = "./scripts/deploy.sh --action switch";
-      detail = "Make the tested generation persistent using the guarded deploy helper. Run this only after the test path passes and failed units are understood.";
+      detail = "Persist the tested generation as the next boot default. Run only after checking failed units.";
     }
     {
-      title = "Show generations for rollback";
-      command = "sudo nix-env --list-generations --profile /nix/var/nix/profiles/system";
-      detail = "List bootable system generations and timestamps before choosing a rollback or comparing recent switches.";
-    }
-    {
-      title = "Emergency rollback current generation";
+      title = "Emergency rollback";
       command = "sudo nixos-rebuild switch --rollback";
-      detail = "Emergency server-console recovery only. This bypasses the guarded deploy health checks and changes both running services and the boot profile, so it may interrupt SSH. Use the guarded deploy's automatic rollback for normal failures; after this command, check failed units and routes before leaving the console.";
+      detail = "Server-console recovery. Bypasses deploy health checks and changes the boot profile.";
     }
     {
-      title = "Check app service status";
-      command = "systemctl status APP.service --no-pager";
-      detail = "Replace APP.service with the real unit, such as immich-server.service, paperless-web.service, jellyfin.service, or filestash.service.";
+      title = "Failed services";
+      command = "sudo systemctl --failed --no-pager";
+      detail = "List failed units after deploys or incidents.";
     }
     {
-      title = "Follow app logs";
-      command = "journalctl -fu APP.service";
-      detail = "Stream one unit's logs while reproducing an app problem. Stop with Ctrl-C.";
+      title = "Follow service logs";
+      command = "journalctl -fu SERVICE.service";
+      detail = "Stream one service's logs. Replace SERVICE with the real unit name.";
     }
     {
-      title = "Restart a single app service";
-      command = "sudo systemctl restart APP.service";
-      detail = "Restart only the affected unit after checking logs and config. Prefer this over broad host restarts.";
+      title = "Restart a service";
+      command = "sudo systemctl restart SERVICE.service";
+      detail = "Restart one service. Check logs first; prefer this over host restarts.";
     }
     {
-      title = "Restart homepage";
-      command = "sudo systemctl restart homepage.service";
-      detail = "Recover a crashed or stuck portal using the Homepage code and generated JSON already in the active NixOS generation. Repository code or configuration changes require a guarded deploy; restarting alone cannot load them.";
-    }
-    {
-      title = "Check OAuth proxy logs";
-      command = "journalctl -u '*oauth2-proxy.service' -b --no-pager";
-      detail = "Inspect SSO proxy failures across protected app surfaces, including bad upstreams, cookie issues, and denied groups.";
-    }
-    {
-      title = "List storage layout services";
-      command = "systemctl list-units --type=service --all '*storage-layout*' '*folder-layout*' fileshare-user-root-sync.service --no-pager";
-      detail = "Inspect the exact layout and ACL reconciliation units available in this generation. Successful oneshot units remain active, so `start` is a no-op; after checking the data mount and logs, re-run one specific unit with `sudo systemctl restart UNIT.service`.";
-    }
-  ]
-  ++ lib.optionals immichEnabled [
-    {
-      title = "Re-run Immich OIDC reconcile";
-      command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
-      detail = "Force Immich user and admin reconciliation from current Kanidm group and claim state after access or admin-group changes.";
-    }
-  ]
-  ++ lib.optionals paperlessEnabled [
-    {
-      title = "Re-run Paperless OIDC reconcile";
-      command = "sudo systemctl start paperless-oidc-reconcile.service";
-      detail = "Force Paperless account reconciliation from Kanidm after access, username, or email changes when the web UI has not caught up.";
-    }
-  ]
-  ++ lib.optionals jellyfinEnabled [
-    {
-      title = "Re-run Jellyfin OIDC bootstrap";
-      command = "sudo systemctl start jellyfin-oidc-bootstrap-v1.service";
-      detail = "Reconcile the pinned OIDC provider, Quick Connect setting, rollback-safe login branding, and private plugin configuration-file permissions. The service reads its client secret through a systemd credential and does not log provider JSON.";
-    }
-    {
-      title = "Retrieve Jellyfin initial password";
-      command = "sudo jellyfin-initial-credential\nsudo jellyfin-initial-credential USERNAME";
-      detail = "Compatibility fallback for native clients that cannot use OIDC or Quick Connect. List users whose root-only initial credential is still stored, then retrieve only the intended username. Treat the printed password as a secret and hand it over through a trusted channel. The stored credential can be stale after a password change; reconciliation does not overwrite the replacement password.";
-    }
-    {
-      title = "Troubleshoot Jellyfin LAN discovery";
-      detail = "Keep the client and server on the same IPv4 broadcast network; Fladder sends a limited broadcast that routers and VLANs do not forward. Disable guest-network, AP, or client isolation. The server accepts the probe on UDP 7359 and returns a unicast reply from UDP source port 7359 to the client’s temporary UDP port, so a default-drop client firewall may need a reply rule even when ordinary established traffic is allowed. TCP 8096 must also be reachable after discovery.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies with nftables";
-      command = "sudo nft insert rule inet filter input iifname \"CLIENT_LAN_INTERFACE\" ip saddr ${vars.networking.lan.ip} udp sport ${toString vars.networking.ports.jellyfinDiscovery} counter accept comment \"Jellyfin discovery replies\"";
-      detail = "Run on the Linux client only after inspecting `sudo nft list ruleset`. Replace CLIENT_LAN_INTERFACE and adapt the table or chain if it is not `inet filter input`. This narrow example accepts only replies from this Jellyfin server and source port; persist the equivalent rule in the client’s firewall configuration after testing.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies with UFW";
-      command = "sudo ufw allow in on CLIENT_LAN_INTERFACE proto udp from ${vars.networking.lan.ip} port ${toString vars.networking.ports.jellyfinDiscovery} to any comment 'Jellyfin discovery replies'";
-      detail = "Run on a UFW-managed Linux client after replacing CLIENT_LAN_INTERFACE. Check `sudo ufw status verbose` first. The rule is limited to UDP replies from this server’s discovery source port rather than opening a fixed client destination port.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies with firewalld";
-      command = "sudo firewall-cmd --permanent --zone=home --add-rich-rule='rule family=\"ipv4\" source address=\"${vars.networking.lan.ip}/32\" source-port port=\"${toString vars.networking.ports.jellyfinDiscovery}\" protocol=\"udp\" accept'\nsudo firewall-cmd --reload";
-      detail = "Run on a firewalld-managed Linux client only if its LAN interface uses the `home` zone; confirm with `firewall-cmd --get-active-zones` and change the zone if necessary. The rich rule accepts only discovery replies from this Jellyfin server and UDP source port.";
-    }
-    {
-      title = "Allow Jellyfin discovery replies on Windows";
-      command = "New-NetFirewallRule -DisplayName \"Jellyfin discovery replies\" -Direction Inbound -Action Allow -Protocol UDP -RemoteAddress ${vars.networking.lan.ip} -RemotePort ${toString vars.networking.ports.jellyfinDiscovery} -Profile Private";
-      detail = "Run in Administrator PowerShell on the client after confirming the LAN is classified Private. This limits the inbound exception to this Jellyfin server and its UDP discovery source port; it does not expose a fixed local port.";
-    }
-    {
-      title = "Allow Jellyfin discovery on Apple devices";
-      detail = "On macOS, open System Settings → Privacy & Security → Local Network and allow Fladder. Then open Network → Firewall → Options, ensure Block all incoming connections is off, and allow incoming connections for Fladder if it is listed. On iPhone or iPad, enable Fladder under Settings → Privacy & Security → Local Network. Keep the device off guest Wi-Fi or any SSID with client isolation.";
-    }
-    {
-      title = "Re-run Jellyfin library sync";
-      command = "sudo systemctl start jellyfin-library-sync.service";
-      detail = "Refresh Jellyfin libraries after media folders are created, repaired, or populated.";
-    }
-  ]
-  ++ lib.optionals kopiaEnabled [
-    {
-      title = "Retrieve Kopia browser credential";
-      command = "sudo nixhomeserver-kopia-browser-credential";
-      detail = "Run only on the server when onboarding or recovering an intended backup administrator. The command prints the active shared Kopia browser credential to your terminal; hand it over through a trusted channel and never paste it into shell history, logs, tickets, screenshots, or chat. The backup-admin group is still required at the Kanidm gateway, and backup-storage-users alone grants only read-only repository browsing.";
-    }
-  ]
-  ++ lib.optionals kiwixEnabled [
-    {
-      title = "Re-run Kiwix library sync";
-      command = "sudo systemctl start kiwix-library-sync.service";
-      detail = "Publish newly uploaded or repaired ZIM files into the Kiwix web library catalog.";
-    }
-  ]
-  ++ lib.optionals offlineMediaEnabledForHomepage [
-    ({
-      title = "Revoke offline-media device access";
-      detail =
-        if offlineMediaAccessGroup == "users" then
-          "Offline Media currently uses the baseline users group. Never remove that group merely to stop device sync: doing so also removes ordinary Homepage and identity access. Have the user open Offline Media and remove each enrolled device. For centrally controlled revocation, configure a new dedicated offlineMedia.accessGroup, deploy it, and grant that role explicitly."
-        else
-          "Remove only the dedicated offline-media role, then immediately reconcile. Reconciliation verifies live Kanidm membership before detaching that user's stale Syncthing folders and devices; it never deletes source media or removes baseline users access.";
-    } // lib.optionalAttrs (offlineMediaAccessGroup != "users") {
-      command = "kanidm group remove-members ${lib.escapeShellArg offlineMediaAccessGroup} USERNAME\nsudo systemctl start offline-media-reconcile.service";
-    })
-  ]
-  ++ [
-    {
-      title = "Check Kanidm health";
-      command = "systemctl status kanidm.service --no-pager";
-      detail = "Check the identity provider before debugging app sign-in, OAuth, or group-claim failures.";
-    }
-    {
-      title = "Bootstrap or recover operator credential";
-      command = "sudo kanidm-operator-bootstrap status\n# If status says initial setup is required:\nsudo kanidm-operator-bootstrap issue";
-      detail = "On the server, check whether the configured operator has completed credential setup. `issue` prints a short-lived one-time setup URL only to the root terminal. For a deliberate later recovery, review the warning and add `--recovery`; never paste the URL into logs or tickets.";
+      title = "Boot warnings";
+      command = "journalctl -b -p warning..alert --no-pager";
+      detail = "Scan current-boot warnings and errors.";
     }
     {
       title = "Authenticate Kanidm CLI";
       command = "kanidm login -D ${lib.escapeShellArg vars.kanidmAdminUser} && kanidm self whoami";
-      detail = "Start or verify a CLI session as the configured delegated operator before running person or group commands. Do not use the built-in idm_admin account for routine administration.";
+      detail = "Start or verify a CLI session before running person or group commands.";
     }
     {
-      title = "List Kanidm people";
-      command = "kanidm person list";
-      detail = "Review known people before creating accounts, granting access, or removing stale access.";
+      title = "Verify user exists";
+      command = "kanidm person get USERNAME";
+      detail = "Check a Kanidm user before creating or changing access.";
     }
     {
-      title = "List Kanidm groups";
-      command = "kanidm group list";
-      detail = "Review available groups before granting app, file, backup, or admin access.";
+      title = "Create user";
+      command = "kanidm person create USERNAME 'Display Name'\nkanidm person update USERNAME --mail EMAIL";
+      detail = "Create a Kanidm person and set their email for OIDC apps.";
     }
     {
-      title = "Inspect Kanidm group";
-      command = "kanidm group get app-admin";
-      detail = "Inspect membership and attributes for a specific group. Replace app-admin with the app, file, backup, or admin group you are checking.";
+      title = "Grant baseline sign-in";
+      command = "kanidm group add-members users USERNAME";
+      detail = "Add the user to the standard users group.";
     }
     {
-      title = "Remove user from access group";
-      command = "kanidm group remove-members app-admin USERNAME";
-      detail = "Use this live command for manual groups such as app-admin, file-access roles, backup roles, or seerr-request-managers after verifying membership. Default application bundles still come from identity.appUsers and identity.appAdminUsers in vars.nix.";
+      title = "Grant app access";
+      command = "kanidm group add-members APP-GROUP USERNAME";
+      detail = "Grant a specific app, file, or admin group. Replace APP-GROUP with the real group name.";
     }
     {
-      title = "Restart identity reconciliation";
+      title = "Revoke access";
+      command = "kanidm group remove-members APP-GROUP USERNAME";
+      detail = "Remove a specific group membership.";
+    }
+    {
+      title = "Generate sign-in link";
+      command = "kanidm person credential create-reset-token USERNAME --name ${lib.escapeShellArg vars.kanidmAdminUser}";
+      detail = "One-hour, single-use link. Send through a trusted channel after access is ready.";
+    }
+    {
+      title = "Reconcile identity";
       command = "sudo systemctl start kanidm-identity-reconcile.service kanidm-files-posix-groups.service fileshare-user-root-sync.service";
-      detail = "Refresh configured display names and mail addresses for Kanidm people that already exist, then refresh POSIX file-group mappings and per-user roots. File and backup role membership remains managed directly in Kanidm.";
-    }
-    {
-      title = "Manage Kanidm entity removal explicitly";
-      command = "$EDITOR modules/Core_Modules/kanidm/provision.nix";
-      detail = "Kanidm autoremove is disabled, so deleted module groups/users are kept for rescue safety. Mark stale provision entries intentionally, for example with `present = false`, before retiring a module or host.";
-    }
-    {
-      title = "Show mounted filesystems";
-      command = "df -hT";
-      detail = "Check free space and filesystem types for mounted roots, content pools, persistent state, and backup paths.";
-    }
-    {
-      title = "Show disk layout";
-      command = "lsblk -f";
-      detail = "Review block devices, filesystems, labels, UUIDs, and mountpoints before storage or recovery work.";
-    }
-    {
-      title = "Discover monitored storage devices";
-      command = "sudo nixhomeserver-storage-inventory --format text";
-      detail = "On the server, list disks detected by the evaluated storage-monitoring inventory, including stable by-id paths to use in config. This installed command cannot accidentally inspect an admin workstation.";
+      detail = "Refresh Kanidm display names, emails, POSIX groups, and per-user roots.";
     }
   ]
-  ++ zfsStorageAdminGuide
-  ++ singleDiskStorageAdminGuide
+  ++ lib.optionals immichEnabled [
+    {
+      title = "Sync Immich accounts";
+      command = "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service";
+      detail = "Reconcile Immich users and admins from Kanidm groups.";
+    }
+  ]
+  ++ lib.optionals paperlessEnabled [
+    {
+      title = "Sync Paperless accounts";
+      command = "sudo systemctl start paperless-oidc-reconcile.service";
+      detail = "Reconcile Paperless accounts from Kanidm after access changes.";
+    }
+  ]
+  ++ lib.optionals jellyfinEnabled [
+    {
+      title = "Jellyfin initial password";
+      command = "sudo jellyfin-initial-credential USERNAME";
+      detail = "Retrieve the stored initial credential for a native client. Treat as a secret.";
+    }
+    {
+      title = "Sync Jellyfin libraries";
+      command = "sudo systemctl start jellyfin-library-sync.service";
+      detail = "Refresh Jellyfin libraries after media changes.";
+    }
+  ]
+  ++ lib.optionals kiwixEnabled [
+    {
+      title = "Sync Kiwix library";
+      command = "sudo systemctl start kiwix-library-sync.service";
+      detail = "Publish new or repaired ZIM files.";
+    }
+  ]
   ++ [
     {
-      title = "Run SMART short sweep";
-      command = "sudo systemctl start storage-smart-short.service";
-      detail = "On the server, start short SMART self-tests for the evaluated monitored-device inventory. Check the storage monitor logs after the tests complete.";
+      title = "Check space & disks";
+      command = "df -hT\nlsblk -f";
+      detail = "Mounted filesystems, free space, block devices, UUIDs, and mountpoints.";
     }
     {
-      title = "Inspect a disk with SMART";
-      command = "sudo smartctl -a /dev/disk/by-id/REPLACE_DISK_ID";
-      detail = "Read SMART attributes, self-test history, and error logs for one disk. Use a stable /dev/disk/by-id path.";
+      title = "Backup schedule";
+      command = "systemctl list-timers 'kopia*' --all --no-pager";
+      detail = "Verify Kopia snapshot timers are scheduled and see next run times.";
     }
     {
-      title = "Check storage monitor logs";
-      command = "journalctl -u 'storage-smart-*' -u smartd.service -b --no-pager";
-      detail = "Inspect SMART sweep and smartd output from the current boot, including failed self-tests and alert messages.";
-    }
-    {
-      title = "Check backup timers";
-      command = "systemctl list-timers 'kopia*' 'rclone*' --all --no-pager";
-      detail = "Verify Kopia snapshot timers${lib.optionalString megaEnabled " and the configured offsite sync timer"} are scheduled and see their next run times.";
-    }
-    {
-      title = "Check Kopia services";
-      command = "systemctl status kopia.service kopia-auth-proxy.service auth-gateway-oauth2-proxy.service auth-gateway-router.service --no-pager";
-      detail = "Inspect the local Kopia server, native auth proxy, and shared SSO gateway together when backup UI or auth is failing.";
-    }
-    {
-      title = "Run persist snapshot now";
+      title = "Trigger snapshot now";
       command = "sudo systemctl start kopia-persist-snapshot.service";
-      detail = "Trigger an immediate snapshot of persisted system and app state. Check logs before assuming it completed.";
-    }
-    {
-      title = "Inspect persist snapshot logs";
-      command = "journalctl -u kopia-persist-snapshot.service -n 100 --no-pager";
-      detail = "Review the most recent persist snapshot run, including Kopia errors and excluded paths.";
+      detail = "Start an immediate persist snapshot. Check logs afterward.";
     }
   ]
   ++ lib.optionals megaEnabled [
     {
-      title = "Run offsite Kopia sync now";
+      title = "Run offsite sync";
       command = "sudo systemctl start rclone-mega-kopia-sync.service";
-      detail = "Start the rclone job that mirrors the Kopia repository offsite. Use after a successful local snapshot when freshness matters.";
-    }
-    {
-      title = "Inspect offsite sync logs";
-      command = "journalctl -u rclone-mega-kopia-sync.service -n 100 --no-pager";
-      detail = "Review the most recent offsite backup sync run, including transfer failures and destination errors.";
+      detail = "Mirror the Kopia repository offsite.";
     }
   ]
   ++ [
     {
-      title = "Check backup repository size";
-      command = "sudo du -sh ${vars.backupRoot}/kopia";
-      detail = "Check the managed Kopia repository's on-disk size before storage, retention, or offsite sync troubleshooting.";
-    }
-    {
-      title = "Check Caddy status";
+      title = "Reverse proxy health";
       command = "systemctl status caddy.service --no-pager";
-      detail = "Check the edge reverse proxy before debugging public or private app reachability.";
+      detail = "Check the edge reverse proxy before debugging app reachability.";
     }
     {
-      title = "Validate Caddy config";
-      command = "nix run --inputs-from . nixpkgs#caddy -- validate --config /etc/caddy/caddy_config --adapter caddyfile";
-      detail = "Validate the running Caddy config file before reloads, route changes, or TLS debugging. A valid Nix build can still produce a bad runtime route.";
-    }
-    {
-      title = "Reload Caddy";
-      command = "sudo systemctl reload caddy.service";
-      detail = "Reload the Caddy configuration already present in the active NixOS generation. Repository route changes must be deployed first; editing the repo and reloading cannot apply them.";
-    }
-    {
-      title = "Inspect Caddy logs";
-      command = "journalctl -u caddy.service -b --no-pager";
-      detail = "Review reverse proxy, TLS, ACME, and upstream errors from the current boot.";
-    }
-    {
-      title = "Check Unbound status";
-      command = "systemctl status unbound.service --no-pager";
-      detail = "Check private DNS health before debugging split-horizon records or NetBird-only routes.";
-    }
-    {
-      title = "Query private DNS";
-      command = "dig @${vars.networking.loopbackIPv4} homepage.${vars.domain}";
-      detail = "Confirm the server's loopback resolver returns the private homepage record before debugging clients or NetBird routes.";
-    }
-    {
-      title = "Check Cloudflare tunnel status";
-      command = "systemctl status 'cloudflared-tunnel-${vars.cloudflareTunnelName}.service' --no-pager";
-      detail = "Inspect the Cloudflare tunnel unit when public hostnames fail but local services still work.";
-    }
-    {
-      title = "Inspect Cloudflare tunnel logs";
-      command = "journalctl -u 'cloudflared-tunnel-${vars.cloudflareTunnelName}.service' -b --no-pager";
-      detail = "Review tunnel registration, connection, DNS, and ingress errors from the current boot.";
-    }
-    {
-      title = "Check NetBird status";
-      command = "netbird-main status";
-      detail = "Confirm the server is connected to NetBird and advertises or receives the expected peers and routes.";
-    }
-    {
-      title = "Inspect firewall rules";
+      title = "Firewall rules";
       command = "sudo nft list ruleset";
-      detail = "Inspect active nftables rules when DNS resolves and the service runs, but traffic is still blocked.";
-    }
-    {
-      title = "Show SFTP host key fingerprint";
-      command = "sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub";
-      detail = "Give this fingerprint to an SFTP/SSHFS user through a trusted channel before their first connection. Investigate rather than accepting an unexpected fingerprint change.";
-    }
-    {
-      title = "Rotate or regenerate secrets";
-      command = "nix run .#generate-secrets -- --identity /path/to/current/age.key";
-      detail = "Verify every manifest secret with the current identity. Use the documented explicit --fresh or --rekey mode only when intentionally changing credentials or recipients.";
-    }
-    {
-      title = "List encrypted secrets";
-      command = "find secrets -maxdepth 1 -name '*.age' -printf '%f\\n' | sort";
-      detail = "Review encrypted age files tracked in the repository without exposing plaintext secret values.";
-    }
-    {
-      title = "List expected external secrets";
-      command = "nix eval --json --impure --expr 'builtins.attrNames ((import ./secrets/manifest.nix).externalSecrets)'";
-      detail = "Print external secret names that must be supplied from staged material rather than generated automatically.";
-    }
-    {
-      title = "Edit staged external secret";
-      command = "$EDITOR secrets/unencrypted/SECRET_NAME";
-      detail = "Create or update one staged plaintext external secret immediately before encryption. Replace SECRET_NAME with a manifest entry.";
-    }
-    {
-      title = "Encrypt staged external secrets";
-      command = "nix run .#generate-secrets -- --replace-external SECRET_NAME --identity /path/to/current/age.key";
-      detail = "Validate and replace one named external manifest secret without rotating unrelated generated credentials. Securely remove its staged plaintext after verifying the result.";
+      detail = "Inspect active nftables rules when a service runs but traffic is blocked.";
     }
   ];
 

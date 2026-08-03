@@ -162,6 +162,10 @@ impl AppConfig {
         self.state_dir.join("control.sqlite3")
     }
 
+    pub fn dvd_inbox_path(&self) -> PathBuf {
+        self.shared_root.join("_ISO").join("_DVDs")
+    }
+
     pub fn visible_roots(&self, identity: &Identity) -> Vec<VisibleRoot> {
         let personal_base = self.users_root.join(&identity.username);
         let definitions = [
@@ -192,13 +196,6 @@ impl AppConfig {
                 "books",
                 RootScope::Shared,
                 self.shared_root.join("_Books"),
-            ),
-            (
-                "shared-dvd-inbox",
-                "DVD ISO inbox",
-                "iso",
-                RootScope::Shared,
-                self.shared_root.join("_ISO/_DVDs"),
             ),
             (
                 "personal-videos",

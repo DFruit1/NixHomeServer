@@ -69,6 +69,57 @@ paths:
       responses:
         "200":
           description: MKVMaker progress, or an unavailable state.
+  /conversions/inbox:
+    get:
+      operationId: listConversionInbox
+      description: >-
+        Lists the shared DVD ISO inbox without exposing it as a catalog root:
+        waiting ISOs beside the _Processed and _Failed results. Each entry
+        carries the parsed ISO 9660 volume label when present so discs can be
+        identified beyond their file names.
+      responses:
+        "200":
+          description: Inbox availability and the pending, processed, and failed ISO groups.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available, pending, processed, failed]
+                properties:
+                  available: { type: boolean }
+                  pending:
+                    type: array
+                    items: { $ref: "#/components/schemas/InboxIso" }
+                  processed:
+                    type: array
+                    items: { $ref: "#/components/schemas/InboxIso" }
+                  failed:
+                    type: array
+                    items: { $ref: "#/components/schemas/InboxIso" }
+        "401":
+          $ref: "#/components/responses/Error"
+  /items/{itemId}/image:
+    get:
+      operationId: getItemImage
+      description: >-
+        Streams cover artwork for one visible catalog item. Artwork items are
+        served directly; for media items the server selects a cataloged image
+        beside the item, preferring well-known cover names. Reads use the same
+        symlink-safe contained open as the broker.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The selected artwork bytes.
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/webp: {}
+        "404":
+          $ref: "#/components/responses/Error"
   /items/{itemId}/subtitles/search:
     get:
       operationId: searchOpenSubtitles
@@ -228,7 +279,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [jellyfin, audiobookshelf, syncthing]
+            enum: [jellyfin, audiobookshelf, kavita, syncthing]
       responses:
         "200":
           description: Latest refresh state, or idle when none has run yet.
@@ -253,7 +304,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [jellyfin, audiobookshelf, syncthing]
+            enum: [jellyfin, audiobookshelf, kavita, syncthing]
       responses:
         "202":
           description: Refresh queued, or already waiting for dispatch.
@@ -382,6 +433,17 @@ components:
         label: { type: string }
         category: { type: string }
         scope: { type: string, enum: [shared, personal] }
+    InboxIso:
+      type: object
+      required: [name, sizeBytes, modifiedNs]
+      properties:
+        name: { type: string }
+        volumeId:
+          type: string
+          nullable: true
+          description: ISO 9660 primary volume label, when the disc provides one.
+        sizeBytes: { type: integer, minimum: 0 }
+        modifiedNs: { type: integer, minimum: 0 }
     IntegrationRefresh:
       type: object
       required: [integrationId, state]

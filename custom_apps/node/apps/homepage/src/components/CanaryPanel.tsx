@@ -14,6 +14,7 @@ export const CanaryPanel = component$(() => {
   const status = useSignal<CanaryStatusResponse>();
   const error = useSignal('');
   const starting = useSignal(false);
+  const dialogRef = useSignal<HTMLDialogElement>();
 
   useVisibleTask$(({ cleanup }) => {
     let cancelled = false;
@@ -49,7 +50,15 @@ export const CanaryPanel = component$(() => {
     }
   });
 
+  const openResults = $(() => {
+    dialogRef.value?.showModal();
+  });
+
   const current = status.value?.current;
+  const results = current?.results;
+  const hasResults = results && results.length > 0;
+  const failedCount = results?.filter(r => r.status === 'failed').length ?? 0;
+
   return (
     <section class="canary-panel" aria-labelledby="canary-heading">
       <div class="canary-panel__header">
@@ -67,28 +76,50 @@ export const CanaryPanel = component$(() => {
         <button type="button" onClick$={start} disabled={starting.value || current?.state === 'running'}>
           {current?.state === 'running' ? 'Checks running…' : starting.value ? 'Starting…' : 'Run service checks'}
         </button>
+        {hasResults && (
+          <button type="button" class="canary-view-results" onClick$={openResults}>
+            View Results ({results?.length ?? 0}{failedCount > 0 ? `, ${failedCount} failed` : ''})
+          </button>
+        )}
         {current?.finishedAt && <span>Last completed {new Date(current.finishedAt).toLocaleString()}</span>}
       </div>
-      {current?.results && current.results.length > 0 && (
-        <div class="canary-results" role="table" aria-label="Canary service results">
-          {current.results.map((result) => (
-            <div class={{ 'canary-result': true, 'is-failed': result.status === 'failed' }} role="row" key={`${result.id}-${result.phase}`}>
-              <span role="cell"><strong>{result.name}</strong><small>{coverageLabel(result)}</small></span>
-              <span role="cell">{result.phase}</span>
-              <span role="cell">{result.status === 'passed' ? 'Passed' : `${result.failureCode}: ${result.message}`}</span>
-              {result.failureCode === 'blank-page' && <small role="cell">HTTP {result.metrics?.responseStatus ?? 'unknown'}, visible text {result.metrics?.textLength ?? 0}, elements {result.metrics?.visibleElements ?? 0}</small>}
-            </div>
-          ))}
+      <dialog ref={dialogRef} class="canary-dialog" aria-label="Canary service results">
+        <div class="canary-dialog__header">
+          <h3>Service Access Canary Results</h3>
+          <button type="button" class="canary-dialog__close" onClick$={() => dialogRef.value?.close()}>×</button>
         </div>
-      )}
-      {(status.value?.retainedFailures.length ?? 0) > 0 && (
-        <details class="canary-history">
-          <summary>Retained failures ({status.value?.retainedFailures.length})</summary>
-          {status.value?.retainedFailures.map((run) => (
-            <div key={run.runId}><strong>{run.finishedAt ? new Date(run.finishedAt).toLocaleString() : run.runId}</strong><span>{run.failureCount} failure(s)</span></div>
-          ))}
-        </details>
-      )}
+        <div class="canary-dialog__content">
+          {hasResults && (
+            <div class="canary-results" role="table" aria-label="Canary service results">
+              {results?.map((result) => (
+                <div class={{ 'canary-result': true, 'is-failed': result.status === 'failed' }} role="row" key={`${result.id}-${result.phase}`}>
+                  <span class="canary-result__service" role="cell">
+                    <strong>{result.name}</strong>
+                    <small>{coverageLabel(result)}</small>
+                  </span>
+                  <span class="canary-result__phase" role="cell">{result.phase}</span>
+                  <span class="canary-result__status" role="cell">
+                    {result.status === 'passed' ? 'Passed' : `${result.failureCode}: ${result.message}`}
+                  </span>
+                  {result.failureCode === 'blank-page' && (
+                    <small class="canary-result__metrics" role="cell">
+                      HTTP {result.metrics?.responseStatus ?? 'unknown'}, visible text {result.metrics?.textLength ?? 0}, elements {result.metrics?.visibleElements ?? 0}
+                    </small>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {(status.value?.retainedFailures.length ?? 0) > 0 && (
+            <details class="canary-history">
+              <summary>Retained failures ({status.value?.retainedFailures.length})</summary>
+              {status.value?.retainedFailures.map((run) => (
+                <div key={run.runId}><strong>{run.finishedAt ? new Date(run.finishedAt).toLocaleString() : run.runId}</strong><span>{run.failureCount} failure(s)</span></div>
+              ))}
+            </details>
+          )}
+        </div>
+      </dialog>
     </section>
   );
 });

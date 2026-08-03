@@ -8,7 +8,7 @@ use crate::{
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,
     },
-    scanner::{scan_root, ScanRoot},
+    scanner::{rescan_root, scan_root_if_needed, ScanRoot},
     subtitles::{opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials},
 };
 use axum::{
@@ -32,10 +32,12 @@ use std::{
     },
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_SUBTITLE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_INBOX_ENTRIES: usize = 200;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -123,7 +125,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/session", get(session))
         .route("/api/v1/roots", get(roots))
         .route("/api/v1/items", get(items))
+        .route("/api/v1/items/{item_id}/image", get(item_image))
         .route("/api/v1/conversions", get(conversions))
+        .route("/api/v1/conversions/inbox", get(conversions_inbox))
         .route("/api/v1/scans", post(scan))
         .route(
             "/api/v1/items/{item_id}/subtitles/upload",
@@ -308,14 +312,16 @@ async fn integration_refresh_status(
 }
 
 fn refresh_adapter_available(config: &AppConfig, integration_id: &str) -> bool {
-    matches!(integration_id, "jellyfin" | "audiobookshelf" | "syncthing")
-        && config.integrations.iter().any(|integration| {
-            integration.id == integration_id
-                && integration.available
-                && integration.capabilities.iter().any(|capability| {
-                    matches!(capability.as_str(), "library-refresh" | "folder-rescan")
-                })
-        })
+    matches!(
+        integration_id,
+        "jellyfin" | "audiobookshelf" | "kavita" | "syncthing"
+    ) && config.integrations.iter().any(|integration| {
+        integration.id == integration_id
+            && integration.available
+            && integration.capabilities.iter().any(|capability| {
+                matches!(capability.as_str(), "library-refresh" | "folder-rescan")
+            })
+    })
 }
 
 async fn read_refresh_status(
@@ -980,6 +986,52 @@ async fn items(
         }
     };
     let owner = (root.scope == RootScope::Personal).then_some(identity.username.as_str());
+    let scan_root_spec = ScanRoot {
+        id: root.id.clone(),
+        owner_username: owner.map(str::to_string),
+        path: root.resolved_path.clone().into(),
+        category: root.category.clone(),
+    };
+    let catalog_handle = state.catalog.clone();
+    match tokio::task::spawn_blocking(move || scan_root_if_needed(&catalog_handle, &scan_root_spec))
+        .await
+    {
+        Ok(Ok(Some(result))) => {
+            log_event(
+                "catalog_root_auto_scanned",
+                &request_id,
+                json!({
+                    "rootId": root.id,
+                    "ownerUsername": owner,
+                    "result": result,
+                }),
+            );
+        }
+        Ok(Ok(None)) => {}
+        Ok(Err(error)) => {
+            log_event(
+                "catalog_auto_scan_failed",
+                &request_id,
+                json!({ "rootId": root.id, "error": error }),
+            );
+            return ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "scan_failed",
+                "The selected media root could not be cataloged.",
+                request_id,
+            )
+            .into_response();
+        }
+        Err(error) => {
+            log_event(
+                "catalog_auto_scan_task_failed",
+                &request_id,
+                json!({ "rootId": root.id, "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    }
+
     let catalog = match state.catalog.open() {
         Ok(catalog) => catalog,
         Err(error) => {
@@ -1045,6 +1097,319 @@ async fn conversions(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     }
 }
 
+async fn conversions_inbox(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let request_id = request_id();
+    if let Err(error) = identity_from_headers(&headers, &request_id) {
+        return error.into_response();
+    }
+    let inbox = state.config.dvd_inbox_path();
+    if !inbox.is_dir() {
+        return Json(json!({
+            "available": false,
+            "pending": [],
+            "processed": [],
+            "failed": [],
+            "requestId": request_id,
+        }))
+        .into_response();
+    }
+    let mut groups = Vec::with_capacity(3);
+    for (key, directory) in [
+        ("pending", inbox.clone()),
+        ("processed", inbox.join("_Processed")),
+        ("failed", inbox.join("_Failed")),
+    ] {
+        match list_iso_directory(&directory, &request_id).await {
+            Ok(entries) => groups.push((key, entries)),
+            Err(error) => {
+                log_event(
+                    "iso_inbox_read_failed",
+                    &request_id,
+                    json!({ "directory": key, "error": error }),
+                );
+                return ApiError::internal(request_id).into_response();
+            }
+        }
+    }
+    Json(json!({
+        "available": true,
+        "pending": groups[0].1,
+        "processed": groups[1].1,
+        "failed": groups[2].1,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+async fn list_iso_directory(
+    directory: &FilePath,
+    request_id: &str,
+) -> Result<Vec<Value>, String> {
+    let mut entries = Vec::new();
+    let mut read_dir = match tokio::fs::read_dir(directory).await {
+        Ok(read_dir) => read_dir,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+        Err(error) => return Err(error.to_string()),
+    };
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let file_type = entry
+            .file_type()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !file_type.is_file() || file_type.is_symlink() {
+            continue;
+        }
+        let name = match entry.file_name().into_string() {
+            Ok(name)
+                if name.len() <= 255
+                    && !name.contains('/')
+                    && name
+                        .to_ascii_lowercase()
+                        .ends_with(".iso") =>
+            {
+                name
+            }
+            _ => continue,
+        };
+        let metadata = entry
+            .metadata()
+            .await
+            .map_err(|error| error.to_string())?;
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+            .unwrap_or(0);
+        let volume_id = iso_volume_id(&entry.path(), request_id).await;
+        entries.push(json!({
+            "name": name,
+            "volumeId": volume_id,
+            "sizeBytes": metadata.len().min(i64::MAX as u64) as i64,
+            "modifiedNs": modified_ns,
+        }));
+        if entries.len() >= MAX_INBOX_ENTRIES {
+            break;
+        }
+    }
+    entries.sort_by(|left, right| {
+        left["name"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["name"].as_str().unwrap_or_default())
+    });
+    Ok(entries)
+}
+
+async fn iso_volume_id(path: &FilePath, request_id: &str) -> Option<String> {
+    const SECTOR_SIZE: u64 = 2048;
+    const PRIMARY_VOLUME_SECTOR: u64 = 16;
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    if file.metadata().await.ok()?.len() < (PRIMARY_VOLUME_SECTOR + 1) * SECTOR_SIZE {
+        return None;
+    }
+    file.seek(std::io::SeekFrom::Start(PRIMARY_VOLUME_SECTOR * SECTOR_SIZE))
+        .await
+        .ok()?;
+    let mut sector = [0u8; SECTOR_SIZE as usize];
+    file.read_exact(&mut sector).await.ok()?;
+    if sector[0] != 1 || &sector[1..6] != b"CD001" || sector[6] != 1 {
+        return None;
+    }
+    let volume_id: String = sector[40..72]
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii_graphic() || *byte == b' ' {
+                *byte as char
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if volume_id.is_empty() {
+        log_event(
+            "iso_volume_id_missing",
+            request_id,
+            json!({ "path": path.display().to_string() }),
+        );
+        return None;
+    }
+    Some(volume_id)
+}
+
+async fn item_image(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if !valid_object_id(&item_id) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_item_id",
+            "The selected catalog item ID is invalid.",
+            request_id,
+        )
+        .into_response();
+    }
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) => item,
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let artwork = if item.media_kind == "artwork" {
+        item
+    } else {
+        let owner = item.owner_username.as_deref();
+        let siblings = match catalog.list_items(&item.root_id, owner, 500) {
+            Ok(items) => items,
+            Err(error) => {
+                log_event(
+                    "catalog_query_failed",
+                    &request_id,
+                    json!({ "error": error.to_string() }),
+                );
+                return ApiError::internal(request_id).into_response();
+            }
+        };
+        let parent = item
+            .relative_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
+        match preferred_artwork(&siblings, parent) {
+            Some(artwork) => artwork,
+            None => {
+                return ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "artwork_not_found",
+                    "No cover artwork is cataloged beside this item.",
+                    request_id,
+                )
+                .into_response()
+            }
+        }
+    };
+    let root = match state.config.resolve_visible_root(&identity, &artwork.root_id) {
+        Some(root) => root,
+        None => return ApiError::internal(request_id).into_response(),
+    };
+    let root_path = root.resolved_path.clone();
+    let relative_path = artwork.relative_path.clone();
+    let bytes = match tokio::task::spawn_blocking(move || {
+        let file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
+            .map_err(|error| error.to_string())?;
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.take(MAX_ARTWORK_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_ARTWORK_BYTES {
+            return Err("artwork exceeds the 32 MiB limit".to_string());
+        }
+        Ok(bytes)
+    })
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => {
+            log_event(
+                "artwork_read_failed",
+                &request_id,
+                json!({ "error": error, "itemId": item_id }),
+            );
+            return ApiError::new(
+                StatusCode::NOT_FOUND,
+                "artwork_not_found",
+                "The cataloged cover artwork can no longer be read safely.",
+                request_id,
+            )
+            .into_response();
+        }
+        Err(error) => {
+            log_event(
+                "artwork_read_task_failed",
+                &request_id,
+                json!({ "error": error.to_string(), "itemId": item_id }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let content_type = match artwork
+        .relative_path
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    };
+    (
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, content_type),
+            (CACHE_CONTROL, "private, max-age=300"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+fn preferred_artwork(items: &[CatalogItem], parent: &str) -> Option<CatalogItem> {
+    items
+        .iter()
+        .filter(|candidate| {
+            candidate.media_kind == "artwork"
+                && candidate
+                    .relative_path
+                    .rsplit_once('/')
+                    .map(|(candidate_parent, _)| candidate_parent)
+                    .unwrap_or("")
+                == parent
+        })
+        .min_by_key(|candidate| {
+            let stem = candidate
+                .relative_path
+                .rsplit_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(&candidate.relative_path)
+                .rsplit_once('.')
+                .map(|(stem, _)| stem)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let priority = [
+                "cover", "folder", "poster", "artwork", "front", "thumb", "fanart",
+            ]
+            .iter()
+            .position(|preferred| *preferred == stem)
+            .unwrap_or(usize::MAX);
+            (priority, candidate.relative_path.clone())
+        })
+        .cloned()
+}
+
 async fn scan(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1078,13 +1443,8 @@ async fn scan(
         category: visible_root.category,
     };
     let catalog_handle = state.catalog.clone();
-    let scan_result = tokio::task::spawn_blocking(move || {
-        let mut catalog = catalog_handle
-            .open()
-            .map_err(|error| format!("open catalog: {error}"))?;
-        scan_root(&mut catalog, &scan_root_spec)
-    })
-    .await;
+    let scan_result =
+        tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec)).await;
     let scan_result = match scan_result {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => {

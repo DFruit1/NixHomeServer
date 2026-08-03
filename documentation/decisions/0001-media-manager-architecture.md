@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-01
+- Updated: 2026-08-02
 
 ## Context
 
@@ -69,9 +70,23 @@ authenticated user. The unprivileged web process may only enqueue fixed
 integration identifiers and exposes the request's durable queued, running,
 succeeded, or failed state. A separate hardened dispatcher follows the current
 Jellyfin scheduled-task result, Audiobookshelf scan tasks and `lastScan`
-timestamps, or Syncthing scan response before recording a terminal result. It
-cannot execute user-supplied commands. Kavita is observed but has no manual
-refresh capability until a safe authenticated adapter is available.
+timestamps, Kavita library `LastScanned` timestamps, or Syncthing scan response
+before recording a terminal result. It cannot execute user-supplied commands.
+The Kavita adapter runs as the `kavita` account, mints a five-minute HS512
+service token from Kavita's existing application token key, sends it only to the
+loopback API, requests a scan of all registered libraries, and does not report
+success until every library's stored scan timestamp advances. This keeps the
+adapter independent of OIDC-only human admin roles without creating another
+long-lived credential. Kavita has no public scan-job status endpoint; the
+persisted timestamp is the adapter's completion boundary, and removal of a
+baseline library is a terminal failure rather than a two-hour wait.
+
+The catalog performs a one-time lazy reconciliation when an authenticated user
+first reads a visible shared or personal root. A durable per-root and per-owner
+scan marker distinguishes an empty but already scanned directory from a new
+catalog. Concurrent first reads of the same root are serialized and re-check
+that marker before walking the filesystem. Explicit editor scans remain
+available for later reconciliation.
 
 ## Consequences
 

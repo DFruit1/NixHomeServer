@@ -220,6 +220,34 @@ async fn viewer_can_read_roots_but_cannot_start_a_scan() {
 }
 
 #[tokio::test]
+async fn viewer_first_read_populates_an_unscanned_catalog() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
+
+    let items = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/items?rootId=shared-videos")
+                .header("x-forwarded-user", "viewer")
+                .header("x-forwarded-groups", "users")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("items response");
+
+    assert_eq!(items.status(), StatusCode::OK);
+    let body = to_bytes(items.into_body(), 64 * 1024)
+        .await
+        .expect("items body");
+    let value: Value = serde_json::from_slice(&body).expect("items json");
+    let catalog_items = value["items"].as_array().expect("items array");
+    assert_eq!(catalog_items.len(), 1);
+    assert_eq!(catalog_items[0]["relativePath"], "Movie.mkv");
+}
+
+#[tokio::test]
 async fn editor_scan_populates_the_catalog() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);
@@ -702,6 +730,42 @@ async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
 }
 
 #[tokio::test]
+async fn authenticated_viewer_can_queue_a_registered_kavita_refresh() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.integrations = vec![IntegrationCapability {
+        id: "kavita".to_string(),
+        label: "Kavita".to_string(),
+        available: true,
+        capabilities: vec!["library-refresh".to_string()],
+    }];
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+
+    let response = app
+        .oneshot(viewer_post_request(
+            "/api/v1/integrations/kavita/refresh",
+            Body::empty(),
+        ))
+        .await
+        .expect("refresh response");
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert!(temp
+        .path()
+        .join("state/refresh-requests/kavita.request")
+        .is_file());
+}
+
+#[tokio::test]
 async fn refresh_status_returns_the_durable_terminal_result() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let mut config = AppConfig::for_test(
@@ -751,6 +815,183 @@ async fn refresh_status_returns_the_durable_terminal_result() {
     assert_eq!(value["state"], "succeeded");
     assert_eq!(value["finishedAt"], 3);
     assert_eq!(value["message"], "Jellyfin library scan completed.");
+}
+
+#[tokio::test]
+async fn iso_inbox_is_not_a_library_root() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_ISO/_DVDs")).expect("iso inbox");
+    let app = test_app(&temp);
+
+    let roots = app
+        .clone()
+        .oneshot(viewer_get_request("/api/v1/roots"))
+        .await
+        .expect("roots response");
+    let body = to_bytes(roots.into_body(), 64 * 1024)
+        .await
+        .expect("roots body");
+    let value: Value = serde_json::from_slice(&body).expect("roots json");
+    let ids: Vec<&str> = value
+        .as_array()
+        .expect("roots array")
+        .iter()
+        .filter_map(|root| root["id"].as_str())
+        .collect();
+    assert!(!ids.contains(&"shared-dvd-inbox"));
+
+    let items = app
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-dvd-inbox"))
+        .await
+        .expect("items response");
+    assert_eq!(items.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn conversions_inbox_lists_iso_groups_with_identification() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let inbox = temp.path().join("shared/_ISO/_DVDs");
+    std::fs::create_dir_all(inbox.join("_Processed")).expect("processed");
+    std::fs::create_dir_all(inbox.join("_Failed")).expect("failed");
+    std::fs::write(inbox.join("MOVIE_DISC.ISO"), test_iso("EXAMPLE_MOVIE")).expect("pending iso");
+    std::fs::write(inbox.join("notes.txt"), b"not an iso").expect("non-iso file");
+    std::fs::write(inbox.join("_Processed/OLD_MOVIE.ISO"), test_iso("OLD_MOVIE"))
+        .expect("processed iso");
+    std::fs::write(inbox.join("_Failed/BROKEN_DISC.ISO"), b"tiny").expect("failed iso");
+    let app = test_app(&temp);
+
+    let response = app
+        .oneshot(viewer_get_request("/api/v1/conversions/inbox"))
+        .await
+        .expect("inbox response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("inbox body");
+    let value: Value = serde_json::from_slice(&body).expect("inbox json");
+    assert_eq!(value["available"], true);
+    let pending = value["pending"].as_array().expect("pending array");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["name"], "MOVIE_DISC.ISO");
+    assert_eq!(pending[0]["volumeId"], "EXAMPLE_MOVIE");
+    assert_eq!(pending[0]["sizeBytes"], 17 * 2048);
+    assert!(pending[0]["modifiedNs"].as_i64().unwrap_or(0) > 0);
+    let processed = value["processed"].as_array().expect("processed array");
+    assert_eq!(processed.len(), 1);
+    assert_eq!(processed[0]["volumeId"], "OLD_MOVIE");
+    let failed = value["failed"].as_array().expect("failed array");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0]["name"], "BROKEN_DISC.ISO");
+    assert!(failed[0]["volumeId"].is_null());
+}
+
+#[tokio::test]
+async fn conversions_inbox_reports_unavailable_without_directory() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+
+    let response = app
+        .oneshot(viewer_get_request("/api/v1/conversions/inbox"))
+        .await
+        .expect("inbox response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("inbox body");
+    let value: Value = serde_json::from_slice(&body).expect("inbox json");
+    assert_eq!(value["available"], false);
+    assert_eq!(value["pending"].as_array().expect("pending").len(), 0);
+}
+
+#[tokio::test]
+async fn item_image_serves_sibling_cover_artwork() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movie (2020)")).expect("movie dir");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie (2020)/Movie (2020).mkv"),
+        b"movie",
+    )
+    .expect("movie");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie (2020)/cover.jpg"),
+        b"jpeg-bytes",
+    )
+    .expect("cover");
+    let app = test_app(&temp);
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .expect("items response");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("items body");
+    let value: Value = serde_json::from_slice(&body).expect("items json");
+    let items = value["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2);
+    let movie_id = items
+        .iter()
+        .find(|item| item["mediaKind"] == "video")
+        .and_then(|item| item["id"].as_str())
+        .expect("movie item id");
+    let cover_id = items
+        .iter()
+        .find(|item| item["mediaKind"] == "artwork")
+        .and_then(|item| item["id"].as_str())
+        .expect("cover item id");
+
+    for id in [movie_id, cover_id] {
+        let response = app
+            .clone()
+            .oneshot(viewer_get_request(&format!("/api/v1/items/{id}/image")))
+            .await
+            .expect("image response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("image/jpeg")
+        );
+        let body = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("image body");
+        assert_eq!(body.as_ref(), b"jpeg-bytes");
+    }
+}
+
+#[tokio::test]
+async fn item_image_returns_not_found_without_artwork() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
+    let movie_id = first_item_id(&app, "shared-videos").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{movie_id}/image"
+        )))
+        .await
+        .expect("image response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    let value: Value = serde_json::from_slice(&body).expect("image json");
+    assert_eq!(value["error"]["code"], "artwork_not_found");
+}
+
+fn test_iso(volume_id: &str) -> Vec<u8> {
+    let mut bytes = vec![0u8; 17 * 2048];
+    bytes[16 * 2048] = 1;
+    bytes[16 * 2048 + 1..16 * 2048 + 6].copy_from_slice(b"CD001");
+    bytes[16 * 2048 + 6] = 1;
+    let mut volume = [b' '; 32];
+    volume[..volume_id.len()].copy_from_slice(volume_id.as_bytes());
+    bytes[16 * 2048 + 40..16 * 2048 + 72].copy_from_slice(&volume);
+    bytes
 }
 
 fn viewer_get_request(uri: &str) -> Request<Body> {

@@ -154,6 +154,20 @@ interface ConversionEnvelope {
   };
 }
 
+interface InboxIso {
+  name: string;
+  volumeId?: string | null;
+  sizeBytes: number;
+  modifiedNs: number;
+}
+
+interface ConversionInbox {
+  available: boolean;
+  pending: InboxIso[];
+  processed: InboxIso[];
+  failed: InboxIso[];
+}
+
 interface DashboardState {
   status?: Status;
   session?: Session;
@@ -162,7 +176,6 @@ interface DashboardState {
   conversions?: ConversionEnvelope;
   selectedRootId: string;
   loading: boolean;
-  scanning: boolean;
   error: string;
   notice: string;
   selectedItemId: string;
@@ -227,7 +240,10 @@ type IconName =
   | "check"
   | "alert"
   | "scan"
-  | "arrow";
+  | "arrow"
+  | "image"
+  | "chevron-down"
+  | "chevron-right";
 
 const Icon = component$<{ name: IconName; size?: number }>((props) => {
   const paths: Record<IconName, string[]> = {
@@ -260,6 +276,9 @@ const Icon = component$<{ name: IconName; size?: number }>((props) => {
     alert: ["M12 4 3 20h18z", "M12 9v4", "M12 17h.01"],
     scan: ["M4 8V4h4", "M16 4h4v4", "M20 16v4h-4", "M8 20H4v-4", "M8 12h8"],
     arrow: ["M5 12h14", "m14 7 5 5-5 5"],
+    image: ["M4 5h16v14H4z", "m4 15 4.5-4.5 3.5 3.5 3-3L20 16", "M9.5 9.5h.01"],
+    "chevron-down": ["m6 9 6 6 6-6"],
+    "chevron-right": ["m9 6 6 6-6 6"],
   };
   return (
     <svg
@@ -288,7 +307,6 @@ export default component$((props: RootProps) => {
     items: [],
     selectedRootId: "",
     loading: true,
-    scanning: false,
     error: "",
     notice: "",
     selectedItemId: "",
@@ -321,10 +339,11 @@ export default component$((props: RootProps) => {
       const requestedRoot = roots.find(
         (root) => root.id === props.initialRootId,
       );
-      state.selectedRootId = requestedRoot?.id ?? roots[0]?.id ?? "";
-      if (requestedRoot) {
+      const selectedRoot = requestedRoot ?? roots[0];
+      state.selectedRootId = selectedRoot?.id ?? "";
+      if (selectedRoot && view.value === "library") {
         const result = await api<{ items: CatalogItem[] }>(
-          `/items?rootId=${encodeURIComponent(requestedRoot.id)}`,
+          `/items?rootId=${encodeURIComponent(selectedRoot.id)}`,
         );
         state.items = result.items;
       }
@@ -345,27 +364,6 @@ export default component$((props: RootProps) => {
       state.items = result.items;
     } catch (error) {
       state.error = readableError(error);
-    }
-  });
-
-  const scanRoot = $(async () => {
-    if (!state.selectedRootId || state.scanning) return;
-    state.scanning = true;
-    state.error = "";
-    state.notice = "";
-    try {
-      const result = await api<{
-        result: { itemsIndexed: number; itemsRemoved: number };
-      }>("/scans", {
-        method: "POST",
-        body: JSON.stringify({ rootId: state.selectedRootId }),
-      });
-      state.notice = `Scan complete: ${result.result.itemsIndexed} indexed, ${result.result.itemsRemoved} removed.`;
-      await loadItems(state.selectedRootId);
-    } catch (error) {
-      state.error = readableError(error);
-    } finally {
-      state.scanning = false;
     }
   });
 
@@ -457,10 +455,6 @@ export default component$((props: RootProps) => {
   });
 
   const currentConversions = state.conversions?.progress.conversions ?? [];
-  const availableIntegrations =
-    state.status?.integrations.filter((item) => item.available).length ?? 0;
-  const availableRoots = state.roots.filter((root) => root.available).length;
-
   return (
     <div class="app-shell">
       <aside class="sidebar">
@@ -483,6 +477,7 @@ export default component$((props: RootProps) => {
               href={`?view=${item.id}`}
               class={{ "nav-item": true, active: view.value === item.id }}
               aria-current={view.value === item.id ? "page" : undefined}
+              title={item.label}
             >
               <Icon name={item.icon} />
               <span>{item.label}</span>
@@ -534,39 +529,9 @@ export default component$((props: RootProps) => {
           <LoadingState />
         ) : view.value === "overview" ? (
           <section class="page-grid overview" aria-label="Server overview">
-            <div class="intro-copy">
-              <span class="section-label">At a glance</span>
-              <h2>Your media, organized without touching the filesystem.</h2>
-              <p>
-                Review conversion activity, inspect canonical library roots, and
-                preview changes through one authenticated control surface.
-              </p>
-            </div>
-            <div class="stat-grid">
-              <StatCard
-                label="Available roots"
-                value={availableRoots}
-                detail={`${state.roots.length} registered`}
-              />
-              <StatCard
-                label="Active conversions"
-                value={currentConversions.length}
-                detail={
-                  state.conversions?.available
-                    ? "MKVMaker connected"
-                    : "MKVMaker idle or absent"
-                }
-              />
-              <StatCard
-                label="Connected apps"
-                value={availableIntegrations}
-                detail={`${state.status?.integrations.length ?? 0} adapters registered`}
-              />
-            </div>
             <section class="panel wide-panel">
               <div class="panel-heading">
                 <div>
-                  <span class="section-label">Library map</span>
                   <h3>Registered media roots</h3>
                 </div>
                 <a class="text-button" href="?view=library">
@@ -582,7 +547,6 @@ export default component$((props: RootProps) => {
             <section class="panel activity-panel">
               <div class="panel-heading">
                 <div>
-                  <span class="section-label">Conversion activity</span>
                   <h3>DVD ISO queue</h3>
                 </div>
                 <span
@@ -603,29 +567,12 @@ export default component$((props: RootProps) => {
         ) : view.value === "library" ? (
           <LibraryView
             state={state}
-            scanRoot$={scanRoot}
             selectItem$={selectItem}
             previewRename$={previewRename}
             confirmRename$={confirmRename}
           />
         ) : view.value === "conversions" ? (
-          <section class="single-column">
-            <div class="intro-copy compact-intro">
-              <span class="section-label">MKVMaker</span>
-              <h2>DVD ISO conversion progress</h2>
-              <p>
-                Conversion reporting remains useful even when MKVMaker is
-                disabled or between runs.
-              </p>
-            </div>
-            <section class="panel">
-              <ConversionList
-                conversions={currentConversions}
-                available={state.conversions?.available ?? false}
-                expanded
-              />
-            </section>
-          </section>
+          <ConversionsView initial={state.conversions} />
         ) : view.value === "subtitles" ? (
           <SubtitleView
             roots={state.roots}
@@ -646,18 +593,6 @@ export default component$((props: RootProps) => {
   );
 });
 
-const StatCard = component$<{
-  label: string;
-  value: number;
-  detail: string;
-}>((props) => (
-  <article class="stat-card">
-    <span>{props.label}</span>
-    <strong class="tabular">{props.value}</strong>
-    <small>{props.detail}</small>
-  </article>
-));
-
 const RootRow = component$<{
   root: MediaRoot;
 }>((props) => (
@@ -669,7 +604,7 @@ const RootRow = component$<{
       <Icon name="folder" size={19} />
     </span>
     <span class="root-name">
-      <strong>{props.root.label}</strong>
+      <strong>{rootDisplayName(props.root)}</strong>
       <small>
         {props.root.scope} · {props.root.category}
       </small>
@@ -681,67 +616,244 @@ const RootRow = component$<{
   </a>
 ));
 
+function rootDisplayName(root: MediaRoot): string {
+  return root.category
+    ? root.category.charAt(0).toUpperCase() + root.category.slice(1)
+    : root.label;
+}
+
+interface TreeNode {
+  name: string;
+  path: string;
+  item?: CatalogItem;
+  children: TreeNode[];
+}
+
+function buildTree(items: CatalogItem[]): TreeNode[] {
+  const roots: TreeNode[] = [];
+  const folders = new Map<string, TreeNode>();
+  for (const item of [...items].sort((a, b) =>
+    a.relativePath.localeCompare(b.relativePath),
+  )) {
+    const segments = item.relativePath.split("/");
+    let path = "";
+    let siblings = roots;
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      path = path ? `${path}/${segments[index]}` : segments[index];
+      let folder = folders.get(path);
+      if (!folder) {
+        folder = { name: segments[index], path, children: [] };
+        folders.set(path, folder);
+        siblings.push(folder);
+      }
+      siblings = folder.children;
+    }
+    siblings.push({
+      name: segments[segments.length - 1],
+      path: item.relativePath,
+      item,
+      children: [],
+    });
+  }
+  const sortBranch = (nodes: TreeNode[]): TreeNode[] =>
+    nodes
+      .map((node) => ({ ...node, children: sortBranch(node.children) }))
+      .sort((left, right) => {
+        const folderDelta =
+          Number(Boolean(right.children.length || !right.item)) -
+          Number(Boolean(left.children.length || !left.item));
+        return folderDelta || left.name.localeCompare(right.name);
+      });
+  return sortBranch(roots);
+}
+
+function topLevelFolders(items: CatalogItem[]): string[] {
+  const folders = new Set<string>();
+  for (const item of items) {
+    const slash = item.relativePath.indexOf("/");
+    if (slash > 0) folders.add(item.relativePath.slice(0, slash));
+  }
+  return [...folders].sort((left, right) => left.localeCompare(right));
+}
+
+function folderDisplayName(folder: string): string {
+  return folder.replace(/^_+/, "") || folder;
+}
+
+function artworkCandidateId(
+  items: CatalogItem[],
+  selectedItemId: string,
+  selectedFolder: string,
+): string {
+  if (selectedItemId) return selectedItemId;
+  if (!selectedFolder) return "";
+  const prefix = `${selectedFolder}/`;
+  const inside = items.filter((item) => item.relativePath.startsWith(prefix));
+  return (
+    inside.find((item) => item.mediaKind === "artwork")?.id ??
+    inside[0]?.id ??
+    ""
+  );
+}
+
+const MediaImage = component$<{
+  imageId: string;
+  title: string;
+  subtitle: string;
+}>(
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  (props) => {
+    const failed = useSignal(false);
+    useTask$(({ track }) => {
+      track(() => props.imageId);
+      failed.value = false;
+    });
+    return (
+      <figure class="media-image">
+        {props.imageId && !failed.value ? (
+          <img
+            src={`/api/v1/items/${encodeURIComponent(props.imageId)}/image`}
+            alt={`Cover artwork for ${props.title}`}
+            loading="lazy"
+            onError$={() => (failed.value = true)}
+          />
+        ) : (
+          <div class="media-image-placeholder" aria-hidden="true">
+            <Icon name="image" size={30} />
+          </div>
+        )}
+        <figcaption>
+          <strong>{props.title}</strong>
+          {props.subtitle && <small>{props.subtitle}</small>}
+        </figcaption>
+      </figure>
+    );
+  },
+);
+
+const RootChoice = component$<{
+  root: MediaRoot;
+  selectedRootId: string;
+}>((props) => (
+  <a
+    class={{
+      "root-choice": true,
+      selected: props.root.id === props.selectedRootId,
+    }}
+    href={`?view=library&root=${encodeURIComponent(props.root.id)}`}
+    aria-current={props.root.id === props.selectedRootId ? "true" : undefined}
+  >
+    <Icon name="folder" size={18} />
+    <span>
+      <strong>{rootDisplayName(props.root)}</strong>
+    </span>
+    <span
+      class={{ "availability-dot": true, available: props.root.available }}
+    />
+  </a>
+));
+
 const LibraryView = component$<{
   state: DashboardState;
-  scanRoot$: QRL<() => Promise<void>>;
   selectItem$: QRL<(item: CatalogItem) => void>;
   previewRename$: QRL<() => Promise<void>>;
   confirmRename$: QRL<() => Promise<void>>;
 }>((props) => {
+  const browser = useStore({
+    expanded: {} as Record<string, boolean>,
+    folderFilter: "",
+    selectedFolder: "",
+  });
+  const selectFolder$ = $((path: string) => {
+    browser.selectedFolder = path;
+    props.state.selectedItemId = "";
+    props.state.preview = undefined;
+  });
   const selected = props.state.roots.find(
     (root) => root.id === props.state.selectedRootId,
   );
+  const libraryRoots = props.state.roots.filter(
+    (root) => root.category !== "iso",
+  );
+  const sharedRoots = libraryRoots.filter((root) => root.scope === "shared");
+  const personalRoots = libraryRoots.filter(
+    (root) => root.scope === "personal",
+  );
+  const folders = topLevelFolders(props.state.items);
+  const visibleItems = browser.folderFilter
+    ? props.state.items.filter((item) =>
+        item.relativePath.startsWith(`${browser.folderFilter}/`),
+      )
+    : props.state.items;
+  const tree = buildTree(visibleItems);
+  const selectedItem = props.state.items.find(
+    (item) => item.id === props.state.selectedItemId,
+  );
+  const imageTitle =
+    selectedItem?.relativePath.split("/").at(-1) ??
+    (browser.selectedFolder
+      ? folderDisplayName(browser.selectedFolder.split("/").at(-1) ?? "")
+      : "");
+  const imageSubtitle = selectedItem
+    ? selectedItem.relativePath
+    : browser.selectedFolder;
   return (
     <section class="library-layout">
       <aside class="panel root-picker">
         <div class="panel-heading">
           <div>
-            <span class="section-label">Locations</span>
             <h3>Media roots</h3>
           </div>
         </div>
-        <div class="root-list">
-          {props.state.roots.map((root) => (
-            <a
-              class={{
-                "root-choice": true,
-                selected: root.id === props.state.selectedRootId,
-              }}
-              href={`?view=library&root=${encodeURIComponent(root.id)}`}
-              aria-current={
-                root.id === props.state.selectedRootId ? "true" : undefined
-              }
-              key={root.id}
-            >
-              <Icon name="folder" size={18} />
-              <span>
-                <strong>{root.label}</strong>
-                <small>{root.scope}</small>
-              </span>
-              <span
-                class={{ "availability-dot": true, available: root.available }}
-              />
-            </a>
-          ))}
+        <div class="root-list grouped">
+          {sharedRoots.length > 0 && (
+            <div class="root-group">
+              <h4 class="root-group-heading">Shared</h4>
+              {sharedRoots.map((root) => (
+                <RootChoice
+                  root={root}
+                  selectedRootId={props.state.selectedRootId}
+                  key={root.id}
+                />
+              ))}
+            </div>
+          )}
+          {personalRoots.length > 0 && (
+            <div class="root-group">
+              <h4 class="root-group-heading">Personal</h4>
+              {personalRoots.map((root) => (
+                <RootChoice
+                  root={root}
+                  selectedRootId={props.state.selectedRootId}
+                  key={root.id}
+                />
+              ))}
+            </div>
+          )}
         </div>
+        {(selectedItem || browser.selectedFolder) && (
+          <div class="root-picker-image">
+            <MediaImage
+              imageId={artworkCandidateId(
+                props.state.items,
+                props.state.selectedItemId,
+                browser.selectedFolder,
+              )}
+              title={imageTitle}
+              subtitle={imageSubtitle}
+            />
+          </div>
+        )}
       </aside>
       <section class="panel catalog-panel">
         <div class="panel-heading catalog-heading">
           <div>
-            <span class="section-label">{selected?.category ?? "Library"}</span>
-            <h3>{selected?.label ?? "Choose a root"}</h3>
+            <h3>
+              {selected
+                ? `${rootDisplayName(selected)} (${selected.scope})`
+                : "Choose a root"}
+            </h3>
           </div>
-          {props.state.session?.canEdit && selected && (
-            <button
-              class="primary-button"
-              type="button"
-              disabled={props.state.scanning}
-              onClick$={props.scanRoot$}
-            >
-              <Icon name="scan" size={18} />{" "}
-              {props.state.scanning ? "Scanning…" : "Scan root"}
-            </button>
-          )}
         </div>
         {!selected ? (
           <EmptyState
@@ -750,53 +862,60 @@ const LibraryView = component$<{
           />
         ) : props.state.items.length === 0 ? (
           <EmptyState
-            title="No catalog entries yet"
-            detail={
-              props.state.session?.canEdit
-                ? "Run a scan to reconcile this root with the catalog."
-                : "An editor can scan this root to populate its catalog."
-            }
+            title="No supported media files found"
+            detail="This directory has been cataloged but does not currently contain supported media files."
           />
         ) : (
-          <div
-            class="item-table"
-            role="table"
-            aria-label={`${selected.label} items`}
-          >
-            <div class="item-row table-header" role="row">
-              <span>Name</span>
-              <span>Type</span>
-              <span>Size</span>
-            </div>
-            {props.state.items.map((item) => (
-              <button
-                class={{
-                  "item-row": true,
-                  selected: props.state.selectedItemId === item.id,
-                }}
-                role="row"
-                type="button"
-                key={item.id}
-                onClick$={() => props.selectItem$(item)}
+          <>
+            {folders.length > 1 && (
+              <div
+                class="folder-filter"
+                role="group"
+                aria-label="Show only one folder"
               >
-                <span class="item-name">
-                  <Icon
-                    name={item.mediaKind === "subtitle" ? "captions" : "tag"}
-                    size={17}
-                  />
-                  <span>{item.relativePath}</span>
-                </span>
-                <span class="kind-pill">{item.mediaKind}</span>
-                <span class="tabular muted">{formatBytes(item.sizeBytes)}</span>
-              </button>
-            ))}
-          </div>
+                {folders.map((folder) => (
+                  <button
+                    class={{
+                      "folder-filter-button": true,
+                      active: browser.folderFilter === folder,
+                    }}
+                    type="button"
+                    key={folder}
+                    aria-pressed={browser.folderFilter === folder}
+                    onClick$={() => {
+                      browser.folderFilter =
+                        browser.folderFilter === folder ? "" : folder;
+                    }}
+                  >
+                    {folderDisplayName(folder)}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div
+              class="item-tree"
+              role="tree"
+              aria-label={`${selected.label} items`}
+            >
+              {tree.map((node) => (
+                <TreeBranch
+                  node={node}
+                  depth={0}
+                  browser={browser}
+                  selectedItemId={props.state.selectedItemId}
+                  selectedFolder={browser.selectedFolder}
+                  selectItem$={props.selectItem$}
+                  selectFolder$={selectFolder$}
+                  key={node.path}
+                />
+              ))}
+            </div>
+          </>
         )}
         {props.state.session?.canEdit && props.state.selectedItemId && (
           <div class="rename-workflow">
             <div class="rename-heading">
               <div>
-                <span class="section-label">Guided organization</span>
                 <h4>Preview a convention-aware path</h4>
               </div>
               <button
@@ -1024,6 +1143,82 @@ const LibraryView = component$<{
   );
 });
 
+const TreeBranch = component$<{
+  node: TreeNode;
+  depth: number;
+  browser: {
+    expanded: Record<string, boolean>;
+    selectedFolder: string;
+    folderFilter: string;
+  };
+  selectedItemId: string;
+  selectedFolder: string;
+  selectItem$: QRL<(item: CatalogItem) => void>;
+  selectFolder$: QRL<(path: string) => void>;
+}>((props) => {
+  const node = props.node;
+  if (node.item) {
+    return (
+      <button
+        class={{
+          "tree-row": true,
+          file: true,
+          selected: props.selectedItemId === node.item.id,
+        }}
+        style={{ paddingLeft: `${14 + props.depth * 16}px` }}
+        role="treeitem"
+        type="button"
+        onClick$={() => {
+          props.browser.selectedFolder = "";
+          props.selectItem$(node.item as CatalogItem);
+        }}
+      >
+        <span class="tree-name">{node.name}</span>
+        <span class="tabular muted">{formatBytes(node.item.sizeBytes)}</span>
+      </button>
+    );
+  }
+  const expanded =
+    props.browser.expanded[node.path] ??
+    (props.depth === 0 || props.browser.folderFilter !== "");
+  return (
+    <div class="tree-branch" role="treeitem" aria-expanded={expanded}>
+      <button
+        class={{
+          "tree-row": true,
+          folder: true,
+          selected: props.selectedFolder === node.path,
+        }}
+        style={{ paddingLeft: `${14 + props.depth * 16}px` }}
+        type="button"
+        onClick$={() => {
+          props.browser.expanded[node.path] = !expanded;
+          props.selectFolder$(node.path);
+        }}
+      >
+        <Icon name={expanded ? "chevron-down" : "chevron-right"} size={15} />
+        <span class="tree-name">{node.name}</span>
+      </button>
+      {expanded && (
+        <div role="group">
+          {node.children.map((child) => (
+            <TreeBranch
+              node={child}
+              depth={props.depth + 1}
+              browser={props.browser}
+              selectedItemId={props.selectedItemId}
+              selectedFolder={props.selectedFolder}
+              selectItem$={props.selectItem$}
+              selectFolder$={props.selectFolder$}
+              key={child.path}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
+
 const ConversionList = component$<{
   conversions: Conversion[];
   available: boolean;
@@ -1056,9 +1251,6 @@ const ConversionList = component$<{
               <span />
             </div>
             <div class="conversion-copy">
-              <span class="section-label">
-                {conversion.mediaKind ?? "DVD video"}
-              </span>
               <h4>{conversion.title ?? "Untitled conversion"}</h4>
               <p>{conversion.detail ?? "Encoding a Jellyfin-compatible MKV"}</p>
               <div class="progress-track" aria-label={`${percent}% complete`}>
@@ -1075,6 +1267,203 @@ const ConversionList = component$<{
     </div>
   );
 });
+
+const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
+  (props) => {
+    const conv = useStore<{
+      conversions?: ConversionEnvelope;
+      inbox?: ConversionInbox;
+      error: string;
+    }>({ conversions: props.initial, inbox: undefined, error: "" });
+
+    useTask$(({ cleanup }) => {
+      let stopped = false;
+      const load = async () => {
+        try {
+          const [conversions, inbox] = await Promise.all([
+            api<ConversionEnvelope>("/conversions"),
+            api<ConversionInbox>("/conversions/inbox"),
+          ]);
+          if (stopped) return;
+          conv.conversions = conversions;
+          conv.inbox = inbox;
+          conv.error = "";
+        } catch (error) {
+          if (!stopped) conv.error = readableError(error);
+        }
+      };
+      void load();
+      const timer = setInterval(load, 5000);
+      cleanup(() => {
+        stopped = true;
+        clearInterval(timer);
+      });
+    });
+
+    const current = conv.conversions?.progress.conversions ?? [];
+    const working = current.length > 0;
+    const inboxReady = conv.inbox?.available ?? false;
+    const converterReporting = conv.conversions?.available ?? false;
+    const statusLabel = working
+      ? "Working"
+      : inboxReady
+        ? "Ready"
+        : "Not set up";
+    return (
+      <section class="single-column conversions-layout">
+        {conv.error && (
+          <div class="message error" role="alert">
+            <Icon name="alert" size={18} />
+            <span>{conv.error}</span>
+            <button type="button" onClick$={() => (conv.error = "")}>
+              ×
+            </button>
+          </div>
+        )}
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h3>DVD ISO converter</h3>
+            </div>
+            <span
+              class={{
+                "status-badge": true,
+                live: working || (inboxReady && converterReporting),
+              }}
+            >
+              {statusLabel}
+            </span>
+          </div>
+          <div class="setup-body">
+            {inboxReady ? (
+              <p class="setup-ready">
+                The converter is set up and watching the shared inbox.
+                {working
+                  ? " An ISO is being converted right now."
+                  : " Drop an ISO in the inbox to start a conversion."}
+              </p>
+            ) : (
+              <p class="setup-missing">
+                The shared DVD ISO inbox is not available on this server. Enable
+                the MKVMaker module in the server configuration and make sure
+                the media-manager service can read _Shared/_ISO/_DVDs.
+              </p>
+            )}
+            <ol class="setup-steps">
+              <li>
+                Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
+              </li>
+              <li>
+                Leave the ISO untouched for about one minute so the server picks
+                it up.
+              </li>
+              <li>
+                Finished films appear in the shared video library. Source ISOs
+                move to _Processed, or to _Failed after repeated failures.
+              </li>
+            </ol>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h3>Active conversions</h3>
+            </div>
+            <span class={{ "status-badge": true, live: working }}>
+              {working ? "Working" : "Idle"}
+            </span>
+          </div>
+          <ConversionList
+            conversions={current}
+            available={converterReporting}
+            expanded
+          />
+        </section>
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h3>ISO inbox</h3>
+            </div>
+            <span class={{ "status-badge": true, live: inboxReady }}>
+              {inboxReady
+                ? `${conv.inbox?.pending.length ?? 0} waiting`
+                : "Unavailable"}
+            </span>
+          </div>
+          {!conv.inbox ? (
+            <p class="quiet-copy">Loading the inbox…</p>
+          ) : !conv.inbox.available ? (
+            <p class="quiet-copy">
+              The inbox directory _Shared/_ISO/_DVDs does not exist on this
+              server yet.
+            </p>
+          ) : (
+            <div class="inbox-groups">
+              <InboxGroup
+                title="Waiting"
+                detail="ISOs queued for conversion"
+                isos={conv.inbox.pending}
+                empty="No ISOs are waiting."
+              />
+              <InboxGroup
+                title="Processed"
+                detail="Source ISOs of completed conversions"
+                isos={conv.inbox.processed}
+                empty="Nothing has been processed yet."
+              />
+              <InboxGroup
+                title="Failed"
+                detail="ISOs that could not be converted"
+                isos={conv.inbox.failed}
+                empty="No failed conversions."
+              />
+            </div>
+          )}
+        </section>
+      </section>
+    );
+  },
+);
+
+const InboxGroup = component$<{
+  title: string;
+  detail: string;
+  isos: InboxIso[];
+  empty: string;
+}>((props) => (
+  <section class="inbox-group">
+    <header>
+      <h4>{props.title}</h4>
+      <small>{props.detail}</small>
+    </header>
+    {props.isos.length === 0 ? (
+      <p class="inbox-empty">{props.empty}</p>
+    ) : (
+      <ul>
+        {props.isos.map((iso) => (
+          <li key={iso.name}>
+            <span class="inbox-iso-name">
+              <strong>{iso.volumeId || iso.name}</strong>
+              {iso.volumeId && <small>{iso.name}</small>}
+            </span>
+            <span class="inbox-iso-meta">
+              <span class="tabular muted">{formatBytes(iso.sizeBytes)}</span>
+              <span class="muted">{formatModified(iso.modifiedNs)}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    )}
+  </section>
+));
+
+function formatModified(modifiedNs: number): string {
+  if (!Number.isFinite(modifiedNs) || modifiedNs <= 0) return "—";
+  return new Date(modifiedNs / 1e6).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
 
 interface SubtitleMatch {
   providerId: string;
@@ -1237,17 +1626,6 @@ const SubtitleView = component$<{
 
   return (
     <section class="subtitle-layout">
-      <div class="intro-copy compact-intro">
-        <span class="section-label">Sidecar workflow</span>
-        <h2>Find the right words for an existing video.</h2>
-        <p>
-          Search OpenSubtitles or upload a UTF-8 subtitle. Every result becomes
-          a no-overwrite preview before the broker places it beside the video.
-          Online search checks the selected file hash first, then falls back to
-          its title.
-        </p>
-      </div>
-
       {subtitle.error && (
         <div class="message error" role="alert">
           <Icon name="alert" size={18} />
@@ -1267,7 +1645,6 @@ const SubtitleView = component$<{
       <section class="panel subtitle-controls">
         <div class="panel-heading">
           <div>
-            <span class="section-label">1 · Choose video</span>
             <h3>Catalog selection</h3>
           </div>
           <span class={{ "status-badge": true, live: props.session?.canEdit }}>
@@ -1303,7 +1680,7 @@ const SubtitleView = component$<{
                 {subtitle.loadingItems
                   ? "Loading videos…"
                   : subtitle.items.length === 0
-                    ? "No cataloged videos — scan this library first"
+                    ? "No supported videos found in this library"
                     : "Choose a video…"}
               </option>
               {subtitle.items.map((item) => (
@@ -1344,12 +1721,40 @@ const SubtitleView = component$<{
         <section class="panel provider-panel">
           <div class="panel-heading">
             <div>
-              <span class="section-label">2a · Online match</span>
               <h3>OpenSubtitles</h3>
             </div>
             <span class={{ "status-badge": true, live: providerAvailable }}>
               {providerAvailable ? "Configured" : "Not configured"}
             </span>
+          </div>
+          <div class="setup-body">
+            {providerAvailable ? (
+              <p class="setup-ready">
+                Online search is set up and working. Choose a cataloged video
+                above, then search: the file hash is checked first for exact
+                matches, with a title fallback.
+              </p>
+            ) : (
+              <>
+                <p class="setup-missing">
+                  Online search is not set up on this server. Subtitle uploads
+                  on the right work without it. To enable search:
+                </p>
+                <ol class="setup-steps">
+                  <li>
+                    Create an OpenSubtitles.com account and application API key.
+                  </li>
+                  <li>
+                    Add those credentials to the server's encrypted
+                    openSubtitlesCredentials secret.
+                  </li>
+                  <li>
+                    Rebuild the server. The "Configured" indicator appears here
+                    once search is live.
+                  </li>
+                </ol>
+              </>
+            )}
           </div>
           <div class="provider-search">
             <label>
@@ -1419,7 +1824,6 @@ const SubtitleView = component$<{
         <section class="panel upload-panel">
           <div class="panel-heading">
             <div>
-              <span class="section-label">2b · Local file</span>
               <h3>Upload subtitle</h3>
             </div>
           </div>
@@ -1488,7 +1892,6 @@ const SubtitleView = component$<{
         <section class="panel subtitle-preview">
           <div class="panel-heading">
             <div>
-              <span class="section-label">3 · Exact preview</span>
               <h3>Confirm sidecar destination</h3>
             </div>
             <button
@@ -1681,17 +2084,11 @@ const MetadataView = component$<{
     }
   });
 
+  const selectedMetadataItem = metadata.items.find(
+    (item) => item.id === metadata.itemId,
+  );
   return (
     <section class="metadata-layout">
-      <div class="intro-copy compact-intro">
-        <span class="section-label">Standards-based metadata</span>
-        <h2>Describe media without rewriting the media itself.</h2>
-        <p>
-          Create Jellyfin-compatible NFO or book/audiobook OPF sidecars. Unknown
-          values stay absent—especially release year—and existing metadata is
-          never replaced silently.
-        </p>
-      </div>
       {metadata.error && (
         <div class="message error" role="alert">
           <Icon name="alert" size={18} />
@@ -1707,177 +2104,200 @@ const MetadataView = component$<{
           <span>{metadata.notice}</span>
         </div>
       )}
-      <section class="panel metadata-panel">
-        <div class="panel-heading">
-          <div>
-            <span class="section-label">Catalog item</span>
-            <h3>Metadata destination</h3>
+      <div class="metadata-columns">
+        <section class="panel metadata-panel">
+          <div class="panel-heading">
+            <div>
+              <h3>Metadata fields</h3>
+            </div>
+            <span
+              class={{ "status-badge": true, live: props.session?.canEdit }}
+            >
+              {props.session?.canEdit ? "Editor" : "Viewer"}
+            </span>
           </div>
-          <span class={{ "status-badge": true, live: props.session?.canEdit }}>
-            {props.session?.canEdit ? "Editor" : "Viewer"}
-          </span>
-        </div>
-        <div class="metadata-picker">
-          <label>
-            <span>Library</span>
-            <select
-              value={metadata.rootId}
-              onChange$={(_, select) => loadMetadataItems(select.value)}
-            >
-              {mediaRoots.map((root) => (
-                <option value={root.id} key={root.id}>
-                  {root.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Media item</span>
-            <select
-              value={metadata.itemId}
-              disabled={metadata.loadingItems || metadata.items.length === 0}
-              onChange$={(_, select) => chooseMetadataItem(select.value)}
-            >
-              <option value="">
-                {metadata.loadingItems
-                  ? "Loading media…"
-                  : metadata.items.length === 0
-                    ? "No cataloged items — scan this library first"
-                    : "Choose an item…"}
-              </option>
-              {metadata.items.map((item) => (
-                <option value={item.id} key={item.id}>
-                  {item.relativePath}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div class="metadata-form">
-          <label class="title-input">
-            <span>Title</span>
-            <input
-              value={metadata.title}
-              maxLength={500}
-              onInput$={(_, input) => (metadata.title = input.value)}
-            />
-          </label>
-          <label>
+          <div class="metadata-form">
+            <label class="title-input">
+              <span>Title</span>
+              <input
+                value={metadata.title}
+                maxLength={500}
+                onInput$={(_, input) => (metadata.title = input.value)}
+              />
+            </label>
+            <label>
+              <span>
+                Year <small>omit when unknown</small>
+              </span>
+              <input
+                value={metadata.year}
+                inputMode="numeric"
+                maxLength={4}
+                placeholder="Unknown"
+                onInput$={(_, input) =>
+                  (metadata.year = input.value.replace(/\D/g, "").slice(0, 4))
+                }
+              />
+            </label>
+            <label>
+              <span>
+                Authors / artists <small>comma-separated</small>
+              </span>
+              <input
+                value={metadata.authors}
+                onInput$={(_, input) => (metadata.authors = input.value)}
+              />
+            </label>
+            <label>
+              <span>
+                Narrators <small>comma-separated</small>
+              </span>
+              <input
+                value={metadata.narrators}
+                onInput$={(_, input) => (metadata.narrators = input.value)}
+              />
+            </label>
+            <label>
+              <span>Series</span>
+              <input
+                value={metadata.series}
+                onInput$={(_, input) => (metadata.series = input.value)}
+              />
+            </label>
+            <label>
+              <span>Volume</span>
+              <input
+                value={metadata.volumeNumber}
+                onInput$={(_, input) => (metadata.volumeNumber = input.value)}
+              />
+            </label>
+            <label>
+              <span>Publisher / studio</span>
+              <input
+                value={metadata.publisher}
+                onInput$={(_, input) => (metadata.publisher = input.value)}
+              />
+            </label>
+            <label>
+              <span>ISBN</span>
+              <input
+                value={metadata.isbn}
+                onInput$={(_, input) => (metadata.isbn = input.value)}
+              />
+            </label>
+            <label>
+              <span>Language code</span>
+              <input
+                value={metadata.language}
+                maxLength={15}
+                onInput$={(_, input) =>
+                  (metadata.language = input.value
+                    .toLowerCase()
+                    .replace(/[^a-z0-9-]/g, ""))
+                }
+              />
+            </label>
+            <label>
+              <span>
+                Genres <small>comma-separated</small>
+              </span>
+              <input
+                value={metadata.genres}
+                onInput$={(_, input) => (metadata.genres = input.value)}
+              />
+            </label>
+            <label class="description-input">
+              <span>Description</span>
+              <textarea
+                value={metadata.description}
+                maxLength={20000}
+                rows={5}
+                onInput$={(_, input) => (metadata.description = input.value)}
+              />
+            </label>
+          </div>
+          <div class="metadata-actions">
             <span>
-              Year <small>omit when unknown</small>
+              NFO is used for video/music; OPF is used for books and audiobooks.
             </span>
-            <input
-              value={metadata.year}
-              inputMode="numeric"
-              maxLength={4}
-              placeholder="Unknown"
-              onInput$={(_, input) =>
-                (metadata.year = input.value.replace(/\D/g, "").slice(0, 4))
+            <button
+              class="primary-button"
+              type="button"
+              disabled={
+                !props.session?.canEdit ||
+                !metadata.itemId ||
+                !metadata.title.trim() ||
+                metadata.planning
               }
-            />
-          </label>
-          <label>
-            <span>
-              Authors / artists <small>comma-separated</small>
-            </span>
-            <input
-              value={metadata.authors}
-              onInput$={(_, input) => (metadata.authors = input.value)}
-            />
-          </label>
-          <label>
-            <span>
-              Narrators <small>comma-separated</small>
-            </span>
-            <input
-              value={metadata.narrators}
-              onInput$={(_, input) => (metadata.narrators = input.value)}
-            />
-          </label>
-          <label>
-            <span>Series</span>
-            <input
-              value={metadata.series}
-              onInput$={(_, input) => (metadata.series = input.value)}
-            />
-          </label>
-          <label>
-            <span>Volume</span>
-            <input
-              value={metadata.volumeNumber}
-              onInput$={(_, input) => (metadata.volumeNumber = input.value)}
-            />
-          </label>
-          <label>
-            <span>Publisher / studio</span>
-            <input
-              value={metadata.publisher}
-              onInput$={(_, input) => (metadata.publisher = input.value)}
-            />
-          </label>
-          <label>
-            <span>ISBN</span>
-            <input
-              value={metadata.isbn}
-              onInput$={(_, input) => (metadata.isbn = input.value)}
-            />
-          </label>
-          <label>
-            <span>Language code</span>
-            <input
-              value={metadata.language}
-              maxLength={15}
-              onInput$={(_, input) =>
-                (metadata.language = input.value
-                  .toLowerCase()
-                  .replace(/[^a-z0-9-]/g, ""))
+              onClick$={previewMetadata}
+            >
+              <Icon name="scan" size={18} />
+              {metadata.planning ? "Preparing…" : "Preview metadata sidecar"}
+            </button>
+          </div>
+        </section>
+        <div class="metadata-side">
+          {selectedMetadataItem && (
+            <MediaImage
+              imageId={selectedMetadataItem.id}
+              title={
+                selectedMetadataItem.relativePath.split("/").at(-1) ??
+                selectedMetadataItem.relativePath
               }
+              subtitle={selectedMetadataItem.relativePath}
             />
-          </label>
-          <label>
-            <span>
-              Genres <small>comma-separated</small>
-            </span>
-            <input
-              value={metadata.genres}
-              onInput$={(_, input) => (metadata.genres = input.value)}
-            />
-          </label>
-          <label class="description-input">
-            <span>Description</span>
-            <textarea
-              value={metadata.description}
-              maxLength={20000}
-              rows={5}
-              onInput$={(_, input) => (metadata.description = input.value)}
-            />
-          </label>
+          )}
+          <section class="panel metadata-destination">
+            <div class="panel-heading">
+              <div>
+                <h3>Metadata destination</h3>
+              </div>
+            </div>
+            <div class="metadata-picker">
+              <label>
+                <span>Library</span>
+                <select
+                  value={metadata.rootId}
+                  onChange$={(_, select) => loadMetadataItems(select.value)}
+                >
+                  {mediaRoots.map((root) => (
+                    <option value={root.id} key={root.id}>
+                      {root.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Media item</span>
+                <select
+                  value={metadata.itemId}
+                  disabled={
+                    metadata.loadingItems || metadata.items.length === 0
+                  }
+                  onChange$={(_, select) => chooseMetadataItem(select.value)}
+                >
+                  <option value="">
+                    {metadata.loadingItems
+                      ? "Loading media…"
+                      : metadata.items.length === 0
+                        ? "No supported media found in this library"
+                        : "Choose an item…"}
+                  </option>
+                  {metadata.items.map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {item.relativePath}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </section>
         </div>
-        <div class="metadata-actions">
-          <span>
-            NFO is used for video/music; OPF is used for books and audiobooks.
-          </span>
-          <button
-            class="primary-button"
-            type="button"
-            disabled={
-              !props.session?.canEdit ||
-              !metadata.itemId ||
-              !metadata.title.trim() ||
-              metadata.planning
-            }
-            onClick$={previewMetadata}
-          >
-            <Icon name="scan" size={18} />
-            {metadata.planning ? "Preparing…" : "Preview metadata sidecar"}
-          </button>
-        </div>
-      </section>
+      </div>
       {metadata.preview && (
         <section class="panel metadata-preview">
           <div class="panel-heading">
             <div>
-              <span class="section-label">Exact plan</span>
               <h3>{metadata.preview.actions[0]?.destinationRelativePath}</h3>
             </div>
           </div>
@@ -1911,35 +2331,6 @@ const MetadataView = component$<{
     </section>
   );
 });
-
-const WorkflowPlaceholder = component$<{
-  icon: IconName;
-  title: string;
-  description: string;
-  mode?: string;
-}>((props) => (
-  <section class="workflow-stage">
-    <div class="workflow-icon">
-      <Icon name={props.icon} size={30} />
-    </div>
-    <span class="section-label">Staged workflow</span>
-    <h2>{props.title}</h2>
-    <p>{props.description}</p>
-    <div class="safety-note">
-      <Icon name="shield" size={18} />
-      <span>
-        <strong>
-          {props.mode === "enabled"
-            ? "Ready for staged plans"
-            : "Read-only milestone"}
-        </strong>
-        <small>
-          Nothing is written until a digest-bound preview is confirmed.
-        </small>
-      </span>
-    </div>
-  </section>
-));
 
 const RefreshView = component$<{ integrations: Integration[] }>((props) => {
   const refresh = useStore<{
@@ -2047,16 +2438,13 @@ const RefreshView = component$<{ integrations: Integration[] }>((props) => {
       };
     }
   });
+  const refreshableIntegrations = props.integrations.filter((integration) =>
+    integration.capabilities.some((capability) =>
+      ["library-refresh", "folder-rescan"].includes(capability),
+    ),
+  );
   return (
     <section class="single-column">
-      <div class="intro-copy compact-intro">
-        <span class="section-label">Optional adapters</span>
-        <h2>Refresh an application when you need it.</h2>
-        <p>
-          Manual requests complement each application’s own watcher and timer.
-          Missing applications stay visible but cannot affect Media Manager.
-        </p>
-      </div>
       {refresh.error && (
         <div class="message error" role="alert">
           <Icon name="alert" size={18} />
@@ -2067,10 +2455,8 @@ const RefreshView = component$<{ integrations: Integration[] }>((props) => {
         </div>
       )}
       <div class="integration-grid">
-        {props.integrations.map((integration) => {
-          const canRefresh = integration.capabilities.some((capability) =>
-            ["library-refresh", "folder-rescan"].includes(capability),
-          );
+        {refreshableIntegrations.map((integration) => {
+          const canRefresh = true;
           const status = refresh.statuses[integration.id];
           const presentation = refreshPresentation(status);
           const stateIcon: IconName =
@@ -2116,26 +2502,24 @@ const RefreshView = component$<{ integrations: Integration[] }>((props) => {
                   </div>
                 )}
               </div>
-              {canRefresh ? (
-                <button
-                  class="secondary-button compact-action"
-                  type="button"
-                  disabled={!integration.available || presentation.busy}
-                  onClick$={() => triggerRefresh(integration)}
-                >
-                  {presentation.action}
-                </button>
-              ) : (
-                <span
-                  class={{ "status-badge": true, live: integration.available }}
-                >
-                  {integration.available ? "Observed" : "Not installed"}
-                </span>
-              )}
+              <button
+                class="secondary-button compact-action"
+                type="button"
+                disabled={!integration.available || presentation.busy}
+                onClick$={() => triggerRefresh(integration)}
+              >
+                {presentation.action}
+              </button>
             </article>
           );
         })}
       </div>
+      {refreshableIntegrations.length === 0 && (
+        <EmptyState
+          title="No refreshable applications"
+          detail="Applications with a manual refresh adapter appear here once they are enabled on the server."
+        />
+      )}
     </section>
   );
 });

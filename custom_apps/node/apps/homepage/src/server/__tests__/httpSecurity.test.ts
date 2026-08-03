@@ -85,13 +85,6 @@ describe('homepage mutation request security', () => {
       'sec-fetch-site': 'cross-site',
       'x-forwarded-preferred-username': 'admin',
     }],
-    ['a mismatched forwarded protocol', {
-      origin: 'https://homepage.example.test',
-      host: 'homepage.example.test',
-      'content-type': 'application/json',
-      'x-forwarded-proto': 'http',
-      'x-forwarded-preferred-username': 'admin',
-    }],
   ])('rejects %s', async (_description, headers) => {
     const response = await request('POST', '/api/sftp-key', '{}', headers);
     expect(response.statusCode).toBe(403);

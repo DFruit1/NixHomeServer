@@ -1,13 +1,16 @@
-use crate::catalog::{Catalog, ScannedItem};
+use crate::catalog::{Catalog, CatalogHandle, ScannedItem};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
     time::UNIX_EPOCH,
 };
 
 const MAX_SCAN_ENTRIES: usize = 1_000_000;
+static ROOT_SCAN_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub struct ScanRoot {
@@ -23,6 +26,58 @@ pub struct ScanResult {
     pub files_seen: usize,
     pub items_indexed: usize,
     pub items_removed: usize,
+}
+
+pub fn scan_root_if_needed(
+    catalog_handle: &CatalogHandle,
+    root: &ScanRoot,
+) -> Result<Option<ScanResult>, String> {
+    with_root_scan_lock(root, || {
+        let mut catalog = catalog_handle
+            .open()
+            .map_err(|error| format!("open catalog: {error}"))?;
+        if catalog
+            .root_has_been_scanned(&root.id, root.owner_username.as_deref())
+            .map_err(|error| format!("read catalog scan state: {error}"))?
+        {
+            return Ok(None);
+        }
+        scan_root(&mut catalog, root).map(Some)
+    })
+}
+
+pub fn rescan_root(catalog_handle: &CatalogHandle, root: &ScanRoot) -> Result<ScanResult, String> {
+    with_root_scan_lock(root, || {
+        let mut catalog = catalog_handle
+            .open()
+            .map_err(|error| format!("open catalog: {error}"))?;
+        scan_root(&mut catalog, root)
+    })
+}
+
+fn with_root_scan_lock<T>(
+    root: &ScanRoot,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let key = format!(
+        "{}\0{}",
+        root.id,
+        root.owner_username.as_deref().unwrap_or_default()
+    );
+    let root_lock = {
+        let locks = ROOT_SCAN_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut locks = locks
+            .lock()
+            .map_err(|_| "root scan lock registry is poisoned".to_string())?;
+        locks
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    let _guard = root_lock
+        .lock()
+        .map_err(|_| "root scan lock is poisoned".to_string())?;
+    operation()
 }
 
 pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, String> {

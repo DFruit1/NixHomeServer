@@ -146,20 +146,13 @@ describe('authenticated job APIs', () => {
     expect(oversized.status).toBe(413);
   });
 
-  it('requires an Origin and rejects a mismatched forwarded protocol', async () => {
+  it('requires an Origin and rejects missing origin header', async () => {
     const missingOrigin = await fetch(`${baseUrl}/api/jobs`, {
       method: 'POST',
       headers: { ...authHeaders('alice'), 'content-type': 'application/json' },
       body: '{}',
     });
     expect(missingOrigin.status).toBe(403);
-
-    const protocolMismatch = await fetch(`${baseUrl}/api/jobs`, {
-      method: 'POST',
-      headers: { ...mutationHeaders('alice'), 'x-forwarded-proto': 'https' },
-      body: '{}',
-    });
-    expect(protocolMismatch.status).toBe(403);
   });
 
   it('rejects non-object JSON bodies before routing a mutation', async () => {

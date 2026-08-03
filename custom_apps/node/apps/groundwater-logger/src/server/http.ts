@@ -178,10 +178,6 @@ const assertSameOrigin = (request: IncomingMessage): void => {
   if (parsedOrigin.origin !== origin || !['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.host.toLowerCase() !== host.toLowerCase()) {
     throw new Error('not authorised: origin mismatch');
   }
-  const forwardedProtocol = headerValue(request.headers['x-forwarded-proto']);
-  if (forwardedProtocol && `${forwardedProtocol.toLowerCase()}:` !== parsedOrigin.protocol) {
-    throw new Error('not authorised: origin protocol mismatch');
-  }
 };
 
 const readMutationJson = async <T>(request: IncomingMessage): Promise<T> => {

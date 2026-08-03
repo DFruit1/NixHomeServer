@@ -122,6 +122,50 @@ describe("Media Manager navigation", () => {
     );
   });
 
+  it("loads the first visible media root when the URL does not select one", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const payload = path.endsWith("/status")
+        ? { mutationMode: "enabled", integrations: [] }
+        : path.endsWith("/session")
+          ? { username: "dsaw", groups: ["users"], canEdit: false }
+          : path.endsWith("/roots")
+            ? [
+                {
+                  id: "shared-videos",
+                  label: "Shared videos",
+                  category: "videos",
+                  scope: "shared",
+                  available: true,
+                },
+              ]
+            : path.includes("/items?rootId=shared-videos")
+              ? {
+                  items: [
+                    {
+                      id: "item-1",
+                      rootId: "shared-videos",
+                      relativePath: "Movie.mkv",
+                      mediaKind: "video",
+                      sizeBytes: 5,
+                    },
+                  ],
+                }
+              : { available: false, progress: {} };
+      return new Response(JSON.stringify(payload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="library" />);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/items?rootId=shared-videos",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+    expect(screen.textContent).toContain("Movie.mkv");
+  });
+
   it("exposes every library choice as a native selected-route link", async () => {
     vi.stubGlobal(
       "fetch",
@@ -280,5 +324,249 @@ describe("Media Manager refresh feedback", () => {
       "/api/v1/integrations/jellyfin/refresh",
       expect.objectContaining({ method: "POST", credentials: "same-origin" }),
     );
+  });
+
+  it("keeps setup-only integrations out of app refresh", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? {
+              mutationMode: "enabled",
+              integrations: [
+                {
+                  id: "jellyfin",
+                  label: "Jellyfin",
+                  available: true,
+                  capabilities: ["library-refresh"],
+                },
+                {
+                  id: "mkvmaker",
+                  label: "DVD ISO converter",
+                  available: false,
+                  capabilities: ["conversion-progress"],
+                },
+                {
+                  id: "opensubtitles",
+                  label: "OpenSubtitles",
+                  available: false,
+                  capabilities: ["subtitle-search", "subtitle-download"],
+                },
+              ],
+            }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="refresh" />);
+
+    expect(screen.textContent).toContain("Jellyfin");
+    expect(screen.textContent).not.toContain("DVD ISO converter");
+    expect(screen.textContent).not.toContain("OpenSubtitles");
+    expect(
+      Array.from(screen.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Instructions",
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe("Media Manager conversions inbox", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("lists inbox ISOs with identification and shows setup guidance", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : path.endsWith("/conversions/inbox")
+                ? {
+                    available: true,
+                    pending: [
+                      {
+                        name: "MOVIE_DISC.ISO",
+                        volumeId: "EXAMPLE_MOVIE",
+                        sizeBytes: 536870912,
+                        modifiedNs: 1754000000000000000,
+                      },
+                    ],
+                    processed: [
+                      {
+                        name: "OLD_MOVIE.ISO",
+                        volumeId: null,
+                        sizeBytes: 268435456,
+                        modifiedNs: 1753000000000000000,
+                      },
+                    ],
+                    failed: [],
+                  }
+                : path.endsWith("/conversions")
+                  ? { available: true, progress: { conversions: [] } }
+                  : {};
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="conversions" />);
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("EXAMPLE_MOVIE"),
+    );
+    expect(screen.textContent).toContain("MOVIE_DISC.ISO");
+    expect(screen.textContent).toContain("512 MiB");
+    expect(screen.textContent).toContain("Waiting");
+    expect(screen.textContent).toContain("Processed");
+    expect(screen.textContent).toContain("Failed");
+    expect(screen.textContent).toContain("OLD_MOVIE.ISO");
+    expect(screen.textContent).toContain(
+      "Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.",
+    );
+    expect(screen.textContent).toContain("No failed conversions.");
+  });
+});
+
+describe("Media Manager library browser", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function libraryFetchMock(items: unknown[]) {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const payload = path.endsWith("/status")
+        ? { mutationMode: "enabled", integrations: [] }
+        : path.endsWith("/session")
+          ? { username: "dsaw", groups: ["users"], canEdit: false }
+          : path.endsWith("/roots")
+            ? [
+                {
+                  id: "shared-videos",
+                  label: "Shared videos",
+                  category: "videos",
+                  scope: "shared",
+                  available: true,
+                },
+                {
+                  id: "shared-music",
+                  label: "Shared music",
+                  category: "music",
+                  scope: "shared",
+                  available: true,
+                },
+                {
+                  id: "personal-videos",
+                  label: "My videos",
+                  category: "videos",
+                  scope: "personal",
+                  available: true,
+                },
+              ]
+            : path.includes("/items?rootId=")
+              ? { items }
+              : { available: false, progress: {} };
+      return new Response(JSON.stringify(payload));
+    });
+  }
+
+  it("groups roots under Shared and Personal headers with short names", async () => {
+    vi.stubGlobal("fetch", libraryFetchMock([]));
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    const headings = Array.from(
+      screen.querySelectorAll(".root-group-heading"),
+    ).map((heading) => heading.textContent);
+    expect(headings).toEqual(["Shared", "Personal"]);
+    const choices = Array.from(
+      screen.querySelectorAll("a.root-choice strong"),
+    ).map((element) => element.textContent);
+    expect(choices).toEqual(["Videos", "Music", "Videos"]);
+    expect(screen.textContent).not.toContain("Shared videos");
+  });
+
+  it("renders a folder tree with toggle buttons instead of a type column", async () => {
+    const items = [
+      {
+        id: "item-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Example Movie (2020).mkv",
+        mediaKind: "video",
+        sizeBytes: 1024,
+      },
+      {
+        id: "item-2",
+        rootId: "shared-videos",
+        relativePath: "_Shows/Example Show/Season 01/Episode.mkv",
+        mediaKind: "video",
+        sizeBytes: 2048,
+      },
+    ];
+    vi.stubGlobal("fetch", libraryFetchMock(items));
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    expect(screen.querySelector(".table-header")).toBeUndefined();
+    expect(screen.querySelector(".kind-pill")).toBeUndefined();
+    expect(screen.textContent).toContain("Example Movie (2020).mkv");
+
+    const filterButtons = Array.from(
+      screen.querySelectorAll(".folder-filter-button"),
+    );
+    expect(filterButtons.map((button) => button.textContent)).toEqual([
+      "Movies",
+      "Shows",
+    ]);
+
+    await userEvent(filterButtons[1] ?? null, "click");
+    expect(filterButtons[1]?.classList.contains("active")).toBe(true);
+    expect(screen.textContent).not.toContain("Example Movie (2020).mkv");
+    expect(screen.textContent).toContain("Episode.mkv");
+
+    await userEvent(filterButtons[1] ?? null, "click");
+    expect(screen.textContent).toContain("Example Movie (2020).mkv");
+  });
+});
+
+describe("Media Manager visual hierarchy", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("omits tiny section labels and the redundant overview statistics", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="overview" />);
+
+    expect(screen.querySelector(".section-label")).toBeUndefined();
+    expect(screen.querySelector(".stat-grid")).toBeUndefined();
+    expect(screen.textContent).not.toContain("Available roots");
+    expect(screen.textContent).not.toContain("Active conversions");
+    expect(screen.textContent).not.toContain("Connected apps");
   });
 });

@@ -146,49 +146,79 @@
   ],
   "adminGuide": [
     {
-      "title": "Review evaluated config",
-      "command": "nix run .#show-config-summary",
-      "detail": "Read-only summary of generated hostnames, app surfaces, access groups, OAuth clients, storage paths, and required secrets. Start here before changing config."
+      "title": "Validate config & prerequisites",
+      "command": "nix run .#validate-config-readiness -- --identity /path/to/age.key",
+      "detail": "Check decryptability and deploy prerequisites. Replace the identity path."
     },
     {
-      "title": "Validate broad changes",
-      "command": "./scripts/deploy.sh --debug --action test",
-      "detail": "Run the broad validation gate and remote test activation after significant config, app, identity, routing, or storage changes."
-    },
-    {
-      "title": "Run routine guarded deploy",
+      "title": "Test deploy",
       "command": "./scripts/deploy.sh --action test",
-      "detail": "Stage the repo archive on the server and run the normal remote nixos-rebuild test path. It does not switch the active generation."
+      "detail": "Test-activate the repo on the live server. Services may restart; the boot default is unchanged."
     },
     {
-      "title": "Switch after a passing test",
+      "title": "Make permanent",
       "command": "./scripts/deploy.sh --action switch",
-      "detail": "Make the tested generation persistent using the guarded deploy helper. Run this only after the test path passes and failed units are understood."
+      "detail": "Persist the tested generation as the next boot default."
     },
     {
-      "title": "Rotate or regenerate secrets",
-      "command": "./scripts/generate-all-secrets.sh --identity /path/to/current/age.key",
-      "detail": "Verify every manifest secret with the current identity. Use explicit fresh or rekey modes only when intentionally changing credentials or recipients."
-    },
-    {
-      "title": "Retrieve Jellyfin initial password",
-      "command": "sudo jellyfin-initial-credential\nsudo jellyfin-initial-credential USERNAME",
-      "detail": "Retrieve only the intended user's root-only initial credential, hand it over securely, and require an immediate password change."
-    },
-    {
-      "title": "Manage Kanidm entity removal explicitly",
-      "command": "$EDITOR modules/Core_Modules/kanidm/provision.nix",
-      "detail": "Kanidm autoremove is disabled, so deleted module groups/users are kept for rescue safety. Mark stale provision entries intentionally before retiring a module or host."
-    },
-    {
-      "title": "Check backup timers",
-      "command": "systemctl list-timers '*kopia*' --no-pager",
-      "detail": "Verify Kopia snapshots and offsite sync timers are scheduled and see their next run times."
-    },
-    {
-      "title": "Check service health",
+      "title": "Failed services",
       "command": "sudo systemctl --failed --no-pager",
-      "detail": "List failed units after deploys or incidents. Follow up with status and logs for each named unit."
+      "detail": "List failed units after deploys or incidents."
+    },
+    {
+      "title": "Verify user exists",
+      "command": "kanidm person get USERNAME",
+      "detail": "Check a Kanidm user before creating or changing access."
+    },
+    {
+      "title": "Create user",
+      "command": "kanidm person create USERNAME 'Display Name'\nkanidm person update USERNAME --mail EMAIL",
+      "detail": "Create a Kanidm person and set their email for OIDC apps."
+    },
+    {
+      "title": "Grant app access",
+      "command": "kanidm group add-members APP-GROUP USERNAME",
+      "detail": "Grant a specific app, file, or admin group."
+    },
+    {
+      "title": "Revoke access",
+      "command": "kanidm group remove-members APP-GROUP USERNAME",
+      "detail": "Remove a specific group membership."
+    },
+    {
+      "title": "Generate sign-in link",
+      "command": "kanidm person credential create-reset-token USERNAME --name canary-admin",
+      "detail": "One-hour, single-use link. Send through a trusted channel."
+    },
+    {
+      "title": "Sync Immich accounts",
+      "command": "sudo systemctl start immich-oidc-reconcile.service immich-admin-reconcile.service",
+      "detail": "Reconcile Immich users and admins from Kanidm groups."
+    },
+    {
+      "title": "Jellyfin initial password",
+      "command": "sudo jellyfin-initial-credential USERNAME",
+      "detail": "Retrieve the stored initial credential for a native client."
+    },
+    {
+      "title": "Check space & disks",
+      "command": "df -hT\nlsblk -f",
+      "detail": "Mounted filesystems, free space, block devices."
+    },
+    {
+      "title": "Backup schedule",
+      "command": "systemctl list-timers 'kopia*' --all --no-pager",
+      "detail": "Verify Kopia snapshot timers are scheduled."
+    },
+    {
+      "title": "Trigger snapshot now",
+      "command": "sudo systemctl start kopia-persist-snapshot.service",
+      "detail": "Start an immediate persist snapshot."
+    },
+    {
+      "title": "Reverse proxy health",
+      "command": "systemctl status caddy.service --no-pager",
+      "detail": "Check the edge reverse proxy."
     }
   ],
   "offlineMedia": {

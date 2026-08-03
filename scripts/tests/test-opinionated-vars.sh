@@ -111,26 +111,23 @@ for vars_file in vars.nix vars.example.nix; do
     "${vars_file} should explain the mirror-pair disk identifiers next to the list."
 done
 
-defaults_json="$(nix eval --impure --json --expr '
-  let
-    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
-    lib = f.inputs.nixpkgs.lib;
-    actual = import ./vars.nix { inherit lib; };
-    example = import ./vars.example.nix { inherit lib; };
-    opinionated = vars: {
-      inherit (vars) backupAccess fileAccess monitoringAccess offlineMedia seerrAccess;
-      canaryUser = vars.identity.canaryUser;
-      adminMailAddresses = vars.identity.adminMailAddresses;
-      adminEmail = vars.identity.adminEmail;
-      inherit (vars) domain;
-      dns = vars.networking.dns;
-      inherit (vars) kopiaDomain rcloneMega zfsDataPool;
-      ports = vars.networking.ports;
-    };
-  in {
-    actual = opinionated actual;
-    example = opinionated example;
-  }
+defaults_json="$(flake_eval_json '
+  actual = import ./vars.nix { inherit lib; };
+  example = import ./vars.example.nix { inherit lib; };
+  opinionated = vars: {
+    inherit (vars) backupAccess fileAccess monitoringAccess offlineMedia seerrAccess;
+    canaryUser = vars.identity.canaryUser;
+    adminMailAddresses = vars.identity.adminMailAddresses;
+    adminEmail = vars.identity.adminEmail;
+    inherit (vars) domain;
+    dns = vars.networking.dns;
+    inherit (vars) kopiaDomain rcloneMega zfsDataPool;
+    ports = vars.networking.ports;
+  };
+in {
+  actual = opinionated actual;
+  example = opinionated example;
+}
 ')"
 
 if ! jq -e '

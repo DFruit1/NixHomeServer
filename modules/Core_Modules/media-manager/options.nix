@@ -73,7 +73,6 @@ in
         { id = "shared-music"; label = "Shared music"; category = "music"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Music"; }
         { id = "shared-audiobooks"; label = "Shared audiobooks"; category = "audiobooks"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Audiobooks"; }
         { id = "shared-books"; label = "Shared books"; category = "books"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Books"; }
-        { id = "shared-dvd-inbox"; label = "DVD ISO inbox"; category = "iso"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_ISO/_DVDs"; }
         { id = "personal-videos"; label = "My videos"; category = "videos"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Videos"; }
         { id = "personal-music"; label = "My music"; category = "music"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Music"; }
         { id = "personal-audiobooks"; label = "My audiobooks"; category = "audiobooks"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Audiobooks"; }
@@ -101,7 +100,7 @@ in
     kavita = {
       label = "Kavita";
       available = hasModule "kavita";
-      capabilities = [ ];
+      capabilities = [ "library-refresh" ];
     };
     syncthing = {
       label = "Syncthing";

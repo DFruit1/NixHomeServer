@@ -239,8 +239,10 @@ require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.ts
   "New-user guidance must clearly identify credentials that support requests must never include."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Use a trusted network path' \
   "New-user guidance must explain the private LAN or NetBird access requirement."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'What this server is for' \
-  "New-user guidance must explain the server purpose before account setup."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Choose what to set up' \
+  "New-user guidance must introduce the complete setup checklist before account setup."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf' \
+  "New-user guidance must recommend the supported Android clients in one place."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \
   "New-user guidance must not imply that checklist progress is stored server-side."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Browser Files and SFTP/SSHFS are separate permissions.' \

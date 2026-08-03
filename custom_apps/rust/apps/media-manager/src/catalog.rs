@@ -104,6 +104,12 @@ impl Catalog {
              );
              CREATE INDEX IF NOT EXISTS catalog_items_root
                ON catalog_items(root_id, owner_username, relative_path);
+             CREATE TABLE IF NOT EXISTS catalog_scans (
+               root_id TEXT NOT NULL,
+               owner_username TEXT NOT NULL DEFAULT '',
+               scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               PRIMARY KEY(root_id, owner_username)
+             );
              CREATE TABLE IF NOT EXISTS audit_events (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
                request_id TEXT NOT NULL,
@@ -181,6 +187,21 @@ impl Catalog {
             )?
             .collect();
         rows
+    }
+
+    pub fn root_has_been_scanned(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+    ) -> rusqlite::Result<bool> {
+        self.connection.query_row(
+            "SELECT EXISTS(
+                   SELECT 1 FROM catalog_scans
+                    WHERE root_id = ?1 AND owner_username = ?2
+                 )",
+            rusqlite::params![root_id, owner_username.unwrap_or_default()],
+            |row| row.get(0),
+        )
     }
 
     pub fn catalog_item(&self, id: &str) -> rusqlite::Result<Option<CatalogItem>> {
@@ -264,6 +285,13 @@ impl Catalog {
         for id in &removed_ids {
             transaction.execute("DELETE FROM catalog_items WHERE id = ?1", [id.as_str()])?;
         }
+        transaction.execute(
+            "INSERT INTO catalog_scans (root_id, owner_username, scanned_at)
+             VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(root_id, owner_username) DO UPDATE SET
+               scanned_at = CURRENT_TIMESTAMP",
+            rusqlite::params![root_id, owner_username.unwrap_or_default()],
+        )?;
         transaction.commit()?;
         Ok(removed_ids.len())
     }
