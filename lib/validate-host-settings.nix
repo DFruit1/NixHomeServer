@@ -1,11 +1,26 @@
 { lib, hostName, settings }:
 
 let
+  catalog = import ../modules/catalog.nix;
+  availableApps = builtins.attrNames catalog.apps;
   isStringList = value: builtins.isList value && lib.all builtins.isString value;
   checks = [
     {
       valid = builtins.isAttrs settings;
       message = "host settings must be an attribute set";
+    }
+    {
+      valid = isStringList (settings.enabledApps or null);
+      message = "applications.enabled must be an explicit list of application names";
+    }
+    {
+      valid = builtins.length (settings.enabledApps or [ ])
+        == builtins.length (lib.unique (settings.enabledApps or [ ]));
+      message = "applications.enabled must not contain duplicate application names";
+    }
+    {
+      valid = lib.all (name: builtins.elem name availableApps) (settings.enabledApps or [ ]);
+      message = "applications.enabled contains an unknown application; valid names are: ${lib.concatStringsSep ", " availableApps}";
     }
     {
       valid = builtins.isString settings.hostname && settings.hostname == hostName;

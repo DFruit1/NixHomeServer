@@ -13,7 +13,7 @@ in
   assertions = [
     {
       assertion = missingSecrets == [ ];
-      message = "Monitoring requires missing age secrets: ${lib.concatStringsSep ", " missingSecrets}";
+      message = "Beszel requires missing age secrets: ${lib.concatStringsSep ", " missingSecrets}";
     }
   ];
 }

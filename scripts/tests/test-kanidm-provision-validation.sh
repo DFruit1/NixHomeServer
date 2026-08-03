@@ -49,7 +49,8 @@ jq -e '
 }
 
 # Use distinct names here so this test catches a future regression even when
-# the real monitoring/SFTP users also happen to be ordinary app users.
+# the real SFTP user also happens to be an ordinary app user. Beszel-owned
+# monitoring users are covered by the all-app authorization tests.
 projected_people="$(nix eval --json --impure --expr '
   let
     f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
@@ -59,8 +60,6 @@ projected_people="$(nix eval --json --impure --expr '
       kanidmAppUsers = [ ];
       kanidmAppAdminUsers = [ ];
       filesSftpUsers = [ "sftp-only" ];
-      monitoringAccess = base.monitoringAccess // { users = [ "monitor-only" ]; };
-      monitoringAccessUsers = [ "monitor-only" ];
       kanidmAdminUser = "admin-only";
       kanidmAppUserEmails = { };
       kanidmAdminMailAddresses = [ ];
@@ -75,7 +74,6 @@ projected_people="$(nix eval --json --impure --expr '
 ')"
 jq -e '
   index("admin-only") != null
-  and index("monitor-only") != null
   and index("sftp-only") != null
 ' <<<"$projected_people" >/dev/null || {
   echo "❌ Special-purpose Kanidm users were not included in person provisioning."

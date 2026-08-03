@@ -239,8 +239,14 @@ require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.ts
   "New-user guidance must clearly identify credentials that support requests must never include."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Use a trusted network path' \
   "New-user guidance must explain the private LAN or NetBird access requirement."
-require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Choose what to set up' \
-  "New-user guidance must introduce the complete setup checklist before account setup."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Install a password manager' \
+  "New-user guidance must start with an actionable password-manager setup step."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'https://bitwarden.com/download/' \
+  "New-user guidance must link directly to the Bitwarden download page."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'https://keepassxc.org/download/' \
+  "New-user guidance must link directly to the KeePassXC download page."
+require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'https://docs.netbird.io/get-started/install' \
+  "New-user guidance must link directly to NetBird installation instructions."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf' \
   "New-user guidance must recommend the supported Android clients in one place."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'progress is saved only in this browser profile' \

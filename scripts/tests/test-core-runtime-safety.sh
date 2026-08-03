@@ -47,11 +47,6 @@ in {
     unboundBefore = cfg.systemd.services.unbound.before;
     netbirdAfter = cfg.systemd.services.netbird-main.after;
   };
-  monitoring = {
-    passwordAuthDisabled = cfg.services.beszel.hub.environment.DISABLE_PASSWORD_AUTH;
-    trustedAuthHeader = cfg.services.beszel.hub.environment.TRUSTED_AUTH_HEADER or null;
-    servicePatterns = cfg.systemd.services.beszel-agent.environment.SERVICE_PATTERNS;
-  };
   syncthing = cfg.repo.authGateway.protectedApps.syncthing;
   backups = {
     sqliteSources = map (dump: dump.source) cfg.repo.backups.sqliteDumps;
@@ -113,14 +108,6 @@ jq -e '
   and (.dns.freebind == true)
   and (.dns.unboundBefore | index("netbird-main.service") != null)
   and (.dns.netbirdAfter | index("unbound.service") != null)
-  and (.monitoring.passwordAuthDisabled == "false")
-  and (.monitoring.trustedAuthHeader == null)
-  and (.monitoring.servicePatterns | contains("groundwater-logger*"))
-  and (.monitoring.servicePatterns | contains("prowlarr*"))
-  and (.monitoring.servicePatterns | contains("qbittorrent*"))
-  and (.monitoring.servicePatterns | contains("radarr*"))
-  and (.monitoring.servicePatterns | contains("seerr*"))
-  and (.monitoring.servicePatterns | contains("sonarr*"))
   and (.syncthing.host | startswith("syncthing."))
   and (.syncthing.upstream == "http://127.0.0.1:8384")
   and (.syncthing.allowedGroups == ["app-admin"])
@@ -218,8 +205,6 @@ require_fixed modules/Core_Modules/impermanence/default.nix 'if [ ! -e "$source_
   "Live adoption must recreate file mountpoints removed while switch-to-configuration rebuilds /etc."
 require_fixed modules/Core_Modules/impermanence/default.nix '/dev/null' \
   "Live adoption must create an empty regular-file mountpoint before binding persisted state."
-forbid_match modules/Core_Modules/monitoring/services.nix 'TRUSTED_AUTH_HEADER' \
-  "Beszel must not trust a forgeable header from arbitrary local processes."
 require_fixed scripts/test-homepage-ui.sh '--inputs-from "$repo_root"' \
   "Playwright must resolve from the flake-pinned nixpkgs input."
 require_fixed scripts/test-homepage-ui.sh '#checks.${system}.homepage' \

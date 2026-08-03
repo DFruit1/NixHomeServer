@@ -29,7 +29,6 @@ export const DetailedServiceGuide = component$(({
     <article id="guide-detail" class="guide-panel detailed-service-guide">
       <span class="eyebrow">{categoryLabels[service.category]} guide</span>
       <h2>{service.name}</h2>
-      {service.appName && <p class="guide-app-name">Powered by {service.appName}</p>}
       {!service.enabled && (
         <aside class="guide-callout neutral">
           This app is not currently enabled. Its guidance is shown because “Show unused apps in Detailed Guide” is on.
@@ -55,9 +54,9 @@ export const DetailedServiceGuide = component$(({
 
       <section>
         <h3>How to use it well</h3>
-        <ol class="steps">
+        <ul class="guide-checklist">
           {tips.map((tip) => <li key={tip}>{tip}</li>)}
-        </ol>
+        </ul>
       </section>
 
       {relatedFolders.length > 0 && (

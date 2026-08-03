@@ -12,6 +12,14 @@ let
       displayName = "Home Server"; # Human-readable name shown in the portal and identity provider.
     };
 
+    applications = {
+      # Every application is opt-in. Add only catalog names that this host
+      # should import, build, and test during routine validation.
+      enabled = [
+        "homepage"
+      ];
+    };
+
     identity = {
       adminUser = "kanidm-admin"; # Dedicated Kanidm operator account; keep separate from the local Unix admin.
       appUsers = [ ]; # Extra existing Kanidm users granted default access to hosted apps.

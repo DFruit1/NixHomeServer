@@ -5,8 +5,8 @@ Use this as the maintained day-2 operations guide for validation, guarded deploy
 ## Service Access Canary
 
 `canary-user` is a non-privileged Kanidm person used by the Homepage admin
-service-access test. It belongs to normal application groups plus monitoring
-access, but never to the backup groups, `app-admin`,
+service-access test. It belongs to normal application groups and receives
+monitoring access only when Beszel is selected, but never to the backup groups, `app-admin`,
 `domain_admins`, `system_admins`, or delegated `idm_*` groups.
 
 `kanidm-canary-bootstrap.service` automatically provisions the generated
@@ -115,11 +115,13 @@ sudo journalctl -t nixhomeserver-failure-alert -n 20 --no-pager
 
 ## Disabling Optional Applications
 
-Application modules are independent of one another. Removing an application's
-entry from `modules/catalog.nix` is the strongest disabled state and is
-appropriate for applications with no enable switch. Integrations are cataloged
-separately and detect absent application options as no-ops. The repository
-regression suite evaluates Core-only, every optional module removed
+Application modules are independent and opt-in per host. Add or remove catalog
+names in `applications.enabled` in that host's settings file. An omitted module
+is not imported, so its packages, services, secrets, and app-specific checks do
+not enter a routine rebuild. Keep its `modules/catalog.nix` entry: the catalog
+is the repository-wide inventory used by `--all-apps` validation. Integrations
+are cataloged separately and detect absent application options as no-ops. The
+exhaustive regression suite evaluates Core-only, every optional module removed
 independently, and a targeted single-app topology.
 
 The following imported modules also have a convenient active-feature switch.
@@ -175,6 +177,7 @@ command arguments, or shell history.
 - Local validation gate: `nix flake check --no-build` then `scripts/validate-repo.sh`
 - Flake-inclusive local gate: `scripts/validate-repo.sh --run-flake-check`
 - Full local gate: `scripts/validate-repo.sh --full`
+- Exhaustive catalog gate: `scripts/validate-repo.sh --full --all-apps`
 - Human config summary: `nix run .#show-config-summary`
 - Machine-readable inventory: `nix run .#export-inventory`
 - Guarded deploy: `./scripts/deploy.sh --action test`
@@ -774,6 +777,7 @@ scripts/validate-repo.sh
 
 Default local `scripts/validate-repo.sh` behavior:
 - runs the lean script suite through `scripts/tests/run-script-tests.sh`
+- scopes optional-app tests to `applications.enabled`
 - does not rerun `nix flake check --no-build`
 - does not run Rust derivation checks
 
@@ -789,10 +793,19 @@ For the full local gate:
 scripts/validate-repo.sh --full
 ```
 
-That mode runs:
+To run the repository-wide optional-module matrix and build every custom app:
+
+```bash
+scripts/validate-repo.sh --full --all-apps
+```
+
+Full mode runs:
 - `nix flake check --no-build` unless `--skip-flake-check` is used
-- `scripts/tests/run-script-tests.sh`
-- `mail-archive-ui-test`
+- the host-scoped flake derivations and script tests
+- Homepage end-to-end checks when Homepage is selected
+
+Adding `--all-apps` swaps in the repository-wide derivation and script-test
+worklists. CI uses that exhaustive form.
 
 Kanidm checks use the native `kanidm` CLI. They do not rely on the old custom
 helper package that was also named `kanidm-admin`; that package name is separate

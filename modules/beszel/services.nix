@@ -160,7 +160,7 @@ lib.mkMerge [
 
   (oauth2Proxy.mkSidecarService {
     serviceName = "monitor-oauth2-proxy";
-    description = "OAuth2 Proxy for Beszel Monitor";
+    description = "OAuth2 Proxy for Beszel";
     clientId = "monitor-web";
     clientSecretFile = config.age.secrets.monitorOauth2ProxyClientSecret.path;
     cookieSecretFile = config.age.secrets.monitorOauth2ProxyCookieSecret.path;

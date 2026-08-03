@@ -53,8 +53,9 @@ surfaces.
 - Attic, providing a loopback-only binary cache for custom applications built
   on the server.
 
-Core services provide Kanidm, Caddy, Cloudflared, NetBird, Unbound, Beszel,
-Kopia, storage layout, backups, and impermanence. Application metadata and
+Core services provide Kanidm, Caddy, Cloudflared, NetBird, Unbound, failure
+alerts, Kopia, storage layout, backups, and impermanence. Beszel is an optional
+application module. Application metadata and
 integration imports live in [`modules/catalog.nix`](modules/catalog.nix), so a
 new app has one catalog entry for its module, secrets, and removal guards.
 
@@ -64,6 +65,11 @@ Normal operator values live near the top of [`vars.nix`](vars.nix). Shared
 compatibility and derived values live in
 [`lib/derive-vars.nix`](lib/derive-vars.nix), preventing the real and example
 configurations from drifting apart.
+
+`applications.enabled` is the per-host application allowlist. Only names in
+that list are imported into the NixOS configuration and included in routine
+custom-app checks. The catalog remains the repository-wide inventory; omitting
+an app from a host does not remove its source or exhaustive CI coverage.
 
 [`hosts.nix`](hosts.nix) is the host catalog. Its key must match each settings
 file's `network.hostname`; an early typed boundary rejects malformed platform,
@@ -111,9 +117,16 @@ Before merging a broad or risky change, run:
 scripts/validate-repo.sh --full
 ```
 
+That full gate remains scoped to `applications.enabled`. To validate and build
+the entire application catalog, including apps disabled for this host, run:
+
+```bash
+scripts/validate-repo.sh --full --all-apps
+```
+
 The flake also exposes lint, Rust, frontend, module-removal, encrypted restore
 round-trip, Disko evaluation, and NixOS VM checks. CI runs the lean gate on
-pushes and pull requests, plus the full gate on a weekly schedule.
+pushes and pull requests, plus the exhaustive all-app gate on a weekly schedule.
 
 ## Reliability and Recovery Boundaries
 

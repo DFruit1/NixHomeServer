@@ -855,8 +855,11 @@ async fn conversions_inbox_lists_iso_groups_with_identification() {
     std::fs::create_dir_all(inbox.join("_Failed")).expect("failed");
     std::fs::write(inbox.join("MOVIE_DISC.ISO"), test_iso("EXAMPLE_MOVIE")).expect("pending iso");
     std::fs::write(inbox.join("notes.txt"), b"not an iso").expect("non-iso file");
-    std::fs::write(inbox.join("_Processed/OLD_MOVIE.ISO"), test_iso("OLD_MOVIE"))
-        .expect("processed iso");
+    std::fs::write(
+        inbox.join("_Processed/OLD_MOVIE.ISO"),
+        test_iso("OLD_MOVIE"),
+    )
+    .expect("processed iso");
     std::fs::write(inbox.join("_Failed/BROKEN_DISC.ISO"), b"tiny").expect("failed iso");
     let app = test_app(&temp);
 
@@ -908,7 +911,8 @@ async fn item_image_serves_sibling_cover_artwork() {
     let temp = tempfile::tempdir().expect("temporary directory");
     std::fs::create_dir_all(temp.path().join("shared/_Videos/Movie (2020)")).expect("movie dir");
     std::fs::write(
-        temp.path().join("shared/_Videos/Movie (2020)/Movie (2020).mkv"),
+        temp.path()
+            .join("shared/_Videos/Movie (2020)/Movie (2020).mkv"),
         b"movie",
     )
     .expect("movie");

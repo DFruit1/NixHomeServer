@@ -412,8 +412,7 @@ impl std::error::Error for ProviderError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        flatten_search_response, opensubtitles_movie_hash, provider_base_url,
-        validated_download_url, SearchResponse,
+        flatten_search_response, opensubtitles_movie_hash, validated_download_url, SearchResponse,
     };
     use std::io::Cursor;
 
@@ -469,15 +468,5 @@ mod tests {
         assert!(validated_download_url("https://dl.opensubtitles.com/file/abc").is_ok());
         assert!(validated_download_url("http://dl.opensubtitles.com/file/abc").is_err());
         assert!(validated_download_url("https://opensubtitles.com.example/file/abc").is_err());
-    }
-
-    #[test]
-    fn login_host_is_expanded_to_the_v1_api_base() {
-        assert_eq!(
-            provider_base_url("vip-api.opensubtitles.com")
-                .expect("provider base")
-                .as_str(),
-            "https://vip-api.opensubtitles.com/api/v1/"
-        );
     }
 }

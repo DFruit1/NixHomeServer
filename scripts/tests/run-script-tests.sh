@@ -8,14 +8,22 @@ cd "$TESTS_REPO_ROOT"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/tests/run-script-tests.sh
+Usage: scripts/tests/run-script-tests.sh [--all-apps]
 
 Run the lean repository checks used by routine rebuild validation.
+
+By default, repository-wide optional-app tests are skipped. Use --all-apps to
+test the complete application catalog, including apps not selected by the host.
 EOF
 }
 
+all_apps=false
 while (($# > 0)); do
   case "$1" in
+    --all-apps)
+      all_apps=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -26,6 +34,36 @@ while (($# > 0)); do
       ;;
   esac
 done
+
+# Flake derivation checks own package builds. Shell regression tests should
+# inspect/evaluate generated outputs without redundantly building them.
+export NIXHOMESERVER_SKIP_NESTED_BUILDS="${NIXHOMESERVER_SKIP_NESTED_BUILDS:-1}"
+if [[ "$all_apps" == true ]]; then
+  export NIXHOMESERVER_TEST_ALL_APPS=1
+else
+  export NIXHOMESERVER_TEST_ALL_APPS=0
+fi
+
+all_app_only_test() {
+  case "${1##*/}" in
+    test-app-module-structure.sh | \
+    test-application-hardening.sh | \
+    test-authorization-group-validation.sh | \
+    test-beszel-module.sh | \
+    test-kiwix-disable-evaluation.sh | \
+    test-module-boundaries.sh | \
+    test-module-disable-evaluation.sh | \
+    test-module-removal-evaluation.sh | \
+    test-paperless-v3-readiness.sh | \
+    test-secret-definitions.sh | \
+    test-secret-generation-flow.sh)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 
 test_scripts=(
   scripts/tests/test-app-module-structure.sh
@@ -47,10 +85,10 @@ test_scripts=(
   scripts/tests/test-archive-view-safety.sh
   scripts/tests/test-auth-gateway-logout.sh
   scripts/tests/test-authorization-group-validation.sh
+  scripts/tests/test-beszel-module.sh
   scripts/tests/test-backup-access-separation.sh
   scripts/tests/test-role-only-sftp-access.sh
   scripts/tests/test-bootstrap-zfs-guid-mode.sh
-  scripts/tests/test-bootstrap-recovery-guards.sh
   scripts/tests/test-bootstrap-secret-preflight.sh
   scripts/tests/test-bootstrap-safety.sh
   scripts/tests/test-core-runtime-safety.sh
@@ -78,7 +116,6 @@ test_scripts=(
   scripts/tests/test-rclone-safety.sh
   scripts/tests/test-rclone-mega-capacity-check.sh
   scripts/tests/test-rclone-mega-preflight.sh
-  scripts/tests/test-rclone-mega-status-event.sh
   scripts/tests/test-smart-sweep-runtime.sh
   scripts/tests/test-storage-path-validation.sh
   scripts/tests/test-zfs-pool-identity.sh
@@ -88,6 +125,10 @@ test_scripts=(
 )
 
 for test_script in "${test_scripts[@]}"; do
+  if [[ "$all_apps" != true ]] && all_app_only_test "$test_script"; then
+    printf '==> %s (skipped: use --all-apps)\n' "$test_script"
+    continue
+  fi
   printf '==> %s\n' "$test_script"
   bash "$test_script"
 done

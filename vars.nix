@@ -12,6 +12,31 @@ let
       displayName = "Sydney Basin Services"; # Human-readable portal and identity-provider name.
     };
 
+    applications = {
+      # Applications are opt-in. Repository modules omitted here are neither
+      # imported into this host nor included in its normal build/test worklist.
+      enabled = [
+        "attic"
+        "audiobookshelf"
+        "files"
+        "homepage"
+        "immich"
+        "jellyfin"
+        "kavita"
+        "mail-archive-ui"
+        "mkvmaker"
+        "offline-music"
+        "paperless"
+        "prowlarr"
+        "qbittorrent"
+        "radarr"
+        "seerr"
+        "sonarr"
+        "vaultwarden"
+        "youtube-downloader"
+      ];
+    };
+
     identity = {
       adminUser = "admindsaw"; # Dedicated Kanidm operator account; keep separate from the local Unix admin.
       appUsers = [ "dsaw" ]; # Non-admin Kanidm users granted default access to hosted apps.

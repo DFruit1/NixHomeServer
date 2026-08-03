@@ -81,11 +81,11 @@ export const ServiceDetail = component$(
         {!isOfflineMedia && (
           <section class="detail-block">
             <h3>Getting Started</h3>
-            <ol class="steps">
+            <ul class="guide-checklist">
               {tips.map((tip) => (
                 <li key={tip}>{tip}</li>
               ))}
-            </ol>
+            </ul>
           </section>
         )}
         {isOfflineMedia && (

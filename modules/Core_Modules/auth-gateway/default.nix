@@ -19,8 +19,8 @@ let
     && config.services.mail-archive-ui.enable;
   sidecarServices = [
     "kopia-oauth2-proxy"
-    "monitor-oauth2-proxy"
   ]
+  ++ lib.optionals (hasModule "beszel") [ "monitor-oauth2-proxy" ]
   ++ lib.optionals (hasModule "files") [ "filestash-oauth2-proxy" ]
   ++ lib.optionals homepageEnabled [ "homepage-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-oauth2-proxy" ]
@@ -44,7 +44,6 @@ let
     vars.backupStorageGroup
   ];
   defaultApps = {
-    monitor = mkApp vars.monitorDomain "http://${loopback}:${toString vars.networking.ports.beszelHub}" [ vars.monitoringAccessGroup ];
     kopia = mkApp vars.kopiaDomain "http://${loopback}:${toString kopiaAuthProxyPort}" [ vars.backupAdminGroup ];
   }
   // lib.optionalAttrs homepageEnabled {

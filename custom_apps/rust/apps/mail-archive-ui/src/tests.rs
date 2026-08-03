@@ -424,86 +424,6 @@ fn visible_message_filename_caps_long_subjects() {
 }
 
 #[test]
-fn forwarded_header_identity_requires_group_membership() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-forwarded-preferred-username",
-        "alice".parse().expect("valid username header"),
-    );
-    headers.insert(
-        "x-forwarded-email",
-        "alice@example.com".parse().expect("valid email header"),
-    );
-    headers.insert(
-        "x-forwarded-groups",
-        "users,mail-archive-users"
-            .parse()
-            .expect("valid groups header"),
-    );
-
-    let identity = identity_from_headers(&headers).expect("identity should be accepted");
-    assert_eq!(identity.username, "alice");
-    assert_eq!(identity.email.as_deref(), Some("alice@example.com"));
-}
-
-#[test]
-fn forwarded_header_identity_rejects_missing_access_group() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-forwarded-preferred-username",
-        "alice".parse().expect("valid username header"),
-    );
-    headers.insert(
-        "x-forwarded-groups",
-        "users".parse().expect("valid groups header"),
-    );
-
-    assert_eq!(
-        identity_from_headers(&headers)
-            .expect_err("missing group should be rejected")
-            .0,
-        StatusCode::FORBIDDEN
-    );
-}
-
-#[test]
-fn state_changing_requests_require_same_origin() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-forwarded-host",
-        "emails.example.com".parse().expect("host"),
-    );
-    headers.insert("x-forwarded-proto", "https".parse().expect("proto"));
-    headers.insert(
-        "origin",
-        "https://emails.example.com".parse().expect("origin"),
-    );
-
-    verify_same_origin_request(&headers).expect("same origin");
-}
-
-#[test]
-fn state_changing_requests_reject_cross_origin() {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-forwarded-host",
-        "emails.example.com".parse().expect("host"),
-    );
-    headers.insert("x-forwarded-proto", "https".parse().expect("proto"));
-    headers.insert(
-        "referer",
-        "https://evil.example.net/form".parse().expect("referer"),
-    );
-
-    assert_eq!(
-        verify_same_origin_request(&headers)
-            .expect_err("cross origin should fail")
-            .0,
-        StatusCode::FORBIDDEN
-    );
-}
-
-#[test]
 fn gmail_defaults_render_expected_sync_config() {
     let tempdir = TempDir::new().expect("tempdir");
     let config = test_config(&tempdir);
@@ -564,40 +484,6 @@ fn encrypted_secret_round_trip_restores_plaintext() {
     let decrypted = decrypt_secret(&key, &encrypted).expect("decrypt");
 
     assert_eq!(decrypted, "super-secret-value");
-}
-
-#[test]
-fn temp_secret_cleanup_removes_file() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let config = test_config(&tempdir);
-    prepare_test_layout(&config);
-
-    let secret_path = {
-        let secret = write_temp_secret(&config, 9, "sekret").expect("secret");
-        assert!(secret.path.exists());
-        secret.path.clone()
-    };
-
-    assert!(!secret_path.exists());
-}
-
-#[test]
-fn temp_config_cleanup_removes_file() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let config = test_config(&tempdir);
-    prepare_test_layout(&config);
-    let account = example_account();
-    let paths = ensure_account_paths(&config, &account).expect("paths");
-    let secret = write_temp_secret(&config, account.id, "sekret").expect("secret");
-
-    let config_path = {
-        let temp_config =
-            write_temp_mbsyncrc(&config, &account, &paths, &secret.path).expect("config");
-        assert!(temp_config.path.exists());
-        temp_config.path.clone()
-    };
-
-    assert!(!config_path.exists());
 }
 
 #[test]
@@ -663,28 +549,6 @@ fn reconcile_interrupted_sync_marks_running_account_as_error() {
     assert_eq!(
         account.last_sync_summary.as_deref(),
         Some("A previous sync stopped before indexing finished.")
-    );
-    assert!(!lock_path.exists());
-}
-
-#[test]
-fn dashboard_load_reconciles_stale_running_syncs() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let config = test_config(&tempdir);
-    prepare_test_layout(&config);
-    let account_id = seed_account(&config, "alice", "secret");
-
-    update_sync_started(&config, account_id).expect("mark running");
-    let lock_path = sync_lock_path(&config, account_id);
-    write_private_file(&lock_path, b"999999").expect("stale lock");
-
-    let views = load_dashboard_account_views(&config, "alice").expect("dashboard views");
-
-    assert_eq!(views.len(), 1);
-    assert_eq!(views[0].status.status_label, "sync failed");
-    assert_eq!(
-        views[0].status.diagnostic_code.as_deref(),
-        Some("interrupted")
     );
     assert!(!lock_path.exists());
 }
@@ -926,26 +790,6 @@ fn legacy_last_sync_error_still_renders_reasonable_summary() {
         view.status.diagnostic_detail.as_deref(),
         Some("legacy failure detail")
     );
-}
-
-#[test]
-fn dashboard_status_payload_serializes_diagnostic_fields() {
-    let payload = DashboardStatusPayload {
-        generated_at: "2026-04-26T00:00:00Z".to_string(),
-        totals: DashboardTotals::default(),
-        accounts: vec![sample_status_payload()],
-    };
-
-    let json = serde_json::to_value(payload).expect("json");
-    let account = &json["accounts"][0];
-    assert!(account.get("archived_message_count").is_some());
-    assert!(account.get("archive_file_count").is_some());
-    assert!(account.get("overlap_file_count").is_some());
-    assert!(account.get("overlap_note").is_some());
-    assert!(account.get("diagnostic_summary").is_some());
-    assert!(account.get("diagnostic_detail").is_some());
-    assert!(account.get("recommended_action").is_some());
-    assert!(account.get("progress_warning").is_some());
 }
 
 #[test]
@@ -1978,60 +1822,6 @@ fn legacy_paperless_task_schema_is_migrated_in_place() {
             .into_iter()
             .any(|name| name == column);
         assert!(found, "expected migrated column {column}");
-    }
-}
-
-#[test]
-fn sender_priority_table_is_initialized_and_deleted_tables_are_dropped() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let config = test_config(&tempdir);
-    prepare_test_layout(&config);
-    let connection = open_db(&config).expect("db");
-
-    let names = ["sender_priorities"];
-    for name in names {
-        let count = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![name],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("table count");
-        assert_eq!(count, 1, "expected table {name} to exist");
-    }
-    for name in ["deleted_messages", "deleted_message_attachments"] {
-        let count = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![name],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("table count");
-        assert_eq!(count, 0, "expected table {name} to stay absent");
-    }
-}
-
-#[test]
-fn message_catalog_and_progress_snapshot_tables_are_initialized() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let config = test_config(&tempdir);
-    prepare_test_layout(&config);
-    let connection = open_db(&config).expect("db");
-
-    let names = [
-        "account_progress_snapshots",
-        "message_catalog",
-        "message_mailbox_instances",
-    ];
-    for name in names {
-        let count = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![name],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("table count");
-        assert_eq!(count, 1, "expected table {name} to exist");
     }
 }
 

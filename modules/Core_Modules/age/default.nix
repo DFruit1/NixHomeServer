@@ -18,6 +18,7 @@ let
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
   atticEnabled = moduleEnabled "attic";
+  beszelEnabled = moduleEnabled "beszel";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
   openSubtitlesCredentialsFile = secretFile "openSubtitlesCredentials";
 in
@@ -43,9 +44,6 @@ in
     kanidmSysAdminPass = { file = secretFile "kanidmSysAdminPass"; owner = "kanidm"; mode = "0400"; };
     oauth2ProxyClientSecret = { file = secretFile "oauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     oauth2ProxyCookieSecret = { file = secretFile "oauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
-    monitorOauth2ProxyClientSecret = { file = secretFile "monitorOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
-    monitorOauth2ProxyCookieSecret = { file = secretFile "monitorOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
-    beszelHubEnv = { file = secretFile "beszelHubEnv"; owner = "root"; mode = "0400"; };
     kopiaServerPassword = { file = secretFile "kopiaServerPassword"; owner = "root"; mode = "0400"; };
     kopiaOauth2ProxyClientSecret = { file = secretFile "kopiaOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     kopiaOauth2ProxyCookieSecret = { file = secretFile "kopiaOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
@@ -53,6 +51,11 @@ in
   }
   // lib.optionalAttrs atticEnabled {
     atticServerEnv = { file = secretFile "atticServerEnv"; owner = "root"; mode = "0400"; };
+  }
+  // lib.optionalAttrs beszelEnabled {
+    monitorOauth2ProxyClientSecret = { file = secretFile "monitorOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    monitorOauth2ProxyCookieSecret = { file = secretFile "monitorOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+    beszelHubEnv = { file = secretFile "beszelHubEnv"; owner = "root"; mode = "0400"; };
   }
   // lib.optionalAttrs megaEnabled {
     rcloneMegaPassword = { file = secretFile "rcloneMegaPassword"; owner = "root"; mode = "0400"; };

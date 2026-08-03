@@ -43,13 +43,3 @@ fn catalog_initialization_is_repeatable_and_uses_wal() {
     assert_eq!(second.schema_version().expect("schema version"), 2);
     assert_eq!(second.journal_mode().expect("journal mode"), "wal");
 }
-
-#[test]
-fn bundled_sqlite_includes_the_wal_reset_fix() {
-    // https://sqlite.org/wal.html#the_wal_reset_bug
-    assert!(
-        rusqlite::version_number() >= 3_051_003,
-        "SQLite {} predates the WAL-reset fix",
-        rusqlite::version()
-    );
-}

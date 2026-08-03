@@ -1141,10 +1141,7 @@ async fn conversions_inbox(State(state): State<Arc<AppState>>, headers: HeaderMa
     .into_response()
 }
 
-async fn list_iso_directory(
-    directory: &FilePath,
-    request_id: &str,
-) -> Result<Vec<Value>, String> {
+async fn list_iso_directory(directory: &FilePath, request_id: &str) -> Result<Vec<Value>, String> {
     let mut entries = Vec::new();
     let mut read_dir = match tokio::fs::read_dir(directory).await {
         Ok(read_dir) => read_dir,
@@ -1156,10 +1153,7 @@ async fn list_iso_directory(
         .await
         .map_err(|error| error.to_string())?
     {
-        let file_type = entry
-            .file_type()
-            .await
-            .map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().await.map_err(|error| error.to_string())?;
         if !file_type.is_file() || file_type.is_symlink() {
             continue;
         }
@@ -1167,18 +1161,13 @@ async fn list_iso_directory(
             Ok(name)
                 if name.len() <= 255
                     && !name.contains('/')
-                    && name
-                        .to_ascii_lowercase()
-                        .ends_with(".iso") =>
+                    && name.to_ascii_lowercase().ends_with(".iso") =>
             {
                 name
             }
             _ => continue,
         };
-        let metadata = entry
-            .metadata()
-            .await
-            .map_err(|error| error.to_string())?;
+        let metadata = entry.metadata().await.map_err(|error| error.to_string())?;
         let modified_ns = metadata
             .modified()
             .ok()
@@ -1212,9 +1201,11 @@ async fn iso_volume_id(path: &FilePath, request_id: &str) -> Option<String> {
     if file.metadata().await.ok()?.len() < (PRIMARY_VOLUME_SECTOR + 1) * SECTOR_SIZE {
         return None;
     }
-    file.seek(std::io::SeekFrom::Start(PRIMARY_VOLUME_SECTOR * SECTOR_SIZE))
-        .await
-        .ok()?;
+    file.seek(std::io::SeekFrom::Start(
+        PRIMARY_VOLUME_SECTOR * SECTOR_SIZE,
+    ))
+    .await
+    .ok()?;
     let mut sector = [0u8; SECTOR_SIZE as usize];
     file.read_exact(&mut sector).await.ok()?;
     if sector[0] != 1 || &sector[1..6] != b"CD001" || sector[6] != 1 {
@@ -1310,7 +1301,10 @@ async fn item_image(
             }
         }
     };
-    let root = match state.config.resolve_visible_root(&identity, &artwork.root_id) {
+    let root = match state
+        .config
+        .resolve_visible_root(&identity, &artwork.root_id)
+    {
         Some(root) => root,
         None => return ApiError::internal(request_id).into_response(),
     };
@@ -1387,7 +1381,7 @@ fn preferred_artwork(items: &[CatalogItem], parent: &str) -> Option<CatalogItem>
                     .rsplit_once('/')
                     .map(|(candidate_parent, _)| candidate_parent)
                     .unwrap_or("")
-                == parent
+                    == parent
         })
         .min_by_key(|candidate| {
             let stem = candidate

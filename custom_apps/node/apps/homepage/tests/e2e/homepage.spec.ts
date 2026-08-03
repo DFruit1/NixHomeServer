@@ -223,58 +223,78 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await page.getByRole('link', { name: 'Getting Started' }).click();
   await expect(page).toHaveURL(/\/getting-started$/);
   await expect(page).toHaveTitle('Getting Started | Example Home Services');
-  await expect(page.getByRole('heading', { name: 'Get started with your home server' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Choose what to set up' })).toBeVisible();
-  await expect(page.getByText(/create a Vaultwarden account on this server.*use another password manager/)).toBeVisible();
-  await expect(page.getByText(/Install NetBird on devices that need private access away from home/)).toBeVisible();
-  await expect(page.getByText(/SSHFS can mount your server files on a computer/)).toBeVisible();
-  await expect(page.getByText(/install Syncthing-Fork from F-Droid/)).toBeVisible();
-  await expect(page.getByText(/Immich, Jellyfin, Inkita, Lissen, and Audiobookshelf/)).toBeVisible();
+  await expect(page.locator('.getting-started-header')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Install a password manager' })).toBeVisible();
+  const setupNavigation = page.getByRole('navigation', { name: 'Getting started steps' });
+  await expect(setupNavigation.locator('details')).toHaveCount(0);
+  await expect(setupNavigation.locator('.step-number')).toHaveCount(0);
+  await expect(setupNavigation.locator('small')).toHaveCount(0);
+  for (const step of [
+    'Install a password manager',
+    'Activate your account',
+    'Save recovery details',
+    'Open your services',
+    'Add your files',
+    'Set up access away from home',
+    'Connect optional apps',
+  ]) {
+    await expect(setupNavigation.getByRole('link', { name: step, exact: true })).toBeVisible();
+  }
+  await expect(page.getByRole('link', { name: 'Download Bitwarden' })).toHaveAttribute('href', 'https://bitwarden.com/download/');
+  await expect(page.getByRole('link', { name: 'Download KeePassXC' })).toHaveAttribute('href', 'https://keepassxc.org/download/');
+  await expect(page.getByText(/Immich|Jellyfin|Inkita|Lissen|Audiobookshelf/)).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Apps available to you' })).toHaveCount(0);
   await expect(page.getByText('Photo and video library with private login and public share-link support.')).toHaveCount(0);
-  await expect(page.getByLabel('I have reviewed what I may want to set up')).toBeVisible();
-  await page.getByLabel('I have reviewed what I may want to set up').check();
-  await page.locator('.step-pagination').getByRole('link', { name: 'Protect your account' }).click();
+  await expect(page.getByLabel('Install a password manager on a trusted device')).toBeVisible();
+  await page.getByLabel('Install a password manager on a trusted device').check();
+  await page.locator('.step-pagination').getByRole('link', { name: 'Activate your account' }).click();
   await expect(page).toHaveURL(/\/getting-started\?step=account#guide$/);
-  await expect(page.getByRole('heading', { name: 'Protect your account' })).toBeVisible();
-  await expect(page.getByText('Signed in as dsaw')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Activate your account' })).toBeVisible();
+  await expect(page.getByText('Signed in as dsaw', { exact: false })).toBeVisible();
   await expect(page.getByText(/progress is saved only in this browser profile/)).toBeVisible();
   await expect(page.getByText(/It works once and expires after one hour/)).toBeVisible();
   await expect(page.getByText('Use a trusted network path.')).toBeVisible();
   await expect(page.getByText(/Never send an admin your password/)).toBeVisible();
-  await expect(page.locator('.getting-started-step').getByLabel('Done', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open Kanidm' })).toHaveAttribute('target', '_blank');
 
-  await page.getByLabel('Checked my sign-in and account recovery options').check();
-  await expect(page.getByLabel('Checked my sign-in and account recovery options')).toBeChecked();
+  await page.getByLabel('Confirm your name and email in Kanidm').check();
+  await expect(page.getByLabel('Confirm your name and email in Kanidm')).toBeChecked();
 
-  await page.getByText('Show all steps').click();
-  await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Prepare for account recovery' }).click();
+  await setupNavigation.getByRole('link', { name: 'Save recovery details' }).click();
   await expect(page).toHaveURL(/\/getting-started\?step=recovery#guide$/);
   await expect(page.getByText('The Passwords app is not available to you.')).toBeVisible();
-  await expect(page.getByLabel('Stored account recovery details outside this server')).toBeVisible();
+  await expect(page.getByLabel('Save your Kanidm username and sign-in address in your password manager')).toBeVisible();
   await expect(page.getByText('Keep a recovery copy outside this server', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Kanidm sign-in', { exact: true })).toBeVisible();
-  await expect(page.getByText('Videos password', { exact: true })).toBeVisible();
+  await expect(page.getByText('Videos password', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Local Backups password', { exact: true })).toBeVisible();
 
-  await page.getByText('Show all steps').click();
-  await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Open your apps' }).click();
+  await setupNavigation.getByRole('link', { name: 'Open your services' }).click();
   await expect(page).toHaveURL(/\/getting-started\?step=services#guide$/);
-  await expect(page.getByRole('heading', { name: 'Open your apps' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Open your services' })).toBeVisible();
   await expect(page.getByText(/lists 5 apps assigned to your account/)).toBeVisible();
   await expect(page.getByLabel('Available services').getByText('Local Backups')).toBeVisible();
   await expect(page.getByLabel('Available services').getByText('Passwords')).toHaveCount(0);
-  await expect(page.getByText('Videos uses a separate Jellyfin password.')).toBeVisible();
+  await expect(page.getByLabel('Open Local Backups and complete its first-time sign-in')).toBeVisible();
+  await expect(page.getByText(/Jellyfin password/)).toHaveCount(0);
   await expect(page.getByText('Local Backups has two sign-in gates.')).toBeVisible();
   await expect(page.getByText('If access was just changed, refresh your sign-in first.')).toBeVisible();
 
-  await page.getByText('Show all steps').click();
-  await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Add your files' }).click();
+  await setupNavigation.getByRole('link', { name: 'Add your files' }).click();
   await expect(page).toHaveURL(/\/getting-started\?step=uploads#guide$/);
-  await expect(page.getByRole('heading', { name: 'Choose how to add files' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Add your files' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open Files' })).toHaveAttribute('target', '_blank');
   await expect(page.getByText(/Browser Files and SFTP\/SSHFS are separate permissions/)).toBeVisible();
+
+  await setupNavigation.getByRole('link', { name: 'Set up access away from home' }).click();
+  await expect(page.getByRole('link', { name: 'Download NetBird' })).toHaveAttribute('href', 'https://docs.netbird.io/get-started/install');
+
+  await setupNavigation.getByRole('link', { name: 'Connect optional apps' }).click();
+  await expect(page.getByRole('heading', { name: 'Connect optional apps' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Download Immich' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Download Jellyfin' })).toBeVisible();
+  await expect(page.getByText(/Inkita, Lissen, and Audiobookshelf/)).toBeVisible();
+  await expect(page.getByText(/ask an admin for the initial Jellyfin password/)).toBeVisible();
 
   await page.getByRole('link', { name: 'For Admins' }).click();
   await expect(page).toHaveURL(/\/admins$/);
@@ -355,12 +375,11 @@ test('getting started skips app and upload tasks that are unavailable to the acc
   await page.goto('/getting-started?step=services');
   await expect(page.getByText(/lists 0 apps assigned to your account/)).toBeVisible();
   await expect(page.getByText('No enabled apps are currently assigned to this account')).toBeVisible();
-  await expect(page.getByLabel('Opened the apps I plan to use')).toHaveCount(0);
+  await expect(page.getByLabel(/Open .* and complete its first-time sign-in/)).toHaveCount(0);
   await expect(page.locator('.getting-started-step').getByLabel('Skip (not available for this account)')).toBeVisible();
 
-  await page.getByText('Show all steps').click();
-  await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Finish' }).click();
-  await expect(page.getByRole('heading', { name: 'Finish setup' })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Getting started steps' }).getByRole('link', { name: 'Connect optional apps' }).click();
+  await expect(page.getByRole('heading', { name: 'Connect optional apps' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open Detailed Guide' })).toHaveCount(0);
   await expect(page.locator('.finish-next-steps').getByText('Detailed Guide')).toHaveCount(0);
 });

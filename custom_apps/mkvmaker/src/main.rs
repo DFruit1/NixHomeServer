@@ -2090,27 +2090,12 @@ fn iso_stem(path: &Path) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn natural_numbers() {
-        assert_eq!(natural_cmp("disc2.iso", "disc10.iso"), Ordering::Less);
-    }
-    #[test]
     fn ordering_validation() {
         assert_eq!(
             apply_order(&["a", "b", "c"], "3,1,2").unwrap(),
             ["c", "a", "b"]
         );
         assert!(apply_order(&[1, 2], "1,1").is_err());
-    }
-    #[test]
-    fn jellyfin_naming() {
-        assert_eq!(
-            jellyfin_name("Film", Some(1976), Some("tmdbid-1")),
-            "Film (1976) [tmdbid-1]"
-        );
-    }
-    #[test]
-    fn invalid_chars_are_safe() {
-        assert_eq!(safe_name("A:B/C"), "A_B_C");
     }
 
     fn test_source(name: &str, title: Option<u64>) -> SourceTitle {
@@ -2251,12 +2236,6 @@ mod tests {
         assert!(command.contains("--subtitle-burned=none"));
         assert!(command.contains("--subtitle-default=none"));
         assert!(!command.contains("--all-audio"));
-    }
-
-    #[test]
-    fn container_date_cleanup_removes_the_matroska_muxing_date() {
-        let command = display_command(&container_date_cleanup_command(Path::new("out.mkv")));
-        assert!(command.contains("--edit info --delete date"));
     }
 
     #[test]

@@ -7,6 +7,8 @@
 , bootstrapConfigurations
 , nixhomeserverSettings
 , offlineInputSources
+, enabledApps
+, testAllApps ? false
 }:
 
 let
@@ -31,12 +33,22 @@ let
     util-linux
   ];
 
+  hasApp = name: builtins.elem name enabledApps;
+  rustAppOwners = {
+    kanidm-canary-bootstrap = "homepage";
+    mail-archive-ui = "mail-archive-ui";
+    media-manager = null;
+    mkvmaker = "mkvmaker";
+  };
+  selectedRustApps = lib.filterAttrs
+    (name: _: rustAppOwners.${name} == null || hasApp rustAppOwners.${name})
+    rustApps;
   rustChecks = lib.concatMapAttrs
     (name: app:
       lib.mapAttrs'
         (checkName: check: lib.nameValuePair "${name}-${checkName}" check)
         app.checks)
-    rustApps;
+    selectedRustApps;
   hostName = builtins.head (builtins.attrNames nixosConfigurations);
   hostConfig = nixosConfigurations.${hostName}.config;
   hostModules = hostConfig.nixhomeserver.modules;
@@ -84,12 +96,11 @@ let
         successfulGenerationRoot
         retainedSuccessfulGenerations
         minimumFreeBytes;
-      retention = {
-      }
-      // lib.optionalAttrs (hostModules."groundwater-logger" or false) {
+      retention = { }
+        // lib.optionalAttrs (hostModules."groundwater-logger" or false) {
         groundwaterLogger = hostConfig.repo.groundwaterLogger.retention;
       }
-      // lib.optionalAttrs (hostModules."youtube-downloader" or false) {
+        // lib.optionalAttrs (hostModules."youtube-downloader" or false) {
         youtubeDownloaderEventDays = hostConfig.repo.youtubeDownloader.eventRetentionDays;
       };
     };
@@ -121,13 +132,12 @@ let
     "nixhomeserver-offline-flake-inputs.json"
     (builtins.toJSON offlineInputSources);
   nixosTests = import ./nixos-tests.nix { inherit lib pkgs; };
+  selectedNixosTests = lib.filterAttrs
+    (name: _: name != "jellyfin-oidc" || hasApp "jellyfin")
+    nixosTests;
 in
 {
-  groundwater-logger = nodeApps.groundwater-logger;
-  homepage = nodeApps.homepage;
   media-manager-package = rustApps.media-manager.package;
-  mkvmaker-package = rustApps.mkvmaker.package;
-  youtube-downloader = nodeApps.youtube-downloader;
 
   shellcheck = pkgs.runCommand "shellcheck"
     {
@@ -168,6 +178,7 @@ in
       NIXHOMESERVER_DEFAULT_HOST = hostName;
       NIXHOMESERVER_INVENTORY_JSON_FILE = inventoryJsonFile;
       NIXHOMESERVER_SKIP_NESTED_BUILDS = "1";
+      NIXHOMESERVER_TEST_ALL_APPS = if testAllApps then "1" else "0";
     } // lib.optionalAttrs (archiveViewHelper != null) {
       NIXHOMESERVER_ARCHIVE_VIEW_HELPER = archiveViewHelper;
     }) ''
@@ -197,7 +208,7 @@ in
         end
     ' flake.lock >flake.lock.offline
     mv flake.lock.offline flake.lock
-    bash scripts/tests/run-script-tests.sh
+    bash scripts/tests/run-script-tests.sh ${lib.optionalString testAllApps "--all-apps"}
     touch "$out"
   '';
 
@@ -209,10 +220,22 @@ in
     touch "$out"
   '';
 }
-  // lib.optionalAttrs (pkgs.system == hostSettings.hostPlatform) {
+// lib.optionalAttrs (pkgs.system == hostSettings.hostPlatform) {
   # Keep the destructive layout fully evaluable/buildable in ordinary CI.
   # Running this derivation never touches disks; only `disko --mode disko` does.
   bootstrap-disko = bootstrapConfigurations."${hostName}-bootstrap".config.system.build.diskoScript;
-  }
-  // nixosTests
+}
+// lib.optionalAttrs (hasApp "groundwater-logger") {
+  groundwater-logger = nodeApps.groundwater-logger;
+}
+// lib.optionalAttrs (hasApp "homepage") {
+  homepage = nodeApps.homepage;
+}
+// lib.optionalAttrs (hasApp "mkvmaker") {
+  mkvmaker-package = rustApps.mkvmaker.package;
+}
+// lib.optionalAttrs (hasApp "youtube-downloader") {
+  youtube-downloader = nodeApps.youtube-downloader;
+}
+// selectedNixosTests
   // rustChecks

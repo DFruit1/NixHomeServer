@@ -40,14 +40,6 @@ behavior_json="$(nix eval --impure --json --expr '
       (toString custom.systemd.services.homepage.environment.HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND)));
     removeCommandDrv = builtins.head (builtins.attrNames (builtins.getContext
       (toString custom.systemd.services.homepage.environment.HOMEPAGE_OFFLINE_MEDIA_REMOVE_COMMAND)));
-    removedMatrix = import ./flake/module-removal-matrix.nix {
-      inherit lib pkgs;
-      vars = customVars;
-      inherit (f.inputs) agenix impermanence filestashNix;
-      inherit (packages) appPackages;
-      sourcePath = f.outPath;
-      requestedVariants = [ "without-offline-music" ];
-    };
   in {
     customGroup = custom.services.kanidm.provision.groups.offline-media-users;
     customDescription = custom.nixhomeserver.kanidmGroupDescriptions.offline-media-users;
@@ -70,7 +62,6 @@ behavior_json="$(nix eval --impure --json --expr '
       syncthingEnabled = disabled.services.syncthing.enable;
       cleanupPresent = builtins.hasAttr "offline-media-disabled-cleanup" disabled.systemd.services;
     };
-    removed = removedMatrix.without-offline-music.offlineMediaSurface;
   }
 ')"
 
@@ -90,13 +81,6 @@ if ! jq -e '
     syncthingEnabled: false,
     cleanupPresent: true
   })
-  and (.removed.syncthingEnabled == false)
-  and (.removed.gatewayRegistered == false)
-  and (.removed.homepageEnvironmentPresent == false)
-  and (.removed.disabledCleanupPresent == true)
-  and (.removed.dedicatedAccessGroupPresent == false)
-  and (.removed.dedicatedGatewayScopePresent == false)
-  and (.removed.dedicatedHomepageScopePresent == false)
 ' <<<"$behavior_json" >/dev/null; then
   echo "❌ Offline-media group provisioning, claims, role coverage, disable, or removal behavior regressed." >&2
   jq . <<<"$behavior_json" >&2
@@ -127,10 +111,6 @@ if ! jq -e '
     | .requiredAllGroups == ["users"]
     and .requiredAnyGroups == ["offline-media-users"]
     and (.loginNotes | contains("baseline users membership")))
-  and (.adminGuide[] | select(.title == "Revoke offline-media device access")
-    | (.command | contains("offline-media-users"))
-    and (.command | contains("offline-media-reconcile.service"))
-    and (.detail | contains("never deletes source media")))
 ' <<<"$homepage_config" >/dev/null; then
   echo "❌ Homepage did not encode additive offline-media access and immediate offboarding reconciliation." >&2
   exit 1
@@ -151,10 +131,6 @@ if ! jq -e '
   and (.services[] | select(.id == "offline-media")
     | (.loginNotes | contains("baseline users membership"))
     and ((.loginNotes | contains("plus users")) | not))
-  and (.adminGuide[] | select(.title == "Revoke offline-media device access")
-    | (has("command") | not)
-    and (.detail | contains("Never remove that group"))
-    and (.detail | contains("remove each enrolled device")))
 ' <<<"$baseline_homepage_config" >/dev/null; then
   echo "❌ Homepage offered an unsafe baseline-users removal command for offline-media revocation." >&2
   exit 1

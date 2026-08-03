@@ -194,11 +194,17 @@ kavita_all_advanced_filter='. as $current
 
 jq -e --argjson before "$kavita_baseline" "$kavita_all_present_filter" \
   <<<"$kavita_complete" >/dev/null
-! jq -e --argjson before "$kavita_baseline" "$kavita_all_present_filter" \
-  <<<"$kavita_missing" >/dev/null
+if jq -e --argjson before "$kavita_baseline" "$kavita_all_present_filter" \
+  <<<"$kavita_missing" >/dev/null; then
+  echo "Expected a missing Kavita library to fail the completeness check." >&2
+  exit 1
+fi
 jq -e --argjson before "$kavita_baseline" "$kavita_all_advanced_filter" \
   <<<"$kavita_complete" >/dev/null
-! jq -e --argjson before "$kavita_baseline" "$kavita_all_advanced_filter" \
-  <<<"$kavita_unchanged" >/dev/null
+if jq -e --argjson before "$kavita_baseline" "$kavita_all_advanced_filter" \
+  <<<"$kavita_unchanged" >/dev/null; then
+  echo "Expected an unchanged Kavita library to fail the advancement check." >&2
+  exit 1
+fi
 
 echo "✅ Media Manager core boundary, identity, persistence, and API contract are valid."

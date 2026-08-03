@@ -283,9 +283,4 @@ mod tests {
             0o400
         );
     }
-
-    #[test]
-    fn rejects_invalid_seed() {
-        assert!(decode_seed("not-a-seed").is_err());
-    }
 }

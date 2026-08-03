@@ -8,6 +8,7 @@ let
     system
     ;
   configuredIdentity = settings.identity;
+  configuredApplications = settings.applications;
   identity = configuredIdentity // {
     canaryUser = "canary-user";
     adminMailAddresses = [ configuredIdentity.adminEmail ];
@@ -150,6 +151,8 @@ rec {
     storage
     ;
   hostname = network.hostname;
+  applications = configuredApplications;
+  enabledApps = configuredApplications.enabled;
   domain = network.domain;
   hostPlatform = system.hostPlatform or "x86_64-linux";
   hardwareProfile = system.hardwareProfile;

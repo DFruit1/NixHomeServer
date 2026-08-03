@@ -21,7 +21,6 @@ in {
   hasNixFs = builtins.hasAttr "/nix" cfg.fileSystems;
   hasPersistFs = builtins.hasAttr "/persist" cfg.fileSystems;
   smartdWants = cfg.systemd.services.smartd.wants or [];
-  beszelExtraFilesystems = cfg.systemd.services.beszel-agent.environment.EXTRA_FILESYSTEMS;
 }')"
 
 jq -e '
@@ -34,7 +33,6 @@ jq -e '
     and (.enableZfsDataPool == true)
     and (.dataRootIsMountPoint == true)
     and (.smartdWants | index("zfs.target") != null)
-    and (.beszelExtraFilesystems | contains("__DataPool"))
   else
     (.rootFsType == "ext4")
     and (.hasNixFs == false)
@@ -42,7 +40,6 @@ jq -e '
     and (.enableZfsDataPool == false)
     and (.dataRootIsMountPoint == false)
     and (.smartdWants | index("zfs.target") == null)
-    and (.beszelExtraFilesystems | contains("__DataPool") | not)
   end)
 ' <<<"$current_profile_json" >/dev/null || {
   echo "❌ Current host platform/storage profile is internally inconsistent."
@@ -142,7 +139,6 @@ in {
   hasNixFs = builtins.hasAttr \"/nix\" cfg.fileSystems;
   hasPersistFs = builtins.hasAttr \"/persist\" cfg.fileSystems;
   smartdWants = cfg.systemd.services.smartd.wants or [];
-  beszelExtraFilesystems = cfg.systemd.services.beszel-agent.environment.EXTRA_FILESYSTEMS;
   vars = {
     hostPlatform = \"aarch64-linux\";
     storageProfile = \"single-disk-ext4\";
@@ -160,9 +156,6 @@ jq -e '
   and (.vars.enableZfsDataPool == false)
   and (.vars.dataRootIsMountPoint == false)
   and (.smartdWants | index("zfs.target") == null)
-  and (.beszelExtraFilesystems | contains("/__Root"))
-  and (.beszelExtraFilesystems | contains("/mnt/data__DataRoot"))
-  and (.beszelExtraFilesystems | contains("__DataPool") | not)
 ' <<<"$synthetic_profile_json" >/dev/null || {
   echo "❌ Synthetic ARM/single-disk profile is not profile-clean."
   jq . <<<"$synthetic_profile_json"

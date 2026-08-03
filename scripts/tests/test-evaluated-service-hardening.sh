@@ -9,8 +9,17 @@ ensure_tools jq nix
 
 host="$(test_default_host)"
 services_json="$(
-  nix eval --json ".#nixosConfigurations.${host}.config.systemd.services" \
-    --apply 'services:
+  NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --json --expr '
+    let
+      flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+      hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+      base = builtins.getAttr hostName flake.nixosConfigurations;
+      host = if builtins.getEnv "NIXHOMESERVER_TEST_ALL_APPS" == "1" then
+        base.extendModules { modules = [ ./modules/bonsai ./modules/groundwater-logger ]; }
+      else
+        base;
+      services = host.config.systemd.services;
+    in
       builtins.mapAttrs
         (_: service: service.serviceConfig)
         (builtins.intersectAttrs {
@@ -23,8 +32,13 @@ services_json="$(
           mail-archive-ui = null;
           mail-archive-ui-paperless-db-snapshot = null;
           youtube-downloader = null;
-        } services)'
+        } services)
+  '
 )"
+
+service_present() {
+  jq -e --arg service "$1" 'has($service)' <<<"$services_json" >/dev/null
+}
 
 require_service_setting() {
   local service="$1"
@@ -48,6 +62,7 @@ for service in \
   mail-archive-ui \
   mail-archive-ui-paperless-db-snapshot \
   youtube-downloader; do
+  service_present "$service" || continue
   require_service_setting "$service" '.NoNewPrivileges == true' \
     "must prevent privilege acquisition"
   require_service_setting "$service" '.PrivateTmp == true' \
@@ -59,6 +74,7 @@ for service in \
 done
 
 for service in bonsai-llama groundwater-logger mail-archive-ui youtube-downloader; do
+  service_present "$service" || continue
   require_service_setting "$service" '.ProtectKernelModules == true' \
     "long-running custom apps must not access kernel modules"
   require_service_setting "$service" '.ProtectKernelTunables == true' \

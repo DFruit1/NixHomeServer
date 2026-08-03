@@ -10,7 +10,7 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/validate-repo.sh [--full] [--run-flake-check] [--skip-flake-check]
+Usage: scripts/validate-repo.sh [--full] [--all-apps] [--run-flake-check] [--skip-flake-check]
 
 Run the local repository validation gate.
 
@@ -27,15 +27,21 @@ Full mode:
   - builds flake check derivations except repo-policy, which is run directly
   - runs the pinned Homepage Playwright end-to-end suite
 
+Application scope:
+  - defaults to applications.enabled for the current host
+  - --all-apps uses the repository-wide check and script-test worklists
+
 Examples:
   scripts/validate-repo.sh
   scripts/validate-repo.sh --run-flake-check
   scripts/validate-repo.sh --full
+  scripts/validate-repo.sh --full --all-apps
   scripts/validate-repo.sh --full --skip-flake-check
 EOF
 }
 
 full_mode=false
+all_apps=false
 run_flake_check=false
 skip_flake_check=false
 tests_dir="${VALIDATE_REPO_TESTS_DIR:-$repo_root/scripts/tests}"
@@ -53,6 +59,10 @@ while (($# > 0)); do
   case "$1" in
     --full)
       full_mode=true
+      shift
+      ;;
+    --all-apps)
+      all_apps=true
       shift
       ;;
     --run-flake-check)
@@ -86,15 +96,20 @@ current_system() {
 }
 
 run_full_derivation_checks() {
-  local system check_name check_names
+  local system check_attr check_name check_names
 
   if [[ "$full_mode" != true ]]; then
     return 0
   fi
 
   system="$(current_system)"
+  if [[ "$all_apps" == true ]]; then
+    check_attr="legacyPackages.${system}.nixhomeserverAllChecks"
+  else
+    check_attr="checks.${system}"
+  fi
   if ! check_names="$(
-    nix eval --json ".#checks.${system}" --apply 'checks: builtins.attrNames checks' \
+    nix eval --json ".#${check_attr}" --apply 'checks: builtins.attrNames checks' \
       | jq -r '.[]' \
       | sort
   )" || [[ -z "$check_names" ]]; then
@@ -110,13 +125,17 @@ run_full_derivation_checks() {
       continue
     fi
     echo "ℹ️ Running ${check_name} derivation…"
-    nix build ".#checks.${system}.${check_name}" --no-link --print-build-logs
+    nix build ".#${check_attr}.${check_name}" --no-link --print-build-logs
   done <<<"$check_names"
 }
 
 run_shell_tests() {
   echo "ℹ️ Running repository policy tests…"
-  "${tests_dir}/run-script-tests.sh"
+  if [[ "$all_apps" == true ]]; then
+    "${tests_dir}/run-script-tests.sh" --all-apps
+  else
+    "${tests_dir}/run-script-tests.sh"
+  fi
 }
 
 run_full_e2e_checks() {

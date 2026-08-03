@@ -10,6 +10,11 @@ in
       "absBootstrapPass"
       "absClientSecret"
     ] [ ];
+    beszel = app ./beszel "Beszel Monitor" "operations" [
+      "beszelHubEnv"
+      "monitorOauth2ProxyClientSecret"
+      "monitorOauth2ProxyCookieSecret"
+    ] [ ];
     bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [ ];
     files = app ./files "Files" "storage" [ ] [ ];
     groundwater-logger = app ./groundwater-logger "Groundwater Logger" "operations" [

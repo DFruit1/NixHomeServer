@@ -7,6 +7,7 @@ let
 
   cases = {
     bonsai = {
+      modules = [ ../../modules/bonsai ];
       disable = { repo.bonsai.enable = lib.mkForce false; };
       registryName = "bonsai";
       services = [ "bonsai-llama" "bonsai-model-prepare" ];
@@ -23,6 +24,7 @@ let
       persistencePaths = [ "/var/lib/bonsai" ];
     };
     groundwater-logger = {
+      modules = [ ../../modules/groundwater-logger ];
       disable = { repo.groundwaterLogger.enable = lib.mkForce false; };
       registryName = "groundwater-logger";
       services = [ "groundwater-logger" ];
@@ -218,7 +220,9 @@ let
 
   evaluate = name: case:
     let
-      host = baseHost.extendModules { modules = [ case.disable ]; };
+      host = baseHost.extendModules {
+        modules = (case.modules or [ ]) ++ [ case.disable ];
+      };
       cfg = host.config;
       fullHosts = map (short: "${short}.${vars.domain}") case.hosts;
       shortHosts = map (short: "http://${short}") case.hosts;

@@ -15,6 +15,7 @@ let
   hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   host = (builtins.getAttr hostName flake.nixosConfigurations).extendModules {
     modules = [
+      ./modules/kiwix
       { repo.kiwix.enable = lib.mkForce false; }
     ];
   };

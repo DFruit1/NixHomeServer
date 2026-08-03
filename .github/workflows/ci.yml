@@ -62,4 +62,4 @@ jobs:
         run: nix run .#gitleaks -- detect --source . --redact --no-banner
 
       - name: Run full repository validation
-        run: scripts/validate-repo.sh --full
+        run: scripts/validate-repo.sh --full --all-apps

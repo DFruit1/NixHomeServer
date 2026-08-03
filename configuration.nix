@@ -1,4 +1,4 @@
-{ ... }:
+{ vars, ... }:
 
 let
   catalog = import ./modules/catalog.nix;
@@ -8,6 +8,6 @@ in
     ./system-resources.nix
     ./modules/Core_Modules
   ]
-  ++ map (spec: spec.module) (builtins.attrValues catalog.apps)
+  ++ map (name: catalog.apps.${name}.module) vars.enabledApps
   ++ catalog.integrations;
 }

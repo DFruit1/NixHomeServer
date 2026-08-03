@@ -10,12 +10,13 @@ let
     hasModule "mail-archive-ui"
     && config.services.mail-archive-ui.enable;
   seerrEnabled = moduleEnabled "seerr";
+  beszelEnabled = hasModule "beszel";
   mediaAutomationEnabled = lib.any moduleEnabled [ "sonarr" "radarr" "prowlarr" "qbittorrent" "seerr" ];
   portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
-    ++ (vars.monitoringAccessUsers or [ ])
+    ++ lib.optionals beszelEnabled (vars.monitoringAccessUsers or [ ])
     ++ (vars.filesSftpUsers or [ ])
   );
   adminMailAddresses =
@@ -73,15 +74,17 @@ let
     "domain_admins" = "Builtin domain-wide administrative group used by platform administration.";
     "users" = "Baseline group for normal users and standard identity resolution.";
     "app-admin" = "Grants application admin access for app surfaces that trust the app-admin group.";
-  } // {
-    "${vars.monitoringAccessGroup}" = "Grants access to the monitoring dashboard without application-admin privileges.";
   } // fileAccessGroupDescriptions // {
     "${vars.backupAdminGroup}" = "Grants backup administration access.";
   } // delegatedOperatorGroupDescriptions // {
     "${vars.backupStorageGroup}" = "Grants read access to encrypted backup repository files.";
   };
   appKanidmGroupDescriptions =
-    lib.optionalAttrs (hasModule "audiobookshelf")
+    lib.optionalAttrs beszelEnabled
+      {
+        "${vars.monitoringAccessGroup}" = "Grants access to the monitoring dashboard without application-admin privileges.";
+      }
+    // lib.optionalAttrs (hasModule "audiobookshelf")
       {
         "audiobookshelf-users" = "Grants Audiobookshelf sign-in.";
       }
@@ -117,7 +120,6 @@ let
     [
       "users"
       "app-admin"
-      vars.monitoringAccessGroup
       vars.fileAccess.webAccessGroup
       vars.fileAccess.sftpAccessGroup
       vars.fileAccess.sharedAccessGroup
@@ -125,6 +127,7 @@ let
       vars.backupAdminGroup
       vars.backupStorageGroup
     ]
+    ++ lib.optionals beszelEnabled [ vars.monitoringAccessGroup ]
     ++ lib.optionals (hasModule "youtube-downloader") [ "downloads-users" ]
     ++ lib.optionals (moduleEnabled "kiwix") [ "kiwix-users" ]
     ++ lib.optionals mailArchiveEnabled [ "mail-archive-users" ]
@@ -206,7 +209,7 @@ in
       } // lib.genAttrs delegatedOperatorGroups (_: mkManualGroup [ vars.kanidmAdminUser ]) // {
         "app-admin" = mkManualGroup vars.kanidmAppAdminUsers;
         users = mkManualGroup vars.kanidmAppUsers;
-      } // {
+      } // lib.optionalAttrs beszelEnabled {
         ${vars.monitoringAccessGroup} = mkManualGroup (vars.monitoringAccessUsers or [ ]);
       } // fileAccessGroups // backupAccessGroups // lib.optionalAttrs seerrEnabled {
         ${vars.seerrRequestManagerGroup} = mkManualGroup [ ];

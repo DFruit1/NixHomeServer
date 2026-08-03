@@ -125,7 +125,6 @@ behavior_json="$(flake_eval_json '
       "immich-users"
       "jellyfin-users"
       "kavita-users"
-      "kiwix-users"
       "mail-archive-users"
       "media-automation-users"
       "paperless-users"

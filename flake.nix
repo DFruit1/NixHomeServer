@@ -19,6 +19,8 @@
   outputs = inputs@{ self, nixpkgs, crane, ... }:
     let
       lib = nixpkgs.lib;
+      catalog = import ./modules/catalog.nix;
+      allAppNames = builtins.attrNames catalog.apps;
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = lib.genAttrs supportedSystems;
       mkPackageData = system:
@@ -78,6 +80,16 @@
         systems = mkOfflineInput inputs.agenix.inputs.systems;
         systems_2 = mkOfflineInput inputs.filestashNix.inputs.systems;
       };
+      mkChecks = system: enabledApps: testAllApps:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          packageData = mkPackageData system;
+        in
+        import ./flake/checks.nix {
+          inherit self lib pkgs offlineInputSources enabledApps testAllApps;
+          inherit nixosConfigurations bootstrapConfigurations nixhomeserverSettings;
+          inherit (packageData) rustApps nodeApps;
+        };
     in
     {
       nixosConfigurations = nixosConfigurations // bootstrapConfigurations;
@@ -87,16 +99,10 @@
         nixhomeserverSettings;
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
       checks = forAllSystems
-        (system:
-          let
-            pkgs = nixpkgs.legacyPackages.${system};
-            packageData = mkPackageData system;
-          in
-          import ./flake/checks.nix {
-            inherit self lib pkgs offlineInputSources;
-            inherit nixosConfigurations bootstrapConfigurations nixhomeserverSettings;
-            inherit (packageData) rustApps nodeApps;
-          });
+        (system: mkChecks system vars.enabledApps false);
+      legacyPackages = forAllSystems (system: {
+        nixhomeserverAllChecks = mkChecks system allAppNames true;
+      });
       devShells = forAllSystems
         (system:
           let

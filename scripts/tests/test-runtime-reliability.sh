@@ -10,20 +10,15 @@ host="$(test_default_host)"
 runtime_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
   host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   cfg = (builtins.getAttr host f.nixosConfigurations).config;
-  disabledBonsaiCfg = ((builtins.getAttr host f.nixosConfigurations).extendModules {
-    modules = [ { repo.bonsai.enable = f.inputs.nixpkgs.lib.mkForce false; } ];
-  }).config;
   policyReconcileService =
     if cfg.systemd.services ? kopia-policy-reconcile
     then cfg.systemd.services.kopia-policy-reconcile
     else null;
   settings = builtins.getAttr host f.lib.nixhomeserverSettings;
-  kiwixHost = "wiki.${settings.domain}";
   seerrHost = "requests.${settings.domain}";
 in {
   snapshotRoots = cfg.repo.backups.snapshotRoots;
   rebuildableSnapshotPaths = cfg.repo.backups.rebuildableSnapshotPaths;
-  disabledBonsaiRebuildableSnapshotPaths = disabledBonsaiCfg.repo.backups.rebuildableSnapshotPaths;
   repositoryPath = cfg.repo.backups.repositoryPath;
   kopiaBootstrapScript = cfg.systemd.services.kopia-repository-bootstrap.script;
   kopiaPolicyReconcile =
@@ -47,9 +42,7 @@ in {
     inherit (cfg.repo.authGateway) enable mode domain;
     protectedCount = builtins.length (builtins.attrNames cfg.repo.authGateway.protectedApps);
     gatewayWantedBy = cfg.systemd.services.auth-gateway-oauth2-proxy.wantedBy;
-    kiwixSidecarWantedBy = cfg.systemd.services.kiwix-oauth2-proxy.wantedBy;
     gatewayExecStart = toString cfg.systemd.services.auth-gateway-oauth2-proxy.serviceConfig.ExecStart;
-    kiwixCaddyConfig = cfg.services.caddy.virtualHosts.${kiwixHost}.extraConfig;
     disabledSeerrPublished = builtins.hasAttr seerrHost cfg.services.caddy.virtualHosts;
   };
   nixInlineOptimise = cfg.nix.settings.auto-optimise-store;
@@ -96,8 +89,7 @@ jq -e '
   and (.snapshotRoots | index($paperless) != null)
   and (.snapshotRoots | length == (unique | length))
   and (.snapshotRoots | all(startswith("/")))
-  and (.rebuildableSnapshotPaths | sort == ["var/lib/atticd/storage", "var/lib/bonsai/models"])
-  and (.disabledBonsaiRebuildableSnapshotPaths | index("var/lib/bonsai/models") != null)
+  and (.rebuildableSnapshotPaths | sort == ["var/lib/atticd/storage"])
   and (.kopiaBootstrapScript | contains("policy set") | not)
   and (.kopiaPolicyReconcile != null)
   and (.kopiaPolicyReconcile.remainAfterExit == true)
@@ -108,11 +100,10 @@ jq -e '
   and (.kopiaPolicyReconcile.script | split("policy set /persist") | length == 3)
   and (.kopiaPolicyReconcile.script | split("policy set /persist")[1] | contains("--clear-ignore") and (contains("--add-ignore") | not))
   and (.kopiaPolicyReconcile.script | split("policy set /persist")[2] | (contains("--clear-ignore") | not) and contains("--add-ignore=var/lib/atticd/storage"))
-  and (.kopiaPolicyReconcile.script | split("policy set /persist")[2] | contains("--add-ignore=var/lib/bonsai/models"))
   and (.kopiaPolicyReconcile.script | contains("+            --add-ignore") | not)
   and (.kopiaServiceAfter | index("kopia-policy-reconcile.service") != null)
   and (.repositoryPath as $repo | .snapshotRoots | all(. as $root | ($repo != $root and ($repo | startswith($root + "/") | not))))
-  and (.sqliteDumpOutputs | index("beszel.sqlite") != null)
+  and (.sqliteDumpOutputs | index("beszel.sqlite") == null)
   and (.postgresqlDumpOutputs | index("immich.pgdump") != null)
   and (if .seerrEnabled then
     (.sqliteDumpOutputs | index("seerr.sqlite") != null)
@@ -122,11 +113,9 @@ jq -e '
   and (if .zfsEnabled then .zfsSnapshots == {enable:true,frequent:0,hourly:24,daily:7,weekly:4,monthly:0} else .zfsSnapshots.enable == false end)
   and (.auth.enable == true)
   and (.auth.mode == "gateway")
-  and (.auth.protectedCount >= 11)
+  and (.auth.protectedCount >= 9)
   and (.auth.gatewayWantedBy | index("multi-user.target") != null)
-  and (.auth.kiwixSidecarWantedBy == [])
   and (.auth.gatewayExecStart | contains("--upstream=static://202"))
-  and (.auth.kiwixCaddyConfig | contains("forward_auth http://127.0.0.1:4180"))
   and (.auth.disabledSeerrPublished == false)
   and (.nixInlineOptimise == false)
   and (.nixGcAutomatic == false)

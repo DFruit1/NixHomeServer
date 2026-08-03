@@ -229,7 +229,10 @@ behavior_json="$(nix eval --impure --json --expr '
       appPackages = packages.appPackages;
     };
     cfg = (system.nixosConfigurations.${base.hostname}.extendModules {
-      modules = [ { repo.seerr.enable = lib.mkForce true; } ];
+      modules = [
+        ./modules/beszel
+        { repo.seerr.enable = lib.mkForce true; }
+      ];
     }).config;
     groups = cfg.services.kanidm.provision.groups;
   in {

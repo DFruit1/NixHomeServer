@@ -52,18 +52,9 @@ let
       payloadRoots = [ ];
       notes = "Resolver trust-anchor state.";
     }
-    {
-      app = "beszel";
-      component = "hub";
-      stateRoot = "/var/lib/beszel-hub";
-      payloadRoots = [ ];
-      notes = "Monitoring hub database, SSH key, and local dashboard state.";
-    }
   ];
   coreSnapshotRoots = [ "/persist" ];
-  coreSqliteDumps = [
-    { source = "/var/lib/beszel-hub/beszel_data/data.db"; outputName = "beszel.sqlite"; }
-  ];
+  coreSqliteDumps = [ ];
   sqliteDumpScript = dump: ''
     source=${lib.escapeShellArg dump.source}
     output_name=${lib.escapeShellArg dump.outputName}

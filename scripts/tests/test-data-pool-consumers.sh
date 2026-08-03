@@ -36,7 +36,7 @@ in {
     requires = cfg.systemd.services.${name}.requires or [];
     after = cfg.systemd.services.${name}.after or [];
     condition = cfg.systemd.services.${name}.unitConfig.ConditionPathIsMountPoint or null;
-  }) names;
+  }) (builtins.filter (name: builtins.hasAttr name cfg.systemd.services) names);
 }')"
 
 jq -e '

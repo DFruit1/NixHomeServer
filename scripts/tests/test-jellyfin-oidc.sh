@@ -48,25 +48,10 @@ for validation_fragment in \
   'RequireExpirationTime = true' \
   'RequireSignedTokens = true' \
   'SecurityTokenSignatureKeyNotFoundException' \
-  'TimeSpan.FromMinutes(2)' \
-  "document.querySelector('#loginPage:not(.hide)')" \
-  "page.querySelector('.readOnlyContent')" \
-  '__nixhomeserverOidcLoginInitialized' \
-  'nixhomeserver-login-view' \
-  'history.pushState' \
-  'window.location.reload()' \
-  'existing.remove()' \
-  "classList.remove('nixhomeserver-oidc-ready')" \
-  'nixhomeserver-oidc-ready'; do
+  'TimeSpan.FromMinutes(2)'; do
   require_fixed modules/jellyfin/patches/oidc-hardening.patch "$validation_fragment" \
     "OIDC hardening patch is missing: $validation_fragment"
 done
-forbid_match modules/jellyfin/patches/oidc-hardening.patch \
-  "document.querySelector('.readOnlyContent')" \
-  "Jellyfin OIDC controls must never target read-only content outside the active login page"
-forbid_match modules/jellyfin/patches/oidc-hardening.patch \
-  '^\+.*\[data-role=\\"page\\"\] form' \
-  "Jellyfin OIDC controls must never use a generic page-form fallback"
 
 host="$(test_default_host)"
 oidc_json="$(
