@@ -86,6 +86,13 @@ struct Args {
     /// Publish a redacted, machine-readable snapshot of the active encode
     #[arg(long, hide = true)]
     progress_file: Option<PathBuf>,
+    /// Write partial encodes here instead of beside the final output; must be
+    /// on the same filesystem as the output for an atomic final rename
+    #[arg(long, hide = true)]
+    staging_dir: Option<PathBuf>,
+    /// ISO titles still waiting in the inbox, included in the progress snapshot
+    #[arg(long = "queue-item", hide = true)]
+    queue_items: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -116,6 +123,8 @@ struct Config {
     rf: f32,
     preset: String,
     recursive: bool,
+    #[serde(default)]
+    staging_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -126,6 +135,7 @@ impl Default for Config {
             rf: 18.0,
             preset: "slow".into(),
             recursive: false,
+            staging_dir: None,
         }
     }
 }
@@ -194,6 +204,7 @@ struct Job {
     profile: EncodeProfile,
     rf: f32,
     preset: String,
+    staging_dir: Option<PathBuf>,
 }
 
 struct PlanOptions<'a> {
@@ -216,6 +227,7 @@ struct ProgressContext {
     completed_seconds: u64,
     item_seconds: u64,
     total_seconds: u64,
+    queued: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -225,6 +237,12 @@ struct PublicProgress<'a> {
     state: &'static str,
     updated_at: u64,
     conversions: [PublicConversion<'a>; 1],
+    #[serde(skip_serializing_if = "slice_is_empty")]
+    queued: &'a [String],
+}
+
+fn slice_is_empty<T>(slice: &[T]) -> bool {
+    slice.is_empty()
 }
 
 #[derive(Serialize)]
@@ -398,6 +416,13 @@ fn main() -> Result<()> {
     if config.output_root.is_relative() {
         config.output_root = env::current_dir()?.join(&config.output_root);
     }
+    if let Some(staging) = args.staging_dir {
+        config.staging_dir = Some(if staging.is_relative() {
+            env::current_dir()?.join(&staging)
+        } else {
+            staging
+        });
+    }
     let chosen_video_preset = if let Some(preset) = args.video_preset {
         Some(preset)
     } else if !args.yes && args.rf.is_none() && args.preset.is_none() {
@@ -505,6 +530,7 @@ fn main() -> Result<()> {
             completed_seconds,
             item_seconds,
             total_seconds,
+            queued: args.queue_items.clone(),
         });
         if let Err(e) = encode(job, &cancelled, progress) {
             eprintln!("ERROR: {e:#}");
@@ -1334,6 +1360,7 @@ fn make_job(source: SourceTitle, output: PathBuf, config: &Config) -> Job {
         profile: config.profile,
         rf: config.rf,
         preset: config.preset.clone(),
+        staging_dir: config.staging_dir.clone(),
     }
 }
 
@@ -1428,8 +1455,11 @@ fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) 
             job.output.display()
         );
     }
-    let partial = job.output.with_extension("partial.mkv");
+    let partial = partial_output(job);
     let log_path = job_state_path(&job.output, "handbrake.log");
+    if let Some(parent) = partial.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let _ = fs::remove_file(&partial);
     let manifest = job_manifest(job, false)?;
     atomic_write(&manifest_path, &serde_json::to_vec_pretty(&manifest)?)?;
@@ -1495,18 +1525,80 @@ fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) 
         let _ = fs::remove_file(&partial);
         bail!("output validation failed; see {}", log_path.display());
     }
-    fs::hard_link(&partial, &job.output).with_context(|| {
-        format!(
-            "could not atomically publish {}; destination may already exist",
-            job.output.display()
-        )
-    })?;
-    fs::remove_file(&partial)?;
+    if let Err(error) = publish_atomically(&partial, &job.output) {
+        let _ = fs::remove_file(&partial);
+        return Err(error).with_context(|| format!("could not publish {}", job.output.display()));
+    }
     atomic_write(
         &manifest_path,
         &serde_json::to_vec_pretty(&job_manifest(job, true)?)?,
     )?;
     Ok(())
+}
+
+fn partial_output(job: &Job) -> PathBuf {
+    let stem = job
+        .output
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    match &job.staging_dir {
+        Some(staging) => staging.join(format!("{stem}.partial.mkv")),
+        None => job.output.with_extension("partial.mkv"),
+    }
+}
+
+fn publish_atomically(partial: &Path, destination: &Path) -> Result<()> {
+    let parent = destination
+        .parent()
+        .with_context(|| format!("output has no parent: {}", destination.display()))?;
+    fs::create_dir_all(parent)?;
+    match fs::hard_link(partial, destination) {
+        Ok(()) => {
+            fs::remove_file(partial)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            // The staging directory lives on another filesystem (a manual
+            // --staging-dir or a reconfiguration). Copy through a hidden temp
+            // file next to the destination so scanners still only ever observe
+            // a complete file appearing atomically via the final rename.
+            let temporary = parent.join(format!(
+                ".{}.{}.{}.publish.tmp",
+                destination
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            let outcome = (|| -> Result<()> {
+                let mut source = fs::File::open(partial)?;
+                let mut target = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temporary)?;
+                std::io::copy(&mut source, &mut target)?;
+                target.sync_all()?;
+                fs::hard_link(&temporary, destination)?;
+                fs::remove_file(&temporary)?;
+                fs::remove_file(partial)?;
+                Ok(())
+            })();
+            if let Err(error) = outcome {
+                let _ = fs::remove_file(&temporary);
+                return Err(error).context("could not publish across filesystems");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("could not publish {}", destination.display()))
+        }
+    }
 }
 
 struct JobLock {
@@ -1799,6 +1891,7 @@ fn write_public_progress(
             eta_seconds,
             rate_fps: rate_fps.filter(|value| value.is_finite() && *value >= 0.0),
         }],
+        queued: &context.queued,
     };
     atomic_write(&context.path, &serde_json::to_vec_pretty(&status)?)
 }
@@ -2279,6 +2372,7 @@ Progress: {"State":"SCANDONE"}"#;
             completed_seconds: 5_400,
             item_seconds: 600,
             total_seconds: 6_600,
+            queued: vec!["Another Film.iso".into(), "Series S2.iso".into()],
         };
         write_public_progress(&context, 50.0, Some(120), Some(24.5)).unwrap();
         let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -2289,6 +2383,109 @@ Progress: {"State":"SCANDONE"}"#;
         assert_eq!(value["conversions"][0]["itemIndex"], 2);
         assert_eq!(value["conversions"][0]["etaSeconds"], 120);
         assert!((value["conversions"][0]["percent"].as_f64().unwrap() - 86.3636).abs() < 0.001);
+        assert_eq!(
+            value["queued"],
+            serde_json::json!(["Another Film.iso", "Series S2.iso"])
+        );
         assert!(value["conversions"][0].get("path").is_none());
+    }
+
+    #[test]
+    fn staged_partials_live_outside_the_output_tree() {
+        let config = Config {
+            staging_dir: Some(PathBuf::from("/srv/shared/.mkvmaker-staging")),
+            ..Config::default()
+        };
+        let job = make_job(
+            test_source("disc.iso", Some(1)),
+            PathBuf::from("/srv/shared/_Videos/_Movies/Film (2000)/Film (2000).mkv"),
+            &config,
+        );
+        assert_eq!(
+            partial_output(&job),
+            PathBuf::from("/srv/shared/.mkvmaker-staging/Film (2000).partial.mkv")
+        );
+        let unstaged = make_job(
+            test_source("disc.iso", Some(1)),
+            PathBuf::from("/srv/shared/_Videos/_Movies/Film (2000)/Film (2000).mkv"),
+            &Config::default(),
+        );
+        assert_eq!(
+            partial_output(&unstaged),
+            PathBuf::from("/srv/shared/_Videos/_Movies/Film (2000)/Film (2000).partial.mkv")
+        );
+    }
+
+    #[test]
+    fn publish_is_atomic_within_a_filesystem() {
+        let directory = env::temp_dir().join(format!(
+            "disc-to-jellyfin-publish-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let staging = directory.join("staging");
+        let output = directory.join("library");
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        let partial = staging.join("Film.partial.mkv");
+        fs::write(&partial, b"complete video").unwrap();
+        let destination = output.join("Film.mkv");
+        publish_atomically(&partial, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"complete video");
+        assert!(!partial.exists());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn publish_never_overwrites_an_existing_library_file() {
+        let directory = env::temp_dir().join(format!(
+            "disc-to-jellyfin-no-overwrite-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let partial = directory.join("Film.partial.mkv");
+        let destination = directory.join("Film.mkv");
+        fs::write(&partial, b"new encode").unwrap();
+        fs::write(&destination, b"existing library file").unwrap();
+
+        assert!(publish_atomically(&partial, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing library file");
+        assert_eq!(fs::read(&partial).unwrap(), b"new encode");
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn empty_queued_is_omitted_from_the_progress_snapshot() {
+        let path = env::temp_dir().join(format!(
+            "disc-to-jellyfin-queued-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let context = ProgressContext {
+            path: path.clone(),
+            title: "Example Film (2001)".into(),
+            kind: MediaKind::Movie,
+            item_index: 1,
+            item_count: 1,
+            item_name: "Example Film (2001).mkv".into(),
+            completed_seconds: 0,
+            item_seconds: 100,
+            total_seconds: 100,
+            queued: vec![],
+        };
+        write_public_progress(&context, 0.0, None, None).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        fs::remove_file(path).unwrap();
+        assert!(value.get("queued").is_none());
     }
 }

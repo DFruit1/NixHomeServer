@@ -1,52 +1,24 @@
-{ lib, pkgs, rustLib, ... }:
+{ pkgs, rustLib, sharedFrontendDeps, ... }:
 
 let
-  frontendSrc = lib.cleanSourceWith {
-    src = ./frontend;
-    name = "media-manager-frontend-src";
-    filter = path: type:
-      let
-        rel = lib.removePrefix "${toString ./frontend}/" (toString path);
-      in
-      !(rel == "node_modules" || lib.hasPrefix "node_modules/" rel)
-      && !(rel == "dist" || lib.hasPrefix "dist/" rel)
-      && lib.cleanSourceFilter path type;
+  frontendDist = rustLib.mkPnpmFrontend {
+    name = "media-manager-frontend";
+    srcDir = ./frontend;
+    pnpmDeps = sharedFrontendDeps;
+    requiredOutputs = [
+      "dist/index.html"
+      "dist/.vite/manifest.json"
+      "dist/q-manifest.json"
+    ];
   };
-
-  frontendDist = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
-    pname = "media-manager-frontend";
-    version = "0.1.0";
-    src = frontendSrc;
-
-    pnpmDeps = pkgs.fetchPnpmDeps {
-      inherit (finalAttrs) pname version src;
-      fetcherVersion = 3;
-      hash = "sha256-GU8O2kA3o+SmAA5BRF/ws7jQqG+Tg7OX41bSw6ownZk=";
-    };
-
-    nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm pkgs.pnpmConfigHook ];
-    CI = "true";
-    buildPhase = ''
-      runHook preBuild
-      pnpm run check
-      test -f dist/index.html
-      test -f dist/.vite/manifest.json
-      test -f dist/q-manifest.json
-      runHook postBuild
-    '';
-    installPhase = ''
-      runHook preInstall
-      cp -R dist "$out"
-      runHook postInstall
-    '';
-  });
 
   app = rustLib.mkRustApp {
     name = "media-manager";
     binaryName = "media-manager";
     srcDir = ./.;
     modulePath = ../../../../modules/Core_Modules/media-manager;
-    extraSourcePrefixes = [ "frontend" ];
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.sqlite ];
     shellEnv = {
       MEDIA_MANAGER_ADDRESS = "127.0.0.1";
       MEDIA_MANAGER_PORT = "8087";
@@ -65,12 +37,15 @@ let
   };
 in
 app // {
-  package = app.package.overrideAttrs (oldAttrs: {
-    postInstall = (oldAttrs.postInstall or "") + ''
+  backendPackage = app.package;
+  package = rustLib.assembleRuntimePackage {
+    name = "media-manager";
+    backendPackage = app.package;
+    extraInstallCommands = ''
       mkdir -p "$out/share/media-manager"
       cp -R --no-preserve=mode ${frontendDist} "$out/share/media-manager/frontend"
     '';
-  });
+  };
   checks = app.checks // {
     frontend = frontendDist;
   };

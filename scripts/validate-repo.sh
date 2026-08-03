@@ -46,8 +46,13 @@ run_flake_check=false
 skip_flake_check=false
 tests_dir="${VALIDATE_REPO_TESTS_DIR:-$repo_root/scripts/tests}"
 eval_cache_dir=""
+pending_validation_roots_dir=""
+validation_outputs_json=""
 
 cleanup_tmpdirs() {
+  if [[ -n "$pending_validation_roots_dir" && -d "$pending_validation_roots_dir" ]]; then
+    rm -rf "$pending_validation_roots_dir"
+  fi
   if [[ -n "$eval_cache_dir" && -d "$eval_cache_dir" ]]; then
     rm -rf "$eval_cache_dir"
   fi
@@ -84,7 +89,7 @@ while (($# > 0)); do
   esac
 done
 
-need nix jq
+need nix jq rg
 
 if [[ -z "${REPO_NIX_EVAL_CACHE_DIR:-}" ]]; then
   eval_cache_dir="$(mktemp -d)"
@@ -96,7 +101,8 @@ current_system() {
 }
 
 run_full_derivation_checks() {
-  local system check_attr check_name check_names
+  local system check_attr check_name check_names root_state_dir output_path root_path
+  local -a check_targets=()
 
   if [[ "$full_mode" != true ]]; then
     return 0
@@ -124,9 +130,80 @@ run_full_derivation_checks() {
       echo "ℹ️ Skipping ${check_name} VM execution because /dev/kvm is unavailable; flake evaluation still checks the test definition."
       continue
     fi
-    echo "ℹ️ Running ${check_name} derivation…"
-    nix build ".#${check_attr}.${check_name}" --no-link --print-build-logs
+    check_targets+=(".#${check_attr}.${check_name}")
   done <<<"$check_names"
+
+  if ((${#check_targets[@]} == 0)); then
+    echo "❌ Full validation resolved no buildable derivation checks." >&2
+    exit 1
+  fi
+
+  echo "ℹ️ Running ${#check_targets[@]} derivation checks in one Nix build…"
+  validation_outputs_json="$(
+    nix build "${check_targets[@]}" --no-link --print-build-logs --json
+  )"
+  jq -e '
+    type == "array"
+    and length > 0
+    and all(.[]; (.outputs | type == "object") and (.outputs | length > 0))
+  ' <<<"$validation_outputs_json" >/dev/null || {
+    echo "❌ Nix returned an invalid full-check output manifest." >&2
+    exit 1
+  }
+
+  if [[ "$all_apps" == true ]]; then
+    return 0
+  fi
+
+  root_state_dir="${VALIDATE_REPO_ROOTS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots}"
+  install -d -m 0700 "$root_state_dir"
+  pending_validation_roots_dir="$(mktemp -d "$root_state_dir/pending.XXXXXX")"
+  while IFS= read -r output_path; do
+    [[ "$output_path" == /nix/store/* ]] || {
+      echo "❌ Full validation returned a non-store output path." >&2
+      exit 1
+    }
+    root_path="$pending_validation_roots_dir/$(basename "$output_path")"
+    nix-store --add-root "$root_path" --indirect --realise "$output_path" >/dev/null
+  done < <(jq -r '[.[].outputs[]] | unique[]' <<<"$validation_outputs_json")
+}
+
+commit_validation_roots() {
+  local root_state_dir current_dir desired_manifest output_path root_path existing_root
+
+  if [[ "$full_mode" != true || "$all_apps" == true || -z "$validation_outputs_json" ]]; then
+    return 0
+  fi
+
+  root_state_dir="${VALIDATE_REPO_ROOTS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots}"
+  current_dir="$root_state_dir/current"
+  desired_manifest="$eval_cache_dir/desired-validation-roots"
+  install -d -m 0700 "$current_dir"
+  : >"$desired_manifest"
+
+  while IFS= read -r output_path; do
+    root_path="$current_dir/$(basename "$output_path")"
+    printf '%s\n' "$root_path" >>"$desired_manifest"
+    if [[ -e "$root_path" && ! -L "$root_path" ]]; then
+      echo "❌ Refusing to replace non-symlink validation root: $root_path" >&2
+      exit 1
+    fi
+    if [[ ! -L "$root_path" ]]; then
+      nix-store --add-root "$root_path" --indirect --realise "$output_path" >/dev/null
+    elif [[ "$(readlink "$root_path")" != "$output_path" ]]; then
+      ln -sfn "$output_path" "$root_path"
+    fi
+  done < <(jq -r '[.[].outputs[]] | unique[]' <<<"$validation_outputs_json")
+
+  while IFS= read -r existing_root; do
+    if ! rg -Fxq "$existing_root" "$desired_manifest"; then
+      rm -f "$existing_root"
+    fi
+  done < <(find "$current_dir" -mindepth 1 -maxdepth 1 -type l -print)
+
+  rm -rf "$pending_validation_roots_dir"
+  pending_validation_roots_dir=""
+  echo "ℹ️ Retained the latest passing host-scoped validation outputs in $current_dir"
 }
 
 run_shell_tests() {
@@ -157,5 +234,6 @@ fi
 run_full_derivation_checks
 run_shell_tests
 run_full_e2e_checks
+commit_validation_roots
 
 echo "✅ Repository checks passed."

@@ -309,18 +309,21 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByText('Check space & disks')).toBeVisible();
   await expect(page.getByText('Reverse proxy health')).toBeVisible();
 
+  for (const title of ['Validate config & prerequisites', 'Test deploy', 'Reverse proxy health']) {
+    await page.locator('details.admin-task').filter({ hasText: title }).locator('summary').click();
+  }
   await expect(page.getByText('nix run .#validate-config-readiness')).toBeVisible();
   await expect(page.getByText('./scripts/deploy.sh --action test')).toBeVisible();
   await expect(page.getByText('systemctl status caddy.service --no-pager')).toBeVisible();
 
-  await page.getByPlaceholder(/Search commands/).fill('backup');
+  await page.getByPlaceholder(/Search commands/).fill('snapshot');
   await expect(page.getByText('Backup schedule')).toBeVisible();
   await expect(page.getByText('Trigger snapshot now')).toBeVisible();
   await expect(page.getByText('Test deploy')).toHaveCount(0);
 
   await page.getByPlaceholder(/Search commands/).fill('kanidm');
   await expect(page.getByText('Verify user exists')).toBeVisible();
-  await expect(page.getByText('Create user')).toBeVisible();
+  await expect(page.getByText('Create user', { exact: true })).toBeVisible();
   await expect(page.getByText('Grant app access')).toBeVisible();
   await expect(page.getByText('Revoke access')).toBeVisible();
   await expect(page.getByText('Generate sign-in link')).toBeVisible();

@@ -219,6 +219,8 @@ require_fixed custom_apps/node/apps/homepage/tests/e2e/playwright.config.mjs 'HO
   "Homepage browser tests must support packaged static assets supplied by the hermetic harness."
 require_fixed scripts/validate-repo.sh '"$repo_root/scripts/test-homepage-ui.sh"' \
   "The full validation gate must include the Homepage Playwright suite."
+require_fixed scripts/validate-repo.sh 'need nix jq rg' \
+  "The validation gate must preflight every command used to retain passing build outputs."
 require_fixed flake/checks.nix 'nodejs' \
   "The hermetic repo-policy check must provide Node for canary render tests."
 require_fixed flake/apps.nix 'settings_json="$(nix eval --json "$repo#lib.nixhomeserverSerializableSettings")"' \

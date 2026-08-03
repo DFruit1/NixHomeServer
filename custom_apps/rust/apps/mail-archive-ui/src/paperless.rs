@@ -263,6 +263,25 @@ pub(super) fn load_attachment_paperless_handoff(
         .map_err(|error| format!("failed to query Paperless handoff state: {error}"))
 }
 
+pub(super) fn load_attachment_paperless_handoffs(
+    connection: &Connection,
+    username: &str,
+) -> Result<HashMap<String, String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT attachment_key, sent_at FROM attachment_paperless_handoffs WHERE username = ?1",
+        )
+        .map_err(|error| format!("failed to prepare Paperless handoff state query: {error}"))?;
+    let rows = statement
+        .query_map(params![username], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("failed to query Paperless handoff states: {error}"))?;
+
+    rows.collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| format!("failed to decode Paperless handoff state: {error}"))
+}
+
 pub(super) fn acquire_paperless_handoff_lock(
     config: &AppConfig,
     username: &str,

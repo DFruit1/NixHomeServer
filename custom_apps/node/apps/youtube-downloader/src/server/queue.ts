@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { access, cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -343,20 +343,24 @@ export class JobQueue {
     const safeRoot = assertInside(outputRoot, request.destination === 'shared' ? outputRoot : this.config.usersRoot);
     await prepareDirectory(safeRoot);
     const folders = folderNameFor(source, request);
-    const outputCandidate = await allocateUniqueFolder(safeRoot, folders);
     const baseFolder = path.join(safeRoot, ...folders);
-    if (outputCandidate.collides && !request.outputFolderCollisionConfirmed) {
-      await rm(tempDir, { recursive: true, force: true });
-      await this.db.setAlert(job.id, folderCollisionAlert(baseFolder, outputCandidate.folder));
-      return;
+    let outputFolder: string;
+    if (request.includeChannel) {
+      outputFolder = baseFolder;
+    } else {
+      const outputCandidate = await allocateUniqueFolder(safeRoot, folders);
+      if (outputCandidate.collides && !request.outputFolderCollisionConfirmed) {
+        await rm(tempDir, { recursive: true, force: true });
+        await this.db.setAlert(job.id, folderCollisionAlert(baseFolder, outputCandidate.folder));
+        return;
+      }
+      outputFolder = outputCandidate.folder;
     }
-    const outputFolder = outputCandidate.folder;
     assertInside(outputFolder, safeRoot);
     await this.db.setOutput(job.id, safeRoot, outputFolder);
 
     const title = sanitizeSegment(source.title, 'Unknown Title');
-    const id = sanitizeSegment(source.id, 'NOID');
-    const baseTemplate = path.join(tempDir, `${title} [${id}].%(ext)s`);
+    const baseTemplate = path.join(tempDir, `${title}.%(ext)s`);
     const chapterTemplate = path.join(tempDir, 'chapters', '%(section_number)02d - %(section_title|Chapter)S.%(ext)s');
     const args = buildDownloadArgs(request, baseTemplate, chapterTemplate);
     await this.db.setStatus(job.id, 'running');
@@ -745,12 +749,27 @@ const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => 
 const copyDirectoryContents = async (sourceDir: string, destinationDir: string): Promise<void> => {
   const entries = await readdir(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
-    await cp(path.join(sourceDir, entry.name), path.join(destinationDir, entry.name), {
+    const destination = await allocateUniqueDestination(destinationDir, entry.name);
+    await cp(path.join(sourceDir, entry.name), destination, {
       recursive: true,
       force: false,
       errorOnExist: true,
     });
   }
+};
+
+const allocateUniqueDestination = async (directory: string, name: string): Promise<string> => {
+  const extension = path.extname(name);
+  const base = extension ? name.slice(0, -extension.length) : name;
+  for (let index = 0; index < 1000; index += 1) {
+    const candidate = index === 0 ? name : `${base} (${index})${extension}`;
+    try {
+      await access(path.join(directory, candidate));
+    } catch {
+      return path.join(directory, candidate);
+    }
+  }
+  throw new Error(`could not allocate a unique output name for ${name} under ${directory}`);
 };
 
 type AudioChapterSpec = {

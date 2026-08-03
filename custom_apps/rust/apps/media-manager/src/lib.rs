@@ -1,3 +1,4 @@
+pub(crate) mod artwork;
 pub mod broker;
 pub mod catalog;
 pub mod config;

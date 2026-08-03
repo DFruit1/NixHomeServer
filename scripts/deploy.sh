@@ -120,11 +120,16 @@ if [[ "${DEPLOY_DRY_RUN:-}" != "1" ]] && nix_uses_substituter "$local_attic_cach
     "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
 fi
 
-local_nix_gc="$(nix_flake_var 'if vars.localNixGC then "true" else "false"')"
-if [[ "$local_nix_gc" != "true" && "$local_nix_gc" != "false" ]]; then
-  echo "blocked: vars.localNixGC must be true or false" >&2
-  exit 1
-fi
+local_nix_gc_mode="$(nix_flake_var 'vars.localNixGCMode')"
+case "$local_nix_gc_mode" in
+  never|capacity|always) ;;
+  *)
+    echo "blocked: vars.localNixGCMode must be never, capacity, or always" >&2
+    exit 1
+    ;;
+esac
+local_nix_store_max_gib="$(nix_flake_var 'toString vars.nixStoreMaxSizeGiB')"
+local_nix_gc_retention_days="$(nix_flake_var 'toString vars.nixGcRetentionDays')"
 
 configured_build_mode="$(nix_flake_var 'vars.buildMode')"
 if [[ -n "$build_mode_override" ]]; then
@@ -235,9 +240,14 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   echo "hostname=${hostname}"
   echo "action=${action}"
   echo "debug=${debug}"
-  if [[ "$local_nix_gc" == "true" ]]; then
-    echo "local_gc=would run nix-store --gc on the workstation before staging"
-  fi
+  case "$local_nix_gc_mode" in
+    capacity)
+      echo "local_gc=would run the capacity-triggered workstation store check before staging"
+      ;;
+    always)
+      echo "local_gc=would run unconditional nix-store --gc on the workstation before staging"
+      ;;
+  esac
   if [[ "$action" == "test" ]]; then
     dry_run_rebuild_command=()
     build_nixos_rebuild_command dry_run_rebuild_command \
@@ -255,10 +265,20 @@ if [[ "${DEPLOY_DRY_RUN:-}" == "1" ]]; then
   exit 0
 fi
 
-if [[ "$local_nix_gc" == "true" ]]; then
-  echo "collecting unreferenced local Nix store paths"
-  nix-store --gc
-fi
+case "$local_nix_gc_mode" in
+  capacity)
+    echo "checking workstation Nix store capacity"
+    local_gc_runtime_dir="${XDG_RUNTIME_DIR:-/tmp}/nixhomeserver-${UID}"
+    NIX_STORE_MAX_GIB="$local_nix_store_max_gib" \
+      NIX_GC_RETENTION_DAYS="$local_nix_gc_retention_days" \
+      NIX_GC_LOCK_PATH="$local_gc_runtime_dir/maintenance.lock" \
+      bash "$script_dir/helpers/nix-store-capacity-gc.sh"
+    ;;
+  always)
+    echo "collecting all unreferenced local Nix store paths"
+    nix-store --gc
+    ;;
+esac
 
 need git ssh tar
 

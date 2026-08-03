@@ -226,12 +226,18 @@ sudo systemctl start nixhomeserver-nix-gc.service
 
 The capacity collector above only covers the deployed server; the workstation
 that evaluates and builds deploys has no equivalent timer. Set
-`system.localNixGC = true` in `vars.nix` to run `nix-store --gc` on the local
-machine at the start of every deploy, before the repository archive is staged.
-This reclaims unreferenced build output left behind by earlier local and
-combined builds without touching any profile generation or rollback point.
-Generation-based cleanup on the workstation remains the responsibility of the
-workstation's own Nix configuration.
+`system.localNixGCMode` in `vars.nix` to `"never"`, `"capacity"`, or `"always"`.
+Capacity mode runs the existing threshold helper against the local
+`/nix/store`, using `system.nixStoreMaxSizeGiB`,
+`system.nixGcRetentionDays`, and a user-writable maintenance lock. It skips
+collection while both the store and its filesystem remain below their
+configured pressure thresholds. Always mode preserves the former unconditional
+`nix-store --gc` behavior; never mode performs no deploy-time local collection.
+
+For compatibility, `system.localNixGC = true` maps to `"always"` and `false`
+maps to `"never"` when `localNixGCMode` is absent. An explicit mode takes
+precedence. Generation-based cleanup on the workstation remains the
+responsibility of the workstation's own Nix configuration.
 
 ```bash
 nix-store --gc
@@ -535,6 +541,12 @@ converted, excluding an obvious play-all duplicate. Completed source ISOs are
 preserved in `_Shared/_ISO/_DVDs/_Processed`. After three failed attempts an ISO
 is preserved in `_Failed` beside an `.error.txt` file.
 
+While an encode runs, the partially written MKV is staged in
+`_Shared/.mkvmaker-staging` outside the Jellyfin library so the library never
+scans an incomplete file; the finished MKV is published into
+`_Shared/_Videos/_Movies` or `_Shared/_Videos/_Shows` with a single atomic
+rename once it passes validation.
+
 Useful checks and controls:
 
 ```bash
@@ -637,8 +649,10 @@ their disc volume labels, sizes, and timestamps beside the `_Processed` and
 **Subtitles** page shows the same kind of setup guidance and status for the
 optional OpenSubtitles search provider, so neither appears under **App
 refresh**. Selecting a file or folder in **Libraries** or an item in
-**Metadata** shows its cataloged cover artwork when a sibling image such as
-`cover.jpg` is present.
+**Metadata** shows title-specific and conventional artwork such as `cover.jpg`,
+`poster.jpg`, and Jellyfin-style suffixed images. The lookup checks the item's
+directory and nearby parent folders before falling back to embedded artwork in
+supported audio and MP4 containers.
 
 ```bash
 systemctl status media-manager.service media-manager-broker.timer
@@ -801,11 +815,31 @@ scripts/validate-repo.sh --full --all-apps
 
 Full mode runs:
 - `nix flake check --no-build` unless `--skip-flake-check` is used
-- the host-scoped flake derivations and script tests
+- the host-scoped flake derivations in one aggregate `nix build`, followed by
+  script tests
 - Homepage end-to-end checks when Homepage is selected
+
+After every gate passes, the host-scoped output set replaces the indirect roots
+under
+`${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots/current`.
+Pending roots are removed on failure, leaving the previous passing set warm.
+The exhaustive `--all-apps` form deliberately does not update these roots.
+Repeat `scripts/validate-repo.sh --full` to reproduce a warm-cache measurement;
+Nix should report that no derivations need building or fetching while those
+roots exist.
 
 Adding `--all-apps` swaps in the repository-wide derivation and script-test
 worklists. CI uses that exhaustive form.
+
+To reproduce custom-app timing measurements, use three equivalent source edits
+per scenario, capture GNU `time` wall, CPU, and peak-RSS fields around the
+single aggregate `nix build` (for example with
+`nix shell nixpkgs#time -c time -v nix build ...`), and record
+`nix path-info -Sh` plus
+`nix path-info --json` for closure and NAR sizes. Keep generated benchmark data
+outside the checkout. For build allocation comparisons, repeat the same edit
+set with each one-shot `--build-mode` value and compare scenario medians; do not
+activate a result while benchmarking.
 
 Kanidm checks use the native `kanidm` CLI. They do not rely on the old custom
 helper package that was also named `kanidm-admin`; that package name is separate

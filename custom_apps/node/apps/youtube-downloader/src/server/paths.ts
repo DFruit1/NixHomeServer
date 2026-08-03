@@ -65,10 +65,10 @@ export const folderNameFor = (source: ProbeResponse, request: CreateJobRequest):
   const channel = sanitizeSegment(source.channel || source.uploader, 'Unknown Channel');
   const { year, date } = dateParts(source);
   const leaf = request.includeDate && date ? `${date} - ${title}` : title;
-  const segments: string[] = [];
   if (request.includeChannel) {
-    segments.push(channel);
+    return [channel];
   }
+  const segments: string[] = [];
   if (request.includeDate && year) {
     segments.push(year);
   }

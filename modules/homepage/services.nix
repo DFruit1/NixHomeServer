@@ -1347,6 +1347,34 @@ let
       command = "sudo systemctl start jellyfin-library-sync.service";
       detail = "Refresh Jellyfin libraries after media changes.";
     }
+    {
+      title = "Troubleshoot Jellyfin LAN discovery";
+      detail = "Keep the client on the same IPv4 broadcast network, disable guest-Wi-Fi or client isolation, and verify that the client accepts replies from the server's UDP source port 7359.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies with nftables";
+      command = "sudo nft insert rule inet filter input iifname \"<CLIENT_LAN_INTERFACE>\" ip saddr ${vars.networking.lan.ip} udp sport 7359 counter accept comment \"Jellyfin discovery replies\"";
+      detail = "Run on the Linux client after confirming its nftables table and input-chain names; persist the equivalent rule in that client's ruleset.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies with UFW";
+      command = "sudo ufw allow in on <CLIENT_LAN_INTERFACE> proto udp from ${vars.networking.lan.ip} port 7359 to any comment 'Jellyfin discovery replies'";
+      detail = "Run on a Linux client managed by UFW. Replace the interface placeholder before applying the rule.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies with firewalld";
+      command = ''sudo firewall-cmd --permanent --zone=home --add-rich-rule='rule family="ipv4" source address="${vars.networking.lan.ip}/32" source-port port="7359" protocol="udp" accept' && sudo firewall-cmd --reload'';
+      detail = "Run on a Linux client managed by firewalld after confirming that its LAN interface belongs to the home zone.";
+    }
+    {
+      title = "Allow Jellyfin discovery replies on Windows";
+      command = ''New-NetFirewallRule -DisplayName "Jellyfin discovery replies" -Direction Inbound -Action Allow -Protocol UDP -RemoteAddress ${vars.networking.lan.ip} -RemotePort 7359 -Profile Private'';
+      detail = "Run in Administrator PowerShell on a Windows client whose LAN network profile is Private.";
+    }
+    {
+      title = "Allow Jellyfin discovery on Apple devices";
+      detail = "On macOS, allow Fladder under System Settings → Privacy & Security → Local Network, then ensure Block all incoming connections is off in Firewall Options. On iPhone or iPad, enable Fladder under Settings → Privacy & Security → Local Network.";
+    }
   ]
   ++ lib.optionals kiwixEnabled [
     {

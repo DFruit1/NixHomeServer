@@ -8,11 +8,33 @@
 ,
 }:
 
+let
+  sourcePath = toString ./.;
+  src = lib.cleanSourceWith {
+    src = ./.;
+    name = "homepage-production-src";
+    filter = path: type:
+      let
+        rel = lib.removePrefix "${sourcePath}/" (toString path);
+        excludedPrefixes = [
+          "node_modules"
+          "dist"
+          "coverage"
+          "test-results"
+          "tests/e2e"
+        ];
+        excluded = lib.any
+          (prefix: rel == prefix || lib.hasPrefix "${prefix}/" rel)
+          excludedPrefixes;
+      in
+      lib.cleanSourceFilter path type && !excluded;
+  };
+in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "homepage";
   version = "0.1.0";
 
-  src = ./.;
+  inherit src;
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;

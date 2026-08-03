@@ -55,6 +55,10 @@ let
       message = "system.localNixGC must be a boolean";
     }
     {
+      valid = builtins.elem settings.localNixGCMode [ "never" "capacity" "always" ];
+      message = "system.localNixGCMode must be never, capacity, or always";
+    }
+    {
       valid = builtins.elem settings.storageProfile [ "zfs-mirror" "single-disk-ext4" ];
       message = "storage.profile must be zfs-mirror or single-disk-ext4";
     }

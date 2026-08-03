@@ -45,7 +45,9 @@ describe('media paths', () => {
   });
 
   it('builds Jellyfin/Audiobookshelf readable folder segments', () => {
-    expect(folderNameFor(source, request)).toEqual(['Original Channel', '2026', '2026-05-17 - A Useful Talk']);
+    expect(folderNameFor(source, request)).toEqual(['Original Channel']);
+    expect(folderNameFor(source, { ...request, includeChannel: false })).toEqual(['2026', '2026-05-17 - A Useful Talk']);
+    expect(folderNameFor(source, { ...request, includeChannel: false, includeDate: false })).toEqual(['A Useful Talk']);
   });
 
   it('uses personal music, audiobook opt-in, and video roots', () => {

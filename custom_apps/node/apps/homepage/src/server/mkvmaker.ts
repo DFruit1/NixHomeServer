@@ -62,6 +62,13 @@ const conversionFrom = (value: unknown): MkvConversionProgress | undefined => {
   };
 };
 
+const queuedItems = (value: unknown): string[] | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const titles = value.map((item) => text(item, 300));
+  if (titles.some((title) => title === undefined)) return undefined;
+  return titles as string[];
+};
+
 export const getMkvProgress = async (
   config: AppConfig,
   headers: IncomingHttpHeaders,
@@ -80,10 +87,12 @@ export const getMkvProgress = async (
     const status = raw as Record<string, unknown>;
     const updatedSeconds = finiteNumber(status.updatedAt, 1, Number.MAX_SAFE_INTEGER);
     if (status.schemaVersion !== 1 || updatedSeconds === undefined) return idle(true, false);
+    const queued = status.queued === undefined ? undefined : queuedItems(status.queued);
+    if (status.queued !== undefined && queued === undefined) return idle(true, false);
     const updatedAtMs = updatedSeconds * 1000;
     if (updatedAtMs > now + 60_000 || now - updatedAtMs > STALE_AFTER_MS) return idle(true);
     if (status.state === 'idle') {
-      return { ...idle(true), updatedAt: new Date(updatedAtMs).toISOString() };
+      return { ...idle(true), updatedAt: new Date(updatedAtMs).toISOString(), queued };
     }
     if (status.state !== 'converting' || !Array.isArray(status.conversions)) return idle(true, false);
     const conversions = status.conversions.map(conversionFrom).filter((value): value is MkvConversionProgress => Boolean(value));
@@ -94,6 +103,7 @@ export const getMkvProgress = async (
       state: 'converting',
       updatedAt: new Date(updatedAtMs).toISOString(),
       conversions,
+      queued,
     };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

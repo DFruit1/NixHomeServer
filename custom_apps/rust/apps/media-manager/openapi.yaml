@@ -103,9 +103,11 @@ paths:
       operationId: getItemImage
       description: >-
         Streams cover artwork for one visible catalog item. Artwork items are
-        served directly; for media items the server selects a cataloged image
-        beside the item, preferring well-known cover names. Reads use the same
-        symlink-safe contained open as the broker.
+        served directly. For media items the server prefers title-specific and
+        well-known cover files beside the item, then searches nearby parent
+        folders used by media servers, and finally reads embedded tag artwork
+        from supported containers. Reads use the same symlink-safe contained
+        open as the broker.
       parameters:
         - in: path
           name: itemId
@@ -118,6 +120,9 @@ paths:
             image/jpeg: {}
             image/png: {}
             image/webp: {}
+            image/gif: {}
+            image/bmp: {}
+            image/tiff: {}
         "404":
           $ref: "#/components/responses/Error"
   /items/{itemId}/subtitles/search:

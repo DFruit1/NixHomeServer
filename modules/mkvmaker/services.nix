@@ -16,6 +16,8 @@ let
     "${cfg.paths.stateRoot}/state"
     "--progress-file"
     "/run/mkvmaker/progress.json"
+    "--staging-dir"
+    cfg.paths.stagingRoot
     "--converter"
     "${package}/bin/disc-to-jellyfin"
     "--settle-seconds"
@@ -163,6 +165,7 @@ in
           cfg.paths.dvdInbox
           cfg.paths.moviesOutput
           cfg.paths.showsOutput
+          cfg.paths.stagingRoot
         ];
       };
     };

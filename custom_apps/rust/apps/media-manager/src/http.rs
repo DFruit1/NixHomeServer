@@ -1,4 +1,5 @@
 use crate::{
+    artwork::{preferred_artwork, read_artwork_file, read_embedded_artwork},
     broker::{
         file_fingerprint, open_regular_file_beneath, BrokerAction, InstallMetadataSidecarAction,
         InstallSubtitleAction, MoveAction,
@@ -36,7 +37,6 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_SUBTITLE_BYTES: usize = 10 * 1024 * 1024;
-const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_INBOX_ENTRIES: usize = 200;
 
 #[derive(Clone)]
@@ -1269,7 +1269,7 @@ async fn item_image(
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
     let artwork = if item.media_kind == "artwork" {
-        item
+        Some(item.clone())
     } else {
         let owner = item.owner_username.as_deref();
         let siblings = match catalog.list_items(&item.root_id, owner, 500) {
@@ -1283,49 +1283,34 @@ async fn item_image(
                 return ApiError::internal(request_id).into_response();
             }
         };
-        let parent = item
-            .relative_path
-            .rsplit_once('/')
-            .map(|(parent, _)| parent)
-            .unwrap_or("");
-        match preferred_artwork(&siblings, parent) {
-            Some(artwork) => artwork,
-            None => {
-                return ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    "artwork_not_found",
-                    "No cover artwork is cataloged beside this item.",
-                    request_id,
-                )
-                .into_response()
-            }
-        }
+        preferred_artwork(&siblings, &item.relative_path)
     };
-    let root = match state
-        .config
-        .resolve_visible_root(&identity, &artwork.root_id)
-    {
+    let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
         Some(root) => root,
         None => return ApiError::internal(request_id).into_response(),
     };
     let root_path = root.resolved_path.clone();
-    let relative_path = artwork.relative_path.clone();
-    let bytes = match tokio::task::spawn_blocking(move || {
-        let file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
-            .map_err(|error| error.to_string())?;
-        use std::io::Read;
-        let mut bytes = Vec::new();
-        file.take(MAX_ARTWORK_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        if bytes.len() as u64 > MAX_ARTWORK_BYTES {
-            return Err("artwork exceeds the 32 MiB limit".to_string());
+    let artwork_path = artwork.map(|candidate| candidate.relative_path);
+    let item_path = item.relative_path.clone();
+    let body = match tokio::task::spawn_blocking(move || {
+        if let Some(relative_path) = artwork_path {
+            read_artwork_file(FilePath::new(&root_path), &relative_path).map(Some)
+        } else {
+            read_embedded_artwork(FilePath::new(&root_path), &item_path)
         }
-        Ok(bytes)
     })
     .await
     {
-        Ok(Ok(bytes)) => bytes,
+        Ok(Ok(Some(body))) => body,
+        Ok(Ok(None)) => {
+            return ApiError::new(
+                StatusCode::NOT_FOUND,
+                "artwork_not_found",
+                "No nearby or embedded cover artwork was found for this item.",
+                request_id,
+            )
+            .into_response()
+        }
         Ok(Err(error)) => {
             log_event(
                 "artwork_read_failed",
@@ -1335,7 +1320,7 @@ async fn item_image(
             return ApiError::new(
                 StatusCode::NOT_FOUND,
                 "artwork_not_found",
-                "The cataloged cover artwork can no longer be read safely.",
+                "Artwork for this item can no longer be read safely.",
                 request_id,
             )
             .into_response();
@@ -1349,59 +1334,15 @@ async fn item_image(
             return ApiError::internal(request_id).into_response();
         }
     };
-    let content_type = match artwork
-        .relative_path
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        _ => "application/octet-stream",
-    };
     (
         StatusCode::OK,
         [
-            (CONTENT_TYPE, content_type),
+            (CONTENT_TYPE, body.content_type),
             (CACHE_CONTROL, "private, max-age=300"),
         ],
-        bytes,
+        body.bytes,
     )
         .into_response()
-}
-
-fn preferred_artwork(items: &[CatalogItem], parent: &str) -> Option<CatalogItem> {
-    items
-        .iter()
-        .filter(|candidate| {
-            candidate.media_kind == "artwork"
-                && candidate
-                    .relative_path
-                    .rsplit_once('/')
-                    .map(|(candidate_parent, _)| candidate_parent)
-                    .unwrap_or("")
-                    == parent
-        })
-        .min_by_key(|candidate| {
-            let stem = candidate
-                .relative_path
-                .rsplit_once('/')
-                .map(|(_, name)| name)
-                .unwrap_or(&candidate.relative_path)
-                .rsplit_once('.')
-                .map(|(stem, _)| stem)
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            let priority = [
-                "cover", "folder", "poster", "artwork", "front", "thumb", "fanart",
-            ]
-            .iter()
-            .position(|preferred| *preferred == stem)
-            .unwrap_or(usize::MAX);
-            (priority, candidate.relative_path.clone())
-        })
-        .cloned()
 }
 
 async fn scan(

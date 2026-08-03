@@ -78,6 +78,18 @@ export const MkvConversionCard = component$(() => {
           </article>
         );
       })}
+      {status.value?.queued && status.value.queued.length > 0 && (
+        <div class="mkv-progress-queue" aria-label={`${status.value.queued.length} DVD disc${status.value.queued.length === 1 ? '' : 's'} waiting`}>
+          <span class="mkv-progress-queue__heading">In queue ({status.value.queued.length})</span>
+          <ol class="mkv-progress-queue__list">
+            {status.value.queued.map((title, index) => (
+              <li key={`${title}-${index}`}>
+                <span class="mkv-progress-queue__number">{index + 1}.</span> {title}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </section>
   );
 });

@@ -94,6 +94,61 @@ describe('MKV conversion progress', () => {
     }
   });
 
+  it('passes validated queued discs through to the card', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'mkvmaker-queued-'));
+    try {
+      const progressFile = path.join(directory, 'progress.json');
+      const now = 1_800_000_000_000;
+      await writeFile(progressFile, JSON.stringify({
+        schemaVersion: 1,
+        state: 'idle',
+        updatedAt: now / 1000,
+        conversions: [],
+        queued: ['Another Film 1999.iso', 'A Series S2 Disc 1.iso'],
+      }));
+
+      expect(await getMkvProgress(baseConfig(progressFile), headers, now)).toEqual({
+        enabled: true,
+        available: true,
+        state: 'idle',
+        updatedAt: new Date(now).toISOString(),
+        conversions: [],
+        queued: ['Another Film 1999.iso', 'A Series S2 Disc 1.iso'],
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('treats malformed queued entries as an unavailable snapshot', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'mkvmaker-queued-bad-'));
+    try {
+      const progressFile = path.join(directory, 'progress.json');
+      await writeFile(progressFile, JSON.stringify({
+        schemaVersion: 1,
+        state: 'converting',
+        updatedAt: 1_800_000_000,
+        conversions: [{
+          title: 'Example Film (2001)',
+          mediaKind: 'movie',
+          itemName: 'Example Film (2001).mkv',
+          itemIndex: 1,
+          itemCount: 1,
+          percent: 1,
+          itemPercent: 1,
+        }],
+        queued: ['fine', { not: 'a title' }],
+      }));
+      expect(await getMkvProgress(baseConfig(progressFile), headers)).toMatchObject({
+        enabled: true,
+        available: false,
+        state: 'idle',
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('requires an authenticated user and rejects malformed snapshots safely', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'mkvmaker-invalid-'));
     try {

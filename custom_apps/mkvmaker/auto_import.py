@@ -60,6 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--progress-file", type=Path)
     parser.add_argument("--converter", required=True)
+    parser.add_argument("--staging-dir", type=Path, help="Write partial MKVs here instead of inside the Jellyfin library.")
     parser.add_argument("--handbrake", default=os.environ.get("DISC_TO_JELLYFIN_HANDBRAKE", "HandBrakeCLI"))
     parser.add_argument("--settle-seconds", type=int, default=60)
     parser.add_argument("--min-duration", type=int, default=300)
@@ -339,7 +340,9 @@ def build_plan(args: argparse.Namespace, source: Path) -> dict[str, Any]:
     }
 
 
-def converter_command(args: argparse.Namespace, source: Path, plan: dict[str, Any]) -> list[str]:
+def converter_command(
+    args: argparse.Namespace, source: Path, plan: dict[str, Any], queued: list[str] | None = None
+) -> list[str]:
     command = [
         args.converter,
         str(source),
@@ -359,6 +362,10 @@ def converter_command(args: argparse.Namespace, source: Path, plan: dict[str, An
         "--title",
         ",".join(str(index) for index in plan["titles"]),
     ]
+    if args.staging_dir:
+        command += ["--staging-dir", str(args.staging_dir)]
+    for title in queued or []:
+        command += ["--queue-item", title]
     if plan.get("year"):
         command += ["--year", str(plan["year"])]
     if plan.get("provider"):
@@ -374,7 +381,12 @@ def converter_command(args: argparse.Namespace, source: Path, plan: dict[str, An
     return command
 
 
-def public_status(args: argparse.Namespace, state: str, plan: dict[str, Any] | None = None) -> None:
+def public_status(
+    args: argparse.Namespace,
+    state: str,
+    plan: dict[str, Any] | None = None,
+    queued: list[str] | None = None,
+) -> None:
     if not args.progress_file:
         return
     conversions: list[dict[str, Any]] = []
@@ -392,16 +404,16 @@ def public_status(args: argparse.Namespace, state: str, plan: dict[str, Any] | N
                 "rateFps": None,
             }
         )
+    payload: dict[str, Any] = {
+        "schemaVersion": 1,
+        "state": state,
+        "updatedAt": int(time.time()),
+        "conversions": conversions,
+    }
+    if queued:
+        payload["queued"] = queued
     try:
-        atomic_json(
-            args.progress_file,
-            {
-                "schemaVersion": 1,
-                "state": state,
-                "updatedAt": int(time.time()),
-                "conversions": conversions,
-            },
-        )
+        atomic_json(args.progress_file, payload)
     except OSError as error:
         print(f"Progress reporting unavailable: {error}", file=sys.stderr)
 
@@ -422,7 +434,12 @@ def archive_source(source: Path, directory: Path) -> Path:
     return destination
 
 
-def process_source(args: argparse.Namespace, source: Path, entry: dict[str, Any]) -> None:
+def process_source(
+    args: argparse.Namespace,
+    source: Path,
+    entry: dict[str, Any],
+    queued: list[str] | None = None,
+) -> None:
     plan = entry.get("plan")
     if not isinstance(plan, dict):
         plan = build_plan(args, source)
@@ -432,8 +449,8 @@ def process_source(args: argparse.Namespace, source: Path, entry: dict[str, Any]
         f"Selected DVD titles {plan['titles']} as {plan['kind']} "
         f"(largest/runtime={plan['dominant_ratio']:.1%})"
     )
-    public_status(args, "converting", plan)
-    command = converter_command(args, source, plan)
+    public_status(args, "converting", plan, queued)
+    command = converter_command(args, source, plan, queued)
     process = subprocess.Popen(command)
     while True:
         if shutdown_signal is not None:
@@ -489,6 +506,24 @@ def run(args: argparse.Namespace) -> int:
         for stale in set(sources) - live_keys:
             del sources[stale]
 
+        def pending_titles(exclude: str | None = None) -> list[str]:
+            return [
+                path.stem
+                for path in sorted(
+                    (
+                        path
+                        for path in args.input_dir.iterdir()
+                        if path.is_file()
+                        and not path.is_symlink()
+                        and path.suffix.casefold() == ".iso"
+                    ),
+                    key=lambda path: natural_key(path.name),
+                )
+                if path.name != exclude
+            ]
+
+        public_status(args, "idle", queued=pending_titles())
+
         failures = 0
         for source in candidates:
             stat = source.stat()
@@ -503,10 +538,11 @@ def run(args: argparse.Namespace) -> int:
             if now < int(entry.get("retry_after", 0)):
                 continue
 
+            queued = pending_titles(exclude=source.name)
             try:
                 entry["status"] = "processing"
                 atomic_json(state_path, state)
-                process_source(args, source, entry)
+                process_source(args, source, entry, queued)
                 archived = archive_source(source, processed_dir)
                 print(f"Completed {source.name}; preserved the ISO at {archived}")
                 del sources[source.name]
@@ -530,7 +566,7 @@ def run(args: argparse.Namespace) -> int:
                     print(f"Moved repeatedly failing ISO to {archived}", file=sys.stderr)
                     del sources[source.name]
             finally:
-                public_status(args, "idle")
+                public_status(args, "idle", queued=pending_titles())
                 atomic_json(state_path, state)
         atomic_json(state_path, state)
         return 1 if failures else 0

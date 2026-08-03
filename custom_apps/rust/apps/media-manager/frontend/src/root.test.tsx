@@ -437,6 +437,54 @@ describe("Media Manager conversions inbox", () => {
     );
     expect(screen.textContent).toContain("No failed conversions.");
   });
+
+  it("shows waiting discs as a compact queue under the active progress", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : path.endsWith("/conversions/inbox")
+                ? { available: true, pending: [], processed: [], failed: [] }
+                : path.endsWith("/conversions")
+                  ? {
+                      available: true,
+                      progress: {
+                        state: "converting",
+                        conversions: [
+                          {
+                            title: "Active Film (2000)",
+                            mediaKind: "movie",
+                            percent: 42,
+                            detail: "Encoding DVD title 1",
+                          },
+                        ],
+                        queued: [
+                          "Another Film 1999.iso",
+                          "A Series S2 Disc 1.iso",
+                        ],
+                      },
+                    }
+                  : {};
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="conversions" />);
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Active Film (2000)"),
+    );
+    expect(screen.textContent).toContain("In queue (2)");
+    expect(screen.textContent).toContain("Another Film 1999.iso");
+    expect(screen.textContent).toContain("A Series S2 Disc 1.iso");
+  });
 });
 
 describe("Media Manager library browser", () => {
@@ -495,6 +543,22 @@ describe("Media Manager library browser", () => {
     ).map((element) => element.textContent);
     expect(choices).toEqual(["Videos", "Music", "Videos"]);
     expect(screen.textContent).not.toContain("Shared videos");
+  });
+
+  it("starts library content without redundant panel headings", async () => {
+    vi.stubGlobal("fetch", libraryFetchMock([]));
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    expect(
+      screen.querySelector(".root-picker > .panel-heading"),
+    ).toBeUndefined();
+    expect(
+      screen.querySelector(".catalog-panel > .catalog-heading"),
+    ).toBeUndefined();
+    expect(screen.textContent).not.toContain("Media roots");
+    expect(screen.textContent).not.toContain("Videos (shared)");
   });
 
   it("renders a folder tree with toggle buttons instead of a type column", async () => {

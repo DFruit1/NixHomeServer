@@ -7,60 +7,79 @@
 , meta ? { }
 , version ? "0.1.0"
 , extraSourcePrefixes ? [ ]
+, packageSourceExcludePrefixes ? [ "tests" ]
 , extraDevShellPackages ? [ ]
 , shellEnv ? { }
 , shellHook ? ""
 , cargoExtraArgs ? "--locked"
+, nativeBuildInputs ? [ ]
+, buildInputs ? [ ]
 ,
 }:
 let
   sourcePath = srcDir;
   sourcePathString = toString sourcePath;
 
-  keepExtraPath =
+  pathRelativeToSource =
     path:
     let
       pathString = toString path;
-      rel =
-        if pathString == sourcePathString then
-          ""
-        else
-          lib.removePrefix "${sourcePathString}/" pathString;
     in
+    if pathString == sourcePathString then
+      ""
+    else
+      lib.removePrefix "${sourcePathString}/" pathString;
+
+  pathMatchesPrefix = rel: prefix:
+    rel == prefix
+    || lib.hasPrefix "${prefix}/" rel;
+
+  pathIsPrefixParent = rel: prefix:
+    rel != "" && lib.hasPrefix "${rel}/" prefix;
+
+  keepExtraPath = rel:
     rel == ""
     || lib.any
       (
         prefix:
-        rel == prefix
-        || lib.hasPrefix "${prefix}/" rel
-        || (rel != "" && lib.hasPrefix "${rel}/" prefix)
+        pathMatchesPrefix rel prefix || pathIsPrefixParent rel prefix
       )
       extraSourcePrefixes;
 
-  src = lib.cleanSourceWith {
-    src = sourcePath;
-    name = "${name}-src";
-    filter =
-      path: type:
-      lib.cleanSourceFilter path type
-      && (
-        craneLib.filterCargoSources path type
-        || keepExtraPath path
-      );
-  };
+  mkSource = sourceName: excludedPrefixes:
+    lib.cleanSourceWith {
+      src = sourcePath;
+      name = sourceName;
+      filter =
+        path: type:
+        let
+          rel = pathRelativeToSource path;
+          excluded = lib.any (pathMatchesPrefix rel) excludedPrefixes;
+        in
+        lib.cleanSourceFilter path type
+        && !excluded
+        && (
+          craneLib.filterCargoSources path type
+          || keepExtraPath rel
+        );
+    };
+
+  packageSrc = mkSource "${name}-package-src" packageSourceExcludePrefixes;
+  checkSrc = mkSource "${name}-check-src" [ ];
 
   commonArgs = {
-    inherit src version cargoExtraArgs;
+    inherit version cargoExtraArgs nativeBuildInputs buildInputs;
     pname = name;
     strictDeps = true;
   };
 
   rawChecks = mkRustChecks {
-    inherit name src commonArgs;
+    inherit name packageSrc checkSrc commonArgs;
   };
 
   package = craneLib.buildPackage (commonArgs // {
     inherit (rawChecks) cargoArtifacts;
+    src = packageSrc;
     doCheck = false;
     meta = meta // {
       mainProgram = binaryName;
@@ -77,4 +96,5 @@ let
 in
 {
   inherit package devShell checks binaryName modulePath meta;
+  backendPackage = package;
 }

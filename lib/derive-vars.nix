@@ -161,7 +161,15 @@ rec {
   buildMode = system.buildMode or "remote";
   nixStoreMaxSizeGiB = system.nixStoreMaxSizeGiB or 80;
   nixGcRetentionDays = system.nixGcRetentionDays or 45;
-  localNixGC = system.localNixGC or false;
+  localNixGCMode = system.localNixGCMode or (
+    if system.localNixGC or false then
+      "always"
+    else
+      "never"
+  );
+  # Retain the normalized boolean for older internal consumers while new code
+  # selects the explicit policy above.
+  localNixGC = localNixGCMode != "never";
   buildSlots = {
     local =
       if buildMode == "local" || buildMode == "maximum-effort" then "auto"

@@ -5,15 +5,30 @@
 , fetchPnpmDeps
 , pnpmConfigHook
 , makeWrapper
-, sqlite
 ,
 }:
 
+let
+  sourcePath = toString ./.;
+  src = lib.cleanSourceWith {
+    src = ./.;
+    name = "youtube-downloader-production-src";
+    filter = path: type:
+      let
+        rel = lib.removePrefix "${sourcePath}/" (toString path);
+        excludedPrefixes = [ "node_modules" "dist" "coverage" "test-results" ];
+        excluded = lib.any
+          (prefix: rel == prefix || lib.hasPrefix "${prefix}/" rel)
+          excludedPrefixes;
+      in
+      lib.cleanSourceFilter path type && !excluded;
+  };
+in
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "youtube-downloader";
   version = "0.1.0";
 
-  src = ./.;
+  inherit src;
 
   pnpmDeps = fetchPnpmDeps {
     inherit (finalAttrs) pname version src;
@@ -26,14 +41,29 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     pnpm
     pnpmConfigHook
     makeWrapper
-    sqlite
   ];
 
   CI = "true";
 
   buildPhase = ''
     runHook preBuild
-    pnpm run build
+    pnpm run build:client >"$TMPDIR/youtube-client-build.log" 2>&1 &
+    client_pid=$!
+    pnpm run build:server >"$TMPDIR/youtube-server-build.log" 2>&1 &
+    server_pid=$!
+    cleanup_builds() {
+      kill "$client_pid" "$server_pid" 2>/dev/null || true
+    }
+    trap cleanup_builds EXIT INT TERM
+    client_status=0
+    server_status=0
+    wait "$client_pid" || client_status=$?
+    wait "$server_pid" || server_status=$?
+    cat "$TMPDIR/youtube-client-build.log" "$TMPDIR/youtube-server-build.log"
+    trap - EXIT INT TERM
+    if ((client_status != 0 || server_status != 0)); then
+      exit 1
+    fi
     runHook postBuild
   '';
 

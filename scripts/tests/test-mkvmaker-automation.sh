@@ -34,6 +34,8 @@ jq -e '
   (.paths.dvdInbox == "/mnt/data/shared/_ISO/_DVDs")
   and (.paths.moviesOutput == "/mnt/data/shared/_Videos/_Movies")
   and (.paths.showsOutput == "/mnt/data/shared/_Videos/_Shows")
+  and (.paths.stagingRoot == "/mnt/data/shared/.mkvmaker-staging")
+  and (.sharedContent | index(".mkvmaker-staging") != null)
   and (.personalContent | index("_ISO") != null)
   and (.sharedContent | index("_ISO") != null)
   and (.guarded | index("mkvmaker-storage-layout-v1") != null)
@@ -63,7 +65,8 @@ jq -e '
     "/var/lib/mkvmaker",
     "/mnt/data/shared/_ISO/_DVDs",
     "/mnt/data/shared/_Videos/_Movies",
-    "/mnt/data/shared/_Videos/_Shows"
+    "/mnt/data/shared/_Videos/_Shows",
+    "/mnt/data/shared/.mkvmaker-staging"
   ])
   and (.homepageEnvironment.HOMEPAGE_MKVMAKER_PROGRESS_FILE == "/run/mkvmaker/progress.json")
 ' <<<"$surface_json" >/dev/null || {
@@ -128,6 +131,14 @@ state = {
         }
     },
 }
+another = root / "inbox/Another_1999.iso"
+another.write_bytes(b"more fake iso data\n")
+another_stat = another.stat()
+state["sources"][another.name] = {
+    "signature": {"size": another_stat.st_size, "mtime_ns": another_stat.st_mtime_ns},
+    "unchanged_since": 9_999_999_999,
+    "attempts": 0,
+}
 (root / "state/queue.json").write_text(json.dumps(state), encoding="utf-8")
 PY
 
@@ -162,6 +173,7 @@ jq -e '
   and (.conversions[0].title == "Restartable")
   and (.conversions[0].mediaKind == "movie")
   and (.conversions[0].percent == 0)
+  and (.queued == ["Another_1999"])
 ' "$test_root/progress.json" >/dev/null
 kill -TERM "$supervisor_pid"
 set +e
@@ -177,7 +189,12 @@ jq -e '
   and (.sources["Restartable_2001.iso"].attempts == 0)
   and (.sources["Restartable_2001.iso"].plan.titles == [1])
 ' "$test_root/state/queue.json" >/dev/null
-jq -e '(.schemaVersion == 1) and (.state == "idle") and (.conversions == [])' \
+jq -e '
+  (.schemaVersion == 1)
+  and (.state == "idle")
+  and (.conversions == [])
+  and (.queued == ["Another_1999", "Restartable_2001"])
+' \
   "$test_root/progress.json" >/dev/null
 [[ -f "$test_root/inbox/Restartable_2001.iso" ]] || {
   echo "❌ Interrupted conversion did not preserve its source ISO." >&2

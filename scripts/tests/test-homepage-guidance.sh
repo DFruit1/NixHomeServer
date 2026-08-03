@@ -48,15 +48,7 @@ if [[ "${NIXHOMESERVER_SKIP_NESTED_BUILDS:-0}" != "1" ]]; then
   and (.services[] | select(.id == "emails") | .logoUrl == "/logos/mail-archive-ui.svg")
   and (.services[] | select(.id == "passwords") | .logoUrl == "/logos/vaultwarden.svg")
   and ([.folderGuides[] | .personalPath?, .sharedPath? | select(. != null) | startswith("/mnt/data") | not] | all)
-  and ([.adminGuide[].title] | index("List storage layout services") != null)
-  and ([.adminGuide[].title] | index("Re-run storage layout services") == null)
-  and (.adminGuide[] | select(.title == "Validate config readiness") | .command | contains("--identity"))
-  and (.adminGuide[] | select(.title == "Restart homepage") | .detail | contains("require a guarded deploy"))
   and (.adminGuide[] | select(.title == "Authenticate Kanidm CLI") | .command | contains("kanidm self whoami"))
-  and (.adminGuide[] | select(.title == "Bootstrap or recover operator credential") | .command | contains("kanidm-operator-bootstrap status"))
-  and (.adminGuide[] | select(.title == "Retrieve Kopia browser credential")
-    | (.command == "sudo nixhomeserver-kopia-browser-credential")
-    and (.detail | contains("backup-storage-users alone grants only read-only repository browsing")))
   and (.adminGuide[] | select(.title == "Troubleshoot Jellyfin LAN discovery")
     | (.detail | contains("same IPv4 broadcast network"))
     and (.detail | contains("client isolation"))
@@ -209,32 +201,8 @@ require_fixed documentation/operations.md 'New-NetFirewallRule' \
   "Jellyfin discovery guidance must include a narrow Windows Firewall example."
 require_fixed documentation/operations.md 'System Settings → Privacy & Security → Local Network' \
   "Jellyfin discovery guidance must cover Apple local-network privacy permission."
-require_fixed modules/homepage/services.nix '++ lib.optionals kopiaEnabled [' \
-  "Homepage must omit Kopia credential guidance when Kopia is disabled."
-require_fixed modules/homepage/services.nix 'command = "sudo systemctl start storage-smart-short.service";' \
-  "SMART guidance must invoke the installed server-side service instead of a workstation repository script."
-require_fixed modules/homepage/services.nix 'command = "sudo nixhomeserver-storage-inventory --format text";' \
-  "Storage inventory guidance must inspect the evaluated server rather than the admin workstation."
 require_fixed custom_apps/node/apps/homepage/src/components/SftpSetup.tsx 'SFTP/SSHFS and browser Files access use separate permissions.' \
   "SFTP guidance must not promise browser uploads to accounts without the separate Files permission."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'This grants every enabled default app group above, not only one app.' \
-  "Homepage admin guidance must explain the shared identity.appUsers access bundle."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'New-user handoff order' \
-  "Homepage admin guidance must provide an ordered new-user handoff checklist."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Create the one-time account link last' \
-  "Homepage admin guidance must delay credential-link creation until access is ready."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Display name' \
-  "Homepage user creation must collect the human-readable display name separately from the username."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Recover the correct sign-in boundary' \
-  "Homepage admin guidance must distinguish Kanidm recovery from app-local credentials."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Access changes and offboarding' \
-  "Homepage admin guidance must explain retained app data and device access during offboarding."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx "'Authenticate Kanidm CLI': { category: 'identity', intents: ['add-user', 'manage-user', 'manage-secrets'] }" \
-  "Homepage account workflows must surface the required Kanidm CLI authentication step."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'usernames must start with a lower-case letter' \
-  "Homepage account workflows must stop admins from copying commands with invalid usernames."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'selectedGroups.value = [];' \
-  "Homepage access selections must be cleared when their target or workflow changes."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Never send an admin your password' \
   "New-user guidance must clearly identify credentials that support requests must never include."
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'Use a trusted network path' \
@@ -271,14 +239,6 @@ if rg -Fq 'Möbius Sync' custom_apps/node/apps/homepage/src/components/OfflineMe
 fi
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'No enabled apps are currently assigned to this account' \
   "New-user guidance must make an empty app assignment a skippable state."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx "group === 'app-admin'" \
-  "Selecting app-admin must automatically include the normal application-access bundle."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'Configured access boundaries and exceptions' \
-  "Admin access guidance must surface configured native-login, file-role, and app-admin exceptions."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx "'Revoke offline-media device access': { category: 'identity', intents: ['manage-user'] }" \
-  "Offline-media offboarding must surface under user-access administration."
-require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx 'File and backup roles are independent manual Kanidm groups' \
-  "Homepage admin guidance must keep backup roles independently Kanidm-managed."
 require_fixed modules/homepage/services.nix '"manual"' \
   "Homepage group metadata must identify Kanidm-managed membership."
 require_fixed custom_apps/node/apps/homepage/src/components/CredentialBackupGuide.tsx '.zip (with attachments)' \

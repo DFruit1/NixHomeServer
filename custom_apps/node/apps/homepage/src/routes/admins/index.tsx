@@ -3,7 +3,18 @@ import { HomepageContext } from '../../shared/homepage-context.js';
 import type { AdminStep } from '../../shared/types.js';
 import { CanaryPanel } from '../../components/CanaryPanel.js';
 
-const executionContext = (command: string | undefined): string => {
+const adminStepMetadata: Record<string, { category: 'network'; executionContext: string }> = {
+  'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' },
+  'Allow Jellyfin discovery replies with UFW': { category: 'network', executionContext: 'Linux client' },
+  'Allow Jellyfin discovery replies with firewalld': { category: 'network', executionContext: 'Linux client' },
+  'Allow Jellyfin discovery replies on Windows': { category: 'network', executionContext: 'Windows client (Administrator PowerShell)' },
+  'Allow Jellyfin discovery on Apple devices': { category: 'network', executionContext: 'Apple client' },
+};
+
+const executionContext = (step: AdminStep): string => {
+  const command = step.command;
+  const metadata = adminStepMetadata[step.title];
+  if (metadata) return metadata.executionContext;
   if (!command) return 'Guided steps';
   if (/^(?:sudo )?\.\//.test(command) || /^(?:git |nix (?:run|flake|eval)|DEPLOY_|\$EDITOR |find secrets)/.test(command)) {
     return 'Repository folder';
@@ -120,7 +131,7 @@ export default component$(() => {
               <AdminTask
                 title={step.title}
                 description={step.detail}
-                context={executionContext(step.command)}
+                context={executionContext(step)}
                 key={step.title}
               >
                 {step.command && <AdminCommand command={step.command} />}

@@ -29,7 +29,8 @@ in
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Failed"}
       install -d -m 1770 -o root -g root \
         ${lib.escapeShellArg cfg.paths.moviesOutput} \
-        ${lib.escapeShellArg cfg.paths.showsOutput}
+        ${lib.escapeShellArg cfg.paths.showsOutput} \
+        ${lib.escapeShellArg cfg.paths.stagingRoot}
 
       for path in \
         ${lib.escapeShellArg vars.sharedRoot} \
@@ -40,7 +41,8 @@ in
       for path in \
         ${lib.escapeShellArg cfg.paths.dvdInbox} \
         ${lib.escapeShellArg cfg.paths.moviesOutput} \
-        ${lib.escapeShellArg cfg.paths.showsOutput}; do
+        ${lib.escapeShellArg cfg.paths.showsOutput} \
+        ${lib.escapeShellArg cfg.paths.stagingRoot}; do
         setfacl -m g:mkvmaker:rwx,d:g:mkvmaker:rwx "$path"
       done
     '';

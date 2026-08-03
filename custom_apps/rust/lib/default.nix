@@ -12,7 +12,20 @@ let
   mkRustApp = import ./mk-rust-app.nix {
     inherit lib craneLib mkRustShell mkRustChecks;
   };
+  assembleRuntimePackage = import ./assemble-runtime-package.nix {
+    inherit pkgs;
+  };
+  mkPnpmFrontend = import ./mk-pnpm-frontend.nix {
+    inherit lib pkgs;
+  };
 in
 {
-  inherit toolchain mkRustApp mkRustShell mkRustChecks;
+  inherit
+    toolchain
+    mkRustApp
+    mkRustShell
+    mkRustChecks
+    assembleRuntimePackage
+    mkPnpmFrontend
+    ;
 }

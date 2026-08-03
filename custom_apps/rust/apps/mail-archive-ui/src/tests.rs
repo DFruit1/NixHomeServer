@@ -1771,6 +1771,70 @@ fn attachment_tables_are_initialized() {
 }
 
 #[test]
+fn attachment_message_state_is_loaded_once_per_account() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let config = test_config(&tempdir);
+    prepare_test_layout(&config);
+    let connection = open_db(&config).expect("db");
+    connection
+        .execute(
+            "INSERT INTO attachment_messages (account_id, message_key, message_relpath, message_mtime, message_size, subject, sender, timestamp, last_scanned_at, has_attachments) VALUES (?1, ?2, ?3, 1, 1, '', '', 1, 'now', ?4)",
+            params![42, "with", "Inbox/cur/with", 1],
+        )
+        .expect("message with attachments");
+    connection
+        .execute(
+            "INSERT INTO attachment_messages (account_id, message_key, message_relpath, message_mtime, message_size, subject, sender, timestamp, last_scanned_at, has_attachments) VALUES (?1, ?2, ?3, 1, 1, '', '', 1, 'now', ?4)",
+            params![42, "without", "Inbox/cur/without", 0],
+        )
+        .expect("message without attachments");
+    connection
+        .execute(
+            "INSERT INTO attachment_messages (account_id, message_key, message_relpath, message_mtime, message_size, subject, sender, timestamp, last_scanned_at, has_attachments) VALUES (?1, ?2, ?3, 1, 1, '', '', 1, 'now', ?4)",
+            params![7, "other", "Inbox/cur/other", 1],
+        )
+        .expect("other account message");
+
+    let states = load_message_attachment_states_for_account(&connection, 42).expect("states");
+
+    assert_eq!(states.get("with"), Some(&true));
+    assert_eq!(states.get("without"), Some(&false));
+    assert!(!states.contains_key("other"));
+}
+
+#[test]
+fn paperless_handoff_state_is_loaded_once_per_user() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let config = test_config(&tempdir);
+    prepare_test_layout(&config);
+    let connection = open_db(&config).expect("db");
+    for (username, key, sent_at) in [
+        ("alice", "attachment-a", "2026-08-01T00:00:00Z"),
+        ("alice", "attachment-b", "2026-08-02T00:00:00Z"),
+        ("bob", "attachment-c", "2026-08-03T00:00:00Z"),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO attachment_paperless_handoffs (username, attachment_key, attachment_sha256, original_filename, consume_filename, sent_at) VALUES (?1, ?2, ?2, ?2, ?2, ?3)",
+                params![username, key, sent_at],
+            )
+            .expect("handoff");
+    }
+
+    let states = load_attachment_paperless_handoffs(&connection, "alice").expect("states");
+
+    assert_eq!(
+        states.get("attachment-a").map(String::as_str),
+        Some("2026-08-01T00:00:00Z")
+    );
+    assert_eq!(
+        states.get("attachment-b").map(String::as_str),
+        Some("2026-08-02T00:00:00Z")
+    );
+    assert!(!states.contains_key("attachment-c"));
+}
+
+#[test]
 fn legacy_paperless_task_schema_is_migrated_in_place() {
     let tempdir = TempDir::new().expect("tempdir");
     let config = test_config(&tempdir);

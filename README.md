@@ -83,6 +83,12 @@ available slot on both. See
 [Build Allocation](documentation/operations.md#build-allocation) for the native
 Nix settings and one-shot overrides.
 
+`system.localNixGCMode` controls workstation collection before deploy:
+`"never"` skips it, `"capacity"` runs the same threshold-based policy used by
+the server, and `"always"` collects unconditionally. The legacy
+`system.localNixGC` boolean still maps to `"always"` or `"never"` when the new
+setting is absent.
+
 Encrypted values use the manifest-driven agenix flow:
 
 ```bash
@@ -123,6 +129,11 @@ the entire application catalog, including apps disabled for this host, run:
 ```bash
 scripts/validate-repo.sh --full --all-apps
 ```
+
+Full host-scoped validation submits its derivations in one Nix build and keeps
+the latest completely passing outputs as indirect GC roots under
+`${XDG_STATE_HOME:-$HOME/.local/state}/nixhomeserver/validation-roots/current`.
+An exhaustive `--all-apps` run never replaces those daily warm roots.
 
 The flake also exposes lint, Rust, frontend, module-removal, encrypted restore
 round-trip, Disko evaluation, and NixOS VM checks. CI runs the lean gate on

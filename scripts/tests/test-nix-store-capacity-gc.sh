@@ -322,14 +322,14 @@ jq -e '
 }
 
 invalid_log="$test_dir/invalid-settings.log"
-for invalid_field in nixStoreMaxSizeGiB nixGcRetentionDays; do
+for invalid_field in nixStoreMaxSizeGiB nixGcRetentionDays localNixGCMode; do
   if NIXHOMESERVER_INVALID_GC_FIELD="$invalid_field" nix eval --impure --raw --expr '
       let
         flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
         lib = flake.inputs.nixpkgs.lib;
         base = import ./vars.nix { inherit lib; };
         field = builtins.getEnv "NIXHOMESERVER_INVALID_GC_FIELD";
-        invalid = base // { ${field} = 0; };
+        invalid = base // { ${field} = if field == "localNixGCMode" then "sometimes" else 0; };
       in
       (import ./lib/validate-host-settings.nix {
         inherit lib;
@@ -340,7 +340,11 @@ for invalid_field in nixStoreMaxSizeGiB nixGcRetentionDays; do
     echo "❌ Host validation accepted ${invalid_field} = 0." >&2
     exit 1
   fi
-  if ! rg -Fq "system.${invalid_field} must be an integer" "$invalid_log"; then
+  expected_error="system.${invalid_field} must be an integer"
+  if [[ "$invalid_field" == "localNixGCMode" ]]; then
+    expected_error="system.localNixGCMode must be never, capacity, or always"
+  fi
+  if ! rg -Fq "$expected_error" "$invalid_log"; then
     echo "❌ Invalid ${invalid_field} failed without actionable guidance." >&2
     cat "$invalid_log" >&2
     exit 1

@@ -151,6 +151,7 @@ interface ConversionEnvelope {
   progress: {
     state?: string;
     conversions?: Conversion[];
+    queued?: string[];
   };
 }
 
@@ -800,11 +801,6 @@ const LibraryView = component$<{
   return (
     <section class="library-layout">
       <aside class="panel root-picker">
-        <div class="panel-heading">
-          <div>
-            <h3>Media roots</h3>
-          </div>
-        </div>
         <div class="root-list grouped">
           {sharedRoots.length > 0 && (
             <div class="root-group">
@@ -846,15 +842,6 @@ const LibraryView = component$<{
         )}
       </aside>
       <section class="panel catalog-panel">
-        <div class="panel-heading catalog-heading">
-          <div>
-            <h3>
-              {selected
-                ? `${rootDisplayName(selected)} (${selected.scope})`
-                : "Choose a root"}
-            </h3>
-          </div>
-        </div>
         {!selected ? (
           <EmptyState
             title="Choose a media root"
@@ -1223,8 +1210,10 @@ const ConversionList = component$<{
   conversions: Conversion[];
   available: boolean;
   expanded?: boolean;
+  queued?: string[];
 }>((props) => {
-  if (props.conversions.length === 0) {
+  const hasQueued = (props.queued?.length ?? 0) > 0;
+  if (props.conversions.length === 0 && !hasQueued) {
     return (
       <EmptyState
         title={
@@ -1264,6 +1253,24 @@ const ConversionList = component$<{
           </article>
         );
       })}
+      {hasQueued && (
+        <div
+          class="conversion-queue"
+          aria-label={`${props.queued!.length} DVD discs waiting`}
+        >
+          <span class="conversion-queue__heading">
+            In queue ({props.queued!.length})
+          </span>
+          <ol class="conversion-queue__list">
+            {props.queued!.map((title, index) => (
+              <li key={`${title}-${index}`}>
+                <span class="conversion-queue__number">{index + 1}.</span>
+                <span class="conversion-queue__title">{title}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 });
@@ -1376,6 +1383,7 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
           <ConversionList
             conversions={current}
             available={converterReporting}
+            queued={conv.conversions?.progress.queued}
             expanded
           />
         </section>

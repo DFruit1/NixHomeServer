@@ -1387,20 +1387,23 @@ pub(super) fn load_attachment_catalog_rows_for_account(
         .map_err(|error| format!("failed to decode attachment catalog rows: {error}"))
 }
 
-pub(super) fn message_catalog_has_attachments(
+pub(super) fn load_message_attachment_states_for_account(
     connection: &Connection,
     account_id: i64,
-    message_key: &str,
-) -> Result<bool, String> {
-    connection
-        .query_row(
-            "SELECT has_attachments FROM attachment_messages WHERE account_id = ?1 AND message_key = ?2 LIMIT 1",
-            params![account_id, message_key],
-            |row| row.get::<_, i64>(0),
+) -> Result<HashMap<String, bool>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT message_key, has_attachments FROM attachment_messages WHERE account_id = ?1",
         )
-        .optional()
-        .map_err(|error| format!("failed to query attachment message state: {error}"))
-        .map(|value| value.unwrap_or(0) != 0)
+        .map_err(|error| format!("failed to prepare attachment message state query: {error}"))?;
+    let rows = statement
+        .query_map(params![account_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
+        })
+        .map_err(|error| format!("failed to query attachment message states: {error}"))?;
+
+    rows.collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| format!("failed to decode attachment message state: {error}"))
 }
 
 pub(super) fn parse_page_number(raw: Option<&str>) -> usize {
@@ -2415,6 +2418,7 @@ pub(super) fn load_attachment_page_data(
         normalize_download_subfolder(params.download_subfolder.as_deref().unwrap_or_default())?;
     let page = parse_page_number(params.page.as_deref());
     let connection = open_db(config)?;
+    let paperless_handoffs = load_attachment_paperless_handoffs(&connection, username)?;
     let priority_rules = load_sender_priority_rules(config, username)?;
     let mut items = Vec::new();
     let mut query_relpaths_by_account = HashMap::<i64, HashSet<String>>::new();
@@ -2522,11 +2526,9 @@ pub(super) fn load_attachment_page_data(
             if !attachment_matches_filters(&item, &filters, attachment_count) {
                 continue;
             }
-            item.paperless_sent_at = load_attachment_paperless_handoff(
-                &connection,
-                username,
-                &item.attachment.attachment_key,
-            )?;
+            item.paperless_sent_at = paperless_handoffs
+                .get(&item.attachment.attachment_key)
+                .cloned();
             items.push(item);
         }
     }
@@ -2698,7 +2700,6 @@ pub(super) fn attachment_keys_for_params(
 ) -> Result<Vec<String>, String> {
     let mut keys = Vec::new();
     let mut seen = HashSet::new();
-    let connection = open_db(config)?;
     let mut page = 1;
 
     loop {
@@ -2709,11 +2710,7 @@ pub(super) fn attachment_keys_for_params(
         let data = load_attachment_page_data(config, username, &page_params)?;
         for item in data.items {
             if seen.insert(item.attachment.attachment_key.clone())
-                && attachment_key_is_new_for_paperless(
-                    &connection,
-                    username,
-                    &item.attachment.attachment_key,
-                )?
+                && item.paperless_sent_at.is_none()
             {
                 keys.push(item.attachment.attachment_key);
             }
@@ -2728,15 +2725,6 @@ pub(super) fn attachment_keys_for_params(
     }
 
     Ok(keys)
-}
-
-pub(super) fn attachment_key_is_new_for_paperless(
-    connection: &Connection,
-    username: &str,
-    attachment_key: &str,
-) -> Result<bool, String> {
-    load_attachment_paperless_handoff(connection, username, attachment_key)
-        .map(|sent| sent.is_none())
 }
 
 pub(super) fn send_attachment_filter_to_paperless(
@@ -3415,9 +3403,13 @@ pub(super) fn search_mail(
         .into_iter()
         .filter(|account| selected_account_id.is_none_or(|selected| selected == account.id))
     {
+        let attachment_states =
+            load_message_attachment_states_for_account(&connection, account.id)?;
         for item in collect_live_messages_for_account(config, &account, &query)? {
-            let has_attachments =
-                message_catalog_has_attachments(&connection, account.id, &item.message_key)?;
+            let has_attachments = attachment_states
+                .get(&item.message_key)
+                .copied()
+                .unwrap_or(false);
             if !message_matches_filters(&item, &filters, Some(has_attachments)) {
                 continue;
             }

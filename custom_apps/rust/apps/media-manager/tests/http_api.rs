@@ -967,6 +967,104 @@ async fn item_image_serves_sibling_cover_artwork() {
 }
 
 #[tokio::test]
+async fn item_image_prefers_title_specific_jellyfin_artwork() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("video directory");
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie-poster.jpg"),
+        b"movie-poster",
+    )
+    .expect("movie poster");
+    std::fs::write(
+        temp.path().join("shared/_Videos/folder.jpg"),
+        b"root-folder-art",
+    )
+    .expect("folder artwork");
+    let app = test_app(&temp);
+    let movie_id = item_id_by_kind(&app, "shared-videos", "video").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{movie_id}/image"
+        )))
+        .await
+        .expect("image response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert_eq!(body.as_ref(), b"movie-poster");
+}
+
+#[tokio::test]
+async fn item_image_falls_back_to_jellyfin_artwork_in_an_ancestor_folder() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Show/Season 01"))
+        .expect("season directory");
+    std::fs::write(
+        temp.path()
+            .join("shared/_Videos/Show/Season 01/Episode.mkv"),
+        b"episode",
+    )
+    .expect("episode");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Show/poster.jpg"),
+        b"series-poster",
+    )
+    .expect("series poster");
+    let app = test_app(&temp);
+    let episode_id = first_item_id(&app, "shared-videos").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{episode_id}/image"
+        )))
+        .await
+        .expect("image response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert_eq!(body.as_ref(), b"series-poster");
+}
+
+#[tokio::test]
+async fn item_image_serves_embedded_audio_cover_artwork() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Album")).expect("album directory");
+    std::fs::write(
+        temp.path().join("shared/_Music/Album/Track.mp3"),
+        mp3_with_embedded_jpeg(b"embedded-cover"),
+    )
+    .expect("tagged audio");
+    let app = test_app(&temp);
+    let track_id = first_item_id(&app, "shared-music").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{track_id}/image"
+        )))
+        .await
+        .expect("image response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("image/jpeg")
+    );
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert_eq!(body.as_ref(), b"embedded-cover");
+}
+
+#[tokio::test]
 async fn item_image_returns_not_found_without_artwork() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);
@@ -985,6 +1083,38 @@ async fn item_image_returns_not_found_without_artwork() {
         .expect("image body");
     let value: Value = serde_json::from_slice(&body).expect("image json");
     assert_eq!(value["error"]["code"], "artwork_not_found");
+}
+
+fn mp3_with_embedded_jpeg(image: &[u8]) -> Vec<u8> {
+    let mut apic = Vec::new();
+    apic.push(0);
+    apic.extend_from_slice(b"image/jpeg\0");
+    apic.push(3);
+    apic.push(0);
+    apic.extend_from_slice(image);
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(b"APIC");
+    frame.extend_from_slice(&(apic.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&[0, 0]);
+    frame.extend_from_slice(&apic);
+
+    let size = frame.len() as u32;
+    let synchsafe = [
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+    ];
+    let mut mp3 = Vec::new();
+    mp3.extend_from_slice(b"ID3\x03\x00\x00");
+    mp3.extend_from_slice(&synchsafe);
+    mp3.extend_from_slice(&frame);
+    for _ in 0..2 {
+        mp3.extend_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        mp3.resize(mp3.len() + 413, 0);
+    }
+    mp3
 }
 
 fn test_iso(volume_id: &str) -> Vec<u8> {
@@ -1062,5 +1192,27 @@ async fn first_item_id(app: &axum::Router, root_id: &str) -> String {
     value["items"][0]["id"]
         .as_str()
         .expect("first item ID")
+        .to_string()
+}
+
+async fn item_id_by_kind(app: &axum::Router, root_id: &str, media_kind: &str) -> String {
+    let response = app
+        .clone()
+        .oneshot(editor_get_request(&format!(
+            "/api/v1/items?rootId={root_id}"
+        )))
+        .await
+        .expect("items response");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("items body");
+    let value: Value = serde_json::from_slice(&body).expect("items JSON");
+    value["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["mediaKind"] == media_kind)
+        .and_then(|item| item["id"].as_str())
+        .expect("item ID for media kind")
         .to_string()
 }

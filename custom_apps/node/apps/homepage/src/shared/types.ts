@@ -132,6 +132,7 @@ export type MkvProgressResponse = {
   state: 'idle' | 'converting';
   updatedAt?: string;
   conversions: MkvConversionProgress[];
+  queued?: string[];
 };
 
 export type SftpKeyResponse = {

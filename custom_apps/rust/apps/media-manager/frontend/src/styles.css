@@ -84,9 +84,9 @@ li {
   top: 0;
   bottom: 0;
   left: 0;
-  width: 72px;
+  width: 48px;
   height: 100vh;
-  padding: 28px 18px 20px;
+  padding: 28px 4px 20px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--line);
@@ -95,11 +95,13 @@ li {
   white-space: nowrap;
   transition:
     width 170ms ease-out,
+    padding-inline 170ms ease-out,
     box-shadow 170ms ease-out;
 }
 .sidebar:hover,
 .sidebar:focus-within {
   width: 244px;
+  padding-inline: 18px;
   box-shadow: 10px 0 32px rgba(33, 29, 21, 0.16);
 }
 .sidebar .brand,
@@ -107,11 +109,40 @@ li {
 .sidebar .sidebar-footer {
   width: 208px;
 }
+@media (min-width: 641px) {
+  .brand > div:last-child,
+  .nav-item > span,
+  .sidebar-footer > div:nth-child(2),
+  .sidebar-footer > .role-dot {
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 100ms ease-out;
+  }
+  .sidebar:hover .brand,
+  .sidebar:focus-within .brand {
+    padding-inline: 9px;
+  }
+  .sidebar:hover .sidebar-footer,
+  .sidebar:focus-within .sidebar-footer {
+    padding-inline: 8px;
+  }
+  .sidebar:hover .brand > div:last-child,
+  .sidebar:focus-within .brand > div:last-child,
+  .sidebar:hover .nav-item > span,
+  .sidebar:focus-within .nav-item > span,
+  .sidebar:hover .sidebar-footer > div:nth-child(2),
+  .sidebar:focus-within .sidebar-footer > div:nth-child(2),
+  .sidebar:hover .sidebar-footer > .role-dot,
+  .sidebar:focus-within .sidebar-footer > .role-dot {
+    visibility: visible;
+    opacity: 1;
+  }
+}
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 9px 30px;
+  padding: 0 3px 30px;
 }
 .brand > div:last-child,
 .sidebar-footer > div:nth-child(2) {
@@ -220,7 +251,7 @@ a:focus-visible {
 .sidebar-footer {
   margin-top: auto;
   min-height: 52px;
-  padding: 10px 8px 6px;
+  padding: 10px 4px 6px;
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) 10px;
   align-items: center;
@@ -261,7 +292,7 @@ a:focus-visible {
 .main-content {
   min-width: 0;
   min-height: 100vh;
-  margin-left: 72px;
+  margin-left: 48px;
   padding: 34px clamp(24px, 4vw, 62px) 70px;
   background: radial-gradient(
     circle at 75% -10%,
@@ -555,6 +586,49 @@ a:focus-visible {
   color: var(--ink);
   font-size: 10px;
 }
+.conversion-queue {
+  margin: 0 20px 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.conversion-list.expanded .conversion-queue {
+  margin: 0 28px 28px;
+}
+.conversion-queue__heading {
+  display: block;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.conversion-queue__list {
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+  list-style: none;
+}
+.conversion-queue__list li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--ink-soft);
+  overflow: hidden;
+}
+.conversion-queue__number {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.conversion-queue__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .empty-state {
   min-height: 226px;
   padding: 32px;
@@ -686,6 +760,7 @@ a:focus-visible {
 .root-list.grouped {
   display: grid;
   gap: 0;
+  padding-top: 14px;
 }
 .root-group + .root-group {
   margin-top: 18px;
@@ -1687,10 +1762,6 @@ a:focus-visible {
   }
   .metadata-side {
     grid-template-columns: 1fr;
-  }
-  .catalog-heading {
-    align-items: flex-start;
-    flex-direction: column;
   }
   .rename-fields {
     grid-template-columns: 1fr 100px;

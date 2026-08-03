@@ -34,13 +34,24 @@ in
       default = "${vars.sharedRoot}/_Videos/_Shows";
       description = "Shared Jellyfin TV library destination.";
     };
+
+    stagingRoot = lib.mkOption {
+      type = lib.types.str;
+      default = "${vars.sharedRoot}/.mkvmaker-staging";
+      description = ''
+        Hidden staging directory for partially written MKVs, kept outside the
+        Jellyfin library so scanners never observe an incomplete file. It must
+        stay on the same filesystem as moviesOutput/showsOutput for the final
+        atomic rename.
+      '';
+    };
   };
 
   config = {
     # Every personal file root and the shared file root get an _ISO folder.
     # Only cfg.paths.dvdInbox under the shared root is watched.
     repo.storage.userRoots.contentSubdirs = [ "_ISO" ];
-    repo.storage.sharedRoots.contentSubdirs = [ "_ISO" "_Videos" ];
+    repo.storage.sharedRoots.contentSubdirs = [ "_ISO" "_Videos" ".mkvmaker-staging" ];
     repo.storage.sharedRoots.videoSubdirs = [ "_Movies" "_Shows" ];
 
     systemd.tmpfiles.rules = [
