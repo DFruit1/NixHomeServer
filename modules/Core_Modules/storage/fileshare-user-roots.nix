@@ -11,13 +11,14 @@ let
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
   backupStorageAccessGroup = vars.backupStorageGroup;
   sharedAccessGid = vars.fileAccessPosixGids.${sharedAccessGroup};
-  usbAccessGid = vars.fileAccessPosixGids.${usbAccessGroup};
   backupStorageAccessGid = vars.fileAccessPosixGids.${backupStorageAccessGroup};
   sharedMountName = vars.fileAccess.sharedMountName or "_Shared";
   usbMountName = vars.fileAccess.usbMountName or "_USB";
   backupStorageMountName = vars.backupAccess.storageMountName or "_Backups";
   sftpChrootBase = vars.fileAccess.sftpChrootBase or "/srv/files-sftp/chroots";
   externalUsbMountRoot = vars.externalUsbMountRoot or "/mnt/external-usb";
+  externalUsbViewMount = vars.externalUsbViewMount or "/mnt/usb-access-view";
+  externalUsbViewName = builtins.baseNameOf externalUsbViewMount;
   backupRoot = vars.backupRoot or "${vars.dataRoot}/backups";
   invalidTopLevelNames = lib.filter
     (name: !storageValidation.validPathComponent name)
@@ -394,10 +395,6 @@ let
       } | ${pkgs.coreutils}/bin/sort -u
     )"
 
-    usb_members_json="$(
-      printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg usbAccessGroup}]}"
-    )"
-
     backup_storage_members_json="$(
       printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg backupStorageAccessGroup}]}"
     )"
@@ -420,12 +417,6 @@ let
       sftp_members["$username"]=1
     done <<<"$sftp_members_json"
 
-    declare -A usb_members=()
-    while IFS= read -r username; do
-      [[ -n "$username" ]] || continue
-      usb_members["$username"]=1
-    done <<<"$usb_members_json"
-
     declare -A backup_storage_members=()
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
@@ -445,11 +436,6 @@ let
         ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
       fi
 
-      if [[ -n "''${usb_members[$username]:-}" ]]; then
-        ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg usbMountName}
-        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-usb-bindfs@.service "$username")"
-      fi
-
       if [[ -n "''${backup_storage_members[$username]:-}" ]]; then
         ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg backupStorageMountName}
         ${pkgs.systemd}/bin/systemctl start "$(service_instance files-backups-bindfs@.service "$username")"
@@ -461,6 +447,10 @@ let
       fi
     done <<<"$members_json"
 
+    # Refresh the shared external USB view membership list so usb-access
+    # additions or removals apply without restarting the bindfs mount.
+    ${pkgs.systemd}/bin/systemctl kill -s USR1 files-usb-shared-view.service 2>/dev/null || true
+
     while IFS= read -r -d "" shared_mount; do
       username="$(basename "$(dirname "$shared_mount")")"
       if [[ -z "''${shared_members[$username]:-}" ]]; then
@@ -470,16 +460,6 @@ let
         fi
       fi
     done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name ${lib.escapeShellArg sharedMountName} -print0)
-
-    while IFS= read -r -d "" usb_mount; do
-      username="$(basename "$(dirname "$usb_mount")")"
-      if [[ -z "''${usb_members[$username]:-}" ]]; then
-        ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-usb-bindfs@.service "$username")" || true
-        if ! ${pkgs.util-linux}/bin/mountpoint -q "$usb_mount"; then
-          rmdir --ignore-fail-on-non-empty "$usb_mount" || true
-        fi
-      fi
-    done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.usersRoot} -mindepth 2 -maxdepth 2 -type d -name ${lib.escapeShellArg usbMountName} -print0)
 
     while IFS= read -r -d "" backups_mount; do
       username="$(basename "$(dirname "$backups_mount")")"
@@ -761,22 +741,6 @@ in
       };
     };
 
-    systemd.services."files-usb-bindfs@" = {
-      description = "Mount external USB files view for %I";
-      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${usbMountName}";
-      serviceConfig = {
-        Type = "simple";
-        ExecStartPre = [
-          dataRootGuard
-          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%I/${usbMountName}"
-          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${externalUsbMountRoot}"
-        ];
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString usbAccessGid} --perms=g+rwX,o-rwx --delete-deny ${externalUsbMountRoot} ${vars.usersRoot}/%I/${usbMountName}";
-        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${usbMountName}";
-        Restart = "on-failure";
-      };
-    };
-
     systemd.services."files-backups-bindfs@" = {
       description = "Mount encrypted backup repository view for %I";
       unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${backupStorageMountName}";
@@ -799,13 +763,13 @@ in
       requires = [ "data-pool-layout.service" ];
       wants = [
         "files-shared-bindfs@%i.service"
-        "files-usb-bindfs@%i.service"
+        "files-usb-shared-view.service"
         "files-backups-bindfs@%i.service"
       ];
       after = [
         "data-pool-layout.service"
         "files-shared-bindfs@%i.service"
-        "files-usb-bindfs@%i.service"
+        "files-usb-shared-view.service"
         "files-backups-bindfs@%i.service"
       ];
       serviceConfig = {
@@ -840,8 +804,14 @@ in
         ExecStart = [
           "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%I ${sftpChrootBase}/%I"
           "${pkgs.util-linux}/bin/mount --rbind ${vars.usersRoot}/%I ${sftpChrootBase}/%I@${vars.domain}"
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${sftpChrootBase}/%I/mnt/${externalUsbViewName}"
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${sftpChrootBase}/%I@${vars.domain}/mnt/${externalUsbViewName}"
+          "${pkgs.util-linux}/bin/mount --bind ${externalUsbViewMount} ${sftpChrootBase}/%I/mnt/${externalUsbViewName}"
+          "${pkgs.util-linux}/bin/mount --bind ${externalUsbViewMount} ${sftpChrootBase}/%I@${vars.domain}/mnt/${externalUsbViewName}"
         ];
         ExecStop = [
+          "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I@${vars.domain}/mnt/${externalUsbViewName}"
+          "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I/mnt/${externalUsbViewName}"
           "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I@${vars.domain}"
           "-${pkgs.util-linux}/bin/umount -l ${sftpChrootBase}/%I"
         ];

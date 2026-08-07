@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-01
-- Updated: 2026-08-02
+- Updated: 2026-08-05
 
 ## Context
 
@@ -64,6 +64,19 @@ use a contained, read-only local file descriptor to calculate the provider's
 first/last-64-KiB movie hash. Exact file matches are returned first; only an
 empty exact search falls back to the derived or editor-supplied title. Media
 contents are never uploaded during this lookup.
+
+Descriptive metadata is read through an additive item subresource. Filename
+parsing is the always-available baseline. When Jellyfin is enabled, a separate
+root-run, loopback-only exporter reads its API key, removes absolute paths and
+unowned personal entries, bounds every field and collection, and atomically
+writes a short-lived snapshot under `/var/cache/media-manager-jellyfin`. The
+unprivileged web service can only read that directory and accepts entries only
+when their registered root, authenticated owner, and relative catalog path all
+match. Jellyfin's bounded `MediaStreams` fields provide container-derived video
+and audio facts; the web service deliberately does not launch a media parser or
+pass arbitrary file descriptors to another process. Stale or invalid snapshots
+fail closed to filename metadata. Episode sidecars use Jellyfin's
+`episodedetails`, `showtitle`, `season`, and `episode` NFO fields.
 
 Manual refresh is a closed, coalescing adapter surface available to every
 authenticated user. The unprivileged web process may only enqueue fixed

@@ -21,6 +21,7 @@ let
   beszelEnabled = moduleEnabled "beszel";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
   openSubtitlesCredentialsFile = secretFile "openSubtitlesCredentials";
+  acoustidApiKeyFile = secretFile "acoustidApiKey";
 in
 {
   imports = [
@@ -126,6 +127,9 @@ in
   }
   // lib.optionalAttrs (builtins.pathExists openSubtitlesCredentialsFile) {
     openSubtitlesCredentials = { file = openSubtitlesCredentialsFile; owner = "media-manager"; group = "media-manager"; mode = "0400"; };
+  }
+  // lib.optionalAttrs (builtins.pathExists acoustidApiKeyFile) {
+    acoustidApiKey = { file = acoustidApiKeyFile; owner = "media-manager"; group = "media-manager"; mode = "0400"; };
   };
 
   systemd.tmpfiles.rules = [

@@ -72,7 +72,9 @@ ensure_local_attic_tunnel() {
   local health_endpoint="$1"
   local tunnel_script="$2"
   local log_file="$3"
-  local wait_attempts="${NIXHOMESERVER_ATTIC_WAIT_ATTEMPTS:-20}"
+  # The persistent tunnel retries SSH after a 15-second backoff. Allow one
+  # complete retry window so a transient disconnect cannot race a rebuild.
+  local wait_attempts="${NIXHOMESERVER_ATTIC_WAIT_ATTEMPTS:-40}"
   local wait_delay="${NIXHOMESERVER_ATTIC_WAIT_DELAY:-0.5}"
   local attempt
 

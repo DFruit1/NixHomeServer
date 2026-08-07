@@ -1443,7 +1443,7 @@ let
           requiredAnyGroups = [ filesSharedAccessGroup ];
         }
         {
-          text = "Your SFTP root includes /${filesUsbMountName} for external USB storage. It is writable but deletion-protected, and it may be empty until an administrator mounts the USB device.";
+          text = "Your SFTP root includes /${filesUsbMountName} for external USB storage. It is writable but deletion-protected. Attached USB drives appear here automatically, each under a folder named after the drive; the shared view is empty while no drive is connected.";
           requiredAnyGroups = [ filesUsbAccessGroup ];
         }
         {

@@ -27,6 +27,8 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   refreshPath = cfg.systemd.paths.media-manager-refresh-requests.pathConfig;
   refreshDispatcher = cfg.systemd.services.media-manager-refresh-dispatch.serviceConfig;
   jellyfinRefresh = cfg.systemd.services.media-manager-refresh-jellyfin.serviceConfig;
+  jellyfinMetadata = cfg.systemd.services.media-manager-jellyfin-metadata.serviceConfig;
+  jellyfinMetadataTimer = cfg.systemd.timers.media-manager-jellyfin-metadata.timerConfig;
   audiobookshelfRefresh = cfg.systemd.services.media-manager-refresh-audiobookshelf.serviceConfig;
   kavitaRefresh = cfg.systemd.services.media-manager-refresh-kavita.serviceConfig;
   syncthingRefresh = cfg.systemd.services.media-manager-refresh-syncthing.serviceConfig;
@@ -67,9 +69,15 @@ jq -e '
   and (.service.NoNewPrivileges == true)
   and (.service.ProtectSystem == "strict")
   and (.service.PrivateTmp == true)
+  and ((.service.RestrictSUIDSGID // false) == false)
   and (.service.ReadWritePaths == ["/var/lib/media-manager"])
-  and (.serviceEnvironment.MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE == null)
-  and (.ageSecretNames | index("openSubtitlesCredentials") == null)
+  and (.serviceEnvironment.MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE == "/run/agenix/openSubtitlesCredentials")
+  and (.serviceEnvironment.MEDIA_MANAGER_ACOUSTID_API_KEY_FILE == "/run/agenix/acoustidApiKey")
+  and (.serviceEnvironment.MEDIA_MANAGER_FPCALC_PATH | test(".*chromaprint.*/bin/fpcalc"))
+  and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE == "/var/cache/media-manager-jellyfin/metadata.json")
+  and (.ageSecretNames | index("openSubtitlesCredentials") != null)
+  and (.ageSecretNames | index("acoustidApiKey") != null)
+  and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-jellyfin") != null)
   and (.brokerUserGroup == "media-manager")
   and (.brokerUserExtraGroups == ["media-manager-broker"])
   and (.broker.User == "media-manager-broker")
@@ -77,6 +85,7 @@ jq -e '
   and (.broker.SupplementaryGroups == ["media-manager-broker"])
   and (.broker.PrivateNetwork == true)
   and (.broker.NoNewPrivileges == true)
+  and ((.broker.RestrictSUIDSGID // false) == false)
   and (.broker.CapabilityBoundingSet == [])
   and (.broker.AmbientCapabilities == [])
   and (.broker.ReadWritePaths == [
@@ -106,6 +115,16 @@ jq -e '
   and (.jellyfinRefresh.IPAddressDeny == "any")
   and (.jellyfinRefresh.IPAddressAllow == ["localhost"])
   and (.jellyfinRefresh.ProtectProc == "invisible")
+  and (.jellyfinMetadata.User == "root")
+  and (.jellyfinMetadata.Group == "media-manager")
+  and (.jellyfinMetadata.CacheDirectory == "media-manager-jellyfin")
+  and (.jellyfinMetadata.CacheDirectoryMode == "0750")
+  and (.jellyfinMetadata.IPAddressDeny == "any")
+  and (.jellyfinMetadata.IPAddressAllow == ["localhost"])
+  and (.jellyfinMetadata.ReadOnlyPaths == ["/var/lib/jellyfin/data/library-sync.api-key"])
+  and (.jellyfinMetadata.TasksMax == 32)
+  and (.jellyfinMetadataTimer.OnBootSec == "2m")
+  and (.jellyfinMetadataTimer.OnUnitInactiveSec == "30m")
   and (.audiobookshelfRefresh.IPAddressDeny == "any")
   and (.audiobookshelfRefresh.IPAddressAllow == ["localhost"])
   and (.audiobookshelfRefresh.ProtectProc == "invisible")
@@ -140,6 +159,12 @@ require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
   '/integrations/{integrationId}/refresh:' \
   "Manual application refresh must remain a closed API contract."
+require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
+  '/items/{itemId}/metadata:' \
+  "The read-only item metadata contract must remain explicit."
+require_fixed documentation/decisions/0001-media-manager-architecture.md \
+  '/var/cache/media-manager-jellyfin' \
+  "Jellyfin metadata must remain separated from web-writable state."
 require_fixed modules/Core_Modules/media-manager/services.nix \
   'systemctl start --wait "$unit"' \
   "Refresh dispatch must wait for each adapter's eventual result."
@@ -179,6 +204,9 @@ require_fixed custom_apps/rust/apps/media-manager/src/bin/media-manager-broker.r
 require_fixed secrets/manifest.nix \
   'openSubtitlesCredentials = {' \
   "OpenSubtitles credentials must remain an optional encrypted external secret."
+require_fixed secrets/manifest.nix \
+  'acoustidApiKey = {' \
+  "AcoustID credentials must remain an optional encrypted external secret."
 
 kavita_baseline='[{"id":1,"lastScanned":"before-1"},{"id":2,"lastScanned":"before-2"}]'
 kavita_complete='[{"id":1,"lastScanned":"after-1"},{"id":2,"lastScanned":"after-2"}]'

@@ -3,6 +3,7 @@ pub mod broker;
 pub mod catalog;
 pub mod config;
 pub mod http;
+pub mod musicbrainz;
 pub mod naming;
 pub mod scanner;
 pub mod subtitles;

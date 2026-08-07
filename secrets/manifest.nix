@@ -206,5 +206,12 @@
       validator = "opensubtitles-credentials-json";
       required = false;
     };
+    acoustidApiKey = {
+      description = "AcoustID (MusicBrainz Picard) API key used for fingerprint lookup in the Media Manager metadata editor.";
+      format = "JSON object with acoustidApiKey string";
+      settingPath = "secrets/unencrypted/acoustidApiKey";
+      validator = "acoustid-credentials-json";
+      required = false;
+    };
   };
 }

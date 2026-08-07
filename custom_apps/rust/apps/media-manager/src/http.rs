@@ -12,6 +12,10 @@ use crate::{
     scanner::{rescan_root, scan_root_if_needed, ScanRoot},
     subtitles::{opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials},
 };
+use crate::musicbrainz::{
+    AcoustidCredentials, LookupMode, MusicBrainzClient, MusicBrainzClientConfig,
+    MUSICBRAINZ_API_BASE, ACOUSTID_API_BASE,
+};
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -100,6 +104,7 @@ struct ProviderSubtitleRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MetadataSidecarRequest {
+    media_type: Option<String>,
     title: String,
     sort_title: Option<String>,
     year: Option<u16>,
@@ -115,6 +120,25 @@ struct MetadataSidecarRequest {
     narrators: Vec<String>,
     #[serde(default)]
     genres: Vec<String>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    episode_title: Option<String>,
+    premiere_date: Option<String>,
+    runtime_minutes: Option<u32>,
+    official_rating: Option<String>,
+    community_rating: Option<f32>,
+    #[serde(default)]
+    writers: Vec<String>,
+    #[serde(default)]
+    provider_ids: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MusicLookupRequest {
+    mode: Option<String>,
+    artist: Option<String>,
+    title: Option<String>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -126,6 +150,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/roots", get(roots))
         .route("/api/v1/items", get(items))
         .route("/api/v1/items/{item_id}/image", get(item_image))
+        .route("/api/v1/items/{item_id}/metadata", get(item_metadata))
         .route("/api/v1/conversions", get(conversions))
         .route("/api/v1/conversions/inbox", get(conversions_inbox))
         .route("/api/v1/scans", post(scan))
@@ -144,6 +169,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/items/{item_id}/metadata/sidecar",
             post(preview_metadata_sidecar),
+        )
+        .route(
+            "/api/v1/items/{item_id}/metadata/lookup",
+            post(lookup_music_metadata),
         )
         .route(
             "/api/v1/integrations/{integration_id}/refresh",
@@ -791,6 +820,23 @@ async fn preview_metadata_sidecar(
         }
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
+    let type_matches_item = matches!(
+        (item.media_kind.as_str(), request.media_type.as_deref()),
+        (_, None)
+            | ("video", Some("movie" | "episode"))
+            | ("music", Some("music"))
+            | ("audiobook", Some("audiobook"))
+            | ("book", Some("book"))
+    );
+    if !type_matches_item {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "metadata_type_mismatch",
+            "The metadata type does not match the catalog item.",
+            request_id,
+        )
+        .into_response();
+    }
     let (destination_relative_path, extension, contents) = metadata_sidecar(&item, &request);
     let staged =
         match stage_sidecar(&state.config, extension, contents.as_bytes(), &request_id).await {
@@ -819,6 +865,399 @@ async fn preview_metadata_sidecar(
             error.into_response()
         }
     }
+}
+
+async fn item_metadata(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) if ["video", "music", "audiobook", "book"].contains(&item.media_kind.as_str()) => {
+            item
+        }
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "metadata_item_unsupported",
+                "Metadata is available for video, music, audiobook, or book items.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+
+    let mut response = filename_metadata(&item);
+    if let Some(cache_file) = &state.config.jellyfin_metadata_cache_file {
+        if let Some(entry) = cached_jellyfin_metadata(cache_file, &item).await {
+            merge_metadata(&mut response, entry);
+        }
+    }
+    let mut result = Json(response).into_response();
+    result.headers_mut().insert(
+        CACHE_CONTROL,
+        "private, no-store".parse().expect("cache header"),
+    );
+    result
+}
+
+async fn lookup_music_metadata(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+    Json(request): Json<MusicLookupRequest>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let mode = match LookupMode::parse(request.mode.as_deref()) {
+        Some(mode) => mode,
+        None => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "musicbrainz_mode_invalid",
+                "Choose auto, fingerprint, or search lookup mode.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let artist = request
+        .artist
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let mut title = request
+        .title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    for (label, value) in [("Artist", &artist), ("Title", &title)] {
+        if value.as_ref().is_some_and(|value| value.len() > 500 || value.contains('\0')) {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "musicbrainz_query_invalid",
+                format!("{label} must contain between 1 and 500 characters."),
+                request_id,
+            )
+            .into_response();
+        }
+    }
+    if artist.is_none() && title.is_none() && mode == LookupMode::Search {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "musicbrainz_query_required",
+            "An artist or title is required to search MusicBrainz.",
+            request_id,
+        )
+        .into_response();
+    }
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) if item.media_kind == "music" => item,
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "music_item_required",
+                "MusicBrainz lookup requires a cataloged music file.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let client = match musicbrainz_client(&state.config, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+    if mode == LookupMode::Fingerprint && !client.has_fingerprint() {
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "musicbrainz_lookup_unconfigured",
+            "Fingerprint lookup needs an AcoustID API key configured on this server.",
+            request_id,
+        )
+        .into_response();
+    }
+    if title.is_none() {
+        title = music_title_from_relative_path(&item.relative_path);
+    }
+    let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
+        Some(root) => root,
+        None => return ApiError::internal(request_id).into_response(),
+    };
+    let root_path = root.resolved_path;
+    let relative_path = item.relative_path.clone();
+    let file_path = match tokio::task::spawn_blocking(move || {
+        let file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
+            .map_err(|error| error.to_string())?;
+        drop(file);
+        let path = FilePath::new(&root_path).join(&relative_path);
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("stat media file: {error}"))?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err("media file is not a regular file".to_string());
+        }
+        Ok(path)
+    })
+    .await
+    {
+        Ok(Ok(path)) => path,
+        Ok(Err(error)) => {
+            log_event(
+                "musicbrainz_file_unavailable",
+                &request_id,
+                json!({ "error": error, "itemId": item.id }),
+            );
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "music_file_unavailable",
+                "The selected audio changed or can no longer be read safely. Scan the library again.",
+                request_id,
+            )
+            .into_response();
+        }
+        Err(error) => {
+            log_event(
+                "musicbrainz_file_task_failed",
+                &request_id,
+                json!({ "error": error.to_string(), "itemId": item.id }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let candidates = match client
+        .lookup_music(&file_path, artist.as_deref(), title.as_deref(), mode)
+        .await
+    {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            log_event(
+                "musicbrainz_lookup_failed",
+                &request_id,
+                json!({ "error": error.to_string(), "itemId": item.id }),
+            );
+            return ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "musicbrainz_lookup_failed",
+                "MusicBrainz could not complete the metadata lookup.",
+                request_id,
+            )
+            .into_response();
+        }
+    };
+    Json(json!({
+        "candidates": candidates,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+fn music_title_from_relative_path(relative_path: &str) -> Option<String> {
+    let filename = relative_path
+        .rsplit_once('/')
+        .map(|(_, filename)| filename)
+        .unwrap_or(relative_path);
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename);
+    let stem = stem.trim();
+    (!stem.is_empty() && stem.len() <= 500).then(|| stem.to_string())
+}
+
+fn filename_metadata(item: &CatalogItem) -> Value {
+    let filename = item
+        .relative_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&item.relative_path);
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename);
+    let mut title = stem.to_string();
+    let mut year = Value::Null;
+    let mut media_type = match item.media_kind.as_str() {
+        "music" => "music",
+        "audiobook" => "audiobook",
+        "book" => "book",
+        _ => "movie",
+    };
+    let mut series = Value::Null;
+    let mut season = Value::Null;
+    let mut episode = Value::Null;
+    let mut episode_title = Value::Null;
+    if item.media_kind == "video" {
+        if let Some((marker_start, marker_end)) = split_episode_marker(stem) {
+            media_type = "episode";
+            let marker = &stem[marker_start..marker_end];
+            let digits = marker.trim_start_matches(['S', 's']);
+            if let Some((season_text, episode_text)) = digits.split_once(['E', 'e']) {
+                season = season_text
+                    .parse::<u32>()
+                    .map(Value::from)
+                    .unwrap_or(Value::Null);
+                episode = episode_text
+                    .parse::<u32>()
+                    .map(Value::from)
+                    .unwrap_or(Value::Null);
+            }
+            let prefix = stem[..marker_start].trim().trim_end_matches('-').trim();
+            let suffix_title = stem[marker_end..].trim().trim_start_matches('-').trim();
+            let (series_title, parsed_year) = strip_trailing_year(prefix);
+            series = Value::String(series_title.to_string());
+            title = if suffix_title.is_empty() {
+                series_title.to_string()
+            } else {
+                suffix_title.to_string()
+            };
+            episode_title = Value::String(title.clone());
+            year = parsed_year.map(Value::from).unwrap_or(Value::Null);
+        } else {
+            let (parsed_title, parsed_year) = strip_trailing_year(stem);
+            title = parsed_title.to_string();
+            year = parsed_year.map(Value::from).unwrap_or(Value::Null);
+        }
+    }
+    json!({
+        "mediaType": media_type, "title": title, "year": year, "series": series,
+        "season": season, "episode": episode, "episodeTitle": episode_title,
+        "description": null, "publisher": null, "language": null, "genres": [],
+        "writers": [], "premiereDate": null, "runtimeMinutes": null,
+        "officialRating": null, "communityRating": null, "providerIds": {},
+        "videoStreams": [], "audioStreams": [], "sources": ["filename"]
+    })
+}
+
+fn split_episode_marker(stem: &str) -> Option<(usize, usize)> {
+    let bytes = stem.as_bytes();
+    for index in 0..bytes.len() {
+        if !matches!(bytes[index], b'S' | b's') {
+            continue;
+        }
+        let season_start = index + 1;
+        let mut cursor = season_start;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() && cursor - season_start < 3 {
+            cursor += 1;
+        }
+        if cursor == season_start || cursor >= bytes.len() || !matches!(bytes[cursor], b'E' | b'e')
+        {
+            continue;
+        }
+        cursor += 1;
+        let episode_start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() && cursor - episode_start < 4 {
+            cursor += 1;
+        }
+        if cursor > episode_start {
+            return Some((index, cursor));
+        }
+    }
+    None
+}
+
+fn strip_trailing_year(value: &str) -> (&str, Option<u16>) {
+    if value.len() >= 7 && value.ends_with(')') {
+        let start = value.len() - 6;
+        if value.as_bytes().get(start) == Some(&b'(') {
+            if let Ok(year) = value[start + 1..value.len() - 1].parse::<u16>() {
+                return (value[..start].trim(), Some(year));
+            }
+        }
+    }
+    (value.trim(), None)
+}
+
+async fn cached_jellyfin_metadata(cache_file: &FilePath, item: &CatalogItem) -> Option<Value> {
+    const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+    const MAX_CACHE_AGE_SECONDS: u64 = 2 * 60 * 60;
+    let metadata = tokio::fs::symlink_metadata(cache_file).await.ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_CACHE_BYTES
+    {
+        return None;
+    }
+    if SystemTime::now()
+        .duration_since(metadata.modified().ok()?)
+        .ok()?
+        .as_secs()
+        > MAX_CACHE_AGE_SECONDS
+    {
+        return None;
+    }
+    let bytes = tokio::fs::read(cache_file).await.ok()?;
+    let cache: Value = serde_json::from_slice(&bytes).ok()?;
+    if cache.get("schemaVersion")?.as_u64()? != 1 {
+        return None;
+    }
+    cache
+        .get("entries")?
+        .as_array()?
+        .iter()
+        .find(|entry| {
+            entry.get("rootId").and_then(Value::as_str) == Some(item.root_id.as_str())
+                && entry.get("relativePath").and_then(Value::as_str)
+                    == Some(item.relative_path.as_str())
+                && entry.get("ownerUsername").and_then(Value::as_str)
+                    == item.owner_username.as_deref()
+        })
+        .cloned()
+}
+
+fn merge_metadata(base: &mut Value, entry: Value) {
+    let Some(base) = base.as_object_mut() else {
+        return;
+    };
+    let Some(entry) = entry.as_object() else {
+        return;
+    };
+    const FIELDS: &[&str] = &[
+        "mediaType",
+        "title",
+        "year",
+        "series",
+        "season",
+        "episode",
+        "episodeTitle",
+        "description",
+        "publisher",
+        "language",
+        "genres",
+        "writers",
+        "premiereDate",
+        "runtimeMinutes",
+        "officialRating",
+        "communityRating",
+        "providerIds",
+        "videoStreams",
+        "audioStreams",
+    ];
+    for field in FIELDS {
+        if let Some(value) = entry.get(*field).filter(|value| !value.is_null()) {
+            base.insert((*field).to_string(), value.clone());
+        }
+    }
+    base.insert("sources".to_string(), json!(["filename", "jellyfin"]));
 }
 
 async fn index(State(state): State<Arc<AppState>>) -> Response {
@@ -928,6 +1367,21 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
             "subtitle-search".to_string(),
             "subtitle-download".to_string(),
         ],
+    });
+    let mut musicbrainz_capabilities = vec!["musicbrainz-lookup".to_string()];
+    if state
+        .config
+        .acoustid_api_key_file
+        .as_ref()
+        .is_some_and(|path| path.is_file())
+    {
+        musicbrainz_capabilities.push("musicbrainz-fingerprint".to_string());
+    }
+    integrations.push(crate::config::IntegrationCapability {
+        id: "musicbrainz".to_string(),
+        label: "MusicBrainz Picard".to_string(),
+        available: true,
+        capabilities: musicbrainz_capabilities,
     });
     Json(json!({
         "schemaVersion": 1,
@@ -1272,7 +1726,7 @@ async fn item_image(
         Some(item.clone())
     } else {
         let owner = item.owner_username.as_deref();
-        let siblings = match catalog.list_items(&item.root_id, owner, 500) {
+        let artwork_items = match catalog.list_artwork(&item.root_id, owner) {
             Ok(items) => items,
             Err(error) => {
                 log_event(
@@ -1283,7 +1737,7 @@ async fn item_image(
                 return ApiError::internal(request_id).into_response();
             }
         };
-        preferred_artwork(&siblings, &item.relative_path)
+        preferred_artwork(&artwork_items, &item.relative_path)
     };
     let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
         Some(root) => root,
@@ -1338,7 +1792,7 @@ async fn item_image(
         StatusCode::OK,
         [
             (CONTENT_TYPE, body.content_type),
-            (CACHE_CONTROL, "private, max-age=300"),
+            (CACHE_CONTROL, "private, max-age=300".to_string()),
         ],
         body.bytes,
     )
@@ -1824,8 +2278,7 @@ fn video_search_title(relative_path: &str) -> &str {
 fn open_subtitles_client(
     config: &AppConfig,
     request_id: &str,
-) -> Result<OpenSubtitlesClient, ApiError> {
-    let path = config
+) -> Result<OpenSubtitlesClient, ApiError> {    let path = config
         .open_subtitles_credentials_file
         .as_deref()
         .filter(|path| path.is_file())
@@ -1853,6 +2306,62 @@ fn open_subtitles_client(
     OpenSubtitlesClient::new(credentials).map_err(|error| {
         log_event(
             "subtitle_provider_client_failed",
+            request_id,
+            json!({ "error": error.to_string() }),
+        );
+        ApiError::internal(request_id.to_string())
+    })
+}
+
+fn musicbrainz_client(
+    config: &AppConfig,
+    request_id: &str,
+) -> Result<MusicBrainzClient, ApiError> {
+    let acoustid_api_key = match config
+        .acoustid_api_key_file
+        .as_deref()
+        .filter(|path| path.is_file())
+    {
+        Some(path) => match AcoustidCredentials::from_file(path) {
+            Ok(credentials) => Some(credentials.acoustid_api_key),
+            Err(error) => {
+                log_event(
+                    "musicbrainz_credentials_invalid",
+                    request_id,
+                    json!({ "error": error.to_string() }),
+                );
+                return Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "musicbrainz_lookup_unconfigured",
+                    "The AcoustID API key is not valid on this server.",
+                    request_id.to_string(),
+                ));
+            }
+        },
+        None => None,
+    };
+    let fpcalc_path = config
+        .fpcalc_path
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("fpcalc"));
+    let client_config = MusicBrainzClientConfig {
+        acoustid_api_key,
+        fpcalc_path,
+        musicbrainz_api_base: config
+            .musicbrainz_api_base
+            .clone()
+            .unwrap_or_else(|| MUSICBRAINZ_API_BASE.to_string()),
+        acoustid_api_base: config
+            .acoustid_api_base
+            .clone()
+            .unwrap_or_else(|| ACOUSTID_API_BASE.to_string()),
+        request_gap: std::time::Duration::from_millis(config.musicbrainz_request_gap_ms),
+        user_agent: "NixHomeServer Media Manager/0.1 (home server; music metadata lookup)"
+            .to_string(),
+    };
+    MusicBrainzClient::new(client_config).map_err(|error| {
+        log_event(
+            "musicbrainz_client_failed",
             request_id,
             json!({ "error": error.to_string() }),
         );
@@ -1931,6 +2440,26 @@ fn subtitle_sidecar_path(
 }
 
 fn validate_metadata_request(request: &MetadataSidecarRequest) -> Result<(), ApiError> {
+    if request.media_type.as_deref().is_some_and(|media_type| {
+        !["movie", "episode", "music", "audiobook", "book"].contains(&media_type)
+    }) {
+        return Err(ApiError::without_request_id(
+            StatusCode::BAD_REQUEST,
+            "metadata_type_invalid",
+            "Choose a supported metadata type.",
+        ));
+    }
+    if request.media_type.as_deref() == Some("episode")
+        && (request.series.as_deref().is_none_or(str::is_empty)
+            || request.season.is_none()
+            || request.episode.is_none())
+    {
+        return Err(ApiError::without_request_id(
+            StatusCode::BAD_REQUEST,
+            "metadata_episode_fields_required",
+            "TV episodes require series, season, and episode values.",
+        ));
+    }
     if !valid_metadata_value(&request.title, 500) || request.title.trim().is_empty() {
         return Err(ApiError::without_request_id(
             StatusCode::BAD_REQUEST,
@@ -1946,6 +2475,9 @@ fn validate_metadata_request(request: &MetadataSidecarRequest) -> Result<(), Api
         (request.volume_number.as_deref(), 32usize),
         (request.isbn.as_deref(), 64usize),
         (request.language.as_deref(), 15usize),
+        (request.episode_title.as_deref(), 500usize),
+        (request.premiere_date.as_deref(), 10usize),
+        (request.official_rating.as_deref(), 64usize),
     ];
     if scalar_fields
         .iter()
@@ -1953,11 +2485,14 @@ fn validate_metadata_request(request: &MetadataSidecarRequest) -> Result<(), Api
         || request.authors.len() > 32
         || request.narrators.len() > 32
         || request.genres.len() > 64
+        || request.writers.len() > 64
+        || request.provider_ids.len() > 32
         || request
             .authors
             .iter()
             .chain(&request.narrators)
             .chain(&request.genres)
+            .chain(&request.writers)
             .any(|value| !valid_metadata_value(value, 500) || value.trim().is_empty())
     {
         return Err(ApiError::without_request_id(
@@ -1971,6 +2506,27 @@ fn validate_metadata_request(request: &MetadataSidecarRequest) -> Result<(), Api
             StatusCode::BAD_REQUEST,
             "metadata_year_invalid",
             "The release year must be omitted when unknown, or be between 1 and 2100.",
+        ));
+    }
+    if request
+        .runtime_minutes
+        .is_some_and(|runtime| runtime == 0 || runtime > 100_000)
+        || request
+            .community_rating
+            .is_some_and(|rating| !rating.is_finite() || !(0.0..=10.0).contains(&rating))
+        || request.season.is_some_and(|season| season > 10_000)
+        || request
+            .episode
+            .is_some_and(|episode| episode == 0 || episode > 100_000)
+        || request
+            .provider_ids
+            .iter()
+            .any(|(key, value)| !valid_metadata_value(key, 64) || !valid_metadata_value(value, 256))
+    {
+        return Err(ApiError::without_request_id(
+            StatusCode::BAD_REQUEST,
+            "metadata_fields_invalid",
+            "One or more typed metadata fields are outside the supported range.",
         ));
     }
     if request.language.as_deref().is_some_and(|language| {
@@ -2015,6 +2571,15 @@ fn metadata_sidecar(
     item: &CatalogItem,
     request: &MetadataSidecarRequest,
 ) -> (String, &'static str, String) {
+    let media_type = request
+        .media_type
+        .as_deref()
+        .unwrap_or(match item.media_kind.as_str() {
+            "music" => "music",
+            "audiobook" => "audiobook",
+            "book" => "book",
+            _ => "movie",
+        });
     let stem = item
         .relative_path
         .rsplit_once('.')
@@ -2022,7 +2587,11 @@ fn metadata_sidecar(
         .unwrap_or(&item.relative_path);
     if item.media_kind == "video" || item.media_kind == "music" {
         let root = if item.media_kind == "video" {
-            "movie"
+            if media_type == "episode" {
+                "episodedetails"
+            } else {
+                "movie"
+            }
         } else {
             "album"
         };
@@ -2035,7 +2604,10 @@ fn metadata_sidecar(
                 .unwrap_or_else(|| "album.nfo".to_string())
         };
         let mut xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<{root}>\n");
-        xml.push_str(&xml_element("title", Some(&request.title)));
+        xml.push_str(&xml_element(
+            "title",
+            request.episode_title.as_deref().or(Some(&request.title)),
+        ));
         xml.push_str(&xml_element("sorttitle", request.sort_title.as_deref()));
         if let Some(year) = request.year {
             xml.push_str(&format!("  <year>{year}</year>\n"));
@@ -2050,11 +2622,38 @@ fn metadata_sidecar(
         ));
         xml.push_str(&xml_element("studio", request.publisher.as_deref()));
         xml.push_str(&xml_element("language", request.language.as_deref()));
+        if media_type == "episode" {
+            xml.push_str(&xml_element("showtitle", request.series.as_deref()));
+            if let Some(season) = request.season {
+                xml.push_str(&format!("  <season>{season}</season>\n"));
+            }
+            if let Some(episode) = request.episode {
+                xml.push_str(&format!("  <episode>{episode}</episode>\n"));
+            }
+        }
+        xml.push_str(&xml_element("premiered", request.premiere_date.as_deref()));
+        xml.push_str(&xml_element("mpaa", request.official_rating.as_deref()));
+        if let Some(runtime) = request.runtime_minutes {
+            xml.push_str(&format!("  <runtime>{runtime}</runtime>\n"));
+        }
+        if let Some(rating) = request.community_rating {
+            xml.push_str(&format!("  <rating>{rating}</rating>\n"));
+        }
         for author in &request.authors {
             xml.push_str(&xml_element("artist", Some(author)));
         }
         for genre in &request.genres {
             xml.push_str(&xml_element("genre", Some(genre)));
+        }
+        for writer in &request.writers {
+            xml.push_str(&xml_element("writer", Some(writer)));
+        }
+        for (provider, id) in &request.provider_ids {
+            xml.push_str(&format!(
+                "  <uniqueid type=\"{}\">{}</uniqueid>\n",
+                xml_text(provider),
+                xml_text(id)
+            ));
         }
         xml.push_str(&format!("</{root}>\n"));
         return (destination, "nfo", xml);

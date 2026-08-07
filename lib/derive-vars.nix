@@ -303,6 +303,7 @@ rec {
     repositoryLimitBytes = configuredOffsiteBackup.repositoryLimitBytes or (19 * 1024 * 1024 * 1024);
   };
   externalUsbMountRoot = "/mnt/external-usb";
+  externalUsbViewMount = "/mnt/usb-access-view";
   staleReferenceCleanup = settings.staleReferenceCleanup;
   fileAccessPosixGids = backupAccessModel.fileAccessPosixGids;
   filesSftpUsers = kanidmAppUsers; # Kanidm users with POSIX accounts and restricted files SFTP chroots.

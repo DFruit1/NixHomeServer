@@ -2,6 +2,7 @@ import {
   $,
   component$,
   type QRL,
+  useOnDocument,
   useSignal,
   useStore,
   useTask$,
@@ -14,7 +15,6 @@ export type View =
   | "library"
   | "conversions"
   | "subtitles"
-  | "metadata"
   | "refresh";
 
 const VIEWS = new Set<View>([
@@ -22,7 +22,6 @@ const VIEWS = new Set<View>([
   "library",
   "conversions",
   "subtitles",
-  "metadata",
   "refresh",
 ]);
 
@@ -139,6 +138,37 @@ interface CatalogItem {
   modifiedNs: number;
 }
 
+export interface TvEpisodeFields {
+  title: string;
+  year: string;
+  season: string;
+  episode: string;
+  episodeTitle: string;
+}
+
+export function parseTvEpisodeFilename(
+  filename: string,
+): TvEpisodeFields | undefined {
+  const stem = filename.replace(/\.[^./]+$/, "");
+  const match = stem.match(
+    /^(.*?)\s*(?:-\s*)?[Ss]([0-9]{1,3})[Ee]([0-9]{1,4})(?:\s*-\s*|\s+)?(.*)$/,
+  );
+  if (!match) return undefined;
+
+  const series = match[1]
+    .trim()
+    .replace(/\s*-\s*$/, "")
+    .trim();
+  const seriesWithYear = series.match(/^(.*?)\s+\(([0-9]{4})\)$/);
+  return {
+    title: seriesWithYear?.[1].trim() ?? series,
+    year: seriesWithYear?.[2] ?? "",
+    season: match[2],
+    episode: match[3],
+    episodeTitle: match[4].trim().replace(/^-\s*/, ""),
+  };
+}
+
 interface Conversion {
   title?: string;
   mediaKind?: string;
@@ -225,7 +255,6 @@ const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "library", label: "Libraries", icon: "library" },
   { id: "conversions", label: "Conversions", icon: "disc" },
   { id: "subtitles", label: "Subtitles", icon: "captions" },
-  { id: "metadata", label: "Metadata", icon: "tag" },
   { id: "refresh", label: "App refresh", icon: "refresh" },
 ];
 
@@ -303,6 +332,8 @@ const Icon = component$<{ name: IconName; size?: number }>((props) => {
 
 export default component$((props: RootProps) => {
   const view = useSignal<View>(props.initialView ?? "overview");
+  const sidebarSide = useSignal<"left" | "right">("left");
+  const menuOpen = useSignal(false);
   const state = useStore<DashboardState>({
     roots: [],
     items: [],
@@ -324,6 +355,32 @@ export default component$((props: RootProps) => {
     planning: false,
     confirming: false,
   });
+
+  // eslint-disable-next-line qwik/no-use-visible-task -- sidebar preference is client-only
+  useVisibleTask$(() => {
+    if (typeof localStorage !== "undefined") {
+      const saved = localStorage.getItem("mm-sidebar-side");
+      if (saved === "right" || saved === "left") sidebarSide.value = saved;
+    }
+  });
+
+  const toggleSidebarSide = $(() => {
+    sidebarSide.value = sidebarSide.value === "left" ? "right" : "left";
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("mm-sidebar-side", sidebarSide.value);
+    }
+    menuOpen.value = false;
+  });
+
+  useOnDocument(
+    "click",
+    $((e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest(".sidebar-footer") && menuOpen.value) {
+        menuOpen.value = false;
+      }
+    }),
+  );
 
   useTask$(async () => {
     try {
@@ -373,19 +430,22 @@ export default component$((props: RootProps) => {
     const category = state.roots.find(
       (root) => root.id === item.rootId,
     )?.category;
-    state.editProfile = profileForCategory(category);
     const filename = item.relativePath.split("/").at(-1) ?? item.relativePath;
-    state.editTitle = filename
-      .replace(/\.[A-Za-z0-9]+$/, "")
-      .replace(/ \([0-9]{4}\)$/, "");
-    state.editYear = filename.match(/ \(([0-9]{4})\)(?:\.[^.]+)?$/)?.[1] ?? "";
+    const tvEpisode =
+      category === "videos" ? parseTvEpisodeFilename(filename) : undefined;
+    state.editProfile = tvEpisode ? "tv" : profileForCategory(category);
+    state.editTitle =
+      tvEpisode?.title ??
+      filename.replace(/\.[A-Za-z0-9]+$/, "").replace(/ \([0-9]{4}\)$/, "");
+    state.editYear =
+      tvEpisode?.year ??
+      filename.match(/ \(([0-9]{4})\)(?:\.[^.]+)?$/)?.[1] ??
+      "";
     state.editCreator = "";
     state.editCollection = "";
-    state.editSeason =
-      filename.match(/[Ss]([0-9]{1,3})[Ee][0-9]{1,4}/)?.[1] ?? "";
-    state.editEpisode =
-      filename.match(/[Ss][0-9]{1,3}[Ee]([0-9]{1,4})/)?.[1] ?? "";
-    state.editEpisodeTitle = "";
+    state.editSeason = tvEpisode?.season ?? "";
+    state.editEpisode = tvEpisode?.episode ?? "";
+    state.editEpisodeTitle = tvEpisode?.episodeTitle ?? "";
     state.editTrack =
       filename.match(/^(?:[0-9]+-)?([0-9]{1,3})\s+-\s+/)?.[1] ?? "";
     state.editDisc = filename.match(/^([0-9]+)-[0-9]{1,3}\s+-\s+/)?.[1] ?? "";
@@ -457,7 +517,12 @@ export default component$((props: RootProps) => {
 
   const currentConversions = state.conversions?.progress.conversions ?? [];
   return (
-    <div class="app-shell">
+    <div
+      class={{
+        "app-shell": true,
+        "sidebar-right": sidebarSide.value === "right",
+      }}
+    >
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark" aria-hidden="true">
@@ -487,8 +552,34 @@ export default component$((props: RootProps) => {
         </nav>
 
         <div class="sidebar-footer">
-          <div class="avatar" aria-hidden="true">
-            {(state.session?.username ?? "?").slice(0, 1).toUpperCase()}
+          <div style={{ position: "relative" }}>
+            <div
+              class="avatar"
+              role="button"
+              tabIndex={0}
+              aria-label="User menu"
+              onClick$={() => (menuOpen.value = !menuOpen.value)}
+              onKeyDown$={(e: KeyboardEvent) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  menuOpen.value = !menuOpen.value;
+                }
+              }}
+            >
+              {(state.session?.username ?? "?").slice(0, 1).toUpperCase()}
+            </div>
+            {menuOpen.value && (
+              <div class="user-menu">
+                <button
+                  type="button"
+                  class="user-menu-item"
+                  onClick$={toggleSidebarSide}
+                >
+                  {sidebarSide.value === "left"
+                    ? "Move sidebar to right"
+                    : "Move sidebar to left"}
+                </button>
+              </div>
+            )}
           </div>
           <div>
             <strong>{state.session?.username ?? "Loading…"}</strong>
@@ -502,9 +593,11 @@ export default component$((props: RootProps) => {
       </aside>
 
       <main class="main-content">
-        <header class="topbar">
-          <h1>{NAV_ITEMS.find((item) => item.id === view.value)?.label}</h1>
-        </header>
+        {view.value !== "library" && (
+          <header class="topbar">
+            <h1>{NAV_ITEMS.find((item) => item.id === view.value)?.label}</h1>
+          </header>
+        )}
 
         {state.error && (
           <div class="message error" role="alert">
@@ -529,42 +622,7 @@ export default component$((props: RootProps) => {
         {state.loading ? (
           <LoadingState />
         ) : view.value === "overview" ? (
-          <section class="page-grid overview" aria-label="Server overview">
-            <section class="panel wide-panel">
-              <div class="panel-heading">
-                <div>
-                  <h3>Registered media roots</h3>
-                </div>
-                <a class="text-button" href="?view=library">
-                  Browse libraries <Icon name="arrow" size={17} />
-                </a>
-              </div>
-              <div class="root-list compact">
-                {state.roots.slice(0, 5).map((root) => (
-                  <RootRow root={root} key={root.id} />
-                ))}
-              </div>
-            </section>
-            <section class="panel activity-panel">
-              <div class="panel-heading">
-                <div>
-                  <h3>DVD ISO queue</h3>
-                </div>
-                <span
-                  class={{
-                    "status-badge": true,
-                    live: currentConversions.length > 0,
-                  }}
-                >
-                  {currentConversions.length > 0 ? "Working" : "Idle"}
-                </span>
-              </div>
-              <ConversionList
-                conversions={currentConversions}
-                available={state.conversions?.available ?? false}
-              />
-            </section>
-          </section>
+          <OverviewSection state={state} />
         ) : view.value === "library" ? (
           <LibraryView
             state={state}
@@ -580,17 +638,101 @@ export default component$((props: RootProps) => {
             session={state.session}
             status={state.status}
           />
-        ) : view.value === "metadata" ? (
-          <MetadataView
-            roots={state.roots}
-            session={state.session}
-            status={state.status}
-          />
         ) : (
           <RefreshView integrations={state.status?.integrations ?? []} />
         )}
       </main>
     </div>
+  );
+});
+
+const OverviewSection = component$<{
+  state: DashboardState;
+}>((props) => {
+  const videoRoots = props.state.roots.filter(
+    (root) => root.category === "videos",
+  );
+  const musicRoots = props.state.roots.filter(
+    (root) => root.category === "music",
+  );
+  const audiobookRoots = props.state.roots.filter(
+    (root) => root.category === "audiobooks",
+  );
+  const bookRoots = props.state.roots.filter(
+    (root) => root.category === "books",
+  );
+
+  const buildOverviewItems = (roots: MediaRoot[]): OverviewItem[] => {
+    const items: OverviewItem[] = [];
+    for (const root of roots) {
+      const rootItems = props.state.items.filter(
+        (item) => item.rootId === root.id,
+      );
+      for (const item of rootItems.slice(0, 12)) {
+        const filename = item.relativePath.split("/").at(-1) ?? "";
+        const stem = filename.replace(/\.[^.]+$/, "");
+        const title = stem
+          .replace(/ \(([0-9]{4})\)$/, "")
+          .replace(/ - S[0-9]+E[0-9]+.*$/, "");
+        const yearMatch = filename.match(/ \(([0-9]{4})\)$/);
+        const subtitle = yearMatch ? yearMatch[1] : root.label;
+        items.push({
+          id: item.id,
+          title,
+          subtitle,
+          imageId: item.id,
+          rootId: item.rootId,
+        });
+      }
+    }
+    return items;
+  };
+
+  const videoItems = buildOverviewItems(videoRoots);
+  const musicItems = buildOverviewItems(musicRoots);
+  const audiobookItems = buildOverviewItems(audiobookRoots);
+  const bookItems = buildOverviewItems(bookRoots);
+
+  return (
+    <section class="overview-carousels" aria-label="Media library overview">
+      {videoItems.length > 0 && (
+        <CategoryCarousel
+          title="Videos"
+          items={videoItems}
+          href="?view=library"
+        />
+      )}
+      {musicItems.length > 0 && (
+        <CategoryCarousel
+          title="Music"
+          items={musicItems}
+          href="?view=library"
+        />
+      )}
+      {audiobookItems.length > 0 && (
+        <CategoryCarousel
+          title="Audiobooks"
+          items={audiobookItems}
+          href="?view=library"
+        />
+      )}
+      {bookItems.length > 0 && (
+        <CategoryCarousel
+          title="Books"
+          items={bookItems}
+          href="?view=library"
+        />
+      )}
+      {videoItems.length === 0 &&
+        musicItems.length === 0 &&
+        audiobookItems.length === 0 &&
+        bookItems.length === 0 && (
+          <EmptyState
+            title="No media found"
+            detail="Add media roots and scan to see your library here."
+          />
+        )}
+    </section>
   );
 });
 
@@ -622,6 +764,141 @@ function rootDisplayName(root: MediaRoot): string {
     ? root.category.charAt(0).toUpperCase() + root.category.slice(1)
     : root.label;
 }
+
+interface OverviewItem {
+  id: string;
+  title: string;
+  subtitle: string;
+  imageId: string;
+  rootId: string;
+}
+
+const CategoryCarousel = component$<{
+  title: string;
+  items: OverviewItem[];
+  href: string;
+}>((props) => {
+  return (
+    <section class="panel category-carousel">
+      <div class="panel-heading">
+        <div>
+          <h3>{props.title}</h3>
+        </div>
+        <a class="text-button" href={props.href}>
+          View all <Icon name="arrow" size={17} />
+        </a>
+      </div>
+      <div class="carousel-scroll-region">
+        {props.items.length === 0 ? (
+          <div class="carousel-empty">
+            <span>No items in this category</span>
+          </div>
+        ) : (
+          <div class="carousel-track">
+            {props.items.map((item) => (
+              <a
+                class="carousel-item"
+                href={`?view=library&root=${encodeURIComponent(item.rootId)}`}
+                key={item.id}
+              >
+                <div class="carousel-item-image">
+                  {item.imageId ? (
+                    <img
+                      src={`/api/v1/items/${encodeURIComponent(item.imageId)}/image`}
+                      alt={item.title}
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div class="carousel-item-placeholder">
+                      <Icon name="image" size={24} />
+                    </div>
+                  )}
+                </div>
+                <div class="carousel-item-info">
+                  <strong>{item.title}</strong>
+                  <small>{item.subtitle}</small>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+});
+
+const SubtitleCard = component$<{
+  items: CatalogItem[];
+  selectedItemId: string;
+}>((props) => {
+  const selectedItem = props.items.find(
+    (item) => item.id === props.selectedItemId,
+  );
+  if (!selectedItem || selectedItem.mediaKind !== "video") {
+    return null;
+  }
+  const selectedItemPath = selectedItem.relativePath;
+  const selectedDir = selectedItemPath.substring(
+    0,
+    selectedItemPath.lastIndexOf("/"),
+  );
+  const videoStem =
+    selectedItemPath
+      .split("/")
+      .at(-1)
+      ?.replace(/\.[^.]+$/, "") ?? "";
+  const subtitles = props.items.filter((item) => {
+    if (item.mediaKind !== "subtitle") return false;
+    const itemDir = item.relativePath.substring(
+      0,
+      item.relativePath.lastIndexOf("/"),
+    );
+    if (itemDir !== selectedDir) return false;
+    const subtitleName = item.relativePath.split("/").at(-1) ?? "";
+    const subtitleStem = subtitleName.replace(/\.[^.]+$/, "");
+    return (
+      subtitleStem === videoStem ||
+      subtitleStem.startsWith(`${videoStem}.`) ||
+      videoStem.startsWith(`${subtitleStem}.`)
+    );
+  });
+  return (
+    <section class="panel subtitle-card">
+      <div class="panel-heading">
+        <div>
+          <h3>Subtitles</h3>
+        </div>
+      </div>
+      <div class="subtitle-card-body">
+        {subtitles.length === 0 ? (
+          <div class="subtitle-empty">
+            <Icon name="captions" size={24} />
+            <span>No subtitles found for this file</span>
+          </div>
+        ) : (
+          <ul class="subtitle-list">
+            {subtitles.map((sub) => {
+              const filename = sub.relativePath.split("/").at(-1) ?? "";
+              const ext = filename.split(".").at(-1)?.toUpperCase() ?? "";
+              const langMatch = filename.match(
+                /\.(?:en|es|fr|de|it|pt|ja|ko|zh|ru|ar|hi)\b/i,
+              );
+              const lang = langMatch
+                ? langMatch[0].slice(1).toUpperCase()
+                : ext;
+              return (
+                <li class="subtitle-item" key={sub.id}>
+                  <span class="subtitle-lang">{lang}</span>
+                  <span class="subtitle-filename">{filename}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+});
 
 interface TreeNode {
   name: string;
@@ -700,7 +977,6 @@ function artworkCandidateId(
 const MediaImage = component$<{
   imageId: string;
   title: string;
-  subtitle: string;
 }>(
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   (props) => {
@@ -723,10 +999,6 @@ const MediaImage = component$<{
             <Icon name="image" size={30} />
           </div>
         )}
-        <figcaption>
-          <strong>{props.title}</strong>
-          {props.subtitle && <small>{props.subtitle}</small>}
-        </figcaption>
       </figure>
     );
   },
@@ -748,9 +1020,6 @@ const RootChoice = component$<{
     <span>
       <strong>{rootDisplayName(props.root)}</strong>
     </span>
-    <span
-      class={{ "availability-dot": true, available: props.root.available }}
-    />
   </a>
 ));
 
@@ -795,9 +1064,6 @@ const LibraryView = component$<{
     (browser.selectedFolder
       ? folderDisplayName(browser.selectedFolder.split("/").at(-1) ?? "")
       : "");
-  const imageSubtitle = selectedItem
-    ? selectedItem.relativePath
-    : browser.selectedFolder;
   return (
     <section class="library-layout">
       <aside class="panel root-picker">
@@ -827,305 +1093,92 @@ const LibraryView = component$<{
             </div>
           )}
         </div>
-        {(selectedItem || browser.selectedFolder) && (
-          <div class="root-picker-image">
-            <MediaImage
-              imageId={artworkCandidateId(
-                props.state.items,
-                props.state.selectedItemId,
-                browser.selectedFolder,
-              )}
-              title={imageTitle}
-              subtitle={imageSubtitle}
-            />
-          </div>
-        )}
       </aside>
       <section class="panel catalog-panel">
-        {!selected ? (
-          <EmptyState
-            title="Choose a media root"
-            detail="Select a registered location to inspect its catalog."
-          />
-        ) : props.state.items.length === 0 ? (
-          <EmptyState
-            title="No supported media files found"
-            detail="This directory has been cataloged but does not currently contain supported media files."
-          />
-        ) : (
-          <>
-            {folders.length > 1 && (
-              <div
-                class="folder-filter"
-                role="group"
-                aria-label="Show only one folder"
-              >
-                {folders.map((folder) => (
-                  <button
-                    class={{
-                      "folder-filter-button": true,
-                      active: browser.folderFilter === folder,
-                    }}
-                    type="button"
-                    key={folder}
-                    aria-pressed={browser.folderFilter === folder}
-                    onClick$={() => {
-                      browser.folderFilter =
-                        browser.folderFilter === folder ? "" : folder;
-                    }}
-                  >
-                    {folderDisplayName(folder)}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div
-              class="item-tree"
-              role="tree"
-              aria-label={`${selected.label} items`}
-            >
-              {tree.map((node) => (
-                <TreeBranch
-                  node={node}
-                  depth={0}
-                  browser={browser}
-                  selectedItemId={props.state.selectedItemId}
-                  selectedFolder={browser.selectedFolder}
-                  selectItem$={props.selectItem$}
-                  selectFolder$={selectFolder$}
-                  key={node.path}
-                />
-              ))}
-            </div>
-          </>
-        )}
-        {props.state.session?.canEdit && props.state.selectedItemId && (
-          <div class="rename-workflow">
-            <div class="rename-heading">
-              <div>
-                <h4>Preview a convention-aware path</h4>
-              </div>
-              <button
-                class="close-button"
-                type="button"
-                aria-label="Close rename editor"
-                onClick$={() => {
-                  props.state.selectedItemId = "";
-                  props.state.preview = undefined;
-                }}
-              >
-                ×
-              </button>
-            </div>
-            <div class="rename-fields">
-              <label class="profile-field">
-                <span>Media profile</span>
-                <select
-                  value={props.state.editProfile}
-                  onInput$={(_, input) => {
-                    props.state.editProfile = input.value as NamingProfile;
-                    props.state.preview = undefined;
-                  }}
+        <div class="catalog-scroll-region">
+          {!selected ? (
+            <EmptyState
+              title="Choose a media root"
+              detail="Select a registered location to inspect its catalog."
+            />
+          ) : props.state.items.length === 0 ? (
+            <EmptyState
+              title="No supported media files found"
+              detail="This directory has been cataloged but does not currently contain supported media files."
+            />
+          ) : (
+            <>
+              {folders.length > 1 && (
+                <div
+                  class="folder-filter"
+                  role="group"
+                  aria-label="Show only one folder"
                 >
-                  {profilesForCategory(selected?.category).map((profile) => (
-                    <option value={profile.id} key={profile.id}>
-                      {profile.label}
-                    </option>
+                  {folders.map((folder) => (
+                    <button
+                      class={{
+                        "folder-filter-button": true,
+                        active: browser.folderFilter === folder,
+                      }}
+                      type="button"
+                      key={folder}
+                      aria-pressed={browser.folderFilter === folder}
+                      onClick$={() => {
+                        browser.folderFilter =
+                          browser.folderFilter === folder ? "" : folder;
+                      }}
+                    >
+                      {folderDisplayName(folder)}
+                    </button>
                   ))}
-                </select>
-              </label>
-              <label class="title-field">
-                <span>Title</span>
-                <input
-                  value={props.state.editTitle}
-                  onInput$={(_, input) => (props.state.editTitle = input.value)}
-                  autocomplete="off"
-                />
-              </label>
-              <label class="year-field">
-                <span>
-                  Release year <small>optional</small>
-                </span>
-                <input
-                  inputMode="numeric"
-                  maxLength={4}
-                  placeholder="Unknown"
-                  value={props.state.editYear}
-                  onInput$={(_, input) =>
-                    (props.state.editYear = input.value
-                      .replace(/\D/g, "")
-                      .slice(0, 4))
-                  }
-                />
-              </label>
-              {props.state.editProfile === "tv" && (
-                <>
-                  <label class="number-field">
-                    <span>Season</span>
-                    <input
-                      inputMode="numeric"
-                      maxLength={3}
-                      placeholder="1"
-                      value={props.state.editSeason}
-                      onInput$={(_, input) =>
-                        (props.state.editSeason = numericValue(input.value, 3))
-                      }
-                    />
-                  </label>
-                  <label class="number-field">
-                    <span>Episode</span>
-                    <input
-                      inputMode="numeric"
-                      maxLength={4}
-                      placeholder="1"
-                      value={props.state.editEpisode}
-                      onInput$={(_, input) =>
-                        (props.state.editEpisode = numericValue(input.value, 4))
-                      }
-                    />
-                  </label>
-                  <label class="detail-field">
-                    <span>
-                      Episode title <small>optional</small>
-                    </span>
-                    <input
-                      value={props.state.editEpisodeTitle}
-                      onInput$={(_, input) =>
-                        (props.state.editEpisodeTitle = input.value)
-                      }
-                      autocomplete="off"
-                    />
-                  </label>
-                </>
+                </div>
               )}
-              {props.state.editProfile === "music" && (
-                <>
-                  <label>
-                    <span>Artist</span>
-                    <input
-                      value={props.state.editCreator}
-                      onInput$={(_, input) =>
-                        (props.state.editCreator = input.value)
-                      }
-                      autocomplete="off"
-                    />
-                  </label>
-                  <label>
-                    <span>Album</span>
-                    <input
-                      value={props.state.editCollection}
-                      onInput$={(_, input) =>
-                        (props.state.editCollection = input.value)
-                      }
-                      autocomplete="off"
-                    />
-                  </label>
-                  <label class="number-field">
-                    <span>Track</span>
-                    <input
-                      inputMode="numeric"
-                      maxLength={3}
-                      value={props.state.editTrack}
-                      onInput$={(_, input) =>
-                        (props.state.editTrack = numericValue(input.value, 3))
-                      }
-                    />
-                  </label>
-                  <label class="number-field">
-                    <span>
-                      Disc <small>optional</small>
-                    </span>
-                    <input
-                      inputMode="numeric"
-                      maxLength={2}
-                      value={props.state.editDisc}
-                      onInput$={(_, input) =>
-                        (props.state.editDisc = numericValue(input.value, 2))
-                      }
-                    />
-                  </label>
-                </>
-              )}
-              {["audiobook", "book"].includes(props.state.editProfile) && (
-                <>
-                  <label>
-                    <span>Author</span>
-                    <input
-                      value={props.state.editCreator}
-                      onInput$={(_, input) =>
-                        (props.state.editCreator = input.value)
-                      }
-                      autocomplete="off"
-                    />
-                  </label>
-                  <label>
-                    <span>
-                      Series <small>optional</small>
-                    </span>
-                    <input
-                      value={props.state.editCollection}
-                      onInput$={(_, input) =>
-                        (props.state.editCollection = input.value)
-                      }
-                      autocomplete="off"
-                    />
-                  </label>
-                </>
-              )}
-              <p class="organization-note">
-                Folder names are constructed from these fields. Unknown years
-                stay omitted; no destination path is accepted from the browser.
-              </p>
-              <button
-                class="secondary-button rename-preview-button"
-                type="button"
-                disabled={props.state.planning || !renameReady(props.state)}
-                onClick$={props.previewRename$}
+              <div
+                class="item-tree"
+                role="tree"
+                aria-label={`${selected.label} items`}
               >
-                <Icon name="scan" size={18} />
-                {props.state.planning ? "Preparing…" : "Preview organization"}
-              </button>
-            </div>
-            {props.state.preview && (
-              <div class="plan-preview">
-                <div class="path-change">
-                  <span>
-                    {props.state.preview.actions[0]?.sourceRelativePath}
-                  </span>
-                  <Icon name="arrow" size={17} />
-                  <strong>
-                    {props.state.preview.actions[0]?.destinationRelativePath}
-                  </strong>
-                </div>
-                {props.state.preview.warnings.map((warning) => (
-                  <p class="plan-warning" key={warning}>
-                    <Icon name="alert" size={16} />
-                    {warning}
-                  </p>
+                {tree.map((node) => (
+                  <TreeBranch
+                    node={node}
+                    depth={0}
+                    browser={browser}
+                    selectedItemId={props.state.selectedItemId}
+                    selectedFolder={browser.selectedFolder}
+                    selectItem$={props.selectItem$}
+                    selectFolder$={selectFolder$}
+                    key={node.path}
+                  />
                 ))}
-                <div class="plan-actions">
-                  <span>
-                    Preview expires in 30 minutes and is bound to the current
-                    file fingerprint.
-                  </span>
-                  <button
-                    class="primary-button"
-                    type="button"
-                    disabled={
-                      props.state.status?.mutationMode !== "enabled" ||
-                      props.state.confirming
-                    }
-                    onClick$={props.confirmRename$}
-                  >
-                    <Icon name="check" size={18} />
-                    {props.state.confirming ? "Queuing…" : "Confirm exact plan"}
-                  </button>
-                </div>
               </div>
-            )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </section>
+      <SubtitleCard
+        items={props.state.items}
+        selectedItemId={props.state.selectedItemId}
+      />
+      {(selectedItem || browser.selectedFolder) && (
+        <div class="root-picker-image">
+          <MediaImage
+            imageId={artworkCandidateId(
+              props.state.items,
+              props.state.selectedItemId,
+              browser.selectedFolder,
+            )}
+            title={imageTitle}
+          />
+        </div>
+      )}
+      {props.state.session?.canEdit && props.state.selectedItemId && (
+        <ItemEditor
+          state={props.state}
+          selected={selected}
+          previewRename$={props.previewRename$}
+          confirmRename$={props.confirmRename$}
+        />
+      )}
     </section>
   );
 });
@@ -1208,7 +1261,6 @@ const TreeBranch = component$<{
 
 const ConversionList = component$<{
   conversions: Conversion[];
-  available: boolean;
   expanded?: boolean;
   queued?: string[];
 }>((props) => {
@@ -1216,16 +1268,8 @@ const ConversionList = component$<{
   if (props.conversions.length === 0 && !hasQueued) {
     return (
       <EmptyState
-        title={
-          props.available
-            ? "No conversion in progress"
-            : "MKVMaker is unavailable"
-        }
-        detail={
-          props.available
-            ? "The DVD ISO queue is currently idle."
-            : "Media Manager will reconnect automatically when progress data appears."
-        }
+        title="No ISO files being converted"
+        detail="Drop an ISO into the shared inbox to start a conversion."
       />
     );
   }
@@ -1310,12 +1354,7 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
     const current = conv.conversions?.progress.conversions ?? [];
     const working = current.length > 0;
     const inboxReady = conv.inbox?.available ?? false;
-    const converterReporting = conv.conversions?.available ?? false;
-    const statusLabel = working
-      ? "Working"
-      : inboxReady
-        ? "Ready"
-        : "Not set up";
+    const statusLabel = working ? "Working" : "Idle";
     return (
       <section class="single-column conversions-layout">
         {conv.error && (
@@ -1335,7 +1374,7 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
             <span
               class={{
                 "status-badge": true,
-                live: working || (inboxReady && converterReporting),
+                live: working,
               }}
             >
               {statusLabel}
@@ -1344,16 +1383,16 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
           <div class="setup-body">
             {inboxReady ? (
               <p class="setup-ready">
-                The converter is set up and watching the shared inbox.
+                The converter is watching the shared inbox.
                 {working
                   ? " An ISO is being converted right now."
                   : " Drop an ISO in the inbox to start a conversion."}
               </p>
             ) : (
               <p class="setup-missing">
-                The shared DVD ISO inbox is not available on this server. Enable
-                the MKVMaker module in the server configuration and make sure
-                the media-manager service can read _Shared/_ISO/_DVDs.
+                No ISO files are queued for conversion at the moment. Copy a DVD
+                ISO into the shared inbox at _Shared/_ISO/_DVDs to start a
+                conversion.
               </p>
             )}
             <ol class="setup-steps">
@@ -1382,7 +1421,6 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
           </div>
           <ConversionList
             conversions={current}
-            available={converterReporting}
             queued={conv.conversions?.progress.queued}
             expanded
           />
@@ -1395,15 +1433,14 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
             <span class={{ "status-badge": true, live: inboxReady }}>
               {inboxReady
                 ? `${conv.inbox?.pending.length ?? 0} waiting`
-                : "Unavailable"}
+                : "Idle"}
             </span>
           </div>
           {!conv.inbox ? (
             <p class="quiet-copy">Loading the inbox…</p>
           ) : !conv.inbox.available ? (
             <p class="quiet-copy">
-              The inbox directory _Shared/_ISO/_DVDs does not exist on this
-              server yet.
+              No ISO files are queued for conversion at the moment.
             </p>
           ) : (
             <div class="inbox-groups">
@@ -1484,6 +1521,20 @@ interface SubtitleMatch {
   hashMatched: boolean;
   machineTranslated: boolean;
   aiTranslated: boolean;
+}
+
+type MusicLookupMode = "auto" | "fingerprint" | "search";
+
+interface MusicCandidate {
+  releaseGroupId: string;
+  artist: string;
+  title: string;
+  releaseType?: string;
+  year?: number;
+  genres: string[];
+  label?: string;
+  trackCount?: number;
+  matchMethod: "fingerprint" | "search";
 }
 
 interface SubtitleState {
@@ -1750,7 +1801,29 @@ const SubtitleView = component$<{
                 </p>
                 <ol class="setup-steps">
                   <li>
-                    Create an OpenSubtitles.com account and application API key.
+                    Create an account at
+                    <a
+                      class="text-button"
+                      href="https://www.opensubtitles.com/en/signup"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      opensubtitles.com
+                    </a>
+                    .
+                  </li>
+                  <li>
+                    Log in and create an application API key at
+                    <a
+                      class="text-button"
+                      href="https://www.opensubtitles.com/consumers"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      opensubtitles.com/consumers
+                    </a>
+                    , selecting "OpenSubtitles REST API" as the API and noting
+                    your account username and password.
                   </li>
                   <li>
                     Add those credentials to the server's encrypted
@@ -1951,10 +2024,11 @@ const SubtitleView = component$<{
   );
 });
 
-interface MetadataState {
-  rootId: string;
-  items: CatalogItem[];
+type EditorTab = "metadata" | "rename";
+
+interface MetadataEditorState {
   itemId: string;
+  mediaType: string;
   title: string;
   year: string;
   authors: string;
@@ -1966,24 +2040,47 @@ interface MetadataState {
   language: string;
   genres: string;
   description: string;
-  loadingItems: boolean;
+  season: string;
+  episode: string;
+  episodeTitle: string;
+  premiereDate: string;
+  runtimeMinutes: string;
+  officialRating: string;
+  communityRating: string;
+  writers: string;
+  providerIds: Record<string, string>;
+  videoStreams: Array<Record<string, unknown>>;
+  audioStreams: Array<Record<string, unknown>>;
+  sources: string[];
+  lookupMode: MusicLookupMode;
+  lookupArtist: string;
+  lookupTitle: string;
+  candidates: MusicCandidate[];
+  lookupLoading: boolean;
+  lookupError: string;
+  loadingDetails: boolean;
   planning: boolean;
   confirming: boolean;
   preview?: MutationPreview;
-  error: string;
-  notice: string;
 }
 
-const MetadataView = component$<{
-  roots: MediaRoot[];
-  session?: Session;
-  status?: Status;
+const ItemEditor = component$<{
+  state: DashboardState;
+  selected?: MediaRoot;
+  previewRename$: QRL<() => Promise<void>>;
+  confirmRename$: QRL<() => Promise<void>>;
 }>((props) => {
-  const mediaRoots = props.roots.filter((root) => root.category !== "iso");
-  const metadata = useStore<MetadataState>({
-    rootId: mediaRoots[0]?.id ?? "",
-    items: [],
+  const tab = useSignal<EditorTab>("metadata");
+  const musicbrainzIntegration = props.state.status?.integrations.find(
+    (integration) => integration.id === "musicbrainz",
+  );
+  const musicbrainzAvailable = musicbrainzIntegration?.available ?? false;
+  const fingerprintAvailable =
+    musicbrainzIntegration?.capabilities.includes("musicbrainz-fingerprint") ??
+    false;
+  const metadata = useStore<MetadataEditorState>({
     itemId: "",
+    mediaType: "movie",
     title: "",
     year: "",
     authors: "",
@@ -1995,59 +2092,141 @@ const MetadataView = component$<{
     language: "en",
     genres: "",
     description: "",
-    loadingItems: false,
+    season: "",
+    episode: "",
+    episodeTitle: "",
+    premiereDate: "",
+    runtimeMinutes: "",
+    officialRating: "",
+    communityRating: "",
+    writers: "",
+    providerIds: {},
+    videoStreams: [],
+    audioStreams: [],
+    sources: [],
+    lookupMode: "auto",
+    lookupArtist: "",
+    lookupTitle: "",
+    candidates: [],
+    lookupLoading: false,
+    lookupError: "",
+    loadingDetails: false,
     planning: false,
     confirming: false,
-    error: "",
-    notice: "",
   });
 
-  const loadMetadataItems = $(async (rootId: string) => {
-    metadata.rootId = rootId;
-    metadata.loadingItems = true;
-    metadata.itemId = "";
-    metadata.preview = undefined;
-    metadata.error = "";
-    try {
-      const result = await api<{ items: CatalogItem[] }>(
-        `/items?rootId=${encodeURIComponent(rootId)}`,
-      );
-      metadata.items = result.items.filter((item) =>
-        ["video", "music", "audiobook", "book"].includes(item.mediaKind),
-      );
-    } catch (error) {
-      metadata.error = readableError(error);
-    } finally {
-      metadata.loadingItems = false;
-    }
+  const closeEditor = $(() => {
+    props.state.selectedItemId = "";
+    props.state.preview = undefined;
+    props.state.notice = "";
   });
 
-  useVisibleTask$(async () => {
-    if (metadata.rootId) await loadMetadataItems(metadata.rootId);
-  });
-
-  const chooseMetadataItem = $((itemId: string) => {
+  useTask$(async ({ track }) => {
+    const itemId = track(() => props.state.selectedItemId);
+    if (!itemId) return;
+    tab.value = "metadata";
+    const item = props.state.items.find((candidate) => candidate.id === itemId);
     metadata.itemId = itemId;
     metadata.preview = undefined;
-    const item = metadata.items.find((candidate) => candidate.id === itemId);
-    if (!item) return;
-    const filename = item.relativePath.split("/").at(-1) ?? item.relativePath;
-    metadata.title = filename
-      .replace(/\.[A-Za-z0-9]+$/, "")
-      .replace(/ \([0-9]{4}\)$/, "");
-    metadata.year = filename.match(/ \(([0-9]{4})\)/)?.[1] ?? "";
+    metadata.loadingDetails = true;
+    metadata.mediaType = mediaTypeForItem(item);
+    const filename = item?.relativePath.split("/").at(-1) ?? "";
+    const tvEpisode = parseTvEpisodeFilename(filename);
+    metadata.title =
+      tvEpisode?.title ??
+      filename.replace(/\.[^.]+$/, "").replace(/ \([0-9]{4}\)$/, "");
+    metadata.year =
+      tvEpisode?.year ?? filename.match(/ \(([0-9]{4})\)$/)?.[1] ?? "";
+    metadata.season = tvEpisode?.season ?? "";
+    metadata.episode = tvEpisode?.episode ?? "";
+    metadata.episodeTitle = tvEpisode?.episodeTitle ?? "";
+    metadata.description = "";
+    metadata.publisher = "";
+    metadata.language = "en";
+    metadata.genres = "";
+    metadata.writers = "";
+    metadata.premiereDate = "";
+    metadata.runtimeMinutes = "";
+    metadata.officialRating = "";
+    metadata.communityRating = "";
+    metadata.authors = "";
+    metadata.narrators = "";
+    metadata.series = "";
+    metadata.volumeNumber = "";
+    metadata.isbn = "";
+    metadata.providerIds = {};
+    metadata.videoStreams = [];
+    metadata.audioStreams = [];
+    metadata.sources = ["filename"];
+    metadata.lookupMode = "auto";
+    metadata.lookupArtist = "";
+    metadata.lookupTitle = "";
+    metadata.candidates = [];
+    metadata.lookupLoading = false;
+    metadata.lookupError = "";
+    props.state.error = "";
+    try {
+      const details = await api<Record<string, unknown>>(
+        `/items/${encodeURIComponent(itemId)}/metadata`,
+      );
+      if (details.mediaType) metadata.mediaType = String(details.mediaType);
+      if (details.title) metadata.title = String(details.title);
+      if (details.year != null && details.year !== "")
+        metadata.year = String(details.year);
+      if (details.series) metadata.series = String(details.series);
+      if (details.season != null && details.season !== "")
+        metadata.season = String(details.season);
+      if (details.episode != null && details.episode !== "")
+        metadata.episode = String(details.episode);
+      if (details.episodeTitle)
+        metadata.episodeTitle = String(details.episodeTitle);
+      if (details.description)
+        metadata.description = String(details.description);
+      if (details.publisher) metadata.publisher = String(details.publisher);
+      if (details.language) metadata.language = String(details.language);
+      metadata.genres = Array.isArray(details.genres)
+        ? (details.genres as string[]).join(", ")
+        : metadata.genres;
+      metadata.writers = Array.isArray(details.writers)
+        ? (details.writers as string[]).join(", ")
+        : metadata.writers;
+      if (details.premiereDate)
+        metadata.premiereDate = String(details.premiereDate).slice(0, 10);
+      if (details.runtimeMinutes != null && details.runtimeMinutes !== "")
+        metadata.runtimeMinutes = String(details.runtimeMinutes);
+      if (details.officialRating)
+        metadata.officialRating = String(details.officialRating);
+      if (details.communityRating != null && details.communityRating !== "")
+        metadata.communityRating = String(details.communityRating);
+      metadata.providerIds =
+        (details.providerIds as Record<string, string>) ?? {};
+      metadata.videoStreams =
+        (details.videoStreams as Array<Record<string, unknown>>) ?? [];
+      metadata.audioStreams =
+        (details.audioStreams as Array<Record<string, unknown>>) ?? [];
+      metadata.sources = (details.sources as string[]) ?? ["filename"];
+      metadata.lookupArtist = metadata.authors;
+      metadata.lookupTitle = metadata.title;
+    } catch (error) {
+      props.state.error = readableError(error);
+    } finally {
+      metadata.loadingDetails = false;
+    }
   });
 
   const previewMetadata = $(async () => {
     if (!metadata.itemId || !metadata.title.trim() || metadata.planning) return;
     metadata.planning = true;
-    metadata.error = "";
-    metadata.notice = "";
+    props.state.error = "";
+    props.state.notice = "";
     const fields: Record<string, unknown> = {
+      mediaType: metadata.mediaType,
       title: metadata.title.trim(),
       authors: commaSeparated(metadata.authors),
       narrators: commaSeparated(metadata.narrators),
       genres: commaSeparated(metadata.genres),
+      writers: commaSeparated(metadata.writers),
+      providerIds: metadata.providerIds,
     };
     const optional: Array<[string, string]> = [
       ["series", metadata.series],
@@ -2056,18 +2235,29 @@ const MetadataView = component$<{
       ["isbn", metadata.isbn],
       ["language", metadata.language],
       ["description", metadata.description],
+      ["episodeTitle", metadata.episodeTitle],
+      ["premiereDate", metadata.premiereDate],
+      ["officialRating", metadata.officialRating],
     ];
     for (const [key, value] of optional) {
       if (value.trim()) fields[key] = value.trim();
     }
     if (metadata.year.trim()) fields.year = Number.parseInt(metadata.year, 10);
+    if (metadata.season.trim())
+      fields.season = Number.parseInt(metadata.season, 10);
+    if (metadata.episode.trim())
+      fields.episode = Number.parseInt(metadata.episode, 10);
+    if (metadata.runtimeMinutes.trim())
+      fields.runtimeMinutes = Number.parseInt(metadata.runtimeMinutes, 10);
+    if (metadata.communityRating.trim())
+      fields.communityRating = Number.parseFloat(metadata.communityRating);
     try {
       metadata.preview = await api<MutationPreview>(
         `/items/${encodeURIComponent(metadata.itemId)}/metadata/sidecar`,
         { method: "POST", body: JSON.stringify(fields) },
       );
     } catch (error) {
-      metadata.error = readableError(error);
+      props.state.error = readableError(error);
     } finally {
       metadata.planning = false;
     }
@@ -2076,55 +2266,243 @@ const MetadataView = component$<{
   const confirmMetadata = $(async () => {
     if (!metadata.preview || metadata.confirming) return;
     metadata.confirming = true;
-    metadata.error = "";
+    props.state.error = "";
     try {
       await api(`/plans/${encodeURIComponent(metadata.preview.id)}/confirm`, {
         method: "POST",
         headers: { "if-match": `"${metadata.preview.digest}"` },
       });
-      metadata.notice =
+      props.state.notice =
         "The metadata sidecar was added to the global mutation queue.";
       metadata.preview = undefined;
     } catch (error) {
-      metadata.error = readableError(error);
+      props.state.error = readableError(error);
     } finally {
       metadata.confirming = false;
     }
   });
 
-  const selectedMetadataItem = metadata.items.find(
-    (item) => item.id === metadata.itemId,
-  );
+  const lookupMusic = $(async () => {
+    if (!metadata.itemId || metadata.lookupLoading) return;
+    metadata.lookupLoading = true;
+    metadata.lookupError = "";
+    props.state.error = "";
+    props.state.notice = "";
+    const body: Record<string, unknown> = { mode: metadata.lookupMode };
+    if (metadata.lookupArtist.trim())
+      body.artist = metadata.lookupArtist.trim();
+    if (metadata.lookupTitle.trim()) body.title = metadata.lookupTitle.trim();
+    try {
+      const result = await api<{
+        requestId: string;
+        candidates: MusicCandidate[];
+      }>(`/items/${encodeURIComponent(metadata.itemId)}/metadata/lookup`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      metadata.candidates = result.candidates;
+      if (result.candidates.length === 0) {
+        props.state.notice =
+          "MusicBrainz found no matching releases. Try a fingerprint lookup or refine the artist and title.";
+      }
+    } catch (error) {
+      metadata.lookupError = readableError(error);
+    } finally {
+      metadata.lookupLoading = false;
+    }
+  });
+
+  const fillMusicCandidate = $((candidate: MusicCandidate) => {
+    metadata.title = candidate.title;
+    metadata.authors = candidate.artist;
+    if (candidate.year) metadata.year = String(candidate.year);
+    if (candidate.genres.length > 0)
+      metadata.genres = candidate.genres.join(", ");
+    if (candidate.label) metadata.publisher = candidate.label;
+    props.state.error = "";
+    props.state.notice = `Filled the form from “${candidate.title}”. Review the fields before previewing the metadata sidecar.`;
+  });
+
   return (
-    <section class="metadata-layout">
-      {metadata.error && (
-        <div class="message error" role="alert">
-          <Icon name="alert" size={18} />
-          <span>{metadata.error}</span>
-          <button type="button" onClick$={() => (metadata.error = "")}>
-            ×
+    <section class="panel editor-card">
+      <div class="editor-heading">
+        <div class="editor-tabs" role="tablist" aria-label="Edit selected item">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab.value === "metadata"}
+            class={{ "editor-tab": true, active: tab.value === "metadata" }}
+            onClick$={() => (tab.value = "metadata")}
+          >
+            <Icon name="tag" size={16} />
+            Metadata
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab.value === "rename"}
+            class={{ "editor-tab": true, active: tab.value === "rename" }}
+            onClick$={() => (tab.value = "rename")}
+          >
+            <Icon name="scan" size={16} />
+            Rename
           </button>
         </div>
-      )}
-      {metadata.notice && (
-        <div class="message success" role="status">
-          <Icon name="check" size={18} />
-          <span>{metadata.notice}</span>
-        </div>
-      )}
-      <div class="metadata-columns">
-        <section class="panel metadata-panel">
-          <div class="panel-heading">
-            <div>
-              <h3>Metadata fields</h3>
-            </div>
-            <span
-              class={{ "status-badge": true, live: props.session?.canEdit }}
-            >
-              {props.session?.canEdit ? "Editor" : "Viewer"}
-            </span>
-          </div>
-          <div class="metadata-form">
+        <button
+          class="close-button"
+          type="button"
+          aria-label="Close item editor"
+          onClick$={closeEditor}
+        >
+          ×
+        </button>
+      </div>
+
+      {tab.value === "metadata" ? (
+        <>
+          {metadata.mediaType === "music" && (
+            <section class="panel musicbrainz-panel">
+              <div class="panel-heading">
+                <div>
+                  <h3>MusicBrainz lookup</h3>
+                </div>
+                <span
+                  class={{ "status-badge": true, live: musicbrainzAvailable }}
+                >
+                  {musicbrainzAvailable
+                    ? fingerprintAvailable
+                      ? "Fingerprint ready"
+                      : "Search only"
+                    : "Unavailable"}
+                </span>
+              </div>
+              <p class="quiet-copy">
+                Match the album release on MusicBrainz and fill this form from
+                it before previewing the sidecar. Fingerprint lookup matches the
+                audio itself but needs an AcoustID API key on the server.
+              </p>
+              <div class="metadata-form">
+                <label>
+                  <span>Lookup mode</span>
+                  <select
+                    value={metadata.lookupMode}
+                    onChange$={(_, select) =>
+                      (metadata.lookupMode = select.value as MusicLookupMode)
+                    }
+                  >
+                    <option value="auto">
+                      Auto — fingerprint, then search
+                    </option>
+                    <option
+                      value="fingerprint"
+                      disabled={!fingerprintAvailable}
+                    >
+                      Fingerprint — match the audio
+                    </option>
+                    <option value="search">Search — artist and title</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Artist</span>
+                  <input
+                    value={metadata.lookupArtist}
+                    maxLength={500}
+                    placeholder="e.g. Nirvana"
+                    onInput$={(_, input) =>
+                      (metadata.lookupArtist = input.value)
+                    }
+                  />
+                </label>
+                <label class="title-input">
+                  <span>Title</span>
+                  <input
+                    value={metadata.lookupTitle}
+                    maxLength={500}
+                    placeholder="e.g. Nevermind"
+                    onInput$={(_, input) =>
+                      (metadata.lookupTitle = input.value)
+                    }
+                  />
+                </label>
+                <div class="metadata-actions">
+                  <button
+                    class="primary-button"
+                    type="button"
+                    disabled={
+                      !musicbrainzAvailable ||
+                      !props.state.session?.canEdit ||
+                      !metadata.itemId ||
+                      metadata.lookupLoading ||
+                      (metadata.lookupMode === "fingerprint" &&
+                        !fingerprintAvailable)
+                    }
+                    onClick$={lookupMusic}
+                  >
+                    <Icon name="disc" size={18} />
+                    {metadata.lookupLoading ? "Looking up…" : "Look up release"}
+                  </button>
+                </div>
+              </div>
+              {metadata.lookupError && (
+                <p class="error-copy">{metadata.lookupError}</p>
+              )}
+              <div class="subtitle-results">
+                {metadata.candidates.map((candidate) => (
+                  <article
+                    class="subtitle-result"
+                    key={candidate.releaseGroupId}
+                  >
+                    <div>
+                      <strong>
+                        {candidate.artist} — {candidate.title}
+                      </strong>
+                      <span>
+                        {candidate.releaseType ?? "Release"} ·{" "}
+                        {candidate.year ?? "unknown year"}
+                        {candidate.label ? ` · ${candidate.label}` : ""}
+                        {candidate.trackCount
+                          ? ` · ${candidate.trackCount} tracks`
+                          : ""}
+                        {candidate.genres.length > 0
+                          ? ` · ${candidate.genres.join(", ")}`
+                          : ""}
+                        {candidate.matchMethod === "fingerprint"
+                          ? " · matched by fingerprint"
+                          : " · matched by search"}
+                      </span>
+                    </div>
+                    <button
+                      class="secondary-button"
+                      type="button"
+                      onClick$={() => fillMusicCandidate(candidate)}
+                    >
+                      Fill form
+                    </button>
+                  </article>
+                ))}
+                {metadata.candidates.length === 0 && (
+                  <p class="quiet-copy">
+                    Matched releases will appear here. Fill the form from a
+                    release, then preview the metadata sidecar as usual.
+                  </p>
+                )}
+              </div>
+            </section>
+          )}
+          <div class="metadata-form editor-metadata-form">
+            <label>
+              <span>Media type</span>
+              <select
+                value={metadata.mediaType}
+                onChange$={(_, select) => (metadata.mediaType = select.value)}
+              >
+                <option value="movie">Movie</option>
+                <option value="episode">TV episode</option>
+                <option value="music">Music</option>
+                <option value="audiobook">Audiobook</option>
+                <option value="book">Book</option>
+              </select>
+            </label>
             <label class="title-input">
               <span>Title</span>
               <input
@@ -2147,6 +2525,40 @@ const MetadataView = component$<{
                 }
               />
             </label>
+            {metadata.mediaType === "episode" && (
+              <>
+                <label>
+                  <span>Season</span>
+                  <input
+                    value={metadata.season}
+                    inputMode="numeric"
+                    onInput$={(_, input) =>
+                      (metadata.season = numericValue(input.value, 4))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Episode</span>
+                  <input
+                    value={metadata.episode}
+                    inputMode="numeric"
+                    onInput$={(_, input) =>
+                      (metadata.episode = numericValue(input.value, 5))
+                    }
+                  />
+                </label>
+                <label class="title-input">
+                  <span>Episode title</span>
+                  <input
+                    value={metadata.episodeTitle}
+                    maxLength={500}
+                    onInput$={(_, input) =>
+                      (metadata.episodeTitle = input.value)
+                    }
+                  />
+                </label>
+              </>
+            )}
             <label>
               <span>
                 Authors / artists <small>comma-separated</small>
@@ -2184,6 +2596,57 @@ const MetadataView = component$<{
               <input
                 value={metadata.publisher}
                 onInput$={(_, input) => (metadata.publisher = input.value)}
+              />
+            </label>
+            <label>
+              <span>Premiere date</span>
+              <input
+                type="date"
+                value={metadata.premiereDate}
+                onInput$={(_, input) => (metadata.premiereDate = input.value)}
+              />
+            </label>
+            <label>
+              <span>
+                Runtime <small>minutes</small>
+              </span>
+              <input
+                value={metadata.runtimeMinutes}
+                inputMode="numeric"
+                onInput$={(_, input) =>
+                  (metadata.runtimeMinutes = numericValue(input.value, 6))
+                }
+              />
+            </label>
+            <label>
+              <span>Official rating</span>
+              <input
+                value={metadata.officialRating}
+                maxLength={64}
+                onInput$={(_, input) => (metadata.officialRating = input.value)}
+              />
+            </label>
+            <label>
+              <span>
+                Community rating <small>0–10</small>
+              </span>
+              <input
+                value={metadata.communityRating}
+                inputMode="decimal"
+                onInput$={(_, input) =>
+                  (metadata.communityRating = input.value
+                    .replace(/[^0-9.]/g, "")
+                    .slice(0, 5))
+                }
+              />
+            </label>
+            <label class="title-input">
+              <span>
+                Writers <small>comma-separated</small>
+              </span>
+              <input
+                value={metadata.writers}
+                onInput$={(_, input) => (metadata.writers = input.value)}
               />
             </label>
             <label>
@@ -2226,13 +2689,15 @@ const MetadataView = component$<{
           </div>
           <div class="metadata-actions">
             <span>
-              NFO is used for video/music; OPF is used for books and audiobooks.
+              {metadata.loadingDetails
+                ? "Reading available metadata…"
+                : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
             </span>
             <button
               class="primary-button"
               type="button"
               disabled={
-                !props.session?.canEdit ||
+                !props.state.session?.canEdit ||
                 !metadata.itemId ||
                 !metadata.title.trim() ||
                 metadata.planning
@@ -2243,102 +2708,313 @@ const MetadataView = component$<{
               {metadata.planning ? "Preparing…" : "Preview metadata sidecar"}
             </button>
           </div>
-        </section>
-        <div class="metadata-side">
-          {selectedMetadataItem && (
-            <MediaImage
-              imageId={selectedMetadataItem.id}
-              title={
-                selectedMetadataItem.relativePath.split("/").at(-1) ??
-                selectedMetadataItem.relativePath
-              }
-              subtitle={selectedMetadataItem.relativePath}
-            />
+          {(metadata.videoStreams.length > 0 ||
+            metadata.audioStreams.length > 0 ||
+            Object.keys(metadata.providerIds).length > 0) && (
+            <div class="editor-facts" aria-label="Jellyfin media facts">
+              <h5>Media facts</h5>
+              <dl>
+                {metadata.videoStreams.map((stream, index) => (
+                  <div key={`video-${index}`}>
+                    <dt>Video</dt>
+                    <dd>
+                      {[
+                        stream.height ? `${String(stream.height)}p` : "",
+                        stream.codec ? String(stream.codec) : "",
+                        stream.videoRange ? String(stream.videoRange) : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </dd>
+                  </div>
+                ))}
+                {metadata.audioStreams.map((stream, index) => (
+                  <div key={`audio-${index}`}>
+                    <dt>Audio</dt>
+                    <dd>
+                      {[
+                        stream.language ? String(stream.language) : "",
+                        stream.codec ? String(stream.codec) : "",
+                        stream.channelLayout
+                          ? String(stream.channelLayout)
+                          : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </dd>
+                  </div>
+                ))}
+                {Object.entries(metadata.providerIds).map(([provider, id]) => (
+                  <div key={provider}>
+                    <dt>{provider.toUpperCase()}</dt>
+                    <dd>{id}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
           )}
-          <section class="panel metadata-destination">
-            <div class="panel-heading">
-              <div>
-                <h3>Metadata destination</h3>
+        </>
+      ) : (
+        <div class="rename-fields">
+          <label class="profile-field">
+            <span>Media profile</span>
+            <select
+              value={props.state.editProfile}
+              onInput$={(_, input) => {
+                props.state.editProfile = input.value as NamingProfile;
+                props.state.preview = undefined;
+              }}
+            >
+              {profilesForCategory(props.selected?.category).map((profile) => (
+                <option value={profile.id} key={profile.id}>
+                  {profile.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label class="title-field">
+            <span>Title</span>
+            <input
+              value={props.state.editTitle}
+              onInput$={(_, input) => (props.state.editTitle = input.value)}
+              autocomplete="off"
+            />
+          </label>
+          <label class="year-field">
+            <span>
+              Release year <small>optional</small>
+            </span>
+            <input
+              inputMode="numeric"
+              maxLength={4}
+              placeholder="Unknown"
+              value={props.state.editYear}
+              onInput$={(_, input) =>
+                (props.state.editYear = input.value
+                  .replace(/\D/g, "")
+                  .slice(0, 4))
+              }
+            />
+          </label>
+          {props.state.editProfile === "tv" && (
+            <>
+              <label class="number-field">
+                <span>Season</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={3}
+                  placeholder="1"
+                  value={props.state.editSeason}
+                  onInput$={(_, input) =>
+                    (props.state.editSeason = numericValue(input.value, 3))
+                  }
+                />
+              </label>
+              <label class="number-field">
+                <span>Episode</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={4}
+                  placeholder="1"
+                  value={props.state.editEpisode}
+                  onInput$={(_, input) =>
+                    (props.state.editEpisode = numericValue(input.value, 4))
+                  }
+                />
+              </label>
+              <label class="detail-field">
+                <span>
+                  Episode title <small>optional</small>
+                </span>
+                <input
+                  value={props.state.editEpisodeTitle}
+                  onInput$={(_, input) =>
+                    (props.state.editEpisodeTitle = input.value)
+                  }
+                  autocomplete="off"
+                />
+              </label>
+            </>
+          )}
+          {props.state.editProfile === "music" && (
+            <>
+              <label>
+                <span>Artist</span>
+                <input
+                  value={props.state.editCreator}
+                  onInput$={(_, input) =>
+                    (props.state.editCreator = input.value)
+                  }
+                  autocomplete="off"
+                />
+              </label>
+              <label>
+                <span>Album</span>
+                <input
+                  value={props.state.editCollection}
+                  onInput$={(_, input) =>
+                    (props.state.editCollection = input.value)
+                  }
+                  autocomplete="off"
+                />
+              </label>
+              <label class="number-field">
+                <span>Track</span>
+                <input
+                  inputMode="numeric"
+                  maxLength={3}
+                  value={props.state.editTrack}
+                  onInput$={(_, input) =>
+                    (props.state.editTrack = numericValue(input.value, 3))
+                  }
+                />
+              </label>
+              <label class="number-field">
+                <span>
+                  Disc <small>optional</small>
+                </span>
+                <input
+                  inputMode="numeric"
+                  maxLength={2}
+                  value={props.state.editDisc}
+                  onInput$={(_, input) =>
+                    (props.state.editDisc = numericValue(input.value, 2))
+                  }
+                />
+              </label>
+            </>
+          )}
+          {["audiobook", "book"].includes(props.state.editProfile) && (
+            <>
+              <label>
+                <span>Author</span>
+                <input
+                  value={props.state.editCreator}
+                  onInput$={(_, input) =>
+                    (props.state.editCreator = input.value)
+                  }
+                  autocomplete="off"
+                />
+              </label>
+              <label>
+                <span>
+                  Series <small>optional</small>
+                </span>
+                <input
+                  value={props.state.editCollection}
+                  onInput$={(_, input) =>
+                    (props.state.editCollection = input.value)
+                  }
+                  autocomplete="off"
+                />
+              </label>
+            </>
+          )}
+          <p class="organization-note">
+            Folder names are constructed from these fields. Unknown years stay
+            omitted; no destination path is accepted from the browser.
+          </p>
+          <button
+            class="secondary-button rename-preview-button"
+            type="button"
+            disabled={props.state.planning || !renameReady(props.state)}
+            onClick$={props.previewRename$}
+          >
+            <Icon name="scan" size={18} />
+            {props.state.planning ? "Preparing…" : "Preview organization"}
+          </button>
+        </div>
+      )}
+
+      {tab.value === "rename"
+        ? props.state.preview && (
+            <div class="plan-preview">
+              <div class="path-change">
+                <span>
+                  {props.state.preview.actions[0]?.sourceRelativePath}
+                </span>
+                <Icon name="arrow" size={17} />
+                <strong>
+                  {props.state.preview.actions[0]?.destinationRelativePath}
+                </strong>
+              </div>
+              {props.state.preview.warnings.map((warning) => (
+                <p class="plan-warning" key={warning}>
+                  <Icon name="alert" size={16} /> {warning}
+                </p>
+              ))}
+              <div class="plan-actions">
+                <span>
+                  Preview expires in 30 minutes and is bound to the current file
+                  fingerprint.
+                </span>
+                <button
+                  class="primary-button"
+                  type="button"
+                  disabled={
+                    props.state.status?.mutationMode !== "enabled" ||
+                    props.state.confirming
+                  }
+                  onClick$={props.confirmRename$}
+                >
+                  <Icon name="check" size={18} />
+                  {props.state.confirming ? "Queuing…" : "Confirm exact plan"}
+                </button>
               </div>
             </div>
-            <div class="metadata-picker">
-              <label>
-                <span>Library</span>
-                <select
-                  value={metadata.rootId}
-                  onChange$={(_, select) => loadMetadataItems(select.value)}
-                >
-                  {mediaRoots.map((root) => (
-                    <option value={root.id} key={root.id}>
-                      {root.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Media item</span>
-                <select
-                  value={metadata.itemId}
+          )
+        : metadata.preview && (
+            <div class="plan-preview">
+              <div class="destination-card">
+                <Icon name="tag" size={21} />
+                <span>
+                  <small>Metadata sidecar</small>
+                  <strong>
+                    {metadata.preview.actions[0]?.destinationRelativePath}
+                  </strong>
+                </span>
+              </div>
+              {metadata.preview.warnings.map((warning) => (
+                <p class="plan-warning" key={warning}>
+                  <Icon name="shield" size={16} /> {warning}
+                </p>
+              ))}
+              <div class="plan-actions">
+                <span>
+                  Review the destination above. Confirmation installs only the
+                  staged sidecar represented by this digest.
+                </span>
+                <button
+                  class="primary-button"
+                  type="button"
                   disabled={
-                    metadata.loadingItems || metadata.items.length === 0
+                    props.state.status?.mutationMode !== "enabled" ||
+                    metadata.confirming
                   }
-                  onChange$={(_, select) => chooseMetadataItem(select.value)}
+                  onClick$={confirmMetadata}
                 >
-                  <option value="">
-                    {metadata.loadingItems
-                      ? "Loading media…"
-                      : metadata.items.length === 0
-                        ? "No supported media found in this library"
-                        : "Choose an item…"}
-                  </option>
-                  {metadata.items.map((item) => (
-                    <option value={item.id} key={item.id}>
-                      {item.relativePath}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  <Icon name="check" size={18} />
+                  {metadata.confirming ? "Queuing…" : "Confirm metadata"}
+                </button>
+              </div>
             </div>
-          </section>
-        </div>
-      </div>
-      {metadata.preview && (
-        <section class="panel metadata-preview">
-          <div class="panel-heading">
-            <div>
-              <h3>{metadata.preview.actions[0]?.destinationRelativePath}</h3>
-            </div>
-          </div>
-          <div class="subtitle-preview-body">
-            {metadata.preview.warnings.map((warning) => (
-              <p class="plan-warning" key={warning}>
-                <Icon name="shield" size={16} /> {warning}
-              </p>
-            ))}
-            <div class="plan-actions">
-              <span>
-                Review the destination above. Confirmation installs only the
-                staged sidecar represented by this digest.
-              </span>
-              <button
-                class="primary-button"
-                type="button"
-                disabled={
-                  props.status?.mutationMode !== "enabled" ||
-                  metadata.confirming
-                }
-                onClick$={confirmMetadata}
-              >
-                <Icon name="check" size={18} />
-                {metadata.confirming ? "Queuing…" : "Confirm metadata"}
-              </button>
-            </div>
-          </div>
-        </section>
-      )}
+          )}
     </section>
   );
 });
+
+function mediaTypeForItem(item?: CatalogItem): string {
+  switch (item?.mediaKind) {
+    case "music":
+      return "music";
+    case "audiobook":
+      return "audiobook";
+    case "book":
+      return "book";
+    default:
+      return "movie";
+  }
+}
 
 const RefreshView = component$<{ integrations: Integration[] }>((props) => {
   const refresh = useStore<{

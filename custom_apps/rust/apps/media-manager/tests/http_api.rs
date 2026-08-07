@@ -8,12 +8,12 @@ use media_manager::{
     http::{router, AppState},
 };
 use serde_json::Value;
+use std::os::unix::fs::PermissionsExt;
 use tower::ServiceExt;
 
 fn test_app(temp: &tempfile::TempDir) -> axum::Router {
     test_app_with_mode(temp, MutationMode::ReadOnly).0
 }
-
 fn test_app_with_mode(
     temp: &tempfile::TempDir,
     mutation_mode: MutationMode,
@@ -649,6 +649,7 @@ async fn metadata_fields_create_an_opf_sidecar_preview_without_a_default_year() 
             &format!("/api/v1/items/{item_id}/metadata/sidecar"),
             Body::from(
                 serde_json::json!({
+                    "mediaType": "audiobook",
                     "title": "The Book",
                     "authors": ["An Author"],
                     "narrators": ["A Narrator"],
@@ -679,6 +680,129 @@ async fn metadata_fields_create_an_opf_sidecar_preview_without_a_default_year() 
     let opf = std::fs::read_to_string(staged).expect("staged OPF");
     assert!(opf.contains("<dc:title>The Book</dc:title>"));
     assert!(!opf.contains("<dc:date>"));
+}
+
+#[tokio::test]
+async fn episode_metadata_creates_a_jellyfin_compatible_episode_nfo() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let episode = temp.path().join("shared/_Videos/_Shows/Open All Hours (1976)/Season 00/Open All Hours (1976) - S00E01 - Pilot.mkv");
+    std::fs::create_dir_all(episode.parent().expect("episode parent")).expect("show folder");
+    std::fs::write(&episode, b"video").expect("episode file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let items = app
+        .clone()
+        .oneshot(editor_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .expect("items response");
+    let body = to_bytes(items.into_body(), 64 * 1024).await.expect("body");
+    let items_json: Value = serde_json::from_slice(&body).expect("items JSON");
+    let item_id = items_json["items"][0]["id"].as_str().expect("item ID");
+
+    let preview = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/sidecar"),
+            Body::from(
+                serde_json::json!({
+                    "mediaType": "episode", "title": "Pilot", "series": "Open All Hours",
+                    "season": 0, "episode": 1, "episodeTitle": "Pilot", "year": 1973,
+                    "premiereDate": "1973-03-24", "runtimeMinutes": 30,
+                    "officialRating": "TV-PG", "communityRating": 10.0,
+                    "writers": ["Roy Clarke"], "genres": ["Comedy"],
+                    "providerIds": {"tmdb": "123"}
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .expect("metadata preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let staged = std::fs::read_dir(temp.path().join("state/provider-staging"))
+        .expect("staging")
+        .next()
+        .expect("staged entry")
+        .expect("staged file")
+        .path();
+    let nfo = std::fs::read_to_string(staged).expect("staged NFO");
+    for expected in [
+        "<episodedetails>",
+        "<showtitle>Open All Hours</showtitle>",
+        "<season>0</season>",
+        "<episode>1</episode>",
+        "<title>Pilot</title>",
+        "<premiered>1973-03-24</premiered>",
+        "<runtime>30</runtime>",
+        "<writer>Roy Clarke</writer>",
+        "<uniqueid type=\"tmdb\">123</uniqueid>",
+    ] {
+        assert!(nfo.contains(expected), "missing {expected} in {nfo}");
+    }
+}
+
+#[tokio::test]
+async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    let cache = temp.path().join("jellyfin-metadata.json");
+    config.jellyfin_metadata_cache_file = Some(cache.clone());
+    let episode_relative =
+        "_Shows/Open All Hours (1976)/Season 00/Open All Hours (1976) - S00E01 - Pilot.mkv";
+    let episode = config.shared_root.join("_Videos").join(episode_relative);
+    std::fs::create_dir_all(episode.parent().expect("episode parent")).expect("show folder");
+    std::fs::write(&episode, b"video").expect("episode file");
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+    let items = app
+        .clone()
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .expect("items response");
+    let body = to_bytes(items.into_body(), 64 * 1024).await.expect("body");
+    let items_json: Value = serde_json::from_slice(&body).expect("items JSON");
+    let item_id = items_json["items"][0]["id"].as_str().expect("item ID");
+    std::fs::write(&cache, serde_json::json!({
+        "schemaVersion": 1,
+        "entries": [{
+            "rootId": "shared-videos", "ownerUsername": null, "relativePath": episode_relative,
+            "mediaType": "episode", "title": "Pilot", "series": "Open All Hours",
+            "season": 0, "episode": 1, "episodeTitle": "Pilot",
+            "description": "Episode 1 of the Ronnie Barker anthology series of pilots, Seven of One.",
+            "premiereDate": "1973-03-24T00:00:00.0000000Z", "runtimeMinutes": 30,
+            "communityRating": 10.0, "writers": ["Roy Clarke"], "providerIds": {"Tmdb": "123"},
+            "videoStreams": [{"height": 576, "codec": "h264", "videoRange": "SDR"}],
+            "audioStreams": [{"language": "eng", "codec": "aac", "channelLayout": "stereo"}]
+        }]
+    }).to_string()).expect("metadata cache");
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{item_id}/metadata"
+        )))
+        .await
+        .expect("metadata response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-store");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let metadata: Value = serde_json::from_slice(&body).expect("metadata JSON");
+    assert_eq!(metadata["series"], "Open All Hours");
+    assert_eq!(metadata["season"], 0);
+    assert_eq!(metadata["episode"], 1);
+    assert_eq!(metadata["runtimeMinutes"], 30);
+    assert_eq!(metadata["videoStreams"][0]["height"], 576);
+    assert_eq!(
+        metadata["sources"],
+        serde_json::json!(["filename", "jellyfin"])
+    );
 }
 
 #[tokio::test]
@@ -1037,7 +1161,7 @@ async fn item_image_serves_embedded_audio_cover_artwork() {
     std::fs::create_dir_all(temp.path().join("shared/_Music/Album")).expect("album directory");
     std::fs::write(
         temp.path().join("shared/_Music/Album/Track.mp3"),
-        mp3_with_embedded_jpeg(b"embedded-cover"),
+        mp3_with_embedded_artwork("image/jpeg", b"embedded-cover"),
     )
     .expect("tagged audio");
     let app = test_app(&temp);
@@ -1065,6 +1189,99 @@ async fn item_image_serves_embedded_audio_cover_artwork() {
 }
 
 #[tokio::test]
+async fn item_image_serves_embedded_webp_cover_artwork() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Album")).expect("album directory");
+    std::fs::write(
+        temp.path().join("shared/_Music/Album/Track.mp3"),
+        mp3_with_embedded_artwork("image/webp", b"webp-cover"),
+    )
+    .expect("tagged audio");
+    let app = test_app(&temp);
+    let track_id = first_item_id(&app, "shared-music").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{track_id}/image"
+        )))
+        .await
+        .expect("image response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("image/webp")
+    );
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert_eq!(body.as_ref(), b"webp-cover");
+}
+
+#[tokio::test]
+async fn item_image_serves_gif_cover_artwork() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movie (2020)")).expect("movie dir");
+    std::fs::write(
+        temp.path()
+            .join("shared/_Videos/Movie (2020)/Movie (2020).mkv"),
+        b"movie",
+    )
+    .expect("movie");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie (2020)/cover.gif"),
+        b"gif-bytes",
+    )
+    .expect("gif cover");
+    let app = test_app(&temp);
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .expect("items response");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("items body");
+    let value: Value = serde_json::from_slice(&body).expect("items json");
+    let items = value["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2);
+    let movie_id = items
+        .iter()
+        .find(|item| item["mediaKind"] == "video")
+        .and_then(|item| item["id"].as_str())
+        .expect("movie item id");
+    let cover_id = items
+        .iter()
+        .find(|item| item["mediaKind"] == "artwork")
+        .and_then(|item| item["id"].as_str())
+        .expect("cover item id");
+
+    for id in [movie_id, cover_id] {
+        let response = app
+            .clone()
+            .oneshot(viewer_get_request(&format!("/api/v1/items/{id}/image")))
+            .await
+            .expect("image response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("image/gif")
+        );
+        let body = to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("image body");
+        assert_eq!(body.as_ref(), b"gif-bytes");
+    }
+}
+
+#[tokio::test]
 async fn item_image_returns_not_found_without_artwork() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);
@@ -1085,10 +1302,11 @@ async fn item_image_returns_not_found_without_artwork() {
     assert_eq!(value["error"]["code"], "artwork_not_found");
 }
 
-fn mp3_with_embedded_jpeg(image: &[u8]) -> Vec<u8> {
+fn mp3_with_embedded_artwork(mime: &str, image: &[u8]) -> Vec<u8> {
     let mut apic = Vec::new();
     apic.push(0);
-    apic.extend_from_slice(b"image/jpeg\0");
+    apic.extend_from_slice(mime.as_bytes());
+    apic.push(0);
     apic.push(3);
     apic.push(0);
     apic.extend_from_slice(image);
@@ -1215,4 +1433,350 @@ async fn item_id_by_kind(app: &axum::Router, root_id: &str, media_kind: &str) ->
         .and_then(|item| item["id"].as_str())
         .expect("item ID for media kind")
         .to_string()
+}
+
+const NIRVANA_MBID: &str = "1b022e01-4da6-387b-8658-8678046e4cef";
+
+fn release_group_payload(mbid: &str) -> String {
+    format!(
+        r#"{{
+            "id": "{mbid}",
+            "title": "Nevermind",
+            "primary-type": "Album",
+            "first-release-date": "1991-09-24",
+            "artist-credit": [{{ "name": "Nirvana", "joinphrase": "" }}],
+            "genres": [{{ "name": "grunge" }}, {{ "name": "alternative rock" }}],
+            "releases": [
+                {{
+                    "label-info": [{{ "label": {{ "name": "DGC" }} }}],
+                    "media": [{{ "track-count": 13 }}]
+                }}
+            ]
+        }}"#
+    )
+}
+
+async fn serve_mock(routes: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock server");
+    let address = listener.local_addr().expect("mock address");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, routes).await.expect("mock server");
+    });
+    (
+        format!("http://127.0.0.1:{}", address.port()),
+        handle,
+    )
+}
+
+fn musicbrainz_mock() -> axum::Router {
+    use axum::routing::get;
+    use axum::Json;
+    async fn search(
+        query: axum::extract::Query<std::collections::HashMap<String, String>>,
+    ) -> Json<Value> {
+        let lucene = query
+            .get("query")
+            .expect("search query parameter")
+            .to_string();
+        assert!(
+            lucene.contains("artist:\"Nirvana\"") || lucene.contains("releasegroup:\"Nevermind\""),
+            "unexpected search query: {lucene}"
+        );
+        Json(serde_json::json!({
+            "release-groups": [{ "id": NIRVANA_MBID }]
+        }))
+    }
+    async fn lookup() -> Json<Value> {
+        Json(
+            serde_json::from_str::<Value>(&release_group_payload(NIRVANA_MBID))
+                .expect("release group payload"),
+        )
+    }
+    async fn acoustid_lookup() -> Json<Value> {
+        Json(serde_json::json!({
+            "status": "ok",
+            "results": [{
+                "recordings": [{
+                    "releasegroups": [{ "id": NIRVANA_MBID }]
+                }]
+            }]
+        }))
+    }
+    axum::Router::new()
+        .route("/release-group/", get(search))
+        .route("/release-group/{id}", get(lookup))
+        .route("/lookup", get(acoustid_lookup))
+}
+
+#[tokio::test]
+async fn musicbrainz_search_lookup_returns_release_group_candidates() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (mock_base, _mock) = serve_mock(musicbrainz_mock()).await;
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.mutation_mode = MutationMode::Enabled;
+    config.musicbrainz_api_base = Some(mock_base);
+    std::fs::create_dir_all(config.shared_root.join("_Music/Artist/Album"))
+        .expect("music folder");
+    std::fs::write(
+        config.shared_root.join("_Music/Artist/Album/01 Song.flac"),
+        b"audio",
+    )
+    .expect("audio file");
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-music", "music").await;
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/lookup"),
+            Body::from(
+                serde_json::json!({
+                    "mode": "search",
+                    "artist": "Nirvana",
+                    "title": "Nevermind"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
+    assert!(value["requestId"].as_str().is_some());
+    let candidate = &value["candidates"][0];
+    assert_eq!(candidate["releaseGroupId"], NIRVANA_MBID);
+    assert_eq!(candidate["artist"], "Nirvana");
+    assert_eq!(candidate["title"], "Nevermind");
+    assert_eq!(candidate["releaseType"], "Album");
+    assert_eq!(candidate["year"], 1991);
+    let genres = candidate["genres"]
+        .as_array()
+        .expect("genres array")
+        .iter()
+        .filter_map(|genre| genre.as_str())
+        .collect::<Vec<_>>();
+    assert!(genres.contains(&"grunge"));
+    assert!(genres.contains(&"alternative rock"));
+    assert_eq!(candidate["label"], "DGC");
+    assert_eq!(candidate["trackCount"], 13);
+    assert_eq!(candidate["matchMethod"], "search");
+}
+
+#[tokio::test]
+async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (mock_base, _mock) = serve_mock(musicbrainz_mock()).await;
+    let key_file = temp.path().join("acoustid.json");
+    std::fs::write(&key_file, r#"{"acoustidApiKey":"test-api-key"}"#).expect("write key");
+    let fpcalc = temp.path().join("fpcalc-stub");
+    let mut finger = "AQ".to_string();
+    for _ in 0..50 {
+        finger.push_str("ABC");
+    }
+    std::fs::write(
+        &fpcalc,
+        format!("#!/bin/sh\necho DURATION=271\necho FINGERPRINT={finger}\n"),
+    )
+    .expect("write stub");
+    let mut permissions = std::fs::metadata(&fpcalc)
+        .expect("stub metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fpcalc, permissions).expect("make stub executable");
+
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.mutation_mode = MutationMode::Enabled;
+    config.musicbrainz_api_base = Some(mock_base.clone());
+    config.acoustid_api_base = Some(mock_base);
+    config.acoustid_api_key_file = Some(key_file);
+    config.fpcalc_path = Some(fpcalc);
+    std::fs::create_dir_all(config.shared_root.join("_Music/Artist/Album"))
+        .expect("music folder");
+    std::fs::write(
+        config.shared_root.join("_Music/Artist/Album/01 Song.flac"),
+        b"audio",
+    )
+    .expect("audio file");
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-music", "music").await;
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/lookup"),
+            Body::from(r#"{"mode":"fingerprint"}"#.to_string()),
+        ))
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
+    assert_eq!(value["candidates"][0]["releaseGroupId"], NIRVANA_MBID);
+    assert_eq!(value["candidates"][0]["matchMethod"], "fingerprint");
+}
+
+#[tokio::test]
+async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (mock_base, _mock) = serve_mock(musicbrainz_mock()).await;
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.mutation_mode = MutationMode::Enabled;
+    config.musicbrainz_api_base = Some(mock_base);
+    std::fs::create_dir_all(config.shared_root.join("_Music/Nirvana"))
+        .expect("music folder");
+    std::fs::write(
+        config.shared_root.join("_Music/Nirvana/Nevermind.flac"),
+        b"audio",
+    )
+    .expect("audio file");
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-music", "music").await;
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/lookup"),
+            Body::from(r#"{"mode":"auto"}"#.to_string()),
+        ))
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
+    assert_eq!(value["candidates"][0]["matchMethod"], "search");
+}
+
+#[tokio::test]
+async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.mutation_mode = MutationMode::Enabled;
+    std::fs::create_dir_all(config.shared_root.join("_Music/Artist"))
+        .expect("music folder");
+    std::fs::write(
+        config.shared_root.join("_Music/Artist/Song.flac"),
+        b"audio",
+    )
+    .expect("audio file");
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-music", "music").await;
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/lookup"),
+            Body::from(r#"{"mode":"fingerprint"}"#.to_string()),
+        ))
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
+    assert_eq!(value["error"]["code"], "musicbrainz_lookup_unconfigured");
+}
+
+#[tokio::test]
+async fn musicbrainz_lookup_rejects_invalid_queries_and_modes() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Artist"))
+        .expect("music folder");
+    std::fs::write(
+        temp.path().join("shared/_Music/Artist/Song.flac"),
+        b"audio",
+    )
+    .expect("audio file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-music", "music").await;
+
+    let invalid_mode = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/lookup"),
+            Body::from(r#"{"mode":"bogus"}"#.to_string()),
+        ))
+        .await
+        .expect("lookup response");
+    assert_eq!(invalid_mode.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(invalid_mode.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
+    assert_eq!(value["error"]["code"], "musicbrainz_mode_invalid");
+
+    let no_query = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/lookup"),
+            Body::from(r#"{"mode":"search"}"#.to_string()),
+        ))
+        .await
+        .expect("lookup response");
+    assert_eq!(no_query.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(no_query.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
+    assert_eq!(value["error"]["code"], "musicbrainz_query_required");
+}
+
+#[tokio::test]
+async fn musicbrainz_lookup_requires_a_music_item() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies"))
+        .expect("movie folder");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movies/Arrival (2016).mkv"),
+        b"movie",
+    )
+    .expect("movie file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-videos", "video").await;
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/lookup"),
+            Body::from(r#"{"mode":"search","artist":"Nirvana"}"#.to_string()),
+        ))
+        .await
+        .expect("lookup response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
+    assert_eq!(value["error"]["code"], "music_item_required");
 }

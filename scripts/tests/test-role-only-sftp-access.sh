@@ -84,7 +84,7 @@ text_derivation_payload() {
 }
 
 sftp_member_block="$(
-  sed -n '/sftp_members_json=/,/usb_members_json=/p' modules/Core_Modules/storage/fileshare-user-roots.nix
+  sed -n '/sftp_members_json=/,/backup_storage_members_json=/p' modules/Core_Modules/storage/fileshare-user-roots.nix
 )"
 for required_group_variable in webAccessGroup sftpAccessGroup sharedAccessGroup usbAccessGroup backupStorageAccessGroup; do
   if ! rg -Fq "group_members_by_name[\${lib.escapeShellArg $required_group_variable}]" <<<"$sftp_member_block"; then

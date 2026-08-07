@@ -50,6 +50,12 @@ pub struct AppConfig {
     pub mutation_mode: MutationMode,
     pub mkvmaker_progress_file: PathBuf,
     pub open_subtitles_credentials_file: Option<PathBuf>,
+    pub jellyfin_metadata_cache_file: Option<PathBuf>,
+    pub acoustid_api_key_file: Option<PathBuf>,
+    pub fpcalc_path: Option<PathBuf>,
+    pub musicbrainz_api_base: Option<String>,
+    pub acoustid_api_base: Option<String>,
+    pub musicbrainz_request_gap_ms: u64,
     pub frontend_dir: Option<PathBuf>,
     pub integrations: Vec<IntegrationCapability>,
 }
@@ -137,6 +143,16 @@ impl AppConfig {
                 "MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE",
             )
             .map(PathBuf::from),
+            jellyfin_metadata_cache_file: env::var_os("MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE")
+                .map(PathBuf::from),
+            acoustid_api_key_file: env::var_os("MEDIA_MANAGER_ACOUSTID_API_KEY_FILE")
+                .map(PathBuf::from),
+            fpcalc_path: env::var_os("MEDIA_MANAGER_FPCALC_PATH").map(PathBuf::from),
+            musicbrainz_api_base: optional_env("MEDIA_MANAGER_MUSICBRAINZ_API_BASE"),
+            acoustid_api_base: optional_env("MEDIA_MANAGER_ACOUSTID_API_BASE"),
+            musicbrainz_request_gap_ms: env_string("MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS", "1000")
+                .parse::<u64>()
+                .map_err(|error| format!("invalid MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS: {error}"))?,
             frontend_dir: env::var_os("MEDIA_MANAGER_FRONTEND_DIR").map(PathBuf::from),
             integrations,
         })
@@ -153,6 +169,12 @@ impl AppConfig {
             mutation_mode: MutationMode::ReadOnly,
             mkvmaker_progress_file: PathBuf::from("progress.json"),
             open_subtitles_credentials_file: None,
+            jellyfin_metadata_cache_file: None,
+            acoustid_api_key_file: None,
+            fpcalc_path: None,
+            musicbrainz_api_base: None,
+            acoustid_api_base: None,
+            musicbrainz_request_gap_ms: 0,
             frontend_dir: None,
             integrations: Vec::new(),
         }
@@ -252,6 +274,10 @@ impl AppConfig {
 
 fn env_string(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
 
 fn valid_identity_component(value: &str) -> bool {

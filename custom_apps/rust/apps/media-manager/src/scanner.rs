@@ -164,7 +164,8 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
 
 fn media_kind<'a>(category: &'a str, extension: &str) -> Option<&'a str> {
     match extension {
-        "jpg" | "jpeg" | "png" | "webp" => Some("artwork"),
+        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "avif" | "svg"
+        | "heic" | "heif" | "jxl" => Some("artwork"),
         "srt" | "vtt" | "ass" | "ssa" | "sub" | "idx" => Some("subtitle"),
         "mkv" | "mp4" | "m4v" | "avi" if category == "videos" => Some("video"),
         "iso" if category == "iso" => Some("iso"),

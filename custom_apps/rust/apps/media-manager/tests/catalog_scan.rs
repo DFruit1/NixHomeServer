@@ -68,6 +68,50 @@ fn scanner_indexes_supported_media_without_following_symlinks() {
 }
 
 #[test]
+fn scanner_indexes_additional_artwork_formats() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let library = dir.path().join("library");
+    std::fs::create_dir_all(library.join("Album")).expect("library directories");
+    std::fs::write(library.join("Album/Track.flac"), b"audio").expect("audio");
+    for (name, bytes) in [
+        ("cover.gif", &b"gif"[..]),
+        ("cover.bmp", &b"bmp"[..]),
+        ("cover.tiff", &b"tiff"[..]),
+        ("cover.avif", &b"avif"[..]),
+        ("cover.svg", &b"svg"[..]),
+        ("cover.heic", &b"heic"[..]),
+        ("cover.jxl", &b"jxl"[..]),
+    ] {
+        std::fs::write(library.join(name), bytes).expect("artwork");
+    }
+
+    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    scan_root(
+        &mut catalog,
+        &ScanRoot {
+            id: "shared-music-art".to_string(),
+            owner_username: None,
+            path: library,
+            category: "music".to_string(),
+        },
+    )
+    .expect("scan");
+
+    let items = catalog
+        .list_items("shared-music-art", None, 100)
+        .expect("catalog items");
+    assert_eq!(items.len(), 8);
+    let artwork: Vec<_> = items
+        .iter()
+        .filter(|item| item.media_kind == "artwork")
+        .collect();
+    assert_eq!(artwork.len(), 7);
+    assert!(items
+        .iter()
+        .any(|item| item.relative_path == "Album/Track.flac"));
+}
+
+#[test]
 fn scanner_removes_catalog_rows_for_files_that_disappeared() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let library = dir.path().join("library");

@@ -21,8 +21,21 @@ let
     MEDIA_MANAGER_FRONTEND_DIR = "${cfg.package}/share/media-manager/frontend";
   };
   openSubtitlesConfigured = builtins.hasAttr "openSubtitlesCredentials" config.age.secrets;
-  webEnvironment = commonEnvironment // lib.optionalAttrs openSubtitlesConfigured {
+  acoustidConfigured = builtins.hasAttr "acoustidApiKey" config.age.secrets;
+  jellyfinMetadataAvailable = cfg.integrations.jellyfin.available or false;
+  jellyfinMetadataCache = "/var/cache/media-manager-jellyfin/metadata.json";
+  webEnvironment = commonEnvironment
+  // lib.optionalAttrs openSubtitlesConfigured {
     MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE = config.age.secrets.openSubtitlesCredentials.path;
+  }
+  // lib.optionalAttrs acoustidConfigured {
+    MEDIA_MANAGER_ACOUSTID_API_KEY_FILE = config.age.secrets.acoustidApiKey.path;
+  }
+  // lib.optionalAttrs jellyfinMetadataAvailable {
+    MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE = jellyfinMetadataCache;
+  }
+  // {
+    MEDIA_MANAGER_FPCALC_PATH = "${pkgs.chromaprint}/bin/fpcalc";
   };
   refreshAvailable = id:
     (cfg.integrations.${id}.available or false)
@@ -206,6 +219,71 @@ let
       done
       echo "Timed out waiting for the Jellyfin library scan" >&2
       exit 1
+    '';
+  };
+  jellyfinMetadataExport = pkgs.writeShellApplication {
+    name = "media-manager-jellyfin-metadata-export";
+    runtimeInputs = [ pkgs.coreutils pkgs.curl pkgs.jq ];
+    text = ''
+      set -euo pipefail
+      base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}"
+      api_key_file=/var/lib/jellyfin/data/library-sync.api-key
+      output=${lib.escapeShellArg jellyfinMetadataCache}
+      [[ -f "$api_key_file" && ! -L "$api_key_file" ]] || exit 1
+      api_key="$(tr -d '\r\n' <"$api_key_file")"
+      [[ "$api_key" =~ ^[A-Za-z0-9._~-]+$ ]] || exit 1
+      tmp="$(mktemp "$(dirname "$output")/.metadata.XXXXXX")"
+      trap 'rm -f -- "$tmp"' EXIT
+      printf 'header = "X-Emby-Token: %s"\n' "$api_key" \
+        | curl --config - --fail --silent --show-error --max-time 90 --max-filesize 16777216 \
+          --get "$base_url/Items" \
+          --data-urlencode 'Recursive=true' \
+          --data-urlencode 'IncludeItemTypes=Movie,Episode,Audio' \
+          --data-urlencode 'Fields=Path,Overview,Genres,Studios,People,ProviderIds,MediaStreams,PremiereDate,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber' \
+          --data-urlencode 'Limit=10000' \
+        | jq -e \
+          --arg shared ${lib.escapeShellArg vars.sharedRoot} \
+          --arg users ${lib.escapeShellArg vars.usersRoot} '
+          def clean($n): if type == "string" then .[0:$n] else null end;
+          def location:
+            . as $path
+            | if startswith($shared + "/_Videos/") then {rootId:"shared-videos",ownerUsername:null,relativePath:ltrimstr($shared + "/_Videos/")}
+              elif startswith($shared + "/_Music/") then {rootId:"shared-music",ownerUsername:null,relativePath:ltrimstr($shared + "/_Music/")}
+              elif startswith($shared + "/_Audiobooks/") then {rootId:"shared-audiobooks",ownerUsername:null,relativePath:ltrimstr($shared + "/_Audiobooks/")}
+              elif startswith($shared + "/_Books/") then {rootId:"shared-books",ownerUsername:null,relativePath:ltrimstr($shared + "/_Books/")}
+              elif startswith($users + "/") then
+                (ltrimstr($users + "/") | split("/")) as $p
+                | select(($p|length) >= 3 and ($p[0] | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+                | ({"_Videos":"videos","_Music":"music","_Audiobooks":"audiobooks","_Books":"books"}[$p[1]]) as $category
+                | select($category != null)
+                | {rootId:("personal-" + $category),ownerUsername:$p[0],relativePath:($p[2:]|join("/"))}
+              else empty end;
+          select((.TotalRecordCount // 0) <= 10000)
+          | {schemaVersion:1, entries:[.Items[]
+              | select((.Path|type) == "string" and (.Path|length) <= 4096)
+              | (.Path | location) as $location
+              | $location + {
+                  mediaType:(if .Type == "Episode" then "episode" elif .Type == "Movie" then "movie" else "music" end),
+                  title:(.Name|clean(500)), year:.ProductionYear,
+                  series:(.SeriesName|clean(500)), season:.ParentIndexNumber, episode:.IndexNumber,
+                  episodeTitle:(if .Type == "Episode" then (.Name|clean(500)) else null end),
+                  description:(.Overview|clean(20000)),
+                  publisher:((.Studios // [])[0].Name|clean(500)),
+                  genres:((.Genres // [])[:64] | map(clean(500))),
+                  writers:((.People // []) | map(select(.Type == "Writer") | .Name | clean(500))[:64]),
+                  premiereDate:(.PremiereDate|clean(32)),
+                  runtimeMinutes:(if (.RunTimeTicks|type) == "number" then ((.RunTimeTicks / 600000000)|round) else null end),
+                  officialRating:(.OfficialRating|clean(64)), communityRating:.CommunityRating,
+                  providerIds:((.ProviderIds // {}) | to_entries[:32] | map(select((.key|length)<=64 and (.value|type)=="string" and (.value|length)<=256)) | from_entries),
+                  videoStreams:((.MediaStreams // []) | map(select(.Type == "Video") | {codec:(.Codec|clean(32)),height:.Height,width:.Width,videoRange:(.VideoRange|clean(32)),bitRate:.BitRate})[:8]),
+                  audioStreams:((.MediaStreams // []) | map(select(.Type == "Audio") | {codec:(.Codec|clean(32)),language:(.Language|clean(15)),channelLayout:(.ChannelLayout|clean(32)),channels:.Channels,bitRate:.BitRate})[:16])
+                }
+              | select(.relativePath != "" and (.relativePath | split("/") | all(. != "" and . != "." and . != "..")))]}
+          | select((.entries|length) <= 10000)
+        ' >"$tmp"
+      chmod 0640 "$tmp"
+      mv -f -- "$tmp" "$output"
+      trap - EXIT
     '';
   };
   audiobookshelfRefresh = pkgs.writeShellApplication {
@@ -434,12 +512,13 @@ in
       RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
       RestrictNamespaces = true;
       RestrictRealtime = true;
-      RestrictSUIDSGID = true;
+      # RestrictSUIDSGID blocks openat2, which contained media reads require.
       LockPersonality = true;
       MemoryDenyWriteExecute = true;
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
-      ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" "-/run/mkvmaker" ];
+      ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" "-/run/mkvmaker" ]
+        ++ lib.optionals jellyfinMetadataAvailable [ "-/var/cache/media-manager-jellyfin" ];
       ReadWritePaths = [ cfg.stateDir ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
@@ -475,7 +554,7 @@ in
       RestrictAddressFamilies = [ ];
       RestrictNamespaces = true;
       RestrictRealtime = true;
-      RestrictSUIDSGID = true;
+      # The broker uses the same openat2-based contained path traversal.
       LockPersonality = true;
       MemoryDenyWriteExecute = true;
       CapabilityBoundingSet = [ ];
@@ -572,6 +651,60 @@ in
       IPAddressAllow = [ "localhost" ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+    };
+  };
+
+  systemd.services.media-manager-jellyfin-metadata = lib.mkIf jellyfinMetadataAvailable {
+    description = "Export a bounded Jellyfin metadata snapshot for Media Manager";
+    after = [ "jellyfin.service" ];
+    wants = [ "jellyfin.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      User = "root";
+      Group = "media-manager";
+      ExecStart = lib.getExe jellyfinMetadataExport;
+      CacheDirectory = "media-manager-jellyfin";
+      CacheDirectoryMode = "0750";
+      UMask = "0027";
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectKernelLogs = true;
+      ProtectControlGroups = true;
+      ProtectProc = "invisible";
+      ProcSubset = "pid";
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      RestrictSUIDSGID = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      MemoryMax = "256M";
+      TasksMax = 32;
+      TimeoutStartSec = "2m";
+      CapabilityBoundingSet = [ ];
+      AmbientCapabilities = [ ];
+      ReadOnlyPaths = [ "/var/lib/jellyfin/data/library-sync.api-key" ];
+      IPAddressDeny = "any";
+      IPAddressAllow = [ "localhost" ];
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+    };
+  };
+
+  systemd.timers.media-manager-jellyfin-metadata = lib.mkIf jellyfinMetadataAvailable {
+    description = "Refresh the Media Manager Jellyfin metadata snapshot";
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "2m";
+      OnUnitInactiveSec = "30m";
+      RandomizedDelaySec = "30s";
+      Persistent = true;
+      Unit = "media-manager-jellyfin-metadata.service";
     };
   };
 

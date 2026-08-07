@@ -28,6 +28,8 @@ cf_creds_valid="${tmpdir}/cf-creds-valid.json"
 cf_creds_empty="${tmpdir}/cf-creds-empty.json"
 opensubtitles_valid="${tmpdir}/opensubtitles-valid.json"
 opensubtitles_extra_field="${tmpdir}/opensubtitles-extra-field.json"
+acoustid_valid="${tmpdir}/acoustid-valid.json"
+acoustid_extra_field="${tmpdir}/acoustid-extra-field.json"
 
 mkdir -p "$plaintext_probe_dir"
 if ! plaintext_staging_is_empty "$plaintext_probe_dir"; then
@@ -89,6 +91,17 @@ if ! validate_opensubtitles_credentials "$opensubtitles_valid"; then
 fi
 if validate_opensubtitles_credentials "$opensubtitles_extra_field"; then
   echo "❌ OpenSubtitles credentials accepted an unknown field."
+  exit 1
+fi
+
+printf '%s' '{"acoustidApiKey":"abcdef0123456789"}' >"$acoustid_valid"
+printf '%s' '{"acoustidApiKey":"abcdef0123456789","applicationKey":"secret"}' >"$acoustid_extra_field"
+if ! validate_acoustid_credentials "$acoustid_valid"; then
+  echo "❌ Valid AcoustID credentials were rejected."
+  exit 1
+fi
+if validate_acoustid_credentials "$acoustid_extra_field"; then
+  echo "❌ AcoustID credentials accepted an unknown field."
   exit 1
 fi
 

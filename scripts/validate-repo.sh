@@ -91,6 +91,15 @@ done
 
 need nix jq rg
 
+local_attic_cache="http://127.0.0.1:8080/nixhomeserver"
+if nix_uses_substituter "$local_attic_cache"; then
+  need curl nohup
+  ensure_local_attic_tunnel \
+    "$local_attic_cache/nix-cache-info" \
+    "${NIXHOMESERVER_ATTIC_TUNNEL_SCRIPT:-$HOME/.local/bin/nixhomeserver-attic-tunnel}" \
+    "${XDG_CACHE_HOME:-$HOME/.cache}/nixhomeserver-attic-tunnel.log"
+fi
+
 if [[ -z "${REPO_NIX_EVAL_CACHE_DIR:-}" ]]; then
   eval_cache_dir="$(mktemp -d)"
   export REPO_NIX_EVAL_CACHE_DIR="$eval_cache_dir"

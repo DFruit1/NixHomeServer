@@ -4,6 +4,7 @@ import { createDOM } from "@builder.io/qwik/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Root, {
   initialRouteFromSearch,
+  parseTvEpisodeFilename,
   refreshPresentation,
   rootFromSearch,
   viewFromSearch,
@@ -57,7 +58,6 @@ describe("Media Manager navigation", () => {
       ["Libraries", "?view=library"],
       ["Conversions", "?view=conversions"],
       ["Subtitles", "?view=subtitles"],
-      ["Metadata", "?view=metadata"],
       ["App refresh", "?view=refresh"],
     ]);
 
@@ -68,21 +68,13 @@ describe("Media Manager navigation", () => {
       expect(link, `${label} navigation link`).toBeDefined();
       expect(link?.getAttribute("href")).toBe(href);
     }
-
-    const browseLink = Array.from(screen.querySelectorAll("a")).find(
-      (element) => element.textContent?.trim() === "Browse libraries",
-    );
-    expect(browseLink?.getAttribute("href")).toBe("?view=library");
-    expect(screen.querySelector("a.root-row")?.getAttribute("href")).toBe(
-      "?view=library&root=shared-videos",
-    );
   });
 
   it("renders a section selected by the current URL without server or mode banners", async () => {
     const { render, screen } = await createDOM();
-    await render(<Root initialView="metadata" />);
+    await render(<Root initialView="conversions" />);
 
-    expect(screen.querySelector("h1")?.textContent).toBe("Metadata");
+    expect(screen.querySelector("h1")?.textContent).toBe("Conversions");
     expect(screen.textContent).not.toContain("Sydney Basiniot Media Server");
     expect(screen.textContent).not.toContain("Staged changes enabled");
     expect(screen.querySelector(".mode-pill")).toBeUndefined();
@@ -115,7 +107,7 @@ describe("Media Manager navigation", () => {
     const { render, screen } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
 
-    expect(screen.querySelector("h1")?.textContent).toBe("Libraries");
+    expect(screen.querySelector(".topbar")).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/items?rootId=shared-videos",
       expect.objectContaining({ credentials: "same-origin" }),
@@ -490,13 +482,13 @@ describe("Media Manager conversions inbox", () => {
 describe("Media Manager library browser", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  function libraryFetchMock(items: unknown[]) {
+  function libraryFetchMock(items: unknown[], canEdit = false) {
     return vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       const payload = path.endsWith("/status")
         ? { mutationMode: "enabled", integrations: [] }
         : path.endsWith("/session")
-          ? { username: "dsaw", groups: ["users"], canEdit: false }
+          ? { username: "dsaw", groups: ["users"], canEdit }
           : path.endsWith("/roots")
             ? [
                 {
@@ -561,6 +553,17 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).not.toContain("Videos (shared)");
   });
 
+  it("renders roots without availability dots", async () => {
+    vi.stubGlobal("fetch", libraryFetchMock([]));
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    expect(
+      screen.querySelector(".root-picker .availability-dot"),
+    ).toBeUndefined();
+  });
+
   it("renders a folder tree with toggle buttons instead of a type column", async () => {
     const items = [
       {
@@ -602,6 +605,288 @@ describe("Media Manager library browser", () => {
 
     await userEvent(filterButtons[1] ?? null, "click");
     expect(screen.textContent).toContain("Example Movie (2020).mkv");
+  });
+
+  it("parses a Jellyfin TV filename into editable fields", async () => {
+    const items = [
+      {
+        id: "episode-1",
+        rootId: "shared-videos",
+        relativePath: "Awesome TV Show (2024) S01E07 The Return.mkv",
+        mediaKind: "video",
+        sizeBytes: 2048,
+      },
+    ];
+    vi.stubGlobal("fetch", libraryFetchMock(items, true));
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-tab")).toBeDefined(),
+    );
+
+    const renameTab = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Rename",
+    );
+    await userEvent(renameTab ?? null, "click");
+
+    expect(screen.querySelectorAll(".number-field input")).toHaveLength(2);
+    expect(
+      screen.querySelector(".title-field input")?.getAttribute("value"),
+    ).toBe("Awesome TV Show");
+    expect(
+      screen.querySelector(".year-field input")?.getAttribute("value"),
+    ).toBe("2024");
+    const numberFields = Array.from(
+      screen.querySelectorAll(".number-field input"),
+    ) as HTMLInputElement[];
+    expect(numberFields.map((field) => field.getAttribute("value"))).toEqual([
+      "01",
+      "07",
+    ]);
+    expect(
+      screen.querySelector(".detail-field input")?.getAttribute("value"),
+    ).toBe("The Return");
+    expect(screen.querySelector(".media-image figcaption")).toBeUndefined();
+    expect(
+      screen.querySelector(".catalog-panel > .catalog-scroll-region"),
+    ).toBeDefined();
+    expect(
+      screen.querySelector(".library-layout > .editor-card"),
+    ).toBeDefined();
+  });
+
+  it("loads metadata into the editor when an item is selected", async () => {
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Example Movie (2020).mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const payload = path.endsWith("/status")
+        ? { mutationMode: "enabled", integrations: [] }
+        : path.endsWith("/session")
+          ? { username: "dsaw", groups: ["users"], canEdit: true }
+          : path.endsWith("/roots")
+            ? [
+                {
+                  id: "shared-videos",
+                  label: "Shared videos",
+                  category: "videos",
+                  scope: "shared",
+                  available: true,
+                },
+              ]
+            : path.includes("/items?rootId=shared-videos")
+              ? { items }
+              : path.endsWith("/metadata")
+                ? {
+                    mediaType: "movie",
+                    title: "Example Movie",
+                    year: 2020,
+                    language: "en",
+                    genres: ["Drama"],
+                    runtimeMinutes: 120,
+                    sources: ["filename", "nfo"],
+                    providerIds: { imdb: "tt0000000" },
+                  }
+                : { available: false, progress: {} };
+      return new Response(JSON.stringify(payload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+
+    await vi.waitFor(() =>
+      expect(
+        screen
+          .querySelector(".metadata-form .title-input input")
+          ?.getAttribute("value"),
+      ).toBe("Example Movie"),
+    );
+    expect(
+      screen.querySelector(".editor-tab.active")?.textContent?.trim(),
+    ).toBe("Metadata");
+    expect(
+      screen.querySelector(".metadata-form select")?.getAttribute("value"),
+    ).toBe("movie");
+    expect(screen.textContent).toContain("IMDB");
+    expect(screen.textContent).toContain("tt0000000");
+    expect(screen.textContent).toContain("Sources: filename + nfo");
+  });
+
+  it("looks up a music release on MusicBrainz and fills the form from it", async () => {
+    const items = [
+      {
+        id: "music-1",
+        rootId: "shared-music",
+        relativePath: "_Music/Nirvana - Nevermind.flac",
+        mediaKind: "music",
+        sizeBytes: 4096,
+      },
+    ];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? {
+              mutationMode: "enabled",
+              integrations: [
+                {
+                  id: "musicbrainz",
+                  label: "MusicBrainz Picard",
+                  available: true,
+                  capabilities: [
+                    "musicbrainz-lookup",
+                    "musicbrainz-fingerprint",
+                  ],
+                },
+              ],
+            }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: true }
+            : path.endsWith("/roots")
+              ? [
+                  {
+                    id: "shared-music",
+                    label: "Shared music",
+                    category: "music",
+                    scope: "shared",
+                    available: true,
+                  },
+                ]
+              : path.includes("/items?rootId=shared-music")
+                ? { items }
+                : path.endsWith("/metadata")
+                  ? {
+                      mediaType: "music",
+                      title: "Smells Like Teen Spirit",
+                      year: 1991,
+                      language: "en",
+                      sources: ["filename"],
+                    }
+                  : path.endsWith("/metadata/lookup")
+                    ? {
+                        requestId: "r1",
+                        candidates: [
+                          {
+                            releaseGroupId:
+                              "1b022e01-4da6-387b-8658-8678046e4cef",
+                            artist: "Nirvana",
+                            title: "Nevermind",
+                            releaseType: "Album",
+                            year: 1991,
+                            genres: ["grunge", "alternative rock"],
+                            label: "DGC",
+                            trackCount: 13,
+                            matchMethod: "search",
+                          },
+                        ],
+                      }
+                    : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-music" />);
+
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".musicbrainz-panel")).toBeDefined(),
+    );
+    expect(screen.textContent).toContain("MusicBrainz lookup");
+    expect(screen.textContent).toContain("Fingerprint ready");
+
+    await userEvent(
+      screen.querySelector(".musicbrainz-panel .primary-button"),
+      "click",
+    );
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Nirvana — Nevermind"),
+    );
+    expect(screen.textContent).toContain("Album");
+    expect(screen.textContent).toContain("DGC");
+    expect(screen.textContent).toContain("13 tracks");
+    expect(screen.textContent).toContain("matched by search");
+
+    const fillButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Fill form",
+    );
+    await userEvent(fillButton ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(
+        screen
+          .querySelector(".editor-metadata-form .title-input input")
+          ?.getAttribute("value"),
+      ).toBe("Nevermind"),
+    );
+    const mainForm = screen.querySelector(".editor-metadata-form");
+    expect(mainForm).toBeDefined();
+    const fieldValue = (labelText: string): string | null => {
+      const label = Array.from(mainForm?.querySelectorAll("label") ?? []).find(
+        (element) =>
+          element.querySelector("span")?.textContent?.includes(labelText),
+      );
+      return label?.querySelector("input")?.getAttribute("value") ?? null;
+    };
+    expect(fieldValue("Authors / artists")).toBe("Nirvana");
+    expect(fieldValue("Year")).toBe("1991");
+    expect(fieldValue("Genres")).toBe("grunge, alternative rock");
+    expect(fieldValue("Publisher / studio")).toBe("DGC");
+    expect(
+      fetchMock.mock.calls.some(
+        ([callInput, callInit]) =>
+          String(callInput).endsWith("/metadata/lookup") &&
+          String(callInit?.body).includes('"mode":"auto"'),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("Jellyfin TV filename parsing", () => {
+  it("separates the documented series, year, season, episode, and title", () => {
+    expect(
+      parseTvEpisodeFilename("Awesome TV Show (2024) S01E07 The Return.mkv"),
+    ).toEqual({
+      title: "Awesome TV Show",
+      year: "2024",
+      season: "01",
+      episode: "07",
+      episodeTitle: "The Return",
+    });
+  });
+
+  it("also parses the manager's existing hyphenated Jellyfin-compatible names", () => {
+    expect(
+      parseTvEpisodeFilename(
+        "Example Show (2020) - S02E003 - A New Beginning.mkv",
+      ),
+    ).toEqual({
+      title: "Example Show",
+      year: "2020",
+      season: "02",
+      episode: "003",
+      episodeTitle: "A New Beginning",
+    });
   });
 });
 

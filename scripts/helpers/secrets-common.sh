@@ -203,6 +203,7 @@ validator_function() {
     cloudflared-credentials-json) printf '%s\n' validate_cf ;;
     cloudflare-api-token) printf '%s\n' validate_cf_api_token ;;
     opensubtitles-credentials-json) printf '%s\n' validate_opensubtitles_credentials ;;
+    acoustid-credentials-json) printf '%s\n' validate_acoustid_credentials ;;
     https-url) printf '%s\n' validate_https_url ;;
     nonempty) printf '%s\n' validate_nonempty_secret ;;
     *)
@@ -302,6 +303,15 @@ validate_opensubtitles_credentials() {
     and (.password | type == "string" and length > 0)
     and ((has("userAgent") | not) or (.userAgent | type == "string" and length > 0))
     and ([.apiKey, .username, .password] | all(. != "REPLACE_ME" and . != "CHANGE_ME"))
+  ' "$1" >/dev/null 2>&1
+}
+
+validate_acoustid_credentials() {
+  jq -e '
+    type == "object"
+    and ((keys - ["acoustidApiKey"]) | length == 0)
+    and (.acoustidApiKey | type == "string" and length >= 8 and test("^[A-Za-z0-9_-]+$"))
+    and (.acoustidApiKey != "REPLACE_ME" and .acoustidApiKey != "CHANGE_ME")
   ' "$1" >/dev/null 2>&1
 }
 

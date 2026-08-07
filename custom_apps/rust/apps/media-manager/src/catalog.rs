@@ -189,6 +189,37 @@ impl Catalog {
         rows
     }
 
+    pub fn list_artwork(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+    ) -> rusqlite::Result<Vec<CatalogItem>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, root_id, owner_username, relative_path, media_kind,
+                    size_bytes, modified_ns, fingerprint
+               FROM catalog_items
+              WHERE root_id = ?1
+                AND media_kind = 'artwork'
+                AND (owner_username IS ?2 OR owner_username = ?2)
+              ORDER BY relative_path",
+        )?;
+        let rows = statement
+            .query_map(rusqlite::params![root_id, owner_username], |row| {
+                Ok(CatalogItem {
+                    id: row.get(0)?,
+                    root_id: row.get(1)?,
+                    owner_username: row.get(2)?,
+                    relative_path: row.get(3)?,
+                    media_kind: row.get(4)?,
+                    size_bytes: row.get(5)?,
+                    modified_ns: row.get(6)?,
+                    fingerprint: row.get(7)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
     pub fn root_has_been_scanned(
         &self,
         root_id: &str,

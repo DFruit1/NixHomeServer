@@ -123,6 +123,11 @@ paths:
             image/gif: {}
             image/bmp: {}
             image/tiff: {}
+            image/avif: {}
+            image/svg+xml: {}
+            image/heic: {}
+            image/heif: {}
+            image/jxl: {}
         "404":
           $ref: "#/components/responses/Error"
   /items/{itemId}/subtitles/search:
@@ -217,6 +222,26 @@ paths:
           $ref: "#/components/responses/Error"
         "415":
           $ref: "#/components/responses/Error"
+  /items/{itemId}/metadata:
+    get:
+      operationId: getItemMetadata
+      description: Returns filename-derived fields enriched by a fresh, root-exported Jellyfin snapshot when an exact catalog path matches.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Editable descriptive metadata plus bounded container-derived stream facts.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "private, no-store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemMetadata" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /items/{itemId}/metadata/sidecar:
     post:
       operationId: previewMetadataSidecar
@@ -235,6 +260,10 @@ paths:
               required: [title]
               additionalProperties: false
               properties:
+                mediaType:
+                  description: Optional for backward compatibility; when omitted it is derived from the catalog kind (video defaults to movie).
+                  type: string
+                  enum: [movie, episode, music, audiobook, book]
                 title: { type: string, minLength: 1, maxLength: 500 }
                 sortTitle: { type: string, maxLength: 500 }
                 year:
@@ -266,10 +295,77 @@ paths:
                     maxItems: 64,
                     items: { type: string, maxLength: 500 },
                   }
+                season: { type: integer, minimum: 0, maximum: 10000 }
+                episode: { type: integer, minimum: 1, maximum: 100000 }
+                episodeTitle: { type: string, maxLength: 500 }
+                premiereDate: { type: string, format: date }
+                runtimeMinutes: { type: integer, minimum: 1, maximum: 100000 }
+                officialRating: { type: string, maxLength: 64 }
+                communityRating: { type: number, minimum: 0, maximum: 10 }
+                writers: { type: array, maxItems: 64, items: { type: string, maxLength: 500 } }
+                providerIds:
+                  type: object
+                  maxProperties: 32
+                  additionalProperties: { type: string, maxLength: 256 }
       responses:
         "201":
           description: Digest-bound no-overwrite metadata sidecar preview.
         "403":
+          $ref: "#/components/responses/Error"
+  /items/{itemId}/metadata/lookup:
+    post:
+      operationId: lookupMusicMetadata
+      description: >-
+        MusicBrainz Picard-style metadata lookup for a cataloged music file.
+        In fingerprint mode the audio is fingerprinted with fpcalc and resolved
+        through AcoustID; in search mode the artist and title query MusicBrainz
+        directly; in auto mode fingerprint is tried first and search is the
+        fallback. Returns release-group candidates the editor can fill into the
+        sidecar form.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                mode:
+                  description: Defaults to auto when omitted.
+                  type: string
+                  enum: [auto, fingerprint, search]
+                artist: { type: string, maxLength: 500 }
+                title: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Release-group candidates and a request identifier for tracing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [candidates, requestId]
+                additionalProperties: false
+                properties:
+                  candidates:
+                    type: array
+                    items: { $ref: "#/components/schemas/MusicReleaseCandidate" }
+                  requestId: { type: string }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "503":
           $ref: "#/components/responses/Error"
   /integrations/{integrationId}/refresh:
     get:
@@ -463,6 +559,52 @@ components:
         startedAt: { type: integer }
         finishedAt: { type: integer }
         message: { type: string }
+    ItemMetadata:
+      type: object
+      required: [mediaType, title, genres, writers, providerIds, videoStreams, audioStreams, sources]
+      properties:
+        mediaType: { type: string, enum: [movie, episode, music, audiobook, book] }
+        title: { type: string }
+        year: { type: integer, nullable: true }
+        series: { type: string, nullable: true }
+        season: { type: integer, nullable: true }
+        episode: { type: integer, nullable: true }
+        episodeTitle: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        publisher: { type: string, nullable: true }
+        language: { type: string, nullable: true }
+        genres: { type: array, items: { type: string } }
+        writers: { type: array, items: { type: string } }
+        premiereDate: { type: string, nullable: true }
+        runtimeMinutes: { type: integer, nullable: true }
+        officialRating: { type: string, nullable: true }
+        communityRating: { type: number, nullable: true }
+        providerIds: { type: object, additionalProperties: { type: string } }
+        videoStreams: { type: array, items: { type: object } }
+        audioStreams: { type: array, items: { type: object } }
+        sources: { type: array, items: { type: string, enum: [filename, jellyfin] } }
+    MusicReleaseCandidate:
+      type: object
+      required: [releaseGroupId, artist, title, genres, matchMethod]
+      additionalProperties: false
+      properties:
+        releaseGroupId: { type: string, format: uuid }
+        artist: { type: string }
+        title: { type: string }
+        releaseType:
+          type: string
+          nullable: true
+          description: MusicBrainz primary release type such as album or single.
+        year: { type: integer, nullable: true }
+        genres:
+          type: array
+          items: { type: string }
+        label: { type: string, nullable: true }
+        trackCount: { type: integer, nullable: true }
+        matchMethod:
+          description: How the candidate was resolved.
+          type: string
+          enum: [fingerprint, search]
     PlanRequest:
       type: object
       required: [operation, itemIds]

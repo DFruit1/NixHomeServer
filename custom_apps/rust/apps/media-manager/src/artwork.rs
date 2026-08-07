@@ -2,7 +2,7 @@ use crate::{broker::open_regular_file_beneath, catalog::CatalogItem};
 use lofty::{
     config::ParseOptions,
     file::{FileType, TaggedFileExt},
-    picture::{MimeType, PictureType},
+    picture::PictureType,
     probe::Probe,
 };
 use std::{
@@ -14,7 +14,7 @@ const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
 
 pub(crate) struct ArtworkBody {
     pub(crate) bytes: Vec<u8>,
-    pub(crate) content_type: &'static str,
+    pub(crate) content_type: String,
 }
 
 pub(crate) fn read_artwork_file(
@@ -32,7 +32,7 @@ pub(crate) fn read_artwork_file(
     }
     Ok(ArtworkBody {
         bytes,
-        content_type: artwork_content_type(relative_path),
+        content_type: artwork_content_type(relative_path).to_string(),
     })
 }
 
@@ -45,6 +45,14 @@ fn artwork_content_type(path: &str) -> &'static str {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("png") => "image/png",
         Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        Some("tif") | Some("tiff") => "image/tiff",
+        Some("avif") => "image/avif",
+        Some("svg") => "image/svg+xml",
+        Some("heic") => "image/heic",
+        Some("heif") => "image/heif",
+        Some("jxl") => "image/jxl",
         _ => "application/octet-stream",
     }
 }
@@ -81,17 +89,16 @@ pub(crate) fn read_embedded_artwork(
     let Some(picture) = picture else {
         return Ok(None);
     };
-    let content_type = match picture.mime_type() {
-        Some(MimeType::Jpeg) => "image/jpeg",
-        Some(MimeType::Png) => "image/png",
-        Some(MimeType::Gif) => "image/gif",
-        Some(MimeType::Bmp) => "image/bmp",
-        Some(MimeType::Tiff) => "image/tiff",
-        _ => return Ok(None),
+    let Some(mime_type) = picture.mime_type() else {
+        return Ok(None);
     };
+    let content_type = mime_type.as_str();
+    if !content_type.starts_with("image/") {
+        return Ok(None);
+    }
     Ok(Some(ArtworkBody {
         bytes: picture.data().to_vec(),
-        content_type,
+        content_type: content_type.to_string(),
     }))
 }
 

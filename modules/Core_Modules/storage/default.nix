@@ -2,6 +2,7 @@
 
 {
   imports = [
+    ./external-usb.nix
     ./fileshare-user-roots.nix
     ./import-fix.nix
     ./layout.nix

@@ -132,7 +132,7 @@ secret.
 - `files-personal-users` grants browser file access through Filestash and personal file-root provisioning.
 - `files-sftp-users` enables SFTP access on the dedicated SFTP endpoint.
 - `files-shared-users` adds `_Shared` inside each user personal root.
-- `usb-access` adds `_USB` view from the mounted external USB storage path.
+- `usb-access` adds the shared `_USB` view of auto-mounted external USB storage.
 - `backup-admin` grants Kopia backup-management access.
 - `backup-storage-users` grants the read-only `_Backups` view without granting
   access to the Kopia administration UI. Add a backup administrator to both

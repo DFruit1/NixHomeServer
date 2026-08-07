@@ -190,7 +190,7 @@ command arguments, or shell history.
 - Reconcile Jellyfin OIDC and Quick Connect: `sudo systemctl start jellyfin-oidc-bootstrap-v1.service`
 - SMART sweep: `sudo systemctl start storage-smart-short.service`
 - Local encrypted backup repository: `/mnt/data/backups/kopia`
-- Manual external USB media root for operators: `/mnt/external-usb/`
+- External USB media auto-mount root: `/mnt/external-usb/` (drives mount on insertion; shared `_USB` view at `/mnt/usb-access-view` is gated to `usb-access`)
 
 ## Nix Store Capacity Garbage Collection
 
@@ -481,7 +481,11 @@ files under `/persist/appdata/files-sftp-authorized-keys/<username>` are the
 administrator recovery/audit surface, not something users edit directly.
 - Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
-- Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB filesystems are mounted manually by an operator under that root.
+- Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB
+  storage auto-mounts on insertion under that root (one folder per drive, named
+  from its label/partition-label/UUID), and the `_USB` shared view is gated to
+  `usb-access` members. Drives are unmounted and their folders removed when the
+  device is detached.
 - Users in `backup-storage-users` also see read-only `_Backups`, backed by
 `/mnt/data/backups`. This role is independent of `backup-admin`.
 - GID `2005` is the fixed on-disk identity of `backup-storage-users`. It is
@@ -500,12 +504,13 @@ kanidm group get backup-admin
 kanidm group get backup-storage-users
 
 systemctl status 'files-shared-bindfs@<user>.service'
-systemctl status 'files-usb-bindfs@<user>.service'
 systemctl status 'files-backups-bindfs@<user>.service'
+systemctl status files-usb-shared-view
+systemctl status files-usb-shared-link
 findmnt /mnt/data || test -d /mnt/data
 findmnt /mnt/data/users/<user>/_Shared || mountpoint /mnt/data/users/<user>/_Shared
-findmnt /mnt/data/users/<user>/_USB || mountpoint /mnt/data/users/<user>/_USB
 findmnt /mnt/data/users/<user>/_Backups || mountpoint /mnt/data/users/<user>/_Backups
+findmnt /mnt/usb-access-view || mountpoint /mnt/usb-access-view
 
 sudo -u filestash sh -lc 'probe=/mnt/data/users/<user>/_Shared/.write-probe && : >"$probe" && test -f "$probe"'
 sudo -u filestash rm /mnt/data/users/<user>/_Shared/.write-probe
@@ -602,8 +607,10 @@ Metadata is initially written as Jellyfin NFO or book/audiobook OPF sidecars;
 media streams are not rewritten. Subtitle uploads accept UTF-8 SRT, WebVTT,
 and ASS files. OpenSubtitles search is optional. It calculates the provider's
 movie hash locally and asks for an exact file match before falling back to a
-title search; the media file itself is not uploaded. To enable it, obtain an
-OpenSubtitles.com REST API consumer key, prepare a mode-0600 JSON file such as:
+title search; the media file itself is not uploaded. To enable it, create an
+OpenSubtitles.com account, then create an application API key under "My
+consumers" at https://www.opensubtitles.com/consumers (select the
+"OpenSubtitles REST API" API). Prepare a mode-0600 JSON file such as:
 
 ```json
 {
@@ -625,6 +632,28 @@ nix run .#generate-secrets -- \
 rm -f secrets/unencrypted/openSubtitlesCredentials
 rmdir secrets/unencrypted 2>/dev/null || true
 git add secrets/openSubtitlesCredentials.age
+```
+
+MusicBrainz Picard-style metadata lookup is available in the **Metadata**
+editor for cataloged music files. Search mode queries MusicBrainz directly from
+an artist and title and works without any configuration. Fingerprint mode
+fingerprints the local audio with `fpcalc` (bundled via the `chromaprint`
+package) and resolves it through AcoustID; it needs an AcoustID API key. Auto
+mode fingerprints first and falls back to search. Enabling the key makes
+fingerprint mode available, otherwise the editor shows the key's absence and
+falls back to search. To enable it, register an application API key at
+https://acoustid.org/settings, then stage and encrypt it without committing
+plaintext (the key lives in a JSON object named `acoustidApiKey`):
+
+```bash
+install -d -m 0700 secrets/unencrypted
+printf '%s\n' '{"acoustidApiKey":"YOUR_KEY"}' > secrets/unencrypted/acoustidApiKey
+nix run .#generate-secrets -- \
+  --replace-external acoustidApiKey \
+  --identity /path/to/current/age.key
+rm -f secrets/unencrypted/acoustidApiKey
+rmdir secrets/unencrypted 2>/dev/null || true
+git add secrets/acoustidApiKey.age
 ```
 
 Manual refresh adapters are registered only for installed applications.
@@ -1189,8 +1218,9 @@ operation and must be performed explicitly after checking that it contains
 nothing that should be recovered.
 
 External USB storage is no longer a managed backup target. If an operator wants
-to copy backups to a removable SSD, mount it manually under `/mnt/external-usb`
-and copy or sync the encrypted repository files from `/mnt/data/backups`.
+to copy backups to a removable SSD, plug it in (it auto-mounts under
+`/mnt/external-usb`) and copy or sync the encrypted repository files from
+`/mnt/data/backups`.
 
 The previous automatic Restic `system-state` behavior is retired and no Restic
 timer or backup service is enabled by this module.
