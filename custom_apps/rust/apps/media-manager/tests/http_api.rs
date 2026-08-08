@@ -40,6 +40,7 @@ fn test_app_with_mode(
         router(AppState {
             config,
             catalog: CatalogHandle::new(database.clone()),
+            jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
         }),
         database,
     )
@@ -311,6 +312,7 @@ async fn frontend_assets_are_served_only_from_the_packaged_asset_directory() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
 
     let asset = app
@@ -758,6 +760,7 @@ async fn items_report_unprobeable_videos_as_null_probes() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
 
@@ -917,6 +920,7 @@ async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
     let items = app
         .clone()
@@ -982,6 +986,7 @@ async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
     let response = app
         .clone()
@@ -1030,6 +1035,7 @@ async fn authenticated_viewer_can_queue_a_registered_kavita_refresh() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
 
     let response = app
@@ -1083,6 +1089,7 @@ async fn refresh_status_returns_the_durable_terminal_result() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
 
     let response = app
@@ -1984,6 +1991,7 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -2069,6 +2077,7 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -2110,6 +2119,7 @@ async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -2145,6 +2155,7 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
     let app = router(AppState {
         config,
         catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
