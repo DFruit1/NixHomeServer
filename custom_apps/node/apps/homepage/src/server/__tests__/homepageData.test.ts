@@ -69,8 +69,12 @@ const baseConfig: AppConfig = {
       requiredAnyGroups: ['files-sftp', 'files-shared-users', 'usb-access', 'backup-storage-users'],
       accessNotes: [
         {
-          text: 'Your SFTP root includes /_Shared as a deletion-protected shared view.',
+          text: 'Your SFTP root includes /_Shared as a shared household view; server-provisioned folders starting with \'_\' can never be deleted, and other shared files can only be removed by members of the delete_shared_files group.',
           requiredAnyGroups: ['files-shared-users'],
+        },
+        {
+          text: 'You can delete files inside /_Shared, the shared household view. Server-provisioned folders starting with \'_\' remain protected and can never be deleted.',
+          requiredAnyGroups: ['delete_shared_files'],
         },
         {
           text: 'Your SFTP root includes /_USB for external USB storage.',

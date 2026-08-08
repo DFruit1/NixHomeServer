@@ -132,6 +132,9 @@ secret.
 - `files-personal-users` grants browser file access through Filestash and personal file-root provisioning.
 - `files-sftp-users` enables SFTP access on the dedicated SFTP endpoint.
 - `files-shared-users` adds `_Shared` inside each user personal root.
+- `delete_shared_files` grants deletion rights inside the `_Shared` view for
+  members who already hold `files-shared-users`. Server-provisioned folders
+  starting with `_` can never be deleted, even by members of this group.
 - `usb-access` adds the shared `_USB` view of auto-mounted external USB storage.
 - `backup-admin` grants Kopia backup-management access.
 - `backup-storage-users` grants the read-only `_Backups` view without granting

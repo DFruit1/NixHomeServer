@@ -42,6 +42,7 @@ let
     sftpAccessGroup = "files-sftp-users";
     localSftpAccessGroup = "files-local-sftp-users";
     sharedAccessGroup = "files-shared-users";
+    deleteSharedAccessGroup = "delete_shared_files";
     usbAccessGroup = "usb-access";
     sharedMountName = "_Shared";
     usbMountName = "_USB";

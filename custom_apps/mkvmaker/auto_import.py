@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -424,6 +426,55 @@ def public_status(
         print(f"Progress reporting unavailable: {error}", file=sys.stderr)
 
 
+def iso_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def find_duplicate(
+    source: Path,
+    entry: dict[str, Any],
+    processed_dir: Path,
+    state: dict[str, Any],
+    state_path: Path,
+) -> str | None:
+    """Return the name of a processed ISO identical to *source*, else None.
+
+    Hashes are cached in durable state keyed by the archived ISO filename, so
+    only new or matching-size ISOs are ever read. A size pre-filter avoids
+    hashing the source when nothing in _Processed could match it.
+    """
+    hashes = state.setdefault("processed_hashes", {})
+    live = {path.name for path in processed_dir.glob("*.iso")}
+    for stale in set(hashes) - live:
+        del hashes[stale]
+    source_size = source.stat().st_size
+    candidates = sorted(
+        (
+            path
+            for path in processed_dir.glob("*.iso")
+            if path.name != source.name and path.stat().st_size == source_size
+        ),
+        key=lambda path: natural_key(path.name),
+    )
+    if not candidates:
+        return None
+    source_hash = entry.get("sha256") or iso_sha256(source)
+    entry["sha256"] = source_hash
+    for iso_path in candidates:
+        digest = hashes.get(iso_path.name)
+        if digest is None:
+            digest = iso_sha256(iso_path)
+            hashes[iso_path.name] = digest
+            atomic_json(state_path, state)
+        if digest == source_hash:
+            return iso_path.name
+    return None
+
+
 def unique_destination(directory: Path, name: str) -> Path:
     candidate = directory / name
     counter = 2
@@ -555,6 +606,24 @@ def run(args: argparse.Namespace) -> int:
             if now < int(entry.get("retry_after", 0)):
                 continue
 
+            try:
+                duplicate = find_duplicate(source, entry, processed_dir, state, state_path)
+            except Exception as error:
+                print(f"Duplicate check unavailable for {source.name}: {error}", file=sys.stderr)
+                duplicate = None
+            if duplicate is not None:
+                archived = archive_source(source, failed_dir)
+                error_path = archived.with_suffix(".iso.error.txt")
+                error_path.write_text(
+                    f"Duplicate ISO. The file is identical to {duplicate}, which has "
+                    f"already been processed and is preserved in _Processed.\n",
+                    encoding="utf-8",
+                )
+                print(f"Moved duplicate ISO {source.name} to {archived}", file=sys.stderr)
+                del sources[source.name]
+                atomic_json(state_path, state)
+                continue
+
             queued = pending_titles(exclude=source.name)
             try:
                 entry["status"] = "processing"
@@ -562,6 +631,8 @@ def run(args: argparse.Namespace) -> int:
                 process_source(args, source, entry, queued)
                 archived = archive_source(source, processed_dir, entry.get("plan"))
                 print(f"Completed {source.name}; preserved the ISO at {archived}")
+                digest = entry.get("sha256") or iso_sha256(archived)
+                state.setdefault("processed_hashes", {})[archived.name] = digest
                 del sources[source.name]
             except ShutdownRequested as error:
                 entry["status"] = "interrupted"
@@ -606,6 +677,11 @@ def self_test() -> None:
     assert not looks_like_episode_set([Title(1, 5400, True), Title(2, 1200, False), Title(3, 900, False)])
     assert match_score("The Wire", "The Wire") == 1.0
     assert natural_key("disc2.iso") < natural_key("disc10.iso")
+    with tempfile.NamedTemporaryFile() as handle:
+        handle.write(b"mkvmaker duplicate self-test\n")
+        handle.flush()
+        digest = iso_sha256(Path(handle.name))
+    assert digest == hashlib.sha256(b"mkvmaker duplicate self-test\n").hexdigest()
     print("mkvmaker auto-import self-tests passed")
 
 

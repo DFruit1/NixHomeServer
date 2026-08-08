@@ -83,6 +83,8 @@ require_fixed custom_apps/mkvmaker/auto_import.py 'ratio >= dominant_ratio' \
   "mkvmaker must implement the dominant-feature threshold"
 require_fixed custom_apps/mkvmaker/src/main.rs 'let _ = fs::remove_file(&partial);' \
   "the converter must discard a stale partial file before restarting an encode"
+require_fixed custom_apps/mkvmaker/auto_import.py 'find_duplicate' \
+  "mkvmaker must hash-check ISOs against the _Processed folder before conversion"
 
 mkdir -p "$test_root/inbox" "$test_root/movies" "$test_root/shows" "$test_root/state"
 printf 'fake iso data\n' >"$test_root/inbox/Restartable_2001.iso"
@@ -229,4 +231,45 @@ touch "$test_root/allow-completion"
 }
 jq -e '.sources["Restartable_2001.iso"] == null' "$test_root/state/queue.json" >/dev/null
 
-echo "✅ Mkvmaker queue, title-selection, path scope, and service policy are valid."
+cp "$test_root/inbox/_Processed/Restartable_2001.iso" \
+  "$test_root/inbox/Restartable_2001_again.iso"
+TEST_ROOT="$test_root" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["TEST_ROOT"])
+state_path = root / "state/queue.json"
+source = root / "inbox/Restartable_2001_again.iso"
+stat = source.stat()
+state = json.loads(state_path.read_text(encoding="utf-8"))
+state["sources"][source.name] = {
+    "signature": {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+    "unchanged_since": 0,
+    "attempts": 0,
+}
+state_path.write_text(json.dumps(state), encoding="utf-8")
+PY
+
+"${auto_import[@]}" >/dev/null
+[[ -f "$test_root/inbox/_Failed/Restartable_2001_again.iso" ]] || {
+  echo "❌ Duplicate ISO was not moved to the _Failed folder." >&2
+  exit 1
+}
+[[ -f "$test_root/inbox/_Processed/Restartable_2001.iso" ]] || {
+  echo "❌ Duplicate check removed the originally processed ISO." >&2
+  exit 1
+}
+error_log="$test_root/inbox/_Failed/Restartable_2001_again.iso.error.txt"
+grep -q "Duplicate ISO" "$error_log" || {
+  echo "❌ Duplicate note is missing from the error log." >&2
+  exit 1
+}
+grep -q "Restartable_2001.iso" "$error_log" || {
+  echo "❌ Duplicate note does not name the existing ISO." >&2
+  exit 1
+}
+jq -e '.sources["Restartable_2001_again.iso"] == null' "$test_root/state/queue.json" >/dev/null
+jq -e '.processed_hashes["Restartable_2001.iso"] != null' "$test_root/state/queue.json" >/dev/null
+
+echo "✅ Mkvmaker queue, title-selection, path scope, deduplication, and service policy are valid."

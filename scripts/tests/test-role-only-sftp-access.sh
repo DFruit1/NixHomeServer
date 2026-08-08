@@ -50,6 +50,7 @@ if ! jq -e '
   and (.homepageScopeGroups | index("usb-access") != null)
   and (.homepageScopeGroups | index("backup-storage-users") != null)
   and (.homepageScopeGroups | index("files-shared-users") != null)
+  and (.homepageScopeGroups | index("delete_shared_files") != null)
   and (.gatewayScopeGroups | index("usb-access") != null)
   and (.gatewayScopeGroups | index("backup-storage-users") != null)
   and (.gatewayScopeGroups | index("files-shared-users") != null)
@@ -94,6 +95,15 @@ for required_group_variable in webAccessGroup sftpAccessGroup sharedAccessGroup 
   fi
 done
 
+delete_shared_block="$(
+  sed -n '/delete_shared_members_json=/,/^    sftp_members_json=/p' modules/Core_Modules/storage/fileshare-user-roots.nix
+)"
+if ! rg -Fq "group_members_by_name[\${lib.escapeShellArg deleteSharedAccessGroup}]" <<<"$delete_shared_block"; then
+  echo "Shared delete-capable view activation omitted deleteSharedAccessGroup members." >&2
+  printf '%s\n' "$delete_shared_block" >&2
+  exit 1
+fi
+
 homepage_config="$(text_derivation_payload "$(jq -r .homepageConfigDrv <<<"$role_json")")"
 if ! jq -e '
   (.sftp.requiredAnyGroups | index("usb-access") != null)
@@ -103,6 +113,10 @@ if ! jq -e '
     | select((.requiredAnyGroups | index("files-shared-users")) != null)
     | .text
     | contains("/_Shared")] | any)
+  and ([.sftp.accessNotes[]
+    | select((.requiredAnyGroups | index("delete_shared_files")) != null)
+    | .text
+    | contains("delete")] | any)
   and ([.sftp.accessNotes[]
     | select((.requiredAnyGroups | index("usb-access")) != null)
     | .text

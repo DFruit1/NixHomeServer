@@ -106,6 +106,8 @@ in
 
     systemd.services.mkvmaker-import = {
       description = "Convert settled shared DVD ISOs into Jellyfin-ready MKVs";
+      restartIfChanged = false;
+      stopIfChanged = false;
       requires = [ "mkvmaker-storage-layout-v1.service" ];
       wants = [ "network-online.target" ];
       after = [ "mkvmaker-storage-layout-v1.service" "network-online.target" ];

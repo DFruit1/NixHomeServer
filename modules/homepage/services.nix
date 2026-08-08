@@ -44,6 +44,7 @@ let
   filesWebAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   filesSftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   filesSharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
+  filesDeleteSharedAccessGroup = vars.fileAccess.deleteSharedAccessGroup or "delete_shared_files";
   filesUsbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
   backupStorageAccessGroup = vars.backupStorageGroup;
   filesUsbMountName = vars.fileAccess.usbMountName or "_USB";
@@ -1455,8 +1456,12 @@ let
       requiredAnyGroups = sftpAccessGroups;
       accessNotes = [
         {
-          text = "Your SFTP root includes /${filesSharedMountName}, a shared household view. It is writable but deletion-protected so shared files cannot be removed through this view.";
+          text = "Your SFTP root includes /${filesSharedMountName}, a shared household view. It is writable; server-provisioned folders starting with '_' can never be deleted, and other shared files can only be removed by members of the ${filesDeleteSharedAccessGroup} group.";
           requiredAnyGroups = [ filesSharedAccessGroup ];
+        }
+        {
+          text = "You can delete files inside /${filesSharedMountName}, the shared household view. Server-provisioned folders starting with '_' remain protected and can never be deleted.";
+          requiredAnyGroups = [ filesDeleteSharedAccessGroup ];
         }
         {
           text = "Your SFTP root includes /${filesUsbMountName} for external USB storage. It is writable but deletion-protected. Attached USB drives appear here automatically, each under a folder named after the drive; the shared view is empty while no drive is connected.";

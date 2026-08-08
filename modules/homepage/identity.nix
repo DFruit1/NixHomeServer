@@ -7,6 +7,7 @@ let
     vars.fileAccess.webAccessGroup
     vars.fileAccess.sftpAccessGroup
     vars.fileAccess.sharedAccessGroup
+    vars.fileAccess.deleteSharedAccessGroup
     vars.fileAccess.usbAccessGroup
     vars.backupStorageGroup
   ];

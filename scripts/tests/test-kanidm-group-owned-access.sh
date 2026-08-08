@@ -28,6 +28,7 @@ access_json="$(
           "files-personal-users"
           "files-sftp-users"
           "files-shared-users"
+          "delete_shared_files"
           "usb-access"
           "backup-admin"
           "backup-storage-users"

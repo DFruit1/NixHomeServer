@@ -35,6 +35,7 @@ if ! jq -e '
     and .fileAccess.sftpAccessGroup == "files-sftp-users"
     and .fileAccess.localSftpAccessGroup == "files-local-sftp-users"
     and .fileAccess.sharedAccessGroup == "files-shared-users"
+    and .fileAccess.deleteSharedAccessGroup == "delete_shared_files"
     and .fileAccess.usbAccessGroup == "usb-access"
     and .fileAccess.sharedMountName == "_Shared"
     and .fileAccess.usbMountName == "_USB"

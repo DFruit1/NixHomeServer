@@ -22,6 +22,11 @@ let
       fallback = "invalid-file-access-usb-group";
       gid = 2004;
     }
+    {
+      field = "deleteSharedAccessGroup";
+      fallback = "invalid-file-access-delete-shared-group";
+      gid = 2006;
+    }
   ];
   configuredName = spec: fileAccess.${spec.field} or null;
   # Attribute names must be strings before the NixOS assertion phase. Preserve

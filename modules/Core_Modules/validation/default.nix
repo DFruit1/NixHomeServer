@@ -233,6 +233,7 @@ let
     webAccessGroup = vars.fileAccess.webAccessGroup or null;
     sftpAccessGroup = vars.fileAccess.sftpAccessGroup or null;
     sharedAccessGroup = vars.fileAccess.sharedAccessGroup or null;
+    deleteSharedAccessGroup = vars.fileAccess.deleteSharedAccessGroup or null;
     usbAccessGroup = vars.fileAccess.usbAccessGroup or null;
   };
   localSftpAccessGroupRaw = vars.fileAccess.localSftpAccessGroup or null;
@@ -358,6 +359,11 @@ let
       field = "sharedAccessGroup";
       group = fileAccessGroupNamesRaw.sharedAccessGroup;
       gid = 2003;
+    }
+    {
+      field = "deleteSharedAccessGroup";
+      group = fileAccessGroupNamesRaw.deleteSharedAccessGroup;
+      gid = 2006;
     }
     {
       field = "usbAccessGroup";
@@ -866,7 +872,7 @@ in
     }
     {
       assertion = invalidFileAccessGroupNameFields == [ ];
-      message = "nixhomeserver: fileAccess webAccessGroup, sftpAccessGroup, sharedAccessGroup, and usbAccessGroup must be valid Kanidm group names; invalid fields: ${builtins.toJSON invalidFileAccessGroupNameFields}";
+      message = "nixhomeserver: fileAccess webAccessGroup, sftpAccessGroup, sharedAccessGroup, deleteSharedAccessGroup, and usbAccessGroup must be valid Kanidm group names; invalid fields: ${builtins.toJSON invalidFileAccessGroupNameFields}";
     }
     {
       assertion = validLocalSftpAccessGroup;
@@ -878,7 +884,7 @@ in
     }
     {
       assertion = invalidFileAccessGidAssignments == [ ];
-      message = "nixhomeserver: configurable file-access groups must retain stable POSIX GIDs (web=2001, SFTP=2002, shared=2003, USB=2004); invalid fields: ${builtins.toJSON invalidFileAccessGidAssignments}";
+      message = "nixhomeserver: configurable file-access groups must retain stable POSIX GIDs (web=2001, SFTP=2002, shared=2003, USB=2004, delete-shared=2006); invalid fields: ${builtins.toJSON invalidFileAccessGidAssignments}";
     }
     {
       assertion = fileAccessLocalGroupNameCollisions == { };
@@ -886,7 +892,7 @@ in
     }
     {
       assertion = fileAccessLocalGidCollisions == { };
-      message = "nixhomeserver: fileAccess POSIX GIDs 2001 through 2004 must not reuse explicit local system or service group GIDs; colliding fields and groups: ${builtins.toJSON fileAccessLocalGidCollisions}";
+      message = "nixhomeserver: fileAccess POSIX GIDs (web=2001, SFTP=2002, shared=2003, USB=2004, delete-shared=2006) must not reuse explicit local system or service group GIDs; colliding fields and groups: ${builtins.toJSON fileAccessLocalGidCollisions}";
     }
     {
       assertion = reservedFileAccessGroupNameCollisions == [ ];

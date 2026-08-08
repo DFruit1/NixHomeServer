@@ -12,8 +12,12 @@
     "requiredAnyGroups": ["files-sftp-users", "files-shared-users", "usb-access", "backup-storage-users"],
     "accessNotes": [
       {
-        "text": "Your SFTP root includes /_Shared as a deletion-protected shared view.",
+        "text": "Your SFTP root includes /_Shared as a shared household view; server-provisioned folders starting with '_' can never be deleted, and other shared files can only be removed by members of the delete_shared_files group.",
         "requiredAnyGroups": ["files-shared-users"]
+      },
+      {
+        "text": "You can delete files inside /_Shared, the shared household view. Server-provisioned folders starting with '_' remain protected and can never be deleted.",
+        "requiredAnyGroups": ["delete_shared_files"]
       },
       {
         "text": "Your SFTP root includes /_USB for external USB storage. It is writable but deletion-protected.",
@@ -25,11 +29,12 @@
       }
     ]
   },
-  "kanidmGroups": ["app-admin", "backup-admin", "backup-storage-users", "documents-users", "files-personal-users", "files-sftp-users", "jellyfin-users", "photos-users", "users"],
+  "kanidmGroups": ["app-admin", "backup-admin", "backup-storage-users", "delete_shared_files", "documents-users", "files-personal-users", "files-sftp-users", "jellyfin-users", "photos-users", "users"],
   "kanidmGroupDescriptions": {
     "app-admin": "Application administration access.",
     "backup-admin": "Backup administration access.",
     "backup-storage-users": "Read-only backup repository access.",
+    "delete_shared_files": "Deletion permission inside the shared files view; server-provisioned folders starting with '_' can never be deleted.",
     "documents-users": "Document archive access.",
     "files-personal-users": "Personal file browser access.",
     "jellyfin-users": "Jellyfin video access.",
@@ -40,6 +45,7 @@
     "app-admin": "manual",
     "backup-admin": "manual",
     "backup-storage-users": "manual",
+    "delete_shared_files": "manual",
     "documents-users": "identity.appUsers",
     "files-personal-users": "manual",
     "files-sftp-users": "manual",

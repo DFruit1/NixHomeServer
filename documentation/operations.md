@@ -481,6 +481,8 @@ files under `/persist/appdata/files-sftp-authorized-keys/<username>` are the
 administrator recovery/audit surface, not something users edit directly.
 - Port `22` is reserved for normal SSH administration and does not expose an SFTP subsystem.
 - Users in `files-shared-users` also see `_Shared` at the top of that root.
+- Members of `delete_shared_files` can delete files through the `_Shared` view;
+  other `files-shared-users` members see it as delete-protected. Server-provisioned folders starting with `_` can never be deleted by anyone through `_Shared`, even by `delete_shared_files` members; admin deletes of provisioned folders are done directly against the real shared path.
 - Users in `usb-access` also see `_USB`, backed by `/mnt/external-usb`. USB
   storage auto-mounts on insertion under that root (one folder per drive, named
   from its label/partition-label/UUID), and the `_USB` shared view is gated to
@@ -491,7 +493,7 @@ administrator recovery/audit surface, not something users edit directly.
 - GID `2005` is the fixed on-disk identity of `backup-storage-users`. It is
   intentionally derived outside `vars.nix`; changing it requires a deliberate
   ownership and ACL migration.
-- `_Shared` is a delete-protected shared view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately; deletes through `_Shared` should fail. Admin deletes are done directly against the real shared path.
+- `_Shared` is a shared household view. Reads, writes, edits, and same-folder renames affect the real shared storage immediately. Deletion through `_Shared` is allowed only for members of `delete_shared_files`; for everyone else deletes should fail. Server-provisioned folders starting with `_` remain non-deletable for all users, including `delete_shared_files` members. Admin deletes are done directly against the real shared path.
 
 Useful file-access checks:
 
@@ -499,11 +501,13 @@ Useful file-access checks:
 kanidm group get files-personal-users
 kanidm group get files-sftp-users
 kanidm group get files-shared-users
+kanidm group get delete_shared_files
 kanidm group get usb-access
 kanidm group get backup-admin
 kanidm group get backup-storage-users
 
 systemctl status 'files-shared-bindfs@<user>.service'
+systemctl status 'files-shared-delete-bindfs@<user>.service'
 systemctl status 'files-backups-bindfs@<user>.service'
 systemctl status files-usb-shared-view
 systemctl status files-usb-shared-link
@@ -517,7 +521,11 @@ sudo -u filestash rm /mnt/data/users/<user>/_Shared/.write-probe
 sudo rm /mnt/data/shared/.write-probe
 ```
 
-The `rm` through `_Shared` is expected to fail with permission denied. The final admin delete against the real shared path should remove the probe from every `_Shared` view.
+The `rm` through `_Shared` is expected to fail with permission denied for a user
+who is not a member of `delete_shared_files`. The final admin delete against the
+real shared path should remove the probe from every `_Shared` view. To grant a
+user deletion rights, add them to `delete_shared_files` and restart the
+`fileshare-user-root-sync.service` for their shared view:
 
 ### Automatic DVD ISO conversion
 

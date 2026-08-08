@@ -66,6 +66,10 @@ let
       value = "Grants access to the shared files view.";
     }
     {
+      name = vars.fileAccess.deleteSharedAccessGroup;
+      value = "Grants deletion permission inside the shared files view; server-provisioned folders starting with '_' can never be deleted.";
+    }
+    {
       name = vars.fileAccess.usbAccessGroup;
       value = "Grants access to the mounted USB files view.";
     }
@@ -152,6 +156,10 @@ let
     }
     {
       name = vars.fileAccess.sharedAccessGroup;
+      value = mkManualGroup [ ];
+    }
+    {
+      name = vars.fileAccess.deleteSharedAccessGroup;
       value = mkManualGroup [ ];
     }
     {

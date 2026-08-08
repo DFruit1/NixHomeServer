@@ -12,18 +12,21 @@ derivation_json="$(flake_eval_json '
     webAccessGroup = "custom-web-users";
     sftpAccessGroup = "custom-sftp-users";
     sharedAccessGroup = "custom-shared-users";
+    deleteSharedAccessGroup = "custom-delete-shared-users";
     usbAccessGroup = "custom-usb-users";
   };
   collision = deriveGids {
     webAccessGroup = "same-group";
     sftpAccessGroup = "same-group";
     sharedAccessGroup = "other-shared-group";
+    deleteSharedAccessGroup = "other-delete-shared-group";
     usbAccessGroup = "other-usb-group";
   };
   malformed = deriveGids {
     webAccessGroup = {};
     sftpAccessGroup = [];
     sharedAccessGroup = null;
+    deleteSharedAccessGroup = 17;
     usbAccessGroup = 42;
   };
   identity = (import ./lib/identity-access.nix { inherit lib; }) {
@@ -40,14 +43,16 @@ in {
       custom-sftp-users = 2002;
       custom-shared-users = 2003;
       custom-usb-users = 2004;
+      custom-delete-shared-users = 2006;
     };
     collisionIsTotal =
       builtins.hasAttr "same-group" collision.posixGids
-      && builtins.length (builtins.attrNames collision.posixGids) == 3;
+      && builtins.length (builtins.attrNames collision.posixGids) == 4;
     malformedIsTotal = malformed.renderableGroupNames == {
       webAccessGroup = "invalid-file-access-web-group";
       sftpAccessGroup = "invalid-file-access-sftp-group";
       sharedAccessGroup = "invalid-file-access-shared-group";
+      deleteSharedAccessGroup = "invalid-file-access-delete-shared-group";
       usbAccessGroup = "invalid-file-access-usb-group";
     };
     appAdminInNormalAccess = builtins.elem "app-admin-only" identity.appUsers;
@@ -83,6 +88,7 @@ behavior_json="$(flake_eval_json '
       webAccessGroup = "custom-web-users";
       sftpAccessGroup = "custom-sftp-users";
       sharedAccessGroup = "custom-shared-users";
+      deleteSharedAccessGroup = "custom-delete-shared-users";
       usbAccessGroup = "custom-usb-users";
     };
     fileAccessGidModel = import ./lib/file-access-gids.nix { inherit fileAccess; };
@@ -133,6 +139,7 @@ behavior_json="$(flake_eval_json '
       identityVars.fileAccess.webAccessGroup
       identityVars.fileAccess.sftpAccessGroup
       identityVars.fileAccess.sharedAccessGroup
+      identityVars.fileAccess.deleteSharedAccessGroup
       identityVars.fileAccess.usbAccessGroup
     ];
   in {
@@ -165,6 +172,7 @@ if ! jq -e '
     "custom-sftp-users": 2002,
     "custom-shared-users": 2003,
     "custom-usb-users": 2004,
+    "custom-delete-shared-users": 2006,
     "backup-storage-users": 2005
   }
   and .customGroupsProvisioned
@@ -235,7 +243,7 @@ file_access_body='
 in evaluatedHost.config.system.build.toplevel.drvPath'
 
 NIXHOMESERVER_FILE_ACCESS_CASE=invalid eval_fails_with \
-  'fileAccess webAccessGroup, sftpAccessGroup, sharedAccessGroup, and usbAccessGroup must be valid Kanidm group names; invalid fields: ["webAccessGroup"]' \
+  'fileAccess webAccessGroup, sftpAccessGroup, sharedAccessGroup, deleteSharedAccessGroup, and usbAccessGroup must be valid Kanidm group names; invalid fields: ["webAccessGroup"]' \
   "$file_access_body"
 
 NIXHOMESERVER_FILE_ACCESS_CASE=collision eval_fails_with \
@@ -259,7 +267,7 @@ NIXHOMESERVER_FILE_ACCESS_CASE=file-service eval_fails_with \
   "$file_access_body"
 
 NIXHOMESERVER_FILE_ACCESS_CASE=local-gid eval_fails_with \
-  'fileAccess POSIX GIDs 2001 through 2004 must not reuse explicit local system or service group GIDs; colliding fields and groups: {"webAccessGroup":["injected-file-gid"]}' \
+  'fileAccess POSIX GIDs (web=2001, SFTP=2002, shared=2003, USB=2004, delete-shared=2006) must not reuse explicit local system or service group GIDs; colliding fields and groups: {"webAccessGroup":["injected-file-gid"]}' \
   "$file_access_body"
 
 echo "✅ Configurable file-access GIDs and app-admin access inheritance tests passed."

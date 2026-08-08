@@ -8,6 +8,7 @@ let
   webAccessGroup = vars.fileAccess.webAccessGroup or "files-personal-users";
   sftpAccessGroup = vars.fileAccess.sftpAccessGroup or "files-sftp-users";
   sharedAccessGroup = vars.fileAccess.sharedAccessGroup or "files-shared-users";
+  deleteSharedAccessGroup = vars.fileAccess.deleteSharedAccessGroup or "delete_shared_files";
   usbAccessGroup = vars.fileAccess.usbAccessGroup or "usb-access";
   backupStorageAccessGroup = vars.backupStorageGroup;
   sharedAccessGid = vars.fileAccessPosixGids.${sharedAccessGroup};
@@ -375,7 +376,7 @@ let
     # Fetch and validate every identity snapshot before making any persistent
     # account, ACL, directory, or mount changes. A partial/empty snapshot must
     # never be interpreted as access revocation.
-    for group_name in ${lib.escapeShellArgs memberGroups}; do
+    for group_name in ${lib.escapeShellArgs memberGroups} ${lib.escapeShellArg deleteSharedAccessGroup}; do
       if ! snapshot_group_members "$group_name"; then
         exit 1
       fi
@@ -383,6 +384,10 @@ let
 
     shared_members_json="$(
       printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg sharedAccessGroup}]}"
+    )"
+
+    delete_shared_members_json="$(
+      printf '%s\n' "''${group_members_by_name[${lib.escapeShellArg deleteSharedAccessGroup}]}"
     )"
 
     sftp_members_json="$(
@@ -411,6 +416,12 @@ let
       shared_members["$username"]=1
     done <<<"$shared_members_json"
 
+    declare -A delete_shared_members=()
+    while IFS= read -r username; do
+      [[ -n "$username" ]] || continue
+      delete_shared_members["$username"]=1
+    done <<<"$delete_shared_members_json"
+
     declare -A sftp_members=()
     while IFS= read -r username; do
       [[ -n "$username" ]] || continue
@@ -433,7 +444,23 @@ let
 
       if [[ -n "''${shared_members[$username]:-}" ]]; then
         ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg sharedMountName}
-        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
+        shared_variant_changed=false
+        if [[ -n "''${delete_shared_members[$username]:-}" ]]; then
+          if ${pkgs.systemd}/bin/systemctl is-active --quiet "$(service_instance files-shared-bindfs@.service "$username")"; then
+            shared_variant_changed=true
+          fi
+          ${pkgs.systemd}/bin/systemctl stop "$(service_instance files-shared-bindfs@.service "$username")" || true
+          ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-delete-bindfs@.service "$username")"
+        else
+          if ${pkgs.systemd}/bin/systemctl is-active --quiet "$(service_instance files-shared-delete-bindfs@.service "$username")"; then
+            shared_variant_changed=true
+          fi
+          ${pkgs.systemd}/bin/systemctl stop "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
+          ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
+        fi
+        if [[ "$shared_variant_changed" == true && -n "''${sftp_members[$username]:-}" ]]; then
+          ${pkgs.systemd}/bin/systemctl restart "$(service_instance files-sftp-user-root@.service "$username")"
+        fi
       fi
 
       if [[ -n "''${backup_storage_members[$username]:-}" ]]; then
@@ -455,6 +482,7 @@ let
       username="$(basename "$(dirname "$shared_mount")")"
       if [[ -z "''${shared_members[$username]:-}" ]]; then
         ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-bindfs@.service "$username")" || true
+        ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
         if ! ${pkgs.util-linux}/bin/mountpoint -q "$shared_mount"; then
           rmdir --ignore-fail-on-non-empty "$shared_mount" || true
         fi
@@ -741,6 +769,27 @@ in
       };
     };
 
+    systemd.services."files-shared-delete-bindfs@" = {
+      description = "Mount deletable shared files view for %I";
+      unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${sharedMountName}";
+      requires = [
+        "data-pool-layout.service"
+      ];
+      after = [
+        "data-pool-layout.service"
+      ];
+      serviceConfig = {
+        Type = "simple";
+        ExecStartPre = [
+          dataRootGuard
+          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%I/${sharedMountName}"
+        ];
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx ${vars.sharedRoot} ${vars.usersRoot}/%I/${sharedMountName}";
+        ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${sharedMountName}";
+        Restart = "on-failure";
+      };
+    };
+
     systemd.services."files-backups-bindfs@" = {
       description = "Mount encrypted backup repository view for %I";
       unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${backupStorageMountName}";
@@ -762,13 +811,13 @@ in
       description = "Bind per-user files root into the SFTP chroot for %I";
       requires = [ "data-pool-layout.service" ];
       wants = [
-        "files-shared-bindfs@%i.service"
         "files-usb-shared-view.service"
         "files-backups-bindfs@%i.service"
       ];
       after = [
         "data-pool-layout.service"
         "files-shared-bindfs@%i.service"
+        "files-shared-delete-bindfs@%i.service"
         "files-usb-shared-view.service"
         "files-backups-bindfs@%i.service"
       ];
