@@ -1569,10 +1569,7 @@ const ConversionList = component$<{
       />
     );
   }
-  const percent = Math.max(
-    0,
-    Math.min(100, props.conversion.percent ?? 0),
-  );
+  const percent = Math.max(0, Math.min(100, props.conversion.percent ?? 0));
   const isoName = props.conversion.sourceIso ?? "";
   return (
     <div class={{ "conversion-list": true, expanded: props.expanded }}>
@@ -1584,7 +1581,8 @@ const ConversionList = component$<{
           </div>
           <div class="conversion-copy">
             <h4>{props.conversion.title}</h4>
-            <p>Converting {isoName}{" "}
+            <p>
+              Converting {isoName}{" "}
               {props.conversion.detail
                 ? `— ${props.conversion.detail}`
                 : "— Encoding a Jellyfin-compatible MKV"}
@@ -1613,9 +1611,7 @@ const ConversionList = component$<{
                 <span class="conversion-queue__number">{index + 1}.</span>
                 <span class="conversion-queue__title" title={item.isoName}>
                   {item.title}{" "}
-                  <span class="conversion-queue__file">
-                    ({item.isoName})
-                  </span>
+                  <span class="conversion-queue__file">({item.isoName})</span>
                 </span>
               </li>
             ))}
@@ -1682,7 +1678,9 @@ const LogDialog = component$<{
           {loading.value ? (
             <p class="quiet-copy">Loading log…</p>
           ) : error.value ? (
-            <p class="message error" role="alert">{error.value}</p>
+            <p class="message error" role="alert">
+              {error.value}
+            </p>
           ) : (
             <pre class="log-content">{log.value}</pre>
           )}
@@ -1725,8 +1723,7 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
       });
     });
 
-    const activeConversions =
-      conv.conversions?.progress.conversions ?? [];
+    const activeConversions = conv.conversions?.progress.conversions ?? [];
     const progressQueued = conv.conversions?.progress.queued ?? [];
     const working = activeConversions.length > 0;
     const inboxReady = conv.inbox?.available ?? false;
@@ -1818,11 +1815,7 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
                 <p class="setup-ready">
                   The converter is watching{" "}
                   {dvdLink ? (
-                    <a
-                      href={dvdLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
+                    <a href={dvdLink} target="_blank" rel="noopener noreferrer">
                       the shared inbox
                     </a>
                   ) : (
@@ -1876,10 +1869,7 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
           </section>
         </div>
         <aside class="conv-sidebar">
-          <ProcessedCard
-            isos={inboxProcessed}
-            filesBaseUrl={filesBaseUrl}
-          />
+          <ProcessedCard isos={inboxProcessed} filesBaseUrl={filesBaseUrl} />
           <FailedCard
             isos={inboxFailed}
             onShowLog$={(name) => (logDialog.value = name)}
@@ -1919,11 +1909,13 @@ const ProcessedCard = component$<{
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  <Icon name="folder" size={12} />&ensp;Open output
+                  <Icon name="folder" size={12} />
+                  &ensp;Open output
                 </a>
               ) : iso.outputDir ? (
                 <span class="side-item-path">
-                  <Icon name="folder" size={12} />&ensp;
+                  <Icon name="folder" size={12} />
+                  &ensp;
                   {iso.outputDir}
                 </span>
               ) : null}
