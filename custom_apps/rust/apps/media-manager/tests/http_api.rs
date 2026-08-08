@@ -2,6 +2,7 @@ use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
 };
+use image::ImageEncoder;
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::{AppConfig, IntegrationCapability, MutationMode},
@@ -10,6 +11,14 @@ use media_manager::{
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use tower::ServiceExt;
+
+fn one_pixel_png() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut bytes)
+        .write_image(&[28, 86, 42, 255], 1, 1, image::ExtendedColorType::Rgba8)
+        .expect("encode test PNG");
+    bytes
+}
 
 fn test_app(temp: &tempfile::TempDir) -> axum::Router {
     test_app_with_mode(temp, MutationMode::ReadOnly).0
@@ -1123,6 +1132,297 @@ async fn item_image_prefers_title_specific_jellyfin_artwork() {
 }
 
 #[tokio::test]
+async fn item_image_uses_jellyfin_default_artwork_for_an_mkv_without_embedded_art() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movie")).expect("movie directory");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie/Movie.mkv"),
+        b"mkv-without-art",
+    )
+    .expect("movie");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie/default.jpg"),
+        b"jellyfin-default-art",
+    )
+    .expect("default art");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie/aaa-scan.jpg"),
+        b"unrelated-image",
+    )
+    .expect("unrelated image");
+    let app = test_app(&temp);
+    let movie_id = item_id_by_kind(&app, "shared-videos", "video").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{movie_id}/image"
+        )))
+        .await
+        .expect("image response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert_eq!(body.as_ref(), b"jellyfin-default-art");
+}
+
+#[tokio::test]
+async fn folder_metadata_uses_folder_identity_and_previews_a_season_sidecar() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let season = temp
+        .path()
+        .join("shared/_Videos/_Shows/Example Show/Season 01");
+    std::fs::create_dir_all(&season).expect("season directory");
+    std::fs::write(season.join("Episode.mkv"), b"video").expect("episode");
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(
+            "/api/v1/folders/metadata?rootId=shared-videos&relativePath=_Shows%2FExample%20Show%2FSeason%2001",
+        ))
+        .await
+        .expect("folder metadata response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("folder metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("folder metadata JSON");
+    assert_eq!(metadata["mediaType"], "season");
+    assert_eq!(metadata["title"], "Season 01");
+    assert_eq!(metadata["sources"][0], "folder");
+
+    let preview = app
+        .oneshot(editor_post_request(
+            "/api/v1/folders/metadata/sidecar?rootId=shared-videos&relativePath=_Shows%2FExample%20Show%2FSeason%2001",
+            Body::from(
+                serde_json::json!({
+                    "mediaType": "season",
+                    "title": "Season 1",
+                    "description": "The first season",
+                    "language": "en"
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .expect("folder metadata preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let value: Value = serde_json::from_slice(&body).expect("preview JSON");
+    assert_eq!(value["actions"][0]["kind"], "install_metadata_sidecar");
+    assert_eq!(
+        value["actions"][0]["destinationRelativePath"],
+        "_Shows/Example Show/Season 01/season.nfo"
+    );
+}
+
+#[tokio::test]
+async fn folder_metadata_splits_a_trailing_year_from_a_movie_folder() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let movie = temp
+        .path()
+        .join("shared/_Videos/_Movies/Example Film (2024)");
+    std::fs::create_dir_all(&movie).expect("movie directory");
+    std::fs::write(movie.join("Example Film (2024).mkv"), b"movie").expect("movie file");
+    let app = test_app(&temp);
+
+    let response = app
+        .oneshot(viewer_get_request(
+            "/api/v1/folders/metadata?rootId=shared-videos&relativePath=_Movies%2FExample%20Film%20%282024%29",
+        ))
+        .await
+        .expect("folder metadata response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("folder metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("folder metadata JSON");
+    assert_eq!(metadata["title"], "Example Film");
+    assert_eq!(metadata["year"], 2024);
+}
+
+#[tokio::test]
+async fn folder_metadata_recognizes_seasons_without_a_shows_collection_prefix() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let season = temp.path().join("shared/_Videos/Example Show/Season 02");
+    std::fs::create_dir_all(&season).expect("season directory");
+    std::fs::write(season.join("Episode.mkv"), b"video").expect("episode");
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(
+            "/api/v1/folders/metadata?rootId=shared-videos&relativePath=Example%20Show%2FSeason%2002",
+        ))
+        .await
+        .expect("folder metadata response");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("folder metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("folder metadata JSON");
+    assert_eq!(metadata["mediaType"], "season");
+    assert_eq!(metadata["season"], 2);
+
+    let preview = app
+        .oneshot(editor_post_request(
+            "/api/v1/folders/metadata/sidecar?rootId=shared-videos&relativePath=Example%20Show%2FSeason%2002",
+            Body::from(r#"{"mediaType":"season","title":"Season 2"}"#),
+        ))
+        .await
+        .expect("season sidecar preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let preview: Value = serde_json::from_slice(&body).expect("preview JSON");
+    assert_eq!(
+        preview["actions"][0]["destinationRelativePath"],
+        "Example Show/Season 02/season.nfo"
+    );
+}
+
+#[tokio::test]
+async fn grouping_folders_are_selectable_but_cannot_receive_media_sidecars() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/_Movies/Film"))
+        .expect("movie grouping");
+    std::fs::write(
+        temp.path().join("shared/_Videos/_Movies/Film/Film.mkv"),
+        b"movie",
+    )
+    .expect("movie file");
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(
+            "/api/v1/folders/metadata?rootId=shared-videos&relativePath=_Movies",
+        ))
+        .await
+        .expect("collection metadata response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("collection metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("collection metadata JSON");
+    assert_eq!(metadata["mediaType"], "collection");
+
+    let preview = app
+        .oneshot(editor_post_request(
+            "/api/v1/folders/metadata/sidecar?rootId=shared-videos&relativePath=_Movies",
+            Body::from(r#"{"mediaType":"collection","title":"Movies"}"#),
+        ))
+        .await
+        .expect("collection sidecar response");
+    assert_eq!(preview.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn music_folders_with_tracks_preview_album_sidecars() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let album = temp.path().join("shared/_Music/Artist/Album");
+    std::fs::create_dir_all(&album).expect("album directory");
+    std::fs::write(album.join("Track.flac"), b"track").expect("track");
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(
+            "/api/v1/folders/metadata?rootId=shared-music&relativePath=Artist%2FAlbum",
+        ))
+        .await
+        .expect("album metadata response");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("album metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("album metadata JSON");
+    assert_eq!(metadata["mediaType"], "music");
+
+    let preview = app
+        .oneshot(editor_post_request(
+            "/api/v1/folders/metadata/sidecar?rootId=shared-music&relativePath=Artist%2FAlbum",
+            Body::from(r#"{"mediaType":"music","title":"Album"}"#),
+        ))
+        .await
+        .expect("album sidecar preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("album preview body");
+    let preview: Value = serde_json::from_slice(&body).expect("album preview JSON");
+    assert_eq!(
+        preview["actions"][0]["destinationRelativePath"],
+        "Artist/Album/album.nfo"
+    );
+}
+
+#[tokio::test]
+async fn artwork_replacement_previews_one_recoverable_broker_action() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let movie = temp.path().join("shared/_Videos/Movie");
+    std::fs::create_dir_all(&movie).expect("movie directory");
+    std::fs::write(movie.join("Movie.mkv"), b"movie").expect("movie");
+    std::fs::write(movie.join("cover.jpg"), b"old-cover").expect("old cover");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let cover_id = item_id_by_kind(&app, "shared-videos", "artwork").await;
+
+    let corrupt = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{cover_id}/image/replacement?format=png"),
+            Body::from(b"\x89PNG\r\n\x1a\nnot-an-image".to_vec()),
+        ))
+        .await
+        .expect("corrupt artwork response");
+    assert_eq!(corrupt.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let response = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{cover_id}/image/replacement?format=png"),
+            Body::from(one_pixel_png()),
+        ))
+        .await
+        .expect("artwork replacement preview");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let preview: Value = serde_json::from_slice(&body).expect("preview JSON");
+    let actions = preview["actions"].as_array().expect("actions");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0]["kind"], "replace_artwork");
+    assert!(actions[0]["destinationRelativePath"].is_null());
+    assert!(actions[0]["archivedRelativePath"]
+        .as_str()
+        .expect("archive path")
+        .contains("superseded/cover-"));
+    assert_eq!(actions[0]["replacementRelativePath"], "Movie/cover.png");
+}
+
+#[tokio::test]
+async fn unauthenticated_artwork_upload_is_rejected_before_reading_a_large_body() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let body = vec![0_u8; 32 * 1024 * 1024 + 2048];
+    let response = test_app(&temp)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/items/not-visible/image/replacement?format=png")
+                .body(Body::from(body))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn item_image_falls_back_to_jellyfin_artwork_in_an_ancestor_folder() {
     let temp = tempfile::tempdir().expect("temporary directory");
     std::fs::create_dir_all(temp.path().join("shared/_Videos/Show/Season 01"))
@@ -1134,10 +1434,16 @@ async fn item_image_falls_back_to_jellyfin_artwork_in_an_ancestor_folder() {
     )
     .expect("episode");
     std::fs::write(
-        temp.path().join("shared/_Videos/Show/poster.jpg"),
+        temp.path().join("shared/_Videos/Show/Show-default.jpg"),
         b"series-poster",
     )
     .expect("series poster");
+    std::fs::write(
+        temp.path()
+            .join("shared/_Videos/Show/Season 01/aaa-scan.jpg"),
+        b"unrelated-season-image",
+    )
+    .expect("unrelated season image");
     let app = test_app(&temp);
     let episode_id = first_item_id(&app, "shared-videos").await;
 
@@ -1464,10 +1770,7 @@ async fn serve_mock(routes: axum::Router) -> (String, tokio::task::JoinHandle<()
     let handle = tokio::spawn(async move {
         axum::serve(listener, routes).await.expect("mock server");
     });
-    (
-        format!("http://127.0.0.1:{}", address.port()),
-        handle,
-    )
+    (format!("http://127.0.0.1:{}", address.port()), handle)
 }
 
 fn musicbrainz_mock() -> axum::Router {
@@ -1521,8 +1824,7 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
     config.state_dir = temp.path().join("state");
     config.mutation_mode = MutationMode::Enabled;
     config.musicbrainz_api_base = Some(mock_base);
-    std::fs::create_dir_all(config.shared_root.join("_Music/Artist/Album"))
-        .expect("music folder");
+    std::fs::create_dir_all(config.shared_root.join("_Music/Artist/Album")).expect("music folder");
     std::fs::write(
         config.shared_root.join("_Music/Artist/Album/01 Song.flac"),
         b"audio",
@@ -1551,7 +1853,9 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
         .await
         .expect("lookup response");
     assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
     assert!(value["requestId"].as_str().is_some());
     let candidate = &value["candidates"][0];
@@ -1605,8 +1909,7 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
     config.acoustid_api_base = Some(mock_base);
     config.acoustid_api_key_file = Some(key_file);
     config.fpcalc_path = Some(fpcalc);
-    std::fs::create_dir_all(config.shared_root.join("_Music/Artist/Album"))
-        .expect("music folder");
+    std::fs::create_dir_all(config.shared_root.join("_Music/Artist/Album")).expect("music folder");
     std::fs::write(
         config.shared_root.join("_Music/Artist/Album/01 Song.flac"),
         b"audio",
@@ -1628,7 +1931,9 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
         .await
         .expect("lookup response");
     assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
     assert_eq!(value["candidates"][0]["releaseGroupId"], NIRVANA_MBID);
     assert_eq!(value["candidates"][0]["matchMethod"], "fingerprint");
@@ -1645,8 +1950,7 @@ async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
     config.state_dir = temp.path().join("state");
     config.mutation_mode = MutationMode::Enabled;
     config.musicbrainz_api_base = Some(mock_base);
-    std::fs::create_dir_all(config.shared_root.join("_Music/Nirvana"))
-        .expect("music folder");
+    std::fs::create_dir_all(config.shared_root.join("_Music/Nirvana")).expect("music folder");
     std::fs::write(
         config.shared_root.join("_Music/Nirvana/Nevermind.flac"),
         b"audio",
@@ -1668,7 +1972,9 @@ async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
         .await
         .expect("lookup response");
     assert_eq!(response.status(), StatusCode::OK);
-    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
     assert_eq!(value["candidates"][0]["matchMethod"], "search");
 }
@@ -1682,13 +1988,9 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
     );
     config.state_dir = temp.path().join("state");
     config.mutation_mode = MutationMode::Enabled;
-    std::fs::create_dir_all(config.shared_root.join("_Music/Artist"))
-        .expect("music folder");
-    std::fs::write(
-        config.shared_root.join("_Music/Artist/Song.flac"),
-        b"audio",
-    )
-    .expect("audio file");
+    std::fs::create_dir_all(config.shared_root.join("_Music/Artist")).expect("music folder");
+    std::fs::write(config.shared_root.join("_Music/Artist/Song.flac"), b"audio")
+        .expect("audio file");
     let database = config.database_path();
     Catalog::open(&database).expect("catalog");
     let app = router(AppState {
@@ -1705,7 +2007,9 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
         .await
         .expect("lookup response");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
     assert_eq!(value["error"]["code"], "musicbrainz_lookup_unconfigured");
 }
@@ -1714,13 +2018,9 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
 async fn musicbrainz_lookup_rejects_invalid_queries_and_modes() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
-    std::fs::create_dir_all(temp.path().join("shared/_Music/Artist"))
-        .expect("music folder");
-    std::fs::write(
-        temp.path().join("shared/_Music/Artist/Song.flac"),
-        b"audio",
-    )
-    .expect("audio file");
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Artist")).expect("music folder");
+    std::fs::write(temp.path().join("shared/_Music/Artist/Song.flac"), b"audio")
+        .expect("audio file");
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
 
@@ -1759,8 +2059,7 @@ async fn musicbrainz_lookup_rejects_invalid_queries_and_modes() {
 async fn musicbrainz_lookup_requires_a_music_item() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
-    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies"))
-        .expect("movie folder");
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies")).expect("movie folder");
     std::fs::write(
         temp.path().join("shared/_Videos/Movies/Arrival (2016).mkv"),
         b"movie",
@@ -1776,7 +2075,9 @@ async fn musicbrainz_lookup_requires_a_music_item() {
         .await
         .expect("lookup response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("body");
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
     assert_eq!(value["error"]["code"], "music_item_required");
 }

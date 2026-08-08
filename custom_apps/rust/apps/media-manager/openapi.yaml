@@ -130,6 +130,53 @@ paths:
             image/jxl: {}
         "404":
           $ref: "#/components/responses/Error"
+  /items/{itemId}/image/replacement:
+    post:
+      operationId: previewArtworkReplacement
+      description: >-
+        Authenticates the caller before reading the body, fully decodes the
+        bounded image, and privately stages replacement cover artwork for a
+        visible artwork item. Confirmation executes one recoverable broker
+        operation that archives the current file in a superseded subfolder and
+        installs the replacement without overwriting either destination.
+        Requires an editor.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: format
+          required: true
+          schema: { type: string, enum: [jpg, jpeg, png, gif, webp] }
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema: { type: string, format: binary, maxLength: 33554432 }
+          image/png:
+            schema: { type: string, format: binary, maxLength: 33554432 }
+          image/gif:
+            schema: { type: string, format: binary, maxLength: 33554432 }
+          image/webp:
+            schema: { type: string, format: binary, maxLength: 33554432 }
+      responses:
+        "201":
+          description: Digest-bound archive-and-replace mutation preview.
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "415":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
   /items/{itemId}/subtitles/search:
     get:
       operationId: searchOpenSubtitles
@@ -242,6 +289,34 @@ paths:
               schema: { $ref: "#/components/schemas/ItemMetadata" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /folders/metadata:
+    get:
+      operationId: getFolderMetadata
+      description: >-
+        Returns filename-derived editable metadata for one contained directory
+        in a visible media root. The directory is opened beneath the
+        server-defined root before any metadata is returned.
+      parameters:
+        - in: query
+          name: rootId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: relativePath
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 4096 }
+      responses:
+        "200":
+          description: Folder-derived metadata for a media directory or a selectable collection/grouping directory.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "private, no-store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemMetadata" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /items/{itemId}/metadata/sidecar:
     post:
       operationId: previewMetadataSidecar
@@ -263,7 +338,7 @@ paths:
                 mediaType:
                   description: Optional for backward compatibility; when omitted it is derived from the catalog kind (video defaults to movie).
                   type: string
-                  enum: [movie, episode, music, audiobook, book]
+                  enum: [movie, series, season, episode, music, audiobook, book]
                 title: { type: string, minLength: 1, maxLength: 500 }
                 sortTitle: { type: string, maxLength: 500 }
                 year:
@@ -302,7 +377,12 @@ paths:
                 runtimeMinutes: { type: integer, minimum: 1, maximum: 100000 }
                 officialRating: { type: string, maxLength: 64 }
                 communityRating: { type: number, minimum: 0, maximum: 10 }
-                writers: { type: array, maxItems: 64, items: { type: string, maxLength: 500 } }
+                writers:
+                  {
+                    type: array,
+                    maxItems: 64,
+                    items: { type: string, maxLength: 500 },
+                  }
                 providerIds:
                   type: object
                   maxProperties: 32
@@ -312,6 +392,82 @@ paths:
           description: Digest-bound no-overwrite metadata sidecar preview.
         "403":
           $ref: "#/components/responses/Error"
+  /folders/metadata/sidecar:
+    post:
+      operationId: previewFolderMetadataSidecar
+      description: >-
+        Creates a staged Jellyfin folder NFO or book/audiobook OPF sidecar for
+        one contained directory in a visible media root. The inferred folder
+        media type cannot be overridden. Requires an editor.
+      parameters:
+        - in: query
+          name: rootId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: relativePath
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 4096 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              additionalProperties: false
+              properties:
+                mediaType:
+                  type: string
+                  enum: [movie, series, season, music, audiobook, book]
+                title: { type: string, minLength: 1, maxLength: 500 }
+                sortTitle: { type: string, maxLength: 500 }
+                year: { type: integer, minimum: 1, maximum: 2100 }
+                description: { type: string, maxLength: 20000 }
+                publisher: { type: string, maxLength: 500 }
+                series: { type: string, maxLength: 500 }
+                volumeNumber: { type: string, maxLength: 32 }
+                isbn: { type: string, maxLength: 64 }
+                language: { type: string, maxLength: 15 }
+                authors:
+                  {
+                    type: array,
+                    maxItems: 32,
+                    items: { type: string, maxLength: 500 },
+                  }
+                narrators:
+                  {
+                    type: array,
+                    maxItems: 32,
+                    items: { type: string, maxLength: 500 },
+                  }
+                genres:
+                  {
+                    type: array,
+                    maxItems: 64,
+                    items: { type: string, maxLength: 500 },
+                  }
+                premiereDate: { type: string, format: date }
+                runtimeMinutes: { type: integer, minimum: 1, maximum: 100000 }
+                officialRating: { type: string, maxLength: 64 }
+                communityRating: { type: number, minimum: 0, maximum: 10 }
+                writers:
+                  {
+                    type: array,
+                    maxItems: 64,
+                    items: { type: string, maxLength: 500 },
+                  }
+                providerIds:
+                  type: object
+                  maxProperties: 32
+                  additionalProperties: { type: string, maxLength: 256 }
+      responses:
+        "201":
+          description: Digest-bound no-overwrite folder sidecar preview.
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /items/{itemId}/metadata/lookup:
     post:
       operationId: lookupMusicMetadata
@@ -353,7 +509,8 @@ paths:
                 properties:
                   candidates:
                     type: array
-                    items: { $ref: "#/components/schemas/MusicReleaseCandidate" }
+                    items:
+                      { $ref: "#/components/schemas/MusicReleaseCandidate" }
                   requestId: { type: string }
         "400":
           $ref: "#/components/responses/Error"
@@ -561,9 +718,33 @@ components:
         message: { type: string }
     ItemMetadata:
       type: object
-      required: [mediaType, title, genres, writers, providerIds, videoStreams, audioStreams, sources]
+      required:
+        [
+          mediaType,
+          title,
+          genres,
+          writers,
+          providerIds,
+          videoStreams,
+          audioStreams,
+          sources,
+        ]
       properties:
-        mediaType: { type: string, enum: [movie, episode, music, audiobook, book] }
+        mediaType:
+          {
+            type: string,
+            enum:
+              [
+                collection,
+                movie,
+                series,
+                season,
+                episode,
+                music,
+                audiobook,
+                book,
+              ],
+          }
         title: { type: string }
         year: { type: integer, nullable: true }
         series: { type: string, nullable: true }
@@ -582,7 +763,11 @@ components:
         providerIds: { type: object, additionalProperties: { type: string } }
         videoStreams: { type: array, items: { type: object } }
         audioStreams: { type: array, items: { type: object } }
-        sources: { type: array, items: { type: string, enum: [filename, jellyfin] } }
+        sources:
+          {
+            type: array,
+            items: { type: string, enum: [filename, folder, jellyfin] },
+          }
     MusicReleaseCandidate:
       type: object
       required: [releaseGroupId, artist, title, genres, matchMethod]

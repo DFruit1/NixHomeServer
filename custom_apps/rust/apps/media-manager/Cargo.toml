@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 axum = "0.8.6"
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 libc = "0.2.177"
 lofty = "0.24.0"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }

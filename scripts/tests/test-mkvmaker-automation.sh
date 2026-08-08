@@ -92,6 +92,7 @@ cat >"$fake_converter" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ ! -e "$test_root/allow-completion" ]]; then
+  printf '%s\n' "\$@" >"$test_root/converter-args"
   printf '%s\n' "\$\$" >"$test_root/converter.pid"
   touch "$test_root/converter-started"
   trap 'exit 130' INT TERM
@@ -167,6 +168,19 @@ done
   wait "$supervisor_pid" 2>/dev/null || true
   exit 1
 }
+python3 - "$test_root/converter-args" "$test_root/inbox" <<'PY'
+import sys
+from pathlib import Path
+
+arguments = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+
+def argument_value(name: str) -> str:
+    index = arguments.index(name)
+    return arguments[index + 1]
+
+assert argument_value("--queue-directory") == sys.argv[2]
+assert argument_value("--active-queue-item") == "Restartable_2001.iso"
+PY
 jq -e '
   (.schemaVersion == 1)
   and (.state == "converting")

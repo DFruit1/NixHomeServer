@@ -364,6 +364,12 @@ def converter_command(
     ]
     if args.staging_dir:
         command += ["--staging-dir", str(args.staging_dir)]
+    command += [
+        "--queue-directory",
+        str(args.input_dir),
+        "--active-queue-item",
+        source.name,
+    ]
     for title in queued or []:
         command += ["--queue-item", title]
     if plan.get("year"):

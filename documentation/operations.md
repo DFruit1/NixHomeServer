@@ -550,7 +550,9 @@ While an encode runs, the partially written MKV is staged in
 `_Shared/.mkvmaker-staging` outside the Jellyfin library so the library never
 scans an incomplete file; the finished MKV is published into
 `_Shared/_Videos/_Movies` or `_Shared/_Videos/_Shows` with a single atomic
-rename once it passes validation.
+rename once it passes validation. ISOs added to the inbox during an active
+encode are re-read from the inbox for each public progress update and appear in
+natural order under the active conversion queue.
 
 Useful checks and controls:
 
@@ -681,7 +683,12 @@ refresh**. Selecting a file or folder in **Libraries** or an item in
 **Metadata** shows title-specific and conventional artwork such as `cover.jpg`,
 `poster.jpg`, and Jellyfin-style suffixed images. The lookup checks the item's
 directory and nearby parent folders before falling back to embedded artwork in
-supported audio and MP4 containers.
+supported audio and MP4 containers. Folder names select their own metadata;
+only the adjacent caret expands or collapses the tree. Selecting a cataloged
+image presents a cover-art replacement action instead of a media metadata form.
+Confirmation archives the original under a `superseded` child directory and
+installs the fully decoded replacement through one recoverable, no-overwrite
+broker operation.
 
 ```bash
 systemctl status media-manager.service media-manager-broker.timer

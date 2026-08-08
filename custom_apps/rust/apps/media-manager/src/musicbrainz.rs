@@ -207,10 +207,7 @@ impl MusicBrainzClient {
             .map_err(|error| ProviderError::new(format!("build release URL: {error}")))?;
         let response = self
             .provider_request(self.client.get(url))
-            .query(&[
-                ("inc", "artist-credits+genres+releases"),
-                ("fmt", "json"),
-            ])
+            .query(&[("inc", "artist-credits+genres+releases"), ("fmt", "json")])
             .send()
             .await
             .map_err(|error| ProviderError::new(format!("release request failed: {error}")))?;
@@ -252,9 +249,7 @@ impl MusicBrainzClient {
             .await
             .map_err(|error| ProviderError::new(format!("decode lookup response: {error}")))?;
         if payload.status != "ok" {
-            return Err(ProviderError::new(
-                "AcoustID rejected the lookup request",
-            ));
+            return Err(ProviderError::new("AcoustID rejected the lookup request"));
         }
         let mut seen = HashSet::new();
         let mut ids = Vec::new();
@@ -478,7 +473,11 @@ fn release_label_and_tracks(releases: &[ReleaseRef]) -> (Option<String>, Option<
                 .find(|name| !name.is_empty() && name.len() <= 500);
         }
         if track_count.is_none() {
-            let total = release.media.iter().filter_map(|media| media.track_count).sum::<u32>();
+            let total = release
+                .media
+                .iter()
+                .filter_map(|media| media.track_count)
+                .sum::<u32>();
             if total > 0 {
                 track_count = Some(total);
             }
@@ -490,7 +489,10 @@ fn release_label_and_tracks(releases: &[ReleaseRef]) -> (Option<String>, Option<
     (label, track_count)
 }
 
-fn build_release_group_query(artist: Option<&str>, title: Option<&str>) -> Result<String, ProviderError> {
+fn build_release_group_query(
+    artist: Option<&str>,
+    title: Option<&str>,
+) -> Result<String, ProviderError> {
     let escape = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
     let mut terms = Vec::new();
     if let Some(title) = title.map(str::trim).filter(|value| !value.is_empty()) {
@@ -546,7 +548,9 @@ fn is_plausible_fingerprint(value: &str) -> bool {
 
 fn valid_mbid(value: &str) -> bool {
     value.len() == 36
-        && value.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
         && value.matches('-').count() == 4
 }
 
@@ -626,9 +630,9 @@ impl std::error::Error for ProviderError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        build_release_group_query, is_trusted_origin, join_artist_credit, parse_fingerprint_output,
-        valid_mbid, AcoustidCredentials, ArtistCredit, ReleaseGroup, ReleaseRef,
-        normalize_release_group,
+        build_release_group_query, is_trusted_origin, join_artist_credit, normalize_release_group,
+        parse_fingerprint_output, valid_mbid, AcoustidCredentials, ArtistCredit, ReleaseGroup,
+        ReleaseRef,
     };
 
     #[test]
@@ -641,10 +645,7 @@ mod tests {
 
     #[test]
     fn fpcalc_key_value_output_is_parsed() {
-        let output = format!(
-            "DURATION=271\nFINGERPRINT=AQ{}\n",
-            "ABC".repeat(50)
-        );
+        let output = format!("DURATION=271\nFINGERPRINT=AQ{}\n", "ABC".repeat(50));
         let (fingerprint, duration) = parse_fingerprint_output(output.as_bytes()).expect("parsed");
         assert_eq!(duration, 271);
         assert_eq!(fingerprint, format!("AQ{}", "ABC".repeat(50)));
@@ -698,17 +699,23 @@ mod tests {
                 joinphrase: String::new(),
             }],
             genres: vec![
-                super::NamedEntity { name: "grunge".to_string() },
-                super::NamedEntity { name: "alternative rock".to_string() },
-            ],
-            releases: vec![
-                ReleaseRef {
-                    label_info: vec![super::LabelInfo {
-                        label: Some(super::Label { name: "DGC".to_string() }),
-                    }],
-                    media: vec![super::Media { track_count: Some(12) }],
+                super::NamedEntity {
+                    name: "grunge".to_string(),
+                },
+                super::NamedEntity {
+                    name: "alternative rock".to_string(),
                 },
             ],
+            releases: vec![ReleaseRef {
+                label_info: vec![super::LabelInfo {
+                    label: Some(super::Label {
+                        name: "DGC".to_string(),
+                    }),
+                }],
+                media: vec![super::Media {
+                    track_count: Some(12),
+                }],
+            }],
         };
         let release = normalize_release_group(group, "search");
         assert_eq!(release.artist, "Nirvana");
@@ -722,14 +729,24 @@ mod tests {
 
     #[test]
     fn search_query_escapes_lucene_quotes() {
-        let query = build_release_group_query(Some(r#"The "Band""#), Some("In Utero")).expect("query");
-        assert_eq!(query, "releasegroup:\"In Utero\" AND artist:\"The \\\"Band\\\"\"");
+        let query =
+            build_release_group_query(Some(r#"The "Band""#), Some("In Utero")).expect("query");
+        assert_eq!(
+            query,
+            "releasegroup:\"In Utero\" AND artist:\"The \\\"Band\\\"\""
+        );
     }
 
     #[test]
     fn trusted_origins_allow_https_and_loopback_http_only() {
-        assert!(is_trusted_origin(&reqwest::Url::parse("https://musicbrainz.org/ws/2/").unwrap()));
-        assert!(is_trusted_origin(&reqwest::Url::parse("http://127.0.0.1:8087/").unwrap()));
-        assert!(!is_trusted_origin(&reqwest::Url::parse("http://musicbrainz.org/ws/2/").unwrap()));
+        assert!(is_trusted_origin(
+            &reqwest::Url::parse("https://musicbrainz.org/ws/2/").unwrap()
+        ));
+        assert!(is_trusted_origin(
+            &reqwest::Url::parse("http://127.0.0.1:8087/").unwrap()
+        ));
+        assert!(!is_trusted_origin(
+            &reqwest::Url::parse("http://musicbrainz.org/ws/2/").unwrap()
+        ));
     }
 }

@@ -150,9 +150,12 @@ impl AppConfig {
             fpcalc_path: env::var_os("MEDIA_MANAGER_FPCALC_PATH").map(PathBuf::from),
             musicbrainz_api_base: optional_env("MEDIA_MANAGER_MUSICBRAINZ_API_BASE"),
             acoustid_api_base: optional_env("MEDIA_MANAGER_ACOUSTID_API_BASE"),
-            musicbrainz_request_gap_ms: env_string("MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS", "1000")
-                .parse::<u64>()
-                .map_err(|error| format!("invalid MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS: {error}"))?,
+            musicbrainz_request_gap_ms: env_string(
+                "MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS",
+                "1000",
+            )
+            .parse::<u64>()
+            .map_err(|error| format!("invalid MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS: {error}"))?,
             frontend_dir: env::var_os("MEDIA_MANAGER_FRONTEND_DIR").map(PathBuf::from),
             integrations,
         })

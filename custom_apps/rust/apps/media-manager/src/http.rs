@@ -1,24 +1,24 @@
+use crate::musicbrainz::{
+    AcoustidCredentials, LookupMode, MusicBrainzClient, MusicBrainzClientConfig, ACOUSTID_API_BASE,
+    MUSICBRAINZ_API_BASE,
+};
 use crate::{
     artwork::{preferred_artwork, read_artwork_file, read_embedded_artwork},
     broker::{
-        file_fingerprint, open_regular_file_beneath, BrokerAction, InstallMetadataSidecarAction,
-        InstallSubtitleAction, MoveAction,
+        file_fingerprint, open_directory_beneath, open_regular_file_beneath, BrokerAction,
+        InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
     },
     catalog::{Catalog, CatalogHandle, CatalogItem, ConfirmPlanOutcome, MutationPlanDraft},
     config::{AppConfig, Identity, MutationMode, RootScope},
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,
     },
-    scanner::{rescan_root, scan_root_if_needed, ScanRoot},
+    scanner::{media_kind as scanned_media_kind, rescan_root, scan_root_if_needed, ScanRoot},
     subtitles::{opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials},
 };
-use crate::musicbrainz::{
-    AcoustidCredentials, LookupMode, MusicBrainzClient, MusicBrainzClientConfig,
-    MUSICBRAINZ_API_BASE, ACOUSTID_API_BASE,
-};
 use axum::{
-    body::Bytes,
-    extract::{Path, Query, State},
+    body::{to_bytes, Bytes},
+    extract::{Path, Query, Request, State},
     http::{
         header::{CACHE_CONTROL, CONTENT_TYPE},
         HeaderMap, StatusCode,
@@ -30,6 +30,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    io::Cursor,
+    os::fd::AsRawFd,
     path::Path as FilePath,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -41,6 +43,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_SUBTITLE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_ARTWORK_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INBOX_ENTRIES: usize = 200;
 
 #[derive(Clone)]
@@ -61,6 +64,19 @@ struct SessionResponse {
 #[serde(rename_all = "camelCase")]
 struct ItemsQuery {
     root_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderMetadataQuery {
+    root_id: String,
+    relative_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtworkReplacementQuery {
+    format: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -150,7 +166,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/roots", get(roots))
         .route("/api/v1/items", get(items))
         .route("/api/v1/items/{item_id}/image", get(item_image))
+        .route(
+            "/api/v1/items/{item_id}/image/replacement",
+            post(preview_artwork_replacement),
+        )
         .route("/api/v1/items/{item_id}/metadata", get(item_metadata))
+        .route("/api/v1/folders/metadata", get(folder_metadata))
         .route("/api/v1/conversions", get(conversions))
         .route("/api/v1/conversions/inbox", get(conversions_inbox))
         .route("/api/v1/scans", post(scan))
@@ -169,6 +190,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/items/{item_id}/metadata/sidecar",
             post(preview_metadata_sidecar),
+        )
+        .route(
+            "/api/v1/folders/metadata/sidecar",
+            post(preview_folder_metadata_sidecar),
         )
         .route(
             "/api/v1/items/{item_id}/metadata/lookup",
@@ -911,6 +936,141 @@ async fn item_metadata(
     result
 }
 
+async fn folder_metadata(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<FolderMetadataQuery>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let folder = match visible_media_folder(&state.config, &identity, &query) {
+        Ok(folder) => folder,
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let folder_name = folder
+        .relative_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&folder.relative_path);
+    let (title, year) = strip_trailing_year(folder_name);
+    let media_type = folder_media_type(&folder);
+    let mut result = Json(json!({
+        "mediaType": media_type,
+        "title": title,
+        "year": year,
+        "series": null,
+        "season": season_number_from_folder(&folder.relative_path),
+        "episode": null,
+        "episodeTitle": null,
+        "description": null,
+        "publisher": null,
+        "language": null,
+        "genres": [],
+        "writers": [],
+        "premiereDate": null,
+        "runtimeMinutes": null,
+        "officialRating": null,
+        "communityRating": null,
+        "providerIds": {},
+        "videoStreams": [],
+        "audioStreams": [],
+        "sources": ["folder"]
+    }))
+    .into_response();
+    result.headers_mut().insert(
+        CACHE_CONTROL,
+        "private, no-store".parse().expect("cache header"),
+    );
+    result
+}
+
+async fn preview_folder_metadata_sidecar(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<FolderMetadataQuery>,
+    Json(request): Json<MetadataSidecarRequest>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let folder = match visible_media_folder(&state.config, &identity, &query) {
+        Ok(folder) => folder,
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let expected_media_type = folder_media_type(&folder);
+    if expected_media_type == "collection" {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "folder_sidecar_unsupported",
+            "This folder groups other media folders and does not have a media sidecar of its own.",
+            request_id,
+        )
+        .into_response();
+    }
+    if let Err(error) = validate_metadata_request(&request) {
+        return error.with_request_id(request_id).into_response();
+    }
+    if request.media_type.as_deref().unwrap_or(expected_media_type) != expected_media_type {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "metadata_type_mismatch",
+            "The metadata type does not match the selected folder.",
+            request_id,
+        )
+        .into_response();
+    }
+    let (destination_relative_path, extension, contents) =
+        folder_metadata_sidecar(&folder, &request);
+    let staged =
+        match stage_sidecar(&state.config, extension, contents.as_bytes(), &request_id).await {
+            Ok(staged) => staged,
+            Err(error) => return error.into_response(),
+        };
+    let action = InstallMetadataSidecarAction {
+        staging_filename: staged.filename,
+        destination_root_id: folder.root_id.clone(),
+        destination_relative_path,
+        expected: staged.expected,
+    };
+    let pseudo_item = CatalogItem {
+        id: format!("folder:{}:{}", folder.root_id, folder.relative_path),
+        root_id: folder.root_id,
+        owner_username: None,
+        relative_path: folder.relative_path,
+        media_kind: folder.category,
+        size_bytes: 0,
+        modified_ns: 0,
+        fingerprint: String::new(),
+    };
+    let mut catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => {
+            let _ = tokio::fs::remove_file(staged.path).await;
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    match create_metadata_plan(
+        &state,
+        &identity,
+        &mut catalog,
+        &pseudo_item,
+        &request,
+        action,
+        request_id.clone(),
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(staged.path).await;
+            error.into_response()
+        }
+    }
+}
+
 async fn lookup_music_metadata(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -943,7 +1103,10 @@ async fn lookup_music_metadata(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     for (label, value) in [("Artist", &artist), ("Title", &title)] {
-        if value.as_ref().is_some_and(|value| value.len() > 500 || value.contains('\0')) {
+        if value
+            .as_ref()
+            .is_some_and(|value| value.len() > 500 || value.contains('\0'))
+        {
             return ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "musicbrainz_query_invalid",
@@ -1799,6 +1962,111 @@ async fn item_image(
         .into_response()
 }
 
+async fn preview_artwork_replacement(
+    State(state): State<Arc<AppState>>,
+    Path(item_id): Path<String>,
+    Query(query): Query<ArtworkReplacementQuery>,
+    request: Request,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, request.headers(), &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) if item.media_kind == "artwork" => item,
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "artwork_item_required",
+                "Cover replacement requires a cataloged image file.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    drop(catalog);
+    let body = match to_bytes(request.into_body(), MAX_ARTWORK_UPLOAD_BYTES).await {
+        Ok(body) => body,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "artwork_size_invalid",
+                "Cover artwork must be no larger than 32 MiB.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let upload_format = query.format;
+    let validation_body = body.clone();
+    let extension = match tokio::task::spawn_blocking(move || {
+        validate_artwork_upload(&upload_format, &validation_body)
+    })
+    .await
+    {
+        Ok(Ok(extension)) => extension,
+        Ok(Err(error)) => return error.with_request_id(request_id).into_response(),
+        Err(error) => {
+            log_event(
+                "artwork_validation_task_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let (parent, filename) = item
+        .relative_path
+        .rsplit_once('/')
+        .unwrap_or(("", &item.relative_path));
+    let (stem, original_extension) = filename.rsplit_once('.').unwrap_or((filename, "jpg"));
+    let destination_relative_path = join_relative(parent, &format!("{stem}.{extension}"));
+    let archived_relative_path = join_relative(
+        parent,
+        &format!("superseded/{stem}-{request_id}.{original_extension}"),
+    );
+    let staged = match stage_sidecar(&state.config, extension, &body, &request_id).await {
+        Ok(staged) => staged,
+        Err(error) => return error.into_response(),
+    };
+    let action = ReplaceArtworkAction {
+        staging_filename: staged.filename,
+        root_id: item.root_id.clone(),
+        source_relative_path: item.relative_path.clone(),
+        archived_relative_path: archived_relative_path.clone(),
+        replacement_relative_path: destination_relative_path.clone(),
+        expected_source: item.fingerprint.clone(),
+        expected_replacement: staged.expected,
+    };
+    let mut catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&staged.path).await;
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    match create_artwork_replacement_plan(
+        &state,
+        &identity,
+        &mut catalog,
+        &item,
+        action,
+        request_id.clone(),
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(staged.path).await;
+            error.into_response()
+        }
+    }
+}
+
 async fn scan(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2233,6 +2501,133 @@ fn visible_catalog_item(
     Ok(item)
 }
 
+struct VisibleMediaFolder {
+    root_id: String,
+    relative_path: String,
+    category: String,
+    has_direct_media: bool,
+    has_season_directory: bool,
+}
+
+fn visible_media_folder(
+    config: &AppConfig,
+    identity: &Identity,
+    query: &FolderMetadataQuery,
+) -> Result<VisibleMediaFolder, ApiError> {
+    if query.relative_path.is_empty() || query.relative_path.len() > 4096 {
+        return Err(ApiError::without_request_id(
+            StatusCode::BAD_REQUEST,
+            "folder_path_invalid",
+            "The selected folder path is invalid.",
+        ));
+    }
+    let root = config
+        .resolve_visible_root(identity, &query.root_id)
+        .filter(|root| ["videos", "music", "audiobooks", "books"].contains(&root.category.as_str()))
+        .ok_or_else(|| {
+            ApiError::without_request_id(
+                StatusCode::FORBIDDEN,
+                "folder_not_visible",
+                "The selected folder is outside the caller's visible media roots.",
+            )
+        })?;
+    let directory =
+        open_directory_beneath(FilePath::new(&root.resolved_path), &query.relative_path).map_err(
+            |_| {
+                ApiError::without_request_id(
+                    StatusCode::CONFLICT,
+                    "folder_missing",
+                    "The selected folder is no longer present in the media library.",
+                )
+            },
+        )?;
+    let (has_direct_media, has_season_directory) = inspect_media_folder(&directory, &root.category)
+        .map_err(|_| {
+            ApiError::without_request_id(
+                StatusCode::CONFLICT,
+                "folder_missing",
+                "The selected folder is no longer present in the media library.",
+            )
+        })?;
+    Ok(VisibleMediaFolder {
+        root_id: root.id,
+        relative_path: query.relative_path.clone(),
+        category: root.category,
+        has_direct_media,
+        has_season_directory,
+    })
+}
+
+fn inspect_media_folder(
+    directory: &std::fs::File,
+    category: &str,
+) -> std::io::Result<(bool, bool)> {
+    let mut has_direct_media = false;
+    let mut has_season_directory = false;
+    let directory_path = format!("/proc/self/fd/{}", directory.as_raw_fd());
+    for (index, entry) in std::fs::read_dir(directory_path)?.enumerate() {
+        if index >= 10_000 {
+            break;
+        }
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            if season_number_from_name(&name.to_string_lossy()).is_some() {
+                has_season_directory = true;
+            }
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let extension = entry
+            .path()
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if scanned_media_kind(category, &extension)
+            .is_some_and(|kind| !matches!(kind, "artwork" | "subtitle"))
+        {
+            has_direct_media = true;
+        }
+    }
+    Ok((has_direct_media, has_season_directory))
+}
+
+fn folder_media_type(folder: &VisibleMediaFolder) -> &'static str {
+    if season_number_from_folder(&folder.relative_path).is_some() {
+        return "season";
+    }
+    match folder.category.as_str() {
+        "videos" if folder.has_season_directory => "series",
+        "videos" if folder.has_direct_media => "movie",
+        "music" if folder.has_direct_media => "music",
+        "audiobooks" if folder.has_direct_media => "audiobook",
+        "books" if folder.has_direct_media => "book",
+        _ => "collection",
+    }
+}
+
+fn season_number_from_folder(relative_path: &str) -> Option<u32> {
+    season_number_from_name(relative_path.rsplit('/').next()?)
+}
+
+fn season_number_from_name(name: &str) -> Option<u32> {
+    if name.eq_ignore_ascii_case("specials") {
+        return Some(0);
+    }
+    let (prefix, number) = name.trim().split_once(' ')?;
+    if !prefix.eq_ignore_ascii_case("season") {
+        return None;
+    }
+    number.trim().parse().ok()
+}
+
 fn normalized_subtitle_language(value: &str) -> Option<String> {
     let value = value.trim().to_ascii_lowercase();
     if value.is_empty() || value.len() > 15 {
@@ -2278,7 +2673,8 @@ fn video_search_title(relative_path: &str) -> &str {
 fn open_subtitles_client(
     config: &AppConfig,
     request_id: &str,
-) -> Result<OpenSubtitlesClient, ApiError> {    let path = config
+) -> Result<OpenSubtitlesClient, ApiError> {
+    let path = config
         .open_subtitles_credentials_file
         .as_deref()
         .filter(|path| path.is_file())
@@ -2313,10 +2709,7 @@ fn open_subtitles_client(
     })
 }
 
-fn musicbrainz_client(
-    config: &AppConfig,
-    request_id: &str,
-) -> Result<MusicBrainzClient, ApiError> {
+fn musicbrainz_client(config: &AppConfig, request_id: &str) -> Result<MusicBrainzClient, ApiError> {
     let acoustid_api_key = match config
         .acoustid_api_key_file
         .as_deref()
@@ -2425,6 +2818,52 @@ fn validate_subtitle_bytes(extension: &str, bytes: &[u8]) -> Result<(), ApiError
     Ok(())
 }
 
+fn validate_artwork_upload(format: &str, bytes: &[u8]) -> Result<&'static str, ApiError> {
+    if bytes.is_empty() || bytes.len() > MAX_ARTWORK_UPLOAD_BYTES {
+        return Err(ApiError::without_request_id(
+            StatusCode::BAD_REQUEST,
+            "artwork_size_invalid",
+            "Cover artwork must be a non-empty image no larger than 32 MiB.",
+        ));
+    }
+    let format = format.trim().to_ascii_lowercase();
+    let (extension, image_format) = match format.as_str() {
+        "jpg" | "jpeg" => ("jpg", image::ImageFormat::Jpeg),
+        "png" => ("png", image::ImageFormat::Png),
+        "gif" => ("gif", image::ImageFormat::Gif),
+        "webp" => ("webp", image::ImageFormat::WebP),
+        _ => {
+            return Err(ApiError::without_request_id(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "artwork_format_unsupported",
+                "Upload a JPEG, PNG, GIF, or WebP image.",
+            ))
+        }
+    };
+    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), image_format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    if reader.decode().is_err() {
+        return Err(ApiError::without_request_id(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "artwork_format_unsupported",
+            "Upload a complete JPEG, PNG, GIF, or WebP image whose contents match its file type and dimensions do not exceed 8192 pixels.",
+        ));
+    }
+    Ok(extension)
+}
+
+fn join_relative(parent: &str, child: &str) -> String {
+    if parent.is_empty() {
+        child.to_string()
+    } else {
+        format!("{parent}/{child}")
+    }
+}
+
 fn subtitle_sidecar_path(
     video_relative_path: &str,
     language: &str,
@@ -2441,7 +2880,16 @@ fn subtitle_sidecar_path(
 
 fn validate_metadata_request(request: &MetadataSidecarRequest) -> Result<(), ApiError> {
     if request.media_type.as_deref().is_some_and(|media_type| {
-        !["movie", "episode", "music", "audiobook", "book"].contains(&media_type)
+        ![
+            "movie",
+            "series",
+            "season",
+            "episode",
+            "music",
+            "audiobook",
+            "book",
+        ]
+        .contains(&media_type)
     }) {
         return Err(ApiError::without_request_id(
             StatusCode::BAD_REQUEST,
@@ -2712,10 +3160,168 @@ fn metadata_sidecar(
     (destination, "opf", xml)
 }
 
+fn folder_metadata_sidecar(
+    folder: &VisibleMediaFolder,
+    request: &MetadataSidecarRequest,
+) -> (String, &'static str, String) {
+    let media_type = request
+        .media_type
+        .as_deref()
+        .unwrap_or_else(|| folder_media_type(folder));
+    if matches!(media_type, "series" | "season") {
+        let root_tag = if media_type == "series" {
+            "tvshow"
+        } else {
+            "season"
+        };
+        let filename = if media_type == "series" {
+            "tvshow.nfo"
+        } else {
+            "season.nfo"
+        };
+        let mut xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<{root_tag}>\n");
+        xml.push_str(&xml_element("title", Some(&request.title)));
+        xml.push_str(&xml_element("sorttitle", request.sort_title.as_deref()));
+        if let Some(year) = request.year {
+            xml.push_str(&format!("  <year>{year}</year>\n"));
+        }
+        xml.push_str(&xml_element("plot", request.description.as_deref()));
+        xml.push_str(&xml_element("studio", request.publisher.as_deref()));
+        xml.push_str(&xml_element("language", request.language.as_deref()));
+        xml.push_str(&xml_element("premiered", request.premiere_date.as_deref()));
+        xml.push_str(&xml_element("mpaa", request.official_rating.as_deref()));
+        if let Some(rating) = request.community_rating {
+            xml.push_str(&format!("  <rating>{rating}</rating>\n"));
+        }
+        for genre in &request.genres {
+            xml.push_str(&xml_element("genre", Some(genre)));
+        }
+        for writer in &request.writers {
+            xml.push_str(&xml_element("writer", Some(writer)));
+        }
+        for (provider, id) in &request.provider_ids {
+            xml.push_str(&format!(
+                "  <uniqueid type=\"{}\">{}</uniqueid>\n",
+                xml_text(provider),
+                xml_text(id)
+            ));
+        }
+        xml.push_str(&format!("</{root_tag}>\n"));
+        return (format!("{}/{filename}", folder.relative_path), "nfo", xml);
+    }
+
+    let (media_kind, placeholder) = match folder.category.as_str() {
+        "music" => ("music", "album-track.mp3"),
+        "audiobooks" => ("audiobook", "book.m4b"),
+        "books" => ("audiobook", "book.epub"),
+        _ => ("video", "movie.mkv"),
+    };
+    let pseudo_item = CatalogItem {
+        id: String::new(),
+        root_id: folder.root_id.clone(),
+        owner_username: None,
+        relative_path: format!("{}/{placeholder}", folder.relative_path),
+        media_kind: media_kind.to_string(),
+        size_bytes: 0,
+        modified_ns: 0,
+        fingerprint: String::new(),
+    };
+    metadata_sidecar(&pseudo_item, request)
+}
+
 struct StagedSidecar {
     filename: String,
     expected: String,
     path: std::path::PathBuf,
+}
+
+fn create_artwork_replacement_plan(
+    state: &AppState,
+    identity: &Identity,
+    catalog: &mut Catalog,
+    item: &CatalogItem,
+    action: ReplaceArtworkAction,
+    request_id: String,
+) -> Result<Response, ApiError> {
+    let archived_relative_path = action.archived_relative_path.clone();
+    let destination_relative_path = action.replacement_relative_path.clone();
+    let actions = vec![BrokerAction::ReplaceArtwork(action)];
+    let expires_at = unix_timestamp().saturating_add(30 * 60);
+    let canonical = serde_json::to_vec(&json!({
+        "actor": identity.username,
+        "itemId": item.id,
+        "actions": actions,
+        "expiresAt": expires_at,
+    }))
+    .map_err(|_| ApiError::internal(request_id.clone()))?;
+    let digest = sha256_hex(&canonical);
+    let plan_id = format!("plan-{request_id}");
+    catalog
+        .create_mutation_plan(&MutationPlanDraft {
+            id: plan_id.clone(),
+            owner_username: identity.username.clone(),
+            digest: digest.clone(),
+            request_json: json!({
+                "kind": "replace_artwork",
+                "itemId": item.id,
+                "archivedRelativePath": archived_relative_path,
+                "destinationRelativePath": destination_relative_path,
+            })
+            .to_string(),
+            expires_at,
+            actions: actions.clone(),
+        })
+        .map_err(|error| {
+            log_event(
+                "mutation_plan_write_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            ApiError::internal(request_id.clone())
+        })?;
+    catalog
+        .insert_audit_event(
+            &request_id,
+            &identity.username,
+            "artwork_replacement_previewed",
+            Some(&plan_id),
+            &json!({
+                "digest": digest,
+                "itemId": item.id,
+                "archivedRelativePath": archived_relative_path,
+                "destinationRelativePath": destination_relative_path,
+            })
+            .to_string(),
+        )
+        .map_err(|error| {
+            log_event(
+                "audit_write_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            ApiError::internal(request_id.clone())
+        })?;
+    let mut warnings = vec![
+        "The current image will be moved into its superseded subfolder before the replacement is installed.",
+        "The staged replacement is fingerprint-bound and will never overwrite another destination.",
+    ];
+    if state.config.mutation_mode == MutationMode::ReadOnly {
+        warnings.push("The service is in read-only mode; this plan cannot be confirmed.");
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "id": plan_id,
+            "digest": digest,
+            "state": "previewed",
+            "actions": actions,
+            "expiresAt": expires_at,
+            "mutationMode": state.config.mutation_mode,
+            "warnings": warnings,
+            "requestId": request_id,
+        })),
+    )
+        .into_response())
 }
 
 async fn stage_sidecar(

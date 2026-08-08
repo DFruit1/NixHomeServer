@@ -42,11 +42,24 @@ pub struct InstallMetadataSidecarAction {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceArtworkAction {
+    pub staging_filename: String,
+    pub root_id: String,
+    pub source_relative_path: String,
+    pub archived_relative_path: String,
+    pub replacement_relative_path: String,
+    pub expected_source: String,
+    pub expected_replacement: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrokerAction {
     Move(MoveAction),
     InstallSubtitle(InstallSubtitleAction),
     InstallMetadataSidecar(InstallMetadataSidecarAction),
+    ReplaceArtwork(ReplaceArtworkAction),
 }
 
 impl From<MoveAction> for BrokerAction {
@@ -64,6 +77,12 @@ impl From<InstallSubtitleAction> for BrokerAction {
 impl From<InstallMetadataSidecarAction> for BrokerAction {
     fn from(action: InstallMetadataSidecarAction) -> Self {
         Self::InstallMetadataSidecar(action)
+    }
+}
+
+impl From<ReplaceArtworkAction> for BrokerAction {
+    fn from(action: ReplaceArtworkAction) -> Self {
+        Self::ReplaceArtwork(action)
     }
 }
 
@@ -110,10 +129,26 @@ pub fn open_regular_file_beneath(root: &Path, relative_path: &str) -> Result<Fil
     Ok(File::from(file_fd))
 }
 
+#[cfg(target_os = "linux")]
+pub fn open_directory_beneath(root: &Path, relative_path: &str) -> Result<File, BrokerError> {
+    let (mut components, leaf) = safe_parent_and_leaf(relative_path)?;
+    components.push(leaf);
+    let root_fd = open_root(root)?;
+    let directory_fd = open_directory_chain(root_fd.as_raw_fd(), &components, false)?;
+    Ok(File::from(directory_fd))
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn open_regular_file_beneath(_root: &Path, _relative_path: &str) -> Result<File, BrokerError> {
     Err(BrokerError::new(
         "contained media reads require Linux openat2",
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn open_directory_beneath(_root: &Path, _relative_path: &str) -> Result<File, BrokerError> {
+    Err(BrokerError::new(
+        "contained media directory reads require Linux openat2",
     ))
 }
 
@@ -129,6 +164,7 @@ pub fn apply_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             apply_install_metadata_sidecar(config, username, action)
         }
+        BrokerAction::ReplaceArtwork(action) => apply_replace_artwork(config, username, action),
     }
 }
 
@@ -146,6 +182,7 @@ pub fn recover_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             recover_installed_metadata_sidecar(config, username, action)
         }
+        BrokerAction::ReplaceArtwork(action) => recover_replaced_artwork(config, username, action),
     }
 }
 
@@ -162,6 +199,11 @@ pub fn discard_staged_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             discard_staged_file(config, &action.staging_filename, &action.expected)
         }
+        BrokerAction::ReplaceArtwork(action) => discard_staged_file(
+            config,
+            &action.staging_filename,
+            &action.expected_replacement,
+        ),
     }
 }
 
@@ -426,6 +468,210 @@ fn validate_metadata_sidecar_action(
     {
         return Err(BrokerError::new(
             "metadata destination must use .nfo or .opf",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn apply_replace_artwork(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceArtworkAction,
+) -> Result<(), BrokerError> {
+    validate_replace_artwork_action(config, username, action)?;
+    if recover_replaced_artwork(config, username, action)? {
+        return Ok(());
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let (archive_parent, archive_leaf) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    let (replacement_parent, replacement_leaf) =
+        safe_parent_and_leaf(&action.replacement_relative_path)?;
+    let root_fd = open_root(Path::new(&root.resolved_path))?;
+    let source_parent_fd = open_directory_chain(root_fd.as_raw_fd(), &source_parent, false)?;
+    let archive_parent_fd = open_directory_chain(root_fd.as_raw_fd(), &archive_parent, true)?;
+    let replacement_parent_fd =
+        open_directory_chain(root_fd.as_raw_fd(), &replacement_parent, false)?;
+    let source = fingerprint_optional_at(source_parent_fd.as_raw_fd(), source_leaf)?;
+    let archived = fingerprint_optional_at(archive_parent_fd.as_raw_fd(), archive_leaf)?;
+    let replacement = fingerprint_optional_at(replacement_parent_fd.as_raw_fd(), replacement_leaf)?;
+    let replacement_is_source = action.source_relative_path == action.replacement_relative_path;
+    let initial = source.as_deref() == Some(action.expected_source.as_str())
+        && archived.is_none()
+        && (replacement_is_source || replacement.is_none());
+    let archived_only = source.is_none()
+        && archived.as_deref() == Some(action.expected_source.as_str())
+        && replacement.is_none();
+    if !initial && !archived_only {
+        if source.is_none()
+            && archived.as_deref() == Some(action.expected_source.as_str())
+            && replacement.is_some()
+        {
+            let rollback = rename_noreplace(
+                archive_parent_fd.as_raw_fd(),
+                archive_leaf,
+                source_parent_fd.as_raw_fd(),
+                source_leaf,
+                "restore archived artwork after replacement conflict",
+            );
+            if rollback.is_ok() {
+                sync_directory(archive_parent_fd.as_raw_fd())?;
+                sync_directory(source_parent_fd.as_raw_fd())?;
+            }
+        }
+        return Err(BrokerError::new(
+            "artwork replacement inputs changed after the mutation preview",
+        ));
+    }
+
+    let (staging_root_fd, temporary_name) = prepare_staged_copy(
+        config,
+        &action.staging_filename,
+        &action.expected_replacement,
+        replacement_parent_fd.as_raw_fd(),
+    )?;
+    if initial {
+        if let Err(error) = rename_noreplace(
+            source_parent_fd.as_raw_fd(),
+            source_leaf,
+            archive_parent_fd.as_raw_fd(),
+            archive_leaf,
+            "archive current artwork",
+        ) {
+            unlink_at_if_present(replacement_parent_fd.as_raw_fd(), &temporary_name);
+            return Err(error);
+        }
+        sync_directory(source_parent_fd.as_raw_fd())?;
+        sync_directory(archive_parent_fd.as_raw_fd())?;
+    }
+    if let Err(install_error) = rename_noreplace(
+        replacement_parent_fd.as_raw_fd(),
+        &temporary_name,
+        replacement_parent_fd.as_raw_fd(),
+        replacement_leaf,
+        "install replacement artwork",
+    ) {
+        unlink_at_if_present(replacement_parent_fd.as_raw_fd(), &temporary_name);
+        let rollback = rename_noreplace(
+            archive_parent_fd.as_raw_fd(),
+            archive_leaf,
+            source_parent_fd.as_raw_fd(),
+            source_leaf,
+            "restore archived artwork after install failure",
+        );
+        if let Err(rollback_error) = rollback {
+            return Err(BrokerError::new(format!(
+                "{install_error}; the original remains preserved at the archive path because rollback failed: {rollback_error}"
+            )));
+        }
+        sync_directory(archive_parent_fd.as_raw_fd())?;
+        sync_directory(source_parent_fd.as_raw_fd())?;
+        return Err(install_error);
+    }
+    sync_directory(replacement_parent_fd.as_raw_fd())?;
+    unlink_regular_at(staging_root_fd.as_raw_fd(), &action.staging_filename)?;
+    sync_directory(staging_root_fd.as_raw_fd())
+}
+
+#[cfg(target_os = "linux")]
+fn recover_replaced_artwork(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceArtworkAction,
+) -> Result<bool, BrokerError> {
+    validate_replace_artwork_action(config, username, action)?;
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
+    let (archive_parent, archive_leaf) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    let (replacement_parent, replacement_leaf) =
+        safe_parent_and_leaf(&action.replacement_relative_path)?;
+    let root_fd = open_root(Path::new(&root.resolved_path))?;
+    let archive_parent_fd = match open_directory_chain(root_fd.as_raw_fd(), &archive_parent, false)
+    {
+        Ok(parent) => parent,
+        Err(_) => return Ok(false),
+    };
+    let replacement_parent_fd =
+        open_directory_chain(root_fd.as_raw_fd(), &replacement_parent, false)?;
+    if fingerprint_optional_at(archive_parent_fd.as_raw_fd(), archive_leaf)?.as_deref()
+        != Some(action.expected_source.as_str())
+        || fingerprint_optional_at(replacement_parent_fd.as_raw_fd(), replacement_leaf)?.as_deref()
+            != Some(action.expected_replacement.as_str())
+    {
+        return Ok(false);
+    }
+    let staging_root_fd = open_root(&config.state_dir.join("provider-staging"))?;
+    match fingerprint_optional_at(staging_root_fd.as_raw_fd(), &action.staging_filename)? {
+        Some(fingerprint) if fingerprint == action.expected_replacement => {
+            unlink_regular_at(staging_root_fd.as_raw_fd(), &action.staging_filename)?;
+            sync_directory(staging_root_fd.as_raw_fd())?;
+        }
+        Some(_) => {
+            return Err(BrokerError::new(
+                "completed artwork replacement has a changed staged recovery file",
+            ))
+        }
+        None => {}
+    }
+    Ok(true)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_replace_artwork_action(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceArtworkAction,
+) -> Result<(), BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
+    if !["videos", "music", "audiobooks", "books"].contains(&root.category.as_str()) {
+        return Err(BrokerError::new(
+            "artwork may only be installed in a media root",
+        ));
+    }
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let (archive_parent, _) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    let (replacement_parent, replacement_leaf) =
+        safe_parent_and_leaf(&action.replacement_relative_path)?;
+    let mut expected_archive_parent = source_parent.clone();
+    expected_archive_parent.push("superseded");
+    if archive_parent != expected_archive_parent || replacement_parent != source_parent {
+        return Err(BrokerError::new(
+            "artwork replacement paths must remain beside the source and in its superseded child",
+        ));
+    }
+    if action.source_relative_path == action.archived_relative_path
+        || action.archived_relative_path == action.replacement_relative_path
+    {
+        return Err(BrokerError::new(
+            "artwork replacement paths must be distinct",
+        ));
+    }
+    if source_leaf.rsplit_once('.').is_none() {
+        return Err(BrokerError::new(
+            "artwork source must have a file extension",
+        ));
+    }
+    let valid_extension = [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+        .iter()
+        .any(|extension| replacement_leaf.to_ascii_lowercase().ends_with(extension));
+    if !valid_extension {
+        return Err(BrokerError::new(
+            "artwork destination must use .jpg, .jpeg, .png, .gif, or .webp",
         ));
     }
     Ok(())
@@ -804,6 +1050,116 @@ fn fingerprint_at(parent_fd: RawFd, leaf: &str) -> Result<String, BrokerError> {
         ));
     }
     Ok(fingerprint_from_stat(&stat))
+}
+
+#[cfg(target_os = "linux")]
+fn fingerprint_optional_at(parent_fd: RawFd, leaf: &str) -> Result<Option<String>, BrokerError> {
+    let leaf = c_string(leaf)?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let result = unsafe {
+        libc::fstatat(
+            parent_fd,
+            leaf.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ENOENT) {
+            return Ok(None);
+        }
+        return Err(BrokerError::new(format!("inspect artwork leaf: {error}")));
+    }
+    let stat = unsafe { stat.assume_init() };
+    if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(BrokerError::new(
+            "artwork path must be a regular non-symlink file",
+        ));
+    }
+    Ok(Some(fingerprint_from_stat(&stat)))
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_staged_copy(
+    config: &AppConfig,
+    staging_filename: &str,
+    expected: &str,
+    destination_parent_fd: RawFd,
+) -> Result<(OwnedFd, String), BrokerError> {
+    let staging_root_fd = open_root(&config.state_dir.join("provider-staging"))?;
+    let source_fd = open_regular_at(staging_root_fd.as_raw_fd(), staging_filename)?;
+    let source_stat = file_stat(source_fd.as_raw_fd())?;
+    if fingerprint_from_stat(&source_stat) != expected {
+        return Err(BrokerError::new(
+            "staged artwork changed after the mutation preview",
+        ));
+    }
+    let (temporary_name, temporary_fd) = create_temporary_file(destination_parent_fd)?;
+    let mut source = File::from(source_fd);
+    let mut temporary = File::from(temporary_fd);
+    let copy_result = (|| -> Result<(), BrokerError> {
+        io::copy(&mut source, &mut temporary)
+            .map_err(|error| BrokerError::new(format!("copy staged artwork: {error}")))?;
+        let times = [
+            libc::timespec {
+                tv_sec: source_stat.st_atime,
+                tv_nsec: source_stat.st_atime_nsec,
+            },
+            libc::timespec {
+                tv_sec: source_stat.st_mtime,
+                tv_nsec: source_stat.st_mtime_nsec,
+            },
+        ];
+        if unsafe { libc::futimens(temporary.as_raw_fd(), times.as_ptr()) } != 0 {
+            return Err(BrokerError::new(format!(
+                "preserve staged artwork timestamp: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        temporary
+            .sync_all()
+            .map_err(|error| BrokerError::new(format!("sync staged artwork copy: {error}")))
+    })();
+    if let Err(error) = copy_result {
+        drop(temporary);
+        unlink_at_if_present(destination_parent_fd, &temporary_name);
+        return Err(error);
+    }
+    drop(temporary);
+    Ok((staging_root_fd, temporary_name))
+}
+
+#[cfg(target_os = "linux")]
+fn rename_noreplace(
+    source_parent_fd: RawFd,
+    source_leaf: &str,
+    destination_parent_fd: RawFd,
+    destination_leaf: &str,
+    operation: &str,
+) -> Result<(), BrokerError> {
+    let source_name = c_string(source_leaf)?;
+    let destination_name = c_string(destination_leaf)?;
+    let renamed = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            source_parent_fd,
+            source_name.as_ptr(),
+            destination_parent_fd,
+            destination_name.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if renamed == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    Err(BrokerError::new(match error.raw_os_error() {
+        Some(libc::EEXIST) => {
+            format!("{operation}: destination already exists; no file was overwritten")
+        }
+        _ => format!("{operation}: {error}"),
+    }))
 }
 
 #[cfg(target_os = "linux")]

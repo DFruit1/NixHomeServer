@@ -607,6 +607,391 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).toContain("Example Movie (2020).mkv");
   });
 
+  it("selects folder names separately from caret-only expansion", async () => {
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Example Movie (2020).mkv",
+        mediaKind: "video",
+        sizeBytes: 1024,
+      },
+      {
+        id: "episode-1",
+        rootId: "shared-videos",
+        relativePath: "_Shows/Example Show/Season 01/Episode.mkv",
+        mediaKind: "video",
+        sizeBytes: 2048,
+      },
+      {
+        id: "cover-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/cover.jpg",
+        mediaKind: "artwork",
+        sizeBytes: 8192,
+      },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const payload = path.endsWith("/status")
+        ? { mutationMode: "enabled", integrations: [] }
+        : path.endsWith("/session")
+          ? { username: "dsaw", groups: ["users"], canEdit: true }
+          : path.endsWith("/roots")
+            ? [
+                {
+                  id: "shared-videos",
+                  label: "Shared videos",
+                  category: "videos",
+                  scope: "shared",
+                  available: true,
+                },
+              ]
+            : path.includes("/items?rootId=shared-videos")
+              ? { items }
+              : path.includes("/folders/metadata?")
+                ? {
+                    mediaType: "movie",
+                    title: "Movies",
+                    language: "en",
+                    sources: ["folder"],
+                  }
+                : { available: false, progress: {} };
+      return new Response(JSON.stringify(payload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    const sharedPane = screen.querySelectorAll(".catalog-panel")[1];
+    const folderRow = (name: string) =>
+      Array.from(sharedPane?.querySelectorAll(".tree-row.folder") ?? []).find(
+        (row) => row.querySelector(".tree-name")?.textContent === name,
+      );
+    const movieBranch = folderRow("_Movies")?.closest(".tree-branch");
+    const showBranch = folderRow("_Shows")?.closest(".tree-branch");
+    expect(movieBranch?.getAttribute("aria-expanded")).toBe("true");
+
+    await userEvent(
+      movieBranch?.querySelector(".tree-folder-name") ?? null,
+      "click",
+    );
+
+    expect(movieBranch?.getAttribute("aria-expanded")).toBe("true");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "/api/v1/folders/metadata?rootId=shared-videos&relativePath=_Movies",
+      ),
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+    expect(
+      screen.querySelector<HTMLImageElement>(".media-image img")?.src,
+    ).toContain("/items/movie-1/image");
+
+    await userEvent(showBranch?.querySelector(".tree-toggle") ?? null, "click");
+    const tree = sharedPane?.querySelector(".item-tree") as HTMLElement;
+    tree.scrollTop = 240;
+    await userEvent(showBranch?.querySelector(".tree-toggle") ?? null, "click");
+
+    expect(showBranch?.getAttribute("aria-expanded")).toBe("true");
+    expect(movieBranch?.getAttribute("aria-expanded")).toBe("false");
+    expect(folderRow("_Movies")?.classList.contains("sibling-muted")).toBe(
+      true,
+    );
+    expect(tree.scrollTop).toBe(0);
+  });
+
+  it("shows a benign cover-art card instead of requesting media metadata", async () => {
+    const items = [
+      {
+        id: "cover-1",
+        rootId: "shared-videos",
+        relativePath: "cover.jpg",
+        mediaKind: "artwork",
+        sizeBytes: 8192,
+      },
+    ];
+    const fetchMock = libraryFetchMock(items, true);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    const sharedPane = screen.querySelectorAll(".catalog-panel")[1];
+
+    await userEvent(
+      sharedPane?.querySelector(".tree-row.file") ?? null,
+      "click",
+    );
+
+    expect(screen.textContent).toContain("Image File (Cover Art)");
+    expect(screen.textContent).toContain("Replace cover art");
+    expect(screen.querySelector(".non-media-card")).toBeDefined();
+    expect(screen.querySelector(".message.error")).toBeUndefined();
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).endsWith("/items/cover-1/metadata"),
+      ),
+    ).toBe(false);
+  });
+
+  it("discards an artwork preview that resolves after another image is selected", async () => {
+    const items = [
+      {
+        id: "cover-a",
+        rootId: "shared-videos",
+        relativePath: "A-cover.jpg",
+        mediaKind: "artwork",
+        sizeBytes: 8192,
+      },
+      {
+        id: "cover-b",
+        rootId: "shared-videos",
+        relativePath: "B-cover.jpg",
+        mediaKind: "artwork",
+        sizeBytes: 8192,
+      },
+    ];
+    let resolveUpload!: (response: Response) => void;
+    const uploadResponse = new Promise<Response>((resolve) => {
+      resolveUpload = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/image/replacement?")) return uploadResponse;
+      return libraryFetchMock(items, true)(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    const fileButton = (name: string) =>
+      Array.from(
+        screen.querySelectorAll<HTMLButtonElement>(
+          ".shared-pane .tree-row.file",
+        ),
+      ).find(
+        (button) => button.querySelector(".tree-name")?.textContent === name,
+      );
+    await userEvent(fileButton("A-cover.jpg") ?? null, "click");
+    const input = screen.querySelector<HTMLInputElement>(
+      ".non-media-card input[type=file]",
+    );
+    const file = { name: "cover.png", type: "image/png" } as File;
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [file],
+    });
+    const uploadChange = userEvent(input, "change");
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([request]) =>
+          String(request).includes("/items/cover-a/image/replacement?"),
+        ),
+      ).toBe(true),
+    );
+
+    await userEvent(fileButton("B-cover.jpg") ?? null, "click");
+    resolveUpload(
+      new Response(JSON.stringify({ id: "plan-a", digest: "a".repeat(64) })),
+    );
+    await uploadChange;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.textContent).not.toContain("Confirm replacement");
+    expect(screen.textContent).toContain("B-cover.jpg");
+  });
+
+  it("discards a folder sidecar preview that resolves after another folder is selected", async () => {
+    const items = [
+      {
+        id: "alpha-episode",
+        rootId: "shared-videos",
+        relativePath: "_Shows/Alpha/Episode.mkv",
+        mediaKind: "video",
+        sizeBytes: 1024,
+      },
+      {
+        id: "beta-episode",
+        rootId: "shared-videos",
+        relativePath: "_Shows/Beta/Episode.mkv",
+        mediaKind: "video",
+        sizeBytes: 1024,
+      },
+    ];
+    let resolvePreview!: (response: Response) => void;
+    const previewResponse = new Promise<Response>((resolve) => {
+      resolvePreview = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (
+        path.includes("/folders/metadata/sidecar?") &&
+        path.includes("relativePath=_Shows%2FAlpha")
+      ) {
+        return previewResponse;
+      }
+      if (path.includes("relativePath=_Shows%2FAlpha")) {
+        return new Response(
+          JSON.stringify({
+            mediaType: "series",
+            title: "Alpha current",
+            sources: ["folder"],
+          }),
+        );
+      }
+      if (path.includes("relativePath=_Shows%2FBeta")) {
+        return new Response(
+          JSON.stringify({
+            mediaType: "series",
+            title: "Beta current",
+            sources: ["folder"],
+          }),
+        );
+      }
+      return libraryFetchMock(items, true)(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    const folderButton = (name: string) =>
+      Array.from(
+        screen.querySelectorAll<HTMLButtonElement>(
+          ".shared-pane .tree-folder-name",
+        ),
+      ).find((button) => button.textContent === name);
+    expect(folderButton("Alpha")).toBeDefined();
+    expect(folderButton("Beta")).toBeDefined();
+    await userEvent(folderButton("Alpha") ?? null, "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector<HTMLInputElement>(".title-input input")?.value,
+      ).toBe("Alpha current"),
+    );
+    const previewClick = userEvent(
+      Array.from(screen.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Preview metadata sidecar"),
+      ) ?? null,
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([request]) =>
+            String(request).includes("/folders/metadata/sidecar?") &&
+            String(request).includes("relativePath=_Shows%2FAlpha"),
+        ),
+      ).toBe(true),
+    );
+    await userEvent(folderButton("Beta") ?? null, "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector<HTMLInputElement>(".title-input input")?.value,
+      ).toBe("Beta current"),
+    );
+
+    resolvePreview(
+      new Response(
+        JSON.stringify({
+          id: "alpha-plan",
+          digest: "a".repeat(64),
+          expiresAt: 9999999999,
+          actions: [
+            {
+              kind: "install_metadata_sidecar",
+              destinationRelativePath: "_Shows/Alpha/tvshow.nfo",
+            },
+          ],
+          warnings: [],
+        }),
+      ),
+    );
+    await previewClick;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.textContent).not.toContain("Confirm metadata");
+  });
+
+  it("clears a selected folder when switching media categories", async () => {
+    const roots = [
+      {
+        id: "shared-videos",
+        label: "Shared videos",
+        category: "videos",
+        scope: "shared",
+        available: true,
+      },
+      {
+        id: "shared-music",
+        label: "Shared music",
+        category: "music",
+        scope: "shared",
+        available: true,
+      },
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const payload = path.endsWith("/status")
+        ? { mutationMode: "enabled", integrations: [] }
+        : path.endsWith("/session")
+          ? { username: "dsaw", groups: ["users"], canEdit: true }
+          : path.endsWith("/roots")
+            ? roots
+            : path.includes("rootId=shared-videos")
+              ? {
+                  items: [
+                    {
+                      id: "video-1",
+                      rootId: "shared-videos",
+                      relativePath: "Collection/Film.mkv",
+                      mediaKind: "video",
+                      sizeBytes: 1024,
+                    },
+                  ],
+                }
+              : path.includes("rootId=shared-music")
+                ? {
+                    items: [
+                      {
+                        id: "music-1",
+                        rootId: "shared-music",
+                        relativePath: "Collection/Track.flac",
+                        mediaKind: "music",
+                        sizeBytes: 1024,
+                      },
+                    ],
+                  }
+                : path.includes("/folders/metadata?")
+                  ? { mediaType: "movie", title: "Collection" }
+                  : { available: false, progress: {} };
+      return new Response(JSON.stringify(payload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    await userEvent(
+      screen.querySelector(".shared-pane .tree-folder-name"),
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-card")).toBeDefined(),
+    );
+    await userEvent(
+      Array.from(screen.querySelectorAll(".library-tab")).find(
+        (tab) => tab.textContent?.trim() === "Music",
+      ) ?? null,
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-card")).toBeUndefined(),
+    );
+  });
+
   it("parses a Jellyfin TV filename into editable fields", async () => {
     const items = [
       {

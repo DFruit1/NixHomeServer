@@ -132,34 +132,56 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
             let distance = candidate_parents
                 .iter()
                 .position(|parent| *parent == candidate_parent)?;
-            Some((candidate, distance, candidate_name))
+            Some((candidate, distance, candidate_name, candidate_parent))
         })
-        .min_by_key(|(candidate, distance, candidate_name)| {
+        .min_by_key(|(candidate, distance, candidate_name, candidate_parent)| {
             let stem = candidate_name
                 .rsplit_once('.')
                 .map(|(stem, _)| stem)
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            let target_priority = [
+            let suffixes = [
                 "",
                 "-poster",
                 "-cover",
                 "-folder",
+                "-default",
+                "-movie",
+                "-show",
+                "-jacket",
                 "-front",
                 "-thumb",
                 "-landscape",
                 "-banner",
                 "-fanart",
                 "-backdrop",
+                "-background",
+                "-art",
                 "-clearlogo",
                 "-logo",
-            ]
-            .iter()
-            .position(|suffix| stem == format!("{target_stem}{suffix}"));
+            ];
+            let folder_stem = candidate_parent
+                .rsplit('/')
+                .next()
+                .unwrap_or(candidate_parent)
+                .to_ascii_lowercase();
+            let target_priority = suffixes
+                .iter()
+                .position(|suffix| stem == format!("{target_stem}{suffix}"))
+                .or_else(|| {
+                    suffixes
+                        .iter()
+                        .position(|suffix| stem == format!("{folder_stem}{suffix}"))
+                        .map(|priority| 50 + priority)
+                });
             let generic_priority = [
                 "cover",
                 "folder",
                 "poster",
+                "default",
+                "movie",
+                "show",
+                "jacket",
                 "artwork",
                 "front",
                 "thumb",
@@ -167,6 +189,8 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
                 "banner",
                 "fanart",
                 "backdrop",
+                "background",
+                "art",
                 "clearlogo",
                 "logo",
             ]
@@ -175,7 +199,12 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
             let name_priority = target_priority
                 .or_else(|| generic_priority.map(|priority| 100 + priority))
                 .unwrap_or(usize::MAX);
-            (*distance, name_priority, candidate.relative_path.clone())
+            (
+                usize::from(name_priority == usize::MAX),
+                *distance,
+                name_priority,
+                candidate.relative_path.clone(),
+            )
         })
-        .map(|(candidate, _, _)| candidate.clone())
+        .map(|(candidate, _, _, _)| candidate.clone())
 }

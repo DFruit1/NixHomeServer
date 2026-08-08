@@ -773,11 +773,11 @@ a:focus-visible {
 
 .library-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   grid-template-areas:
-    "tabs tabs"
-    "personal shared"
-    "image editor";
+    "tabs tabs tabs tabs tabs tabs"
+    "personal personal personal shared shared shared"
+    "image image editor editor editor editor";
   align-items: start;
   gap: 18px 20px;
 }
@@ -906,7 +906,8 @@ a:focus-visible {
 }
 .catalog-panel {
   position: relative;
-  min-height: min(560px, 68vh);
+  height: 55vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-self: stretch;
@@ -1105,12 +1106,12 @@ a:focus-visible {
   min-height: 0;
   flex: 1 1 auto;
   padding: 6px 0;
-  font-size: 11px;
+  font-size: 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 .tree-row {
-  min-height: 34px;
+  min-height: 40px;
   padding-right: 20px;
   display: flex;
   align-items: center;
@@ -1142,6 +1143,33 @@ a:focus-visible {
 .tree-row.folder .tree-name {
   font-weight: 600;
 }
+.tree-row.sibling-muted .tree-name {
+  color: var(--ink-faint);
+}
+.tree-toggle,
+.tree-folder-name {
+  min-height: 40px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.tree-toggle {
+  width: 40px;
+  margin-left: -12px;
+  padding: 0;
+  display: grid;
+  flex: 0 0 40px;
+  place-items: center;
+}
+.tree-folder-name {
+  min-width: 0;
+  padding: 0;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  text-align: left;
+}
 .tree-name {
   min-width: 0;
   flex: 1 1 auto;
@@ -1149,15 +1177,66 @@ a:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
 }
 .muted {
   color: var(--ink-faint);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
 }
 .editor-card {
   grid-area: editor;
+}
+.non-media-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.non-media-heading h3 {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 500;
+}
+.non-media-body {
+  min-height: 220px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+.non-media-body > p {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+.non-media-body > code {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.non-media-confirm {
+  width: 100%;
+  padding-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-top: 1px solid var(--line);
+}
+.non-media-confirm p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
 }
 .editor-heading {
   min-height: 64px;
@@ -1488,7 +1567,8 @@ a:focus-visible {
   width: 100%;
   height: 300px;
   border-radius: 4px;
-  object-fit: cover;
+  object-fit: contain;
+  background: var(--paper-recess);
 }
 .media-image img {
   display: block;
@@ -2051,7 +2131,8 @@ a:focus-visible {
       "editor";
   }
   .catalog-panel {
-    min-height: min(420px, 55vh);
+    height: 55vh;
+    min-height: 0;
   }
   .subtitle-workflows {
     grid-template-columns: 1fr;

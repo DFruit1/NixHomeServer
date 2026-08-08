@@ -93,6 +93,12 @@ struct Args {
     /// ISO titles still waiting in the inbox, included in the progress snapshot
     #[arg(long = "queue-item", hide = true)]
     queue_items: Vec<String>,
+    /// Inbox to re-scan while encoding so newly arrived ISOs appear in the queue
+    #[arg(long, hide = true)]
+    queue_directory: Option<PathBuf>,
+    /// Current inbox filename to exclude from the live queue
+    #[arg(long, hide = true)]
+    active_queue_item: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -228,6 +234,8 @@ struct ProgressContext {
     item_seconds: u64,
     total_seconds: u64,
     queued: Vec<String>,
+    queue_directory: Option<PathBuf>,
+    active_queue_item: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -531,6 +539,8 @@ fn main() -> Result<()> {
             item_seconds,
             total_seconds,
             queued: args.queue_items.clone(),
+            queue_directory: args.queue_directory.clone(),
+            active_queue_item: args.active_queue_item.clone(),
         });
         if let Err(e) = encode(job, &cancelled, progress) {
             eprintln!("ERROR: {e:#}");
@@ -1870,6 +1880,7 @@ fn write_public_progress(
         ((context.item_index - 1) as f64 + item_percent / 100.0) / context.item_count.max(1) as f64
             * 100.0
     };
+    let queued = live_queue_items(context);
     let status = PublicProgress {
         schema_version: 1,
         state: "converting",
@@ -1891,9 +1902,38 @@ fn write_public_progress(
             eta_seconds,
             rate_fps: rate_fps.filter(|value| value.is_finite() && *value >= 0.0),
         }],
-        queued: &context.queued,
+        queued: &queued,
     };
     atomic_write(&context.path, &serde_json::to_vec_pretty(&status)?)
+}
+
+fn live_queue_items(context: &ProgressContext) -> Vec<String> {
+    let Some(directory) = context.queue_directory.as_deref() else {
+        return context.queued.clone();
+    };
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(_) => return context.queued.clone(),
+    };
+    let mut queued = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter(|entry| {
+            context
+                .active_queue_item
+                .as_deref()
+                .is_none_or(|active| entry.file_name() != OsStr::new(active))
+        })
+        .map(|entry| entry.path())
+        .filter(|path| is_iso(path))
+        .filter_map(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .collect::<Vec<_>>();
+    queued.sort_by(|left, right| natural_cmp(left, right));
+    queued.dedup();
+    queued
 }
 
 fn relay_progress<R: std::io::Read>(
@@ -1918,17 +1958,19 @@ fn relay_progress<R: std::io::Read>(
             rate = Some(value);
         } else if let Some(value) = json_number(trimmed, "\"Progress\"") {
             let percent = (value * 100.0).clamp(0.0, 100.0);
-            if percent < last_percent + 0.5 && !(percent >= 100.0 && last_percent < 100.0) {
-                continue;
+            if percent >= last_percent + 0.5 || (percent >= 100.0 && last_percent < 100.0) {
+                last_percent = percent;
+                let eta_text = eta.map(format_duration).unwrap_or_else(|| "--:--".into());
+                let rate_text = rate
+                    .filter(|v| *v > 0.0)
+                    .map(|v| format!("  {v:.1} fps"))
+                    .unwrap_or_default();
+                eprint!("\r  Encoding {percent:5.1}%  ETA {eta_text}{rate_text}   ");
+                std::io::stderr().flush().ok();
             }
-            last_percent = percent;
-            let eta_text = eta.map(format_duration).unwrap_or_else(|| "--:--".into());
-            let rate_text = rate
-                .filter(|v| *v > 0.0)
-                .map(|v| format!("  {v:.1} fps"))
-                .unwrap_or_default();
-            eprint!("\r  Encoding {percent:5.1}%  ETA {eta_text}{rate_text}   ");
-            std::io::stderr().flush().ok();
+            // Progress lines arrive more frequently than the console display threshold.
+            // Refresh the public snapshot on each one so a newly arrived ISO becomes
+            // visible in the queue without waiting for another half-percent of encoding.
             if let Some(context) = progress.as_ref() {
                 let _ = write_public_progress(context, percent, eta, rate);
             }
@@ -2373,6 +2415,8 @@ Progress: {"State":"SCANDONE"}"#;
             item_seconds: 600,
             total_seconds: 6_600,
             queued: vec!["Another Film.iso".into(), "Series S2.iso".into()],
+            queue_directory: None,
+            active_queue_item: None,
         };
         write_public_progress(&context, 50.0, Some(120), Some(24.5)).unwrap();
         let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -2482,10 +2526,52 @@ Progress: {"State":"SCANDONE"}"#;
             item_seconds: 100,
             total_seconds: 100,
             queued: vec![],
+            queue_directory: None,
+            active_queue_item: None,
         };
         write_public_progress(&context, 0.0, None, None).unwrap();
         let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         fs::remove_file(path).unwrap();
         assert!(value.get("queued").is_none());
+    }
+
+    #[test]
+    fn progress_discovers_isos_added_to_the_live_queue() {
+        let directory = env::temp_dir().join(format!(
+            "disc-to-jellyfin-live-queue-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("Active.iso"), b"active").unwrap();
+        fs::write(directory.join("Disc 10.iso"), b"waiting").unwrap();
+        let path = directory.join("progress.json");
+        let context = ProgressContext {
+            path: path.clone(),
+            title: "Active".into(),
+            kind: MediaKind::Movie,
+            item_index: 1,
+            item_count: 1,
+            item_name: "Active.mkv".into(),
+            completed_seconds: 0,
+            item_seconds: 100,
+            total_seconds: 100,
+            queued: vec![],
+            queue_directory: Some(directory.clone()),
+            active_queue_item: Some("Active.iso".into()),
+        };
+
+        write_public_progress(&context, 10.0, None, None).unwrap();
+        let first: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(first["queued"], serde_json::json!(["Disc 10"]));
+
+        fs::write(directory.join("Disc 2.iso"), b"arrived later").unwrap();
+        write_public_progress(&context, 20.0, None, None).unwrap();
+        let second: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(second["queued"], serde_json::json!(["Disc 2", "Disc 10"]));
+        fs::remove_dir_all(&directory).unwrap();
     }
 }

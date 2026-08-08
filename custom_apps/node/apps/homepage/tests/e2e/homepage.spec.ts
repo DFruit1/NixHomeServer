@@ -288,7 +288,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
   await expect(page.getByText(/lists 5 apps assigned to your account/)).toBeVisible();
   await expect(page.getByLabel('Available services').getByText('Local Backups')).toBeVisible();
   await expect(page.getByLabel('Available services').getByText('Passwords')).toHaveCount(0);
-  await expect(page.getByLabel('Open Local Backups and complete its first-time sign-in')).toBeVisible();
+  await expect(page.getByLabel('Open Local Backups and sign in with the Kopia password from an admin')).toBeVisible();
   await expect(page.getByText(/Jellyfin password/)).toHaveCount(0);
   await expect(page.getByText('Local Backups has two sign-in gates.')).toBeVisible();
   await expect(page.getByText('If access was just changed, refresh your sign-in first.')).toBeVisible();

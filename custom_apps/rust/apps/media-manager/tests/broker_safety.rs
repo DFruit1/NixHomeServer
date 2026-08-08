@@ -2,10 +2,10 @@
 
 use media_manager::{
     broker::{
-        apply_install_metadata_sidecar, apply_install_subtitle, apply_move,
+        apply_install_metadata_sidecar, apply_install_subtitle, apply_move, apply_replace_artwork,
         discard_staged_broker_action, file_fingerprint, move_destination_matches,
-        open_regular_file_beneath, BrokerAction, InstallMetadataSidecarAction,
-        InstallSubtitleAction, MoveAction,
+        open_regular_file_beneath, recover_broker_action, BrokerAction,
+        InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
     },
     config::AppConfig,
 };
@@ -95,6 +95,107 @@ fn broker_installs_metadata_sidecars_without_replacing_existing_metadata() {
     };
     assert!(apply_install_metadata_sidecar(&config, "editor", &collision).is_err());
     assert!(state.join("provider-staging/metadata-2.opf").exists());
+}
+
+#[test]
+fn broker_replaces_artwork_as_one_recoverable_no_overwrite_operation() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let shared = temp.path().join("shared");
+    let users = temp.path().join("users");
+    let state = temp.path().join("state");
+    fs::create_dir_all(shared.join("_Videos/Movie/superseded")).expect("movie directory");
+    fs::create_dir_all(state.join("provider-staging")).expect("staging directory");
+    fs::write(shared.join("_Videos/Movie/cover.jpg"), b"old artwork").expect("old artwork");
+    let staged = state.join("provider-staging/artwork-1.png");
+    fs::write(&staged, b"\x89PNG\r\n\x1a\nreplacement").expect("staged artwork");
+    let mut config = AppConfig::for_test(
+        shared.to_str().expect("shared path"),
+        users.to_str().expect("users path"),
+    );
+    config.state_dir = state.clone();
+    let action = ReplaceArtworkAction {
+        staging_filename: "artwork-1.png".to_string(),
+        root_id: "shared-videos".to_string(),
+        source_relative_path: "Movie/cover.jpg".to_string(),
+        archived_relative_path: "Movie/superseded/cover-old.jpg".to_string(),
+        replacement_relative_path: "Movie/cover.png".to_string(),
+        expected_source: file_fingerprint(&shared.join("_Videos/Movie/cover.jpg"))
+            .expect("source fingerprint"),
+        expected_replacement: file_fingerprint(&staged).expect("staged fingerprint"),
+    };
+
+    apply_replace_artwork(&config, "editor", &action).expect("replace artwork");
+    assert_eq!(
+        fs::read(shared.join("_Videos/Movie/superseded/cover-old.jpg")).expect("archived artwork"),
+        b"old artwork"
+    );
+    assert_eq!(
+        fs::read(shared.join("_Videos/Movie/cover.png")).expect("installed artwork"),
+        b"\x89PNG\r\n\x1a\nreplacement"
+    );
+    assert!(!staged.exists());
+    assert!(recover_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ReplaceArtwork(action.clone())
+    )
+    .expect("completed replacement recovery"));
+
+    fs::create_dir_all(shared.join("_Videos/Collision/superseded")).expect("collision directory");
+    fs::write(shared.join("_Videos/Collision/cover.jpg"), b"collision old")
+        .expect("collision source");
+    fs::write(shared.join("_Videos/Collision/cover.png"), b"occupied")
+        .expect("occupied destination");
+    let second_stage = state.join("provider-staging/artwork-2.png");
+    fs::write(&second_stage, b"\x89PNG\r\n\x1a\nsecond").expect("second stage");
+    let collision = ReplaceArtworkAction {
+        staging_filename: "artwork-2.png".to_string(),
+        root_id: "shared-videos".to_string(),
+        source_relative_path: "Collision/cover.jpg".to_string(),
+        archived_relative_path: "Collision/superseded/cover-old.jpg".to_string(),
+        replacement_relative_path: "Collision/cover.png".to_string(),
+        expected_source: file_fingerprint(&shared.join("_Videos/Collision/cover.jpg"))
+            .expect("collision source fingerprint"),
+        expected_replacement: file_fingerprint(&second_stage).expect("second fingerprint"),
+    };
+    assert!(apply_replace_artwork(&config, "editor", &collision).is_err());
+    assert_eq!(
+        fs::read(shared.join("_Videos/Collision/cover.jpg")).expect("original retained"),
+        b"collision old"
+    );
+    assert!(!shared
+        .join("_Videos/Collision/superseded/cover-old.jpg")
+        .exists());
+    assert!(second_stage.exists());
+
+    fs::create_dir_all(shared.join("_Videos/Recovery/superseded")).expect("recovery directory");
+    let recovery_source = shared.join("_Videos/Recovery/cover.jpg");
+    let recovery_archive = shared.join("_Videos/Recovery/superseded/cover-old.jpg");
+    fs::write(&recovery_source, b"recovery old").expect("recovery source");
+    let third_stage = state.join("provider-staging/artwork-3.png");
+    fs::write(&third_stage, b"\x89PNG\r\n\x1a\nrecovered replacement").expect("recovery stage");
+    let recovery = ReplaceArtworkAction {
+        staging_filename: "artwork-3.png".to_string(),
+        root_id: "shared-videos".to_string(),
+        source_relative_path: "Recovery/cover.jpg".to_string(),
+        archived_relative_path: "Recovery/superseded/cover-old.jpg".to_string(),
+        replacement_relative_path: "Recovery/cover.png".to_string(),
+        expected_source: file_fingerprint(&recovery_source).expect("recovery source fingerprint"),
+        expected_replacement: file_fingerprint(&third_stage).expect("recovery stage fingerprint"),
+    };
+    fs::rename(&recovery_source, &recovery_archive).expect("simulate crash after archive");
+    assert!(!recover_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ReplaceArtwork(recovery.clone())
+    )
+    .expect("partial recovery state"));
+    apply_replace_artwork(&config, "editor", &recovery)
+        .expect("finish replacement after simulated crash");
+    assert_eq!(
+        fs::read(shared.join("_Videos/Recovery/cover.png")).expect("recovered replacement"),
+        b"\x89PNG\r\n\x1a\nrecovered replacement"
+    );
 }
 
 #[test]

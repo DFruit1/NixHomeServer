@@ -162,7 +162,7 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
     Ok(result)
 }
 
-fn media_kind<'a>(category: &'a str, extension: &str) -> Option<&'a str> {
+pub(crate) fn media_kind<'a>(category: &'a str, extension: &str) -> Option<&'a str> {
     match extension {
         "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "avif" | "svg"
         | "heic" | "heif" | "jxl" => Some("artwork"),

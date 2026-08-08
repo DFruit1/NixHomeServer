@@ -223,6 +223,7 @@ interface DashboardState {
   editDisc: string;
   planning: boolean;
   confirming: boolean;
+  previewSelectionKey: string;
   preview?: MutationPreview;
 }
 
@@ -356,6 +357,7 @@ export default component$((props: RootProps) => {
     editDisc: "",
     planning: false,
     confirming: false,
+    previewSelectionKey: "",
   });
 
   // eslint-disable-next-line qwik/no-use-visible-task -- sidebar preference is client-only
@@ -956,6 +958,7 @@ function artworkCandidateId(
   const prefix = `${selectedFolder}/`;
   const inside = items.filter((item) => item.relativePath.startsWith(prefix));
   return (
+    inside.find((item) => item.mediaKind !== "artwork")?.id ??
     inside.find((item) => item.mediaKind === "artwork")?.id ??
     inside[0]?.id ??
     ""
@@ -992,6 +995,164 @@ const MediaImage = component$<{
   },
 );
 
+const ArtworkFileCard = component$<{
+  item: CatalogItem;
+  state: DashboardState;
+}>((props) => {
+  const uploadInput = useSignal<HTMLInputElement>();
+  const replacement = useStore<{
+    uploading: boolean;
+    confirming: boolean;
+    error: string;
+    notice: string;
+    previewItemId: string;
+    preview?: MutationPreview;
+  }>({
+    uploading: false,
+    confirming: false,
+    error: "",
+    notice: "",
+    previewItemId: "",
+  });
+  useTask$(({ track }) => {
+    track(() => props.item.id);
+    replacement.uploading = false;
+    replacement.confirming = false;
+    replacement.error = "";
+    replacement.notice = "";
+    replacement.previewItemId = "";
+    replacement.preview = undefined;
+  });
+  const confirmReplacement = $(async () => {
+    if (
+      !replacement.preview ||
+      replacement.previewItemId !== props.item.id ||
+      replacement.confirming
+    )
+      return;
+    const itemId = props.item.id;
+    const preview = replacement.preview;
+    replacement.confirming = true;
+    replacement.error = "";
+    try {
+      await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
+        method: "POST",
+        headers: { "if-match": `"${preview.digest}"` },
+      });
+      if (props.item.id !== itemId) return;
+      replacement.notice =
+        "The cover replacement was added to the mutation queue.";
+      replacement.previewItemId = "";
+      replacement.preview = undefined;
+    } catch (error) {
+      if (props.item.id === itemId) replacement.error = readableError(error);
+    } finally {
+      if (props.item.id === itemId) replacement.confirming = false;
+    }
+  });
+  return (
+    <section class="panel editor-card non-media-card">
+      <div class="editor-heading">
+        <div class="non-media-heading">
+          <Icon name="image" size={18} />
+          <h3>Image File (Cover Art)</h3>
+        </div>
+        <button
+          class="close-button"
+          type="button"
+          aria-label="Close image details"
+          onClick$={() => (props.state.selectedItemId = "")}
+        >
+          ×
+        </button>
+      </div>
+      <div class="non-media-body">
+        <p>
+          This image is used as nearby cover art. It does not have editable
+          media metadata of its own.
+        </p>
+        <code>{props.item.relativePath}</code>
+        <input
+          ref={uploadInput}
+          class="visually-hidden"
+          type="file"
+          accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp"
+          onChange$={async (_, input) => {
+            const file = input.files?.[0];
+            if (!file || replacement.uploading) return;
+            const itemId = props.item.id;
+            const format = file.name.split(".").at(-1)?.toLowerCase() ?? "";
+            replacement.uploading = true;
+            replacement.error = "";
+            replacement.notice = "";
+            replacement.previewItemId = "";
+            replacement.preview = undefined;
+            try {
+              const preview = await api<MutationPreview>(
+                `/items/${encodeURIComponent(itemId)}/image/replacement?${new URLSearchParams({ format })}`,
+                {
+                  method: "POST",
+                  headers: {
+                    "content-type": file.type || "application/octet-stream",
+                  },
+                  body: file,
+                },
+              );
+              if (props.item.id === itemId) {
+                replacement.previewItemId = itemId;
+                replacement.preview = preview;
+              }
+            } catch (error) {
+              if (props.item.id === itemId)
+                replacement.error = readableError(error);
+            } finally {
+              if (props.item.id === itemId) replacement.uploading = false;
+              input.value = "";
+            }
+          }}
+        />
+        <button
+          class="secondary-button"
+          type="button"
+          disabled={!props.state.session?.canEdit || replacement.uploading}
+          onClick$={() => uploadInput.value?.click()}
+        >
+          <Icon name="image" size={18} />
+          {replacement.uploading
+            ? "Preparing replacement…"
+            : "Replace cover art"}
+        </button>
+        {replacement.preview && (
+          <div class="non-media-confirm">
+            <p>
+              The current file will move into a <code>superseded</code>
+              subfolder before the new image is installed.
+            </p>
+            <button
+              class="primary-button"
+              type="button"
+              disabled={
+                props.state.status?.mutationMode !== "enabled" ||
+                replacement.confirming
+              }
+              onClick$={confirmReplacement}
+            >
+              <Icon name="check" size={18} />
+              {replacement.confirming ? "Queuing…" : "Confirm replacement"}
+            </button>
+          </div>
+        )}
+        {replacement.error && <p class="error-copy">{replacement.error}</p>}
+        {replacement.notice && (
+          <p class="success-copy" role="status">
+            {replacement.notice}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+});
+
 const CATEGORY_TABS: Array<{ id: string; label: string; icon: IconName }> = [
   { id: "videos", label: "Videos", icon: "image" },
   { id: "music", label: "Music", icon: "disc" },
@@ -1004,6 +1165,7 @@ const LibraryPane = component$<{
   subtitle: string;
   browser: {
     expanded: Record<string, boolean>;
+    activeByParent: Record<string, string>;
     folderFilter: string;
     selectedFolder: string;
   };
@@ -1020,7 +1182,14 @@ const LibraryPane = component$<{
     : props.items;
   const tree = buildTree(visibleItems);
   return (
-    <section class="panel catalog-panel">
+    <section
+      class={{
+        panel: true,
+        "catalog-panel": true,
+        "personal-pane": props.title === "Personal",
+        "shared-pane": props.title === "Shared",
+      }}
+    >
       <div class="pane-heading">
         <h3>{props.title}</h3>
         <span class="pane-count">{props.items.length}</span>
@@ -1072,6 +1241,10 @@ const LibraryPane = component$<{
                   selectedFolder={props.browser.selectedFolder}
                   selectItem$={props.selectItem$}
                   selectFolder$={props.selectFolder$}
+                  parentPath=""
+                  siblingPaths={tree
+                    .filter((sibling) => !sibling.item)
+                    .map((sibling) => sibling.path)}
                   key={node.path}
                 />
               ))}
@@ -1092,13 +1265,22 @@ const LibraryView = component$<{
 }>((props) => {
   const personal = useStore({
     expanded: {} as Record<string, boolean>,
+    activeByParent: {} as Record<string, string>,
     folderFilter: "",
     selectedFolder: "",
   });
   const shared = useStore({
     expanded: {} as Record<string, boolean>,
+    activeByParent: {} as Record<string, string>,
     folderFilter: "",
     selectedFolder: "",
+  });
+  useTask$(({ track }) => {
+    track(() => props.state.selectedCategory);
+    personal.selectedFolder = "";
+    shared.selectedFolder = "";
+    props.state.selectedItemId = "";
+    props.state.preview = undefined;
   });
   const libraryRoots = props.state.roots.filter(
     (root) => root.category !== "iso",
@@ -1126,15 +1308,39 @@ const LibraryView = component$<{
     (activeFolder
       ? folderDisplayName(activeFolder.split("/").at(-1) ?? "")
       : "");
+  const activeFolderItems = personal.selectedFolder
+    ? personalItems
+    : sharedItems;
+  const activeFolderRootId = activeFolderItems.find((item) =>
+    item.relativePath.startsWith(`${activeFolder}/`),
+  )?.rootId;
   const selectPersonalFolder$ = $((path: string) => {
     personal.selectedFolder = path;
+    shared.selectedFolder = "";
     props.state.selectedItemId = "";
     props.state.preview = undefined;
   });
   const selectSharedFolder$ = $((path: string) => {
     shared.selectedFolder = path;
+    personal.selectedFolder = "";
     props.state.selectedItemId = "";
     props.state.preview = undefined;
+  });
+  const selectPersonalItem$ = $((item: CatalogItem) => {
+    personal.selectedFolder = "";
+    shared.selectedFolder = "";
+    props.selectItem$(item);
+  });
+  const selectSharedItem$ = $((item: CatalogItem) => {
+    personal.selectedFolder = "";
+    shared.selectedFolder = "";
+    props.selectItem$(item);
+  });
+  const closeFolderEditor$ = $(() => {
+    personal.selectedFolder = "";
+    shared.selectedFolder = "";
+    props.state.preview = undefined;
+    props.state.notice = "";
   });
   return (
     <section class="library-layout">
@@ -1169,7 +1375,7 @@ const LibraryView = component$<{
         browser={personal}
         items={personalItems}
         selectedItemId={props.state.selectedItemId}
-        selectItem$={props.selectItem$}
+        selectItem$={selectPersonalItem$}
         selectFolder$={selectPersonalFolder$}
       />
       <LibraryPane
@@ -1178,7 +1384,7 @@ const LibraryView = component$<{
         browser={shared}
         items={sharedItems}
         selectedItemId={props.state.selectedItemId}
-        selectItem$={props.selectItem$}
+        selectItem$={selectSharedItem$}
         selectFolder$={selectSharedFolder$}
       />
       {(selectedItem || activeFolder) && (
@@ -1193,11 +1399,29 @@ const LibraryView = component$<{
           />
         </div>
       )}
-      {props.state.selectedItemId && (
+      {selectedItem &&
+        ["video", "music", "audiobook", "book"].includes(
+          selectedItem.mediaKind,
+        ) && (
+          <ItemEditor
+            state={props.state}
+            previewRename$={props.previewRename$}
+            confirmRename$={props.confirmRename$}
+          />
+        )}
+      {selectedItem?.mediaKind === "artwork" && (
+        <ArtworkFileCard item={selectedItem} state={props.state} />
+      )}
+      {!selectedItem && activeFolder && activeFolderRootId && (
         <ItemEditor
           state={props.state}
           previewRename$={props.previewRename$}
           confirmRename$={props.confirmRename$}
+          folder={{
+            rootId: activeFolderRootId,
+            relativePath: activeFolder,
+          }}
+          close$={closeFolderEditor$}
         />
       )}
     </section>
@@ -1209,6 +1433,7 @@ const TreeBranch = component$<{
   depth: number;
   browser: {
     expanded: Record<string, boolean>;
+    activeByParent: Record<string, string>;
     selectedFolder: string;
     folderFilter: string;
   };
@@ -1216,6 +1441,8 @@ const TreeBranch = component$<{
   selectedFolder: string;
   selectItem$: QRL<(item: CatalogItem) => void>;
   selectFolder$: QRL<(path: string) => void>;
+  parentPath: string;
+  siblingPaths: string[];
 }>((props) => {
   const node = props.node;
   if (node.item) {
@@ -1242,24 +1469,53 @@ const TreeBranch = component$<{
   const expanded =
     props.browser.expanded[node.path] ??
     (props.depth === 0 || props.browser.folderFilter !== "");
+  const mutedBySibling =
+    Boolean(props.browser.activeByParent[props.parentPath]) &&
+    props.browser.activeByParent[props.parentPath] !== node.path;
   return (
     <div class="tree-branch" role="treeitem" aria-expanded={expanded}>
-      <button
+      <div
         class={{
           "tree-row": true,
           folder: true,
           selected: props.selectedFolder === node.path,
+          "sibling-muted": mutedBySibling,
         }}
         style={{ paddingLeft: `${14 + props.depth * 16}px` }}
-        type="button"
-        onClick$={() => {
-          props.browser.expanded[node.path] = !expanded;
-          props.selectFolder$(node.path);
-        }}
       >
-        <Icon name={expanded ? "chevron-down" : "chevron-right"} size={15} />
-        <span class="tree-name">{node.name}</span>
-      </button>
+        <button
+          class="tree-toggle"
+          type="button"
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${node.name}`}
+          onClick$={(_, currentTarget) => {
+            const willExpand = !expanded;
+            props.browser.expanded[node.path] = willExpand;
+            if (willExpand) {
+              for (const siblingPath of props.siblingPaths) {
+                props.browser.expanded[siblingPath] = siblingPath === node.path;
+              }
+              props.browser.activeByParent[props.parentPath] = node.path;
+              const tree = currentTarget.closest(
+                ".item-tree",
+              ) as HTMLElement | null;
+              if (tree) tree.scrollTop = 0;
+            } else if (
+              props.browser.activeByParent[props.parentPath] === node.path
+            ) {
+              props.browser.activeByParent[props.parentPath] = "";
+            }
+          }}
+        >
+          <Icon name={expanded ? "chevron-down" : "chevron-right"} size={15} />
+        </button>
+        <button
+          class="tree-folder-name"
+          type="button"
+          onClick$={() => props.selectFolder$(node.path)}
+        >
+          <span class="tree-name">{node.name}</span>
+        </button>
+      </div>
       {expanded && (
         <div role="group">
           {node.children.map((child) => (
@@ -1271,6 +1527,10 @@ const TreeBranch = component$<{
               selectedFolder={props.selectedFolder}
               selectItem$={props.selectItem$}
               selectFolder$={props.selectFolder$}
+              parentPath={node.path}
+              siblingPaths={node.children
+                .filter((sibling) => !sibling.item)
+                .map((sibling) => sibling.path)}
               key={child.path}
             />
           ))}
@@ -2090,6 +2350,7 @@ interface MetadataEditorState {
   loadingDetails: boolean;
   planning: boolean;
   confirming: boolean;
+  previewSelectionKey: string;
   preview?: MutationPreview;
 }
 
@@ -2097,6 +2358,11 @@ const ItemEditor = component$<{
   state: DashboardState;
   previewRename$: QRL<() => Promise<void>>;
   confirmRename$: QRL<() => Promise<void>>;
+  folder?: {
+    rootId: string;
+    relativePath: string;
+  };
+  close$?: QRL<() => void>;
 }>((props) => {
   const tab = useSignal<EditorTab>("metadata");
   const section = useSignal<MetadataSection>("basics");
@@ -2104,7 +2370,7 @@ const ItemEditor = component$<{
     (item) => item.id === props.state.selectedItemId,
   );
   const selectedRoot = props.state.roots.find(
-    (root) => root.id === selectedItem?.rootId,
+    (root) => root.id === (props.folder?.rootId ?? selectedItem?.rootId),
   );
   const musicbrainzIntegration = props.state.status?.integrations.find(
     (integration) => integration.id === "musicbrainz",
@@ -2148,25 +2414,45 @@ const ItemEditor = component$<{
     loadingDetails: false,
     planning: false,
     confirming: false,
+    previewSelectionKey: "",
   });
 
   const closeEditor = $(() => {
+    if (props.folder) {
+      props.close$?.();
+      return;
+    }
     props.state.selectedItemId = "";
     props.state.preview = undefined;
     props.state.notice = "";
   });
 
   useTask$(async ({ track }) => {
-    const itemId = track(() => props.state.selectedItemId);
-    if (!itemId) return;
+    const selectionKey = track(() =>
+      props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId,
+    );
+    if (!selectionKey) return;
     tab.value = "metadata";
     section.value = "basics";
-    const item = props.state.items.find((candidate) => candidate.id === itemId);
-    metadata.itemId = itemId;
+    const item = props.folder
+      ? undefined
+      : props.state.items.find(
+          (candidate) => candidate.id === props.state.selectedItemId,
+        );
+    metadata.itemId = selectionKey;
+    metadata.planning = false;
+    metadata.confirming = false;
+    metadata.previewSelectionKey = "";
     metadata.preview = undefined;
     metadata.loadingDetails = true;
-    metadata.mediaType = mediaTypeForItem(item);
-    const filename = item?.relativePath.split("/").at(-1) ?? "";
+    metadata.mediaType = props.folder
+      ? mediaTypeForFolder(selectedRoot?.category, props.folder.relativePath)
+      : mediaTypeForItem(item);
+    const filename =
+      (props.folder?.relativePath ?? item?.relativePath)?.split("/").at(-1) ??
+      "";
     const tvEpisode = parseTvEpisodeFilename(filename);
     metadata.title =
       tvEpisode?.title ??
@@ -2202,9 +2488,21 @@ const ItemEditor = component$<{
     metadata.lookupError = "";
     props.state.error = "";
     try {
-      const details = await api<Record<string, unknown>>(
-        `/items/${encodeURIComponent(itemId)}/metadata`,
-      );
+      const metadataPath = props.folder
+        ? `/folders/metadata?${new URLSearchParams({
+            rootId: props.folder.rootId,
+            relativePath: props.folder.relativePath,
+          })}`
+        : `/items/${encodeURIComponent(props.state.selectedItemId)}/metadata`;
+      const details = await api<Record<string, unknown>>(metadataPath);
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId !== selectionKey ||
+        visibleSelectionKey !== selectionKey
+      )
+        return;
       if (details.mediaType) metadata.mediaType = String(details.mediaType);
       if (details.title) metadata.title = String(details.title);
       if (details.year != null && details.year !== "")
@@ -2244,14 +2542,29 @@ const ItemEditor = component$<{
       metadata.lookupArtist = metadata.authors;
       metadata.lookupTitle = metadata.title;
     } catch (error) {
-      props.state.error = readableError(error);
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId === selectionKey &&
+        visibleSelectionKey === selectionKey
+      )
+        props.state.error = readableError(error);
     } finally {
-      metadata.loadingDetails = false;
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId === selectionKey &&
+        visibleSelectionKey === selectionKey
+      )
+        metadata.loadingDetails = false;
     }
   });
 
   const previewMetadata = $(async () => {
     if (!metadata.itemId || !metadata.title.trim() || metadata.planning) return;
+    const selectionKey = metadata.itemId;
     metadata.planning = true;
     props.state.error = "";
     props.state.notice = "";
@@ -2288,33 +2601,93 @@ const ItemEditor = component$<{
     if (metadata.communityRating.trim())
       fields.communityRating = Number.parseFloat(metadata.communityRating);
     try {
-      metadata.preview = await api<MutationPreview>(
-        `/items/${encodeURIComponent(metadata.itemId)}/metadata/sidecar`,
-        { method: "POST", body: JSON.stringify(fields) },
-      );
+      const sidecarPath = props.folder
+        ? `/folders/metadata/sidecar?${new URLSearchParams({
+            rootId: props.folder.rootId,
+            relativePath: props.folder.relativePath,
+          })}`
+        : `/items/${encodeURIComponent(props.state.selectedItemId)}/metadata/sidecar`;
+      const preview = await api<MutationPreview>(sidecarPath, {
+        method: "POST",
+        body: JSON.stringify(fields),
+      });
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId === selectionKey &&
+        visibleSelectionKey === selectionKey
+      ) {
+        metadata.previewSelectionKey = selectionKey;
+        metadata.preview = preview;
+      }
     } catch (error) {
-      props.state.error = readableError(error);
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId === selectionKey &&
+        visibleSelectionKey === selectionKey
+      )
+        props.state.error = readableError(error);
     } finally {
-      metadata.planning = false;
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId === selectionKey &&
+        visibleSelectionKey === selectionKey
+      )
+        metadata.planning = false;
     }
   });
 
   const confirmMetadata = $(async () => {
-    if (!metadata.preview || metadata.confirming) return;
+    if (
+      !metadata.preview ||
+      metadata.previewSelectionKey !== metadata.itemId ||
+      metadata.confirming
+    )
+      return;
+    const selectionKey = metadata.itemId;
+    const preview = metadata.preview;
     metadata.confirming = true;
     props.state.error = "";
     try {
-      await api(`/plans/${encodeURIComponent(metadata.preview.id)}/confirm`, {
+      await api(`/plans/${encodeURIComponent(preview.id)}/confirm`, {
         method: "POST",
-        headers: { "if-match": `"${metadata.preview.digest}"` },
+        headers: { "if-match": `"${preview.digest}"` },
       });
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId !== selectionKey ||
+        visibleSelectionKey !== selectionKey
+      )
+        return;
       props.state.notice =
         "The metadata sidecar was added to the global mutation queue.";
+      metadata.previewSelectionKey = "";
       metadata.preview = undefined;
     } catch (error) {
-      props.state.error = readableError(error);
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId === selectionKey &&
+        visibleSelectionKey === selectionKey
+      )
+        props.state.error = readableError(error);
     } finally {
-      metadata.confirming = false;
+      const visibleSelectionKey = props.folder
+        ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
+        : props.state.selectedItemId;
+      if (
+        metadata.itemId === selectionKey &&
+        visibleSelectionKey === selectionKey
+      )
+        metadata.confirming = false;
     }
   });
 
@@ -2373,26 +2746,33 @@ const ItemEditor = component$<{
             <Icon name="tag" size={16} />
             Metadata
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab.value === "rename"}
-            class={{ "editor-tab": true, active: tab.value === "rename" }}
-            onClick$={() => (tab.value = "rename")}
-          >
-            <Icon name="scan" size={16} />
-            Rename
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab.value === "subtitles"}
-            class={{ "editor-tab": true, active: tab.value === "subtitles" }}
-            onClick$={() => (tab.value = "subtitles")}
-          >
-            <Icon name="captions" size={16} />
-            Subtitles
-          </button>
+          {!props.folder && (
+            <>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab.value === "rename"}
+                class={{ "editor-tab": true, active: tab.value === "rename" }}
+                onClick$={() => (tab.value = "rename")}
+              >
+                <Icon name="scan" size={16} />
+                Rename
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab.value === "subtitles"}
+                class={{
+                  "editor-tab": true,
+                  active: tab.value === "subtitles",
+                }}
+                onClick$={() => (tab.value = "subtitles")}
+              >
+                <Icon name="captions" size={16} />
+                Subtitles
+              </button>
+            </>
+          )}
         </div>
         <button
           class="close-button"
@@ -2406,7 +2786,7 @@ const ItemEditor = component$<{
 
       {tab.value === "metadata" ? (
         <>
-          {metadata.mediaType === "music" && (
+          {metadata.mediaType === "music" && !props.folder && (
             <section class="panel musicbrainz-panel">
               <div class="panel-heading">
                 <div>
@@ -2563,11 +2943,15 @@ const ItemEditor = component$<{
                   <span>Media type</span>
                   <select
                     value={metadata.mediaType}
+                    disabled={Boolean(props.folder)}
                     onChange$={(_, select) =>
                       (metadata.mediaType = select.value)
                     }
                   >
                     <option value="movie">Movie</option>
+                    <option value="collection">Collection</option>
+                    <option value="series">TV series</option>
+                    <option value="season">TV season</option>
                     <option value="episode">TV episode</option>
                     <option value="music">Music</option>
                     <option value="audiobook">Audiobook</option>
@@ -2790,13 +3174,18 @@ const ItemEditor = component$<{
               disabled={
                 !props.state.session?.canEdit ||
                 !metadata.itemId ||
+                metadata.mediaType === "collection" ||
                 !metadata.title.trim() ||
                 metadata.planning
               }
               onClick$={previewMetadata}
             >
               <Icon name="scan" size={18} />
-              {metadata.planning ? "Preparing…" : "Preview metadata sidecar"}
+              {metadata.mediaType === "collection"
+                ? "Grouping folder"
+                : metadata.planning
+                  ? "Preparing…"
+                  : "Preview metadata sidecar"}
             </button>
           </div>
           {(metadata.videoStreams.length > 0 ||
@@ -3107,6 +3496,27 @@ function mediaTypeForItem(item?: CatalogItem): string {
       return "audiobook";
     case "book":
       return "book";
+    default:
+      return "movie";
+  }
+}
+
+function mediaTypeForFolder(
+  category: string | undefined,
+  path: string,
+): string {
+  switch (category) {
+    case "music":
+      return "music";
+    case "audiobooks":
+      return "audiobook";
+    case "books":
+      return "book";
+    case "videos":
+      if (path.startsWith("_Shows/")) {
+        return /(?:^|\/)Season\s+\d+$/i.test(path) ? "season" : "series";
+      }
+      return "movie";
     default:
       return "movie";
   }
