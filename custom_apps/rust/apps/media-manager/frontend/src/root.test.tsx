@@ -1014,6 +1014,7 @@ describe("Media Manager library browser", () => {
     const renameTab = Array.from(screen.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Rename",
     );
+    await new Promise((r) => setTimeout(r, 0));
     await userEvent(renameTab ?? null, "click");
 
     expect(screen.querySelectorAll(".number-field input")).toHaveLength(2);
