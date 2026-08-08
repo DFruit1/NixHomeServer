@@ -468,7 +468,7 @@ let
             ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
             ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-bindfs@.service "$username")" || true
             ${pkgs.systemd}/bin/systemctl reset-failed "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
-            ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-delete-bindfs@.service "$username")"
+            ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-shared-delete-bindfs@.service "$username")"
           fi
         else
           if [[ "$normal_bindfs_active" != true || "$delete_bindfs_active" == true ]]; then
@@ -476,22 +476,22 @@ let
             ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
             ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-bindfs@.service "$username")" || true
             ${pkgs.systemd}/bin/systemctl reset-failed "$(service_instance files-shared-bindfs@.service "$username")" || true
-            ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
+            ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-shared-bindfs@.service "$username")"
           fi
         fi
         if [[ "$shared_variant_changed" == true && -n "''${sftp_members[$username]:-}" ]]; then
-          ${pkgs.systemd}/bin/systemctl restart "$(service_instance files-sftp-user-root@.service "$username")"
+          ${pkgs.systemd}/bin/systemctl restart --no-block "$(service_instance files-sftp-user-root@.service "$username")"
         fi
       fi
 
       if [[ -n "''${backup_storage_members[$username]:-}" ]]; then
         ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg backupStorageMountName}
-        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-backups-bindfs@.service "$username")"
+        ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-backups-bindfs@.service "$username")"
       fi
 
       if [[ -n "''${sftp_members[$username]:-}" ]]; then
         install -d -m 0755 -o root -g root ${lib.escapeShellArg sftpChrootBase}/"$username"
-        ${pkgs.systemd}/bin/systemctl start "$(service_instance files-sftp-user-root@.service "$username")"
+        ${pkgs.systemd}/bin/systemctl start --no-block "$(service_instance files-sftp-user-root@.service "$username")"
       fi
     done <<<"$members_json"
 

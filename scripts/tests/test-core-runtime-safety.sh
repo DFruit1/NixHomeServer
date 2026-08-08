@@ -165,6 +165,11 @@ require_fixed modules/Core_Modules/storage/layout.nix \
 require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix \
   'Refusing fileshare operation because ${vars.dataRoot} is not a mounted data pool' \
   "Fileshare reconciliation must recheck the data mount on every run."
+for service_template in files-shared-delete-bindfs@ files-shared-bindfs@ files-sftp-user-root@; do
+  require_fixed modules/Core_Modules/storage/fileshare-user-roots.nix \
+    "systemctl start --no-block \"\$(service_instance $service_template.service \"\$username\")\"" \
+    "Fileshare reconciliation must not synchronously wait for $service_template units ordered after it."
+done
 forbid_match modules/Core_Modules/backups/default.nix '/var/lib/seerr/db/db[.]sqlite3' \
   "Disabled Seerr state must not be mandatory in the core backup module."
 require_fixed modules/Core_Modules/backups/default.nix 'sha256sum -- "dumps/$output_name"' \
