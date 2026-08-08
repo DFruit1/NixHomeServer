@@ -74,6 +74,15 @@ let
     [[ -d ${lib.escapeShellArg vars.sharedRoot} ]]
     [[ -d ${lib.escapeShellArg backupRoot} ]]
   '';
+  prepareSharedMountTarget = pkgs.writeShellScript "prepare-shared-bindfs-mount-target" ''
+    set -euo pipefail
+
+    target="$1"
+    if ${pkgs.util-linux}/bin/mountpoint -q "$target"; then
+      ${pkgs.fuse3}/bin/fusermount3 -u "$target" || true
+    fi
+    ${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root "$target"
+  '';
 
   mkPerUserDirCommand =
     { root
@@ -445,18 +454,30 @@ let
       if [[ -n "''${shared_members[$username]:-}" ]]; then
         ensure_mount_dir ${lib.escapeShellArg vars.usersRoot}/"$username"/${lib.escapeShellArg sharedMountName}
         shared_variant_changed=false
+        delete_bindfs_active=false
+        normal_bindfs_active=false
+        if ${pkgs.systemd}/bin/systemctl is-active --quiet "$(service_instance files-shared-delete-bindfs@.service "$username")"; then
+          delete_bindfs_active=true
+        fi
+        if ${pkgs.systemd}/bin/systemctl is-active --quiet "$(service_instance files-shared-bindfs@.service "$username")"; then
+          normal_bindfs_active=true
+        fi
         if [[ -n "''${delete_shared_members[$username]:-}" ]]; then
-          if ${pkgs.systemd}/bin/systemctl is-active --quiet "$(service_instance files-shared-bindfs@.service "$username")"; then
+          if [[ "$delete_bindfs_active" != true || "$normal_bindfs_active" == true ]]; then
             shared_variant_changed=true
+            ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
+            ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-bindfs@.service "$username")" || true
+            ${pkgs.systemd}/bin/systemctl reset-failed "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
+            ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-delete-bindfs@.service "$username")"
           fi
-          ${pkgs.systemd}/bin/systemctl stop "$(service_instance files-shared-bindfs@.service "$username")" || true
-          ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-delete-bindfs@.service "$username")"
         else
-          if ${pkgs.systemd}/bin/systemctl is-active --quiet "$(service_instance files-shared-delete-bindfs@.service "$username")"; then
+          if [[ "$normal_bindfs_active" != true || "$delete_bindfs_active" == true ]]; then
             shared_variant_changed=true
+            ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
+            ${pkgs.systemd}/bin/systemctl stop --no-block "$(service_instance files-shared-bindfs@.service "$username")" || true
+            ${pkgs.systemd}/bin/systemctl reset-failed "$(service_instance files-shared-bindfs@.service "$username")" || true
+            ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
           fi
-          ${pkgs.systemd}/bin/systemctl stop "$(service_instance files-shared-delete-bindfs@.service "$username")" || true
-          ${pkgs.systemd}/bin/systemctl start "$(service_instance files-shared-bindfs@.service "$username")"
         fi
         if [[ "$shared_variant_changed" == true && -n "''${sftp_members[$username]:-}" ]]; then
           ${pkgs.systemd}/bin/systemctl restart "$(service_instance files-sftp-user-root@.service "$username")"
@@ -743,7 +764,8 @@ in
       wantedBy = [ "timers.target" ];
       timerConfig = {
         Unit = "fileshare-user-root-sync.service";
-        OnCalendar = "*-*-* 00/6:00:00";
+        OnBootSec = "5min";
+        OnUnitInactiveSec = "6h";
         Persistent = true;
       };
     };
@@ -751,42 +773,60 @@ in
     systemd.services."files-shared-bindfs@" = {
       description = "Mount delete-protected shared files view for %I";
       unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${sharedMountName}";
+      wants = [
+        "fileshare-user-root-sync.service"
+        "data-pool-layout.service"
+      ];
       requires = [
         "data-pool-layout.service"
       ];
       after = [
+        "fileshare-user-root-sync.service"
         "data-pool-layout.service"
       ];
+      conflicts = [ "files-shared-delete-bindfs@%i.service" ];
       serviceConfig = {
         Type = "simple";
         ExecStartPre = [
           dataRootGuard
-          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%I/${sharedMountName}"
+          "${prepareSharedMountTarget} ${vars.usersRoot}/%I/${sharedMountName}"
         ];
         ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx --delete-deny ${vars.sharedRoot} ${vars.usersRoot}/%I/${sharedMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${sharedMountName}";
         Restart = "on-failure";
+        RestartSec = "10s";
+        StartLimitIntervalSec = "2m";
+        StartLimitBurst = 6;
       };
     };
 
     systemd.services."files-shared-delete-bindfs@" = {
       description = "Mount deletable shared files view for %I";
       unitConfig.ConditionPathIsDirectory = "${vars.usersRoot}/%I/${sharedMountName}";
+      wants = [
+        "fileshare-user-root-sync.service"
+        "data-pool-layout.service"
+      ];
       requires = [
         "data-pool-layout.service"
       ];
       after = [
+        "fileshare-user-root-sync.service"
         "data-pool-layout.service"
       ];
+      conflicts = [ "files-shared-bindfs@%i.service" ];
       serviceConfig = {
         Type = "simple";
         ExecStartPre = [
           dataRootGuard
-          "${pkgs.coreutils}/bin/install -d -m 0755 -o root -g root ${vars.usersRoot}/%I/${sharedMountName}"
+          "${prepareSharedMountTarget} ${vars.usersRoot}/%I/${sharedMountName}"
         ];
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx ${vars.sharedRoot} ${vars.usersRoot}/%I/${sharedMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx,a-t ${vars.sharedRoot} ${vars.usersRoot}/%I/${sharedMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${sharedMountName}";
         Restart = "on-failure";
+        RestartSec = "10s";
+        StartLimitIntervalSec = "2m";
+        StartLimitBurst = 6;
       };
     };
 

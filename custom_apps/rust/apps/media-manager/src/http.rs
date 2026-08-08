@@ -34,14 +34,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     io::Cursor,
     os::fd::AsRawFd,
     path::Path as FilePath,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -50,10 +51,66 @@ const MAX_SUBTITLE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ARTWORK_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INBOX_ENTRIES: usize = 200;
 
+const JELLYFIN_IMAGE_CACHE_TTL: Duration = Duration::from_secs(3600);
+const JELLYFIN_IMAGE_CACHE_MAX_ENTRIES: usize = 2048;
+
+pub struct JellyfinImageCache {
+    entries: Mutex<HashMap<String, CachedJellyfinImage>>,
+    max_entries: usize,
+}
+
+struct CachedJellyfinImage {
+    data: Vec<u8>,
+    content_type: String,
+    expires: Instant,
+}
+
+impl Default for JellyfinImageCache {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            max_entries: JELLYFIN_IMAGE_CACHE_MAX_ENTRIES,
+        }
+    }
+}
+
+impl JellyfinImageCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, key: &str) -> Option<(Vec<u8>, String)> {
+        let entries = self.entries.lock().expect("cache lock");
+        entries
+            .get(key)
+            .filter(|entry| entry.expires > Instant::now())
+            .map(|entry| (entry.data.clone(), entry.content_type.clone()))
+    }
+
+    fn insert(&self, key: String, data: Vec<u8>, content_type: String) {
+        let mut entries = self.entries.lock().expect("cache lock");
+        if entries.len() >= self.max_entries {
+            let now = Instant::now();
+            entries.retain(|_, entry| entry.expires > now);
+        }
+        if entries.len() < self.max_entries {
+            entries.insert(
+                key,
+                CachedJellyfinImage {
+                    data,
+                    content_type,
+                    expires: Instant::now() + JELLYFIN_IMAGE_CACHE_TTL,
+                },
+            );
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
     pub catalog: CatalogHandle,
+    pub jellyfin_image_cache: Arc<JellyfinImageCache>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2230,6 +2287,115 @@ async fn iso_volume_id(path: &FilePath, request_id: &str) -> Option<String> {
     Some(volume_id)
 }
 
+async fn read_jellyfin_api_key(api_key_file: &FilePath) -> Option<String> {
+    let bytes = tokio::fs::read(api_key_file).await.ok()?;
+    let key = String::from_utf8_lossy(&bytes)
+        .trim()
+        .to_string();
+    if key.is_empty() || key.len() > 512 {
+        return None;
+    }
+    if !key
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-'))
+    {
+        return None;
+    }
+    Some(key)
+}
+
+async fn try_jellyfin_image_fallback(
+    state: &Arc<AppState>,
+    item: &CatalogItem,
+) -> Option<Response> {
+    let cache_file = state.config.jellyfin_metadata_cache_file.as_ref()?;
+    let base_url = state.config.jellyfin_base_url.as_ref()?;
+    let api_key_file = state.config.jellyfin_api_key_file.as_ref()?;
+    let api_key = read_jellyfin_api_key(api_key_file).await?;
+    let entry = cached_jellyfin_metadata(cache_file, item).await?;
+    let jellyfin_item_id = entry.get("itemId")?.as_str()?;
+    let image_tags = entry.get("imageTags")?;
+    let primary_tag = image_tags.get("Primary")
+        .or_else(|| image_tags.get("primary"))
+        .and_then(Value::as_str)?;
+    if jellyfin_item_id.is_empty()
+        || jellyfin_item_id.len() > 128
+        || !jellyfin_item_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+    if primary_tag.is_empty()
+        || primary_tag.len() > 256
+        || !primary_tag
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return None;
+    }
+    let cache_key = format!("{}:Primary:{}", jellyfin_item_id, primary_tag);
+    if let Some((cached_data, cached_ct)) = state.jellyfin_image_cache.get(&cache_key) {
+        return Some(
+            (
+                StatusCode::OK,
+                [
+                    (CONTENT_TYPE, cached_ct),
+                    (CACHE_CONTROL, "private, max-age=300".to_string()),
+                ],
+                cached_data,
+            )
+                .into_response(),
+        );
+    }
+    let url = format!(
+        "{}/Items/{}/Images/Primary?tag={}",
+        base_url.trim_end_matches('/'),
+        jellyfin_item_id,
+        primary_tag
+    );
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let response = client
+        .get(&url)
+        .header("X-Emby-Token", &api_key)
+        .send()
+        .await
+        .ok()?;
+    if response.status() != StatusCode::OK {
+        return None;
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| {
+            let lower = v.to_lowercase();
+            lower.starts_with("image/") && lower.len() < 128
+        })
+        .unwrap_or("image/jpeg")
+        .to_string();
+    let data = response.bytes().await.ok()?;
+    if data.len() > 32 * 1024 * 1024 {
+        return None;
+    }
+    state
+        .jellyfin_image_cache
+        .insert(cache_key, data.to_vec(), content_type.clone());
+    Some(
+        (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, content_type),
+                (CACHE_CONTROL, "private, max-age=300".to_string()),
+            ],
+            data,
+        )
+            .into_response(),
+    )
+}
+
 async fn item_image(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2299,6 +2465,11 @@ async fn item_image(
     {
         Ok(Ok(Some(body))) => body,
         Ok(Ok(None)) => {
+            if let Some(jellyfin_response) =
+                try_jellyfin_image_fallback(&state, &item).await
+            {
+                return jellyfin_response;
+            }
             return ApiError::new(
                 StatusCode::NOT_FOUND,
                 "artwork_not_found",

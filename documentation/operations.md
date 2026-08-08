@@ -565,8 +565,8 @@ natural order under the active conversion queue.
 Useful checks and controls:
 
 ```bash
-systemctl status mkvmaker-import.timer mkvmaker-import.service
-journalctl -u mkvmaker-import.service
+systemctl status mkvmaker-import.timer mkvmaker-import.service mkvmaker-import-worker.service
+journalctl -u mkvmaker-import.service -u mkvmaker-import-worker.service
 sudo systemctl start mkvmaker-import.service
 ```
 

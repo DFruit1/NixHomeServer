@@ -35,6 +35,8 @@ let
   }
   // lib.optionalAttrs jellyfinMetadataAvailable {
     MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE = jellyfinMetadataCache;
+    MEDIA_MANAGER_JELLYFIN_BASE_URL = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}";
+    MEDIA_MANAGER_JELLYFIN_API_KEY_FILE = "/var/lib/jellyfin/data/library-sync.api-key";
   }
   // {
     MEDIA_MANAGER_FPCALC_PATH = "${pkgs.chromaprint}/bin/fpcalc";
@@ -241,7 +243,7 @@ let
           --get "$base_url/Items" \
           --data-urlencode 'Recursive=true' \
           --data-urlencode 'IncludeItemTypes=Movie,Episode,Audio' \
-          --data-urlencode 'Fields=Path,Overview,Genres,Studios,People,ProviderIds,MediaStreams,PremiereDate,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber' \
+           --data-urlencode 'Fields=Path,Overview,Genres,Studios,People,ProviderIds,MediaStreams,PremiereDate,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,SeriesName,ParentIndexNumber,IndexNumber,Id,ImageTags' \
           --data-urlencode 'Limit=10000' \
         | jq -e \
           --arg shared ${lib.escapeShellArg vars.sharedRoot} \
@@ -265,8 +267,10 @@ let
               | select((.Path|type) == "string" and (.Path|length) <= 4096)
               | (.Path | location) as $location
               | $location + {
-                  mediaType:(if .Type == "Episode" then "episode" elif .Type == "Movie" then "movie" else "music" end),
-                  title:(.Name|clean(500)), year:.ProductionYear,
+                   mediaType:(if .Type == "Episode" then "episode" elif .Type == "Movie" then "movie" else "music" end),
+                   itemId: .Id,
+                   imageTags: (.ImageTags // {}),
+                   title:(.Name|clean(500)), year:.ProductionYear,
                   series:(.SeriesName|clean(500)), season:.ParentIndexNumber, episode:.IndexNumber,
                   episodeTitle:(if .Type == "Episode" then (.Name|clean(500)) else null end),
                   description:(.Overview|clean(20000)),
@@ -520,7 +524,7 @@ in
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
       ReadOnlyPaths = [ "-${vars.sharedRoot}" "-${vars.usersRoot}" "-/run/mkvmaker" ]
-        ++ lib.optionals jellyfinMetadataAvailable [ "-/var/cache/media-manager-jellyfin" ];
+        ++ lib.optionals jellyfinMetadataAvailable [ "-/var/cache/media-manager-jellyfin" "-/var/lib/jellyfin/data/library-sync.api-key" ];
       ReadWritePaths = [ cfg.stateDir ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];

@@ -6,10 +6,10 @@ use image::ImageEncoder;
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::{AppConfig, IntegrationCapability, MutationMode},
-    http::{router, AppState},
+    http::{router, AppState, JellyfinImageCache},
 };
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
+use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use tower::ServiceExt;
 
 fn one_pixel_png() -> Vec<u8> {

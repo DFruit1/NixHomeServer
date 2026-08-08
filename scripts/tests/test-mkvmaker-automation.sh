@@ -25,8 +25,10 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   persistence = cfg.repo.impermanence.inventory.persistenceDirectories;
   backupApps = map (entry: entry.app) cfg.repo.backups.appStateEntries;
   timer = cfg.systemd.timers.mkvmaker-import.timerConfig;
-  unit = cfg.systemd.services.mkvmaker-import.unitConfig;
-  service = cfg.systemd.services.mkvmaker-import.serviceConfig;
+  dispatcher = cfg.systemd.services.mkvmaker-import.serviceConfig;
+  dispatcherUnit = cfg.systemd.services.mkvmaker-import.unitConfig;
+  worker = cfg.systemd.services.mkvmaker-import-worker.serviceConfig;
+  workerUnit = cfg.systemd.services.mkvmaker-import-worker.unitConfig;
   homepageEnvironment = cfg.systemd.services.homepage.environment;
 }')"
 
@@ -40,34 +42,48 @@ jq -e '
   and (.sharedContent | index("_ISO") != null)
   and (.guarded | index("mkvmaker-storage-layout-v1") != null)
   and (.guarded | index("mkvmaker-import") != null)
+  and (.guarded | index("mkvmaker-import-worker") != null)
   and (.persistence | index("/var/lib/mkvmaker") != null)
   and (.backupApps | index("mkvmaker") != null)
   and (.timer.OnBootSec == "1min")
   and (.timer.OnUnitInactiveSec == "1min")
-  and (.unit.StartLimitIntervalSec == "1h")
-  and (.unit.StartLimitBurst > 60)
-  and (.service.User == "mkvmaker")
-  and (.service.Group == "mkvmaker")
-  and (.service.RuntimeDirectory == "mkvmaker")
-  and (.service.RuntimeDirectoryMode == "0755")
-  and (.service.ProtectSystem == "strict")
-  and (.service.NoNewPrivileges == true)
-  and (.service.Restart == "no")
-  and (.service.KillSignal == "SIGINT")
-  and (.service.KillMode == "control-group")
-  and (.service.SendSIGKILL == true)
-  and (.service.FinalKillSignal == "SIGKILL")
-  and (.service.SuccessExitStatus | map(tostring) | index("130") != null)
-  and (.service.SuccessExitStatus | map(tostring) | index("SIGINT") != null)
-  and (.service.SupplementaryGroups | index("files-shared-users") != null)
-  and (.service.SupplementaryGroups | index("nixhomeserver-maintenance") != null)
-  and (.service.ReadWritePaths == [
+  and (.timer.Unit == "mkvmaker-import.service")
+  and (.dispatcherUnit.StartLimitIntervalSec == "1h")
+  and (.dispatcherUnit.StartLimitBurst > 60)
+  and (.dispatcher.Type == "oneshot")
+  and (.dispatcher.ExecStart == "/run/current-system/sw/bin/systemctl start --no-block mkvmaker-import-worker.service")
+  and (.dispatcher.RuntimeDirectory == null)
+  and (.dispatcher.Restart == "no")
+  and (.dispatcher.TimeoutStartSec == "30s")
+  and (.dispatcher.ProtectSystem == "strict")
+  and (.dispatcher.NoNewPrivileges == true)
+  and (.worker.Type == "simple")
+  and (.worker.User == "mkvmaker")
+  and (.worker.Group == "mkvmaker")
+  and (.worker.RuntimeDirectory == "mkvmaker")
+  and (.worker.RuntimeDirectoryMode == "0755")
+  and (.worker.RuntimeDirectoryPreserve == "yes")
+  and (.worker.ProtectSystem == "strict")
+  and (.worker.NoNewPrivileges == true)
+  and (.worker.Restart == "on-failure")
+  and (.worker.RestartSec == "30s")
+  and (.worker.TimeoutStartSec == "8h")
+  and (.worker.KillSignal == "SIGINT")
+  and (.worker.KillMode == "control-group")
+  and (.worker.SendSIGKILL == true)
+  and (.worker.FinalKillSignal == "SIGKILL")
+  and (.worker.SuccessExitStatus | map(tostring) | index("130") != null)
+  and (.worker.SuccessExitStatus | map(tostring) | index("SIGINT") != null)
+  and (.worker.SupplementaryGroups | index("files-shared-users") != null)
+  and (.worker.SupplementaryGroups | index("nixhomeserver-maintenance") != null)
+  and (.worker.ReadWritePaths == [
     "/var/lib/mkvmaker",
     "/mnt/data/shared/_ISO/_DVDs",
     "/mnt/data/shared/_Videos/_Movies",
     "/mnt/data/shared/_Videos/_Shows",
     "/mnt/data/shared/.mkvmaker-staging"
   ])
+  and (.workerUnit.StartLimitBurst > 60)
   and (.homepageEnvironment.HOMEPAGE_MKVMAKER_PROGRESS_FILE == "/run/mkvmaker/progress.json")
 ' <<<"$surface_json" >/dev/null || {
   echo "❌ Mkvmaker evaluated service or storage surface is invalid." >&2

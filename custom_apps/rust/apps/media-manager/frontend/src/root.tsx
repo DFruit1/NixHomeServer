@@ -289,7 +289,11 @@ type IconName =
   | "arrow"
   | "image"
   | "chevron-down"
-  | "chevron-right";
+  | "chevron-right"
+  | "audiobookshelf"
+  | "jellyfin"
+  | "kavita"
+  | "syncthing";
 
 const Icon = component$<{ name: IconName; size?: number }>((props) => {
   const paths: Record<IconName, string[]> = {
@@ -325,6 +329,24 @@ const Icon = component$<{ name: IconName; size?: number }>((props) => {
     image: ["M4 5h16v14H4z", "m4 15 4.5-4.5 3.5 3.5 3-3L20 16", "M9.5 9.5h.01"],
     "chevron-down": ["m6 9 6 6 6-6"],
     "chevron-right": ["m9 6 6 6-6 6"],
+    audiobookshelf: [
+      "M3 18v-6a9 9 0 0 1 18 0v6",
+      "M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z",
+    ],
+    jellyfin: [
+      "M12 2L2 7l10 5 10-5-10-5z",
+      "M2 17l10 5 10-5",
+      "M2 12l10 5 10-5",
+    ],
+    kavita: [
+      "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20",
+    ],
+    syncthing: [
+      "M21 2v6h-6",
+      "M3 12a9 9 0 0 1 15-6.7L21 8",
+      "M3 22v-6h6",
+      "M21 12a9 9 0 0 1-15 6.7L3 16",
+    ],
   };
   return (
     <svg
@@ -4039,6 +4061,14 @@ const RefreshView = component$<{ integrations: Integration[] }>((props) => {
       ["library-refresh", "folder-rescan"].includes(capability),
     ),
   );
+
+  const integrationIconMap: Record<string, IconName> = {
+    audiobookshelf: "audiobookshelf",
+    jellyfin: "jellyfin",
+    kavita: "kavita",
+    syncthing: "syncthing",
+  };
+
   return (
     <section class="single-column">
       {refresh.error && (
@@ -4055,12 +4085,7 @@ const RefreshView = component$<{ integrations: Integration[] }>((props) => {
           const canRefresh = true;
           const status = refresh.statuses[integration.id];
           const presentation = refreshPresentation(status);
-          const stateIcon: IconName =
-            status?.state === "succeeded"
-              ? "check"
-              : status?.state === "failed"
-                ? "alert"
-                : "refresh";
+          const appIcon = integrationIconMap[integration.id] ?? "refresh";
           return (
             <article
               class={{
@@ -4076,7 +4101,7 @@ const RefreshView = component$<{ integrations: Integration[] }>((props) => {
                   spinning: status?.state === "running",
                 }}
               >
-                <Icon name={stateIcon} size={20} />
+                <Icon name={appIcon} size={20} />
               </div>
               <div class="integration-copy">
                 <h3>{integration.label}</h3>

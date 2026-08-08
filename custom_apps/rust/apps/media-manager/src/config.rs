@@ -51,6 +51,8 @@ pub struct AppConfig {
     pub mkvmaker_progress_file: PathBuf,
     pub open_subtitles_credentials_file: Option<PathBuf>,
     pub jellyfin_metadata_cache_file: Option<PathBuf>,
+    pub jellyfin_base_url: Option<String>,
+    pub jellyfin_api_key_file: Option<PathBuf>,
     pub acoustid_api_key_file: Option<PathBuf>,
     pub fpcalc_path: Option<PathBuf>,
     pub ffprobe_path: Option<PathBuf>,
@@ -147,6 +149,9 @@ impl AppConfig {
             .map(PathBuf::from),
             jellyfin_metadata_cache_file: env::var_os("MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE")
                 .map(PathBuf::from),
+            jellyfin_base_url: optional_env("MEDIA_MANAGER_JELLYFIN_BASE_URL"),
+            jellyfin_api_key_file: env::var_os("MEDIA_MANAGER_JELLYFIN_API_KEY_FILE")
+                .map(PathBuf::from),
             acoustid_api_key_file: env::var_os("MEDIA_MANAGER_ACOUSTID_API_KEY_FILE")
                 .map(PathBuf::from),
             fpcalc_path: env::var_os("MEDIA_MANAGER_FPCALC_PATH").map(PathBuf::from),
@@ -177,6 +182,8 @@ impl AppConfig {
             mkvmaker_progress_file: PathBuf::from("progress.json"),
             open_subtitles_credentials_file: None,
             jellyfin_metadata_cache_file: None,
+            jellyfin_base_url: None,
+            jellyfin_api_key_file: None,
             acoustid_api_key_file: None,
             fpcalc_path: None,
             ffprobe_path: None,

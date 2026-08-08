@@ -35,6 +35,8 @@ in {
   filesRouterGroups = cfg.repo.authGateway.protectedApps.files.allowedGroups;
   homepageSidecarExec = cfg.systemd.services.homepage-oauth2-proxy.serviceConfig.ExecStart;
   filesSidecarExec = cfg.systemd.services.filestash-oauth2-proxy.serviceConfig.ExecStart;
+  sharedViewExec = cfg.systemd.services."files-shared-bindfs@".serviceConfig.ExecStart;
+  sharedDeleteViewExec = cfg.systemd.services."files-shared-delete-bindfs@".serviceConfig.ExecStart;
   homepageConfigDrv = cfg.systemd.services.homepage.environment.HOMEPAGE_CONFIG_FILE.drvPath;
 }
 ')"
@@ -65,6 +67,10 @@ if ! jq -e '
   and (.filesSidecarExec | contains("--allowed-group=usb-access") | not)
   and (.filesSidecarExec | contains("--allowed-group=backup-storage-users") | not)
   and (.filesSidecarExec | contains("--allowed-group=files-shared-users") | not)
+  and (.sharedViewExec | contains("--delete-deny"))
+  and (.sharedViewExec | contains("a-t") | not)
+  and (.sharedDeleteViewExec | contains("--delete-deny") | not)
+  and (.sharedDeleteViewExec | contains("--perms=g+rwX,o-rwx,a-t"))
 ' <<<"$role_json" >/dev/null; then
   echo "Role-only identity, Homepage access, or Files web isolation regressed." >&2
   jq . <<<"$role_json" >&2

@@ -1,9 +1,10 @@
 use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::AppConfig,
-    http::{router, AppState},
+    http::{router, AppState, JellyfinImageCache},
 };
 use serde_json::json;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -31,6 +32,7 @@ async fn run() -> Result<(), String> {
     let state = AppState {
         catalog: CatalogHandle::new(config.database_path()),
         config,
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
     };
     let listener = tokio::net::TcpListener::bind(address)
         .await

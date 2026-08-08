@@ -37,6 +37,7 @@ let
     "--video-preset"
     cfg.videoPreset
   ];
+  dispatchCommand = "/run/current-system/sw/bin/systemctl start --no-block mkvmaker-import-worker.service";
 in
 {
   options.repo.mkvmaker = {
@@ -90,7 +91,10 @@ in
       }
     ];
 
-    repo.storage.dataPool.guardedServices = [ "mkvmaker-import" ];
+    repo.storage.dataPool.guardedServices = [
+      "mkvmaker-import"
+      "mkvmaker-import-worker"
+    ];
 
     systemd.timers.mkvmaker-import = {
       description = "Check the shared DVD ISO inbox for settled uploads";
@@ -105,6 +109,50 @@ in
     };
 
     systemd.services.mkvmaker-import = {
+      description = "Dispatch the shared DVD ISO conversion worker";
+      requires = [ "mkvmaker-storage-layout-v1.service" ];
+      wants = [ "network-online.target" ];
+      after = [ "mkvmaker-storage-layout-v1.service" "network-online.target" ];
+      environment = {
+        HOME = cfg.paths.stateRoot;
+        XDG_CONFIG_HOME = "${cfg.paths.stateRoot}/config";
+        XDG_CACHE_HOME = "${cfg.paths.stateRoot}/cache";
+        XDG_STATE_HOME = "${cfg.paths.stateRoot}/state";
+      };
+      unitConfig = {
+        RequiresMountsFor = [ vars.dataRoot ];
+        StartLimitIntervalSec = "1h";
+        # The empty-inbox check is expected to start once per minute. Keep the
+        # rate limit above that normal cadence so it only catches a genuine
+        # rapid start loop instead of permanently exhausting the watcher.
+        StartLimitBurst = 120;
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = dispatchCommand;
+        Restart = "no";
+        TimeoutStartSec = "30s";
+        TimeoutStopSec = "30s";
+        Nice = 10;
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        LockPersonality = true;
+        RestrictSUIDSGID = true;
+        RestrictNamespaces = true;
+        SystemCallArchitectures = "native";
+      };
+    };
+
+    systemd.services.mkvmaker-import-worker = {
       description = "Convert settled shared DVD ISOs into Jellyfin-ready MKVs";
       restartIfChanged = false;
       stopIfChanged = false;
@@ -126,15 +174,20 @@ in
         StartLimitBurst = 120;
       };
       serviceConfig = {
-        Type = "oneshot";
+        Type = "simple";
         RuntimeDirectory = "mkvmaker";
         RuntimeDirectoryMode = "0755";
+        # The worker is the only unit that owns /run/mkvmaker. Preserving it
+        # across unit stop keeps progress.json visible to Media Manager while
+        # idle instead of deleting the live status file after every run.
+        RuntimeDirectoryPreserve = "yes";
         User = "mkvmaker";
         Group = "mkvmaker";
         SupplementaryGroups = [ sharedAccessGroup "nixhomeserver-maintenance" ];
         ExecStart = command;
-        Restart = "no";
-        TimeoutStartSec = "infinity";
+        Restart = "on-failure";
+        RestartSec = "30s";
+        TimeoutStartSec = "8h";
         TimeoutStopSec = "2min";
         KillSignal = "SIGINT";
         KillMode = "control-group";
