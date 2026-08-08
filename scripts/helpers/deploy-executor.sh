@@ -56,7 +56,7 @@ activation_started=false
 boot_commit_started=false
 transaction_complete=false
 active_activation_unit=""
-activation_poll_attempts=300
+activation_poll_attempts=1200
 activation_poll_interval=2
 
 human_bytes() {
