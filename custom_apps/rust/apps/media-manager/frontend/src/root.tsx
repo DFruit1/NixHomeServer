@@ -338,9 +338,7 @@ const Icon = component$<{ name: IconName; size?: number }>((props) => {
       "M2 17l10 5 10-5",
       "M2 12l10 5 10-5",
     ],
-    kavita: [
-      "M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20",
-    ],
+    kavita: ["M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"],
     syncthing: [
       "M21 2v6h-6",
       "M3 12a9 9 0 0 1 15-6.7L21 8",
