@@ -48,7 +48,7 @@ export const SshfsGuide = component$(({
       <ul class="guide-checklist">
         <li>The setup creates a key pair on your device. Upload only the public key; the private key must never leave that device.</li>
         <li>Before accepting the first connection, compare the server fingerprint with one provided by an administrator through a trusted channel.</li>
-        <li>Make a manual mount work before configuring automatic mounting. Automatic mounts also need the device to unlock its key without an interactive prompt.</li>
+        <li>Make a manual mount work before configuring automatic mounting. Automatic mounts also need the device to unlock its key without an interactive prompt, so it is recommended to leave the key passphrase empty for simplicity. If you want to prevent the key being used without your permission, store it in an SSH keyring such as KeePassXC's SSH Agent or an alternative keyring rather than as a plain file on disk.</li>
       </ul>
     </section>
 

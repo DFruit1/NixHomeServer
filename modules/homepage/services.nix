@@ -25,6 +25,7 @@ let
   torrentsHost = "torrents.${vars.domain}";
   backupsHost = vars.kopiaDomain;
   monitorHost = vars.monitorDomain;
+  mediaManagerHost = "media.${vars.domain}";
   syncthingHost = "syncthing.${vars.domain}";
   offlineMediaCfg = vars.offlineMedia;
   offlineMediaAccessGroupRaw = offlineMediaCfg.accessGroup or "users";
@@ -128,6 +129,7 @@ let
   radarrEnabled = hostEnabled radarrHost;
   prowlarrEnabled = hostEnabled prowlarrHost;
   qbittorrentEnabled = hostEnabled torrentsHost;
+  mediaManagerEnabled = hostEnabled mediaManagerHost;
   kopiaEnabled = hostEnabled backupsHost;
   monitorEnabled = hostEnabled monitorHost;
   personalPath = relativePath: "/${relativePath}";
@@ -995,6 +997,20 @@ let
       uploadNotes = "Add media with the Files app first; this service then copies it to your connected devices.";
       requiredAllGroups = offlineMediaRequiredAllGroups;
       requiredAnyGroups = offlineMediaRequiredAnyGroups;
+    }
+    {
+      id = "media-manager";
+      name = "Media Manager";
+      url = "https://${mediaManagerHost}";
+      enabled = mediaManagerEnabled;
+      category = "media";
+      description = "Browse, organize, and move media across shared and personal library roots.";
+      loginNotes = "Use Kanidm; requires media-manager-editors for mutation permissions.";
+      projectUrl = "https://github.com/user/media-manager";
+      logoUrl = "/logos/media-manager.svg";
+      appName = "media-manager";
+      uploadNotes = "Place media in the appropriate shared or personal root folders.";
+      requiredAnyGroups = [ "media-manager-editors" "users" ];
     }
     {
       id = "books";

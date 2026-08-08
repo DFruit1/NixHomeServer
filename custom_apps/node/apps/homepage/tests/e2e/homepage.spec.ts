@@ -147,6 +147,18 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await expectNoHorizontalOverflow(page);
 
   const setup = page.locator('article').filter({ has: page.getByRole('heading', { name: 'SSHFS Mount Setup' }) });
+  // The OS tabs default to the detected operating system (Linux in the test runner).
+  await expect(setup.locator('pre.linux code').first()).toBeVisible();
+  await expect(setup.getByText('Install sshfs, then mount the server manually')).toBeVisible();
+  await expect(setup.locator('pre code').filter({ hasText: 'systemctl --user enable --now nixhomeserver-files.service' })).toBeVisible();
+  await expect(setup.locator('label[for="sftp-setup-linux-systemd"]')).toBeChecked();
+
+  await setup.locator('label[for="sftp-setup-linux-runit"]').click();
+  await expect(setup.locator('pre code').filter({ hasText: 'xbps-install -S turnstile' })).toBeVisible();
+  await expect(setup.locator('pre code').filter({ hasText: 'SVDIR=~/.config/service sv up nixhomeserver-files' })).toBeVisible();
+  await setup.locator('label[for="sftp-setup-linux-systemd"]').click();
+
+  await setup.locator('label[for="sftp-setup-windows"]').click();
   await expect(setup.locator('pre.windows code').first()).toBeVisible();
   await expect(setup.locator('pre.windows code').first()).toContainText('New-Item -ItemType Directory -Force');
   await expect(setup.locator('pre.windows code').first()).toContainText('ssh-keygen -t rsa -b 4096');
@@ -165,6 +177,7 @@ test('homepage navigation and SFTP upload flow stay client-side', async ({ page 
   await setup.locator('label[for="sftp-setup-linux"]').click();
   await expect(setup.getByText('Install sshfs, then mount the server manually')).toBeVisible();
   await expect(setup.locator('pre code').filter({ hasText: 'systemctl --user enable --now nixhomeserver-files.service' })).toBeVisible();
+  await expect(setup.locator('label[for="sftp-setup-linux-systemd"]')).toBeChecked();
 
   const uploadHeading = page.getByRole('heading', { name: 'Upload SSHFS Public Key' });
   await uploadHeading.scrollIntoViewIfNeeded();

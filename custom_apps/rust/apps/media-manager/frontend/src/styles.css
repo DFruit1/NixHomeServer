@@ -773,17 +773,87 @@ a:focus-visible {
 
 .library-layout {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   grid-template-areas:
-    "roots catalog"
-    "subtitles subtitles"
+    "tabs tabs"
+    "personal shared"
     "image editor";
   align-items: start;
   gap: 18px 20px;
 }
-.root-picker {
-  grid-area: roots;
-  align-self: stretch;
+.library-tabs {
+  grid-area: tabs;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.library-tab {
+  min-height: 40px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-soft);
+  background: var(--card);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition-property: color, background-color, border-color, scale;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+.library-tab:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+.library-tab.active {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+.library-tab:active:not(:disabled) {
+  scale: 0.96;
+}
+.library-tab.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.library-tab .icon {
+  flex: 0 0 auto;
+}
+.personal-pane {
+  grid-area: personal;
+}
+.shared-pane {
+  grid-area: shared;
+}
+.pane-heading {
+  min-height: 50px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.pane-heading h3 {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 500;
+}
+.pane-count {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
 }
 .root-choice {
   min-height: 54px;
@@ -836,13 +906,10 @@ a:focus-visible {
 }
 .catalog-panel {
   position: relative;
-  grid-area: catalog;
-  min-height: 0;
-  height: 100%;
+  min-height: min(560px, 68vh);
+  display: flex;
+  flex-direction: column;
   align-self: stretch;
-}
-.subtitle-card {
-  grid-area: subtitles;
 }
 .subtitle-card-body {
   padding: 16px 20px;
@@ -988,31 +1055,12 @@ a:focus-visible {
   font-size: 9px;
 }
 .catalog-scroll-region {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-.root-list.grouped {
-  display: grid;
-  gap: 0;
-  padding-top: 14px;
-}
-.root-group + .root-group {
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-.root-group-heading {
-  padding: 0 14px 8px;
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
 }
 .folder-filter {
   flex: 0 0 auto;
@@ -1159,6 +1207,47 @@ a:focus-visible {
   flex: 0 0 auto;
 }
 .editor-tab:active {
+  scale: 0.96;
+}
+.metadata-section-tabs {
+  min-height: 50px;
+  padding: 10px 20px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.metadata-section-tab {
+  min-height: 30px;
+  padding: 0 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  background: var(--card);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition-property: color, background-color, border-color, scale;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+.metadata-section-tab:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-wash);
+}
+.metadata-section-tab.active {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+.metadata-section-tab:active {
   scale: 0.96;
 }
 .editor-facts {
@@ -1955,28 +2044,20 @@ a:focus-visible {
   .library-layout {
     grid-template-columns: 1fr;
     grid-template-areas:
-      "roots"
-      "catalog"
-      "subtitles"
+      "tabs"
+      "personal"
+      "shared"
       "image"
       "editor";
   }
   .catalog-panel {
-    min-height: min(570px, 60vh);
+    min-height: min(420px, 55vh);
   }
   .subtitle-workflows {
     grid-template-columns: 1fr;
   }
   .metadata-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .root-picker .root-list.grouped {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .root-group + .root-group {
-    margin-top: 0;
-    padding-top: 0;
-    border-top: 0;
   }
   .inbox-groups {
     grid-template-columns: 1fr;
@@ -2080,9 +2161,6 @@ a:focus-visible {
   .topbar {
     margin-bottom: 32px;
     align-items: flex-start;
-  }
-  .root-picker .root-list.grouped {
-    grid-template-columns: 1fr;
   }
   .rename-fields {
     grid-template-columns: 1fr 100px;

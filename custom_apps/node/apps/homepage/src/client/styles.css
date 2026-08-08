@@ -1001,6 +1001,125 @@ h4 {
   padding-top: 20px;
 }
 
+.explain-more {
+  display: flex;
+  justify-content: flex-start;
+  max-width: 680px;
+  margin-top: 26px;
+}
+
+.explain-more__trigger {
+  border: 0;
+  background: none;
+  color: #245b9f;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.explain-more__trigger:hover,
+.explain-more__trigger:focus-visible {
+  color: #1a4a86;
+}
+
+.explain-more__dialog {
+  width: min(920px, 92vw);
+  max-width: none;
+  border: 1px solid #d6dce6;
+  border-radius: 12px;
+  padding: 0;
+  box-shadow: 0 16px 48px rgba(31, 42, 56, 0.2);
+}
+
+.explain-more__dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.explain-more__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #d6dce6;
+  padding: 16px 20px;
+}
+
+.explain-more__header h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.explain-more__close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid #d6dce6;
+  border-radius: 6px;
+  background: #fff;
+  color: #4b596c;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 700;
+  padding: 0;
+}
+
+.explain-more__close:hover {
+  background: #f2f9ff;
+  border-color: #245b9f;
+  color: #245b9f;
+}
+
+.explain-more__body {
+  display: grid;
+  gap: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 18px 20px 20px;
+}
+
+.explain-more__section {
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.explain-more__section--plain {
+  background: #f0f7ff;
+  border-color: #c8d8ec;
+}
+
+.explain-more__section--technical {
+  background: #f8fafc;
+}
+
+.explain-more__section h4 {
+  margin: 2px 0 8px;
+  font-size: 16px;
+}
+
+.explain-more__prose p {
+  margin: 0 0 10px;
+  color: #44546a;
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 640px;
+}
+
+.explain-more__prose p:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 720px) {
+  .explain-more__dialog {
+    width: 95vw;
+  }
+}
+
 .getting-started-addresses {
   margin-top: 18px;
 }
@@ -1782,6 +1901,17 @@ h4 {
   background: #fff;
 }
 
+.next-step-link {
+  color: #245b9f;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.next-step-link:hover,
+.next-step-link:focus-visible {
+  text-decoration: underline;
+}
+
 .service-preview-bar {
   position: fixed;
   right: 18px;
@@ -2535,6 +2665,25 @@ code {
 .sftp-access-card #sftp-access-macos:checked ~ .os-panel.macos,
 .sftp-access-card #sftp-access-linux:checked ~ .os-panel.linux {
   display: block;
+}
+
+.linux-init-panel {
+  display: none;
+}
+
+.sftp-setup-card #sftp-setup-linux-systemd:checked ~ .linux-init-panel.systemd,
+.sftp-setup-card #sftp-setup-linux-runit:checked ~ .linux-init-panel.runit,
+.sftp-access-card #sftp-access-linux-systemd:checked ~ .linux-init-panel.systemd,
+.sftp-access-card #sftp-access-linux-runit:checked ~ .linux-init-panel.runit {
+  display: block;
+}
+
+.sftp-setup-card #sftp-setup-linux-systemd:checked ~ .os-picker label[for="sftp-setup-linux-systemd"],
+.sftp-setup-card #sftp-setup-linux-runit:checked ~ .os-picker label[for="sftp-setup-linux-runit"],
+.sftp-access-card #sftp-access-linux-systemd:checked ~ .os-picker label[for="sftp-access-linux-systemd"],
+.sftp-access-card #sftp-access-linux-runit:checked ~ .os-picker label[for="sftp-access-linux-runit"] {
+  background: #245b9f;
+  color: #fff;
 }
 
 .sftp-step-list {

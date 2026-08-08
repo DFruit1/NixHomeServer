@@ -206,6 +206,7 @@ interface DashboardState {
   items: CatalogItem[];
   conversions?: ConversionEnvelope;
   selectedRootId: string;
+  selectedCategory: string;
   loading: boolean;
   error: string;
   notice: string;
@@ -338,6 +339,7 @@ export default component$((props: RootProps) => {
     roots: [],
     items: [],
     selectedRootId: "",
+    selectedCategory: "",
     loading: true,
     error: "",
     notice: "",
@@ -382,6 +384,26 @@ export default component$((props: RootProps) => {
     }),
   );
 
+  const loadCategoryItems = $(async (category: string) => {
+    const categoryRoots = state.roots.filter(
+      (root) => root.category === category,
+    );
+    state.selectedCategory = category;
+    state.error = "";
+    try {
+      const results = await Promise.all(
+        categoryRoots.map((root) =>
+          api<{ items: CatalogItem[] }>(
+            `/items?rootId=${encodeURIComponent(root.id)}`,
+          ),
+        ),
+      );
+      state.items = results.flatMap((result) => result.items);
+    } catch (error) {
+      state.error = readableError(error);
+    }
+  });
+
   useTask$(async () => {
     try {
       const [status, session, roots, conversions] = await Promise.all([
@@ -399,29 +421,14 @@ export default component$((props: RootProps) => {
       );
       const selectedRoot = requestedRoot ?? roots[0];
       state.selectedRootId = selectedRoot?.id ?? "";
-      if (selectedRoot && view.value === "library") {
-        const result = await api<{ items: CatalogItem[] }>(
-          `/items?rootId=${encodeURIComponent(selectedRoot.id)}`,
-        );
-        state.items = result.items;
+      state.selectedCategory = selectedRoot?.category ?? "";
+      if (view.value === "library" && selectedRoot) {
+        await loadCategoryItems(selectedRoot.category);
       }
     } catch (error) {
       state.error = readableError(error);
     } finally {
       state.loading = false;
-    }
-  });
-
-  const loadItems = $(async (rootId: string) => {
-    state.selectedRootId = rootId;
-    state.error = "";
-    try {
-      const result = await api<{ items: CatalogItem[] }>(
-        `/items?rootId=${encodeURIComponent(rootId)}`,
-      );
-      state.items = result.items;
-    } catch (error) {
-      state.error = readableError(error);
     }
   });
 
@@ -629,6 +636,7 @@ export default component$((props: RootProps) => {
             selectItem$={selectItem}
             previewRename$={previewRename}
             confirmRename$={confirmRename}
+            loadCategoryItems$={loadCategoryItems}
           />
         ) : view.value === "conversions" ? (
           <ConversionsView initial={state.conversions} />
@@ -736,35 +744,6 @@ const OverviewSection = component$<{
   );
 });
 
-const RootRow = component$<{
-  root: MediaRoot;
-}>((props) => (
-  <a
-    class="root-row"
-    href={`?view=library&root=${encodeURIComponent(props.root.id)}`}
-  >
-    <span class="root-icon">
-      <Icon name="folder" size={19} />
-    </span>
-    <span class="root-name">
-      <strong>{rootDisplayName(props.root)}</strong>
-      <small>
-        {props.root.scope} · {props.root.category}
-      </small>
-    </span>
-    <span
-      class={{ "availability-dot": true, available: props.root.available }}
-    />
-    <Icon name="arrow" size={17} />
-  </a>
-));
-
-function rootDisplayName(root: MediaRoot): string {
-  return root.category
-    ? root.category.charAt(0).toUpperCase() + root.category.slice(1)
-    : root.label;
-}
-
 interface OverviewItem {
   id: string;
   title: string;
@@ -834,8 +813,25 @@ const SubtitleCard = component$<{
   const selectedItem = props.items.find(
     (item) => item.id === props.selectedItemId,
   );
-  if (!selectedItem || selectedItem.mediaKind !== "video") {
-    return null;
+  if (!selectedItem) {
+    return (
+      <div class="subtitle-card-body">
+        <div class="subtitle-empty">
+          <Icon name="captions" size={24} />
+          <span>Select a file to inspect its subtitles.</span>
+        </div>
+      </div>
+    );
+  }
+  if (selectedItem.mediaKind !== "video") {
+    return (
+      <div class="subtitle-card-body">
+        <div class="subtitle-empty">
+          <Icon name="captions" size={24} />
+          <span>Subtitles are only listed for video files.</span>
+        </div>
+      </div>
+    );
   }
   const selectedItemPath = selectedItem.relativePath;
   const selectedDir = selectedItemPath.substring(
@@ -849,6 +845,7 @@ const SubtitleCard = component$<{
       ?.replace(/\.[^.]+$/, "") ?? "";
   const subtitles = props.items.filter((item) => {
     if (item.mediaKind !== "subtitle") return false;
+    if (item.rootId !== selectedItem.rootId) return false;
     const itemDir = item.relativePath.substring(
       0,
       item.relativePath.lastIndexOf("/"),
@@ -863,40 +860,31 @@ const SubtitleCard = component$<{
     );
   });
   return (
-    <section class="panel subtitle-card">
-      <div class="panel-heading">
-        <div>
-          <h3>Subtitles</h3>
+    <div class="subtitle-card-body">
+      {subtitles.length === 0 ? (
+        <div class="subtitle-empty">
+          <Icon name="captions" size={24} />
+          <span>No subtitles found for this file</span>
         </div>
-      </div>
-      <div class="subtitle-card-body">
-        {subtitles.length === 0 ? (
-          <div class="subtitle-empty">
-            <Icon name="captions" size={24} />
-            <span>No subtitles found for this file</span>
-          </div>
-        ) : (
-          <ul class="subtitle-list">
-            {subtitles.map((sub) => {
-              const filename = sub.relativePath.split("/").at(-1) ?? "";
-              const ext = filename.split(".").at(-1)?.toUpperCase() ?? "";
-              const langMatch = filename.match(
-                /\.(?:en|es|fr|de|it|pt|ja|ko|zh|ru|ar|hi)\b/i,
-              );
-              const lang = langMatch
-                ? langMatch[0].slice(1).toUpperCase()
-                : ext;
-              return (
-                <li class="subtitle-item" key={sub.id}>
-                  <span class="subtitle-lang">{lang}</span>
-                  <span class="subtitle-filename">{filename}</span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-    </section>
+      ) : (
+        <ul class="subtitle-list">
+          {subtitles.map((sub) => {
+            const filename = sub.relativePath.split("/").at(-1) ?? "";
+            const ext = filename.split(".").at(-1)?.toUpperCase() ?? "";
+            const langMatch = filename.match(
+              /\.(?:en|es|fr|de|it|pt|ja|ko|zh|ru|ar|hi)\b/i,
+            );
+            const lang = langMatch ? langMatch[0].slice(1).toUpperCase() : ext;
+            return (
+              <li class="subtitle-item" key={sub.id}>
+                <span class="subtitle-lang">{lang}</span>
+                <span class="subtitle-filename">{filename}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 });
 
@@ -1004,177 +992,210 @@ const MediaImage = component$<{
   },
 );
 
-const RootChoice = component$<{
-  root: MediaRoot;
-  selectedRootId: string;
-}>((props) => (
-  <a
-    class={{
-      "root-choice": true,
-      selected: props.root.id === props.selectedRootId,
-    }}
-    href={`?view=library&root=${encodeURIComponent(props.root.id)}`}
-    aria-current={props.root.id === props.selectedRootId ? "true" : undefined}
-  >
-    <Icon name="folder" size={18} />
-    <span>
-      <strong>{rootDisplayName(props.root)}</strong>
-    </span>
-  </a>
-));
+const CATEGORY_TABS: Array<{ id: string; label: string; icon: IconName }> = [
+  { id: "videos", label: "Videos", icon: "image" },
+  { id: "music", label: "Music", icon: "disc" },
+  { id: "audiobooks", label: "Audiobooks", icon: "captions" },
+  { id: "books", label: "Books", icon: "library" },
+];
+
+const LibraryPane = component$<{
+  title: string;
+  subtitle: string;
+  browser: {
+    expanded: Record<string, boolean>;
+    folderFilter: string;
+    selectedFolder: string;
+  };
+  items: CatalogItem[];
+  selectedItemId: string;
+  selectItem$: QRL<(item: CatalogItem) => void>;
+  selectFolder$: QRL<(path: string) => void>;
+}>((props) => {
+  const folders = topLevelFolders(props.items);
+  const visibleItems = props.browser.folderFilter
+    ? props.items.filter((item) =>
+        item.relativePath.startsWith(`${props.browser.folderFilter}/`),
+      )
+    : props.items;
+  const tree = buildTree(visibleItems);
+  return (
+    <section class="panel catalog-panel">
+      <div class="pane-heading">
+        <h3>{props.title}</h3>
+        <span class="pane-count">{props.items.length}</span>
+      </div>
+      <div class="catalog-scroll-region">
+        {props.items.length === 0 ? (
+          <EmptyState
+            title={props.subtitle}
+            detail="This directory has been cataloged but does not currently contain supported media files."
+          />
+        ) : (
+          <>
+            {folders.length > 1 && (
+              <div
+                class="folder-filter"
+                role="group"
+                aria-label="Show only one folder"
+              >
+                {folders.map((folder) => (
+                  <button
+                    class={{
+                      "folder-filter-button": true,
+                      active: props.browser.folderFilter === folder,
+                    }}
+                    type="button"
+                    key={folder}
+                    aria-pressed={props.browser.folderFilter === folder}
+                    onClick$={() => {
+                      props.browser.folderFilter =
+                        props.browser.folderFilter === folder ? "" : folder;
+                    }}
+                  >
+                    {folderDisplayName(folder)}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div
+              class="item-tree"
+              role="tree"
+              aria-label={`${props.title} items`}
+            >
+              {tree.map((node) => (
+                <TreeBranch
+                  node={node}
+                  depth={0}
+                  browser={props.browser}
+                  selectedItemId={props.selectedItemId}
+                  selectedFolder={props.browser.selectedFolder}
+                  selectItem$={props.selectItem$}
+                  selectFolder$={props.selectFolder$}
+                  key={node.path}
+                />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
+});
 
 const LibraryView = component$<{
   state: DashboardState;
   selectItem$: QRL<(item: CatalogItem) => void>;
   previewRename$: QRL<() => Promise<void>>;
   confirmRename$: QRL<() => Promise<void>>;
+  loadCategoryItems$: QRL<(category: string) => Promise<void>>;
 }>((props) => {
-  const browser = useStore({
+  const personal = useStore({
     expanded: {} as Record<string, boolean>,
     folderFilter: "",
     selectedFolder: "",
   });
-  const selectFolder$ = $((path: string) => {
-    browser.selectedFolder = path;
-    props.state.selectedItemId = "";
-    props.state.preview = undefined;
+  const shared = useStore({
+    expanded: {} as Record<string, boolean>,
+    folderFilter: "",
+    selectedFolder: "",
   });
-  const selected = props.state.roots.find(
-    (root) => root.id === props.state.selectedRootId,
-  );
   const libraryRoots = props.state.roots.filter(
     (root) => root.category !== "iso",
   );
-  const sharedRoots = libraryRoots.filter((root) => root.scope === "shared");
-  const personalRoots = libraryRoots.filter(
+  const activeCategory = props.state.selectedCategory;
+  const categoryRoots = libraryRoots.filter(
+    (root) => root.category === activeCategory,
+  );
+  const personalRoots = categoryRoots.filter(
     (root) => root.scope === "personal",
   );
-  const folders = topLevelFolders(props.state.items);
-  const visibleItems = browser.folderFilter
-    ? props.state.items.filter((item) =>
-        item.relativePath.startsWith(`${browser.folderFilter}/`),
-      )
-    : props.state.items;
-  const tree = buildTree(visibleItems);
+  const sharedRoots = categoryRoots.filter((root) => root.scope === "shared");
+  const personalItems = props.state.items.filter((item) =>
+    personalRoots.some((root) => root.id === item.rootId),
+  );
+  const sharedItems = props.state.items.filter((item) =>
+    sharedRoots.some((root) => root.id === item.rootId),
+  );
   const selectedItem = props.state.items.find(
     (item) => item.id === props.state.selectedItemId,
   );
+  const activeFolder = personal.selectedFolder || shared.selectedFolder;
   const imageTitle =
     selectedItem?.relativePath.split("/").at(-1) ??
-    (browser.selectedFolder
-      ? folderDisplayName(browser.selectedFolder.split("/").at(-1) ?? "")
+    (activeFolder
+      ? folderDisplayName(activeFolder.split("/").at(-1) ?? "")
       : "");
+  const selectPersonalFolder$ = $((path: string) => {
+    personal.selectedFolder = path;
+    props.state.selectedItemId = "";
+    props.state.preview = undefined;
+  });
+  const selectSharedFolder$ = $((path: string) => {
+    shared.selectedFolder = path;
+    props.state.selectedItemId = "";
+    props.state.preview = undefined;
+  });
   return (
     <section class="library-layout">
-      <aside class="panel root-picker">
-        <div class="root-list grouped">
-          {sharedRoots.length > 0 && (
-            <div class="root-group">
-              <h4 class="root-group-heading">Shared</h4>
-              {sharedRoots.map((root) => (
-                <RootChoice
-                  root={root}
-                  selectedRootId={props.state.selectedRootId}
-                  key={root.id}
-                />
-              ))}
-            </div>
-          )}
-          {personalRoots.length > 0 && (
-            <div class="root-group">
-              <h4 class="root-group-heading">Personal</h4>
-              {personalRoots.map((root) => (
-                <RootChoice
-                  root={root}
-                  selectedRootId={props.state.selectedRootId}
-                  key={root.id}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </aside>
-      <section class="panel catalog-panel">
-        <div class="catalog-scroll-region">
-          {!selected ? (
-            <EmptyState
-              title="Choose a media root"
-              detail="Select a registered location to inspect its catalog."
-            />
-          ) : props.state.items.length === 0 ? (
-            <EmptyState
-              title="No supported media files found"
-              detail="This directory has been cataloged but does not currently contain supported media files."
-            />
-          ) : (
-            <>
-              {folders.length > 1 && (
-                <div
-                  class="folder-filter"
-                  role="group"
-                  aria-label="Show only one folder"
-                >
-                  {folders.map((folder) => (
-                    <button
-                      class={{
-                        "folder-filter-button": true,
-                        active: browser.folderFilter === folder,
-                      }}
-                      type="button"
-                      key={folder}
-                      aria-pressed={browser.folderFilter === folder}
-                      onClick$={() => {
-                        browser.folderFilter =
-                          browser.folderFilter === folder ? "" : folder;
-                      }}
-                    >
-                      {folderDisplayName(folder)}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div
-                class="item-tree"
-                role="tree"
-                aria-label={`${selected.label} items`}
-              >
-                {tree.map((node) => (
-                  <TreeBranch
-                    node={node}
-                    depth={0}
-                    browser={browser}
-                    selectedItemId={props.state.selectedItemId}
-                    selectedFolder={browser.selectedFolder}
-                    selectItem$={props.selectItem$}
-                    selectFolder$={selectFolder$}
-                    key={node.path}
-                  />
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      </section>
-      <SubtitleCard
-        items={props.state.items}
+      <div class="library-tabs" role="tablist" aria-label="Media categories">
+        {CATEGORY_TABS.map((tab) => {
+          const hasRoots = libraryRoots.some(
+            (root) => root.category === tab.id,
+          );
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeCategory === tab.id}
+              class={{
+                "library-tab": true,
+                active: activeCategory === tab.id,
+                disabled: !hasRoots,
+              }}
+              disabled={!hasRoots}
+              onClick$={() => props.loadCategoryItems$(tab.id)}
+            >
+              <Icon name={tab.icon} size={17} />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+      <LibraryPane
+        title="Personal"
+        subtitle="No personal media files found"
+        browser={personal}
+        items={personalItems}
         selectedItemId={props.state.selectedItemId}
+        selectItem$={props.selectItem$}
+        selectFolder$={selectPersonalFolder$}
       />
-      {(selectedItem || browser.selectedFolder) && (
+      <LibraryPane
+        title="Shared"
+        subtitle="No shared media files found"
+        browser={shared}
+        items={sharedItems}
+        selectedItemId={props.state.selectedItemId}
+        selectItem$={props.selectItem$}
+        selectFolder$={selectSharedFolder$}
+      />
+      {(selectedItem || activeFolder) && (
         <div class="root-picker-image">
           <MediaImage
             imageId={artworkCandidateId(
               props.state.items,
               props.state.selectedItemId,
-              browser.selectedFolder,
+              activeFolder,
             )}
             title={imageTitle}
           />
         </div>
       )}
-      {props.state.session?.canEdit && props.state.selectedItemId && (
+      {props.state.selectedItemId && (
         <ItemEditor
           state={props.state}
-          selected={selected}
           previewRename$={props.previewRename$}
           confirmRename$={props.confirmRename$}
         />
@@ -2024,7 +2045,15 @@ const SubtitleView = component$<{
   );
 });
 
-type EditorTab = "metadata" | "rename";
+type EditorTab = "metadata" | "rename" | "subtitles";
+
+type MetadataSection = "basics" | "people" | "advanced";
+
+const METADATA_SECTIONS: Array<{ id: MetadataSection; label: string }> = [
+  { id: "basics", label: "Basics" },
+  { id: "people", label: "People" },
+  { id: "advanced", label: "Advanced" },
+];
 
 interface MetadataEditorState {
   itemId: string;
@@ -2066,11 +2095,17 @@ interface MetadataEditorState {
 
 const ItemEditor = component$<{
   state: DashboardState;
-  selected?: MediaRoot;
   previewRename$: QRL<() => Promise<void>>;
   confirmRename$: QRL<() => Promise<void>>;
 }>((props) => {
   const tab = useSignal<EditorTab>("metadata");
+  const section = useSignal<MetadataSection>("basics");
+  const selectedItem = props.state.items.find(
+    (item) => item.id === props.state.selectedItemId,
+  );
+  const selectedRoot = props.state.roots.find(
+    (root) => root.id === selectedItem?.rootId,
+  );
   const musicbrainzIntegration = props.state.status?.integrations.find(
     (integration) => integration.id === "musicbrainz",
   );
@@ -2125,6 +2160,7 @@ const ItemEditor = component$<{
     const itemId = track(() => props.state.selectedItemId);
     if (!itemId) return;
     tab.value = "metadata";
+    section.value = "basics";
     const item = props.state.items.find((candidate) => candidate.id === itemId);
     metadata.itemId = itemId;
     metadata.preview = undefined;
@@ -2347,6 +2383,16 @@ const ItemEditor = component$<{
             <Icon name="scan" size={16} />
             Rename
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab.value === "subtitles"}
+            class={{ "editor-tab": true, active: tab.value === "subtitles" }}
+            onClick$={() => (tab.value = "subtitles")}
+          >
+            <Icon name="captions" size={16} />
+            Subtitles
+          </button>
         </div>
         <button
           class="close-button"
@@ -2489,203 +2535,248 @@ const ItemEditor = component$<{
               </div>
             </section>
           )}
-          <div class="metadata-form editor-metadata-form">
-            <label>
-              <span>Media type</span>
-              <select
-                value={metadata.mediaType}
-                onChange$={(_, select) => (metadata.mediaType = select.value)}
+          <div
+            class="metadata-section-tabs"
+            role="tablist"
+            aria-label="Metadata fields"
+          >
+            {METADATA_SECTIONS.map((item) => (
+              <button
+                type="button"
+                role="tab"
+                key={item.id}
+                aria-selected={section.value === item.id}
+                class={{
+                  "metadata-section-tab": true,
+                  active: section.value === item.id,
+                }}
+                onClick$={() => (section.value = item.id)}
               >
-                <option value="movie">Movie</option>
-                <option value="episode">TV episode</option>
-                <option value="music">Music</option>
-                <option value="audiobook">Audiobook</option>
-                <option value="book">Book</option>
-              </select>
-            </label>
-            <label class="title-input">
-              <span>Title</span>
-              <input
-                value={metadata.title}
-                maxLength={500}
-                onInput$={(_, input) => (metadata.title = input.value)}
-              />
-            </label>
-            <label>
-              <span>
-                Year <small>omit when unknown</small>
-              </span>
-              <input
-                value={metadata.year}
-                inputMode="numeric"
-                maxLength={4}
-                placeholder="Unknown"
-                onInput$={(_, input) =>
-                  (metadata.year = input.value.replace(/\D/g, "").slice(0, 4))
-                }
-              />
-            </label>
-            {metadata.mediaType === "episode" && (
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <div class="metadata-form editor-metadata-form">
+            {section.value === "basics" && (
               <>
                 <label>
-                  <span>Season</span>
+                  <span>Media type</span>
+                  <select
+                    value={metadata.mediaType}
+                    onChange$={(_, select) =>
+                      (metadata.mediaType = select.value)
+                    }
+                  >
+                    <option value="movie">Movie</option>
+                    <option value="episode">TV episode</option>
+                    <option value="music">Music</option>
+                    <option value="audiobook">Audiobook</option>
+                    <option value="book">Book</option>
+                  </select>
+                </label>
+                <label class="title-input">
+                  <span>Title</span>
                   <input
-                    value={metadata.season}
+                    value={metadata.title}
+                    maxLength={500}
+                    onInput$={(_, input) => (metadata.title = input.value)}
+                  />
+                </label>
+                <label>
+                  <span>
+                    Year <small>omit when unknown</small>
+                  </span>
+                  <input
+                    value={metadata.year}
                     inputMode="numeric"
+                    maxLength={4}
+                    placeholder="Unknown"
                     onInput$={(_, input) =>
-                      (metadata.season = numericValue(input.value, 4))
+                      (metadata.year = input.value
+                        .replace(/\D/g, "")
+                        .slice(0, 4))
+                    }
+                  />
+                </label>
+                {metadata.mediaType === "episode" && (
+                  <>
+                    <label>
+                      <span>Season</span>
+                      <input
+                        value={metadata.season}
+                        inputMode="numeric"
+                        onInput$={(_, input) =>
+                          (metadata.season = numericValue(input.value, 4))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Episode</span>
+                      <input
+                        value={metadata.episode}
+                        inputMode="numeric"
+                        onInput$={(_, input) =>
+                          (metadata.episode = numericValue(input.value, 5))
+                        }
+                      />
+                    </label>
+                    <label class="title-input">
+                      <span>Episode title</span>
+                      <input
+                        value={metadata.episodeTitle}
+                        maxLength={500}
+                        onInput$={(_, input) =>
+                          (metadata.episodeTitle = input.value)
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+                <label>
+                  <span>Language code</span>
+                  <input
+                    value={metadata.language}
+                    maxLength={15}
+                    onInput$={(_, input) =>
+                      (metadata.language = input.value
+                        .toLowerCase()
+                        .replace(/[^a-z0-9-]/g, ""))
                     }
                   />
                 </label>
                 <label>
-                  <span>Episode</span>
+                  <span>
+                    Genres <small>comma-separated</small>
+                  </span>
                   <input
-                    value={metadata.episode}
-                    inputMode="numeric"
-                    onInput$={(_, input) =>
-                      (metadata.episode = numericValue(input.value, 5))
-                    }
+                    value={metadata.genres}
+                    onInput$={(_, input) => (metadata.genres = input.value)}
+                  />
+                </label>
+              </>
+            )}
+            {section.value === "people" && (
+              <>
+                <label>
+                  <span>
+                    Authors / artists <small>comma-separated</small>
+                  </span>
+                  <input
+                    value={metadata.authors}
+                    onInput$={(_, input) => (metadata.authors = input.value)}
+                  />
+                </label>
+                <label>
+                  <span>
+                    Narrators <small>comma-separated</small>
+                  </span>
+                  <input
+                    value={metadata.narrators}
+                    onInput$={(_, input) => (metadata.narrators = input.value)}
                   />
                 </label>
                 <label class="title-input">
-                  <span>Episode title</span>
+                  <span>
+                    Writers <small>comma-separated</small>
+                  </span>
                   <input
-                    value={metadata.episodeTitle}
-                    maxLength={500}
+                    value={metadata.writers}
+                    onInput$={(_, input) => (metadata.writers = input.value)}
+                  />
+                </label>
+                <label>
+                  <span>Series</span>
+                  <input
+                    value={metadata.series}
+                    onInput$={(_, input) => (metadata.series = input.value)}
+                  />
+                </label>
+                <label>
+                  <span>Volume</span>
+                  <input
+                    value={metadata.volumeNumber}
                     onInput$={(_, input) =>
-                      (metadata.episodeTitle = input.value)
+                      (metadata.volumeNumber = input.value)
                     }
                   />
                 </label>
               </>
             )}
-            <label>
-              <span>
-                Authors / artists <small>comma-separated</small>
-              </span>
-              <input
-                value={metadata.authors}
-                onInput$={(_, input) => (metadata.authors = input.value)}
-              />
-            </label>
-            <label>
-              <span>
-                Narrators <small>comma-separated</small>
-              </span>
-              <input
-                value={metadata.narrators}
-                onInput$={(_, input) => (metadata.narrators = input.value)}
-              />
-            </label>
-            <label>
-              <span>Series</span>
-              <input
-                value={metadata.series}
-                onInput$={(_, input) => (metadata.series = input.value)}
-              />
-            </label>
-            <label>
-              <span>Volume</span>
-              <input
-                value={metadata.volumeNumber}
-                onInput$={(_, input) => (metadata.volumeNumber = input.value)}
-              />
-            </label>
-            <label>
-              <span>Publisher / studio</span>
-              <input
-                value={metadata.publisher}
-                onInput$={(_, input) => (metadata.publisher = input.value)}
-              />
-            </label>
-            <label>
-              <span>Premiere date</span>
-              <input
-                type="date"
-                value={metadata.premiereDate}
-                onInput$={(_, input) => (metadata.premiereDate = input.value)}
-              />
-            </label>
-            <label>
-              <span>
-                Runtime <small>minutes</small>
-              </span>
-              <input
-                value={metadata.runtimeMinutes}
-                inputMode="numeric"
-                onInput$={(_, input) =>
-                  (metadata.runtimeMinutes = numericValue(input.value, 6))
-                }
-              />
-            </label>
-            <label>
-              <span>Official rating</span>
-              <input
-                value={metadata.officialRating}
-                maxLength={64}
-                onInput$={(_, input) => (metadata.officialRating = input.value)}
-              />
-            </label>
-            <label>
-              <span>
-                Community rating <small>0–10</small>
-              </span>
-              <input
-                value={metadata.communityRating}
-                inputMode="decimal"
-                onInput$={(_, input) =>
-                  (metadata.communityRating = input.value
-                    .replace(/[^0-9.]/g, "")
-                    .slice(0, 5))
-                }
-              />
-            </label>
-            <label class="title-input">
-              <span>
-                Writers <small>comma-separated</small>
-              </span>
-              <input
-                value={metadata.writers}
-                onInput$={(_, input) => (metadata.writers = input.value)}
-              />
-            </label>
-            <label>
-              <span>ISBN</span>
-              <input
-                value={metadata.isbn}
-                onInput$={(_, input) => (metadata.isbn = input.value)}
-              />
-            </label>
-            <label>
-              <span>Language code</span>
-              <input
-                value={metadata.language}
-                maxLength={15}
-                onInput$={(_, input) =>
-                  (metadata.language = input.value
-                    .toLowerCase()
-                    .replace(/[^a-z0-9-]/g, ""))
-                }
-              />
-            </label>
-            <label>
-              <span>
-                Genres <small>comma-separated</small>
-              </span>
-              <input
-                value={metadata.genres}
-                onInput$={(_, input) => (metadata.genres = input.value)}
-              />
-            </label>
-            <label class="description-input">
-              <span>Description</span>
-              <textarea
-                value={metadata.description}
-                maxLength={20000}
-                rows={5}
-                onInput$={(_, input) => (metadata.description = input.value)}
-              />
-            </label>
+            {section.value === "advanced" && (
+              <>
+                <label>
+                  <span>Publisher / studio</span>
+                  <input
+                    value={metadata.publisher}
+                    onInput$={(_, input) => (metadata.publisher = input.value)}
+                  />
+                </label>
+                <label>
+                  <span>Premiere date</span>
+                  <input
+                    type="date"
+                    value={metadata.premiereDate}
+                    onInput$={(_, input) =>
+                      (metadata.premiereDate = input.value)
+                    }
+                  />
+                </label>
+                <label>
+                  <span>
+                    Runtime <small>minutes</small>
+                  </span>
+                  <input
+                    value={metadata.runtimeMinutes}
+                    inputMode="numeric"
+                    onInput$={(_, input) =>
+                      (metadata.runtimeMinutes = numericValue(input.value, 6))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Official rating</span>
+                  <input
+                    value={metadata.officialRating}
+                    maxLength={64}
+                    onInput$={(_, input) =>
+                      (metadata.officialRating = input.value)
+                    }
+                  />
+                </label>
+                <label>
+                  <span>
+                    Community rating <small>0–10</small>
+                  </span>
+                  <input
+                    value={metadata.communityRating}
+                    inputMode="decimal"
+                    onInput$={(_, input) =>
+                      (metadata.communityRating = input.value
+                        .replace(/[^0-9.]/g, "")
+                        .slice(0, 5))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>ISBN</span>
+                  <input
+                    value={metadata.isbn}
+                    onInput$={(_, input) => (metadata.isbn = input.value)}
+                  />
+                </label>
+                <label class="description-input">
+                  <span>Description</span>
+                  <textarea
+                    value={metadata.description}
+                    maxLength={20000}
+                    rows={5}
+                    onInput$={(_, input) =>
+                      (metadata.description = input.value)
+                    }
+                  />
+                </label>
+              </>
+            )}
           </div>
           <div class="metadata-actions">
             <span>
@@ -2754,6 +2845,11 @@ const ItemEditor = component$<{
             </div>
           )}
         </>
+      ) : tab.value === "subtitles" ? (
+        <SubtitleCard
+          items={props.state.items}
+          selectedItemId={props.state.selectedItemId}
+        />
       ) : (
         <div class="rename-fields">
           <label class="profile-field">
@@ -2765,7 +2861,7 @@ const ItemEditor = component$<{
                 props.state.preview = undefined;
               }}
             >
-              {profilesForCategory(props.selected?.category).map((profile) => (
+              {profilesForCategory(selectedRoot?.category).map((profile) => (
                 <option value={profile.id} key={profile.id}>
                   {profile.label}
                 </option>

@@ -7,7 +7,7 @@ const tokenClass = (token: string) => {
   if (token === '\\') {
     return 'syntax-continuation';
   }
-  if (/^(sshfs|ssh-keygen|mkdir|chmod|cat|net|umount|fusermount|systemctl|launchctl|New-Item|Get-Content|Out-Null)$/.test(token)) {
+  if (/^(sshfs|ssh-keygen|mkdir|chmod|cat|net|umount|fusermount|systemctl|launchctl|New-Item|Get-Content|Out-Null|sudo|ln|sv|xbps-install)$/.test(token)) {
     return 'syntax-command';
   }
   if (/^(-[A-Za-z0-9]+|\/[A-Za-z]+:|-[A-Za-z0-9]+)$/.test(token) || token.startsWith('-o')) {

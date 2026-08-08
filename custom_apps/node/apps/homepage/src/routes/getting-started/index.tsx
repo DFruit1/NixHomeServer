@@ -1,6 +1,7 @@
 import { $, component$, useContext, useStore, useVisibleTask$, type JSXOutput } from '@builder.io/qwik';
 import { Link, useLocation } from '@builder.io/qwik-city';
 import { CredentialBackupGuide } from '../../components/CredentialBackupGuide.js';
+import { ExplainMore } from '../../components/ExplainMore.js';
 import { SftpSetup } from '../../components/SftpSetup.js';
 import { HomepageContext } from '../../shared/homepage-context.js';
 import type { ServiceCard } from '../../shared/types.js';
@@ -15,6 +16,19 @@ const serviceStatus = (service: ServiceCard | undefined): SetupStatus => {
     return 'unavailable';
   }
   return service.enabled ? 'available' : 'unavailable';
+};
+
+const serviceSetupLabel = (service: ServiceCard): string => {
+  switch (service.id) {
+    case 'passwords':
+      return 'Open Passwords and register with your email, or sign in with your existing master password';
+    case 'backups':
+      return 'Open Local Backups and sign in with the Kopia password from an admin';
+    case 'monitor':
+      return 'Open Monitor and sign in with the Beszel login from an admin';
+    default:
+      return `Open ${service.name} once to finish setup with your Kanidm sign-in`;
+  }
 };
 
 export default component$(() => {
@@ -108,7 +122,7 @@ export default component$(() => {
 
   const serviceSetupItems = enabledServices.map((service) => ({
     id: `service-opened-${service.id}`,
-    label: `Open ${service.name} and complete its first-time sign-in`,
+    label: serviceSetupLabel(service),
     status: manualChecks[`service-opened-${service.id}`] ? 'manual' as const : 'pending' as const,
     manual: true,
   }));
@@ -278,6 +292,21 @@ export default component$(() => {
           <aside class="guide-callout neutral"><strong>Choose one.</strong> Bitwarden works across phones and computers and can connect to the server's Passwords service. KeePassXC keeps a local encrypted vault that you back up yourself.</aside>
         </>
       ),
+      explain: {
+        plain: (
+          <>
+            <p>A password manager keeps all of your passwords, recovery codes, and app-specific logins in one locked place, protected by a single master password that only you know.</p>
+            <p>It stores a copy on your own devices, so you can still read your logins even if this server or its network goes offline. The later steps create logins — your sign-in, app passwords, recovery codes — and having a vault ready now gives each one a safe place to go.</p>
+          </>
+        ),
+        technical: (
+          <>
+            <p>This server's Passwords service is Vaultwarden, a Bitwarden-compatible server. A local KeePassXC database is the no-server alternative.</p>
+            <p>Vaultwarden is deliberately kept separate from the Kanidm SSO directory. That separation reduces the chance of accidental password access on an open desktop or phone, and your passwords stay reachable even if an issue with Kanidm arises. It also lets us set up passwords during initial bootstrapping of the server, before Kanidm admins and users have been created.</p>
+            <p>Vaults are encrypted end-to-end: the server never sees your master password, so a server compromise does not expose vault contents.</p>
+          </>
+        ),
+      },
     },
     {
       id: 'account',
@@ -296,6 +325,22 @@ export default component$(() => {
           <aside class="guide-callout neutral"><strong>Use a trusted network path.</strong> Open private services only on your home network or through NetBird. {serverLanHost ? <>If a service doesn't work at home, tell the admin you're reaching the server at <strong>{serverLanHost}</strong>.</> : "If a service doesn't work, tell the admin which network you're using."} Never bypass certificate warnings.</aside>
         </>
       ),
+      explain: {
+        plain: (
+          <>
+            <p>Kanidm is the single sign-in used by Homepage and most services. Activating your account makes it secure and verified, so every app knows it is really you.</p>
+            <p>Adding a passkey or authenticator as a second sign-in method means that even if someone gets your password, they still cannot get in without one of your devices. A quick sign-out and sign-in test confirms everything works before you depend on it.</p>
+          </>
+        ),
+        technical: (
+          <>
+            <p>Kanidm is the identity provider (IdP); Homepage and the OAuth2-protected services trust it, so one account covers the whole surface.</p>
+            <p>The one-time enrollment link is single-use and expires after one hour. That prevents a stale link from being replayed to take over an account; if it expires, an admin must issue a new one.</p>
+            <p>Credential policy favours passkeys (WebAuthn) as a phishing-resistant second factor over reusable codes. Recovery codes give you a way back in if you lose the device holding your passkey.</p>
+            <p>Account group memberships determine which apps appear on your Services page, and a fresh sign-in refreshes those claims, so group changes take effect after the next login.</p>
+          </>
+        ),
+      },
     },
     {
       id: 'recovery',
@@ -349,6 +394,22 @@ export default component$(() => {
           <aside class="guide-callout neutral">Store recovery codes in a second secure location that does not depend on this server. Save app-specific passwords separately from your Kanidm password.</aside>
         </>
       ),
+      explain: {
+        plain: (
+          <>
+            <p>This step records what you need to get back into your account if a device is lost, broken, or the server is offline.</p>
+            <p>Save your username and sign-in address, write down which devices hold your passkeys or authenticator, and keep a backup of your password vault somewhere that does not depend on this server — like a spare key kept away from the lock.</p>
+          </>
+        ),
+        technical: (
+          <>
+            <p>Kanidm recovery relies on registered credentials (passkeys or authenticator) and the account recovery codes. If all of those are lost, only an admin can reset the account, so recording the devices and the sign-in address matters.</p>
+            <p>The Vaultwarden master password can never be reset by anyone — the vault is encrypted end-to-end and the server never sees the master password. A personal export kept off-server is the only safety net for vault contents, which is why this step includes a recovery backup.</p>
+            <p>Local Backups (Kopia) and Monitor (Beszel) use their own credentials, so a Kanidm compromise does not extend to encrypted backups or monitoring logins.</p>
+            <p>Keep recovery codes in a second location that does not depend on this server, and save app-specific passwords separately from your Kanidm password.</p>
+          </>
+        ),
+      },
     },
     {
       id: 'services',
@@ -358,7 +419,7 @@ export default component$(() => {
         <>
           <span class="eyebrow">Core services</span>
           <h1>Open your services</h1>
-          <p class="step-lead">The Services page lists {enabledServices.length} app{enabledServices.length === 1 ? '' : 's'} assigned to your account. Open each service once and tick it off below.</p>
+          <p class="step-lead">The Services page lists {enabledServices.length} app{enabledServices.length === 1 ? '' : 's'} assigned to your account. Open each service once and tick it off below. Most use the Kanidm sign-in you just set up; Passwords and the other separately noted apps have their own login.</p>
           {enabledServices.length > 0 && (
             <div class="available-service-list" aria-label="Available services">
               {enabledServices.map((service) => (
@@ -374,6 +435,11 @@ export default component$(() => {
           {(documentsStatus === 'available' || booksStatus === 'available') && (
             <aside class="guide-callout neutral">
               <strong>Some app accounts are created on first sign-in.</strong> {documentsStatus === 'available' && 'Documents'}{documentsStatus === 'available' && booksStatus === 'available' && ' and '}{booksStatus === 'available' && 'Books'} may need a moment to create a local profile. Try once before reporting issues.
+            </aside>
+          )}
+          {passwordsStatus === 'available' && (
+            <aside class="guide-callout">
+              <strong>Passwords is separate from Kanidm.</strong> It uses its own vault and master password, not your Kanidm password. On the first visit, register with your local account email. If that email is already registered, sign in with the Vaultwarden master password instead — don't create a second vault. An admin can't recover a lost master password.
             </aside>
           )}
           {backupsStatus === 'available' && (
@@ -394,6 +460,22 @@ export default component$(() => {
           </div>
         </>
       ),
+      explain: {
+        plain: (
+          <>
+            <p>This step opens every app assigned to your account once, so first-time setup happens and you can confirm each one works for you.</p>
+            <p>Some apps create your local profile the first time you sign in, so give them a moment before reporting a problem.</p>
+          </>
+        ),
+        technical: (
+          <>
+            <p>Apps sit behind the auth gateway and reuse the Kanidm session via OAuth2/OIDC, so you do not manage separate credentials for each service. Passwords (Vaultwarden) is the deliberate exception: it is not behind the gateway, so its self-service vault and master password stay reachable independently of Kanidm.</p>
+            <p>Some apps (Documents, Books) provision a local profile on first successful sign-in; a blank or slow first load is expected behaviour.</p>
+            <p>Backups (Kopia) and Monitor (Beszel) have two sign-in gates: a Kanidm group check, then an app-level credential. A failure at the second gate is not fixed by resetting Kanidm.</p>
+            <p>If access was just granted, sign out and back in to refresh the session's group claims before asking an admin to investigate.</p>
+          </>
+        ),
+      },
     },
     {
       id: 'uploads',
@@ -430,6 +512,22 @@ export default component$(() => {
           )}
         </>
       ),
+      explain: {
+        plain: (
+          <>
+            <p>This step moves one small test file to the server so you can see exactly where it lands and confirm everything works before you move the rest of your files.</p>
+            <p>Follow the Detailed Guide for the correct destination folder so your files end up where you expect them to be.</p>
+          </>
+        ),
+        technical: (
+          <>
+            <p>Two separate transfer paths exist: the Files web app (Filestash) for small in-browser uploads, and SFTP/SSHFS for large or regular transfers.</p>
+            <p>SFTP authenticates with a device key and is only exposed on the home network, so it is not reachable from outside your LAN.</p>
+            <p>Destination folders map to specific app import directories (for example the photo library or audiobooks library). Uploading the same file into multiple folders creates duplicates, because nothing deduplicates across destinations.</p>
+            <p>Browser Files and SFTP are separate permissions — having one does not imply the other.</p>
+          </>
+        ),
+      },
     },
     {
       id: 'devices',
@@ -447,6 +545,21 @@ export default component$(() => {
           <aside class="guide-callout neutral">Ask an admin to enrol the device after installation. Never expose a private service directly, use a public share hostname as an app login, or bypass a certificate warning.</aside>
         </>
       ),
+      explain: {
+        plain: (
+          <>
+            <p>Skip this step if you only use the server at home. Otherwise, NetBird connects your devices to the server through a private, encrypted tunnel, so you can use it from anywhere without opening it to the public internet.</p>
+            <p>An admin enrols each device after you install it, which keeps device access controlled.</p>
+          </>
+        ),
+        technical: (
+          <>
+            <p>NetBird builds a private WireGuard-based mesh overlay; only enrolled devices can resolve and reach the private service hostnames. This keeps private endpoints off the public internet.</p>
+            <p>The public edge (Caddy/Cloudflare) only publishes the approved public share hostnames, so public exposure is limited by design.</p>
+            <p>Never expose a private service directly or bypass a certificate warning — the threat model depends on private endpoints staying off the public internet. Enrolment is an admin action so device join is deliberate and auditable.</p>
+          </>
+        ),
+      },
     },
     {
       id: 'finish',
@@ -525,8 +638,23 @@ export default component$(() => {
           </div>
         </>
       ),
+      explain: {
+        plain: (
+          <>
+            <p>This last step connects your phone and media apps to the server: photo backup, video watching, books, audiobooks, and offline media sync. Only do the ones you will actually use.</p>
+          </>
+        ),
+        technical: (
+          <>
+            <p>Each optional client connects over the private network or the app's assigned hostname. Where supported, apps reuse the Kanidm session for sign-in.</p>
+            <p>Photos (Immich) backs up from your phone; Videos (Jellyfin) uses seeded household accounts; Books (Inkita) and Audiobooks (Lissen or Audiobookshelf) attach to their libraries.</p>
+            <p>Jellyfin supports Quick Connect to avoid sharing a password; otherwise the bootstrap password should be changed on first sign-in and saved in your password manager.</p>
+            <p>Offline Media (Syncthing-Fork) replicates folders as Receive Only to mirror media onto the device for offline use; iPhone and iPad are not supported.</p>
+          </>
+        ),
+      },
     },
-  ] satisfies { id: GettingStartedStepId; label: string; status: SetupStatus; content: JSXOutput }[];
+  ] satisfies { id: GettingStartedStepId; label: string; status: SetupStatus; content: JSXOutput; explain: { plain: JSXOutput; technical: JSXOutput } }[];
 
   const activeStepIndex = steps.findIndex((step) => step.id === activeStepId);
   const activeStep = steps[activeStepIndex] ?? steps[0];
@@ -567,9 +695,10 @@ export default component$(() => {
 
       <article class="getting-started-step">
         {activeStep.content}
+        <ExplainMore title={activeStep.label} plain={activeStep.explain.plain} technical={activeStep.explain.technical} />
         <nav class="step-pagination" aria-label="Guide pagination">
           {previousStep ? <Link class="secondary-link" href={`/getting-started?step=${previousStep.id}#guide`}>&larr; {previousStep.label}</Link> : <span />}
-          {nextStep && <Link class="primary-link" href={`/getting-started?step=${nextStep.id}#guide`}>{nextStep.label} &rarr;</Link>}
+          {nextStep && <Link class="next-step-link" href={`/getting-started?step=${nextStep.id}#guide`}>Next Step: {nextStep.label} &rarr;</Link>}
         </nav>
       </article>
     </section>

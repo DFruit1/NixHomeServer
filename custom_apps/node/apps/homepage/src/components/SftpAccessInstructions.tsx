@@ -1,4 +1,5 @@
-import { component$ } from '@builder.io/qwik';
+import { component$, useVisibleTask$ } from '@builder.io/qwik';
+import { detectClientOs } from '../shared/ui-constants.js';
 import { SftpAccessDetails } from './SftpAccessDetails.js';
 
 export const SftpAccessInstructions = component$(({ username, serverHost, port }: { username: string; serverHost: string; port: number }) => {
@@ -7,6 +8,12 @@ export const SftpAccessInstructions = component$(({ username, serverHost, port }
     macos: 'sftp-access-macos',
     linux: 'sftp-access-linux',
   } as const;
+
+  useVisibleTask$(() => {
+    const detected = detectClientOs();
+    const input = document.getElementById(osRadio[detected]) as HTMLInputElement | null;
+    if (input) input.checked = true;
+  });
 
   return (
     <div class="sftp-access-panel sftp-os-card sftp-access-card">
@@ -25,13 +32,13 @@ export const SftpAccessInstructions = component$(({ username, serverHost, port }
         </label>
       </div>
       <div class="os-panel windows">
-        <SftpAccessDetails os="windows" username={username} serverHost={serverHost} port={port} />
+        <SftpAccessDetails os="windows" username={username} serverHost={serverHost} port={port} radioIdPrefix="sftp-access" />
       </div>
       <div class="os-panel macos">
-        <SftpAccessDetails os="macos" username={username} serverHost={serverHost} port={port} />
+        <SftpAccessDetails os="macos" username={username} serverHost={serverHost} port={port} radioIdPrefix="sftp-access" />
       </div>
       <div class="os-panel linux">
-        <SftpAccessDetails os="linux" username={username} serverHost={serverHost} port={port} />
+        <SftpAccessDetails os="linux" username={username} serverHost={serverHost} port={port} radioIdPrefix="sftp-access" />
       </div>
     </div>
   );

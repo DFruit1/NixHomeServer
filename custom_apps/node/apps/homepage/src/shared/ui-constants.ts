@@ -1,3 +1,5 @@
+import type { SftpOs } from './ui-types.js';
+
 export const serviceSymbols: Record<string, string> = {
   photos: 'P',
   documents: 'D',
@@ -184,6 +186,22 @@ export const sftpOsLabels = {
   linux: 'Linux',
 };
 
+export const detectClientOs = (): SftpOs => {
+  if (typeof navigator === 'undefined') {
+    return 'linux';
+  }
+  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform
+    ?? navigator.platform
+    ?? '';
+  const platformLower = platform.toLowerCase();
+  if (platformLower.includes('win')) return 'windows';
+  if (platformLower.includes('mac')) return 'macos';
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('windows')) return 'windows';
+  if (ua.includes('mac os x') || ua.includes('macintosh')) return 'macos';
+  return 'linux';
+};
+
 export const sftpKeygenCommands = {
   windows: 'New-Item -ItemType Directory -Force -Path $env:USERPROFILE\\.ssh | Out-Null; ssh-keygen -t rsa -b 4096 -f $env:USERPROFILE\\.ssh\\id_rsa; Get-Content $env:USERPROFILE\\.ssh\\id_rsa.pub',
   macos: 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -t ed25519 -a 64 -f ~/.ssh/nixhomeserver-files && cat ~/.ssh/nixhomeserver-files.pub',
@@ -262,6 +280,16 @@ WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
 systemctl --user enable --now nixhomeserver-files.service`,
+  linuxRunit: `sshfs_bin="$(command -v sshfs)" || { echo "sshfs is not installed or not on PATH" >&2; exit 1; }
+case "$sshfs_bin" in /*) ;; *) echo "sshfs did not resolve to an absolute path" >&2; exit 1;; esac
+sudo xbps-install -S turnstile
+sudo ln -sf /etc/sv/turnstiled /var/service/turnstiled
+mkdir -p ~/.config/service/nixhomeserver-files ~/NixHomeServerFiles && cat > ~/.config/service/nixhomeserver-files/run <<RUN
+#!/bin/sh
+exec "$sshfs_bin" -f -p {port} -o IdentityFile="$HOME/.ssh/nixhomeserver-files" -o IdentitiesOnly=yes -o reconnect -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o umask=0007 {username}@{host}:/ "$HOME/NixHomeServerFiles"
+RUN
+chmod +x ~/.config/service/nixhomeserver-files/run
+SVDIR=~/.config/service sv up nixhomeserver-files`,
 };
 
 export const sshfsUnmountCommands = {

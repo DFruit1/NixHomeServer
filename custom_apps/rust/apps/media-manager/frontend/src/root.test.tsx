@@ -158,7 +158,7 @@ describe("Media Manager navigation", () => {
     expect(screen.textContent).toContain("Movie.mkv");
   });
 
-  it("exposes every library choice as a native selected-route link", async () => {
+  it("exposes every category as a selectable library tab", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -184,7 +184,7 @@ describe("Media Manager navigation", () => {
                     available: true,
                   },
                 ]
-              : path.includes("/items?rootId=shared-videos")
+              : path.includes("/items?rootId=")
                 ? { items: [] }
                 : { available: false, progress: {} };
         return new Response(JSON.stringify(payload));
@@ -194,13 +194,13 @@ describe("Media Manager navigation", () => {
     const { render, screen } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
 
-    const choices = Array.from(screen.querySelectorAll("a.root-choice"));
-    expect(choices.map((choice) => choice.getAttribute("href"))).toEqual([
-      "?view=library&root=shared-videos",
-      "?view=library&root=shared-music",
-    ]);
-    expect(choices[0]?.getAttribute("aria-current")).toBe("true");
-    expect(choices[1]?.getAttribute("aria-current")).toBeNull();
+    const tabs = Array.from(screen.querySelectorAll(".library-tab"));
+    const labels = tabs.map((tab) => tab.textContent?.trim());
+    expect(labels).toEqual(["Videos", "Music", "Audiobooks", "Books"]);
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
+    expect(tabs[2]?.classList.contains("disabled")).toBe(true);
+    expect(tabs[3]?.classList.contains("disabled")).toBe(true);
   });
 });
 
@@ -520,21 +520,21 @@ describe("Media Manager library browser", () => {
     });
   }
 
-  it("groups roots under Shared and Personal headers with short names", async () => {
+  it("splits library content into Personal and Shared panes", async () => {
     vi.stubGlobal("fetch", libraryFetchMock([]));
 
     const { render, screen } = await createDOM();
     await render(<Root initialView="library" initialRootId="shared-videos" />);
 
     const headings = Array.from(
-      screen.querySelectorAll(".root-group-heading"),
+      screen.querySelectorAll(".pane-heading h3"),
     ).map((heading) => heading.textContent);
-    expect(headings).toEqual(["Shared", "Personal"]);
-    const choices = Array.from(
-      screen.querySelectorAll("a.root-choice strong"),
-    ).map((element) => element.textContent);
-    expect(choices).toEqual(["Videos", "Music", "Videos"]);
+    expect(headings).toEqual(["Personal", "Shared"]);
+    expect(
+      screen.querySelectorAll(".catalog-panel").length,
+    ).toBeGreaterThanOrEqual(2);
     expect(screen.textContent).not.toContain("Shared videos");
+    expect(screen.textContent).not.toContain("My videos");
   });
 
   it("starts library content without redundant panel headings", async () => {
@@ -848,9 +848,25 @@ describe("Media Manager library browser", () => {
       );
       return label?.querySelector("input")?.getAttribute("value") ?? null;
     };
-    expect(fieldValue("Authors / artists")).toBe("Nirvana");
+    const sectionTab = (label: string): Element | null =>
+      Array.from(screen.querySelectorAll(".metadata-section-tab")).find(
+        (element) => element.textContent?.trim() === label,
+      ) ?? null;
     expect(fieldValue("Year")).toBe("1991");
     expect(fieldValue("Genres")).toBe("grunge, alternative rock");
+    await userEvent(sectionTab("People"), "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".metadata-section-tab.active")?.textContent,
+      ).toBe("People"),
+    );
+    expect(fieldValue("Authors / artists")).toBe("Nirvana");
+    await userEvent(sectionTab("Advanced"), "click");
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".metadata-section-tab.active")?.textContent,
+      ).toBe("Advanced"),
+    );
     expect(fieldValue("Publisher / studio")).toBe("DGC");
     expect(
       fetchMock.mock.calls.some(

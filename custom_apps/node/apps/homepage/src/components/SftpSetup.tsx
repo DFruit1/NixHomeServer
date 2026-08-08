@@ -1,6 +1,6 @@
-import { $, component$, useSignal } from '@builder.io/qwik';
+import { $, component$, useSignal, useVisibleTask$ } from '@builder.io/qwik';
 import { Link } from '@builder.io/qwik-city';
-import { sftpKeygenCommands, sftpOsLabels } from '../shared/ui-constants.js';
+import { detectClientOs, sftpKeygenCommands, sftpOsLabels } from '../shared/ui-constants.js';
 import type { SftpAccess, SftpKeyResponse } from '../shared/types.js';
 import { CommandSnippet } from './CommandSnippet.js';
 import { SftpAccessDetails } from './SftpAccessDetails.js';
@@ -20,6 +20,18 @@ export const SftpSetup = component$(({
   const keyStatusKind = useSignal<'success' | 'error'>('success');
   const keySubmitting = useSignal(false);
   const keyValue = useSignal('');
+
+  const osRadio = {
+    windows: 'sftp-setup-windows',
+    macos: 'sftp-setup-macos',
+    linux: 'sftp-setup-linux',
+  } as const;
+
+  useVisibleTask$(() => {
+    const detected = detectClientOs();
+    const input = document.getElementById(osRadio[detected]) as HTMLInputElement | null;
+    if (input) input.checked = true;
+  });
 
   const savePublicKey = $(async () => {
     const publicKey = keyValue.value.trim();
@@ -60,17 +72,17 @@ export const SftpSetup = component$(({
       {sftp.accessNotes.map((note) => (
         <aside class="guide-callout neutral" key={note}>{note}</aside>
       ))}
-      <input class="os-radio" id="sftp-setup-windows" name="sftp-setup-os" type="radio" defaultChecked />
-      <input class="os-radio" id="sftp-setup-macos" name="sftp-setup-os" type="radio" />
-      <input class="os-radio" id="sftp-setup-linux" name="sftp-setup-os" type="radio" />
+      <input class="os-radio" id={osRadio.windows} name="sftp-setup-os" type="radio" defaultChecked />
+      <input class="os-radio" id={osRadio.macos} name="sftp-setup-os" type="radio" />
+      <input class="os-radio" id={osRadio.linux} name="sftp-setup-os" type="radio" />
       <div class="os-picker" role="tablist" aria-label="Operating system">
-        <label role="tab" for="sftp-setup-windows">
+        <label role="tab" for={osRadio.windows}>
           Windows
         </label>
-        <label role="tab" for="sftp-setup-macos">
+        <label role="tab" for={osRadio.macos}>
           macOS
         </label>
-        <label role="tab" for="sftp-setup-linux">
+        <label role="tab" for={osRadio.linux}>
           Linux
         </label>
       </div>
@@ -84,7 +96,7 @@ export const SftpSetup = component$(({
         </li>
         <li>
           <h3>Generate an SSH key pair</h3>
-          <p>Choose your OS above and run the matching command on your device. Use a passphrase if you want extra key protection.</p>
+          <p>Choose your OS above and run the matching command on your device. Press Enter to leave the passphrase empty when it asks: this keeps automatic mounts simple, because a passphrase-protected key cannot unlock without an interactive prompt. If you want to prevent someone with access to your device from using the key without permission, keep it in an SSH keyring instead of as a plain file on disk — KeePassXC's SSH Agent or an alternative SSH keyring, such as your operating system's built-in SSH agent or keychain.</p>
           <p class="os-panel windows">SSHFS-Win key mode uses <code>~/.ssh/id_rsa</code>. If that file already exists, stop rather than overwrite it and ask an administrator for help choosing a compatible dedicated key.</p>
           <CommandSnippet class="os-panel windows" command={sftpKeygenCommands.windows} />
           <CommandSnippet class="os-panel macos" command={sftpKeygenCommands.macos} />
@@ -118,13 +130,13 @@ export const SftpSetup = component$(({
           <h3 class="os-panel macos">Mount from {sftpOsLabels.macos}</h3>
           <h3 class="os-panel linux">Mount from {sftpOsLabels.linux}</h3>
           <div class="os-panel windows">
-            <SftpAccessDetails os="windows" username={username} serverHost={sftp.host} port={sftp.port} />
+            <SftpAccessDetails os="windows" username={username} serverHost={sftp.host} port={sftp.port} radioIdPrefix="sftp-setup" />
           </div>
           <div class="os-panel macos">
-            <SftpAccessDetails os="macos" username={username} serverHost={sftp.host} port={sftp.port} />
+            <SftpAccessDetails os="macos" username={username} serverHost={sftp.host} port={sftp.port} radioIdPrefix="sftp-setup" />
           </div>
           <div class="os-panel linux">
-            <SftpAccessDetails os="linux" username={username} serverHost={sftp.host} port={sftp.port} />
+            <SftpAccessDetails os="linux" username={username} serverHost={sftp.host} port={sftp.port} radioIdPrefix="sftp-setup" />
           </div>
           <p class="hint">Make the manual mount work first. Automatic mounts need a device key that can be unlocked without an interactive prompt, normally through the operating system's SSH agent or keychain; keep using the manual command if that is not configured.</p>
         </li>
