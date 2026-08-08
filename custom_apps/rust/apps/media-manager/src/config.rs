@@ -53,10 +53,12 @@ pub struct AppConfig {
     pub jellyfin_metadata_cache_file: Option<PathBuf>,
     pub acoustid_api_key_file: Option<PathBuf>,
     pub fpcalc_path: Option<PathBuf>,
+    pub ffprobe_path: Option<PathBuf>,
     pub musicbrainz_api_base: Option<String>,
     pub acoustid_api_base: Option<String>,
     pub musicbrainz_request_gap_ms: u64,
     pub frontend_dir: Option<PathBuf>,
+    pub files_base_url: Option<String>,
     pub integrations: Vec<IntegrationCapability>,
 }
 
@@ -148,6 +150,7 @@ impl AppConfig {
             acoustid_api_key_file: env::var_os("MEDIA_MANAGER_ACOUSTID_API_KEY_FILE")
                 .map(PathBuf::from),
             fpcalc_path: env::var_os("MEDIA_MANAGER_FPCALC_PATH").map(PathBuf::from),
+            ffprobe_path: env::var_os("MEDIA_MANAGER_FFPROBE").map(PathBuf::from),
             musicbrainz_api_base: optional_env("MEDIA_MANAGER_MUSICBRAINZ_API_BASE"),
             acoustid_api_base: optional_env("MEDIA_MANAGER_ACOUSTID_API_BASE"),
             musicbrainz_request_gap_ms: env_string(
@@ -157,6 +160,7 @@ impl AppConfig {
             .parse::<u64>()
             .map_err(|error| format!("invalid MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS: {error}"))?,
             frontend_dir: env::var_os("MEDIA_MANAGER_FRONTEND_DIR").map(PathBuf::from),
+            files_base_url: optional_env("MEDIA_MANAGER_FILESTASH_BASE_URL"),
             integrations,
         })
     }
@@ -175,10 +179,12 @@ impl AppConfig {
             jellyfin_metadata_cache_file: None,
             acoustid_api_key_file: None,
             fpcalc_path: None,
+            ffprobe_path: None,
             musicbrainz_api_base: None,
             acoustid_api_base: None,
             musicbrainz_request_gap_ms: 0,
             frontend_dir: None,
+            files_base_url: None,
             integrations: Vec::new(),
         }
     }

@@ -129,6 +129,15 @@ interface MediaRoot {
   available: boolean;
 }
 
+interface VideoProbe {
+  fps?: number;
+  width?: number;
+  height?: number;
+  codec?: string;
+  hasEmbeddedSubtitles: boolean;
+  subtitleLanguages: string[];
+}
+
 interface CatalogItem {
   id: string;
   rootId: string;
@@ -136,6 +145,7 @@ interface CatalogItem {
   mediaKind: string;
   sizeBytes: number;
   modifiedNs: number;
+  videoProbe?: VideoProbe | null;
 }
 
 export interface TvEpisodeFields {
@@ -174,6 +184,7 @@ interface Conversion {
   mediaKind?: string;
   percent?: number;
   detail?: string;
+  sourceIso?: string;
 }
 
 interface ConversionEnvelope {
@@ -190,6 +201,8 @@ interface InboxIso {
   volumeId?: string | null;
   sizeBytes: number;
   modifiedNs: number;
+  hasErrorLog?: boolean;
+  outputDir?: string;
 }
 
 interface ConversionInbox {
@@ -197,6 +210,7 @@ interface ConversionInbox {
   pending: InboxIso[];
   processed: InboxIso[];
   failed: InboxIso[];
+  filesBaseUrl?: string;
 }
 
 interface DashboardState {
@@ -1541,12 +1555,13 @@ const TreeBranch = component$<{
 });
 
 const ConversionList = component$<{
-  conversions: Conversion[];
+  conversion: Conversion;
+  queuedEntry: QueuedConversion[];
   expanded?: boolean;
-  queued?: string[];
 }>((props) => {
-  const hasQueued = (props.queued?.length ?? 0) > 0;
-  if (props.conversions.length === 0 && !hasQueued) {
+  const hasQueued = props.queuedEntry.length > 0;
+  const hasActive = !!(props.conversion?.title || props.conversion?.sourceIso);
+  if (!hasActive && !hasQueued) {
     return (
       <EmptyState
         title="No ISO files being converted"
@@ -1554,48 +1569,125 @@ const ConversionList = component$<{
       />
     );
   }
+  const percent = Math.max(
+    0,
+    Math.min(100, props.conversion.percent ?? 0),
+  );
+  const isoName = props.conversion.sourceIso ?? "";
   return (
     <div class={{ "conversion-list": true, expanded: props.expanded }}>
-      {props.conversions.map((conversion, index) => {
-        const percent = Math.max(0, Math.min(100, conversion.percent ?? 0));
-        return (
-          <article class="conversion-card" key={`${conversion.title}-${index}`}>
-            <div class="disc-visual">
-              <span />
-              <span />
+      {props.conversion.title && (
+        <article class="conversion-card">
+          <div class="disc-visual">
+            <span />
+            <span />
+          </div>
+          <div class="conversion-copy">
+            <h4>{props.conversion.title}</h4>
+            <p>Converting {isoName}{" "}
+              {props.conversion.detail
+                ? `— ${props.conversion.detail}`
+                : "— Encoding a Jellyfin-compatible MKV"}
+            </p>
+            <div class="progress-track" aria-label={`${percent}% complete`}>
+              <span style={{ width: `${percent}%` }} />
             </div>
-            <div class="conversion-copy">
-              <h4>{conversion.title ?? "Untitled conversion"}</h4>
-              <p>{conversion.detail ?? "Encoding a Jellyfin-compatible MKV"}</p>
-              <div class="progress-track" aria-label={`${percent}% complete`}>
-                <span style={{ width: `${percent}%` }} />
-              </div>
-              <div class="progress-meta">
-                <span>Converting</span>
-                <strong class="tabular">{percent.toFixed(0)}%</strong>
-              </div>
+            <div class="progress-meta">
+              <span>Converting</span>
+              <strong class="tabular">{percent.toFixed(0)}%</strong>
             </div>
-          </article>
-        );
-      })}
+          </div>
+        </article>
+      )}
       {hasQueued && (
         <div
           class="conversion-queue"
-          aria-label={`${props.queued!.length} DVD discs waiting`}
+          aria-label={`${props.queuedEntry.length} DVD discs waiting`}
         >
           <span class="conversion-queue__heading">
-            In queue ({props.queued!.length})
+            In queue ({props.queuedEntry.length})
           </span>
           <ol class="conversion-queue__list">
-            {props.queued!.map((title, index) => (
-              <li key={`${title}-${index}`}>
+            {props.queuedEntry.map((item, index) => (
+              <li key={`${item.isoName}-${index}`}>
                 <span class="conversion-queue__number">{index + 1}.</span>
-                <span class="conversion-queue__title">{title}</span>
+                <span class="conversion-queue__title" title={item.isoName}>
+                  {item.title}{" "}
+                  <span class="conversion-queue__file">
+                    ({item.isoName})
+                  </span>
+                </span>
               </li>
             ))}
           </ol>
         </div>
       )}
+    </div>
+  );
+});
+
+interface QueuedConversion {
+  title: string;
+  isoName: string;
+}
+
+const LogDialog = component$<{
+  isoName: string;
+  onClose$: QRL<() => void>;
+}>((props) => {
+  const log = useSignal<string>("");
+  const loading = useSignal(true);
+  const error = useSignal("");
+
+  useTask$(() => {
+    const load = async () => {
+      try {
+        log.value = (
+          await api<{ content: string }>(
+            `/conversions/inbox/error?name=${encodeURIComponent(props.isoName)}`,
+          )
+        ).content;
+      } catch (e) {
+        error.value = readableError(e);
+      } finally {
+        loading.value = false;
+      }
+    };
+    void load();
+  });
+
+  return (
+    <div class="dialog-backdrop" onClick$={props.onClose$}>
+      <div
+        class="dialog"
+        role="dialog"
+        aria-label={`Error log for ${props.isoName}`}
+        onClick$={(e) => e.stopPropagation()}
+      >
+        <div class="dialog-header">
+          <h3>Conversion Error Log</h3>
+          <button
+            type="button"
+            class="dialog-close"
+            onClick$={props.onClose$}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="dialog-body">
+          <p class="dialog-iso-name">
+            <strong>{props.isoName}</strong>
+          </p>
+          {loading.value ? (
+            <p class="quiet-copy">Loading log…</p>
+          ) : error.value ? (
+            <p class="message error" role="alert">{error.value}</p>
+          ) : (
+            <pre class="log-content">{log.value}</pre>
+          )}
+        </div>
+      </div>
     </div>
   );
 });
@@ -1607,6 +1699,7 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
       inbox?: ConversionInbox;
       error: string;
     }>({ conversions: props.initial, inbox: undefined, error: "" });
+    const logDialog = useSignal<string>("");
 
     useTask$(({ cleanup }) => {
       let stopped = false;
@@ -1632,14 +1725,72 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
       });
     });
 
-    const current = conv.conversions?.progress.conversions ?? [];
-    const working = current.length > 0;
+    const activeConversions =
+      conv.conversions?.progress.conversions ?? [];
+    const progressQueued = conv.conversions?.progress.queued ?? [];
+    const working = activeConversions.length > 0;
     const inboxReady = conv.inbox?.available ?? false;
     const statusLabel = working ? "Working" : "Idle";
+
+    const inboxPending = conv.inbox?.pending ?? [];
+    const inboxProcessed = conv.inbox?.processed ?? [];
+    const inboxFailed = conv.inbox?.failed ?? [];
+    const filesBaseUrl = conv.inbox?.filesBaseUrl ?? "";
+
+    const pendingMap = new Map<string, InboxIso>();
+    for (const iso of inboxPending) {
+      pendingMap.set(iso.name.replace(/\.iso$/i, ""), iso);
+      pendingMap.set(iso.name, iso);
+    }
+
+    const queuedEntries: QueuedConversion[] = [];
+    const seen = new Set<string>();
+    for (const stem of progressQueued) {
+      if (seen.has(stem)) continue;
+      const cleanStem = stem.replace(/\.iso$/i, "");
+      const match = pendingMap.get(stem) ?? pendingMap.get(cleanStem);
+      if (match) {
+        seen.add(stem);
+        seen.add(cleanStem);
+        seen.add(match.name);
+        seen.add(match.name.replace(/\.iso$/i, ""));
+        queuedEntries.push({
+          title: match.volumeId || cleanStem,
+          isoName: match.name,
+        });
+      } else {
+        seen.add(stem);
+        queuedEntries.push({
+          title: cleanStem,
+          isoName: cleanStem + ".iso",
+        });
+      }
+    }
+    for (const iso of inboxPending) {
+      const stem = iso.name.replace(/\.iso$/i, "");
+      if (!seen.has(stem) && !seen.has(iso.name)) {
+        seen.add(stem);
+        queuedEntries.push({
+          title: iso.volumeId || stem,
+          isoName: iso.name,
+        });
+      }
+    }
+
+    const dvdLink = filesBaseUrl
+      ? `${filesBaseUrl}/files/_Shared/_ISO/_DVDs/`
+      : "";
+
     return (
-      <section class="single-column conversions-layout">
+      <section class="conversions-layout">
+        {logDialog.value && (
+          <LogDialog
+            isoName={logDialog.value}
+            onClose$={() => (logDialog.value = "")}
+          />
+        )}
         {conv.error && (
-          <div class="message error" role="alert">
+          <div class="message error conv-error" role="alert">
             <Icon name="alert" size={18} />
             <span>{conv.error}</span>
             <button type="button" onClick$={() => (conv.error = "")}>
@@ -1647,139 +1798,179 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
             </button>
           </div>
         )}
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <h3>DVD ISO converter</h3>
+        <div class="conv-main">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>DVD ISO converter</h3>
+              </div>
+              <span
+                class={{
+                  "status-badge": true,
+                  live: working,
+                }}
+              >
+                {statusLabel}
+              </span>
             </div>
-            <span
-              class={{
-                "status-badge": true,
-                live: working,
-              }}
-            >
-              {statusLabel}
-            </span>
-          </div>
-          <div class="setup-body">
-            {inboxReady ? (
-              <p class="setup-ready">
-                The converter is watching the shared inbox.
-                {working
-                  ? " An ISO is being converted right now."
-                  : " Drop an ISO in the inbox to start a conversion."}
-              </p>
-            ) : (
-              <p class="setup-missing">
-                No ISO files are queued for conversion at the moment. Copy a DVD
-                ISO into the shared inbox at _Shared/_ISO/_DVDs to start a
-                conversion.
-              </p>
-            )}
-            <ol class="setup-steps">
-              <li>
-                Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
-              </li>
-              <li>
-                Leave the ISO untouched for about one minute so the server picks
-                it up.
-              </li>
-              <li>
-                Finished films appear in the shared video library. Source ISOs
-                move to _Processed, or to _Failed after repeated failures.
-              </li>
-            </ol>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <h3>Active conversions</h3>
+            <div class="setup-body">
+              {inboxReady ? (
+                <p class="setup-ready">
+                  The converter is watching{" "}
+                  {dvdLink ? (
+                    <a
+                      href={dvdLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      the shared inbox
+                    </a>
+                  ) : (
+                    "the shared inbox"
+                  )}
+                  .
+                  {working
+                    ? " An ISO is being converted right now."
+                    : " Drop an ISO in the inbox to start a conversion."}
+                </p>
+              ) : (
+                <p class="setup-missing">
+                  No ISO files are queued for conversion at the moment. Copy a
+                  DVD ISO into the shared inbox at _Shared/_ISO/_DVDs to start a
+                  conversion.
+                </p>
+              )}
+              <ol class="setup-steps">
+                <li>
+                  Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.
+                </li>
+                <li>
+                  Leave the ISO untouched for about one minute so the server
+                  picks it up.
+                </li>
+                <li>
+                  Finished films appear in the shared video library. Source ISOs
+                  move to _Processed, or to _Failed after repeated failures.
+                </li>
+                <li>
+                  ISO files in the queue can be safely renamed or moved, but do
+                  not modify any file that is actively being converted.
+                </li>
+              </ol>
             </div>
-            <span class={{ "status-badge": true, live: working }}>
-              {working ? "Working" : "Idle"}
-            </span>
-          </div>
-          <ConversionList
-            conversions={current}
-            queued={conv.conversions?.progress.queued}
-            expanded
+          </section>
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <h3>Active conversions</h3>
+              </div>
+              <span class={{ "status-badge": true, live: working }}>
+                {working ? "Working" : "Idle"}
+              </span>
+            </div>
+            <ConversionList
+              conversion={activeConversions[0] ?? ({} as Conversion)}
+              queuedEntry={queuedEntries}
+              expanded
+            />
+          </section>
+        </div>
+        <aside class="conv-sidebar">
+          <ProcessedCard
+            isos={inboxProcessed}
+            filesBaseUrl={filesBaseUrl}
           />
-        </section>
-        <section class="panel">
-          <div class="panel-heading">
-            <div>
-              <h3>ISO inbox</h3>
-            </div>
-            <span class={{ "status-badge": true, live: inboxReady }}>
-              {inboxReady
-                ? `${conv.inbox?.pending.length ?? 0} waiting`
-                : "Idle"}
-            </span>
-          </div>
-          {!conv.inbox ? (
-            <p class="quiet-copy">Loading the inbox…</p>
-          ) : !conv.inbox.available ? (
-            <p class="quiet-copy">
-              No ISO files are queued for conversion at the moment.
-            </p>
-          ) : (
-            <div class="inbox-groups">
-              <InboxGroup
-                title="Waiting"
-                detail="ISOs queued for conversion"
-                isos={conv.inbox.pending}
-                empty="No ISOs are waiting."
-              />
-              <InboxGroup
-                title="Processed"
-                detail="Source ISOs of completed conversions"
-                isos={conv.inbox.processed}
-                empty="Nothing has been processed yet."
-              />
-              <InboxGroup
-                title="Failed"
-                detail="ISOs that could not be converted"
-                isos={conv.inbox.failed}
-                empty="No failed conversions."
-              />
-            </div>
-          )}
-        </section>
+          <FailedCard
+            isos={inboxFailed}
+            onShowLog$={(name) => (logDialog.value = name)}
+          />
+        </aside>
       </section>
     );
   },
 );
 
-const InboxGroup = component$<{
-  title: string;
-  detail: string;
+const ProcessedCard = component$<{
   isos: InboxIso[];
-  empty: string;
+  filesBaseUrl: string;
 }>((props) => (
-  <section class="inbox-group">
-    <header>
-      <h4>{props.title}</h4>
-      <small>{props.detail}</small>
-    </header>
-    {props.isos.length === 0 ? (
-      <p class="inbox-empty">{props.empty}</p>
-    ) : (
-      <ul>
-        {props.isos.map((iso) => (
-          <li key={iso.name}>
-            <span class="inbox-iso-name">
-              <strong>{iso.volumeId || iso.name}</strong>
-              {iso.volumeId && <small>{iso.name}</small>}
-            </span>
-            <span class="inbox-iso-meta">
-              <span class="tabular muted">{formatBytes(iso.sizeBytes)}</span>
-              <span class="muted">{formatModified(iso.modifiedNs)}</span>
-            </span>
-          </li>
-        ))}
-      </ul>
-    )}
+  <section class="panel side-panel">
+    <div class="panel-heading">
+      <div>
+        <h3>Processed</h3>
+        <small>Successfully converted ISOs</small>
+      </div>
+    </div>
+    <div class="side-panel-body">
+      {props.isos.length === 0 ? (
+        <p class="quiet-copy">Nothing has been processed yet.</p>
+      ) : (
+        <ul class="side-list">
+          {props.isos.map((iso) => (
+            <li key={iso.name}>
+              <span class="side-item-name">
+                <strong>{iso.volumeId || iso.name}</strong>
+                <small>{iso.name}</small>
+              </span>
+              {iso.outputDir && props.filesBaseUrl ? (
+                <a
+                  class="side-item-link"
+                  href={`${props.filesBaseUrl}/files/_Shared/${iso.outputDir}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="folder" size={12} />&ensp;Open output
+                </a>
+              ) : iso.outputDir ? (
+                <span class="side-item-path">
+                  <Icon name="folder" size={12} />&ensp;
+                  {iso.outputDir}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  </section>
+));
+
+const FailedCard = component$<{
+  isos: InboxIso[];
+  onShowLog$: QRL<(name: string) => void>;
+}>((props) => (
+  <section class="panel side-panel">
+    <div class="panel-heading">
+      <div>
+        <h3>Failed</h3>
+        <small>ISOs that could not be converted</small>
+      </div>
+    </div>
+    <div class="side-panel-body">
+      {props.isos.length === 0 ? (
+        <p class="quiet-copy">No failed conversions.</p>
+      ) : (
+        <ul class="side-list">
+          {props.isos.map((iso) => (
+            <li key={iso.name}>
+              <span class="side-item-name">
+                <strong>{iso.volumeId || iso.name}</strong>
+                <small>{iso.name}</small>
+              </span>
+              {iso.hasErrorLog && (
+                <button
+                  type="button"
+                  class="side-item-log-btn"
+                  onClick$={() => props.onShowLog$(iso.name)}
+                >
+                  Show log
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   </section>
 ));
 
@@ -1798,10 +1989,30 @@ interface SubtitleMatch {
   language: string;
   release: string;
   downloadCount: number;
+  fps?: number;
+  votes?: number;
+  uploadDate?: string;
+  subFormat?: string;
   hearingImpaired: boolean;
   hashMatched: boolean;
   machineTranslated: boolean;
   aiTranslated: boolean;
+  fpsCompatible?: boolean | null;
+}
+
+interface SubtitleCue {
+  index: number;
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
+interface SubtitleContent {
+  provider: string;
+  fileId: number;
+  cues: SubtitleCue[];
+  truncated: boolean;
+  requestId: string;
 }
 
 type MusicLookupMode = "auto" | "fingerprint" | "search";
@@ -1825,14 +2036,75 @@ interface SubtitleState {
   language: string;
   query: string;
   hearingImpaired: boolean;
+  showWithSubtitles: boolean;
+  subtitleStatus: Record<string, "none" | "sidecar" | "embedded" | "both">;
   loadingItems: boolean;
   searching: boolean;
   installing: boolean;
   confirming: boolean;
+  loadingContent: boolean;
   results: SubtitleMatch[];
+  video?: VideoProbe | null;
+  content?: SubtitleContent;
+  contentError: string;
   preview?: MutationPreview;
   error: string;
   notice: string;
+}
+
+type SubtitleStatus = "none" | "sidecar" | "embedded" | "both";
+
+function subtitleStatusMap(
+  items: CatalogItem[],
+): Record<string, SubtitleStatus> {
+  const statuses: Record<string, SubtitleStatus> = {};
+  const subtitleItems = items.filter((item) => item.mediaKind === "subtitle");
+  for (const item of items) {
+    if (item.mediaKind !== "video") continue;
+    const videoPath = item.relativePath;
+    const videoStem = videoPath.replace(/\.[^/.]+$/, "");
+    const hasSidecar = subtitleItems.some((subtitle) => {
+      const subtitleStem = subtitle.relativePath.replace(/\.[^/.]+$/, "");
+      return (
+        subtitleStem === videoStem ||
+        subtitleStem.startsWith(`${videoStem}.`) ||
+        videoStem.startsWith(`${subtitleStem}.`)
+      );
+    });
+    const hasEmbedded = item.videoProbe?.hasEmbeddedSubtitles === true;
+    statuses[videoPath] =
+      hasSidecar && hasEmbedded
+        ? "both"
+        : hasSidecar
+          ? "sidecar"
+          : hasEmbedded
+            ? "embedded"
+            : "none";
+  }
+  return statuses;
+}
+
+function subtitleStatusLabel(status: SubtitleStatus | undefined): string {
+  switch (status) {
+    case "sidecar":
+      return " (has subtitles)";
+    case "embedded":
+      return " (embedded subtitles)";
+    case "both":
+      return " (subtitles + embedded)";
+    default:
+      return "";
+  }
+}
+
+function formatCueTime(milliseconds: number): string {
+  const total = Math.max(0, Math.floor(milliseconds));
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1_000);
+  const millis = total % 1_000;
+  const pad = (value: number, width = 2) => String(value).padStart(width, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)},${pad(millis, 3)}`;
 }
 
 const SubtitleView = component$<{
@@ -1854,11 +2126,16 @@ const SubtitleView = component$<{
     language: "en",
     query: "",
     hearingImpaired: false,
+    showWithSubtitles: false,
+    subtitleStatus: {},
     loadingItems: false,
     searching: false,
     installing: false,
     confirming: false,
+    loadingContent: false,
     results: [],
+    video: undefined,
+    contentError: "",
     error: "",
     notice: "",
   });
@@ -1868,15 +2145,30 @@ const SubtitleView = component$<{
     subtitle.loadingItems = true;
     subtitle.itemId = "";
     subtitle.results = [];
-    subtitle.preview = undefined;
+    subtitle.video = undefined;
+    subtitle.content = undefined;
     subtitle.error = "";
     try {
-      const result = await api<{ items: CatalogItem[] }>(
-        `/items?rootId=${encodeURIComponent(rootId)}`,
+      let items: CatalogItem[] = [];
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const result = await api<{
+          items: CatalogItem[];
+          probePending: boolean;
+        }>(
+          `/items?rootId=${encodeURIComponent(rootId)}&includeVideoProbes=true`,
+        );
+        items = result.items;
+        if (!result.probePending) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      subtitle.items = items;
+      subtitle.subtitleStatus = subtitleStatusMap(items);
+      const firstVideo = items.find(
+        (item) =>
+          item.mediaKind === "video" &&
+          subtitle.subtitleStatus[item.relativePath] === "none",
       );
-      subtitle.items = result.items.filter(
-        (item) => item.mediaKind === "video",
-      );
+      subtitle.itemId = firstVideo?.id ?? "";
     } catch (error) {
       subtitle.error = readableError(error);
     } finally {
@@ -1894,16 +2186,20 @@ const SubtitleView = component$<{
     subtitle.error = "";
     subtitle.notice = "";
     subtitle.preview = undefined;
+    subtitle.content = undefined;
+    subtitle.video = undefined;
     try {
       const parameters = new URLSearchParams({ languages: subtitle.language });
       if (subtitle.query.trim()) parameters.set("query", subtitle.query.trim());
       const response = await api<{
         matchMethod: "movie-hash" | "title-fallback";
         results: SubtitleMatch[];
+        video?: VideoProbe | null;
       }>(
         `/items/${encodeURIComponent(subtitle.itemId)}/subtitles/search?${parameters}`,
       );
       subtitle.results = response.results;
+      subtitle.video = response.video ?? null;
       if (response.results.length === 0) {
         subtitle.notice =
           "OpenSubtitles returned no matches for this title and language.";
@@ -1918,6 +2214,21 @@ const SubtitleView = component$<{
       subtitle.error = readableError(error);
     } finally {
       subtitle.searching = false;
+    }
+  });
+
+  const viewContent = $(async (match: SubtitleMatch) => {
+    if (!subtitle.itemId || subtitle.loadingContent) return;
+    subtitle.loadingContent = true;
+    subtitle.contentError = "";
+    try {
+      subtitle.content = await api<SubtitleContent>(
+        `/items/${encodeURIComponent(subtitle.itemId)}/subtitles/provider/${match.fileId}/content`,
+      );
+    } catch (error) {
+      subtitle.contentError = readableError(error);
+    } finally {
+      subtitle.loadingContent = false;
     }
   });
 
@@ -1964,6 +2275,15 @@ const SubtitleView = component$<{
     }
   });
 
+  const videoItems = subtitle.items.filter(
+    (item) => item.mediaKind === "video",
+  );
+  const selectableVideos = subtitle.showWithSubtitles
+    ? videoItems
+    : videoItems.filter(
+        (item) => subtitle.subtitleStatus[item.relativePath] === "none",
+      );
+
   return (
     <section class="subtitle-layout">
       {subtitle.error && (
@@ -2009,23 +2329,29 @@ const SubtitleView = component$<{
             <span>Cataloged video</span>
             <select
               value={subtitle.itemId}
-              disabled={subtitle.loadingItems || subtitle.items.length === 0}
+              disabled={subtitle.loadingItems || videoItems.length === 0}
               onChange$={(_, select) => {
                 subtitle.itemId = select.value;
                 subtitle.results = [];
+                subtitle.video = undefined;
                 subtitle.preview = undefined;
+                subtitle.content = undefined;
               }}
             >
               <option value="">
                 {subtitle.loadingItems
                   ? "Loading videos…"
-                  : subtitle.items.length === 0
+                  : videoItems.length === 0
                     ? "No supported videos found in this library"
-                    : "Choose a video…"}
+                    : selectableVideos.length === 0
+                      ? "No videos without subtitles in this library"
+                      : "Choose a video…"}
               </option>
-              {subtitle.items.map((item) => (
+              {selectableVideos.map((item) => (
                 <option value={item.id} key={item.id}>
-                  {item.relativePath}
+                  {`${item.relativePath}${subtitleStatusLabel(
+                    subtitle.subtitleStatus[item.relativePath],
+                  )}`}
                 </option>
               ))}
             </select>
@@ -2053,6 +2379,16 @@ const SubtitleView = component$<{
               }
             />
             <span>Prefer SDH / hearing-impaired naming</span>
+          </label>
+          <label class="checkbox-field">
+            <input
+              type="checkbox"
+              checked={subtitle.showWithSubtitles}
+              onChange$={(_, input) =>
+                (subtitle.showWithSubtitles = input.checked)
+              }
+            />
+            <span>Show files that already have subtitles</span>
           </label>
         </div>
       </section>
@@ -2147,6 +2483,25 @@ const SubtitleView = component$<{
             </button>
           </div>
           <div class="subtitle-results">
+            {subtitle.video && (
+              <p class="video-summary">
+                <strong>Video:</strong>{" "}
+                {subtitle.video.codec ?? "unknown codec"}
+                {subtitle.video.width && subtitle.video.height
+                  ? ` · ${subtitle.video.width}×${subtitle.video.height}`
+                  : ""}
+                {subtitle.video.fps
+                  ? ` · ${subtitle.video.fps.toFixed(3)} fps`
+                  : ""}
+                {subtitle.video.hasEmbeddedSubtitles
+                  ? ` · ${
+                      subtitle.video.subtitleLanguages?.length > 0
+                        ? subtitle.video.subtitleLanguages.join(", ")
+                        : "embedded"
+                    } subtitle stream`
+                  : ""}
+              </p>
+            )}
             {subtitle.results.map((match) => (
               <article
                 class="subtitle-result"
@@ -2157,30 +2512,89 @@ const SubtitleView = component$<{
                   <span>
                     {match.language} · {match.downloadCount.toLocaleString()}{" "}
                     downloads
+                    {match.fps ? ` · ${match.fps.toFixed(3)} fps` : ""}
+                    {match.fpsCompatible === false
+                      ? " · fps mismatch"
+                      : match.fpsCompatible === true
+                        ? " · fps matches video"
+                        : ""}
+                    {match.subFormat ? ` · ${match.subFormat}` : ""}
                     {match.hashMatched ? " · exact file match" : ""}
                     {match.hearingImpaired ? " · SDH" : ""}
                     {match.machineTranslated || match.aiTranslated
                       ? " · machine translated"
                       : ""}
+                    {match.votes ? ` · ${match.votes} votes` : ""}
+                    {match.uploadDate
+                      ? ` · ${new Date(match.uploadDate).toLocaleDateString()}`
+                      : ""}
                   </span>
                 </div>
-                <button
-                  class="secondary-button"
-                  type="button"
-                  disabled={subtitle.installing}
-                  onClick$={() => selectProviderSubtitle(match)}
-                >
-                  Preview
-                </button>
+                <div class="subtitle-result-actions">
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    disabled={subtitle.installing}
+                    onClick$={() => selectProviderSubtitle(match)}
+                  >
+                    Install
+                  </button>
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    disabled={subtitle.loadingContent}
+                    onClick$={() => viewContent(match)}
+                  >
+                    {subtitle.loadingContent ? "Loading…" : "View content"}
+                  </button>
+                </div>
               </article>
             ))}
             {subtitle.results.length === 0 && (
               <p class="quiet-copy">
                 Search results will show release names, language, accessibility,
-                and translation flags so an editor can choose the closest match.
+                translation flags, and frame rate so an editor can choose the
+                closest match.
               </p>
             )}
           </div>
+          {subtitle.contentError && (
+            <p class="quiet-copy content-error" role="alert">
+              {subtitle.contentError}
+            </p>
+          )}
+          {subtitle.content && (
+            <section class="subtitle-content">
+              <div class="panel-heading">
+                <div>
+                  <h4>Content preview</h4>
+                </div>
+                <button
+                  class="close-button"
+                  type="button"
+                  aria-label="Close subtitle content preview"
+                  onClick$={() => (subtitle.content = undefined)}
+                >
+                  ×
+                </button>
+              </div>
+              <ol class="subtitle-cue-list">
+                {subtitle.content.cues.map((cue) => (
+                  <li class="subtitle-cue" key={cue.index}>
+                    <time>
+                      {formatCueTime(cue.startMs)} → {formatCueTime(cue.endMs)}
+                    </time>
+                    <span>{cue.text || "—"}</span>
+                  </li>
+                ))}
+              </ol>
+              {subtitle.content.truncated && (
+                <p class="quiet-copy">
+                  Only the first 40 cues are shown for this preview.
+                </p>
+              )}
+            </section>
+          )}
         </section>
 
         <section class="panel upload-panel">

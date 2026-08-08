@@ -265,6 +265,8 @@ struct PublicConversion<'a> {
     item_percent: f64,
     eta_seconds: Option<u64>,
     rate_fps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_iso: Option<&'a str>,
 }
 
 fn main() -> Result<()> {
@@ -1881,6 +1883,7 @@ fn write_public_progress(
             * 100.0
     };
     let queued = live_queue_items(context);
+    let source_iso = context.active_queue_item.as_deref();
     let status = PublicProgress {
         schema_version: 1,
         state: "converting",
@@ -1901,6 +1904,7 @@ fn write_public_progress(
             item_percent,
             eta_seconds,
             rate_fps: rate_fps.filter(|value| value.is_finite() && *value >= 0.0),
+            source_iso,
         }],
         queued: &queued,
     };
@@ -2426,6 +2430,7 @@ Progress: {"State":"SCANDONE"}"#;
         assert_eq!(value["conversions"][0]["title"], "Example Film (2001)");
         assert_eq!(value["conversions"][0]["itemIndex"], 2);
         assert_eq!(value["conversions"][0]["etaSeconds"], 120);
+        assert!(value["conversions"][0]["sourceIso"].is_null());
         assert!((value["conversions"][0]["percent"].as_f64().unwrap() - 86.3636).abs() < 0.001);
         assert_eq!(
             value["queued"],
@@ -2567,6 +2572,7 @@ Progress: {"State":"SCANDONE"}"#;
         write_public_progress(&context, 10.0, None, None).unwrap();
         let first: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(first["queued"], serde_json::json!(["Disc 10"]));
+        assert_eq!(first["conversions"][0]["sourceIso"], "Active.iso");
 
         fs::write(directory.join("Disc 2.iso"), b"arrived later").unwrap();
         write_public_progress(&context, 20.0, None, None).unwrap();

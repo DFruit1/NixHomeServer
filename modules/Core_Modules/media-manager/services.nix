@@ -19,6 +19,8 @@ let
     MEDIA_MANAGER_MKVMAKER_PROGRESS_FILE = "/run/mkvmaker/progress.json";
     MEDIA_MANAGER_INTEGRATIONS_JSON = integrationsJson;
     MEDIA_MANAGER_FRONTEND_DIR = "${cfg.package}/share/media-manager/frontend";
+    MEDIA_MANAGER_FFPROBE = "${pkgs.ffmpeg}/bin/ffprobe";
+    MEDIA_MANAGER_FILESTASH_BASE_URL = "https://files.${vars.domain}";
   };
   openSubtitlesConfigured = builtins.hasAttr "openSubtitlesCredentials" config.age.secrets;
   acoustidConfigured = builtins.hasAttr "acoustidApiKey" config.age.secrets;

@@ -433,10 +433,21 @@ def unique_destination(directory: Path, name: str) -> Path:
     return candidate
 
 
-def archive_source(source: Path, directory: Path) -> Path:
+def archive_source(source: Path, directory: Path, plan: dict[str, Any] | None = None) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     destination = unique_destination(directory, source.name)
     os.replace(source, destination)
+    if plan:
+        manifest = destination.with_suffix(".iso.output.json")
+        manifest.write_text(
+            json.dumps({
+                "sourceIso": source.name,
+                "outputDir": plan.get("output", ""),
+                "title": plan.get("name", ""),
+                "kind": plan.get("kind", ""),
+            }),
+            encoding="utf-8",
+        )
     return destination
 
 
@@ -549,7 +560,7 @@ def run(args: argparse.Namespace) -> int:
                 entry["status"] = "processing"
                 atomic_json(state_path, state)
                 process_source(args, source, entry, queued)
-                archived = archive_source(source, processed_dir)
+                archived = archive_source(source, processed_dir, entry.get("plan"))
                 print(f"Completed {source.name}; preserved the ISO at {archived}")
                 del sources[source.name]
             except ShutdownRequested as error:
@@ -567,7 +578,7 @@ def run(args: argparse.Namespace) -> int:
                 print(f"Failed {source.name} (attempt {entry['attempts']}/{args.max_attempts}): {error}", file=sys.stderr)
                 if entry["attempts"] >= args.max_attempts and source.exists():
                     archived = archive_source(source, failed_dir)
-                    error_path = archived.with_suffix(archived.suffix + ".error.txt")
+                    error_path = archived.with_suffix(".iso.error.txt")
                     error_path.write_text(entry["last_error"] + "\n", encoding="utf-8")
                     print(f"Moved repeatedly failing ISO to {archived}", file=sys.stderr)
                     del sources[source.name]

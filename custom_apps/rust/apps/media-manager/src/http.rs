@@ -9,12 +9,16 @@ use crate::{
         InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
     },
     catalog::{Catalog, CatalogHandle, CatalogItem, ConfirmPlanOutcome, MutationPlanDraft},
-    config::{AppConfig, Identity, MutationMode, RootScope},
+    config::{AppConfig, Identity, MutationMode, RootScope, VisibleRoot},
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,
     },
     scanner::{media_kind as scanned_media_kind, rescan_root, scan_root_if_needed, ScanRoot},
-    subtitles::{opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials},
+    subtitle_format::parse_srt,
+    subtitles::{
+        opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials, SubtitleMatch,
+    },
+    video_probe::{probe_video, refresh_root_probes, VideoProbe, VideoProbeCache},
 };
 use axum::{
     body::{to_bytes, Bytes},
@@ -64,6 +68,8 @@ struct SessionResponse {
 #[serde(rename_all = "camelCase")]
 struct ItemsQuery {
     root_id: String,
+    #[serde(default)]
+    include_video_probes: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +180,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/folders/metadata", get(folder_metadata))
         .route("/api/v1/conversions", get(conversions))
         .route("/api/v1/conversions/inbox", get(conversions_inbox))
+        .route(
+            "/api/v1/conversions/inbox/error",
+            get(conversions_inbox_error),
+        )
         .route("/api/v1/scans", post(scan))
         .route(
             "/api/v1/items/{item_id}/subtitles/upload",
@@ -186,6 +196,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/items/{item_id}/subtitles/provider",
             post(install_provider_subtitle),
+        )
+        .route(
+            "/api/v1/items/{item_id}/subtitles/provider/{file_id}/content",
+            get(subtitle_provider_content),
         )
         .route(
             "/api/v1/items/{item_id}/metadata/sidecar",
@@ -494,8 +508,9 @@ async fn search_subtitles(
         Some(root) => root,
         None => return ApiError::internal(request_id).into_response(),
     };
-    let root_path = root.resolved_path;
     let relative_path = item.relative_path.clone();
+    let video_probe = probe_for_video(&state, &root, &item, request_id.clone()).await;
+    let root_path = root.resolved_path;
     let movie_hash = match tokio::task::spawn_blocking(move || {
         let mut file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
             .map_err(|error| error.to_string())?;
@@ -545,28 +560,122 @@ async fn search_subtitles(
         None => Vec::new(),
     };
     if !exact_results.is_empty() {
-        return Json(json!({
-            "provider": "opensubtitles",
-            "query": search_query,
-            "languages": languages,
-            "matchMethod": "movie-hash",
-            "results": exact_results,
-            "requestId": request_id,
-        }))
-        .into_response();
+        return subtitle_result_payload(
+            &search_query,
+            &languages,
+            "movie-hash",
+            exact_results,
+            &video_probe,
+            &request_id,
+        );
     }
 
     match client.search_by_query(search_query, &languages).await {
-        Ok(results) => Json(json!({
-            "provider": "opensubtitles",
-            "query": search_query,
-            "languages": languages,
-            "matchMethod": "title-fallback",
-            "results": results,
-            "requestId": request_id,
-        }))
-        .into_response(),
+        Ok(results) => subtitle_result_payload(
+            &search_query,
+            &languages,
+            "title-fallback",
+            results,
+            &video_probe,
+            &request_id,
+        ),
         Err(error) => subtitle_provider_search_error(error, &request_id).into_response(),
+    }
+}
+
+fn subtitle_result_payload(
+    search_query: &str,
+    languages: &str,
+    match_method: &str,
+    results: Vec<SubtitleMatch>,
+    video_probe: &Option<VideoProbe>,
+    request_id: &str,
+) -> Response {
+    let video_fps = video_probe.as_ref().and_then(|probe| probe.fps);
+    let results = results
+        .into_iter()
+        .map(|result| {
+            let fps_compatible = subtitle_fps_compatible(result.fps, video_fps);
+            let mut value = serde_json::to_value(&result).unwrap_or_else(|_| json!({}));
+            value["fpsCompatible"] = match fps_compatible {
+                Some(compatible) => json!(compatible),
+                None => Value::Null,
+            };
+            value
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "provider": "opensubtitles",
+        "query": search_query,
+        "languages": languages,
+        "matchMethod": match_method,
+        "results": results,
+        "video": video_probe,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+fn subtitle_fps_compatible(subtitle_fps: Option<f64>, video_fps: Option<f64>) -> Option<bool> {
+    match (subtitle_fps, video_fps) {
+        (Some(subtitle_fps), Some(video_fps)) if video_fps > 0.0 => {
+            Some((subtitle_fps - video_fps).abs() <= 0.5)
+        }
+        _ => None,
+    }
+}
+
+async fn probe_for_video(
+    state: &AppState,
+    root: &VisibleRoot,
+    item: &CatalogItem,
+    request_id: String,
+) -> Option<VideoProbe> {
+    let Some(ffprobe) = state.config.ffprobe_path.clone() else {
+        return None;
+    };
+    let state_dir = state.config.state_dir.clone();
+    let root_id = root.id.clone();
+    let root_path = root.resolved_path.clone();
+    let relative_path = item.relative_path.clone();
+    let fingerprint = item.fingerprint.clone();
+    let item_id = item.id.clone();
+    let request_id_for_probe = request_id.clone();
+    let item_id_for_probe = item_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        let mut cache = VideoProbeCache::open(&state_dir, &root_id);
+        if let Some(probe) = cache.probe_for(&relative_path, &fingerprint) {
+            return Some(probe);
+        }
+        let probe = match probe_video(
+            FilePath::new(&ffprobe),
+            &FilePath::new(&root_path).join(&relative_path),
+        ) {
+            Ok(probe) => Some(probe),
+            Err(error) => {
+                log_event(
+                    "video_probe_failed",
+                    &request_id_for_probe,
+                    json!({ "error": error, "itemId": item_id_for_probe }),
+                );
+                None
+            }
+        };
+        cache.set(&relative_path, &fingerprint, probe.clone());
+        let _ = cache.save();
+        probe
+    })
+    .await
+    {
+        Ok(probe) => probe,
+        Err(error) => {
+            log_event(
+                "video_probe_task_failed",
+                &request_id,
+                json!({ "error": error.to_string(), "itemId": item_id }),
+            );
+            None
+        }
     }
 }
 
@@ -699,6 +808,116 @@ async fn install_provider_subtitle(
             error.into_response()
         }
     }
+}
+
+async fn subtitle_provider_content(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((item_id, file_id)): Path<(String, i64)>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if file_id <= 0 {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_provider_file_id",
+            "The selected provider file ID is invalid.",
+            request_id,
+        )
+        .into_response();
+    }
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let _item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) if item.media_kind == "video" => item,
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "video_item_required",
+                "Subtitle content requires a cataloged video file.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let client = match open_subtitles_client(&state.config, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+    let bytes = match client.download(file_id).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            log_event(
+                "subtitle_provider_download_failed",
+                &request_id,
+                json!({ "error": error.to_string(), "fileId": file_id }),
+            );
+            return ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "subtitle_provider_failed",
+                "OpenSubtitles could not supply the selected subtitle.",
+                request_id,
+            )
+            .into_response();
+        }
+    };
+    if bytes.is_empty() || bytes.len() > MAX_SUBTITLE_BYTES || bytes.contains(&0) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_subtitle_file",
+            "The subtitle must be a non-empty text file no larger than 10 MiB.",
+            request_id,
+        )
+        .into_response();
+    }
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "subtitle_encoding_unsupported",
+                "Subtitle previews require UTF-8 text encoding.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let cues = match parse_srt(text) {
+        Ok(cues) => cues,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "subtitle_syntax_invalid",
+                "The provider returned a subtitle that could not be parsed as SRT.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    const MAX_PREVIEW_CUES: usize = 40;
+    let truncated = cues.len() > MAX_PREVIEW_CUES;
+    let preview = cues.into_iter().take(MAX_PREVIEW_CUES).collect::<Vec<_>>();
+    Json(json!({
+        "provider": "opensubtitles",
+        "fileId": file_id,
+        "cues": preview,
+        "truncated": truncated,
+        "requestId": request_id,
+    }))
+    .into_response()
 }
 
 async fn upload_subtitle(
@@ -1660,17 +1879,100 @@ async fn items(
             return ApiError::internal(request_id).into_response();
         }
     };
-    match catalog.list_items(&root.id, owner, 200) {
-        Ok(items) => Json(json!({ "items": items, "nextCursor": null })).into_response(),
+    let items = match catalog.list_items(&root.id, owner, 200) {
+        Ok(items) => items,
         Err(error) => {
             log_event(
                 "catalog_query_failed",
                 &request_id,
                 json!({ "error": error.to_string() }),
             );
-            ApiError::internal(request_id).into_response()
+            return ApiError::internal(request_id).into_response();
         }
+    };
+    if query.include_video_probes {
+        return items_with_video_probes(&state, &root, items, &request_id).await;
     }
+    Json(json!({ "items": items, "nextCursor": null })).into_response()
+}
+
+async fn items_with_video_probes(
+    state: &AppState,
+    root: &VisibleRoot,
+    items: Vec<CatalogItem>,
+    request_id: &str,
+) -> Response {
+    let Some(ffprobe) = state.config.ffprobe_path.clone() else {
+        return Json(json!({
+            "items": items,
+            "nextCursor": null,
+            "probePending": false,
+        }))
+        .into_response();
+    };
+    let state_dir = state.config.state_dir.clone();
+    let root_id = root.id.clone();
+    let root_path = root.resolved_path.clone();
+    let videos = items
+        .iter()
+        .filter(|item| item.media_kind == "video")
+        .map(|item| (item.relative_path.clone(), item.fingerprint.clone()))
+        .collect::<Vec<_>>();
+    let videos_for_probe = videos.clone();
+    let (cache, probe_error) = match tokio::task::spawn_blocking(move || {
+        let mut cache = VideoProbeCache::open(&state_dir, &root_id);
+        let error = refresh_root_probes(
+            FilePath::new(&ffprobe),
+            FilePath::new(&root_path),
+            &mut cache,
+            &videos_for_probe,
+        )
+        .err()
+        .map(|error| format!("refresh video probes: {error}"));
+        (cache, error)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            log_event(
+                "video_probe_task_failed",
+                request_id,
+                json!({ "error": error.to_string(), "rootId": root.id }),
+            );
+            return ApiError::internal(request_id.to_string()).into_response();
+        }
+    };
+    if let Some(error) = probe_error {
+        log_event(
+            "video_probe_refresh_failed",
+            request_id,
+            json!({ "error": error, "rootId": root.id }),
+        );
+    }
+    let probe_pending = videos
+        .iter()
+        .any(|(path, fingerprint)| !cache.has_probe(path, fingerprint));
+    let items = items
+        .into_iter()
+        .map(|item| {
+            let mut value = serde_json::to_value(&item)
+                .unwrap_or_else(|_| json!({ "id": item.id }));
+            if item.media_kind == "video" {
+                value["videoProbe"] = cache
+                    .probe_for(&item.relative_path, &item.fingerprint)
+                    .and_then(|probe| serde_json::to_value(probe).ok())
+                    .unwrap_or(Value::Null);
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "items": items,
+        "nextCursor": null,
+        "probePending": probe_pending,
+    }))
+    .into_response()
 }
 
 async fn conversions(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -1731,12 +2033,13 @@ async fn conversions_inbox(State(state): State<Arc<AppState>>, headers: HeaderMa
         .into_response();
     }
     let mut groups = Vec::with_capacity(3);
+    let shared_root = state.config.shared_root.clone();
     for (key, directory) in [
         ("pending", inbox.clone()),
         ("processed", inbox.join("_Processed")),
         ("failed", inbox.join("_Failed")),
     ] {
-        match list_iso_directory(&directory, &request_id).await {
+        match list_iso_directory(&directory, key, &shared_root, &request_id).await {
             Ok(entries) => groups.push((key, entries)),
             Err(error) => {
                 log_event(
@@ -1748,17 +2051,25 @@ async fn conversions_inbox(State(state): State<Arc<AppState>>, headers: HeaderMa
             }
         }
     }
-    Json(json!({
+    let mut body = json!({
         "available": true,
         "pending": groups[0].1,
         "processed": groups[1].1,
         "failed": groups[2].1,
         "requestId": request_id,
-    }))
-    .into_response()
+    });
+    if let Some(ref base_url) = state.config.files_base_url {
+        body["filesBaseUrl"] = json!(base_url);
+    }
+    Json(body).into_response()
 }
 
-async fn list_iso_directory(directory: &FilePath, request_id: &str) -> Result<Vec<Value>, String> {
+async fn list_iso_directory(
+    directory: &FilePath,
+    context: &str,
+    shared_root: &FilePath,
+    request_id: &str,
+) -> Result<Vec<Value>, String> {
     let mut entries = Vec::new();
     let mut read_dir = match tokio::fs::read_dir(directory).await {
         Ok(read_dir) => read_dir,
@@ -1792,12 +2103,35 @@ async fn list_iso_directory(directory: &FilePath, request_id: &str) -> Result<Ve
             .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
             .unwrap_or(0);
         let volume_id = iso_volume_id(&entry.path(), request_id).await;
-        entries.push(json!({
+        let mut iso_entry = json!({
             "name": name,
             "volumeId": volume_id,
             "sizeBytes": metadata.len().min(i64::MAX as u64) as i64,
             "modifiedNs": modified_ns,
-        }));
+        });
+        match context {
+            "processed" => {
+                let manifest_path = entry.path().with_extension("iso.output.json");
+                if let Ok(content) = tokio::fs::read_to_string(&manifest_path).await {
+                    if let Ok(manifest) = serde_json::from_str::<Value>(&content) {
+                        let output_dir = manifest["outputDir"].as_str().unwrap_or_default();
+                        let relative = output_dir
+                            .strip_prefix(shared_root.to_string_lossy().as_ref())
+                            .unwrap_or(output_dir)
+                            .trim_start_matches('/');
+                        iso_entry["outputDir"] = json!(relative);
+                    }
+                }
+            }
+            "failed" => {
+                let error_path = entry.path().with_extension("iso.error.txt");
+                if error_path.exists() {
+                    iso_entry["hasErrorLog"] = json!(true);
+                }
+            }
+            _ => {}
+        }
+        entries.push(iso_entry);
         if entries.len() >= MAX_INBOX_ENTRIES {
             break;
         }
@@ -1809,6 +2143,51 @@ async fn list_iso_directory(directory: &FilePath, request_id: &str) -> Result<Ve
             .cmp(right["name"].as_str().unwrap_or_default())
     });
     Ok(entries)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InboxErrorQuery {
+    name: String,
+}
+
+async fn conversions_inbox_error(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<InboxErrorQuery>,
+) -> Response {
+    let request_id = request_id();
+    if let Err(error) = identity_from_headers(&headers, &request_id) {
+        return error.into_response();
+    }
+    if query.name.contains('/') || query.name.contains("..") || query.name.is_empty() {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_name",
+            "The file name is not valid.",
+            request_id,
+        )
+        .into_response();
+    }
+    let error_path = state
+        .config
+        .dvd_inbox_path()
+        .join("_Failed")
+        .join(&query.name)
+        .with_extension("iso.error.txt");
+    if !error_path.exists() {
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            "error_log_missing",
+            "No error log was found.",
+            request_id,
+        )
+        .into_response();
+    }
+    match tokio::fs::read_to_string(&error_path).await {
+        Ok(content) => Json(json!({ "content": content, "requestId": request_id })).into_response(),
+        Err(_) => ApiError::internal(request_id).into_response(),
+    }
 }
 
 async fn iso_volume_id(path: &FilePath, request_id: &str) -> Option<String> {
@@ -4083,5 +4462,30 @@ impl IntoResponse for ApiError {
             })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::subtitle_fps_compatible;
+
+    #[test]
+    fn subtitle_fps_within_half_a_frame_is_compatible() {
+        assert_eq!(subtitle_fps_compatible(Some(23.976), Some(24.0)), Some(true));
+        assert_eq!(subtitle_fps_compatible(Some(25.0), Some(25.0)), Some(true));
+        assert_eq!(subtitle_fps_compatible(Some(29.97), Some(29.97)), Some(true));
+    }
+
+    #[test]
+    fn subtitle_fps_mismatch_is_reported_as_incompatible() {
+        assert_eq!(subtitle_fps_compatible(Some(25.0), Some(23.976)), Some(false));
+        assert_eq!(subtitle_fps_compatible(Some(23.976), Some(25.0)), Some(false));
+    }
+
+    #[test]
+    fn unknown_fps_on_either_side_is_neutral() {
+        assert_eq!(subtitle_fps_compatible(None, Some(24.0)), None);
+        assert_eq!(subtitle_fps_compatible(Some(24.0), None), None);
+        assert_eq!(subtitle_fps_compatible(None, None), None);
     }
 }

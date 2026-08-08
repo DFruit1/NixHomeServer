@@ -634,6 +634,155 @@ async fn subtitle_upload_creates_an_editor_bound_no_overwrite_preview() {
 }
 
 #[tokio::test]
+async fn subtitle_content_preview_requires_provider_credentials() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::ReadOnly);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("movie folder");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie.mkv"),
+        b"movie",
+    )
+    .expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+
+    let response = app
+        .oneshot(editor_get_request(&format!(
+            "/api/v1/items/{item_id}/subtitles/provider/123/content"
+        )))
+        .await
+        .expect("content response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(value["error"]["code"], "subtitle_provider_unconfigured");
+}
+
+#[tokio::test]
+async fn subtitle_content_preview_rejects_non_positive_file_ids() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::ReadOnly);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("movie folder");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie.mkv"),
+        b"movie",
+    )
+    .expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+
+    let response = app
+        .oneshot(editor_get_request(&format!(
+            "/api/v1/items/{item_id}/subtitles/provider/0/content"
+        )))
+        .await
+        .expect("content response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(value["error"]["code"], "invalid_provider_file_id");
+}
+
+#[tokio::test]
+async fn subtitle_content_preview_requires_a_video_item() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::ReadOnly);
+    std::fs::create_dir_all(temp.path().join("shared/_Audiobooks/Author/Book"))
+        .expect("book folder");
+    std::fs::write(
+        temp.path().join("shared/_Audiobooks/Author/Book/Book.m4b"),
+        b"audio",
+    )
+    .expect("audio file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-audiobooks"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-audiobooks", "audiobook").await;
+
+    let response = app
+        .oneshot(editor_get_request(&format!(
+            "/api/v1/items/{item_id}/subtitles/provider/123/content"
+        )))
+        .await
+        .expect("content response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(value["error"]["code"], "video_item_required");
+}
+
+#[tokio::test]
+async fn items_without_ffprobe_report_no_probe_pending() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::ReadOnly);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("movie folder");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movie.mkv"),
+        b"movie",
+    )
+    .expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+
+    let response = app
+        .oneshot(editor_get_request(
+            "/api/v1/items?rootId=shared-videos&includeVideoProbes=true",
+        ))
+        .await
+        .expect("items response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(value["probePending"], false);
+    assert!(value["items"][0].get("videoProbe").is_none());
+}
+
+#[tokio::test]
+async fn items_report_unprobeable_videos_as_null_probes() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    config.ffprobe_path = Some(temp.path().join("definitely-not-ffprobe"));
+    std::fs::create_dir_all(config.shared_root.join("_Videos")).expect("movie folder");
+    std::fs::write(config.shared_root.join("_Videos/Movie.mkv"), b"movie").expect("movie");
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+    });
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+
+    let response = app
+        .oneshot(editor_get_request(
+            "/api/v1/items?rootId=shared-videos&includeVideoProbes=true",
+        ))
+        .await
+        .expect("items response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(value["probePending"], false);
+    let video = value["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["mediaKind"] == "video")
+        .expect("video item");
+    assert_eq!(video["videoProbe"], Value::Null);
+}
+
+#[tokio::test]
 async fn metadata_fields_create_an_opf_sidecar_preview_without_a_default_year() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);

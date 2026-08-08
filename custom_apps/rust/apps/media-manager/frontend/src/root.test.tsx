@@ -419,8 +419,6 @@ describe("Media Manager conversions inbox", () => {
       expect(screen.textContent).toContain("EXAMPLE_MOVIE"),
     );
     expect(screen.textContent).toContain("MOVIE_DISC.ISO");
-    expect(screen.textContent).toContain("512 MiB");
-    expect(screen.textContent).toContain("Waiting");
     expect(screen.textContent).toContain("Processed");
     expect(screen.textContent).toContain("Failed");
     expect(screen.textContent).toContain("OLD_MOVIE.ISO");

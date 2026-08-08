@@ -6,4 +6,6 @@ pub mod http;
 pub mod musicbrainz;
 pub mod naming;
 pub mod scanner;
+pub mod subtitle_format;
 pub mod subtitles;
+pub mod video_probe;

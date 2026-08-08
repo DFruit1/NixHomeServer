@@ -251,6 +251,13 @@ pub struct SubtitleMatch {
     pub language: String,
     pub release: String,
     pub download_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<f64>,
+    pub votes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub_format: Option<String>,
     pub hearing_impaired: bool,
     pub hash_matched: bool,
     pub machine_translated: bool,
@@ -285,6 +292,14 @@ struct SearchAttributes {
     machine_translated: bool,
     #[serde(default)]
     ai_translated: bool,
+    #[serde(default)]
+    fps: Option<f64>,
+    #[serde(default)]
+    votes: i64,
+    #[serde(default)]
+    upload_date: Option<String>,
+    #[serde(default)]
+    sub_format: Option<String>,
     #[serde(default)]
     files: Vec<SearchFile>,
 }
@@ -324,6 +339,10 @@ fn flatten_search_response(response: SearchResponse) -> Vec<SubtitleMatch> {
                     language: entry.attributes.language.clone(),
                     release: entry.attributes.release.clone(),
                     download_count: entry.attributes.download_count,
+                    fps: entry.attributes.fps,
+                    votes: entry.attributes.votes,
+                    upload_date: entry.attributes.upload_date.clone(),
+                    sub_format: entry.attributes.sub_format.clone(),
                     hearing_impaired: entry.attributes.hearing_impaired,
                     hash_matched: entry.attributes.moviehash_match,
                     machine_translated: entry.attributes.machine_translated,
@@ -450,6 +469,10 @@ mod tests {
                     "moviehash_match": true,
                     "machine_translated": false,
                     "ai_translated": false,
+                    "fps": 23.976,
+                    "votes": 42,
+                    "upload_date": "2021-05-13T18:45:31Z",
+                    "sub_format": "srt",
                     "files": [{ "file_id": 12345, "file_name": "Arrival.en.srt" }]
                 }
             }]
@@ -461,6 +484,10 @@ mod tests {
         assert_eq!(results[0].language, "en");
         assert!(results[0].hearing_impaired);
         assert!(results[0].hash_matched);
+        assert_eq!(results[0].fps, Some(23.976));
+        assert_eq!(results[0].votes, 42);
+        assert_eq!(results[0].upload_date.as_deref(), Some("2021-05-13T18:45:31Z"));
+        assert_eq!(results[0].sub_format.as_deref(), Some("srt"));
     }
 
     #[test]
