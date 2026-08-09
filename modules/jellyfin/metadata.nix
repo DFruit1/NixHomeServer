@@ -1,4 +1,4 @@
-{ config, lib, pkgs, vars, jellyfinMetadataPlugins, ... }:
+{ lib, pkgs, vars, jellyfinMetadataPlugins, ... }:
 
 let
   dataDir = "/var/lib/jellyfin";
@@ -7,13 +7,6 @@ let
   jellyfinPort = vars.networking.ports.jellyfin;
   jellyfinUrl = "http://${loopback}:${toString jellyfinPort}";
   apiKeyFile = "${dataDir}/data/library-sync.api-key";
-
-  pluginDirs = builtins.listToAttrs (map
-    (plugin: {
-      name = "${pluginsDir}/${plugin.pluginDirName}";
-      value = plugin;
-    })
-    jellyfinMetadataPlugins);
 
   metadataPluginInstaller = pkgs.writeShellApplication {
     name = "jellyfin-metadata-plugins-install";
