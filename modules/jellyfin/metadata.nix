@@ -17,6 +17,7 @@ let
     '' + lib.concatMapStringsSep "\n" (plugin: ''
       src_dir="${plugin.drv}/lib"
       dest_dir="$dest_plugins_dir/${plugin.pluginDirName}"
+      install -d -m 0750 -o jellyfin -g jellyfin "$dest_dir"
       for src_file in "$src_dir"/*; do
         [[ -f "$src_file" ]] || continue
         fname="$(basename "$src_file")"
@@ -54,11 +55,27 @@ in
       })
       jellyfinMetadataPlugins);
 
-    systemd.services.jellyfin = {
-      restartTriggers = map (plugin: plugin.drv) jellyfinMetadataPlugins;
-      serviceConfig.ExecStartPre = lib.mkAfter [
-        "${metadataPluginInstaller}/bin/jellyfin-metadata-plugins-install"
+    systemd.services.jellyfin-metadata-plugins-install-v1 = {
+      description = "Install declarative Jellyfin metadata plugins";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "data-pool-layout.service" "jellyfin-storage-layout-v1.service" ];
+      after = [ "data-pool-layout.service" "jellyfin-storage-layout-v1.service" ];
+      before = [ "jellyfin.service" ];
+      path = [ pkgs.coreutils ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      unitConfig = lib.mkMerge [
+        { RequiresMountsFor = [ vars.dataRoot ]; }
+        (lib.mkIf vars.dataRootIsMountPoint {
+          ConditionPathIsMountPoint = vars.dataRoot;
+        })
       ];
+      script = ''
+        set -euo pipefail
+        ${metadataPluginInstaller}/bin/jellyfin-metadata-plugins-install
+      '';
     };
 
     systemd.services.jellyfin-metadata-bootstrap-v1 = {
