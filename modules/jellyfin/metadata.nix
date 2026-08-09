@@ -21,7 +21,7 @@ let
       for src_file in "$src_dir"/*; do
         [[ -f "$src_file" ]] || continue
         fname="$(basename "$src_file")"
-        install -m 0444 "$src_file" "$dest_dir/$fname"
+        install -m 0644 -o jellyfin -g jellyfin "$src_file" "$dest_dir/$fname"
       done
     '') jellyfinMetadataPlugins;
   };
