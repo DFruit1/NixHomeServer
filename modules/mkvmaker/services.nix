@@ -154,8 +154,7 @@ in
 
     systemd.services.mkvmaker-import-worker = {
       description = "Convert settled shared DVD ISOs into Jellyfin-ready MKVs";
-      restartIfChanged = false;
-      stopIfChanged = false;
+      wantedBy = [ "multi-user.target" ];
       requires = [ "mkvmaker-storage-layout-v1.service" ];
       wants = [ "network-online.target" ];
       after = [ "mkvmaker-storage-layout-v1.service" "network-online.target" ];
@@ -224,5 +223,11 @@ in
         ];
       };
     };
+
+    # Keep the progress surface present across NixOS activation even when an
+    # already-running encode crosses the generation boundary.
+    systemd.tmpfiles.rules = [
+      "d /run/mkvmaker 0755 mkvmaker mkvmaker -"
+    ];
   };
 }

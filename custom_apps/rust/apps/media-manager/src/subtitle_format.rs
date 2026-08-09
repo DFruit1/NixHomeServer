@@ -61,9 +61,7 @@ fn parse_timing(line: &str) -> Option<(u64, u64)> {
 }
 
 fn parse_time(token: &str) -> Option<u64> {
-    let (clock, fraction) = token
-        .split_once(|character| character == ',' || character == '.')
-        .unwrap_or((token, "0"));
+    let (clock, fraction) = token.split_once([',', '.']).unwrap_or((token, "0"));
     let mut parts = clock.split(':');
     let seconds = parts.next_back()?.parse::<u64>().ok()?;
     let mut total_ms = seconds * 1000;
@@ -111,10 +109,9 @@ mod tests {
 
     #[test]
     fn webvtt_headers_and_positioning_metadata_are_tolerated() {
-        let cues = parse_srt(
-            "WEBVTT\n\n00:00:01.000 --> 00:00:04.000 align:start position:0%\nCaptioned",
-        )
-        .expect("parse srt");
+        let cues =
+            parse_srt("WEBVTT\n\n00:00:01.000 --> 00:00:04.000 align:start position:0%\nCaptioned")
+                .expect("parse srt");
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].start_ms, 1000);
         assert_eq!(cues[0].end_ms, 4000);

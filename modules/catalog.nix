@@ -32,6 +32,7 @@ in
     ];
     jellyfin = app ./jellyfin "Jellyfin" "media" [ "jellyfinOidcClientSecret" ] [
       "jellyfin-oidc-bootstrap-v1"
+      "jellyfin-metadata-bootstrap-v1"
     ];
     kavita = app ./kavita "Kavita" "media" [
       "kavitaClientSecret"

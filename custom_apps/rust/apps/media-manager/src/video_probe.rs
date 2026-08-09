@@ -123,7 +123,8 @@ fn parse_fps(value: &str) -> Option<f64> {
     let (numerator, denominator) = value.split_once('/')?;
     let numerator = numerator.trim().parse::<f64>().ok()?;
     let denominator = denominator.trim().parse::<f64>().ok()?;
-    if denominator == 0.0 || !numerator.is_finite() || !denominator.is_finite() || numerator <= 0.0 {
+    if denominator == 0.0 || !numerator.is_finite() || !denominator.is_finite() || numerator <= 0.0
+    {
         return None;
     }
     Some(numerator / denominator)
@@ -151,7 +152,9 @@ pub struct VideoProbeCache {
 
 impl VideoProbeCache {
     pub fn open(state_dir: &Path, root_id: &str) -> Self {
-        let path = state_dir.join("video-probes").join(format!("{root_id}.json"));
+        let path = state_dir
+            .join("video-probes")
+            .join(format!("{root_id}.json"));
         let entries = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<VideoProbeCacheFile>(&bytes).ok())
@@ -178,12 +181,7 @@ impl VideoProbeCache {
             .is_some_and(|entry| entry.fingerprint == fingerprint)
     }
 
-    pub fn set(
-        &mut self,
-        relative_path: &str,
-        fingerprint: &str,
-        probe: Option<VideoProbe>,
-    ) {
+    pub fn set(&mut self, relative_path: &str, fingerprint: &str, probe: Option<VideoProbe>) {
         self.dirty = true;
         self.entries.insert(
             relative_path.to_string(),
@@ -242,10 +240,7 @@ pub fn refresh_root_probes(
         if cache.has_probe(relative_path, fingerprint) {
             continue;
         }
-        let probe = match probe_video(ffprobe, &root_path.join(relative_path)) {
-            Ok(probe) => Some(probe),
-            Err(_) => None,
-        };
+        let probe = probe_video(ffprobe, &root_path.join(relative_path)).ok();
         cache.set(relative_path, fingerprint, probe);
         probed += 1;
     }
@@ -256,8 +251,7 @@ pub fn refresh_root_probes(
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_fps, parse_probe_json, probe_video, refresh_root_probes, VideoProbe,
-        VideoProbeCache,
+        parse_fps, parse_probe_json, probe_video, refresh_root_probes, VideoProbe, VideoProbeCache,
     };
     use std::path::Path;
 
@@ -357,8 +351,11 @@ mod tests {
 
     #[test]
     fn probe_video_rejects_unreadable_files() {
-        let error = probe_video(Path::new("definitely-not-ffprobe"), Path::new("/nonexistent"))
-            .expect_err("unreadable probe must fail");
+        let error = probe_video(
+            Path::new("definitely-not-ffprobe"),
+            Path::new("/nonexistent"),
+        )
+        .expect_err("unreadable probe must fail");
         assert!(!error.is_empty());
     }
 }

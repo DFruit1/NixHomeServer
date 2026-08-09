@@ -405,6 +405,11 @@ if (( ${#live_position} >= ${#profile_position} || ${#profile_position} >= ${#bo
   exit 1
 fi
 
+# The rendered rollback scripts default to the target system PATH. Pure Nix
+# build sandboxes have no /run/current-system or /usr/bin, so pin them to the
+# local PATH for the remaining runtime executions.
+deploy_target_path="$PATH"
+
 mkdir "$deploy_lock_dir"
 printf '%s\n' 'newer-transaction-owner' >"$deploy_lock_dir/owner"
 if ! stale_rollback_output="$(/bin/sh -c "$rollback_script" 2>&1)"; then

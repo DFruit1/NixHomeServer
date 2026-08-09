@@ -43,6 +43,11 @@ test_gcroot_dir="/nix/var/nix/gcroots/nixhomeserver-tested"
 test_gcroot_path="${test_gcroot_dir}/${HOSTNAME_ARG}"
 deploy_lock_dir="/run/lock/nixhomeserver-deploy-${HOSTNAME_ARG}"
 deploy_lock_token="$(date +%s%N)-$$"
+# The rollback and lock-release scripts must run with a self-contained PATH on
+# the target after systemd or sudo has replaced the environment. Tests override
+# this with the local shell PATH so the rendered scripts can run inside a pure
+# Nix build sandbox that has no /run/current-system or /usr/bin.
+deploy_target_path="${deploy_target_path:-/run/current-system/sw/bin:/usr/bin:/bin}"
 
 source_hash=""
 previous_current=""
@@ -423,7 +428,7 @@ render_lock_expiry_script() {
   # or superseded by a later, successful recovery rather than silently unlocked
   # by the ordinary stale-lock timer.
   # shellcheck disable=SC2034 # Assigned through the caller-provided nameref.
-  output_script="PATH=/run/current-system/sw/bin:/usr/bin:/bin; export PATH; if test -e $(printf '%q' "$recovery_marker"); then echo 'blocked: retaining deploy lock after failed delayed recovery' >&2; exit 1; elif test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") && rmdir $(printf '%q' "$deploy_lock_dir"); elif ! test -e $(printf '%q' "$owner_path"); then rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi"
+  output_script="PATH=${deploy_target_path}; export PATH; if test -e $(printf '%q' "$recovery_marker"); then echo 'blocked: retaining deploy lock after failed delayed recovery' >&2; exit 1; elif test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") && rmdir $(printf '%q' "$deploy_lock_dir"); elif ! test -e $(printf '%q' "$owner_path"); then rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi"
 }
 
 deploy_lock_token_owned() {
@@ -583,7 +588,7 @@ schedule_rollback() {
   recovery_complete_marker="$(deploy_recovery_complete_marker_path)"
   failure_marker_quoted="$(printf '%q' "$recovery_marker")"
   complete_marker_quoted="$(printf '%q' "$recovery_complete_marker")"
-  rollback_script="PATH=/run/current-system/sw/bin:/usr/bin:/bin; export PATH; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token") && ! test -e ${failure_marker_quoted}; then status=0; $(printf '%q' "$previous_current/bin/switch-to-configuration") test || status=1; $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") || status=1; $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot || status=1; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then umask 077; if test \"\$status\" -eq 0; then rm -f ${failure_marker_quoted}; printf '%s\\n' 'delayed rollback completed; stale executor remains blocked until it exits or the lock expires' > ${complete_marker_quoted}; else rm -f ${complete_marker_quoted}; printf '%s\\n' 'delayed rollback failed; inspect the rollback service before clearing this lock' > ${failure_marker_quoted}; fi; fi; exit \$status; else echo 'stale deploy rollback no longer owns its transaction lock; skipping generation changes' >&2; exit 0; fi"
+  rollback_script="PATH=${deploy_target_path}; export PATH; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token") && ! test -e ${failure_marker_quoted}; then status=0; $(printf '%q' "$previous_current/bin/switch-to-configuration") test || status=1; $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") || status=1; $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot || status=1; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then umask 077; if test \"\$status\" -eq 0; then rm -f ${failure_marker_quoted}; printf '%s\\n' 'delayed rollback completed; stale executor remains blocked until it exits or the lock expires' > ${complete_marker_quoted}; else rm -f ${complete_marker_quoted}; printf '%s\\n' 'delayed rollback failed; inspect the rollback service before clearing this lock' > ${failure_marker_quoted}; fi; fi; exit \$status; else echo 'stale deploy rollback no longer owns its transaction lock; skipping generation changes' >&2; exit 0; fi"
   scheduled_unit="nixhomeserver-deploy-rollback-${HOSTNAME_ARG}-$(date +%s%N)-$$"
   target_command "sudo /bin/sh -c $(printf '%q' "test -f ${owner_path} && test \"\$(cat ${owner_path})\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && exec systemd-run --quiet --unit=$(printf '%q' "$scheduled_unit") --on-active=$(printf '%q' "$delay") --description='NixHomeServer interrupted deploy rollback' /bin/sh -c $(printf '%q' "$rollback_script")")"
   rollback_unit="$scheduled_unit"

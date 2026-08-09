@@ -618,7 +618,7 @@ async fn search_subtitles(
     };
     if !exact_results.is_empty() {
         return subtitle_result_payload(
-            &search_query,
+            search_query,
             &languages,
             "movie-hash",
             exact_results,
@@ -629,7 +629,7 @@ async fn search_subtitles(
 
     match client.search_by_query(search_query, &languages).await {
         Ok(results) => subtitle_result_payload(
-            &search_query,
+            search_query,
             &languages,
             "title-fallback",
             results,
@@ -688,9 +688,7 @@ async fn probe_for_video(
     item: &CatalogItem,
     request_id: String,
 ) -> Option<VideoProbe> {
-    let Some(ffprobe) = state.config.ffprobe_path.clone() else {
-        return None;
-    };
+    let ffprobe = state.config.ffprobe_path.clone()?;
     let state_dir = state.config.state_dir.clone();
     let root_id = root.id.clone();
     let root_path = root.resolved_path.clone();
@@ -2013,8 +2011,8 @@ async fn items_with_video_probes(
     let items = items
         .into_iter()
         .map(|item| {
-            let mut value = serde_json::to_value(&item)
-                .unwrap_or_else(|_| json!({ "id": item.id }));
+            let mut value =
+                serde_json::to_value(&item).unwrap_or_else(|_| json!({ "id": item.id }));
             if item.media_kind == "video" {
                 value["videoProbe"] = cache
                     .probe_for(&item.relative_path, &item.fingerprint)
@@ -2289,9 +2287,7 @@ async fn iso_volume_id(path: &FilePath, request_id: &str) -> Option<String> {
 
 async fn read_jellyfin_api_key(api_key_file: &FilePath) -> Option<String> {
     let bytes = tokio::fs::read(api_key_file).await.ok()?;
-    let key = String::from_utf8_lossy(&bytes)
-        .trim()
-        .to_string();
+    let key = String::from_utf8_lossy(&bytes).trim().to_string();
     if key.is_empty() || key.len() > 512 {
         return None;
     }
@@ -2304,35 +2300,42 @@ async fn read_jellyfin_api_key(api_key_file: &FilePath) -> Option<String> {
     Some(key)
 }
 
-async fn try_jellyfin_image_fallback(
-    state: &Arc<AppState>,
-    item: &CatalogItem,
-) -> Option<Response> {
-    let cache_file = state.config.jellyfin_metadata_cache_file.as_ref()?;
-    let base_url = state.config.jellyfin_base_url.as_ref()?;
-    let api_key_file = state.config.jellyfin_api_key_file.as_ref()?;
-    let api_key = read_jellyfin_api_key(api_key_file).await?;
-    let entry = cached_jellyfin_metadata(cache_file, item).await?;
-    let jellyfin_item_id = entry.get("itemId")?.as_str()?;
-    let image_tags = entry.get("imageTags")?;
-    let primary_tag = image_tags.get("Primary")
-        .or_else(|| image_tags.get("primary"))
-        .and_then(Value::as_str)?;
-    if jellyfin_item_id.is_empty()
-        || jellyfin_item_id.len() > 128
-        || !jellyfin_item_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
-        return None;
-    }
-    if primary_tag.is_empty()
-        || primary_tag.len() > 256
-        || !primary_tag
+fn valid_jellyfin_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+fn valid_image_tag(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-    {
-        return None;
-    }
-    let cache_key = format!("{}:Primary:{}", jellyfin_item_id, primary_tag);
+}
+
+fn try_image_tag_from_tags<'a>(image_tags: &'a Value, image_type: &str) -> Option<&'a str> {
+    image_tags
+        .get(image_type)
+        .or_else(|| {
+            let mut lower = image_type.to_string();
+            lower[..1].make_ascii_lowercase();
+            image_tags.get(&lower)
+        })
+        .and_then(Value::as_str)
+}
+
+async fn fetch_jellyfin_image(
+    state: &Arc<AppState>,
+    base_url: &str,
+    api_key: &str,
+    jellyfin_item_id: &str,
+    image_type: &str,
+    image_tag: &str,
+) -> Option<Response> {
+    let cache_key = format!("{}:{}:{}", jellyfin_item_id, image_type, image_tag);
     if let Some((cached_data, cached_ct)) = state.jellyfin_image_cache.get(&cache_key) {
         return Some(
             (
@@ -2347,10 +2350,11 @@ async fn try_jellyfin_image_fallback(
         );
     }
     let url = format!(
-        "{}/Items/{}/Images/Primary?tag={}",
+        "{}/Items/{}/Images/{}?tag={}",
         base_url.trim_end_matches('/'),
         jellyfin_item_id,
-        primary_tag
+        image_type,
+        image_tag
     );
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -2359,7 +2363,7 @@ async fn try_jellyfin_image_fallback(
         .ok()?;
     let response = client
         .get(&url)
-        .header("X-Emby-Token", &api_key)
+        .header("X-Emby-Token", api_key)
         .send()
         .await
         .ok()?;
@@ -2394,6 +2398,113 @@ async fn try_jellyfin_image_fallback(
         )
             .into_response(),
     )
+}
+
+async fn try_jellyfin_image_fallback(
+    state: &Arc<AppState>,
+    item: &CatalogItem,
+    request_id: &str,
+) -> Option<Response> {
+    let Some(cache_file) = &state.config.jellyfin_metadata_cache_file else {
+        log_event(
+            "jellyfin_fallback_no_cache_config",
+            request_id,
+            json!({ "itemId": item.id }),
+        );
+        return None;
+    };
+    let Some(base_url) = &state.config.jellyfin_base_url else {
+        log_event(
+            "jellyfin_fallback_no_base_url",
+            request_id,
+            json!({ "itemId": item.id }),
+        );
+        return None;
+    };
+    let Some(api_key_file) = &state.config.jellyfin_api_key_file else {
+        log_event(
+            "jellyfin_fallback_no_api_key_file",
+            request_id,
+            json!({ "itemId": item.id }),
+        );
+        return None;
+    };
+    let Some(api_key) = read_jellyfin_api_key(api_key_file).await else {
+        log_event(
+            "jellyfin_fallback_api_key_read_failed",
+            request_id,
+            json!({ "itemId": item.id }),
+        );
+        return None;
+    };
+    let Some(entry) = cached_jellyfin_metadata(cache_file, item).await else {
+        log_event(
+            "jellyfin_fallback_cache_miss",
+            request_id,
+            json!({
+                "itemId": item.id,
+                "rootId": item.root_id,
+                "relativePath": item.relative_path,
+                "ownerUsername": item.owner_username,
+            }),
+        );
+        return None;
+    };
+    let Some(jellyfin_item_id) = entry.get("itemId").and_then(Value::as_str) else {
+        log_event(
+            "jellyfin_fallback_no_jellyfin_id",
+            request_id,
+            json!({ "itemId": item.id }),
+        );
+        return None;
+    };
+    if !valid_jellyfin_id(jellyfin_item_id) {
+        log_event(
+            "jellyfin_fallback_invalid_id",
+            request_id,
+            json!({ "itemId": item.id }),
+        );
+        return None;
+    }
+    let Some(image_tags) = entry.get("imageTags") else {
+        log_event(
+            "jellyfin_fallback_no_image_tags",
+            request_id,
+            json!({ "itemId": item.id, "jellyfinItemId": jellyfin_item_id }),
+        );
+        return None;
+    };
+    let image_types = ["Primary", "Backdrop", "Banner", "Logo", "Thumb"];
+    for image_type in image_types {
+        let Some(image_tag) = try_image_tag_from_tags(image_tags, image_type) else {
+            continue;
+        };
+        if !valid_image_tag(image_tag) {
+            continue;
+        }
+        if let Some(response) = fetch_jellyfin_image(
+            state,
+            base_url,
+            &api_key,
+            jellyfin_item_id,
+            image_type,
+            image_tag,
+        )
+        .await
+        {
+            return Some(response);
+        }
+    }
+    log_event(
+        "jellyfin_fallback_no_image",
+        request_id,
+        json!({
+            "itemId": item.id,
+            "jellyfinItemId": jellyfin_item_id,
+            "availableTags": image_tags,
+        }),
+    );
+    None
 }
 
 async fn item_image(
@@ -2466,7 +2577,7 @@ async fn item_image(
         Ok(Ok(Some(body))) => body,
         Ok(Ok(None)) => {
             if let Some(jellyfin_response) =
-                try_jellyfin_image_fallback(&state, &item).await
+                try_jellyfin_image_fallback(&state, &item, &request_id).await
             {
                 return jellyfin_response;
             }
@@ -2476,7 +2587,7 @@ async fn item_image(
                 "No nearby or embedded cover artwork was found for this item.",
                 request_id,
             )
-            .into_response()
+            .into_response();
         }
         Ok(Err(error)) => {
             log_event(
@@ -2484,6 +2595,11 @@ async fn item_image(
                 &request_id,
                 json!({ "error": error, "itemId": item_id }),
             );
+            if let Some(jellyfin_response) =
+                try_jellyfin_image_fallback(&state, &item, &request_id).await
+            {
+                return jellyfin_response;
+            }
             return ApiError::new(
                 StatusCode::NOT_FOUND,
                 "artwork_not_found",
@@ -4642,15 +4758,27 @@ mod tests {
 
     #[test]
     fn subtitle_fps_within_half_a_frame_is_compatible() {
-        assert_eq!(subtitle_fps_compatible(Some(23.976), Some(24.0)), Some(true));
+        assert_eq!(
+            subtitle_fps_compatible(Some(23.976), Some(24.0)),
+            Some(true)
+        );
         assert_eq!(subtitle_fps_compatible(Some(25.0), Some(25.0)), Some(true));
-        assert_eq!(subtitle_fps_compatible(Some(29.97), Some(29.97)), Some(true));
+        assert_eq!(
+            subtitle_fps_compatible(Some(29.97), Some(29.97)),
+            Some(true)
+        );
     }
 
     #[test]
     fn subtitle_fps_mismatch_is_reported_as_incompatible() {
-        assert_eq!(subtitle_fps_compatible(Some(25.0), Some(23.976)), Some(false));
-        assert_eq!(subtitle_fps_compatible(Some(23.976), Some(25.0)), Some(false));
+        assert_eq!(
+            subtitle_fps_compatible(Some(25.0), Some(23.976)),
+            Some(false)
+        );
+        assert_eq!(
+            subtitle_fps_compatible(Some(23.976), Some(25.0)),
+            Some(false)
+        );
     }
 
     #[test]

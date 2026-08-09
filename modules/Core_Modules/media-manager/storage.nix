@@ -60,6 +60,9 @@ in
         -m g:media-manager:r-x \
         -m g:media-manager-broker:r-x \
         ${lib.escapeShellArg vars.sharedRoot}
+      if [[ -d ${lib.escapeShellArg "${vars.sharedRoot}/_ISO"} ]]; then
+        setfacl -m g:media-manager:r-x -m g:media-manager-broker:r-x ${lib.escapeShellArg "${vars.sharedRoot}/_ISO"}
+      fi
       for path in ${pathArgs}; do
         [[ -d "$path" ]] || continue
         if ! getfacl -cp "$path" | grep -q '^group:media-manager-broker:rwx$'; then

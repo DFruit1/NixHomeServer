@@ -140,6 +140,7 @@ jq -e '
   and (.syncthingRefresh.ProtectProc == "invisible")
   and (.storageAccessScript | contains("setfacl -x \"d:g:$group\" /mnt/data/shared"))
   and (.storageAccessScript | contains("-m g:media-manager-broker:r-x"))
+  and (.storageAccessScript | contains("setfacl -m g:media-manager:r-x -m g:media-manager-broker:r-x /mnt/data/shared/_ISO"))
   and (.storageAccessScript | contains("setfacl -P -R"))
 ' <<<"$surface_json" >/dev/null || {
   echo "❌ Media Manager core configuration is invalid." >&2

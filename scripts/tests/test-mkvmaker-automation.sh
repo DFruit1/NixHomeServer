@@ -29,6 +29,9 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   dispatcherUnit = cfg.systemd.services.mkvmaker-import.unitConfig;
   worker = cfg.systemd.services.mkvmaker-import-worker.serviceConfig;
   workerUnit = cfg.systemd.services.mkvmaker-import-worker.unitConfig;
+  workerRestartIfChanged = cfg.systemd.services.mkvmaker-import-worker.restartIfChanged;
+  workerWantedBy = cfg.systemd.services.mkvmaker-import-worker.wantedBy;
+  tmpfiles = cfg.systemd.tmpfiles.rules;
   homepageEnvironment = cfg.systemd.services.homepage.environment;
 }')"
 
@@ -63,6 +66,9 @@ jq -e '
   and (.worker.RuntimeDirectory == "mkvmaker")
   and (.worker.RuntimeDirectoryMode == "0755")
   and (.worker.RuntimeDirectoryPreserve == "yes")
+  and (.workerRestartIfChanged == true)
+  and (.workerWantedBy | index("multi-user.target") != null)
+  and (.tmpfiles | index("d /run/mkvmaker 0755 mkvmaker mkvmaker -") != null)
   and (.worker.ProtectSystem == "strict")
   and (.worker.NoNewPrivileges == true)
   and (.worker.Restart == "on-failure")

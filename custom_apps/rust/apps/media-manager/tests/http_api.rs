@@ -640,11 +640,7 @@ async fn subtitle_content_preview_requires_provider_credentials() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::ReadOnly);
     std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("movie folder");
-    std::fs::write(
-        temp.path().join("shared/_Videos/Movie.mkv"),
-        b"movie",
-    )
-    .expect("movie");
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
     let item_id = first_item_id(&app, "shared-videos").await;
 
@@ -667,11 +663,7 @@ async fn subtitle_content_preview_rejects_non_positive_file_ids() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::ReadOnly);
     std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("movie folder");
-    std::fs::write(
-        temp.path().join("shared/_Videos/Movie.mkv"),
-        b"movie",
-    )
-    .expect("movie");
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
     let item_id = first_item_id(&app, "shared-videos").await;
 
@@ -722,11 +714,7 @@ async fn items_without_ffprobe_report_no_probe_pending() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, _) = test_app_with_mode(&temp, MutationMode::ReadOnly);
     std::fs::create_dir_all(temp.path().join("shared/_Videos")).expect("movie folder");
-    std::fs::write(
-        temp.path().join("shared/_Videos/Movie.mkv"),
-        b"movie",
-    )
-    .expect("movie");
+    std::fs::write(temp.path().join("shared/_Videos/Movie.mkv"), b"movie").expect("movie");
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
 
     let response = app

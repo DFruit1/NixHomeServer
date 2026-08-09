@@ -486,7 +486,10 @@ mod tests {
         assert!(results[0].hash_matched);
         assert_eq!(results[0].fps, Some(23.976));
         assert_eq!(results[0].votes, 42);
-        assert_eq!(results[0].upload_date.as_deref(), Some("2021-05-13T18:45:31Z"));
+        assert_eq!(
+            results[0].upload_date.as_deref(),
+            Some("2021-05-13T18:45:31Z")
+        );
         assert_eq!(results[0].sub_format.as_deref(), Some("srt"));
     }
 

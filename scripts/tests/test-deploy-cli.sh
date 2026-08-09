@@ -374,6 +374,7 @@ cat >"$attic_test_dir/tunnel" <<'EOF'
 touch "$ATTIC_TEST_STARTED_MARKER" "$ATTIC_TEST_READY_MARKER"
 EOF
 chmod +x "$attic_test_dir/tunnel"
+make_test_executable "$attic_mock_bin/curl" "$attic_test_dir/tunnel"
 
 export ATTIC_TEST_READY_MARKER="$attic_ready_marker"
 export ATTIC_TEST_STARTED_MARKER="$attic_started_marker"

@@ -513,7 +513,7 @@ run_reconcile() {
   OFFLINE_MEDIA_STATE_GROUP="$(id -g)" \
   OFFLINE_MEDIA_SYNCTHING_CONFIG="$test_dir/config.xml" \
   OFFLINE_MEDIA_USERS_ROOT="$users_root" \
-  "$reconcile_script"
+  bash "$reconcile_script"
 }
 
 reset_runtime_case
