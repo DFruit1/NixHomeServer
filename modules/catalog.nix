@@ -113,7 +113,7 @@ in
     ./Integrations/grant_files_access_to_jellyfin_media.nix
     ./Integrations/grant_files_access_to_kavita_media.nix
     ./Integrations/grant_files_access_to_kiwix_library.nix
-    ./Integrations/remove_direct_mail_archive_access_from_paperless_inbox.nix
+    ./Integrations/grant_mail_archive_access_to_paperless_consume_subdirectory.nix
     ./Integrations/send_mail_archive_documents_to_paperless.nix
     ./Integrations/wait_for_audiobookshelf_storage_before_youtube_downloader.nix
     ./Integrations/wait_for_jellyfin_storage_before_youtube_downloader.nix

@@ -14,7 +14,14 @@ in
     )
     (lib.mkIf config.services.mail-archive-ui.enable {
       systemd.services.paperless-storage-layout-v1.script = lib.mkAfter ''
-        setfacl -x u:mail-archive-ui '${config.repo.paperless.paths.inbox}' 2>/dev/null || true
+        inbox='${config.repo.paperless.paths.inbox}'
+        staging='${config.repo.paperless.paths.handoffStaging}'
+        consume_subdir="$inbox/mail-archive"
+
+        install -d -m 2770 -o root -g paperless "$consume_subdir"
+        setfacl -m u:mail-archive-ui:--x "$inbox"
+        setfacl -m u:mail-archive-ui:rwx -m d:u:mail-archive-ui:rwx "$consume_subdir"
+        setfacl -m u:mail-archive-ui:rwx "$staging"
       '';
     });
 }

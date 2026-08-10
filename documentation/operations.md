@@ -756,7 +756,7 @@ are suffixed as `file (1).ext`.
 
 Attachment rows can be selected with normal click, Ctrl/Cmd-click, and
 Shift-click conventions. Selected attachments can be downloaded locally as a ZIP
-or copied into the configured Paperless consume inbox. The Paperless handoff is
+or copied into the configured Paperless consume directory. The Paperless handoff is
 recorded per user and attachment after the consume-file rename succeeds;
 Paperless ownership and post-processing follow the normal Paperless consumer
 behavior.

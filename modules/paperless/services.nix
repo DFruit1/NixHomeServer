@@ -94,6 +94,7 @@ in
         PAPERLESS_OCR_LANGUAGE = "eng";
         PAPERLESS_OCR_CLEAN = "clean";
         PAPERLESS_OCR_OUTPUT_TYPE = "pdfa";
+        PAPERLESS_CONSUMER_RECURSIVE = "true";
       }
       // lib.optionalAttrs (!config.repo.paperless.v3.enable) {
         # Paperless-ngx v2 settings. Keep these intact until the guarded v3

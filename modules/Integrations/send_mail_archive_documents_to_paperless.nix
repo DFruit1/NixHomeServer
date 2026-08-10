@@ -18,7 +18,7 @@ in
       # immutable database can therefore return a stale view. A periodic SQLite
       # backup gives duplicate detection a consistent, self-contained snapshot.
       services.mail-archive-ui = {
-        paperlessConsumeRoot = lib.mkDefault config.repo.paperless.paths.inbox;
+        paperlessConsumeRoot = lib.mkDefault "${config.repo.paperless.paths.inbox}/mail-archive";
         paperlessHandoffStagingRoot = lib.mkDefault config.repo.paperless.paths.handoffStaging;
         paperlessDatabasePath = lib.mkDefault "${config.services.mail-archive-ui.runtimeDir}/paperless-db-snapshot.sqlite3";
       };
