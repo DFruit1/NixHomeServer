@@ -74,6 +74,7 @@ let
     otherFolderIdPrefix = "nixhomeserver-other-videos";
     accessGroup = "users";
   };
+  enabled = name: builtins.elem name configuredApplications.enabled;
   ports = {
     http = 80;
     https = 443;
@@ -81,44 +82,78 @@ let
     dnscryptProxy = 5053;
     netbirdWireGuard = 51820;
     kanidm = 8443;
-    oauth2ProxyMailArchive = 4181;
-    oauth2ProxyKiwix = 4182;
-    oauth2ProxyDownloads = 4183;
-    oauth2ProxyFilestash = 4184;
     oauth2ProxyKopia = 4185;
     oauth2ProxyHomepage = 4186;
     oauth2ProxyMonitor = 4187;
     beszelHub = 8090;
     beszelAgent = 45876;
     kopia = 51515;
-    groundwaterLogger = 8091;
-    groundwaterMqtt = 1883;
     homepage = 8084;
-    bonsai = 8086;
     mediaManager = 8087;
-    paperless = 8000;
-    audiobookshelf = 13378;
+  }
+  // lib.optionalAttrs (enabled "files") {
+    oauth2ProxyFilestash = 4184;
     filestash = 8334;
     filesSftp = 2222;
+  }
+  // lib.optionalAttrs (enabled "mail-archive-ui") {
+    oauth2ProxyMailArchive = 4181;
     mailArchiveUi = 9011;
+  }
+  // lib.optionalAttrs (enabled "kiwix") {
+    oauth2ProxyKiwix = 4182;
+    kiwix = 8081;
+  }
+  // lib.optionalAttrs (enabled "youtube-downloader") {
+    oauth2ProxyDownloads = 4183;
+    youtubeDownloader = 8083;
+  }
+  // lib.optionalAttrs (enabled "groundwater-logger") {
+    groundwaterLogger = 8091;
+    groundwaterMqtt = 1883;
+  }
+  // lib.optionalAttrs (enabled "bonsai") {
+    bonsai = 8086;
+  }
+  // lib.optionalAttrs (enabled "paperless") {
+    paperless = 8000;
+  }
+  // lib.optionalAttrs (enabled "audiobookshelf") {
+    audiobookshelf = 13378;
+  }
+  // lib.optionalAttrs (enabled "immich") {
     immich = 2283;
     immichPublicProxy = 3300;
-    kiwix = 8081;
+  }
+  // lib.optionalAttrs (enabled "kavita") {
     kavita = 5000;
+  }
+  // lib.optionalAttrs (enabled "vaultwarden") {
     vaultwarden = 8222;
+  }
+  // lib.optionalAttrs (enabled "jellyfin") {
     jellyfin = 8096;
     jellyfinDiscovery = 7359;
-    youtubeDownloader = 8083;
+  }
+  // lib.optionalAttrs (enabled "seerr") {
     seerr = 5055;
+    oauth2ProxySeerr = 4189;
+  }
+  // lib.optionalAttrs (enabled "sonarr") {
     sonarr = 8989;
+    oauth2ProxySonarr = 4190;
+  }
+  // lib.optionalAttrs (enabled "radarr") {
     radarr = 7878;
+    oauth2ProxyRadarr = 4191;
+  }
+  // lib.optionalAttrs (enabled "prowlarr") {
     prowlarr = 9696;
+    oauth2ProxyProwlarr = 4192;
+  }
+  // lib.optionalAttrs (enabled "qbittorrent") {
     qbittorrentWeb = 8085;
     qbittorrentTorrent = 51413;
-    oauth2ProxySeerr = 4189;
-    oauth2ProxySonarr = 4190;
-    oauth2ProxyRadarr = 4191;
-    oauth2ProxyProwlarr = 4192;
     oauth2ProxyQbittorrent = 4193;
   };
   advanced = {
@@ -303,6 +338,7 @@ rec {
     criticalPercent = 90;
     repositoryLimitBytes = configuredOffsiteBackup.repositoryLimitBytes or (19 * 1024 * 1024 * 1024);
   };
+  zfsArcMaxPercent = 50;
   externalUsbMountRoot = "/mnt/external-usb";
   externalUsbViewMount = "/mnt/usb-access-view";
   staleReferenceCleanup = settings.staleReferenceCleanup;

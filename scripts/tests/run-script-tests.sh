@@ -102,6 +102,7 @@ test_scripts=(
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh
+  scripts/tests/test-integration-dependencies.sh
   scripts/tests/test-install-repository-seeding.sh
   scripts/tests/test-jellyfin-oidc.sh
   scripts/tests/test-kanidm-provision-validation.sh
@@ -124,13 +125,44 @@ test_scripts=(
   scripts/tests/test-secret-generation-flow.sh
 )
 
+active=0
+max_jobs=$(nproc 2>/dev/null || echo 2)
+failures=0
+test_tmp="${TMPDIR:-/tmp}/nixhomeserver-tests"
+mkdir -p "$test_tmp"
+
 for test_script in "${test_scripts[@]}"; do
   if [[ "$all_apps" != true ]] && all_app_only_test "$test_script"; then
     printf '==> %s (skipped: use --all-apps)\n' "$test_script"
     continue
   fi
-  printf '==> %s\n' "$test_script"
-  bash "$test_script"
+
+  while (( active >= max_jobs )); do
+    wait -n 2>/dev/null || true
+    ((active--)) || true
+  done
+
+  log_file="${test_tmp}/test-${test_script//\//_}.log"
+  (
+    printf '==> %s\n' "$test_script"
+    if ! bash "$test_script" > "$log_file" 2>&1; then
+      cat "$log_file"
+      exit 1
+    fi
+  ) &
+  ((active++))
 done
+
+while (( active > 0 )); do
+  if ! wait -n 2>/dev/null; then
+    ((failures++)) || true
+  fi
+  ((active--)) || true
+done
+
+if (( failures > 0 )); then
+  echo "❌ $failures test script(s) failed."
+  exit 1
+fi
 
 echo "✅ All requested script tests passed."

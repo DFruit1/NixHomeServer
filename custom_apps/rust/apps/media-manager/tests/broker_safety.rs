@@ -52,6 +52,37 @@ fn broker_renames_within_a_registered_root_without_overwrite() {
 }
 
 #[test]
+fn broker_moves_a_file_into_the_library_tombstone_without_deleting_it() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let shared = temp.path().join("shared");
+    let users = temp.path().join("users");
+    fs::create_dir_all(shared.join("_Videos/Movies")).expect("movie root");
+    fs::write(shared.join("_Videos/Movies/Arrival.mkv"), b"video").expect("source");
+    let config = AppConfig::for_test(
+        shared.to_str().expect("shared path"),
+        users.to_str().expect("users path"),
+    );
+    let expected =
+        file_fingerprint(&shared.join("_Videos/Movies/Arrival.mkv")).expect("fingerprint");
+    let action = MoveAction {
+        source_root_id: "shared-videos".to_string(),
+        source_relative_path: "Movies/Arrival.mkv".to_string(),
+        destination_root_id: "shared-videos".to_string(),
+        destination_relative_path: "_Tombstone/Movies/Arrival.mkv".to_string(),
+        expected,
+    };
+
+    apply_move(&config, "editor", &action).expect("tombstone move");
+    assert!(!shared.join("_Videos/Movies/Arrival.mkv").exists());
+    assert_eq!(
+        fs::read(shared.join("_Videos/_Tombstone/Movies/Arrival.mkv"))
+            .expect("tombstone destination"),
+        b"video"
+    );
+    assert!(move_destination_matches(&config, "editor", &action).expect("idempotency check"));
+}
+
+#[test]
 fn broker_installs_metadata_sidecars_without_replacing_existing_metadata() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let shared = temp.path().join("shared");

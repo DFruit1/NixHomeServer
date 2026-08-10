@@ -1110,6 +1110,101 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).toContain("Sources: filename + nfo");
   });
 
+  it("previews and queues removing an item into the library tombstone", async () => {
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Example Movie (2020).mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    let previewRequests = 0;
+    let confirmRequests = 0;
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: true }
+            : path.endsWith("/roots")
+              ? [
+                  {
+                    id: "shared-videos",
+                    label: "Shared videos",
+                    category: "videos",
+                    scope: "shared",
+                    available: true,
+                  },
+                ]
+              : path.includes("/items?rootId=")
+                ? { items }
+                : undefined;
+        if (payload !== undefined) {
+          return new Response(JSON.stringify(payload));
+        }
+        if (path.endsWith("/plans") && init?.method === "POST") {
+          previewRequests += 1;
+          return new Response(
+            JSON.stringify({
+              id: "plan-tombstone",
+              digest: "abc123",
+              expiresAt: Date.now() + 1800000,
+              actions: [
+                {
+                  kind: "move",
+                  sourceRelativePath: "_Movies/Example Movie (2020).mkv",
+                  destinationRelativePath:
+                    "_Tombstone/_Movies/Example Movie (2020).mkv",
+                },
+              ],
+              warnings: [],
+            }),
+            { status: 201 },
+          );
+        }
+        if (/\/plans\/[^/]+\/confirm$/.test(path) && init?.method === "POST") {
+          confirmRequests += 1;
+          return new Response("{}", { status: 202 });
+        }
+        return new Response(JSON.stringify({ available: false, progress: {} }));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-tab")).toBeDefined(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const removeButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Remove from library",
+    );
+    await userEvent(removeButton ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Confirm removal"),
+    );
+    expect(previewRequests).toBe(1);
+    expect(screen.textContent).toContain(
+      "_Tombstone/_Movies/Example Movie (2020).mkv",
+    );
+
+    const confirmButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Confirm removal",
+    );
+    await userEvent(confirmButton ?? null, "click");
+
+    await vi.waitFor(() => expect(confirmRequests).toBe(1));
+    expect(screen.textContent).toContain("library tombstone");
+  });
+
   it("looks up a music release on MusicBrainz and fills the form from it", async () => {
     const items = [
       {

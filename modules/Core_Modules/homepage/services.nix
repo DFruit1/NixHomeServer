@@ -72,7 +72,7 @@ let
   mkvmakerEnabled = config.nixhomeserver.modules.mkvmaker or false;
   offlineMediaStateDir = offlineMediaCfg.stateDir or "/persist/appdata/offline-media";
   offlineMediaStateFile = "${offlineMediaStateDir}/devices.json";
-  offlineMediaModel = (import ../../lib/offline-media.nix { inherit lib; }) offlineMediaCfg;
+  offlineMediaModel = (import ../../../lib/offline-media.nix { inherit lib; }) offlineMediaCfg;
   offlineMediaFolderSpecs = offlineMediaModel.folderSpecs;
   offlineMediaFolderSpecsJson = builtins.toJSON offlineMediaFolderSpecs;
   offlineMediaStateValidationJq = ''

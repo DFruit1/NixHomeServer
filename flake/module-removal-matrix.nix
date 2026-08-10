@@ -13,8 +13,7 @@ let
   repo = sourcePath;
   catalog = import (repo + "/modules/catalog.nix");
   appNames = builtins.attrNames catalog.apps;
-  coreApps = [ "homepage" ];
-  optionalAppNames = builtins.filter (name: !(builtins.elem name coreApps)) appNames;
+  optionalAppNames = appNames;
   integrationModules = catalog.integrations;
 
   hardwareModule =
@@ -59,9 +58,9 @@ let
         removed = lib.removePrefix "without-" variant;
         selectedApps =
           if variant == "core-only" then
-            coreApps
+            [ ]
           else if variant == "prowlarr-only" then
-            coreApps ++ [ "prowlarr" ]
+            [ "prowlarr" ]
           else
             builtins.filter (name: name != removed) appNames;
         host = mkHost selectedApps;
@@ -74,7 +73,7 @@ let
             inherit name;
             value = true;
           })
-          selectedApps);
+          selectedApps) // { homepage = true; };
         mediaApps = builtins.filter
           (name: builtins.elem name [ "qbittorrent" "radarr" "sonarr" ])
           selectedApps;
@@ -109,9 +108,8 @@ let
           syncthingEnabled = host.config.services.syncthing.enable;
           gatewayRegistered = builtins.hasAttr "syncthing" host.config.repo.authGateway.protectedApps;
           homepageEnvironmentPresent =
-            builtins.elem "homepage" selectedApps
-            && builtins.hasAttr "HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND"
-              services.homepage.environment;
+            builtins.hasAttr "HOMEPAGE_OFFLINE_MEDIA_ENROLL_COMMAND"
+              (services.homepage.environment or { });
           disabledCleanupPresent = builtins.hasAttr "offline-media-disabled-cleanup" services;
           dedicatedAccessGroupPresent =
             (vars.offlineMedia.accessGroup or "users") != "users"
@@ -123,12 +121,13 @@ let
               host.config.services.kanidm.provision.systems.oauth2.auth-gateway-web.scopeMaps;
           dedicatedHomepageScopePresent =
             (vars.offlineMedia.accessGroup or "users") != "users"
-            && builtins.elem "homepage" selectedApps
+            && builtins.hasAttr "homepage-web"
+              host.config.services.kanidm.provision.systems.oauth2
             && builtins.hasAttr (vars.offlineMedia.accessGroup or "users")
               host.config.services.kanidm.provision.systems.oauth2.homepage-web.scopeMaps;
         };
         homepageConfigDrv =
-          if builtins.elem "homepage" selectedApps then
+          if builtins.hasAttr "homepage" services then
             builtins.head
               (builtins.attrNames (builtins.getContext
                 (toString services.homepage.environment.HOMEPAGE_CONFIG_FILE)))
@@ -204,7 +203,6 @@ let
         valid =
           lib.hasPrefix "/nix/store/" host.config.system.build.toplevel.drvPath
           && registry == expectedRegistry
-          && (variant != "core-only" || (selectedApps == coreApps && registry == { homepage = true; }))
           && removedOwnedSecretsAbsent
           && guardedServicesValid
           && removedGuardedServicesAbsent

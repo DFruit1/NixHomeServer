@@ -188,7 +188,7 @@ require_fixed scripts/helpers/offline-media-reconcile.sh '/rest/db/scan?folder=$
   "Offline media must force periodic Syncthing scans so missed filesystem events self-heal."
 require_fixed scripts/helpers/offline-media-reconcile.sh '! -readable -print -quit' \
   "Offline media health checks must detect files Syncthing cannot read."
-require_fixed modules/homepage/services.nix '/rest/db/completion?device=$enrolled_device_id&folder=$folder_id' \
+require_fixed modules/Core_Modules/homepage/services.nix '/rest/db/completion?device=$enrolled_device_id&folder=$folder_id' \
   "The homepage must expose per-device sync backlog instead of treating enrollment as health."
 
 echo "✅ Runtime reliability regression tests passed."

@@ -131,7 +131,8 @@ impl Catalog {
         match schema_version {
             0 => create_mutation_schema(&connection)?,
             1 => migrate_mutation_schema_v1(&connection)?,
-            2 => {}
+            2 => migrate_playback_positions(&connection)?,
+            3 => {}
             version => {
                 return Err(rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_SCHEMA),
@@ -218,6 +219,39 @@ impl Catalog {
             })?
             .collect();
         rows
+    }
+
+    pub fn get_playback_position(
+        &self,
+        item_id: &str,
+        username: &str,
+    ) -> rusqlite::Result<Option<f64>> {
+        self.connection
+            .query_row(
+                "SELECT position_seconds FROM playback_positions
+                  WHERE item_id = ?1 AND username = ?2",
+                rusqlite::params![item_id, username],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|opt| opt.flatten())
+    }
+
+    pub fn save_playback_position(
+        &self,
+        item_id: &str,
+        username: &str,
+        position_seconds: f64,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            r#"INSERT INTO playback_positions (item_id, username, position_seconds)
+               VALUES (?1, ?2, ?3)
+               ON CONFLICT(item_id, username) DO UPDATE SET
+                 position_seconds = excluded.position_seconds,
+                 updated_at = CURRENT_TIMESTAMP"#,
+            rusqlite::params![item_id, username, position_seconds],
+        )?;
+        Ok(())
     }
 
     pub fn root_has_been_scanned(
@@ -687,6 +721,21 @@ fn migrate_mutation_schema_v1(connection: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX mutation_plans_queue
            ON mutation_plans(state, confirmed_at, created_at);
          PRAGMA user_version = 2;
+         COMMIT;",
+    )
+}
+
+fn migrate_playback_positions(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE IF NOT EXISTS playback_positions (
+           item_id TEXT NOT NULL,
+           username TEXT NOT NULL,
+           position_seconds REAL NOT NULL,
+           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+           PRIMARY KEY(item_id, username)
+         ) WITHOUT ROWID;
+         PRAGMA user_version = 3;
          COMMIT;",
     )
 }

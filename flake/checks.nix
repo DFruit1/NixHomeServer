@@ -35,7 +35,7 @@ let
 
   hasApp = name: builtins.elem name enabledApps;
   rustAppOwners = {
-    kanidm-canary-bootstrap = "homepage";
+    kanidm-canary-bootstrap = null;
     mail-archive-ui = "mail-archive-ui";
     media-manager = null;
     mkvmaker = "mkvmaker";
@@ -228,7 +228,7 @@ in
 // lib.optionalAttrs (hasApp "groundwater-logger") {
   groundwater-logger = nodeApps.groundwater-logger;
 }
-// lib.optionalAttrs (hasApp "homepage") {
+// {
   homepage = nodeApps.homepage;
 }
 // lib.optionalAttrs (hasApp "mkvmaker") {

@@ -104,7 +104,7 @@ lib.mkMerge [
     };
 
     boot.extraModprobeConfig = lib.optionalString vars.enableZfsDataPool ''
-      options zfs zfs_arc_min=536870912 zfs_arc_max=4294967296
+      options zfs zfs_arc_min=536870912
     '';
 
     services.journald.extraConfig = ''
@@ -120,7 +120,25 @@ lib.mkMerge [
     };
 
     systemd.services =
-      lib.optionalAttrs (hasModule "immich") {
+      lib.optionalAttrs vars.enableZfsDataPool {
+        zfs-arc-tune = {
+          description = "Set ZFS ARC maximum to a percentage of system RAM";
+          wantedBy = [ "zfs-import-cache.service" ];
+          before = [ "zfs-import-cache.service" ];
+          after = [ "systemd-modules-load.service" ];
+          unitConfig.DefaultDependencies = false;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            total_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+            arc_max=$(( total_kb * 1024 * ${toString (vars.zfsArcMaxPercent or 50)} / 100 ))
+            echo "$arc_max" > /sys/module/zfs/parameters/zfs_arc_max
+          '';
+        };
+      }
+      // lib.optionalAttrs (hasModule "immich") {
       immich-machine-learning.serviceConfig = {
         MemoryHigh = "4G";
         MemoryMax = "6G";

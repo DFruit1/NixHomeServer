@@ -68,6 +68,36 @@ fn scanner_indexes_supported_media_without_following_symlinks() {
 }
 
 #[test]
+fn scanner_skips_the_tombstone_folder() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let library = dir.path().join("library");
+    std::fs::create_dir_all(&library).expect("library");
+    std::fs::write(library.join("Keep.mkv"), b"video").expect("media");
+    std::fs::create_dir_all(library.join("_Tombstone")).expect("tombstone");
+    std::fs::write(library.join("_Tombstone/Gone.mp4"), b"video").expect("tombstoned media");
+
+    let mut catalog = Catalog::open(&dir.path().join("control.sqlite3")).expect("catalog");
+    let result = scan_root(
+        &mut catalog,
+        &ScanRoot {
+            id: "shared-videos".to_string(),
+            owner_username: None,
+            path: library,
+            category: "videos".to_string(),
+        },
+    )
+    .expect("scan");
+
+    assert_eq!(result.files_seen, 1);
+    assert_eq!(result.items_indexed, 1);
+    let items = catalog
+        .list_items("shared-videos", None, 100)
+        .expect("catalog items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].relative_path, "Keep.mkv");
+}
+
+#[test]
 fn scanner_indexes_additional_artwork_formats() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let library = dir.path().join("library");

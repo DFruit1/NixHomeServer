@@ -147,7 +147,7 @@ EOF
   fi
 fi
 
-if rg -n 'logoUrl = "https?://' modules/homepage/services.nix; then
+if rg -n 'logoUrl = "https?://' modules/Core_Modules/homepage/services.nix; then
   echo "Homepage service logos must be packaged locally rather than fetched during page views." >&2
   exit 1
 fi
@@ -156,7 +156,7 @@ while IFS= read -r logo_path; do
     echo "Homepage service logo is referenced but not packaged: ${logo_path}" >&2
     exit 1
   fi
-done < <(rg -o -N 'logoUrl = "(/logos/[^"]+)"' modules/homepage/services.nix -r '$1' | sort -u)
+done < <(rg -o -N 'logoUrl = "(/logos/[^"]+)"' modules/Core_Modules/homepage/services.nix -r '$1' | sort -u)
 
 if rg -n 'shows live groups|live group catalog' documentation/kanidm.md; then
   echo "Kanidm documentation must not describe evaluated groups as live membership." >&2
@@ -165,7 +165,7 @@ fi
 require_fixed documentation/operations.md 'never to the backup groups' \
   "Operations guidance must not claim that the non-privileged canary has backup access."
 
-require_fixed modules/homepage/services.nix '++ lib.optionals megaEnabled [' \
+require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals megaEnabled [' \
   "Homepage must omit MEGA commands when offsite MEGA sync is disabled."
 require_fixed custom_apps/node/apps/homepage/src/server/http.ts 'assertFeatureAccess(user, config.homepage.sftp.requiredAllGroups, config.homepage.sftp.requiredAnyGroups)' \
   "SFTP key mutation must enforce the evaluated SFTP access groups."
@@ -181,13 +181,13 @@ if rg -Fq '/usr/local/bin/sshfs' custom_apps/node/apps/homepage/src/shared/ui-co
   echo "SSHFS guidance must support Apple Silicon, NixOS, and non-default install prefixes." >&2
   exit 1
 fi
-require_fixed modules/homepage/services.nix 'loginNotes = "Requires ${filesWebAccessGroup} for browser access."' \
+require_fixed modules/Core_Modules/homepage/services.nix 'loginNotes = "Requires ${filesWebAccessGroup} for browser access."' \
   "Files guidance must use the evaluated configurable web-access group."
-require_fixed modules/homepage/services.nix '++ lib.optionals immichEnabled [' \
+require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals immichEnabled [' \
   "Homepage must omit Immich reconciliation commands when Immich is disabled."
-require_fixed modules/homepage/services.nix '++ lib.optionals paperlessEnabled [' \
+require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals paperlessEnabled [' \
   "Homepage must omit Paperless reconciliation commands when Paperless is disabled."
-require_fixed modules/homepage/services.nix '++ lib.optionals jellyfinEnabled [' \
+require_fixed modules/Core_Modules/homepage/services.nix '++ lib.optionals jellyfinEnabled [' \
   "Homepage must omit Jellyfin synchronization commands when Jellyfin is disabled."
 require_fixed custom_apps/node/apps/homepage/src/routes/admins/index.tsx \
   "'Allow Jellyfin discovery replies with nftables': { category: 'network', executionContext: 'Linux client' }" \
@@ -239,7 +239,7 @@ if rg -Fq 'Möbius Sync' custom_apps/node/apps/homepage/src/components/OfflineMe
 fi
 require_fixed custom_apps/node/apps/homepage/src/routes/getting-started/index.tsx 'No enabled apps are currently assigned to this account' \
   "New-user guidance must make an empty app assignment a skippable state."
-require_fixed modules/homepage/services.nix '"manual"' \
+require_fixed modules/Core_Modules/homepage/services.nix '"manual"' \
   "Homepage group metadata must identify Kanidm-managed membership."
 require_fixed custom_apps/node/apps/homepage/src/components/CredentialBackupGuide.tsx '.zip (with attachments)' \
   "Vault recovery guidance must explain the separate attachment export."

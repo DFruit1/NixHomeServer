@@ -8,7 +8,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools node
 
 CANARY_RUNNER_TEST_MODE=1 node --input-type=module <<'EOF'
-const { generateTotp, hasAuthenticationBoundary, hasNativeOidcLoginEntry, isAccessDeniedResponse, isBlankRender, nativeOidcEntryUrl } = await import('./modules/homepage/canary-runner.mjs');
+const { generateTotp, hasAuthenticationBoundary, hasNativeOidcLoginEntry, isAccessDeniedResponse, isBlankRender, nativeOidcEntryUrl } = await import('./modules/Core_Modules/homepage/canary-runner.mjs');
 const cases = [
   [{ textLength: 0, visibleElements: 0, richElements: 0 }, true, 'empty HTTP 200 body'],
   [{ textLength: 12, visibleElements: 3, richElements: 0 }, true, 'near-empty visible text'],

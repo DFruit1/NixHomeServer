@@ -21,11 +21,6 @@ in
       "groundwaterAppMqttPassword"
       "groundwaterLoggerMqttPassword"
     ] [ ];
-    homepage = app ./homepage "Homepage" "operations" [
-      "canaryUserPassword"
-      "homepageOauth2ProxyClientSecret"
-      "homepageOauth2ProxyCookieSecret"
-    ] [ ];
     immich = app ./immich "Immich" "media" [ "immichClientSecret" ] [
       "immich-storage-layout-v1"
       "immich-server"

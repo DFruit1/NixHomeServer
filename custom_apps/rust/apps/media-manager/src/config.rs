@@ -3,6 +3,8 @@ use std::{env, net::IpAddr, path::PathBuf};
 
 pub const DEFAULT_EDITOR_GROUP: &str = "media-manager-editors";
 
+pub const TOMBSTONE_FOLDER: &str = "_Tombstone";
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MutationMode {

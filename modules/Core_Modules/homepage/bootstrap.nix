@@ -1,7 +1,7 @@
 { config, ... }:
 
 let
-  repoRoot = ../..;
+  repoRoot = ../../..;
   ageHeader = "-----BEGIN AGE ENCRYPTED FILE-----";
   mkSecretAssertions = secretNames:
     map

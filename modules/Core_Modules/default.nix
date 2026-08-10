@@ -23,5 +23,6 @@
     ./syncthing
     ./unbound
     ./validation
+    ./homepage
   ];
 }

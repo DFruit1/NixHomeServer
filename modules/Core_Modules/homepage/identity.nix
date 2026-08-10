@@ -15,7 +15,7 @@ in
 {
   services.kanidm.provision.systems.oauth2.homepage-web = {
     displayName = "Home";
-    imageFile = ../Core_Modules/kanidm/assets/portal.svg;
+    imageFile = ../kanidm/assets/portal.svg;
     originUrl = "https://${host}/oauth2/callback";
     originLanding = "https://${host}";
     basicSecretFile = config.age.secrets.homepageOauth2ProxyClientSecret.path;

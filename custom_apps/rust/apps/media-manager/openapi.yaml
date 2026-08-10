@@ -799,6 +799,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/CanonicalizeNames"
             - $ref: "#/components/schemas/SemanticMove"
+            - $ref: "#/components/schemas/Tombstone"
         itemIds:
           type: array
           minItems: 1
@@ -838,6 +839,12 @@ components:
       properties:
         kind: { const: semantic_move }
         destinationRootId: { type: string }
+    Tombstone:
+      type: object
+      required: [kind]
+      additionalProperties: false
+      properties:
+        kind: { const: tombstone }
     Error:
       type: object
       required: [error]

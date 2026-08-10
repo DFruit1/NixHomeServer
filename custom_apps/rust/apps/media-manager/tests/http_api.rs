@@ -521,6 +521,44 @@ async fn book_profile_builds_an_author_series_and_title_path() {
 }
 
 #[tokio::test]
+async fn tombstone_plan_moves_the_item_into_the_library_tombstone() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies")).expect("movie folder");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movies/Arrival (2016).mkv"),
+        b"movie",
+    )
+    .expect("movie");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = first_item_id(&app, "shared-videos").await;
+    let preview = app
+        .oneshot(editor_post_request(
+            "/api/v1/plans",
+            Body::from(
+                serde_json::json!({
+                    "operation": { "kind": "tombstone" },
+                    "itemIds": [item_id]
+                })
+                .to_string(),
+            ),
+        ))
+        .await
+        .expect("preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(
+        value["actions"][0]["destinationRelativePath"],
+        "_Tombstone/Movies/Arrival (2016).mkv"
+    );
+    assert_eq!(value["actions"][0]["sourceRootId"], "shared-videos");
+    assert_eq!(value["actions"][0]["destinationRootId"], "shared-videos");
+}
+
+#[tokio::test]
 async fn enabled_confirmation_queues_exactly_the_previewed_plan() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (app, database) = test_app_with_mode(&temp, MutationMode::Enabled);
@@ -2228,4 +2266,139 @@ async fn musicbrainz_lookup_requires_a_music_item() {
         .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("lookup JSON");
     assert_eq!(value["error"]["code"], "music_item_required");
+}
+
+#[tokio::test]
+async fn music_stream_lists_and_serves_audio_with_range_support() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let bytes = b"0123456789abcdef";
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Artist/Album")).expect("music folder");
+    std::fs::write(
+        temp.path().join("shared/_Music/Artist/Album/01 Song.flac"),
+        bytes,
+    )
+    .expect("audio file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
+
+    let item_id = item_id_by_kind(&app, "shared-music", "music").await;
+    let full = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{item_id}/stream"
+        )))
+        .await
+        .expect("stream response");
+    assert_eq!(full.status(), StatusCode::OK);
+    assert_eq!(
+        full.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("audio/flac")
+    );
+    assert_eq!(
+        full.headers()
+            .get("accept-ranges")
+            .and_then(|value| value.to_str().ok()),
+        Some("bytes")
+    );
+    let body = to_bytes(full.into_body(), 64 * 1024).await.expect("body");
+    assert_eq!(body.as_ref(), bytes);
+
+    let ranged = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/items/{item_id}/stream"))
+                .header("x-forwarded-user", "viewer")
+                .header("x-forwarded-groups", "users")
+                .header("range", "bytes=2-5")
+                .body(Body::empty())
+                .expect("ranged request"),
+        )
+        .await
+        .expect("ranged response");
+    assert_eq!(ranged.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        ranged
+            .headers()
+            .get("content-range")
+            .and_then(|value| value.to_str().ok()),
+        Some(format!("bytes 2-5/{}", bytes.len()).as_str())
+    );
+    let body = to_bytes(ranged.into_body(), 64 * 1024).await.expect("body");
+    assert_eq!(body.as_ref(), &bytes[2..6]);
+
+    let suffix = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/items/{item_id}/stream"))
+                .header("x-forwarded-user", "viewer")
+                .header("x-forwarded-groups", "users")
+                .header("range", "bytes=-4")
+                .body(Body::empty())
+                .expect("suffix request"),
+        )
+        .await
+        .expect("suffix response");
+    assert_eq!(suffix.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        suffix
+            .headers()
+            .get("content-range")
+            .and_then(|value| value.to_str().ok()),
+        Some(
+            format!(
+                "bytes {}-{}/{}",
+                bytes.len() - 4,
+                bytes.len() - 1,
+                bytes.len()
+            )
+            .as_str()
+        )
+    );
+    let body = to_bytes(suffix.into_body(), 64 * 1024).await.expect("body");
+    assert_eq!(body.as_ref(), &bytes[bytes.len() - 4..]);
+
+    let beyond = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/items/{item_id}/stream"))
+                .header("x-forwarded-user", "viewer")
+                .header("x-forwarded-groups", "users")
+                .header("range", "bytes=999999-")
+                .body(Body::empty())
+                .expect("beyond request"),
+        )
+        .await
+        .expect("beyond response");
+    assert_eq!(beyond.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+#[tokio::test]
+async fn music_stream_rejects_non_audio_items() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    std::fs::create_dir_all(temp.path().join("shared/_Videos/Movies")).expect("movie folder");
+    std::fs::write(
+        temp.path().join("shared/_Videos/Movies/Arrival (2016).mkv"),
+        b"movie",
+    )
+    .expect("movie file");
+    editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
+    let item_id = item_id_by_kind(&app, "shared-videos", "video").await;
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{item_id}/stream"
+        )))
+        .await
+        .expect("stream response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("stream JSON");
+    assert_eq!(value["error"]["code"], "audio_item_required");
 }

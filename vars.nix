@@ -19,7 +19,6 @@ let
         "attic"
         "audiobookshelf"
         "files"
-        "homepage"
         "immich"
         "jellyfin"
         "kavita"
@@ -112,5 +111,4 @@ let
     };
   };
 in
-(removeAttrs settings [ "offsiteBackup" ])
-  // (import ./lib/derive-vars.nix { inherit lib settings; })
+settings // (import ./lib/derive-vars.nix { inherit lib settings; })

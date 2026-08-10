@@ -116,3 +116,27 @@ if [[ "$expected_integration_names" != "$configured_integration_names" ]]; then
 fi
 
 echo "✅ App module structure tests passed."
+
+# Verify each app module's default.nix only imports facets from within its own directory.
+facet_violations=()
+while IFS= read -r module_dir; do
+  module_name="${module_dir##*/}"
+  is_app_module_dir "$module_name" || continue
+
+  while IFS= read -r import_path; do
+    [[ -n "$import_path" ]] || continue
+    case "$import_path" in
+      ../*|./*/*)
+        facet_violations+=("${module_name}/default.nix imports ${import_path}, which is outside the module directory.")
+        ;;
+    esac
+  done < <(rg -oP '^\s+\K\./\S+' "${module_dir}/default.nix" || true)
+done <<<"$module_dirs"
+
+if ((${#facet_violations[@]} > 0)); then
+  echo "❌ App module default.nix must only import facets from its own directory:"
+  printf '   %s\n' "${facet_violations[@]}"
+  exit 1
+fi
+
+echo "✅ App module facet boundary tests passed."

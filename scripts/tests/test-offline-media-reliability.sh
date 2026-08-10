@@ -276,7 +276,7 @@ backup_admin_group="$(nix eval --impure --raw --expr '
 assert_invalid_group "$backup_admin_group" 'collides with a reserved, file-access, application, or exactly managed backup group'
 
 reconcile_script=scripts/helpers/offline-media-reconcile.sh
-for mutation_source in "$reconcile_script" modules/homepage/services.nix scripts/helpers/offline-media-disabled-cleanup.sh; do
+for mutation_source in "$reconcile_script" modules/Core_Modules/homepage/services.nix scripts/helpers/offline-media-disabled-cleanup.sh; do
   require_fixed "$mutation_source" '.devices.lock' \
     "offline-media mutations in $mutation_source must share the persistent lock"
   require_fixed "$mutation_source" 'flock -x 9' \
@@ -298,11 +298,11 @@ require_fixed modules/Core_Modules/syncthing/default.nix 'offline-media-disabled
 # rejecting consecutive dots only in these helpers would make a valid host
 # configuration fail later during self-service enrollment or reconciliation.
 if rg -Fq 'contains("..")' \
-    modules/homepage/services.nix \
+    modules/Core_Modules/homepage/services.nix \
     scripts/helpers/offline-media-reconcile.sh \
     scripts/helpers/offline-media-disabled-cleanup.sh \
   || rg -Fq '"$username" == *..*' \
-    modules/homepage/services.nix \
+    modules/Core_Modules/homepage/services.nix \
     scripts/helpers/offline-media-reconcile.sh \
     scripts/helpers/offline-media-disabled-cleanup.sh; then
   echo "❌ Offline-media helpers impose a username rule that diverges from canonical Kanidm validation." >&2

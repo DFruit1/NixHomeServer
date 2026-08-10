@@ -40,6 +40,6 @@ fn catalog_initialization_is_repeatable_and_uses_wal() {
     drop(first);
     let second = Catalog::open(&path).expect("reopen catalog");
 
-    assert_eq!(second.schema_version().expect("schema version"), 2);
+    assert_eq!(second.schema_version().expect("schema version"), 3);
     assert_eq!(second.journal_mode().expect("journal mode"), "wal");
 }

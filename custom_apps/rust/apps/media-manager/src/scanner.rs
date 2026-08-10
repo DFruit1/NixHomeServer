@@ -1,4 +1,7 @@
-use crate::catalog::{Catalog, CatalogHandle, ScannedItem};
+use crate::{
+    catalog::{Catalog, CatalogHandle, ScannedItem},
+    config::TOMBSTONE_FOLDER,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -116,6 +119,9 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
                 continue;
             }
             if file_type.is_dir() {
+                if path.file_name().and_then(|value| value.to_str()) == Some(TOMBSTONE_FOLDER) {
+                    continue;
+                }
                 pending.push(path);
                 continue;
             }
