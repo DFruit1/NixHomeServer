@@ -11,8 +11,10 @@ pub(super) fn render_dashboard(
 
     body.push_str(
         "<section class=\"hero dashboard-hero\">
-          <h1>Mail Archive</h1>
-          <p class=\"lede\">Search saved messages and find documents in attachments.</p>
+          <div class=\"hero-headline\">
+            <h1>Mail Archive</h1>
+            <p class=\"lede\">Search saved messages and find documents in attachments.</p>
+          </div>
           <div class=\"nav hero-actions\">
             <a href=\"/search\">Search mail</a>
             <a class=\"secondary\" href=\"/attachments\">Search attachments</a>
@@ -20,7 +22,12 @@ pub(super) fn render_dashboard(
         </section>",
     );
 
-    body.push_str("<details class=\"section stack dashboard-maintenance\"><summary>Mailbox status and maintenance</summary>");
+    body.push_str(
+        "<section class=\"page-heading\" aria-label=\"Mailbox status\">
+           <h2>Mailboxes</h2>
+           <a class=\"button-link secondary\" href=\"/accounts/new\">Add mailbox</a>
+         </section>",
+    );
     body.push_str(
         "<div id=\"dashboard-status-island\" data-mail-archive-island=\"dashboard-status\"></div>",
     );
@@ -35,10 +42,9 @@ pub(super) fn render_dashboard(
         }
         body.push_str("</div>");
         body.push_str(
-            "<div class=\"action-row\"><a class=\"button-link secondary\" href=\"/accounts/new\">Add mailbox</a></div>",
+            "<div class=\"action-row\"><a class=\"button-link secondary\" href=\"/accounts/new\">Add another mailbox</a></div>",
         );
     }
-    body.push_str("</details>");
 
     layout("Mail Archive", Some(identity), "dashboard", &body)
 }
@@ -232,51 +238,63 @@ pub(super) fn render_account_card(view: &DashboardAccountView) -> String {
     } else {
         "Manual only"
     };
+    let status_class = sanitized_status_class(&status.status_class);
+    let status_label = if status.status_label.is_empty() {
+        "—"
+    } else {
+        status.status_label.as_str()
+    };
     let mut body = String::new();
 
     writeln!(
         &mut body,
-        "<article class=\"account-card\" data-account-card data-account-id=\"{}\">
-          <div class=\"card-header\">
-            <div class=\"mailbox-title\">
-              <span class=\"provider-icon {}\" aria-hidden=\"true\">{}</span>
-              <div>
-              <h2>{}</h2>
-                <p class=\"meta\" data-last-activity>{}</p>
-              </div>
+        "<article class=\"account-card item-card item-card-{}\" data-account-card data-account-id=\"{}\">
+          <div class=\"account-card-primary\">
+            <span class=\"provider-icon {}\" aria-hidden=\"true\">{}</span>
+            <div class=\"account-card-titles\">
+              <h2 data-account-name>{}</h2>
+              <span class=\"meta account-card-meta\">
+                <strong data-progress-field=\"archived\">{}</strong>
+                <span class=\"meta-sep\">·</span>
+                <span><strong data-progress-field=\"pending\">{}</strong> indexing</span>
+                <span class=\"meta-sep\">·</span>
+                <span data-index-pill>{}</span>
+              </span>
             </div>
-            {}
-          </div>
-          <div class=\"action-row\">
-            <form method=\"post\" action=\"/accounts/{}/sync\" data-dashboard-action><button type=\"submit\">Sync Now</button></form>
+            <span class=\"status {}\" data-status-badge title=\"Last activity: {}\">{}</span>
+            <span class=\"account-card-actions\">
+              <form method=\"post\" action=\"/accounts/{}/sync\" data-dashboard-action><button class=\"secondary\" type=\"submit\">Sync Now</button></form>
+            </span>
           </div>
           <details class=\"account-settings\">
-            <summary>Details and maintenance</summary>
-            <div class=\"progress-metrics\">
-              <div class=\"summary-metric\"><span class=\"metric-label\">Saved mail</span><strong data-progress-field=\"archived\">{}</strong></div>
-              <div class=\"summary-metric\"><span class=\"metric-label\">Catching up</span><strong data-progress-field=\"pending\">{}</strong></div>
-            </div>
-            <div class=\"hint\">Provider: {} · Automatic updates: {}</div>
-            <details class=\"edit-mailbox-menu\">
-              <summary>Edit mailbox</summary>
+            <summary>Sync &amp; maintenance</summary>
+            <div class=\"account-settings-body\">
+              {}
+              <p class=\"meta account-card-context\" data-last-activity>Last activity: {}</p>
+              <p class=\"hint\">Provider: {} · Automatic updates: {}</p>
               <div class=\"action-row maintenance-actions\">
                 <a class=\"button-link secondary\" href=\"/accounts/{}/edit\">Connection settings</a>
                 <form method=\"post\" action=\"/accounts/{}/reindex\" data-dashboard-action><button class=\"secondary\" type=\"submit\">Repair search</button></form>
                 <form method=\"post\" action=\"/accounts/{}/toggle-sync\" data-dashboard-action><button class=\"secondary\" type=\"submit\">{}</button></form>
               </div>
-            </details>
+            </div>
           </details>
           {}
           {}",
+        escape_html(status_class),
         account.id,
         escape_html(provider_icon_class(&account.provider_kind)),
         escape_html(provider_icon_label(&account.provider_kind)),
         escape_html(&account.display_name),
-        escape_html(&status.last_activity),
-        render_health_lights(account, status),
-        account.id,
         status.archived_message_count,
         status.pending_index_count,
+        escape_html(&status.index_label),
+        escape_html(status_class),
+        escape_html(&status.last_activity),
+        escape_html(status_label),
+        account.id,
+        render_health_lights(account, status),
+        escape_html(&status.last_activity),
         escape_html(provider_label(&account.provider_kind)),
         escape_html(schedule_label),
         account.id,
@@ -294,6 +312,13 @@ pub(super) fn render_account_card(view: &DashboardAccountView) -> String {
 
     body.push_str("</article>");
     body
+}
+
+pub(super) fn sanitized_status_class(raw: &str) -> &str {
+    match raw {
+        "ok" | "pending" | "error" | "idle" | "unindexed" => raw,
+        _ => "idle",
+    }
 }
 
 pub(super) fn account_status(
@@ -339,10 +364,12 @@ pub(super) fn render_account_form(
 ) -> String {
     let mut body = String::new();
     body.push_str(&format!(
-        "<section class=\"hero\">
-          <p class=\"eyebrow\">Mailbox Setup</p>
-          <h1>{}</h1>
-          <p class=\"lede\">{}</p>
+        "<section class=\"page-heading\">
+          <div>
+            <p class=\"eyebrow\">Mailbox Setup</p>
+            <h1>{}</h1>
+            <p class=\"meta\">{}</p>
+          </div>
         </section>",
         escape_html(heading),
         escape_html(lede),
@@ -380,10 +407,9 @@ pub(super) fn render_account_form(
               <input type=\"password\" name=\"secret\" value=\"\" autocomplete=\"new-password\" {}>
             </label>
           </div>
-          {}
-          <label><input type=\"checkbox\" name=\"sync_enabled\" {}> Update this mailbox automatically</label>
+          <p class=\"form-hint\">{}</p>
           <details class=\"account-settings\">
-            <summary>Advanced connection settings</summary>
+            <summary>Advanced connection settings · folders · automatic sync</summary>
             <div class=\"fields two\">
               <label>Server
                 <input name=\"imap_host\" value=\"{}\" placeholder=\"imap.gmail.com\">
@@ -395,14 +421,11 @@ pub(super) fn render_account_form(
             <label>Folders to save
               <textarea name=\"folder_patterns\" placeholder=\"One folder pattern per line\">{}</textarea>
             </label>
+            <label class=\"checkbox-field\"><input type=\"checkbox\" name=\"sync_enabled\" {}> Update this mailbox automatically</label>
           </details>
-          <div class=\"actions\">
+          <div class=\"submit-actions\">
             <button type=\"submit\">{}</button>
           </div>
-          <ul class=\"muted-list\">
-            <li>Gmail usually needs an app password.</li>
-            <li>Saved mail can be searched and attachments can be sent to Paperless.</li>
-          </ul>
         </form>",
         escape_html(action_url),
         if form.provider_kind == "gmail" {
@@ -418,13 +441,13 @@ pub(super) fn render_account_form(
         escape_html(&form.display_name),
         escape_html(&form.imap_username),
         if secret_required { "required" } else { "" },
-        secret_help
-            .map(|text| format!("<p class=\"hint\">{}</p>", escape_html(text)))
-            .unwrap_or_default(),
-        if form.sync_enabled.is_some() { "checked" } else { "" },
+        escape_html(
+            secret_help.unwrap_or("Gmail usually needs an app password. Saved mail can be searched and attachments can be sent to Paperless.")
+        ),
         escape_html(&form.imap_host),
         escape_html(&form.imap_port),
         escape_html(&form.folder_patterns),
+        if form.sync_enabled.is_some() { "checked" } else { "" },
         escape_html(submit_label),
     )
     .ok();
@@ -449,54 +472,92 @@ pub(super) fn render_attachments_page(
     let show_download_all = data.state.result_count > data.items.len();
     writeln!(
         &mut body,
+        "<section class=\"page-heading\">
+           <div>
+             <p class=\"eyebrow\">Attachments</p>
+             <h1>Search saved attachments</h1>
+           </div>
+         </section>",
+    )
+    .ok();
+    writeln!(
+        &mut body,
         "<section class=\"panel search-panel\">
-          <form id=\"attachment-search-form\" method=\"get\" action=\"/attachments\" class=\"search-form\">
-            <div class=\"primary-search-row\">
-              <label class=\"primary-search-field\">Search attachments
-                <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
-              </label>
-              <button class=\"search-submit\" type=\"submit\">Search</button>
-            </div>
-            <div class=\"attachment-filter-layout\">
-              <section class=\"attachment-control-column\" aria-label=\"Attachment search controls\">
-                <div class=\"control-group\">
-                  <span class=\"control-kicker\">Mailbox</span>
-                  <select class=\"control-field\" name=\"account_id\" aria-label=\"Mailbox\"><option value=\"\">All mailboxes</option>{}</select>
-                </div>
-              </section>
-              {}
-            </div>
-            {}
-          </form>
-          {}
-          <div class=\"attachment-toolbar\">
-            <div class=\"toolbar-selection\">
-              <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
-              <span class=\"selection-count\" data-selected-count data-total-results=\"{}\">0/{} results selected</span>
-            </div>
-            <div class=\"toolbar-actions\">
-              <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
-                {}
-                <button class=\"icon-button\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\" data-bulk-action>↓</button>
-                {}
-              </form>
-              <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
-                <input type=\"hidden\" name=\"return_to\" value=\"{}\">
-                <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button data-bulk-action>&#8594;</button>
-              </form>
-            </div>
-          </div>
-        </section>",
+           <form id=\"attachment-search-form\" method=\"get\" action=\"/attachments\" class=\"search-form\">
+             <div class=\"primary-search-row\">
+               <label class=\"primary-search-field\">Search attachments
+                 <input class=\"primary-search-input\" name=\"q\" value=\"{}\">
+               </label>
+               <button class=\"search-submit\" type=\"submit\">Search</button>
+             </div>
+             <details class=\"filter-accordion\">
+               <summary>Filters</summary>
+               <div class=\"filter-grid\">
+                 <section class=\"basic-filter-column\" aria-label=\"Basic attachment filters\">
+                   {}
+                   {}
+                   {}
+                   {}
+                 </section>
+                 <div class=\"filter-link-row\">
+                   <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-advanced-dialog\">Advanced filters</button>
+                   <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-presets-dialog\">Filter presets</button>
+                   <a class=\"advanced-filter-link\" href=\"/attachments?q=\">Reset filters</a>
+                 </div>
+               </div>
+             </details>
+             {}
+           </form>
+         </section>
+         {}
+         <section class=\"attachment-toolbar\" aria-label=\"Bulk attachment actions\">
+           <div class=\"toolbar-selection\">
+             <div id=\"attachment-selection-island\" data-mail-archive-island=\"attachment-selection\"></div>
+             <span class=\"selection-count\" data-selected-count data-total-results=\"{}\">0/{} results selected</span>
+           </div>
+           <div class=\"toolbar-actions\">
+             <form id=\"attachment-download-form\" method=\"post\" action=\"/attachments/download\" class=\"icon-form\">
+               {}
+               <button class=\"bulk-action\" type=\"submit\" title=\"Download selected attachments\" aria-label=\"Download selected attachments\" data-bulk-action>Download</button>
+               {}
+             </form>
+             <form id=\"attachment-paperless-form\" method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
+               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
+               <button class=\"secondary bulk-action paperless-send-button\" type=\"submit\" title=\"Send selected attachments to Paperless\" aria-label=\"Send selected attachments to Paperless\" data-paperless-button data-bulk-action>Send to Paperless</button>
+             </form>
+           </div>
+         </section>",
         escape_html(&data.filters.message.q),
-        render_account_options(&data.accounts, data.selected_account_id),
-        render_attachment_basic_filters(data),
+        render_attachment_mailbox_control(data),
+        render_filter_row(
+            "Extension",
+            &format!(
+                "<select name=\"extension\">{}</select>",
+                render_common_attachment_extension_options(&data.filters.extension)
+            )
+        ),
+        render_filter_row(
+            "Sender address",
+            &format!(
+                "<input name=\"sender_address\" value=\"{}\">",
+                escape_html(&data.filters.message.sender_address)
+            )
+        ),
+        render_filter_row(
+            "Date range",
+            &format!(
+                "<div class=\"date-range-fields\"><input type=\"date\" name=\"date_from\" value=\"{}\" aria-label=\"Date from\"><input type=\"date\" name=\"date_to\" value=\"{}\" aria-label=\"Date to\"></div>",
+                escape_html(&data.filters.message.date_from),
+                escape_html(&data.filters.message.date_to)
+            )
+        ),
+        filter_hiddens,
         advanced_dialog,
         preset_dialog,
         data.state.result_count,
         data.state.result_count,
-        filter_hiddens,
         if show_download_all {
-            "<button class=\"secondary icon-button\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">⇩</button>"
+            "<button class=\"secondary bulk-action\" type=\"submit\" name=\"selection_scope\" value=\"all_matching\" title=\"Download all matching attachments\" aria-label=\"Download all matching attachments\">Download all</button>"
         } else {
             ""
         },
@@ -537,40 +598,15 @@ pub(super) fn render_attachments_page(
     layout("Attachments", Some(identity), "attachments", &body)
 }
 
-pub(super) fn render_attachment_basic_filters(data: &AttachmentPageData) -> String {
+pub(super) fn render_attachment_mailbox_control(data: &AttachmentPageData) -> String {
     format!(
-        "<section class=\"basic-filter-column\" aria-label=\"Basic attachment filters\">
-          {}
-          {}
-          {}
-          <div class=\"attachment-filter-link-row\">
-            <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-advanced-dialog\">Advanced filters</button>
-            <button class=\"advanced-filter-link\" type=\"button\" data-open-dialog=\"attachment-presets-dialog\">Filter presets</button>
-            <a class=\"advanced-filter-link\" href=\"/attachments?q=\">Reset filters</a>
-          </div>
-        </section>",
-        render_filter_row(
-            "Extension",
-            &format!(
-                "<select name=\"extension\">{}</select>",
-                render_common_attachment_extension_options(&data.filters.extension)
-            )
-        ),
-        render_filter_row(
-            "Sender address",
-            &format!(
-                "<input name=\"sender_address\" value=\"{}\">",
-                escape_html(&data.filters.message.sender_address)
-            )
-        ),
-        render_filter_row(
-            "Date range",
-            &format!(
-                "<div class=\"date-range-fields\"><input type=\"date\" name=\"date_from\" value=\"{}\" aria-label=\"Date from\"><input type=\"date\" name=\"date_to\" value=\"{}\" aria-label=\"Date to\"></div>",
-                escape_html(&data.filters.message.date_from),
-                escape_html(&data.filters.message.date_to)
-            )
-        ),
+        "<section class=\"attachment-control-column\" aria-label=\"Attachment search controls\">
+           <div class=\"control-group\">
+             <span class=\"control-kicker\">Mailbox</span>
+             <select class=\"control-field\" name=\"account_id\" aria-label=\"Mailbox\"><option value=\"\">All mailboxes</option>{}</select>
+           </div>
+         </section>",
+        render_account_options(&data.accounts, data.selected_account_id),
     )
 }
 
@@ -889,24 +925,29 @@ pub(super) fn render_preset_auto_export(
             escape_html(return_to),
         )
         .ok();
+        let last_run_label = paperless_task_run_label(task);
+        let mut summary_parts: Vec<String> = Vec::new();
+        summary_parts.push(format!(
+            "{} · {}",
+            if task.enabled { "Enabled" } else { "Paused" },
+            escape_html(&last_run_label)
+        ));
+        summary_parts.push(format!(
+            "Status: {}",
+            escape_html(task.last_status.as_deref().unwrap_or("not run"))
+        ));
+        summary_parts.push(format!("{} successful", task.successful_runs));
+        summary_parts.push(format!("{} failed", task.failed_runs));
         if let Some(summary) = task.last_summary.as_deref() {
-            writeln!(
-                &mut html,
-                "<p class=\"meta task-summary\">{}</p>",
-                escape_html(summary)
-            )
-            .ok();
+            summary_parts.push(escape_html(summary));
+        }
+        if let Some(retry) = task.next_retry_at.as_deref() {
+            summary_parts.push(format!("retry at {}", escape_html(retry)));
         }
         writeln!(
             &mut html,
-            "<p class=\"meta task-summary\">Status: {} · {} successful run(s) · {} failed/partial run(s){}</p>",
-            escape_html(task.last_status.as_deref().unwrap_or("not run")),
-            task.successful_runs,
-            task.failed_runs,
-            task.next_retry_at
-                .as_deref()
-                .map(|retry| format!(" · retry scheduled for {}", escape_html(retry)))
-                .unwrap_or_default(),
+            "<p class=\"meta task-summary\">{}</p>",
+            summary_parts.join(" · ")
         )
         .ok();
     }
@@ -931,13 +972,18 @@ pub(super) fn render_unlinked_paperless_tasks(
     if unlinked.is_empty() {
         return String::new();
     }
-    let mut html =
-        String::from("<section class=\"unlinked-auto-exports\"><h3>Unlinked auto-exports</h3>");
+    let unlinked_count = unlinked.len();
+    let mut html = format!(
+        "<section class=\"notice info unlinked-auto-exports\">
+           <p class=\"notice-title\">{unlinked_count} unlinked auto-export{plural}</p>
+           <div class=\"unlinked-auto-export-list\">",
+        plural = if unlinked_count == 1 { "" } else { "s" }
+    );
     for task in unlinked {
         writeln!(
             &mut html,
-            "<div class=\"preset-card orphan-task\">
-              <span>{}</span>
+            "<div class=\"unlinked-auto-export-row\">
+              <span class=\"unlinked-name\">{}</span>
               <span class=\"meta\">{} · {}</span>
               <form method=\"post\" action=\"/attachments/paperless-tasks/delete\" class=\"icon-form\">
                 <input type=\"hidden\" name=\"task_id\" value=\"{}\">
@@ -953,7 +999,7 @@ pub(super) fn render_unlinked_paperless_tasks(
         )
         .ok();
     }
-    html.push_str("</section>");
+    html.push_str("</div></section>");
     html
 }
 
@@ -1348,13 +1394,13 @@ pub(super) fn render_search(
     let mut body = String::new();
     body.push_str(&render_toasts(flash, error));
 
-    body.push_str(
+body.push_str(
         "<section class=\"page-heading\">
-          <div>
-            <p class=\"eyebrow\">Mail</p>
-            <h1>Search saved messages.</h1>
-          </div>
-        </section>",
+           <div>
+             <p class=\"eyebrow\">Mail</p>
+             <h1>Search saved messages</h1>
+           </div>
+         </section>",
     );
 
     writeln!(
@@ -1403,11 +1449,11 @@ pub(super) fn render_search(
                 <label>Date to
                   <input type=\"date\" name=\"date_to\" value=\"{}\">
                 </label>
+                <div class=\"filter-link-row\">
+                  <a class=\"advanced-filter-link\" href=\"/search?q=\">Reset filters</a>
+                </div>
               </div>
             </details>
-            <div class=\"action-row\">
-              <a class=\"button-link secondary icon-button\" href=\"/search?q=\" title=\"Reset filters\" aria-label=\"Reset filters\">×</a>
-            </div>
           </form>
         </section>",
         escape_html(&filters.q),

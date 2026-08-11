@@ -16,6 +16,9 @@
   --warning-soft: #efe7cc;
   --info-soft: rgba(15, 107, 92, 0.08);
   --shadow: 0 18px 48px rgba(31, 42, 38, 0.1);
+  --shadow-overlay: 0 18px 48px rgba(31, 42, 38, 0.18);
+  --shadow-toast: 0 12px 32px rgba(31, 42, 38, 0.18);
+  --ring: 0 0 0 3px var(--accent-soft);
   --radius: 8px;
   font-family:
     Inter,
@@ -54,17 +57,16 @@ a {
   justify-content: space-between;
   gap: 1rem;
   margin: 0 0 1.15rem;
-  padding: 0.9rem 1rem;
-  border: 1px solid #cddfd5;
-  border-top: 0;
-  border-radius: 0 0 var(--radius) var(--radius);
-  background: linear-gradient(118deg, #f8fcf9 0%, #e8f7f0 42%, #f7fbf8 100%);
+  padding: 0.85rem 0.25rem;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
 }
 
 .brand-link {
   display: inline-flex;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.55rem;
   color: var(--ink);
   text-decoration: none;
   font-weight: 800;
@@ -74,41 +76,41 @@ a {
   position: relative;
   display: inline-grid;
   place-items: center;
-  width: 2.45rem;
-  height: 2.45rem;
-  border-radius: var(--radius);
-  background: linear-gradient(145deg, #0f6b5c, #57aa8f);
-  box-shadow: 0 8px 18px rgba(15, 107, 92, 0.16);
+  width: 2rem;
+  height: 2rem;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
 }
 
 .brand-envelope {
   position: relative;
   display: block;
-  width: 1.35rem;
-  height: 0.95rem;
-  border: 2px solid #fff;
-  border-radius: 3px;
+  width: 1.05rem;
+  height: 0.78rem;
+  border: 1.5px solid #fff;
+  border-radius: 2px;
 }
 
 .brand-envelope::before,
 .brand-envelope::after {
   position: absolute;
-  top: 0.1rem;
-  width: 0.72rem;
-  height: 0.72rem;
-  border-top: 2px solid #fff;
+  top: -0.05rem;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-top: 1.5px solid #fff;
   content: "";
 }
 
 .brand-envelope::before {
-  left: 0.1rem;
-  transform: rotate(38deg);
+  left: 0;
+  transform: rotate(28deg);
   transform-origin: top left;
 }
 
 .brand-envelope::after {
-  right: 0.1rem;
-  transform: rotate(-38deg);
+  right: 0;
+  transform: rotate(-28deg);
   transform-origin: top right;
 }
 
@@ -139,87 +141,120 @@ a {
 }
 
 .hero,
-.panel,
-.section,
-.result,
-.account-card,
-.attachment-card {
+.panel {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
 }
 
+/* Item cards: list-row treatment with subtle colored left border that reads
+ * as a "tile" rather than a "panel". Used by account cards, preset cards,
+ * mail rows, and attachment rows when flagged. */
+.item-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-left: 3px solid rgba(29, 31, 28, 0.18);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.item-card-elevated,
+.item-card.selected {
+  border-color: rgba(15, 107, 92, 0.36);
+  border-left-color: var(--accent);
+  box-shadow: 0 8px 24px rgba(31, 42, 38, 0.08);
+}
+
+.item-card-ok {
+  border-left-color: #1f9d68;
+}
+.item-card-pending {
+  border-left-color: #c98b18;
+}
+.item-card-error {
+  border-left-color: #c5412d;
+}
+.item-card-idle {
+  border-left-color: rgba(29, 31, 28, 0.18);
+}
+.item-card-unindexed {
+  border-left-color: rgba(15, 107, 92, 0.45);
+}
+
 .hero {
-  padding: 2.25rem;
+  padding: 1rem 1.25rem;
   margin-bottom: 1.1rem;
-  background: linear-gradient(128deg, #ffffff 0%, #f3fbf7 58%, #e7f5ee 100%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.dashboard-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.1rem;
+}
+
+.dashboard-hero .hero-headline {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
 }
 
 .dashboard-hero h1 {
   max-width: 680px;
-  font-size: clamp(2rem, 4vw, 3.2rem);
-  line-height: 1;
+  margin: 0;
+  font-size: 1.45rem;
+  line-height: 1.15;
 }
 
 .dashboard-hero .lede {
-  max-width: 650px;
-  font-size: 1.08rem;
+  margin: 0;
+  max-width: 560px;
+  font-size: 0.92rem;
+  color: var(--muted);
 }
 
 .dashboard-hero .hero-actions {
-  margin-top: 1.45rem;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
 }
 
 .dashboard-hero .hero-actions a {
-  min-width: 12rem;
-  min-height: 3.25rem;
-  font-size: 1.02rem;
-  font-weight: 800;
-}
-
-.dashboard-maintenance {
-  padding: 0;
-  background: transparent;
-  border-color: transparent;
-}
-
-.dashboard-maintenance summary {
-  width: max-content;
-  max-width: 100%;
-  cursor: pointer;
-  color: var(--muted);
+  min-width: 0;
+  min-height: 2.4rem;
+  padding: 0.45rem 0.85rem;
   font-size: 0.92rem;
   font-weight: 700;
 }
 
-.dashboard-maintenance[open] {
-  padding: 1rem;
-  border-color: var(--border);
-  background: var(--panel);
+.dashboard-maintenance {
+  display: none;
 }
 
-.dashboard-maintenance[open] summary {
-  margin-bottom: 0.75rem;
-  color: var(--accent-strong);
-}
-
-.panel,
-.section {
+.panel {
   padding: 1.25rem;
   margin-bottom: 1rem;
 }
 
-.result,
 .account-card,
-.attachment-card {
-  padding: 1.15rem 1.2rem;
+.mail-row,
+.attachment-row,
+.preset-card {
+  padding: 0.95rem 1.05rem;
 }
 
 .mail-list,
 .attachment-list,
 .mailbox-list {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.9rem;
   margin-top: 1rem;
 }
 
@@ -306,8 +341,7 @@ a {
 }
 
 .mail-row > *,
-.attachment-row > *,
-.card-header > * {
+.attachment-row > * {
   min-width: 0;
 }
 
@@ -412,14 +446,40 @@ button.icon-button,
   font-weight: 850;
 }
 
-.search-submit:hover {
-  background: #0a584d;
+.form-hint {
+  margin: 0;
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem;
+  background: var(--accent-ghost);
+  color: var(--accent-strong);
+  font-size: 0.86rem;
+  line-height: 1.45;
 }
 
-.paperless-send-button {
-  border: 1px solid rgba(83, 88, 78, 0.28);
-  background: #fffdf5;
-  color: var(--accent-strong);
+.submit-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin-top: 0.65rem;
+}
+
+.submit-actions button,
+.submit-actions .button-link {
+  min-height: 2.6rem;
+  padding: 0.5rem 1.05rem;
+}
+
+.submit-actions label.checkbox-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.search-submit:hover {
+  background: #0a584d;
 }
 
 .paperless-sent-button {
@@ -428,13 +488,23 @@ button.icon-button,
 }
 
 .attachment-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.75rem;
-  justify-content: flex-start;
-  max-width: 21rem;
-  padding-top: 0.25rem;
+  gap: 0.85rem;
+  justify-content: space-between;
+  width: 100%;
+  max-width: none;
+  padding: 0.6rem 0.8rem;
+  margin: -0.25rem 0 0.8rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+  box-shadow: 0 8px 18px rgba(30, 25, 15, 0.06);
 }
 
 .toolbar-selection,
@@ -442,11 +512,39 @@ button.icon-button,
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.55rem;
+  gap: 0.65rem;
+}
+
+.toolbar-selection {
+  font-size: 0.92rem;
 }
 
 .toolbar-actions {
   justify-content: flex-end;
+}
+
+.bulk-action,
+button.bulk-action,
+.button-link.bulk-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.2rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+button.bulk-action.secondary,
+.button-link.bulk-action.secondary {
+  border-color: #c7ddd3;
+  color: var(--accent-strong);
+  background: #eef8f4;
 }
 
 .select-page {
@@ -493,28 +591,36 @@ button.icon-button,
   gap: 1rem;
 }
 
-.section-head {
-  display: grid;
-  gap: 0.25rem;
-}
-
 .page-heading {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
   margin: 0 0 1rem;
+  padding: 0.25rem 0.1rem 0.65rem;
+  border-bottom: 1px solid var(--border);
 }
 
 .page-heading h1 {
   margin: 0;
-  font-size: 2rem;
-  line-height: 1.08;
+  font-size: 1.6rem;
+  line-height: 1.1;
 }
 
-.page-heading-icon {
-  color: var(--accent-strong);
-  font-size: 2.08rem;
-  line-height: 1;
+.page-heading h2 {
+  margin: 0;
+  font-size: 1.18rem;
+  font-weight: 750;
+}
+
+.page-heading .eyebrow {
+  margin: 0 0 0.25rem;
+}
+
+.page-heading > div {
+  display: grid;
+  gap: 0.15rem;
 }
 
 .card-grid,
@@ -525,46 +631,92 @@ button.icon-button,
   grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
 }
 
-.card-header,
-.result-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.9rem;
-  align-items: flex-start;
+.panel {
+  padding: 1.25rem;
+  margin-bottom: 1rem;
 }
 
 .account-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 1rem;
+  gap: 0.7rem;
   padding: 0.95rem 1rem;
   box-shadow: none;
 }
 
-.account-card .card-header {
-  align-items: center;
-  min-width: 0;
-}
-
-.account-card h2 {
-  margin-bottom: 0.25rem;
-  font-size: 1.08rem;
-}
-
-.account-card .action-row {
-  justify-content: flex-end;
-}
-
-.mailbox-title {
-  display: flex;
+.account-card-primary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 0.8rem;
   min-width: 0;
 }
 
-.mailbox-title > div {
+.account-card-titles {
+  display: grid;
+  gap: 0.18rem;
   min-width: 0;
+}
+
+.account-card-meta {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.account-card-meta strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.account-card-meta .meta-sep {
+  color: rgba(29, 31, 28, 0.28);
+}
+
+.account-card-meta [data-index-pill] {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.account-card-context {
+  margin: 0;
+}
+
+.account-card-actions {
+  display: inline-flex;
+  align-items: center;
+}
+
+.account-card-actions button {
+  min-height: 2.2rem;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.88rem;
+}
+
+.account-card h2 {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.account-settings-body {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.account-settings-body .health-lights {
+  justify-content: flex-start;
+}
+
+.account-settings-body .health-light::after {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.6rem;
 }
 
 .provider-icon {
@@ -749,9 +901,8 @@ button {
 }
 
 .secondary.paperless-send-button {
-  border: 1px solid rgba(83, 88, 78, 0.28);
-  background: #fffdf5;
-  color: var(--accent-strong);
+  /* Use the standard secondary treatment; "sent" state is conveyed by
+   * .paperless-sent-button in the per-row action column. */
 }
 
 .pill,
@@ -881,7 +1032,7 @@ form {
 .search-panel {
   display: grid;
   gap: 0.75rem;
-  padding: 0.9rem;
+  padding: 1.1rem 1.25rem;
 }
 
 .search-form {
@@ -917,21 +1068,47 @@ form {
 }
 
 .attachment-filter-layout {
-  display: grid;
-  grid-template-columns: minmax(16rem, 21rem) minmax(0, 1fr);
-  align-items: start;
-  gap: 1.35rem;
+  display: none;
 }
 
 .attachment-control-column {
   display: grid;
-  gap: 1.25rem;
-  padding: 0.3rem 0.9rem 0.3rem 0;
+  gap: 0.55rem;
+  padding: 0;
 }
 
-.control-group {
+.basic-filter-column {
   display: grid;
   gap: 0.65rem;
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: end;
+}
+
+.basic-filter-column .filter-row {
+  grid-template-columns: 1fr;
+  gap: 0.25rem;
+}
+
+.basic-filter-column .attachment-control-column {
+  grid-column: 1 / -1;
+}
+
+.basic-filter-column .date-range-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.filter-link-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  padding-top: 0.4rem;
+  margin-top: 0.15rem;
+  border-top: 1px solid rgba(29, 31, 28, 0.08);
 }
 
 .control-kicker {
@@ -940,6 +1117,11 @@ form {
   font-weight: 850;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.control-group {
+  display: grid;
+  gap: 0.4rem;
 }
 
 .control-field {
@@ -961,7 +1143,7 @@ form {
 .basic-filter-column,
 .stacked-filter-dialog {
   display: grid;
-  gap: 0.38rem;
+  gap: 0.7rem;
 }
 
 .basic-filter-column {
@@ -1033,7 +1215,7 @@ form {
   background: var(--panel);
   color: inherit;
   padding: 0;
-  box-shadow: 0 24px 80px rgba(20, 22, 19, 0.22);
+  box-shadow: var(--shadow-overlay);
 }
 
 .app-dialog::backdrop {
@@ -1052,7 +1234,7 @@ form {
   align-items: center;
   justify-content: space-between;
   gap: 0.8rem;
-  padding: 0.85rem 1rem;
+  padding: 0.95rem 1.2rem;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1069,9 +1251,9 @@ form {
 
 .dialog-body {
   display: grid;
-  gap: 0.8rem;
+  gap: 1rem;
   overflow: auto;
-  padding: 1rem;
+  padding: 1.1rem 1.25rem;
 }
 
 .preset-dialog {
@@ -1240,14 +1422,16 @@ form {
 .preset-card {
   display: grid;
   gap: 0.45rem;
-  padding: 0.65rem;
+  padding: 0.85rem 1rem;
   border: 1px solid rgba(12, 92, 80, 0.14);
+  border-left: 3px solid rgba(15, 107, 92, 0.28);
   border-radius: 6px;
   background: #fff;
 }
 
 .preset-card-current {
   border-color: rgba(12, 92, 80, 0.42);
+  border-left-color: var(--accent);
 }
 
 .preset-card-main {
@@ -1276,8 +1460,35 @@ form {
 .preset-auto-export summary {
   cursor: pointer;
   color: var(--accent-strong);
-  font-size: 0.88rem;
-  font-weight: 800;
+  font-size: 0.82rem;
+  font-weight: 700;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  opacity: 0.85;
+}
+
+.preset-auto-export summary::-webkit-details-marker {
+  display: none;
+}
+
+.preset-auto-export summary::before {
+  content: "›";
+  display: inline-block;
+  font-size: 0.95rem;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 140ms ease;
+}
+
+.preset-auto-export[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.preset-auto-export[open] summary {
+  margin-bottom: 0.3rem;
+  opacity: 1;
 }
 
 .auto-export-form,
@@ -1344,7 +1555,7 @@ textarea {
   display: flex;
   align-items: baseline;
   gap: 0.35rem;
-  margin-top: 1rem;
+  margin-top: 0.7rem;
   margin-bottom: 0.2rem;
   padding: 0 0.1rem;
 }
@@ -1398,7 +1609,7 @@ textarea {
 .toast {
   padding: 0.85rem 1rem;
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-toast);
   font-weight: 600;
   animation: toast-lifecycle 4.8s ease forwards;
 }
@@ -1467,6 +1678,40 @@ textarea {
 .notice.warning {
   background: var(--warning-soft);
   border-color: rgba(113, 93, 17, 0.18);
+}
+
+.notice.info {
+  background: var(--info-soft);
+  border-color: rgba(15, 107, 92, 0.18);
+}
+
+.notice.info .notice-title {
+  color: var(--accent-strong);
+}
+
+.unlinked-auto-export-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.unlinked-auto-export-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.unlinked-auto-export-row .unlinked-name {
+  font-weight: 700;
+}
+
+.unlinked-auto-export-row .meta {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .notice-title,
@@ -1599,6 +1844,88 @@ code {
   font-size: 0.95em;
 }
 
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a.button-link:focus-visible,
+.nav a:focus-visible,
+.top-nav a:focus-visible,
+.brand-link:focus-visible,
+.advanced-filter-link:focus-visible,
+.preset-card .button-link:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+@media (max-width: 920px) {
+  /* On tablet widths the 5-column desktop grid is too dense; collapse the
+   * least-critical columns into stacked wrapping so the row stays on one
+   * visual line and the priority select keeps usable width. */
+
+  .mail-row {
+    grid-template-columns:
+      minmax(6rem, 0.6fr) minmax(0, 1.6fr) minmax(0, 1.4fr)
+      minmax(7rem, 0.6fr);
+    grid-template-areas:
+      "date sender subject priority"
+      "date tags   tags     priority";
+    grid-auto-columns: minmax(0, 1fr);
+  }
+
+  .mail-row > .meta {
+    grid-area: date;
+  }
+  .mail-row > .sender-cell {
+    grid-area: sender;
+  }
+  .mail-row > .mail-subject {
+    grid-area: subject;
+    align-self: end;
+  }
+  .mail-row > .tag-list {
+    grid-area: tags;
+  }
+  .mail-row > .priority-cell {
+    grid-area: priority;
+  }
+
+  .attachment-row {
+    grid-template-columns:
+      minmax(7.5rem, 0.6fr) minmax(0, 2.4fr) minmax(4.4rem, 0.4fr)
+      minmax(5.2rem, auto);
+    grid-template-areas:
+      "date main badge actions"
+      "date main priority priority";
+  }
+
+  .attachment-row > .meta.truncate {
+    grid-area: date;
+  }
+  .attachment-row > .attachment-main {
+    grid-area: main;
+  }
+  .attachment-row > .badge {
+    grid-area: badge;
+  }
+  .attachment-row > .row-actions {
+    grid-area: actions;
+  }
+  .attachment-row > .priority-cell {
+    grid-area: priority;
+  }
+
+  .mail-list-header,
+  .attachment-list-header {
+    display: none;
+  }
+
+  .attachment-list-header {
+    display: none;
+  }
+}
+
 @media (max-width: 720px) {
   .page {
     width: min(100% - 1rem, 1180px);
@@ -1614,58 +1941,116 @@ code {
     justify-content: flex-start;
   }
 
-  .hero,
-  .panel,
-  .result,
-  .account-card {
-    border-radius: var(--radius);
+  .top-nav a {
+    flex: 1 1 auto;
+    justify-content: center;
+    text-align: center;
   }
 
-  .card-header,
-  .result-head {
-    grid-template-columns: 1fr;
-    display: grid;
+  /* Dashboard hero collapses to a stacked column with full-width actions */
+  .dashboard-hero {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
   }
 
-  .account-card {
-    grid-template-columns: minmax(0, 1fr);
+  .dashboard-hero .hero-headline {
+    width: 100%;
   }
 
-  .account-card .action-row {
+  .dashboard-hero .hero-actions {
     justify-content: stretch;
   }
 
-  .mail-row {
-    grid-template-columns: minmax(6rem, 0.8fr) minmax(0, 1.4fr) auto;
+  .dashboard-hero .hero-actions a {
+    flex: 1 1 auto;
+    width: 100%;
+    justify-content: center;
   }
 
+  /* Page heading wraps: title above, action button full-width below */
+  .page-heading {
+    align-items: stretch;
+    gap: 0.65rem;
+  }
+
+  .page-heading h1 {
+    font-size: 1.4rem;
+  }
+
+  .page-heading h2 {
+    font-size: 1.1rem;
+  }
+
+  .page-heading > a.button-link,
+  .page-heading > .button-link {
+    width: 100%;
+  }
+
+  /* Account card primary collapses to a two-row grid so the status pill
+   * and Sync Now button no longer fight for horizontal space. */
+  .account-card-primary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "icon titles"
+      "status actions";
+    row-gap: 0.55rem;
+    column-gap: 0.7rem;
+    align-items: center;
+  }
+
+  .account-card-primary > .provider-icon {
+    grid-area: icon;
+    align-self: start;
+  }
+
+  .account-card-primary > .account-card-titles {
+    grid-area: titles;
+  }
+
+  .account-card-primary > .status {
+    grid-area: status;
+    justify-self: start;
+  }
+
+  .account-card-primary > .account-card-actions {
+    grid-area: actions;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .account-card-actions button {
+    width: 100%;
+  }
+
+  .account-card-meta {
+    font-size: 0.82rem;
+    gap: 0.3rem;
+  }
+
+  .account-card .action-row,
+  .account-card .maintenance-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .account-card .maintenance-actions > * {
+    width: 100%;
+  }
+
+  /* Primary search row stacks: input full width, submit below */
   .primary-search-row {
     grid-template-columns: 1fr;
   }
 
-  .preset-dialog-button {
-    justify-self: start;
-    min-height: 2.35rem;
+  .primary-search-row .search-submit,
+  .primary-search-row .search-submit.icon-button {
+    width: 100%;
+    min-height: 2.4rem;
   }
 
-  .filter-accordion-row,
-  .attachment-management-row {
-    grid-template-columns: 1fr;
-  }
-
-  .attachment-filter-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .attachment-control-column {
-    padding-right: 0;
-  }
-
-  .filter-row {
-    grid-template-columns: 1fr;
-    gap: 0.3rem;
-  }
-
+  /* Filter accordion and the new attachment filter-grid collapse to one column */
   .filter-grid {
     grid-template-columns: 1fr;
   }
@@ -1677,6 +2062,159 @@ code {
     width: 100%;
   }
 
+  .basic-filter-column {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-link-row {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 0.65rem 1rem;
+  }
+
+  .attachment-control-column {
+    padding-right: 0;
+  }
+
+  /* Sticky attachment toolbar stacks vertically; bulk-action buttons go full-width */
+  .attachment-toolbar {
+    position: static;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.55rem;
+    padding: 0.65rem 0.75rem;
+  }
+
+  .toolbar-selection,
+  .toolbar-actions {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .toolbar-actions {
+    justify-content: stretch;
+  }
+
+  .toolbar-actions form,
+  .toolbar-actions .icon-form {
+    flex: 1 1 auto;
+  }
+
+  .bulk-action,
+  button.bulk-action,
+  .button-link.bulk-action {
+    width: 100%;
+  }
+
+  /* Hide the strict 5-column list headers on mobile; rows become cards */
+  .mail-list-header,
+  .attachment-list-header {
+    display: none;
+  }
+
+  /* Mail rows become stacked cards */
+  .mail-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.3rem;
+    padding: 0.7rem 0.8rem;
+  }
+
+  .mail-row > .meta,
+  .mail-row > .meta.truncate {
+    font-size: 0.82rem;
+    color: var(--muted);
+    text-align: left;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .mail-row .sender-cell {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .mail-row .mail-subject strong {
+    font-size: 1rem;
+  }
+
+  .mail-row .tag-list {
+    gap: 0.35rem;
+    flex-wrap: wrap;
+  }
+
+  .mail-row .priority-cell,
+  .mail-row .priority-select {
+    width: 100%;
+  }
+
+  /* Attachment rows stack: date+badge on top, filename, meta, actions */
+  .attachment-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+    padding: 0.75rem 0.85rem;
+  }
+
+  .attachment-row > .meta.truncate {
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-align: left;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .attachment-row .attachment-main {
+    gap: 0.2rem;
+  }
+
+  .attachment-row .attachment-main strong {
+    font-size: 1rem;
+  }
+
+  .attachment-row .attachment-main .meta {
+    font-size: 0.82rem;
+    line-height: 1.45;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .attachment-row .badge {
+    align-self: flex-start;
+  }
+
+  .attachment-row .row-actions {
+    display: flex;
+    flex-direction: row;
+    gap: 0.45rem;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .attachment-row .priority-cell,
+  .attachment-row .priority-select {
+    width: 100%;
+  }
+
+  /* Pagination row wraps */
+  .pagination-row {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .pagination-row .meta {
+    order: -1;
+    width: 100%;
+  }
+
+  /* Preset dialog internals collapse */
   .preset-save-form,
   .paperless-tasks .preset-save-form {
     grid-template-columns: 1fr;
@@ -1685,52 +2223,20 @@ code {
   .preset-card-main,
   .auto-export-actions {
     grid-template-columns: 1fr;
-    justify-items: start;
+    justify-items: stretch;
   }
 
-  .attachment-toolbar,
-  .toolbar-selection,
-  .toolbar-actions {
-    align-items: stretch;
-  }
-
-  .attachment-toolbar {
-    max-width: none;
-  }
-
-  .toolbar-selection,
-  .toolbar-actions {
+  .auto-export-actions button {
     width: 100%;
   }
 
-  .mail-list-header,
-  .attachment-list-header {
-    display: none;
+  .unlinked-auto-export-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
   }
 
-  .mail-row .mail-subject {
-    grid-column: 1 / -1;
-  }
-
-  .mail-row .tag-list {
-    grid-column: 1 / 3;
-  }
-
-  .mail-row .priority-cell {
-    grid-column: span 1;
-  }
-
-  .attachment-row {
-    grid-template-columns: 1.6rem minmax(0, 1fr) auto;
-  }
-
-  .attachment-row .badge,
-  .attachment-row > .meta,
-  .attachment-row .tag-list,
-  .attachment-row .priority-cell {
-    grid-column: 2 / -1;
-  }
-
+  /* Default action rows stack vertically */
   .action-row,
   .actions,
   .nav,
