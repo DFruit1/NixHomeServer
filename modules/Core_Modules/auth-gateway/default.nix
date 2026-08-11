@@ -103,6 +103,7 @@ let
           header_up -X-Auth-Request-Groups
           header_up -X-Auth-Request-Preferred-Username
           header_up X-Forwarded-Proto https
+          header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
           header_up X-Forwarded-User {http.request.header.X-Forwarded-User}
           header_up X-Forwarded-Email {http.request.header.X-Forwarded-Email}
           header_up X-Forwarded-Groups {http.request.header.X-Forwarded-Groups}
