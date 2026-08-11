@@ -1950,10 +1950,36 @@ async fn items(
             return ApiError::internal(request_id).into_response();
         }
     };
-    if query.include_video_probes {
-        return items_with_video_probes(&state, &root, items, &request_id).await;
+    let root_path = FilePath::new(&root.resolved_path);
+    let mut live_items = Vec::with_capacity(items.len());
+    let mut stale_ids = Vec::new();
+    for item in items {
+        if root_path.join(&item.relative_path).exists() {
+            live_items.push(item);
+        } else {
+            stale_ids.push(item.id);
+        }
     }
-    Json(json!({ "items": items, "nextCursor": null })).into_response()
+    if !stale_ids.is_empty() {
+        let count = stale_ids.len();
+        if let Err(error) = catalog.remove_items(&stale_ids) {
+            log_event(
+                "catalog_prune_failed",
+                &request_id,
+                json!({ "rootId": root.id, "staleCount": count, "error": error.to_string() }),
+            );
+        } else {
+            log_event(
+                "catalog_items_pruned",
+                &request_id,
+                json!({ "rootId": root.id, "prunedCount": count }),
+            );
+        }
+    }
+    if query.include_video_probes {
+        return items_with_video_probes(&state, &root, live_items, &request_id).await;
+    }
+    Json(json!({ "items": live_items, "nextCursor": null })).into_response()
 }
 
 async fn items_with_video_probes(

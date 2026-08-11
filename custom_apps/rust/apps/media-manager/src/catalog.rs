@@ -190,6 +190,16 @@ impl Catalog {
         rows
     }
 
+    pub fn remove_items(&self, ids: &[String]) -> rusqlite::Result<usize> {
+        let mut deleted = 0;
+        for id in ids {
+            deleted += self
+                .connection
+                .execute("DELETE FROM catalog_items WHERE id = ?1", [id])?;
+        }
+        Ok(deleted)
+    }
+
     pub fn list_artwork(
         &self,
         root_id: &str,
