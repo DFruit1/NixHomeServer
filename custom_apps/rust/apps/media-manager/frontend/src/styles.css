@@ -2929,6 +2929,16 @@ a:focus-visible {
 }
 
 /* ── Player responsive ── */
+@media (max-width: 1000px) {
+  .player-layout {
+    grid-template-columns: 1fr;
+  }
+  .player-sidebar {
+    max-height: none;
+    min-height: 0;
+  }
+}
+
 @media (max-width: 640px) {
   .sidebar {
     top: auto;
@@ -3016,21 +3026,23 @@ a:focus-visible {
     align-items: stretch;
     flex-direction: column;
   }
-  .player-layout {
-    grid-template-columns: 1fr;
-  }
-  .player-sidebar {
-    max-height: none;
-    min-height: 0;
+  .now-playing {
+    padding: 24px 16px;
   }
   .now-playing-artwork {
-    width: 200px;
-    height: 200px;
+    width: min(200px, calc(100vw - 80px));
+    height: min(200px, calc(100vw - 80px));
   }
-  .player-time {
+  .now-playing-info {
+    width: 100%;
+  }
+  .track-title,
+  .track-artist-album {
     max-width: 100%;
   }
-  .volume-control {
+  .player-time,
+  .volume-control,
+  .player-extras {
     max-width: 100%;
   }
 }

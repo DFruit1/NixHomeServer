@@ -231,6 +231,46 @@ impl Catalog {
         rows
     }
 
+    pub fn list_media_in_directory(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        directory: &str,
+    ) -> rusqlite::Result<Vec<CatalogItem>> {
+        let prefix = if directory.is_empty() {
+            String::new()
+        } else {
+            format!("{directory}/")
+        };
+        let mut statement = self.connection.prepare(
+            "SELECT id, root_id, owner_username, relative_path, media_kind,
+                    size_bytes, modified_ns, fingerprint
+               FROM catalog_items
+              WHERE root_id = ?1
+                AND (owner_username IS ?2 OR owner_username = ?2)
+                AND instr(relative_path, ?3) = 1
+                AND substr(relative_path, length(?3) + 1) NOT LIKE '%/%'
+                AND media_kind != 'artwork'
+                AND media_kind != 'subtitle'
+              ORDER BY relative_path",
+        )?;
+        let rows = statement
+            .query_map(rusqlite::params![root_id, owner_username, prefix], |row| {
+                Ok(CatalogItem {
+                    id: row.get(0)?,
+                    root_id: row.get(1)?,
+                    owner_username: row.get(2)?,
+                    relative_path: row.get(3)?,
+                    media_kind: row.get(4)?,
+                    size_bytes: row.get(5)?,
+                    modified_ns: row.get(6)?,
+                    fingerprint: row.get(7)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
     pub fn get_playback_position(
         &self,
         item_id: &str,

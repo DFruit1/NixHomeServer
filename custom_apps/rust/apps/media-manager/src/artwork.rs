@@ -12,6 +12,20 @@ use std::{
 
 const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
 
+const EMBEDDED_ARTWORK_KINDS: &[&str] = &[
+    "music",
+    "audiobook",
+    "book",
+    "video",
+    "movie",
+    "tv",
+    "episode",
+];
+
+pub(crate) fn is_embedded_artwork_capable(media_kind: &str) -> bool {
+    EMBEDDED_ARTWORK_KINDS.contains(&media_kind)
+}
+
 pub(crate) struct ArtworkBody {
     pub(crate) bytes: Vec<u8>,
     pub(crate) content_type: String,
@@ -30,9 +44,15 @@ pub(crate) fn read_artwork_file(
     if bytes.len() as u64 > MAX_ARTWORK_BYTES {
         return Err("artwork exceeds the 32 MiB limit".to_string());
     }
+    let mut content_type = artwork_content_type(relative_path).to_string();
+    if content_type == "application/octet-stream" {
+        if let Some(sniffed) = sniff_image_content_type(&bytes) {
+            content_type = sniffed;
+        }
+    }
     Ok(ArtworkBody {
         bytes,
-        content_type: artwork_content_type(relative_path).to_string(),
+        content_type,
     })
 }
 
@@ -89,17 +109,58 @@ pub(crate) fn read_embedded_artwork(
     let Some(picture) = picture else {
         return Ok(None);
     };
-    let Some(mime_type) = picture.mime_type() else {
+    let content_type = picture
+        .mime_type()
+        .map(|mime| mime.as_str().to_string())
+        .filter(|mime| mime.starts_with("image/"))
+        .or_else(|| sniff_image_content_type(picture.data()));
+    let Some(content_type) = content_type else {
         return Ok(None);
     };
-    let content_type = mime_type.as_str();
     if !content_type.starts_with("image/") {
         return Ok(None);
     }
     Ok(Some(ArtworkBody {
         bytes: picture.data().to_vec(),
-        content_type: content_type.to_string(),
+        content_type,
     }))
+}
+
+pub(crate) fn sniff_image_content_type(bytes: &[u8]) -> Option<String> {
+    const SIGNATURES: &[(&str, &[u8])] = &[
+        ("image/jpeg", &[0xFF, 0xD8, 0xFF]),
+        (
+            "image/png",
+            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        ),
+        ("image/gif", b"GIF8"),
+        ("image/bmp", b"BM"),
+        ("image/webp", b"RIFF"),
+    ];
+    for (mime, signature) in SIGNATURES {
+        if bytes.starts_with(signature) {
+            if *mime == "image/webp" && bytes.len() >= 12 && &bytes[8..12] != b"WEBP" {
+                continue;
+            }
+            return Some((*mime).to_string());
+        }
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let brand = &bytes[8..12];
+        let mosaic = &[
+            (b"heic", "image/heic"),
+            (b"heix", "image/heic"),
+            (b"mif1", "image/heif"),
+            (b"avif", "image/avif"),
+            (b"jxl ", "image/jxl"),
+        ];
+        for (brand_bytes, mime) in mosaic {
+            if brand == brand_bytes.as_slice() {
+                return Some((*mime).to_string());
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Option<CatalogItem> {
@@ -111,10 +172,10 @@ pub(crate) fn preferred_artwork(items: &[CatalogItem], target_path: &str) -> Opt
         .to_ascii_lowercase();
     let mut candidate_parents = vec![target_parent];
     let mut ancestor = target_parent;
-    for _ in 0..3 {
-        let Some((parent, _)) = ancestor.rsplit_once('/') else {
+    while let Some((parent, _)) = ancestor.rsplit_once('/') {
+        if parent == ancestor {
             break;
-        };
+        }
         candidate_parents.push(parent);
         ancestor = parent;
     }

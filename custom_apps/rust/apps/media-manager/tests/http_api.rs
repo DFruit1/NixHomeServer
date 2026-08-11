@@ -1677,6 +1677,81 @@ async fn item_image_serves_embedded_audio_cover_artwork() {
 }
 
 #[tokio::test]
+async fn item_image_falls_back_to_embedded_artwork_from_a_sibling_track() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Album")).expect("album directory");
+    std::fs::write(
+        temp.path()
+            .join("shared/_Music/Album/AAA Coverless Track.mp3"),
+        b"coverless audio",
+    )
+    .expect("coverless track");
+    std::fs::write(
+        temp.path()
+            .join("shared/_Music/Album/ZZZ Covered Track.mp3"),
+        mp3_with_embedded_artwork("image/jpeg", b"sibling-cover"),
+    )
+    .expect("sibling with cover");
+    let app = test_app(&temp);
+    let track_id = first_item_id(&app, "shared-music").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{track_id}/image"
+        )))
+        .await
+        .expect("image response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("image/jpeg")
+    );
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert_eq!(body.as_ref(), b"sibling-cover");
+}
+
+#[tokio::test]
+async fn item_image_sniffs_embedded_artwork_when_mime_type_is_missing() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Music/Album")).expect("album directory");
+    let mut jpeg = Vec::from(&b"\xFF\xD8\xFF"[..]);
+    jpeg.extend_from_slice(b"sniffed-cover");
+    std::fs::write(
+        temp.path().join("shared/_Music/Album/Track.mp3"),
+        mp3_with_embedded_artwork("", &jpeg),
+    )
+    .expect("tagged audio without mime type");
+    let app = test_app(&temp);
+    let track_id = first_item_id(&app, "shared-music").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{track_id}/image"
+        )))
+        .await
+        .expect("image response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("image/jpeg")
+    );
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("image body");
+    assert!(body.as_ref().ends_with(b"sniffed-cover"));
+}
+
+#[tokio::test]
 async fn item_image_serves_embedded_webp_cover_artwork() {
     let temp = tempfile::tempdir().expect("temporary directory");
     std::fs::create_dir_all(temp.path().join("shared/_Music/Album")).expect("album directory");

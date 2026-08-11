@@ -3,7 +3,10 @@ use crate::musicbrainz::{
     MUSICBRAINZ_API_BASE,
 };
 use crate::{
-    artwork::{preferred_artwork, read_artwork_file, read_embedded_artwork},
+    artwork::{
+        is_embedded_artwork_capable, preferred_artwork, read_artwork_file, read_embedded_artwork,
+        ArtworkBody,
+    },
     broker::{
         file_fingerprint, open_directory_beneath, open_regular_file_beneath, BrokerAction,
         InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
@@ -2596,12 +2599,49 @@ async fn item_image(
     let root_path = root.resolved_path.clone();
     let artwork_path = artwork.map(|candidate| candidate.relative_path);
     let item_path = item.relative_path.clone();
+    let item_kind = item.media_kind.clone();
+    let item_id_for_logs = item.id.clone();
+    let item_dir = item_path
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let siblings = if artwork_path.is_none() && is_embedded_artwork_capable(&item_kind) {
+        match catalog.list_media_in_directory(
+            &item.root_id,
+            item.owner_username.as_deref(),
+            item_dir,
+        ) {
+            Ok(items) => items
+                .into_iter()
+                .filter(|sibling| sibling.relative_path != item_path)
+                .filter(|sibling| is_embedded_artwork_capable(&sibling.media_kind))
+                .map(|sibling| sibling.relative_path)
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                log_event(
+                    "sibling_media_query_failed",
+                    &request_id,
+                    json!({ "error": error.to_string(), "itemId": item_id_for_logs }),
+                );
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
     let body = match tokio::task::spawn_blocking(move || {
         if let Some(relative_path) = artwork_path {
-            read_artwork_file(FilePath::new(&root_path), &relative_path).map(Some)
-        } else {
-            read_embedded_artwork(FilePath::new(&root_path), &item_path)
+            return read_artwork_file(FilePath::new(&root_path), &relative_path).map(Some);
         }
+        if let Ok(Some(body)) = read_embedded_artwork(FilePath::new(&root_path), &item_path) {
+            return Ok(Some(body));
+        }
+        for sibling_path in &siblings {
+            if let Ok(Some(body)) = read_embedded_artwork(FilePath::new(&root_path), sibling_path) {
+                return Ok(Some(body));
+            }
+        }
+        Ok::<Option<ArtworkBody>, String>(None)
     })
     .await
     {
