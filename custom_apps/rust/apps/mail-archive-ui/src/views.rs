@@ -1241,13 +1241,13 @@ pub(super) fn render_attachment_item(
 
     let download_action = format!(
         "<form method=\"post\" action=\"/attachments/{}/download/browser\" class=\"icon-form\">
-          <button class=\"icon-button\" type=\"submit\" title=\"Download attachment locally\" aria-label=\"Download attachment locally\">↓</button>
+          <button class=\"row-action-button\" type=\"submit\" title=\"Download attachment locally\" aria-label=\"Download attachment locally\">↓</button>
         </form>",
         escape_html(&item.attachment.attachment_key),
     );
     let paperless_action = if let Some(sent_at) = item.paperless_sent_at.as_deref() {
         format!(
-            "<button class=\"icon-button paperless-sent-button\" type=\"button\" title=\"Successfully sent to Paperless on {}\" aria-label=\"Successfully sent to Paperless on {}\" data-paperless-sent-button>✓</button>",
+            "<button class=\"row-action-button paperless-sent-button\" type=\"button\" title=\"Successfully sent to Paperless on {}\" aria-label=\"Successfully sent to Paperless on {}\" data-paperless-sent-button>✓</button>",
             escape_html(sent_at),
             escape_html(sent_at),
         )
@@ -1256,7 +1256,7 @@ pub(super) fn render_attachment_item(
             "<form method=\"post\" action=\"/attachments/send-paperless\" class=\"icon-form\" data-paperless-form>
               <input type=\"hidden\" name=\"return_to\" value=\"{}\">
               <input type=\"hidden\" name=\"attachment_keys\" value=\"{}\">
-              <button class=\"secondary icon-button paperless-send-button\" type=\"submit\" title=\"Send attachment to Paperless\" aria-label=\"Send attachment to Paperless\" data-paperless-button>&#8594;</button>
+              <button class=\"secondary row-action-button paperless-send-button\" type=\"submit\" title=\"Send attachment to Paperless\" aria-label=\"Send attachment to Paperless\" data-paperless-button>&#8594;</button>
             </form>",
             escape_html(return_to),
             escape_html(&item.attachment.attachment_key),
