@@ -44,7 +44,12 @@ for ((offset = 0; offset < ${#variants[@]}; offset += batch_size)); do
       and .value.removedOwnedSecretsAbsent
       and .value.guardedServicesValid
       and .value.removedGuardedServicesAbsent
-      and (.value.registry == (.value.selected | map({ key: ., value: true }) | from_entries))
+      and (.value.registry == (
+        (.value.selected + ["homepage"])
+        | unique
+        | map({ key: ., value: true })
+        | from_entries
+      ))
       and (.value.caddyHostCount >= 3)
       and (.value.oauthClientCount >= 3)
       and (
@@ -68,8 +73,8 @@ for ((offset = 0; offset < ${#variants[@]}; offset += batch_size)); do
         end
       )
     )
-    and ((."core-only"? // { selected: ["homepage"], registry: { homepage: true } })
-      | .selected == ["homepage"] and .registry == { homepage: true })
+    and ((."core-only"? // { selected: [], registry: { homepage: true } })
+      | .selected == [] and .registry == { homepage: true })
   ' <<<"$matrix_json" >/dev/null || {
     echo "❌ Optional-module removal matrix failed structural validation."
     jq . <<<"$matrix_json"
@@ -101,7 +106,7 @@ prowlarr_only_json="$(
 
 jq -e '."prowlarr-only" as $variant
   | $variant.valid
-  and ($variant.selected == ["homepage", "prowlarr"])
+  and ($variant.selected == ["prowlarr"])
   and ($variant.registry == { homepage: true, prowlarr: true })
   and ($variant.mediaAutomationSurface.mediaLayoutPresent == false)
   and ($variant.mediaAutomationSurface.mediaGroupPresent == false)

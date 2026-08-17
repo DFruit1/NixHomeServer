@@ -34,6 +34,7 @@ services_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
     "media-automation-bootstrap-prowlarr-qbittorrent"
     "media-automation-bootstrap-sonarr"
     "media-automation-bootstrap-radarr"
+    "media-automation-bootstrap-chaptarr"
     "media-automation-bootstrap-prowlarr"
     "media-automation-bootstrap-seerr"
     "paperless-permissions-bootstrap"
@@ -53,6 +54,7 @@ services_json="$(NIXHOMESERVER_TEST_HOST="$host" flake_eval_json '
     "media-automation-bootstrap-prowlarr-qbittorrent"
     "media-automation-bootstrap-sonarr"
     "media-automation-bootstrap-radarr"
+    "media-automation-bootstrap-chaptarr"
     "media-automation-bootstrap-prowlarr"
     "media-automation-bootstrap-seerr"
     "paperless-permissions-bootstrap"
@@ -72,7 +74,7 @@ in
 ')"
 
 jq -e '
-  length == 22
+  length == 23
   and all(
     to_entries[];
     .value.restart == "on-failure"

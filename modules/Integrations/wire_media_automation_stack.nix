@@ -1,21 +1,26 @@
 { config, lib, options, pkgs, vars, ... }:
 
 let
+  storageValidation = import ../../lib/storage-validation.nix { inherit lib; };
   hasRepoModule = name: lib.hasAttrByPath [ "repo" name ] options;
   appEnabled = name:
     hasRepoModule name
     && lib.attrByPath [ "repo" name "enable" ] false config;
+  chaptarrEnabled = appEnabled "chaptarr";
   seerrEnabled = appEnabled "seerr";
   sonarrEnabled = appEnabled "sonarr";
   radarrEnabled = appEnabled "radarr";
   prowlarrEnabled = appEnabled "prowlarr";
   qbittorrentEnabled = appEnabled "qbittorrent";
   jellyfinPresent = hasRepoModule "jellyfin";
+  audiobookshelfPresent = hasRepoModule "audiobookshelf";
+  kavitaPresent = hasRepoModule "kavita";
   # Jellyfin is enabled by importing its module; unlike the Arr modules, it
   # intentionally has no separate repo.jellyfin.enable switch.
   jellyfinEnabled = jellyfinPresent;
   enabled =
-    seerrEnabled
+    chaptarrEnabled
+    || seerrEnabled
     || sonarrEnabled
     || radarrEnabled
     || prowlarrEnabled
@@ -24,7 +29,7 @@ let
   storageLayoutEnabled = videoLayoutEnabled || qbittorrentEnabled;
   loopback = vars.networking.loopbackIPv4;
   ports = vars.networking.ports;
-  qbitPaths =
+  qbitPathsRaw =
     if hasRepoModule "qbittorrent" then
       config.repo.qbittorrent.paths
     else
@@ -36,11 +41,21 @@ let
         tvDir = "${completeDir}/tv";
         prowlarrDir = "${vars.sharedRoot}/_Downloads/prowlarr";
       };
+  qbitPaths = qbitPathsRaw // {
+    downloadRoot = lib.removeSuffix "/" qbitPathsRaw.downloadRoot;
+    completeDir = lib.removeSuffix "/" qbitPathsRaw.completeDir;
+  };
   sharedVideosRoot =
     if jellyfinPresent then config.repo.jellyfin.paths.sharedVideosRoot
     else "${vars.sharedRoot}/_Videos";
   moviesRoot = "${sharedVideosRoot}/_Movies";
   showsRoot = "${sharedVideosRoot}/_Shows";
+  booksDownloadDir = "${qbitPaths.completeDir}/books";
+  qbitDownloadRootPrefix = "${qbitPaths.downloadRoot}/";
+  qbitCompleteDirWithinDownloadRoot =
+    qbitPaths.completeDir != qbitPaths.downloadRoot
+    && lib.hasPrefix qbitDownloadRootPrefix "${qbitPaths.completeDir}/";
+  qbitCompleteRelativeDir = lib.removePrefix qbitDownloadRootPrefix qbitPaths.completeDir;
   seerrManagedDir = "/var/lib/seerr/.nixos-managed";
   seerrJellyfinBootstrapUser = "seerr-bootstrap";
   seerrJellyfinBootstrapEmail = "seerr-bootstrap@${vars.domain}";
@@ -73,21 +88,59 @@ in
     warnings = lib.optional (seerrEnabled && !jellyfinEnabled)
       "Seerr is enabled without Jellyfin; automatic Seerr/Jellyfin bootstrap is disabled and Seerr must be configured manually.";
 
-    repo.storage.sharedRoots.contentSubdirs = lib.mkIf storageLayoutEnabled (
-      lib.optional qbittorrentEnabled "_Downloads"
-      ++ lib.optional videoLayoutEnabled "_Videos"
-    );
+    assertions = lib.optionals (chaptarrEnabled && qbittorrentEnabled) [
+      {
+        assertion =
+          storageValidation.validAbsolutePath qbitPaths.downloadRoot
+          && storageValidation.validAbsolutePath qbitPaths.completeDir;
+        message = "qBittorrent download paths used by Chaptarr must be normalized absolute paths without traversal components.";
+      }
+      {
+        assertion = lib.removeSuffix "/" config.repo.chaptarr.paths.downloadRoot == qbitPaths.downloadRoot;
+        message = "Chaptarr and qBittorrent must use the same host download root for remote-path translation.";
+      }
+      {
+        assertion = qbitCompleteDirWithinDownloadRoot;
+        message = "qBittorrent's completed-download directory must be below its download root so Chaptarr can translate it into /downloads.";
+      }
+    ];
 
-    repo.storage.dataPool.guardedServices =
-      lib.optional storageLayoutEnabled "media-automation-storage-layout-v1"
-      ++ lib.optional qbittorrentEnabled "qbittorrent"
-      ++ lib.optional sonarrEnabled "sonarr"
-      ++ lib.optional radarrEnabled "radarr"
-      ++ lib.optional qbittorrentEnabled "media-automation-bootstrap-qbittorrent"
-      ++ lib.optional (prowlarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-prowlarr-qbittorrent"
-      ++ lib.optional (sonarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-sonarr"
-      ++ lib.optional (radarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-radarr"
-      ++ lib.optional (prowlarrEnabled && sonarrEnabled && radarrEnabled) "media-automation-bootstrap-prowlarr";
+    repo = {
+      storage.sharedRoots.contentSubdirs = lib.mkIf storageLayoutEnabled (
+        lib.optional qbittorrentEnabled "_Downloads"
+          ++ lib.optional videoLayoutEnabled "_Videos"
+      );
+
+      storage.dataPool.guardedServices =
+        lib.optional storageLayoutEnabled "media-automation-storage-layout-v1"
+          ++ lib.optional qbittorrentEnabled "qbittorrent"
+          ++ lib.optional sonarrEnabled "sonarr"
+          ++ lib.optional radarrEnabled "radarr"
+          ++ lib.optional qbittorrentEnabled "media-automation-bootstrap-qbittorrent"
+          ++ lib.optional (prowlarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-prowlarr-qbittorrent"
+          ++ lib.optional (sonarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-sonarr"
+          ++ lib.optional (radarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-radarr"
+          ++ lib.optional (chaptarrEnabled && qbittorrentEnabled) "media-automation-bootstrap-chaptarr"
+          ++ lib.optional (prowlarrEnabled && (sonarrEnabled || radarrEnabled || chaptarrEnabled)) "media-automation-bootstrap-prowlarr";
+    } // lib.optionalAttrs (hasRepoModule "chaptarr") {
+      chaptarr.paths = lib.mkIf chaptarrEnabled (lib.mkMerge [
+        (lib.optionalAttrs audiobookshelfPresent {
+          audiobookRoot = lib.mkDefault config.repo.audiobookshelf.paths.sharedAudiobooksRoot;
+        })
+        (lib.optionalAttrs kavitaPresent {
+          ebookRoot = lib.mkDefault "${config.repo.kavita.paths.sharedBooksRoot}/_Ebooks";
+        })
+      ]);
+    };
+
+    systemd.services.chaptarr-storage-layout-v1 = lib.mkIf chaptarrEnabled {
+      wants =
+        lib.optional audiobookshelfPresent "audiobookshelf-storage-layout-v1.service"
+        ++ lib.optional kavitaPresent "kavita-storage-layout-v1.service";
+      after =
+        lib.optional audiobookshelfPresent "audiobookshelf-storage-layout-v1.service"
+        ++ lib.optional kavitaPresent "kavita-storage-layout-v1.service";
+    };
 
     systemd.services.media-automation-storage-layout-v1 = lib.mkIf storageLayoutEnabled {
       description = "Provision shared storage for media automation";
@@ -109,6 +162,7 @@ in
         "media-automation-bootstrap-qbittorrent.service"
         "media-automation-bootstrap-sonarr.service"
         "media-automation-bootstrap-radarr.service"
+        "media-automation-bootstrap-chaptarr.service"
         "media-automation-bootstrap-prowlarr.service"
         "media-automation-bootstrap-prowlarr-qbittorrent.service"
       ];
@@ -135,6 +189,7 @@ in
             qbitPaths.tvDir
             qbitPaths.prowlarrDir
           ]
+          ++ lib.optional (chaptarrEnabled && qbittorrentEnabled) booksDownloadDir
           ++ lib.optional radarrEnabled moviesRoot
           ++ lib.optional sonarrEnabled showsRoot
         )}; do
@@ -144,6 +199,12 @@ in
             setfacl -m g:jellyfin-media:rwX,d:g:jellyfin-media:rwx "$path"
           ''}
         done
+        ${lib.optionalString (chaptarrEnabled && qbittorrentEnabled) ''
+          setfacl -m g:chaptarr:r-X ${lib.escapeShellArgs [ qbitPaths.downloadRoot qbitPaths.completeDir ]}
+          setfacl -m g:chaptarr:rwx,d:g:chaptarr:rwx ${lib.escapeShellArg booksDownloadDir}
+          setfacl -P -R -m g:chaptarr:rwX ${lib.escapeShellArg booksDownloadDir}
+          find ${lib.escapeShellArg booksDownloadDir} -type d -exec setfacl -m d:g:chaptarr:rwx '{}' +
+        ''}
       '';
     };
 
@@ -194,6 +255,9 @@ in
         create_category movies ${lib.escapeShellArg qbitPaths.moviesDir}
         create_category tv ${lib.escapeShellArg qbitPaths.tvDir}
         create_category prowlarr ${lib.escapeShellArg qbitPaths.prowlarrDir}
+        ${lib.optionalString chaptarrEnabled ''
+          create_category books ${lib.escapeShellArg booksDownloadDir}
+        ''}
 
         remove_empty_legacy_category() {
           local name="$1"
@@ -523,55 +587,115 @@ in
       '';
     };
 
-    systemd.services.media-automation-bootstrap-prowlarr = lib.mkIf (prowlarrEnabled && sonarrEnabled && radarrEnabled) {
-      description = "Bootstrap Prowlarr application links to Sonarr and Radarr";
+    systemd.services.media-automation-bootstrap-chaptarr = lib.mkIf (chaptarrEnabled && qbittorrentEnabled)
+      (import ./helpers/chaptarr-qbittorrent-bootstrap.nix {
+        inherit
+          config
+          lib
+          automationPath
+          reconcileServiceConfig
+          loopback
+          ports
+          ;
+        hostCompleteDir = qbitPaths.completeDir;
+        containerCompleteDir = "/downloads/${qbitCompleteRelativeDir}";
+      });
+
+    systemd.services.media-automation-bootstrap-prowlarr = lib.mkIf (prowlarrEnabled && (sonarrEnabled || radarrEnabled || chaptarrEnabled)) {
+      description = "Bootstrap Prowlarr application links";
       wantedBy = [ "multi-user.target" ];
       wants = [
         "prowlarr.service"
-        "sonarr.service"
-        "radarr.service"
-        "media-automation-storage-layout-v1.service"
-      ];
+      ]
+      ++ lib.optional sonarrEnabled "sonarr.service"
+      ++ lib.optional radarrEnabled "radarr.service"
+      ++ lib.optional chaptarrEnabled "chaptarr.service"
+      ++ lib.optional storageLayoutEnabled "media-automation-storage-layout-v1.service";
       after = [
         "prowlarr.service"
-        "sonarr.service"
-        "radarr.service"
-        "media-automation-storage-layout-v1.service"
-      ];
+      ]
+      ++ lib.optional sonarrEnabled "sonarr.service"
+      ++ lib.optional radarrEnabled "radarr.service"
+      ++ lib.optional chaptarrEnabled "chaptarr.service"
+      ++ lib.optional storageLayoutEnabled "media-automation-storage-layout-v1.service";
       path = automationPath;
-      serviceConfig = reconcileServiceConfig;
+      serviceConfig = reconcileServiceConfig // {
+        RuntimeDirectory = "media-automation-bootstrap-prowlarr";
+        RuntimeDirectoryMode = "0700";
+      };
       script = ''
         set -euo pipefail
 
         prowlarr_config=/var/lib/prowlarr/config.xml
-        sonarr_config=/var/lib/sonarr/.config/NzbDrone/config.xml
-        radarr_config=/var/lib/radarr/.config/Radarr/config.xml
         prowlarr_url="http://${loopback}:${toString ports.prowlarr}"
+        required_configs=("$prowlarr_config")
+        ${lib.optionalString sonarrEnabled ''
+          sonarr_config=/var/lib/sonarr/.config/NzbDrone/config.xml
+          required_configs+=("$sonarr_config")
+        ''}
+        ${lib.optionalString radarrEnabled ''
+          radarr_config=/var/lib/radarr/.config/Radarr/config.xml
+          required_configs+=("$radarr_config")
+        ''}
+        ${lib.optionalString chaptarrEnabled ''
+          chaptarr_config=${lib.escapeShellArg "${config.repo.chaptarr.paths.stateDir}/config.xml"}
+          required_configs+=("$chaptarr_config")
+        ''}
 
         read_api_key() {
           [[ -f "$1" ]] || return 0
           sed -n 's:.*<ApiKey>\(.*\)</ApiKey>.*:\1:p' "$1" | head -n1
         }
 
+        all_api_keys_ready() {
+          local config_file
+          for config_file in "''${required_configs[@]}"; do
+            [[ -f "$config_file" ]] && grep -q '<ApiKey>' "$config_file" || return 1
+          done
+        }
+
         for _ in $(seq 1 120); do
-          [[ -f "$prowlarr_config" && -f "$sonarr_config" && -f "$radarr_config" ]] \
-            && grep -q '<ApiKey>' "$prowlarr_config" \
-            && grep -q '<ApiKey>' "$sonarr_config" \
-            && grep -q '<ApiKey>' "$radarr_config" \
-            && break
+          all_api_keys_ready && break
           sleep 1
         done
 
         prowlarr_key="$(read_api_key "$prowlarr_config")"
-        sonarr_key="$(read_api_key "$sonarr_config")"
-        radarr_key="$(read_api_key "$radarr_config")"
-        [[ -n "$prowlarr_key" && -n "$sonarr_key" && -n "$radarr_key" ]] || {
-          echo "Prowlarr, Sonarr, or Radarr API keys are not ready; retrying media bootstrap." >&2
+        [[ -n "$prowlarr_key" ]] || {
+          echo "Prowlarr API key is not ready; retrying media bootstrap." >&2
           exit 1
         }
+        ${lib.optionalString sonarrEnabled ''
+          sonarr_key="$(read_api_key "$sonarr_config")"
+          [[ -n "$sonarr_key" ]] || {
+            echo "Sonarr API key is not ready; retrying media bootstrap." >&2
+            exit 1
+          }
+        ''}
+        ${lib.optionalString radarrEnabled ''
+          radarr_key="$(read_api_key "$radarr_config")"
+          [[ -n "$radarr_key" ]] || {
+            echo "Radarr API key is not ready; retrying media bootstrap." >&2
+            exit 1
+          }
+        ''}
+        ${lib.optionalString chaptarrEnabled ''
+          chaptarr_key="$(read_api_key "$chaptarr_config")"
+          [[ -n "$chaptarr_key" ]] || {
+            echo "Chaptarr API key is not ready; retrying media bootstrap." >&2
+            exit 1
+          }
+        ''}
+
+        umask 077
+        runtime_dir=/run/media-automation-bootstrap-prowlarr
+        papi_header="$runtime_dir/api-header"
+        install -m 0600 /dev/null "$papi_header"
+        api_key_files=()
+        trap 'rm -f "$papi_header" "''${api_key_files[@]}"' EXIT
+        printf 'X-Api-Key: %s\n' "$prowlarr_key" > "$papi_header"
 
         papi() {
-          curl --silent --show-error --fail -H "X-Api-Key: $prowlarr_key" "$@"
+          curl --silent --show-error --fail -H "@$papi_header" "$@"
         }
 
         for _ in $(seq 1 60); do
@@ -593,6 +717,11 @@ in
           local sync_categories="$5"
           local existing_id
           local payload
+          local api_key_file
+
+          api_key_file="$(mktemp "$runtime_dir/api-key.XXXXXX")"
+          api_key_files+=("$api_key_file")
+          printf '%s' "$api_key" > "$api_key_file"
 
           existing_id="$(papi "$prowlarr_url/api/v1/applications" | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -n1)"
           payload="$(
@@ -602,7 +731,7 @@ in
                 --arg name "$name" \
                 --arg baseUrl "$base_url" \
                 --arg prowlarrUrl "$prowlarr_url" \
-                --arg apiKey "$api_key" \
+                --rawfile apiKey "$api_key_file" \
                 --argjson syncCategories "$sync_categories" \
                 '
                 map(select(.implementation == $implementation))[0]
@@ -618,6 +747,7 @@ in
                     end
                   ))'
           )"
+          rm -f "$api_key_file"
 
           [[ -n "$payload" && "$payload" != "null" ]] || {
             echo "Prowlarr did not expose the $implementation application schema; retrying media bootstrap." >&2
@@ -627,12 +757,21 @@ in
             jq --argjson id "$existing_id" '.id = $id' <<<"$payload" \
               | papi -X PUT -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/applications/$existing_id" >/dev/null
           else
-            papi -X POST -H 'Content-Type: application/json' --data-binary "$payload" "$prowlarr_url/api/v1/applications" >/dev/null
+            printf '%s' "$payload" \
+              | papi -X POST -H 'Content-Type: application/json' --data-binary @- "$prowlarr_url/api/v1/applications" >/dev/null
           fi
         }
 
-        upsert_app Sonarr Sonarr "http://${loopback}:${toString ports.sonarr}" "$sonarr_key" '[5000,5010,5020,5030,5040,5045,5050,5070,5080]'
-        upsert_app Radarr Radarr "http://${loopback}:${toString ports.radarr}" "$radarr_key" '[2000,2010,2020,2030,2040,2045,2050,2060,2070,2080]'
+        ${lib.optionalString sonarrEnabled ''
+          upsert_app Sonarr Sonarr "http://${loopback}:${toString ports.sonarr}" "$sonarr_key" '[5000,5010,5020,5030,5040,5045,5050,5070,5080]'
+        ''}
+        ${lib.optionalString radarrEnabled ''
+          upsert_app Radarr Radarr "http://${loopback}:${toString ports.radarr}" "$radarr_key" '[2000,2010,2020,2030,2040,2045,2050,2060,2070,2080]'
+        ''}
+        ${lib.optionalString chaptarrEnabled ''
+          # Chaptarr exposes the Readarr-compatible API expected by Prowlarr.
+          upsert_app Chaptarr Readarr "http://${loopback}:${toString ports.chaptarr}" "$chaptarr_key" '[3030,7000,7020]'
+        ''}
       '';
     };
 

@@ -31,6 +31,7 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   workerUnit = cfg.systemd.services.mkvmaker-import-worker.unitConfig;
   workerRestartIfChanged = cfg.systemd.services.mkvmaker-import-worker.restartIfChanged;
   workerWantedBy = cfg.systemd.services.mkvmaker-import-worker.wantedBy;
+  storageLayout = cfg.systemd.services.mkvmaker-storage-layout-v1.script;
   tmpfiles = cfg.systemd.tmpfiles.rules;
   homepageEnvironment = cfg.systemd.services.homepage.environment;
 }')"
@@ -90,6 +91,7 @@ jq -e '
     "/mnt/data/shared/.mkvmaker-staging"
   ])
   and (.workerUnit.StartLimitBurst > 60)
+  and (.storageLayout | contains("/_Duplicate"))
   and (.homepageEnvironment.HOMEPAGE_MKVMAKER_PROGRESS_FILE == "/run/mkvmaker/progress.json")
 ' <<<"$surface_json" >/dev/null || {
   echo "❌ Mkvmaker evaluated service or storage surface is invalid." >&2
@@ -107,6 +109,16 @@ require_fixed custom_apps/mkvmaker/src/main.rs 'let _ = fs::remove_file(&partial
   "the converter must discard a stale partial file before restarting an encode"
 require_fixed custom_apps/mkvmaker/auto_import.py 'find_duplicate' \
   "mkvmaker must hash-check ISOs against the _Processed folder before conversion"
+require_fixed custom_apps/mkvmaker/auto_import.py 'is_jellyfin_named' \
+  "mkvmaker must detect Jellyfin-style filename curation and preserve the user's chosen library name"
+require_fixed custom_apps/mkvmaker/auto_import.py 'if not hints.is_jellyfin_named' \
+  "mkvmaker must bypass TVmaze when the ISO filename already carries Jellyfin naming signals"
+require_fixed custom_apps/mkvmaker/auto_import.py 'find_existing_series' \
+  "mkvmaker must keep related discs in one Jellyfin library folder for queue continuity"
+require_fixed custom_apps/mkvmaker/auto_import.py '_roman_to_int' \
+  "mkvmaker must interpret Roman/Arabic series identifiers (e.g. Rumpole IV/3) as season numbers"
+require_fixed custom_apps/mkvmaker/auto_import.py 'RUMPOLE_OF_THE_BAILEY_IV_DISC_2' \
+  "mkvmaker self-test must cover the user's Rumpole IV / Series 3 grouping example"
 
 mkdir -p "$test_root/inbox" "$test_root/movies" "$test_root/shows" "$test_root/state"
 printf 'fake iso data\n' >"$test_root/inbox/Restartable_2001.iso"
@@ -115,6 +127,7 @@ fake_converter="$test_root/fake-converter"
 cat >"$fake_converter" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'invoked\n' >>"$test_root/converter-invocations"
 if [[ ! -e "$test_root/allow-completion" ]]; then
   printf '%s\n' "\$@" >"$test_root/converter-args"
   printf '%s\n' "\$\$" >"$test_root/converter.pid"
@@ -271,27 +284,150 @@ state["sources"][source.name] = {
     "attempts": 0,
 }
 state_path.write_text(json.dumps(state), encoding="utf-8")
+
+canonical_output = root / "movies/Restartable/Restartable.mkv"
+duplicate_output = root / "movies/Restartable duplicate/Restartable duplicate.mkv"
+canonical_output.parent.mkdir(parents=True, exist_ok=True)
+duplicate_output.parent.mkdir(parents=True, exist_ok=True)
+canonical_output.write_bytes(b"canonical mkv\n")
+duplicate_output.write_bytes(b"duplicate mkv\n")
+
+jobs = root / "state/disc-to-jellyfin/jobs"
+jobs.mkdir(parents=True, exist_ok=True)
+common = {
+    "completed": True,
+    "input_size": source.stat().st_size,
+    "title": 1,
+}
+(jobs / "canonical.job.json").write_text(
+    json.dumps({
+        **common,
+        "input": str(root / "inbox/Restartable_2001.iso"),
+        "output": str(canonical_output),
+    }),
+    encoding="utf-8",
+)
+(jobs / "duplicate.job.json").write_text(
+    json.dumps({
+        **common,
+        "input": str(source),
+        "output": str(duplicate_output),
+    }),
+    encoding="utf-8",
+)
 PY
 
 "${auto_import[@]}" >/dev/null
-[[ -f "$test_root/inbox/_Failed/Restartable_2001_again.iso" ]] || {
-  echo "❌ Duplicate ISO was not moved to the _Failed folder." >&2
+[[ -f "$test_root/inbox/_Duplicate/Restartable_2001_again.iso" ]] || {
+  echo "❌ Duplicate ISO was not moved to the _Duplicate folder." >&2
   exit 1
 }
 [[ -f "$test_root/inbox/_Processed/Restartable_2001.iso" ]] || {
   echo "❌ Duplicate check removed the originally processed ISO." >&2
   exit 1
 }
-error_log="$test_root/inbox/_Failed/Restartable_2001_again.iso.error.txt"
-grep -q "Duplicate ISO" "$error_log" || {
-  echo "❌ Duplicate note is missing from the error log." >&2
+duplicate_report="$test_root/inbox/_Duplicate/Restartable_2001_again.iso.duplicate.json"
+jq -e '
+  (.duplicateOf == "Restartable_2001.iso")
+  and (.quarantinedOutputs | length == 1)
+' "$duplicate_report" >/dev/null || {
+  echo "❌ Duplicate report is missing its canonical ISO or quarantined output." >&2
   exit 1
 }
-grep -q "Restartable_2001.iso" "$error_log" || {
-  echo "❌ Duplicate note does not name the existing ISO." >&2
+[[ -f "$test_root/movies/Restartable/Restartable.mkv" ]] || {
+  echo "❌ Duplicate cleanup moved the canonical Jellyfin output." >&2
+  exit 1
+}
+[[ ! -e "$test_root/movies/Restartable duplicate/Restartable duplicate.mkv" ]] || {
+  echo "❌ Duplicate cleanup left the duplicate output in Jellyfin." >&2
+  exit 1
+}
+[[ -f "$test_root/inbox/_Duplicate/_Movies/Restartable duplicate/Restartable duplicate.mkv" ]] || {
+  echo "❌ Duplicate cleanup did not preserve the duplicate output for review." >&2
   exit 1
 }
 jq -e '.sources["Restartable_2001_again.iso"] == null' "$test_root/state/queue.json" >/dev/null
 jq -e '.processed_hashes["Restartable_2001.iso"] != null' "$test_root/state/queue.json" >/dev/null
+[[ "$(wc -l <"$test_root/converter-invocations")" == 2 ]] || {
+  echo "❌ Byte-identical ISO reached the converter." >&2
+  exit 1
+}
+
+# A repeated upload with exactly the same filename must also be detected. The
+# processed and inbox paths are distinct, so excluding equal basenames would
+# unnecessarily decode the same bytes again.
+cp "$test_root/inbox/_Processed/Restartable_2001.iso" \
+  "$test_root/inbox/Restartable_2001.iso"
+TEST_ROOT="$test_root" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["TEST_ROOT"])
+state_path = root / "state/queue.json"
+source = root / "inbox/Restartable_2001.iso"
+stat = source.stat()
+state = json.loads(state_path.read_text(encoding="utf-8"))
+state["sources"][source.name] = {
+    "signature": {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+    "unchanged_since": 0,
+    "attempts": 0,
+}
+state_path.write_text(json.dumps(state), encoding="utf-8")
+PY
+
+"${auto_import[@]}" >/dev/null
+[[ -f "$test_root/inbox/_Duplicate/Restartable_2001.iso" ]] || {
+  echo "❌ Same-name duplicate ISO was not quarantined." >&2
+  exit 1
+}
+[[ "$(wc -l <"$test_root/converter-invocations")" == 2 ]] || {
+  echo "❌ Same-name duplicate ISO reached the converter." >&2
+  exit 1
+}
+
+# Hash I/O failures must never degrade into an unchecked conversion.
+cp "$test_root/inbox/_Processed/Restartable_2001.iso" \
+  "$test_root/inbox/Unverifiable.iso"
+TEST_ROOT="$test_root" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["TEST_ROOT"])
+state_path = root / "state/queue.json"
+source = root / "inbox/Unverifiable.iso"
+stat = source.stat()
+state = json.loads(state_path.read_text(encoding="utf-8"))
+state["processed_hashes"].pop("Restartable_2001.iso", None)
+state["sources"][source.name] = {
+    "signature": {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+    "unchanged_since": 0,
+    "attempts": 0,
+}
+state_path.write_text(json.dumps(state), encoding="utf-8")
+PY
+chmod 000 "$test_root/inbox/_Processed/Restartable_2001.iso"
+set +e
+"${auto_import[@]}" >/dev/null 2>&1
+unverifiable_status=$?
+set -e
+chmod 0644 "$test_root/inbox/_Processed/Restartable_2001.iso"
+[[ "$unverifiable_status" == 1 ]] || {
+  echo "❌ Unavailable duplicate hashing did not fail the importer." >&2
+  exit 1
+}
+[[ -f "$test_root/inbox/Unverifiable.iso" ]] || {
+  echo "❌ Unverifiable ISO was not retained for a safe retry." >&2
+  exit 1
+}
+jq -e '
+  (.sources["Unverifiable.iso"].status == "duplicate-check-failed")
+  and (.sources["Unverifiable.iso"].attempts == 1)
+' "$test_root/state/queue.json" >/dev/null
+[[ "$(wc -l <"$test_root/converter-invocations")" == 2 ]] || {
+  echo "❌ Unverifiable ISO reached the converter." >&2
+  exit 1
+}
 
 echo "✅ Mkvmaker queue, title-selection, path scope, deduplication, and service policy are valid."

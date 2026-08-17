@@ -204,6 +204,10 @@ require_fixed documentation/quickstart.md 'mount --bind /mnt/persist/etc/nixos /
   "Fresh installs must seed the on-host repository into persisted storage before first rollback."
 require_fixed modules/Core_Modules/impermanence/default.nix 'system.activationScripts.seedCorePersistence' \
   "Existing hosts must migrate newly centralized core persistence before bind mounts hide live state."
+require_fixed modules/Core_Modules/impermanence/default.nix '"/var/lib/nixhomeserver-deploy"' \
+  "Guarded deployment state must survive root rollback and live impermanence activation."
+require_fixed modules/Core_Modules/impermanence/default.nix 'seed_directory /var/lib/nixhomeserver-deploy' \
+  "The first live adoption of persistent deployment state must preserve the active transaction token."
 require_fixed modules/Core_Modules/impermanence/default.nix 'mount --bind "$persistent_path" "$source_path"' \
   "Existing core files must be safely adopted during a live impermanence activation."
 require_fixed modules/Core_Modules/impermanence/default.nix 'if [ ! -e "$source_path" ]; then' \

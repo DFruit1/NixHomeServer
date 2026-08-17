@@ -80,9 +80,9 @@ in
       "d ${paths.stateDir} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.cacheRoot} 0750 youtube-downloader youtube-downloader -"
       "d ${paths.tempDir} 0750 youtube-downloader youtube-downloader -"
-      "d ${paths.sharedVideoRoot} 1770 youtube-downloader ${sharedAccessGroup} -"
-      "d ${paths.sharedAudioRoot} 1770 youtube-downloader ${sharedAccessGroup} -"
-      "d ${paths.sharedAudiobooksRoot} 1770 youtube-downloader ${sharedAccessGroup} -"
+      "d ${paths.sharedVideoRoot} 0770 youtube-downloader ${sharedAccessGroup} -"
+      "d ${paths.sharedAudioRoot} 0770 youtube-downloader ${sharedAccessGroup} -"
+      "d ${paths.sharedAudiobooksRoot} 0770 youtube-downloader ${sharedAccessGroup} -"
     ];
   };
 }

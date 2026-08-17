@@ -8,8 +8,8 @@ cd "$TESTS_REPO_ROOT"
 
 ensure_tools find rg sort jq
 
-# Each integration file maps to the app names it depends on.
-# An integration is only meaningful when all of its listed apps are enabled.
+# Each integration file maps to app names that must all be enabled. Integrations
+# with independently optional participants use the separate participant map.
 declare -A integration_apps=(
   [expose_mail_archive_emails_in_files]="mail-archive-ui files"
   [grant_files_access_to_audiobookshelf_media]="files audiobookshelf"
@@ -20,7 +20,10 @@ declare -A integration_apps=(
   [send_mail_archive_documents_to_paperless]="mail-archive-ui paperless"
   [wait_for_audiobookshelf_storage_before_youtube_downloader]="audiobookshelf youtube-downloader"
   [wait_for_jellyfin_storage_before_youtube_downloader]="jellyfin youtube-downloader"
-  [wire_media_automation_stack]="seerr sonarr radarr prowlarr qbittorrent jellyfin"
+  [wire_media_automation_stack]=""
+)
+declare -A integration_optional_participants=(
+  [wire_media_automation_stack]="chaptarr seerr sonarr radarr prowlarr qbittorrent jellyfin"
 )
 
 # Report any integration whose required apps are not all enabled.
@@ -54,7 +57,7 @@ echo "✓ Integration file list matches catalog.nix."
 violations=()
 while IFS= read -r file; do
   name="${file%.nix}"
-  [[ -n "${integration_apps[$name]:-}" ]] && continue
+  [[ -n "${integration_apps[$name]+present}" ]] && continue
 
   violations+=("modules/Integrations/${file} is missing from the integration_apps dependency map in this test script.")
 done <<<"$catalog_integration_files"
@@ -74,6 +77,17 @@ else
   while IFS= read -r file; do
     name="${file%.nix}"
     required_apps="${integration_apps[$name]}"
+    optional_participants="${integration_optional_participants[$name]:-}"
+    if [[ -n "$optional_participants" ]]; then
+      integration_active=false
+      for app in $optional_participants; do
+        if echo "$enabled_apps_list" | tr ',' '\n' | grep -qx "$app"; then
+          integration_active=true
+          break
+        fi
+      done
+      [[ "$integration_active" == true ]] || continue
+    fi
     missing=""
     for app in $required_apps; do
       if ! echo "$enabled_apps_list" | tr ',' '\n' | grep -qx "$app"; then

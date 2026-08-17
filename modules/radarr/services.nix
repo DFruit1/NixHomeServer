@@ -1,4 +1,4 @@
-{ config, lib, oauth2Proxy, pkgs, vars, ... }:
+{ config, lib, oauth2Proxy, pkgs, unstablePkgs, vars, ... }:
 
 let
   cfg = config.repo.radarr;
@@ -16,6 +16,7 @@ in
     {
       services.radarr = {
         enable = true;
+        package = unstablePkgs.radarr;
         openFirewall = false;
         dataDir = "/var/lib/radarr/.config/Radarr";
         settings = {

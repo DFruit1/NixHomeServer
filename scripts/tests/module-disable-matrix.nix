@@ -23,6 +23,31 @@ let
       guardedServices = [ ];
       persistencePaths = [ "/var/lib/bonsai" ];
     };
+    chaptarr = {
+      disable = { repo.chaptarr.enable = lib.mkForce false; };
+      registryName = "chaptarr";
+      services = [
+        "chaptarr"
+        "chaptarr-storage-layout-v1"
+        "media-automation-bootstrap-chaptarr"
+      ];
+      containers = [ "chaptarr" ];
+      timers = [ ];
+      hosts = [ "chaptarr" ];
+      gatewayApps = [ "chaptarr" ];
+      oauthClients = [ ];
+      kanidmGroups = [ ];
+      users = [ "chaptarr" ];
+      groups = [ "chaptarr" ];
+      secrets = [ ];
+      backupApps = [ "chaptarr" ];
+      guardedServices = [
+        "chaptarr"
+        "chaptarr-storage-layout-v1"
+        "media-automation-bootstrap-chaptarr"
+      ];
+      persistencePaths = [ "/var/lib/chaptarr" ];
+    };
     groundwater-logger = {
       modules = [ ../../modules/groundwater-logger ];
       disable = { repo.groundwaterLogger.enable = lib.mkForce false; };
@@ -74,6 +99,7 @@ let
     };
     media-automation-all = {
       disable = {
+        repo.chaptarr.enable = lib.mkForce false;
         repo.prowlarr.enable = lib.mkForce false;
         repo.qbittorrent.enable = lib.mkForce false;
         repo.radarr.enable = lib.mkForce false;
@@ -82,6 +108,9 @@ let
       };
       registryName = "prowlarr";
       services = [
+        "chaptarr"
+        "chaptarr-storage-layout-v1"
+        "media-automation-bootstrap-chaptarr"
         "media-automation-bootstrap-prowlarr"
         "media-automation-bootstrap-prowlarr-qbittorrent"
         "media-automation-bootstrap-qbittorrent"
@@ -100,13 +129,14 @@ let
         "sonarr"
         "sonarr-oauth2-proxy"
       ];
+      containers = [ "chaptarr" ];
       timers = [ "seerr-permissions-reconcile" ];
-      hosts = [ "prowlarr" "requests" "sonarr" "radarr" "torrents" ];
-      gatewayApps = [ "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
+      hosts = [ "chaptarr" "prowlarr" "requests" "sonarr" "radarr" "torrents" ];
+      gatewayApps = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
       oauthClients = [ "prowlarr-web" "qbittorrent-web" "radarr-web" "seerr-web" "sonarr-web" ];
       kanidmGroups = [ "media-automation-users" vars.seerrRequestManagerGroup ];
-      users = [ "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
-      groups = [ "media-automation" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
+      users = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
+      groups = [ "chaptarr" "media-automation" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
       secrets = [
         "prowlarrOauth2ProxyClientSecret"
         "prowlarrOauth2ProxyCookieSecret"
@@ -119,8 +149,11 @@ let
         "sonarrOauth2ProxyClientSecret"
         "sonarrOauth2ProxyCookieSecret"
       ];
-      backupApps = [ "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
+      backupApps = [ "chaptarr" "prowlarr" "qbittorrent" "radarr" "seerr" "sonarr" ];
       guardedServices = [
+        "chaptarr"
+        "chaptarr-storage-layout-v1"
+        "media-automation-bootstrap-chaptarr"
         "media-automation-bootstrap-prowlarr"
         "media-automation-bootstrap-prowlarr-qbittorrent"
         "media-automation-bootstrap-qbittorrent"
@@ -131,7 +164,7 @@ let
         "radarr"
         "sonarr"
       ];
-      persistencePaths = [ "/var/lib/prowlarr" "/var/lib/radarr" "/var/lib/seerr" "/var/lib/sonarr" ];
+      persistencePaths = [ "/var/lib/chaptarr" "/var/lib/prowlarr" "/var/lib/radarr" "/var/lib/seerr" "/var/lib/sonarr" ];
     };
     prowlarr = {
       disable = { repo.prowlarr.enable = lib.mkForce false; };
@@ -231,6 +264,7 @@ let
         ++ case.hosts
         ++ map (short: "${short}.${vars.networking.dns.lanDomain}") case.hosts;
       present = attrs: names: builtins.filter (name: builtins.hasAttr name attrs) names;
+      presentContainers = present cfg.virtualisation.oci-containers.containers (case.containers or [ ]);
       presentServices = present cfg.systemd.services case.services;
       presentTimers = present cfg.systemd.timers case.timers;
       presentCaddyHosts = present cfg.services.caddy.virtualHosts (fullHosts ++ shortHosts ++ lanHosts);
@@ -262,6 +296,7 @@ let
         disabledBackupExclusionsValid
         presentBackupApps
         presentCaddyHosts
+        presentContainers
         presentGatewayApps
         presentGroups
         presentGuardedServices
@@ -277,6 +312,7 @@ let
         lib.hasPrefix "/nix/store/" cfg.system.build.toplevel.drvPath
         && (cfg.nixhomeserver.modules.${case.registryName} or false)
         && presentServices == [ ]
+        && presentContainers == [ ]
         && presentTimers == [ ]
         && presentCaddyHosts == [ ]
         && presentPrivateHosts == [ ]

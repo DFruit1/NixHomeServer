@@ -5,6 +5,8 @@ let
   filesPort = vars.networking.ports.filestash;
   oauth2ProxyPort = vars.networking.ports.oauth2ProxyFilestash;
   host = "files.${vars.domain}";
+  transfersHost = "transfers.${vars.domain}";
+  transfersPort = vars.networking.ports.filestashTransfers;
   stateDir = config.repo.files.paths.stateDir;
   managedDir = "${stateDir}/.nixos-managed";
   secretRuntimeDir = "/run/filestash-secrets";
@@ -52,6 +54,80 @@ let
     )
     sftpLoginUserEmailEntries;
   filestashPackages = filestashNix.packages.${pkgs.stdenv.hostPlatform.system};
+  # Public share links are copied from the authenticated UI on `files.` and must
+  # point at the unauthenticated `transfers.` host. The built frontend derives
+  # share URLs from `window.location.origin`, so rewrite the three share-link
+  # construction sites in the shipped bundle (deterministic for the pinned
+  # revision) to hard-code the transfers origin. Precompressed variants are
+  # regenerated because the static server prefers them over the plain bundle.
+  patchedFrontend = pkgs.runCommand "filestash-frontend-transfers" {
+    nativeBuildInputs = [ pkgs.gnused pkgs.brotli pkgs.gzip ];
+  } ''
+    cp -r --no-preserve=mode,ownership ${filestashPackages.frontend} $out
+    chmod -R u+w $out
+    app="$(find "$out/assets/js" -maxdepth 1 -name 'app_*.js' -print -quit)"
+    if [ -z "$app" ]; then
+      echo "filestash frontend: expected an app bundle under assets/js" >&2
+      exit 1
+    fi
+    anchor_count="$(grep -oF 'window.location.origin+"/s/"' "$app" | wc -l)"
+    if [ "$anchor_count" -ne 3 ]; then
+      echo "filestash frontend: expected 3 share-link anchors, found $anchor_count" >&2
+      exit 1
+    fi
+    sed -i "s~window\\.location\\.origin+\"/s/\"~https://${transfersHost}:${toString transfersPort}/s/~g" "$app"
+    replaced_count="$(grep -oF 'https://${transfersHost}:${toString transfersPort}/s/' "$app" | wc -l)"
+    if [ "$replaced_count" -ne 3 ]; then
+      echo "filestash frontend: share-link rewrite incomplete ($replaced_count/3)" >&2
+      exit 1
+    fi
+    rm -f "$app.br" "$app.gz"
+    brotli -9 -o "$app.br" "$app"
+    gzip -9 -n -c "$app" > "$app.gz"
+  '';
+  officePluginSource = pkgs.fetchFromGitHub {
+    owner = "mickael-kerjean";
+    repo = "filestash";
+    rev = "8a36ba943a47c1323309f73a11b741b3089a7dcf";
+    hash = "sha256-04T05ZnP5zEr4Pdo7U6/3KdMENtNgcIM2OqQW1whWsk=";
+  };
+  officePluginAssets = {
+    sofficeJs = pkgs.fetchurl {
+      url = "https://cdn.zetaoffice.net/zetaoffice_latest/soffice.js";
+      hash = "sha256-UUPlNU9HC4f4a6JyvP74V70T5vB7WWZuSKfMuJZDzXc=";
+    };
+    sofficeWasm = pkgs.fetchurl {
+      url = "https://cdn.zetaoffice.net/zetaoffice_latest/soffice.wasm";
+      hash = "sha256-oRgIqro8mkQSqGW95kUkf9nQsmK1uqBoCp/O0pqGVuQ=";
+    };
+    sofficeMetadata = pkgs.fetchurl {
+      url = "https://cdn.zetaoffice.net/zetaoffice_latest/soffice.data.js.metadata";
+      hash = "sha256-XZ2QnQubOEQ8DxlwQDLQ/BLWVPbJwkwsOyN3OcSEiuM=";
+    };
+    sofficeData = pkgs.fetchurl {
+      url = "https://cdn.zetaoffice.net/zetaoffice_latest/soffice.data";
+      hash = "sha256-nTwc88kEzlcJBQUrpoRPM4P96TrRJntlo65LI22y/QU=";
+    };
+    zetaJs = pkgs.fetchurl {
+      url = "https://zetaoffice.net/demos/standalone/assets/vendor/zetajs/zeta.js";
+      hash = "sha256-tw7nAikIgixRJTW79DxORMKXrMNk51Qqu6DTBx9fm/0=";
+    };
+  };
+  officePluginArchive = pkgs.runCommand "filestash-application-office.zip" {
+    nativeBuildInputs = [ pkgs.zip ];
+  } ''
+    cp -r ${officePluginSource}/server/plugin/plg_application_office plugin
+    chmod -R u+w plugin
+    mkdir -p plugin/lib/lowa
+    cp ${officePluginAssets.sofficeJs} plugin/lib/lowa/soffice.js
+    cp ${officePluginAssets.sofficeWasm} plugin/lib/lowa/soffice.wasm.br
+    cp ${officePluginAssets.sofficeMetadata} plugin/lib/lowa/soffice.data.js.metadata
+    cp ${officePluginAssets.sofficeData} plugin/lib/lowa/soffice.data.br
+    cp ${officePluginAssets.zetaJs} plugin/lib/lowa/zeta.js
+    find plugin -exec touch -h -d @1 {} +
+    cd plugin
+    zip -X -q -r "$out" . -x "lib/vendor/*"
+  '';
   proxyPasswordPlugin = pkgs.writeText "plg_authenticate_proxy_password.go" ''
         package plg_authenticate_proxy_password
 
@@ -230,6 +306,11 @@ let
         rm -rf vendor server/vendor
 
         chmod -R u+w server/plugin server/ctrl
+        cp -r ${officePluginSource}/server/plugin/plg_application_office server/plugin/
+        substituteInPlace server/plugin/index.go \
+                --replace-fail '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"' '_ "github.com/mickael-kerjean/filestash/server/plugin/plg_authenticate_passthrough"
+      _ "github.com/mickael-kerjean/filestash/server/plugin/plg_application_office"'
+
         mkdir -p server/plugin/plg_authenticate_proxy_password
         install -m 0644 ${proxyPasswordPlugin} server/plugin/plg_authenticate_proxy_password/index.go
 
@@ -270,6 +351,7 @@ let
       pathCert = "/proc/self/cwd/state/certs";
       pathTmp = "/proc/self/cwd/cache";
       passthru = {
+        officePlugin = true;
         proxyAuthPlugin = true;
         proxyPasswordAuthPlugin = true;
       };
@@ -283,7 +365,7 @@ let
     pushd $out/libexec/filestash
 
     mkdir --parents state/config
-    ln --symbolic ${filestashPackages.frontend} public
+    ln --symbolic ${patchedFrontend} public
     ln --symbolic "$pathConfig"  state/config/config.json
     ln --symbolic "$pathDb"      state/db
     ln --symbolic "$pathLog"     state/log
@@ -328,7 +410,7 @@ in
             port = filesPort;
             host = host;
             force_ssl = true;
-            logout = "/oauth2/sign_out?rd=/oauth2/start?rd=%2F";
+            logout = "/oauth2/sign_out";
             upload_button = true;
             refresh_after_upload = true;
             cookie_timeout = vars.filesSessionExpirationHours * 60;
@@ -385,6 +467,8 @@ in
           ConditionPathIsMountPoint = vars.dataRoot;
         };
         preStart = lib.mkAfter ''
+          install -m 0444 ${officePluginArchive} \
+            ${lib.escapeShellArg "${config.services.filestash.paths.plugins}/application_office.zip"}
           chmod 0640 "$RUNTIME_DIRECTORY"/config.json
         '';
         serviceConfig = {

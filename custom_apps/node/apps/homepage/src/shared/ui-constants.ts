@@ -4,6 +4,7 @@ export const serviceSymbols: Record<string, string> = {
   photos: 'P',
   documents: 'D',
   files: 'F',
+  chaptarr: 'C',
   requests: 'R',
   sonarr: 'S',
   radarr: 'R',
@@ -45,6 +46,10 @@ export const serviceTips: Record<string, string[]> = {
     'Use _Movies for films and _Shows for series in Jellyfin.',
     'Use _Videos/_YouTube for downloaded videos and _Videos/_Other for other videos you want available offline.',
     'Keep subtitle files beside the matching video file.',
+  ],
+  chaptarr: [
+    'Audiobooks import into the shared Audiobookshelf library; ebooks import into the shared Kavita library.',
+    'Book and audiobook indexers are managed in Prowlarr, while Chaptarr handles metadata, monitoring, and imports.',
   ],
   'offline-media': [
     'Put music files in your personal _Music folder.',

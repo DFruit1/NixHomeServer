@@ -23,6 +23,7 @@ let
     (mkTarget { id = "files"; name = "Files"; host = "files.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Filestash|Files"; })
     (mkTarget { id = "audiobooks"; name = "Audiobooks"; host = "audiobooks.${vars.domain}"; path = "/audiobookshelf/"; coverageMode = "native-oidc"; expectedPattern = "Audiobookshelf|Audiobooks"; })
     (mkTarget { id = "videos"; name = "Videos"; host = "videos.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Jellyfin|Videos|My Media"; oidcLoginPath = "/sso/OIDC/Start/kanidm"; quickConnectCheck = true; })
+    (mkTarget { id = "chaptarr"; name = "Book Downloads"; host = "chaptarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Chaptarr|Book"; })
     (mkTarget { id = "requests"; name = "Requests"; host = "requests.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Seerr|Jellyseerr|Requests"; })
     (mkTarget { id = "sonarr"; name = "TV Show Downloads"; host = "sonarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Sonarr|TV Show"; })
     (mkTarget { id = "radarr"; name = "Movie Downloads"; host = "radarr.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Radarr|Movie"; })

@@ -292,6 +292,14 @@ require_fixed scripts/helpers/deploy-executor.sh 'could not prove activation' \
   "Rollback must not race an activation whose quiescence is unknown."
 require_fixed scripts/helpers/deploy-executor.sh 'run_detached_activation "$built_toplevel" test tested-build' \
   "Test deploy must activate the built closure through the marker-guarded target unit."
+require_fixed scripts/helpers/deploy-executor.sh 'deploy_lock_dir="${deploy_state_dir}/transactions/${HOSTNAME_ARG}"' \
+  "Deployment ownership must survive NixOS activation recreating /run/lock."
+require_fixed scripts/helpers/deploy-executor.sh 'runtime_unit_dir="/run/systemd/system"' \
+  "Guarded activation and rollback units must survive the systemd re-exec performed by NixOS activation."
+require_fixed scripts/helpers/deploy-executor.sh 'X-StopOnRemoval=false' \
+  "NixOS activation must not stop the external transaction unit that is performing the activation."
+forbid_match scripts/helpers/deploy-executor.sh 'exec systemd-run --unit=.*Detached NixOS' \
+  "Forward and rollback activations must not use transient units that disappear during systemd re-exec."
 require_fixed scripts/deploy.sh 'need git ssh tar' \
   "Deploy source creation must require Git rather than broad-archiving a copied tree."
 require_fixed modules/Core_Modules/base-system/default.nix 'if vars.buildSlots.remote == 0 then "auto"' \

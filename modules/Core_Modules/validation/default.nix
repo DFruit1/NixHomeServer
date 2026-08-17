@@ -76,6 +76,12 @@ let
   uniquePortValues = lib.unique portValues;
   invalidEndpointPorts = lib.filterAttrs (_: port: !(builtins.isInt port) || port < 1 || port > 65535) endpointPorts;
   caddyHosts = builtins.attrNames config.services.caddy.virtualHosts;
+  stripVhostPort = name:
+    let
+      portMatch = builtins.match "(.*):([0-9]+)$" name;
+    in
+    if portMatch == null then name else builtins.elemAt portMatch 0;
+  caddyHostNames = map stripVhostPort caddyHosts;
   cloudflareHosts = builtins.attrNames config.services.cloudflared.tunnels.${vars.cloudflareTunnelName}.ingress;
   privateDnsHosts = config.services.unbound.privateHosts;
   privateDnsHostNames = builtins.attrNames privateDnsHosts;
@@ -142,7 +148,7 @@ let
         in
         name == ""
         || (!isAllowedLanAlias && name != "default" && !nameValidation.validDnsName name))
-      (caddyHosts ++ cloudflareHosts ++ privateDnsHostNames);
+      (caddyHostNames ++ cloudflareHosts ++ privateDnsHostNames);
   offDomainAppHosts =
     lib.filter
       (
@@ -151,10 +157,10 @@ let
         && !(lib.hasSuffix ".${vars.domain}" name)
         && !builtins.elem name allowedLanAliasHosts
       )
-      caddyHosts;
+      caddyHostNames;
   cloudflareWithoutCaddy =
     lib.filter
-      (name: !(builtins.hasAttr name config.services.caddy.virtualHosts))
+      (name: !(builtins.elem name caddyHostNames))
       cloudflareHosts;
   invalidDnsHosts =
     lib.filter

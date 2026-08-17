@@ -8,6 +8,7 @@
     ./services.nix
     ./bootstrap.nix
     ./backups.nix
+    ./distributed-workers.nix
   ];
 
   nixhomeserver.modules.mkvmaker = true;

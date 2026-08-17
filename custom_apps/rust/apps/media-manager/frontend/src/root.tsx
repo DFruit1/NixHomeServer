@@ -11,7 +11,6 @@ import {
 import { api, ApiError } from "./api";
 
 export type View =
-  | "overview"
   | "library"
   | "conversions"
   | "subtitles"
@@ -19,7 +18,6 @@ export type View =
   | "player";
 
 const VIEWS = new Set<View>([
-  "overview",
   "library",
   "conversions",
   "subtitles",
@@ -29,7 +27,7 @@ const VIEWS = new Set<View>([
 
 export function viewFromSearch(search: string): View {
   const view = new URLSearchParams(search).get("view") as View | null;
-  return view && VIEWS.has(view) ? view : "overview";
+  return view && VIEWS.has(view) ? view : "library";
 }
 
 export function rootFromSearch(search: string): string {
@@ -269,7 +267,6 @@ interface MutationPreview {
 }
 
 const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
-  { id: "overview", label: "Overview", icon: "dashboard" },
   { id: "library", label: "Libraries", icon: "library" },
   { id: "conversions", label: "Conversions", icon: "disc" },
   { id: "subtitles", label: "Subtitles", icon: "captions" },
@@ -278,7 +275,6 @@ const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
 ];
 
 type IconName =
-  | "dashboard"
   | "library"
   | "disc"
   | "captions"
@@ -310,12 +306,6 @@ type IconName =
 
 const Icon = component$<{ name: IconName; size?: number }>((props) => {
   const paths: Record<IconName, string[]> = {
-    dashboard: [
-      "M4 4h6v6H4z",
-      "M14 4h6v10h-6z",
-      "M4 14h6v6H4z",
-      "M14 18h6v2h-6z",
-    ],
     library: ["M4 5h5l2 2h9v12H4z", "M4 9h16"],
     disc: [
       "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z",
@@ -415,7 +405,7 @@ const Icon = component$<{ name: IconName; size?: number }>((props) => {
 });
 
 export default component$((props: RootProps) => {
-  const view = useSignal<View>(props.initialView ?? "overview");
+  const view = useSignal<View>(props.initialView ?? "library");
   const sidebarSide = useSignal<"left" | "right">("left");
   const menuOpen = useSignal(false);
   const state = useStore<DashboardState>({
@@ -683,7 +673,12 @@ export default component$((props: RootProps) => {
         </div>
       </aside>
 
-      <main class="main-content">
+      <main
+        class={{
+          "main-content": true,
+          "main-content--conversions": view.value === "conversions",
+        }}
+      >
         {view.value !== "library" && (
           <header class="topbar">
             <h1>{NAV_ITEMS.find((item) => item.id === view.value)?.label}</h1>
@@ -712,8 +707,6 @@ export default component$((props: RootProps) => {
 
         {state.loading ? (
           <LoadingState />
-        ) : view.value === "overview" ? (
-          <OverviewSection state={state} />
         ) : view.value === "library" ? (
           <LibraryView
             state={state}
@@ -737,158 +730,6 @@ export default component$((props: RootProps) => {
         )}
       </main>
     </div>
-  );
-});
-
-const OverviewSection = component$<{
-  state: DashboardState;
-}>((props) => {
-  const videoRoots = props.state.roots.filter(
-    (root) => root.category === "videos",
-  );
-  const musicRoots = props.state.roots.filter(
-    (root) => root.category === "music",
-  );
-  const audiobookRoots = props.state.roots.filter(
-    (root) => root.category === "audiobooks",
-  );
-  const bookRoots = props.state.roots.filter(
-    (root) => root.category === "books",
-  );
-
-  const buildOverviewItems = (roots: MediaRoot[]): OverviewItem[] => {
-    const items: OverviewItem[] = [];
-    for (const root of roots) {
-      const rootItems = props.state.items.filter(
-        (item) => item.rootId === root.id,
-      );
-      for (const item of rootItems.slice(0, 12)) {
-        const filename = item.relativePath.split("/").at(-1) ?? "";
-        const stem = filename.replace(/\.[^.]+$/, "");
-        const title = stem
-          .replace(/ \(([0-9]{4})\)$/, "")
-          .replace(/ - S[0-9]+E[0-9]+.*$/, "");
-        const yearMatch = filename.match(/ \(([0-9]{4})\)$/);
-        const subtitle = yearMatch ? yearMatch[1] : root.label;
-        items.push({
-          id: item.id,
-          title,
-          subtitle,
-          imageId: item.id,
-          rootId: item.rootId,
-        });
-      }
-    }
-    return items;
-  };
-
-  const videoItems = buildOverviewItems(videoRoots);
-  const musicItems = buildOverviewItems(musicRoots);
-  const audiobookItems = buildOverviewItems(audiobookRoots);
-  const bookItems = buildOverviewItems(bookRoots);
-
-  return (
-    <section class="overview-carousels" aria-label="Media library overview">
-      {videoItems.length > 0 && (
-        <CategoryCarousel
-          title="Videos"
-          items={videoItems}
-          href="?view=library"
-        />
-      )}
-      {musicItems.length > 0 && (
-        <CategoryCarousel
-          title="Music"
-          items={musicItems}
-          href="?view=library"
-        />
-      )}
-      {audiobookItems.length > 0 && (
-        <CategoryCarousel
-          title="Audiobooks"
-          items={audiobookItems}
-          href="?view=library"
-        />
-      )}
-      {bookItems.length > 0 && (
-        <CategoryCarousel
-          title="Books"
-          items={bookItems}
-          href="?view=library"
-        />
-      )}
-      {videoItems.length === 0 &&
-        musicItems.length === 0 &&
-        audiobookItems.length === 0 &&
-        bookItems.length === 0 && (
-          <EmptyState
-            title="No media found"
-            detail="Add media roots and scan to see your library here."
-          />
-        )}
-    </section>
-  );
-});
-
-interface OverviewItem {
-  id: string;
-  title: string;
-  subtitle: string;
-  imageId: string;
-  rootId: string;
-}
-
-const CategoryCarousel = component$<{
-  title: string;
-  items: OverviewItem[];
-  href: string;
-}>((props) => {
-  return (
-    <section class="panel category-carousel">
-      <div class="panel-heading">
-        <div>
-          <h3>{props.title}</h3>
-        </div>
-        <a class="text-button" href={props.href}>
-          View all <Icon name="arrow" size={17} />
-        </a>
-      </div>
-      <div class="carousel-scroll-region">
-        {props.items.length === 0 ? (
-          <div class="carousel-empty">
-            <span>No items in this category</span>
-          </div>
-        ) : (
-          <div class="carousel-track">
-            {props.items.map((item) => (
-              <a
-                class="carousel-item"
-                href={`?view=library&root=${encodeURIComponent(item.rootId)}`}
-                key={item.id}
-              >
-                <div class="carousel-item-image">
-                  {item.imageId ? (
-                    <img
-                      src={`/api/v1/items/${encodeURIComponent(item.imageId)}/image`}
-                      alt={item.title}
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div class="carousel-item-placeholder">
-                      <Icon name="image" size={24} />
-                    </div>
-                  )}
-                </div>
-                <div class="carousel-item-info">
-                  <strong>{item.title}</strong>
-                  <small>{item.subtitle}</small>
-                </div>
-              </a>
-            ))}
-          </div>
-        )}
-      </div>
-    </section>
   );
 });
 
@@ -1957,11 +1798,16 @@ const ProcessedCard = component$<{
   <section class="panel side-panel">
     <div class="panel-heading">
       <div>
-        <h3>Processed</h3>
+        <h3 id="processed-heading">Processed</h3>
         <small>Successfully converted ISOs</small>
       </div>
     </div>
-    <div class="side-panel-body">
+    <div
+      class="side-panel-body"
+      role="region"
+      aria-labelledby="processed-heading"
+      tabIndex={0}
+    >
       {props.isos.length === 0 ? (
         <p class="quiet-copy">Nothing has been processed yet.</p>
       ) : (
@@ -2004,11 +1850,16 @@ const FailedCard = component$<{
   <section class="panel side-panel">
     <div class="panel-heading">
       <div>
-        <h3>Failed</h3>
+        <h3 id="failed-heading">Failed</h3>
         <small>ISOs that could not be converted</small>
       </div>
     </div>
-    <div class="side-panel-body">
+    <div
+      class="side-panel-body"
+      role="region"
+      aria-labelledby="failed-heading"
+      tabIndex={0}
+    >
       {props.isos.length === 0 ? (
         <p class="quiet-copy">No failed conversions.</p>
       ) : (

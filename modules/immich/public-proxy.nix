@@ -1,4 +1,4 @@
-{ pkgs, vars, ... }:
+{ pkgs, unstablePkgs, vars, ... }:
 
 let
   proxyUser = "immich-public-proxy";
@@ -38,7 +38,7 @@ in
             ${pkgs.systemd}/bin/systemctl --user stop immich-public-proxy.service || true
           ${pkgs.procps}/bin/pkill -u ${proxyUser} -f 'podman|conmon|passt|node dist/index.js' || true
         ''}";
-        ExecStart = "${pkgs.immich-public-proxy}/bin/immich-public-proxy";
+        ExecStart = "${unstablePkgs.immich-public-proxy}/bin/immich-public-proxy";
         Restart = "on-failure";
         RestartSec = "5s";
         NoNewPrivileges = true;

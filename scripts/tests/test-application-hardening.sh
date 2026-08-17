@@ -56,7 +56,7 @@ forbid_match "$youtube_module" 'yt-dlp-nightly-builds|youtube-downloader-yt-dlp-
   "YouTube Downloader must use the flake-locked yt-dlp package"
 require_fixed "$youtube_module" 'files-shared-users' \
   "YouTube Downloader must join the shared write group"
-require_fixed "$youtube_paths" '1770 youtube-downloader ${sharedAccessGroup}' \
+require_fixed "$youtube_paths" '0770 youtube-downloader ${sharedAccessGroup}' \
   "shared download roots must be writable by the downloader service"
 require_fixed "$youtube_http" 'db.listJobs(user.username)' \
   "job history must be scoped to the authenticated user"

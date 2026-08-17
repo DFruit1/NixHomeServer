@@ -101,10 +101,10 @@ in
 
         install -d -m 1770 -o root -g root ${cfg.paths.sharedBooksRoot}
         for path in ${lib.escapeShellArgs sharedKavitaDirs}; do
-          install -d -m 1770 -o root -g root "$path"
+          install -d -m 0770 -o root -g root "$path"
         done
         for path in ${lib.escapeShellArgs sharedKavitaAnonDirs}; do
-          install -d -m 1770 -o root -g root "$path"
+          install -d -m 0770 -o root -g root "$path"
         done
 
         setfacl -m g:kavita-media:r-X ${vars.sharedRoot} ${cfg.paths.sharedBooksRoot}

@@ -68,12 +68,13 @@ let
         ageSecretNames = builtins.attrNames host.config.age.secrets;
         registry = host.config.nixhomeserver.modules;
         guardedServices = host.config.repo.storage.dataPool.guardedServices;
-        expectedRegistry = builtins.listToAttrs (map
-          (name: {
-            inherit name;
-            value = true;
-          })
-          selectedApps) // { homepage = true; };
+        expectedRegistry = builtins.listToAttrs
+          (map
+            (name: {
+              inherit name;
+              value = true;
+            })
+            selectedApps) // { homepage = true; };
         mediaApps = builtins.filter
           (name: builtins.elem name [ "qbittorrent" "radarr" "sonarr" ])
           selectedApps;
@@ -178,9 +179,9 @@ let
           (moduleGuardedServices.${removed} or [ ]);
         removedBackupExclusionsAbsent =
           (removed != "bonsai"
-            || !(builtins.elem "var/lib/bonsai/models" host.config.repo.backups.rebuildableSnapshotPaths))
+          || !(builtins.elem "var/lib/bonsai/models" host.config.repo.backups.rebuildableSnapshotPaths))
           && (removed != "attic"
-            || !(builtins.elem "var/lib/atticd/storage" host.config.repo.backups.rebuildableSnapshotPaths));
+          || !(builtins.elem "var/lib/atticd/storage" host.config.repo.backups.rebuildableSnapshotPaths));
       in
       {
         drvPath = host.config.system.build.toplevel.drvPath;

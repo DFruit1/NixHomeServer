@@ -75,6 +75,11 @@ assertion_json="$(nix eval --impure --json --expr '
         }];
       }];
     };
+    invalidStructuralHost = baseSystem.nixosConfigurations.${base.hostname}.extendModules {
+      modules = [{
+        repo.storage.sharedRoots.structuralSubdirs = [ "_Videos" "_Books;touch-unsafe" ];
+      }];
+    };
   in {
     sharedMount = onlyNewFailures (base // {
       fileAccess = base.fileAccess // { sharedMountName = "../escape"; };
@@ -98,6 +103,10 @@ assertion_json="$(nix eval --impure --json --expr '
       map (entry: entry.message)
         (builtins.filter (entry: !entry.assertion) invalidInternalHost.config.assertions)
     );
+    structuralSubdir = lib.subtractLists baseMessages (
+      map (entry: entry.message)
+        (builtins.filter (entry: !entry.assertion) invalidStructuralHost.config.assertions)
+    );
   }
 ')"
 
@@ -109,6 +118,7 @@ jq -e '
   and (.offlineFolder | any(contains("offlineMedia folder relativePath values must be normalized safe relative paths")))
   and (.offlineState | any(contains("offlineMedia.stateDir must be a normalized absolute child of /persist/appdata")))
   and (.internalRelative | any(contains("repo.storage.userRoots relative paths must be normalized safe relative paths")))
+  and (.structuralSubdir | any(contains("repo.storage.sharedRoots.structuralSubdirs must contain only safe single directory names")))
 ' <<<"$assertion_json" >/dev/null || {
   echo "❌ Unsafe storage paths did not produce every actionable full-system assertion." >&2
   jq . <<<"$assertion_json" >&2

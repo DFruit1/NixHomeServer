@@ -50,6 +50,7 @@ all_app_only_test() {
     test-application-hardening.sh | \
     test-authorization-group-validation.sh | \
     test-beszel-module.sh | \
+    test-chaptarr-module.sh | \
     test-kiwix-disable-evaluation.sh | \
     test-module-boundaries.sh | \
     test-module-disable-evaluation.sh | \
@@ -86,6 +87,7 @@ test_scripts=(
   scripts/tests/test-auth-gateway-logout.sh
   scripts/tests/test-authorization-group-validation.sh
   scripts/tests/test-beszel-module.sh
+  scripts/tests/test-chaptarr-module.sh
   scripts/tests/test-backup-access-separation.sh
   scripts/tests/test-role-only-sftp-access.sh
   scripts/tests/test-bootstrap-zfs-guid-mode.sh
@@ -112,13 +114,17 @@ test_scripts=(
   scripts/tests/test-media-manager-core.sh
   scripts/tests/test-paperless-v3-readiness.sh
   scripts/tests/test-mkvmaker-automation.sh
+  scripts/tests/test-mkvmaker-distributed-queue.sh
+  scripts/tests/test-mkvmaker-worker-image.sh
   scripts/tests/test-platform-storage-profiles.sh
   scripts/tests/test-runtime-reliability.sh
   scripts/tests/test-rclone-safety.sh
   scripts/tests/test-rclone-mega-capacity-check.sh
   scripts/tests/test-rclone-mega-preflight.sh
+  scripts/tests/test-script-test-runner.sh
   scripts/tests/test-smart-sweep-runtime.sh
   scripts/tests/test-storage-path-validation.sh
+  scripts/tests/test-unbound-adblock.sh
   scripts/tests/test-zfs-pool-identity.sh
   scripts/tests/test-zfs-snapshot-freshness.sh
   scripts/tests/test-secret-definitions.sh
@@ -131,6 +137,13 @@ failures=0
 test_tmp="${TMPDIR:-/tmp}/nixhomeserver-tests"
 mkdir -p "$test_tmp"
 
+wait_for_one_test() {
+  if ! wait -n 2>/dev/null; then
+    ((failures++)) || true
+  fi
+  ((active--)) || true
+}
+
 for test_script in "${test_scripts[@]}"; do
   if [[ "$all_apps" != true ]] && all_app_only_test "$test_script"; then
     printf '==> %s (skipped: use --all-apps)\n' "$test_script"
@@ -138,8 +151,7 @@ for test_script in "${test_scripts[@]}"; do
   fi
 
   while (( active >= max_jobs )); do
-    wait -n 2>/dev/null || true
-    ((active--)) || true
+    wait_for_one_test
   done
 
   log_file="${test_tmp}/test-${test_script//\//_}.log"
@@ -150,14 +162,11 @@ for test_script in "${test_scripts[@]}"; do
       exit 1
     fi
   ) &
-  ((active++))
+  ((active++)) || true
 done
 
 while (( active > 0 )); do
-  if ! wait -n 2>/dev/null; then
-    ((failures++)) || true
-  fi
-  ((active--)) || true
+  wait_for_one_test
 done
 
 if (( failures > 0 )); then

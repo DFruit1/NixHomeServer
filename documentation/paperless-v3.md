@@ -1,13 +1,14 @@
 # Paperless-ngx v3 Migration Readiness
 
 Paperless-ngx 3.0.0 was released upstream on 22 July 2026. The repository's
-pinned `nixpkgs-unstable` revision still packages Paperless-ngx 2.20.15, so the
-production host deliberately remains on the stable 2.20.15 package and its v2
-configuration.
+pinned `nixpkgs-unstable` revision now offers a 3.x candidate (currently 3.0.5),
+while the production host deliberately remains on the stable 2.20.15 package
+and its v2 configuration until the migration is explicitly scheduled and its
+operator checks can be observed.
 
 The dormant v3 profile lives in `modules/paperless/v3.nix`. Do not bypass its
-version assertion with a hand-built package. Once nixpkgs unstable contains a
-reviewed v3 package, update only that input and confirm the candidate:
+version assertion with a hand-built package. Confirm the pinned candidate
+before scheduling the migration:
 
 ```bash
 nix flake update nixpkgs-unstable
@@ -15,7 +16,7 @@ nix eval --raw \
   .#nixosConfigurations.server.config.repo.paperless.v3.candidateVersion
 ```
 
-The output must be `3.x`. The actual migration is enabled explicitly:
+The output must be `3.x`. The actual migration is still enabled explicitly:
 
 ```nix
 repo.paperless.v3.enable = true;

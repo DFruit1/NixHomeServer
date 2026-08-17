@@ -41,7 +41,9 @@ deploy_state_dir="/var/lib/nixhomeserver-deploy"
 test_stamp_path="${deploy_state_dir}/last-tested-${HOSTNAME_ARG}.stamp"
 test_gcroot_dir="/nix/var/nix/gcroots/nixhomeserver-tested"
 test_gcroot_path="${test_gcroot_dir}/${HOSTNAME_ARG}"
-deploy_lock_dir="/run/lock/nixhomeserver-deploy-${HOSTNAME_ARG}"
+deploy_lock_dir="${deploy_state_dir}/transactions/${HOSTNAME_ARG}"
+runtime_unit_dir="/run/systemd/system"
+runtime_unit_script_dir="${deploy_state_dir}/transactions/.unit-scripts"
 deploy_lock_token="$(date +%s%N)-$$"
 # The rollback and lock-release scripts must run with a self-contained PATH on
 # the target after systemd or sudo has replaced the environment. Tests override
@@ -431,6 +433,54 @@ render_lock_expiry_script() {
   output_script="PATH=${deploy_target_path}; export PATH; if test -e $(printf '%q' "$recovery_marker"); then echo 'blocked: retaining deploy lock after failed delayed recovery' >&2; exit 1; elif test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then rm -f $(printf '%q' "$recovery_complete_marker") $(printf '%q' "$owner_path") && rmdir $(printf '%q' "$deploy_lock_dir"); elif ! test -e $(printf '%q' "$owner_path"); then rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi"
 }
 
+render_runtime_timer_start_script() {
+  local -n output_script="$1"
+  local unit="$2"
+  local delay="$3"
+  local description="$4"
+  local command_script="$5"
+  local service_content timer_content script_path service_path timer_path
+
+  [[ "$unit" =~ ^[A-Za-z0-9_.@-]+$ ]] || return 1
+  [[ "$delay" =~ ^[1-9][0-9]*[smhd]$ ]] || return 1
+  script_path="${runtime_unit_script_dir}/${unit}.sh"
+  service_path="${runtime_unit_dir}/${unit}.service"
+  timer_path="${runtime_unit_dir}/${unit}.timer"
+  service_content="[Unit]
+Description=${description}
+X-StopOnRemoval=false
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh ${script_path}"
+  timer_content="[Unit]
+Description=${description}
+X-StopOnRemoval=false
+
+[Timer]
+OnActiveSec=${delay}
+Unit=${unit}.service"
+  # Runtime unit files, unlike systemd-run transient units, survive the daemon
+  # re-exec performed by switch-to-configuration.
+  # shellcheck disable=SC2034 # Assigned through the caller-provided nameref.
+  output_script="set -e; PATH=${deploy_target_path}; export PATH; install -d -m 0700 $(printf '%q' "${deploy_state_dir}/transactions") $(printf '%q' "$runtime_unit_script_dir"); printf '%s\n' $(printf '%q' "$command_script") > $(printf '%q' "${script_path}.tmp"); chmod 0700 $(printf '%q' "${script_path}.tmp"); mv -f $(printf '%q' "${script_path}.tmp") $(printf '%q' "$script_path"); printf '%s\n' $(printf '%q' "$service_content") > $(printf '%q' "${service_path}.tmp"); chmod 0600 $(printf '%q' "${service_path}.tmp"); mv -f $(printf '%q' "${service_path}.tmp") $(printf '%q' "$service_path"); printf '%s\n' $(printf '%q' "$timer_content") > $(printf '%q' "${timer_path}.tmp"); chmod 0600 $(printf '%q' "${timer_path}.tmp"); mv -f $(printf '%q' "${timer_path}.tmp") $(printf '%q' "$timer_path"); systemctl daemon-reload; systemctl start $(printf '%q' "${unit}.timer")"
+}
+
+render_runtime_unit_cleanup_script() {
+  local -n output_script="$1"
+  local unit="$2"
+  local stop_units="${3:-true}"
+  local stop_script=""
+
+  [[ "$unit" =~ ^[A-Za-z0-9_.@-]+$ ]] || return 1
+  [[ "$stop_units" == "true" || "$stop_units" == "false" ]] || return 1
+  if [[ "$stop_units" == "true" ]]; then
+    stop_script="systemctl stop $(printf '%q' "${unit}.timer") $(printf '%q' "${unit}.service") >/dev/null 2>&1 || true; "
+  fi
+  # shellcheck disable=SC2034 # Assigned through the caller-provided nameref.
+  output_script="PATH=${deploy_target_path}; export PATH; ${stop_script}rm -f $(printf '%q' "${runtime_unit_dir}/${unit}.timer") $(printf '%q' "${runtime_unit_dir}/${unit}.service") $(printf '%q' "${runtime_unit_script_dir}/${unit}.sh"); systemctl daemon-reload; systemctl reset-failed $(printf '%q' "${unit}.service") >/dev/null 2>&1 || true"
+}
+
 deploy_lock_token_owned() {
   local owner_path="${deploy_lock_dir}/owner"
   local ownership_script
@@ -466,18 +516,19 @@ assert_deploy_lock_owned() {
 }
 
 acquire_deploy_lock() {
-  local acquire_script expiry_script owner_path timer_service timer_timer
+  local acquire_script cleanup_script expiry_script owner_path timer_start_script
 
   owner_path="${deploy_lock_dir}/owner"
   lock_expiry_unit="nixhomeserver-deploy-unlock-${HOSTNAME_ARG}-$(date +%s%N)-$$"
-  timer_timer="${lock_expiry_unit}.timer"
-  timer_service="${lock_expiry_unit}.service"
   render_lock_expiry_script expiry_script
+  render_runtime_timer_start_script timer_start_script \
+    "$lock_expiry_unit" "26h" "NixHomeServer stale deploy lock cleanup" "$expiry_script"
+  render_runtime_unit_cleanup_script cleanup_script "$lock_expiry_unit"
 
   # Arm cleanup before creating the lock. If the remote shell or SSH transport
   # disappears at any later point, an acquired lock always has a target-side
   # expiry backstop. A failed mkdir cancels only this transaction's unique timer.
-  acquire_script="set -e; umask 077; systemd-run --quiet --unit=$(printf '%q' "$lock_expiry_unit") --on-active=26h --description='NixHomeServer stale deploy lock cleanup' /bin/sh -c $(printf '%q' "$expiry_script"); if mkdir $(printf '%q' "$deploy_lock_dir"); then if printf '%s\\n' $(printf '%q' "$deploy_lock_token") > $(printf '%q' "$owner_path"); then exit 0; fi; rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi; systemctl stop $(printf '%q' "$timer_timer") $(printf '%q' "$timer_service") >/dev/null 2>&1 || true; systemctl reset-failed $(printf '%q' "$timer_service") >/dev/null 2>&1 || true; exit 1"
+  acquire_script="set -e; umask 077; ${timer_start_script}; if mkdir $(printf '%q' "$deploy_lock_dir"); then if printf '%s\\n' $(printf '%q' "$deploy_lock_token") > $(printf '%q' "$owner_path"); then exit 0; fi; rmdir $(printf '%q' "$deploy_lock_dir") 2>/dev/null || true; fi; ${cleanup_script}; exit 1"
   if ! target_command "sudo /bin/sh -c $(printf '%q' "$acquire_script")"; then
     echo "blocked: could not acquire ${deploy_lock_dir} with an armed expiry timer; another deployment may already hold it" >&2
     lock_expiry_unit=""
@@ -498,7 +549,8 @@ release_deploy_lock() {
   render_lock_release_script release_script
   target_command "sudo /bin/sh -c $(printf '%q' "$release_script")"
   if [[ -n "$lock_expiry_unit" ]]; then
-    target_command "sudo systemctl stop $(printf '%q' "$lock_expiry_unit.timer") $(printf '%q' "$lock_expiry_unit.service") >/dev/null 2>&1 || true; sudo systemctl reset-failed $(printf '%q' "$lock_expiry_unit.service") >/dev/null 2>&1 || true"
+    render_runtime_unit_cleanup_script release_script "$lock_expiry_unit"
+    target_command "sudo /bin/sh -c $(printf '%q' "$release_script")"
   fi
   deploy_lock_acquired=false
   lock_expiry_unit=""
@@ -509,7 +561,7 @@ quiesce_active_activation() {
   local quiesce_script
 
   [[ -n "$unit" ]] || return 0
-  quiesce_script="sudo systemctl stop $(printf '%q' "$unit") >/dev/null 2>&1 || true; load_state=\$(sudo systemctl show -P LoadState $(printf '%q' "$unit") 2>/dev/null || true); active_state=\$(sudo systemctl show -P ActiveState $(printf '%q' "$unit") 2>/dev/null || true); case \"\$load_state:\$active_state\" in loaded:inactive|loaded:failed|not-found:inactive) ;; *) echo \"blocked: activation unit $(printf '%q' "$unit") remained in unsafe state: load=\$load_state active=\$active_state\" >&2; exit 1 ;; esac"
+  quiesce_script="sudo systemctl stop $(printf '%q' "$unit") >/dev/null 2>&1 || true; load_state=\$(sudo systemctl show -P LoadState $(printf '%q' "$unit") 2>/dev/null || true); active_state=\$(sudo systemctl show -P ActiveState $(printf '%q' "$unit") 2>/dev/null || true); case \"\$load_state:\$active_state\" in loaded:inactive|loaded:failed|not-found:inactive) ;; *) echo \"blocked: activation unit $(printf '%q' "$unit") remained in unsafe state: load=\$load_state active=\$active_state\" >&2; exit 1 ;; esac; sudo rm -f $(printf '%q' "${runtime_unit_dir}/${unit}.service"); sudo systemctl daemon-reload; sudo systemctl reset-failed $(printf '%q' "$unit") >/dev/null 2>&1 || true"
   if ! target_command "$quiesce_script"; then
     echo "blocked: could not prove activation ${unit} was inactive before recovery" >&2
     return 1
@@ -521,7 +573,7 @@ run_detached_activation() {
   local toplevel="$1"
   local mode="$2"
   local label="$3"
-  local marker_guard recovery_complete_marker unit state="" result status start_command recovery_marker
+  local marker_guard recovery_complete_marker unit unit_content state="" result status start_command recovery_marker
 
   deploy_validate_toplevel_path "$toplevel" || return 1
   [[ "$mode" == "test" || "$mode" == "boot" ]] || return 1
@@ -535,7 +587,14 @@ run_detached_activation() {
     assert_deploy_lock_owned
     marker_guard="test ! -e ${recovery_marker} && test ! -e ${recovery_complete_marker}"
   fi
-  start_command="sudo /bin/sh -c $(printf '%q' "test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ${marker_guard} && exec systemd-run --unit=$(printf '%q' "$unit") --description='Detached NixOS ${label} activation' --service-type=exec $(printf '%q' "$toplevel/bin/switch-to-configuration") $(printf '%q' "$mode")")"
+  unit_content="[Unit]
+Description=Detached NixOS ${label} activation
+X-StopOnRemoval=false
+
+[Service]
+Type=exec
+ExecStart=${toplevel}/bin/switch-to-configuration ${mode}"
+  start_command="sudo /bin/sh -c $(printf '%q' "set -e; test -f ${deploy_lock_dir}/owner && test \"\$(cat ${deploy_lock_dir}/owner)\" = ${deploy_lock_token} && ${marker_guard}; printf '%s\\n' $(printf '%q' "$unit_content") > $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp"); chmod 0600 $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp"); mv -f $(printf '%q' "${runtime_unit_dir}/${unit}.service.tmp") $(printf '%q' "${runtime_unit_dir}/${unit}.service"); systemctl daemon-reload; systemctl start $(printf '%q' "$unit")")"
 
   echo "starting detached ${label} activation as ${unit}"
   active_activation_unit="$unit"
@@ -570,17 +629,16 @@ run_detached_activation() {
   if [[ "$result" != "success" || "$status" != "0" ]]; then
     target_command "sudo systemctl status --no-pager $(printf '%q' "$unit") || true"
     echo "blocked: detached ${label} activation failed" >&2
-    active_activation_unit=""
+    quiesce_active_activation || true
     return 1
   fi
 
-  target_command "sudo systemctl reset-failed $(printf '%q' "$unit") >/dev/null 2>&1 || true"
-  active_activation_unit=""
+  quiesce_active_activation
 }
 
 schedule_rollback() {
   local delay="$1"
-  local complete_marker_quoted failure_marker_quoted owner_path recovery_complete_marker recovery_marker rollback_script scheduled_unit
+  local complete_marker_quoted failure_marker_quoted owner_path recovery_complete_marker recovery_marker rollback_script scheduled_unit timer_start_script
 
   assert_deploy_lock_owned
   owner_path="${deploy_lock_dir}/owner"
@@ -590,13 +648,15 @@ schedule_rollback() {
   complete_marker_quoted="$(printf '%q' "$recovery_complete_marker")"
   rollback_script="PATH=${deploy_target_path}; export PATH; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token") && ! test -e ${failure_marker_quoted}; then status=0; $(printf '%q' "$previous_current/bin/switch-to-configuration") test || status=1; $(printf '%q' "$target_nix_env") --profile /nix/var/nix/profiles/system --set $(printf '%q' "$previous_boot") || status=1; $(printf '%q' "$previous_boot/bin/switch-to-configuration") boot || status=1; if test -f $(printf '%q' "$owner_path") && test \"\$(cat $(printf '%q' "$owner_path"))\" = $(printf '%q' "$deploy_lock_token"); then umask 077; if test \"\$status\" -eq 0; then rm -f ${failure_marker_quoted}; printf '%s\\n' 'delayed rollback completed; stale executor remains blocked until it exits or the lock expires' > ${complete_marker_quoted}; else rm -f ${complete_marker_quoted}; printf '%s\\n' 'delayed rollback failed; inspect the rollback service before clearing this lock' > ${failure_marker_quoted}; fi; fi; exit \$status; else echo 'stale deploy rollback no longer owns its transaction lock; skipping generation changes' >&2; exit 0; fi"
   scheduled_unit="nixhomeserver-deploy-rollback-${HOSTNAME_ARG}-$(date +%s%N)-$$"
-  target_command "sudo /bin/sh -c $(printf '%q' "test -f ${owner_path} && test \"\$(cat ${owner_path})\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && exec systemd-run --quiet --unit=$(printf '%q' "$scheduled_unit") --on-active=$(printf '%q' "$delay") --description='NixHomeServer interrupted deploy rollback' /bin/sh -c $(printf '%q' "$rollback_script")")"
+  render_runtime_timer_start_script timer_start_script \
+    "$scheduled_unit" "$delay" "NixHomeServer interrupted deploy rollback" "$rollback_script"
+  target_command "sudo /bin/sh -c $(printf '%q' "test -f ${owner_path} && test \"\$(cat ${owner_path})\" = ${deploy_lock_token} && ! test -e ${recovery_marker} && ! test -e ${recovery_complete_marker} && ${timer_start_script}")"
   rollback_unit="$scheduled_unit"
   echo "scheduled target-side rollback ${rollback_unit}.timer after ${delay}"
 }
 
 cancel_scheduled_rollback() {
-  local cancel_script marker_guard recovery_mode="${1:-false}" rollback_service rollback_timer
+  local cancel_script cleanup_script marker_guard recovery_mode="${1:-false}" rollback_service rollback_timer
 
   [[ -n "$rollback_unit" ]] || return 0
   if [[ "$recovery_mode" == "true" ]]; then
@@ -611,7 +671,11 @@ cancel_scheduled_rollback() {
   else
     marker_guard="test ! -e $(deploy_recovery_marker_path) && test ! -e $(deploy_recovery_complete_marker_path)"
   fi
-  cancel_script="set -e; test -f $(printf '%q' "$deploy_lock_dir/owner"); test \"\$(cat $(printf '%q' "$deploy_lock_dir/owner"))\" = $(printf '%q' "$deploy_lock_token"); ${marker_guard}; sudo systemctl stop $(printf '%q' "$rollback_timer") >/dev/null 2>&1 || true; for unit in $(printf '%q' "$rollback_timer") $(printf '%q' "$rollback_service"); do state=\$(sudo systemctl show -P ActiveState \"\$unit\" 2>/dev/null || true); case \"\$state\" in inactive|failed) ;; *) echo \"blocked: rollback unit \$unit remained in unsafe state: \$state\" >&2; exit 1 ;; esac; done; ${marker_guard}; sudo systemctl reset-failed $(printf '%q' "$rollback_service") >/dev/null 2>&1 || true"
+  # The timer is stopped and both units are proven inactive above. Avoid a
+  # second service stop after that proof so cancellation cannot interrupt a
+  # rollback that somehow raced its timer shutdown.
+  render_runtime_unit_cleanup_script cleanup_script "$rollback_unit" false
+  cancel_script="set -e; test -f $(printf '%q' "$deploy_lock_dir/owner"); test \"\$(cat $(printf '%q' "$deploy_lock_dir/owner"))\" = $(printf '%q' "$deploy_lock_token"); ${marker_guard}; systemctl stop $(printf '%q' "$rollback_timer") >/dev/null 2>&1 || true; for unit in $(printf '%q' "$rollback_timer") $(printf '%q' "$rollback_service"); do state=\$(systemctl show -P ActiveState \"\$unit\" 2>/dev/null || true); case \"\$state\" in inactive|failed) ;; *) echo \"blocked: rollback unit \$unit remained in unsafe state: \$state\" >&2; exit 1 ;; esac; done; ${marker_guard}; ${cleanup_script}"
   # The transaction lock is root-only, so cancellation and its ownership
   # checks must execute in one privileged shell just like acquisition/release.
   target_command "sudo /bin/sh -c $(printf '%q' "$cancel_script")" || return

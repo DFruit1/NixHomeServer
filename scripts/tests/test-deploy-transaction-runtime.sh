@@ -354,9 +354,12 @@ fi
 encoded_acquire="${captured_target_command##* /bin/sh -c }"
 acquire_script=""
 eval "acquire_script=${encoded_acquire}"
-expiry_prefix="${acquire_script%%systemd-run*}"
+timer_start="systemctl start ${lock_expiry_unit}.timer"
+expiry_prefix="${acquire_script%%"$timer_start"*}"
 mkdir_prefix="${acquire_script%%mkdir *}"
-if [[ "$acquire_script" != *"systemd-run"* || "$acquire_script" != *"mkdir "* ]] \
+if [[ "$acquire_script" != *"$timer_start"* \
+  || "$acquire_script" != *"/run/systemd/system/${lock_expiry_unit}.timer"* \
+  || "$acquire_script" != *"mkdir "* ]] \
   || ((${#expiry_prefix} >= ${#mkdir_prefix})); then
   echo "❌ Deploy lock was created before its target-side expiry backstop was armed."
   printf '%s\n' "$acquire_script"
@@ -379,7 +382,8 @@ schedule_rollback "15m"
 encoded_rollback="${captured_target_command##* /bin/sh -c }"
 schedule_script=""
 eval "schedule_script=${encoded_rollback}"
-encoded_rollback="${schedule_script##* /bin/sh -c }"
+encoded_rollback="${schedule_script#*printf \'%s\\n\' }"
+encoded_rollback="${encoded_rollback%% > *}"
 rollback_script=""
 eval "rollback_script=${encoded_rollback}"
 
@@ -472,7 +476,8 @@ schedule_rollback "15m"
 encoded_rollback="${captured_target_command##* /bin/sh -c }"
 schedule_script=""
 eval "schedule_script=${encoded_rollback}"
-encoded_rollback="${schedule_script##* /bin/sh -c }"
+encoded_rollback="${schedule_script#*printf \'%s\\n\' }"
+encoded_rollback="${encoded_rollback%% > *}"
 matching_rollback_script=""
 eval "matching_rollback_script=${encoded_rollback}"
 if ! /bin/sh -c "$matching_rollback_script"; then
@@ -498,7 +503,8 @@ schedule_rollback "15m"
 encoded_rollback="${captured_target_command##* /bin/sh -c }"
 schedule_script=""
 eval "schedule_script=${encoded_rollback}"
-encoded_rollback="${schedule_script##* /bin/sh -c }"
+encoded_rollback="${schedule_script#*printf \'%s\\n\' }"
+encoded_rollback="${encoded_rollback%% > *}"
 failed_rollback_script=""
 eval "failed_rollback_script=${encoded_rollback}"
 if /bin/sh -c "$failed_rollback_script"; then
@@ -543,7 +549,7 @@ target_command() {
     printf 'active\n'
     return 0
   fi
-  if [[ "$1" == *"systemd-run"* ]]; then
+  if [[ "$1" == *"nixos-detached-"* && "$1" == *".service.tmp"* ]]; then
     printf 'start\n' >>"$activation_events"
   fi
   return 0
@@ -578,7 +584,7 @@ cat >"$cancel_mock_bin/systemctl" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >>"$TEST_ROLLBACK_CANCEL_LOG"
 case "${1:-}" in
-  stop|reset-failed)
+  stop|reset-failed|daemon-reload)
     exit 0
     ;;
   show)
@@ -599,6 +605,7 @@ esac
 EOF
 make_test_executable "$cancel_mock_bin/sudo" "$cancel_mock_bin/systemctl"
 export TEST_ROLLBACK_CANCEL_LOG="$cancel_mock_log"
+deploy_target_path="$cancel_mock_bin:$PATH"
 target_command() {
   if [[ "$1" != sudo\ /bin/sh\ -c\ * ]]; then
     echo "rollback cancellation did not enter a privileged ownership-check shell" >&2

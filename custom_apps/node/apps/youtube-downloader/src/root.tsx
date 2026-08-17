@@ -465,7 +465,7 @@ const ProfileMenu = component$<ProfileMenuProps>(({ image, username, onImageChan
         <button class="profile-action" type="button" onClick$={clearAndClose}>
           Clear history
         </button>
-        <a class="profile-signout" href="/oauth2/sign_out?rd=/oauth2/start" onClick$={closeMenu}>
+        <a class="profile-signout" href="/oauth2/sign_out" onClick$={closeMenu}>
           Log out
         </a>
       </section>

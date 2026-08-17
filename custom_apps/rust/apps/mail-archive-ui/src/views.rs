@@ -1394,7 +1394,7 @@ pub(super) fn render_search(
     let mut body = String::new();
     body.push_str(&render_toasts(flash, error));
 
-body.push_str(
+    body.push_str(
         "<section class=\"page-heading\">
            <div>
              <p class=\"eyebrow\">Mail</p>

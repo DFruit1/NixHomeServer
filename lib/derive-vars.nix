@@ -94,6 +94,7 @@ let
   // lib.optionalAttrs (enabled "files") {
     oauth2ProxyFilestash = 4184;
     filestash = 8334;
+    filestashTransfers = 9443;
     filesSftp = 2222;
   }
   // lib.optionalAttrs (enabled "mail-archive-ui") {
@@ -120,6 +121,9 @@ let
   }
   // lib.optionalAttrs (enabled "audiobookshelf") {
     audiobookshelf = 13378;
+  }
+  // lib.optionalAttrs (enabled "chaptarr") {
+    chaptarr = 8789;
   }
   // lib.optionalAttrs (enabled "immich") {
     immich = 2283;
@@ -296,7 +300,7 @@ rec {
   lanDnsDomain = networking.dns.lanDomain;
   lanDnsHosts = networking.dns.lanHosts;
   netIface = networking.interfaces.lan;
-  kanidmAuthSessionExpirySeconds = 259200; # Kanidm auth session lifetime in seconds.
+  kanidmAuthSessionExpirySeconds = configuredIdentity.authSessionExpirySeconds or 259200; # Kanidm auth session lifetime in seconds; operator-set in vars.nix, defaults to 3 days.
   kanidmPrivilegeSessionExpirySeconds = 900; # Kanidm privileged write window in seconds.
   filesSessionExpirationHours = 8; # Files web UI browser session lifetime in hours.
   brandName = branding.displayName;

@@ -16,6 +16,11 @@ in
       "monitorOauth2ProxyCookieSecret"
     ] [ ];
     bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [ ];
+    chaptarr = app ./chaptarr "Chaptarr" "media-automation" [ ] [
+      "chaptarr"
+      "chaptarr-storage-layout-v1"
+      "media-automation-bootstrap-chaptarr"
+    ];
     files = app ./files "Files" "storage" [ ] [ ];
     groundwater-logger = app ./groundwater-logger "Groundwater Logger" "operations" [
       "groundwaterAppMqttPassword"
@@ -58,6 +63,9 @@ in
     mkvmaker = app ./mkvmaker "DVD ISO Converter" "media" [ ] [
       "mkvmaker-storage-layout-v1"
       "mkvmaker-import"
+      "mkvmaker-import-worker"
+      "mkvmaker-worker-config"
+      "mkvmaker-worker-image-publish"
     ];
     offline-music = app ./offline-music "Offline Music" "media" [ ] [
       "offline-media-reconcile"

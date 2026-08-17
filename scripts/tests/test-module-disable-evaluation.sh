@@ -9,6 +9,7 @@ ensure_tools jq nix
 host="$(test_default_host)"
 cases=(
   bonsai
+  chaptarr
   groundwater-logger
   mail-archive-ui
   media-automation-all
@@ -41,6 +42,7 @@ for ((offset = 0; offset < ${#cases[@]}; offset += batch_size)); do
       and .registryPresent
       and (.drvPath | startswith("/nix/store/") and endswith(".drv"))
       and (.presentServices == [])
+      and (.presentContainers == [])
       and (.presentTimers == [])
       and (.presentCaddyHosts == [])
       and (.presentPrivateHosts == [])

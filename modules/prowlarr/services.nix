@@ -1,4 +1,4 @@
-{ config, lib, oauth2Proxy, pkgs, vars, ... }:
+{ config, lib, oauth2Proxy, pkgs, unstablePkgs, vars, ... }:
 
 let
   cfg = config.repo.prowlarr;
@@ -16,6 +16,7 @@ in
     {
       services.prowlarr = {
         enable = true;
+        package = unstablePkgs.prowlarr;
         openFirewall = false;
         dataDir = "/var/lib/prowlarr";
         settings = {

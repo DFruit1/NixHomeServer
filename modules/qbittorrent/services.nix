@@ -1,4 +1,4 @@
-{ config, lib, oauth2Proxy, vars, ... }:
+{ config, lib, oauth2Proxy, unstablePkgs, vars, ... }:
 
 let
   cfg = config.repo.qbittorrent;
@@ -17,6 +17,7 @@ in
     {
       services.qbittorrent = {
         enable = true;
+        package = unstablePkgs.qbittorrent-nox;
         openFirewall = false;
         profileDir = paths.profileDir;
         webuiPort = vars.networking.ports.qbittorrentWeb;

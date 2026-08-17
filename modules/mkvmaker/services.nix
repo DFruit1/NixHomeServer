@@ -36,6 +36,10 @@ let
     cfg.audioProfile
     "--video-preset"
     cfg.videoPreset
+    "--worker-id"
+    vars.hostname
+    "--lease-seconds"
+    (toString cfg.distributedWorkers.leaseSeconds)
   ];
   dispatchCommand = "/run/current-system/sw/bin/systemctl start --no-block mkvmaker-import-worker.service";
 in

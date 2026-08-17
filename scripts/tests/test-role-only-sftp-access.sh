@@ -70,7 +70,8 @@ if ! jq -e '
   and (.sharedViewExec | contains("--delete-deny"))
   and (.sharedViewExec | contains("a-t") | not)
   and (.sharedDeleteViewExec | contains("--delete-deny") | not)
-  and (.sharedDeleteViewExec | contains("--perms=g+rwX,o-rwx,a-t"))
+  and (.sharedDeleteViewExec | contains("a-t") | not)
+  and (.sharedDeleteViewExec | contains("--perms=g+rwX,o-rwx"))
 ' <<<"$role_json" >/dev/null; then
   echo "Role-only identity, Homepage access, or Files web isolation regressed." >&2
   jq . <<<"$role_json" >&2

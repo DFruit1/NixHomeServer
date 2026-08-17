@@ -14,10 +14,36 @@ services_json="$(
       flake = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
       hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
       base = builtins.getAttr hostName flake.nixosConfigurations;
-      host = if builtins.getEnv "NIXHOMESERVER_TEST_ALL_APPS" == "1" then
-        base.extendModules { modules = [ ./modules/bonsai ./modules/groundwater-logger ]; }
-      else
-        base;
+      configuredVars = flake.lib.nixhomeserverSettings.${hostName};
+      catalog = import ./modules/catalog.nix;
+      allAppSettings = configuredVars // {
+        applications = configuredVars.applications // {
+          enabled = builtins.attrNames catalog.apps;
+        };
+      };
+      allAppVars = allAppSettings // (import ./lib/derive-vars.nix {
+        inherit (flake.inputs.nixpkgs) lib;
+        settings = allAppSettings;
+      });
+      pkgs = flake.inputs.nixpkgs.legacyPackages.${allAppVars.hostPlatform};
+      packageData = import ./flake/packages.nix {
+        inherit (flake.inputs.nixpkgs) lib;
+        inherit pkgs;
+        crane = flake.inputs.crane;
+      };
+      allAppSystem = import ./flake/system.nix {
+        inputs = flake.inputs;
+        inherit (flake.inputs.nixpkgs) lib;
+        inherit pkgs;
+        vars = allAppVars;
+        system = allAppVars.hostPlatform;
+        appPackages = packageData.appPackages;
+      };
+      host =
+        if builtins.getEnv "NIXHOMESERVER_TEST_ALL_APPS" == "1" then
+          allAppSystem.nixosConfigurations.${hostName}
+        else
+          base;
       services = host.config.systemd.services;
     in
       builtins.mapAttrs

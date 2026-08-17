@@ -1,7 +1,11 @@
-{ config, lib, vars, ... }:
+{ config, lib, pkgs, vars, ... }:
 
 let
   privateHosts = config.services.unbound.privateHosts;
+  adblockCfg = config.repo.unbound.adblock;
+  adblockAllowlistFile = pkgs.writeText "unbound-adblock-allowlist.txt" (
+    lib.concatStringsSep "\n" adblockCfg.allowlist
+  );
   loopback = vars.networking.loopbackIPv4;
   loopbackCidr = vars.networking.loopbackIPv4Cidr;
   dnsPort = vars.networking.ports.dns;
@@ -121,6 +125,51 @@ in
     description = "Split-horizon private host records rendered into Unbound views.";
   };
 
+  options.repo.unbound = {
+    adblock = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Filter advertising, tracker, and known-malware domains at the resolver
+          with a periodically refreshed blocklist.
+        '';
+      };
+
+      action = lib.mkOption {
+        type = lib.types.enum [ "always_nxdomain" "refuse" ];
+        default = "always_nxdomain";
+        description = "Unbound local-zone action applied to every blocked domain.";
+      };
+
+      urls = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "https://small.oisd.nl/" ];
+        description = ''
+          HTTPS blocklist sources. Each source may be in hosts, Adblock-Plus, or
+          plain domain-list format; entries that are not bare domain names are
+          ignored. The default oisd small list is low-volume and privacy-oriented.
+        '';
+      };
+
+      allowlist = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Bare domains that must never be blocked. An entry also unblocks every
+          subdomain beneath it by rendering an overriding transparent zone.
+        '';
+      };
+
+      blocklistFile = lib.mkOption {
+        type = lib.types.str;
+        readOnly = true;
+        default = "/var/lib/unbound/adblock.conf";
+        description = "Generated include fragment consumed by Unbound.";
+      };
+    };
+  };
+
   config = {
     services.unbound.privateHosts = {
       "${vars.domain}" = {
@@ -194,6 +243,28 @@ in
               rrset-roundrobin = true;
               auto-trust-anchor-file = "/var/lib/unbound/root.key";
               do-not-query-localhost = false;
+              # Privacy and hardening: hide identity/version, prefetch keys,
+              # serve stale data during upstream outages, use NSEC for negative
+              # caching, and block replies that smuggle RFC1918/link-local
+              # addresses (rebinding protection). Caches grow to a modest size
+              # for the home-LAN query volume.
+              hide-identity = true;
+              hide-version = true;
+              prefetch-key = true;
+              serve-expired = true;
+              aggressive-nsec = true;
+              private-address = [
+                "10.0.0.0/8"
+                "172.16.0.0/12"
+                "192.168.0.0/16"
+                "169.254.0.0/16"
+                "127.0.0.0/8"
+                "::1/128"
+                "fc00::/7"
+                "fe80::/10"
+              ];
+              rrset-cache-size = "64m";
+              msg-cache-size = "32m";
               # NetBird creates its interface asynchronously after first-boot
               # enrollment. Linux freebind lets Unbound reserve that configured
               # address before the interface exists, avoiding a DNS/NetBird
@@ -224,6 +295,7 @@ in
               forward-first = false;
             })
           ];
+          include = lib.mkIf adblockCfg.enable [ adblockCfg.blocklistFile ];
         }
         // lib.optionalAttrs splitDnsMode {
           view = [
@@ -249,5 +321,222 @@ in
       "netbird-main.service"
       "netbird-main-login.service"
     ];
+
+    assertions = [
+      {
+        assertion = !adblockCfg.enable || adblockCfg.urls != [ ];
+        message = "repo.unbound.adblock.urls must contain at least one HTTPS source when ad-blocking is enabled.";
+      }
+      {
+        assertion = lib.all (url: lib.hasPrefix "https://" url) adblockCfg.urls;
+        message = "repo.unbound.adblock.urls entries must use https:// sources.";
+      }
+      {
+        assertion = lib.all
+          (domain:
+            lib.match "[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?" domain != null
+            && !lib.hasInfix ".." domain
+            && lib.hasInfix "." domain)
+          adblockCfg.allowlist;
+        message = "repo.unbound.adblock.allowlist entries must be bare domain names (no scheme, wildcard, port, path, empty label, or single-label hostname).";
+      }
+    ];
+
+    systemd.services.unbound-adblock = lib.mkIf adblockCfg.enable {
+      description = "Refresh Unbound ad-block blocklist";
+      wantedBy = [ "multi-user.target" ];
+      # The generated include fragment must exist before Unbound first reads its
+      # config; at boot this unit runs first and writes it. An upstream outage
+      # is degraded-but-successful so it cannot fail system activation; other
+      # script/runtime failures still use the standard OnFailure alert.
+      before = [ "unbound.service" ];
+      after = [ "dnscrypt-proxy.service" "network.target" ];
+      unitConfig = {
+        OnFailure = [ config.repo.monitoring.failureAlerts.targetUnit ];
+        OnFailureJobMode = "replace-irreversibly";
+      };
+      path = with pkgs; [ coreutils curl gawk gnugrep gnused systemd util-linux ];
+      serviceConfig = {
+        Type = "oneshot";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        LockPersonality = true;
+        RestrictSUIDSGID = true;
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+        SystemCallArchitectures = "native";
+        ReadWritePaths = [ "/var/lib/unbound" ];
+      };
+      script = ''
+        set -euo pipefail
+
+        blocklist_file=${lib.escapeShellArg adblockCfg.blocklistFile}
+        action=${lib.escapeShellArg adblockCfg.action}
+        max_entries=250000
+        state_dir="$(dirname "$blocklist_file")"
+
+        mkdir -p "$state_dir"
+        raw_file="$(mktemp "$state_dir/.adblock-raw.XXXXXX")"
+        domains_file="$(mktemp "$state_dir/.adblock-domains.XXXXXX")"
+        allow_file="$(mktemp "$state_dir/.adblock-allow.XXXXXX")"
+        tmp_file="$(mktemp "$state_dir/.adblock-generated.XXXXXX")"
+        trap 'rm -f "$raw_file" "$domains_file" "$allow_file" "$tmp_file"' EXIT
+
+        # Normalize the operator allowlist into one lowercase domain per line.
+        : > "$allow_file"
+        if [[ -s ${lib.escapeShellArg adblockAllowlistFile} ]]; then
+          sed -e 's/^\.//' -e 's/\.$//' -e 's/\(.*\)/\L\1/' \
+            ${lib.escapeShellArg adblockAllowlistFile} \
+            | ${pkgs.coreutils}/bin/sort -u > "$allow_file"
+        fi
+
+        # Fetch every configured source; succeed if at least one is reachable.
+        any_fetched=false
+        : > "$raw_file"
+        for url in ${lib.escapeShellArgs adblockCfg.urls}; do
+          if curl --silent --show-error --fail --location \
+               --connect-timeout 10 --max-time 45 --max-filesize 67108864 \
+               --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 45 \
+               "$url" >> "$raw_file"; then
+            printf '\n' >> "$raw_file"
+            any_fetched=true
+          else
+            echo "WARNING: failed to fetch blocklist source: $url" >&2
+          fi
+        done
+
+        if [[ "$any_fetched" != true ]]; then
+          alert_message="No Unbound blocklist source could be fetched; retaining the last-good (or empty) blocklist."
+          echo "ALERT: $alert_message" >&2
+          # A source outage is expected degradation, not a resolver or
+          # activation failure. Record it at daemon.alert priority while
+          # leaving OnFailure available for unexpected updater failures.
+          logger --tag unbound-adblock --priority daemon.alert -- "$alert_message" || true
+          if [[ ! -f "$blocklist_file" ]]; then
+            printf '# nixhomeserver unbound ad-block: no source reachable yet\nserver:\n' \
+              | ${pkgs.coreutils}/bin/install -m 0644 -o unbound -g unbound /dev/stdin "$blocklist_file"
+          fi
+          exit 0
+        fi
+
+        # Extract one bare domain per line from hosts, Adblock-Plus, and plain
+        # domain-list formats, discarding wildcards, IP literals, and anything
+        # that is not a valid DNS name.
+        ${pkgs.gawk}/bin/awk '
+          {
+            line = $0
+            gsub(/[\r]/, "", line)
+            if (line == "") next
+            if (line ~ /^[!#\[]/) next
+            if (line ~ /^@@/) next
+            domain = ""
+            if (line ~ /^\|\|/) {
+              sub(/^\|\|/, "", line)
+              sub(/\^.*/, "", line)
+              if (line ~ /^\*\./) sub(/^\*\./, "", line)
+              domain = line
+            } else {
+              n = split(line, fields, /[ \t]+/)
+              if (n >= 2 && (fields[1] == "0.0.0.0" || fields[1] == "127.0.0.1")) {
+                domain = fields[2]
+              } else if (n == 1) {
+                domain = fields[1]
+              } else {
+                next
+              }
+            }
+            domain = tolower(domain)
+            sub(/\.+$/, "", domain)
+            if (domain == "") next
+            if (domain !~ /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/) next
+            if (domain ~ /\.\./) next
+            if (domain ~ /^[0-9]+(\.[0-9]+)+$/) next
+            if (split(domain, labels, ".") < 2) next
+            print domain
+          }
+        ' "$raw_file" | ${pkgs.coreutils}/bin/sort -u > "$domains_file"
+
+        # Drop any blocked domain covered by an allowlist entry (the entry
+        # itself or any of its subdomains).
+        if [[ -s "$allow_file" ]]; then
+          ${pkgs.gawk}/bin/awk '
+            NR == FNR { allow[$0] = 1; next }
+            {
+              skip = 0
+              for (entry in allow) {
+                if ($0 == entry || $0 ~ ("\\." entry "$")) { skip = 1; break }
+              }
+              if (!skip) print
+            }
+          ' "$allow_file" "$domains_file" > "$tmp_file"
+          ${pkgs.coreutils}/bin/mv "$tmp_file" "$domains_file"
+        fi
+
+        # Render the include fragment. Allowlist entries become overriding
+        # transparent zones so subdomains remain reachable beneath a blocked
+        # parent.
+        {
+          printf '# nixhomeserver unbound ad-block; generated by unbound-adblock.service\n'
+          printf 'server:\n'
+          while IFS= read -r entry; do
+            [[ -n "$entry" ]] || continue
+            printf '  local-zone: "%s" transparent\n' "$entry"
+          done < "$allow_file"
+          entry_count=0
+          while IFS= read -r domain; do
+            [[ -n "$domain" ]] || continue
+            if (( entry_count >= max_entries )); then
+              echo "WARNING: blocklist truncated at $max_entries entries" >&2
+              break
+            fi
+            printf '  local-zone: "%s" %s\n' "$domain" "$action"
+            (( entry_count++ )) || true
+          done < "$domains_file"
+        } > "$tmp_file"
+
+        # Reject a malformed fragment instead of loading it into Unbound.
+        if ! ${pkgs.gawk}/bin/awk -v action="$action" '
+            /^#/ { next }
+            /^server:$/ { next }
+            !match($0, "^  local-zone: \"[a-z0-9][a-z0-9.-]*[a-z0-9]?\" (transparent|" action ")$") {
+              print "INVALID: " $0 > "/dev/stderr"
+              bad = 1
+            }
+            END { exit bad }
+          ' "$tmp_file"; then
+          echo "Generated Unbound blocklist fragment failed validation; refusing to install." >&2
+          exit 1
+        fi
+
+        ${pkgs.coreutils}/bin/chown unbound:unbound "$tmp_file"
+        ${pkgs.coreutils}/bin/chmod 0644 "$tmp_file"
+        ${pkgs.coreutils}/bin/mv -f "$tmp_file" "$blocklist_file"
+
+        # Reload only when Unbound is already running; at boot it starts after
+        # this unit and reads the freshly generated file itself. Queue the
+        # reload without waiting because this updater is ordered before
+        # Unbound, and a synchronous reload would deadlock reactivation.
+        if systemctl is-active --quiet unbound.service 2>/dev/null; then
+          systemctl --no-block reload unbound.service
+        fi
+      '';
+    };
+
+    systemd.timers.unbound-adblock-refresh = lib.mkIf adblockCfg.enable {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnCalendar = "*-*-* 03:15:00 UTC";
+        RandomizedDelaySec = "30m";
+        Persistent = true;
+        Unit = "unbound-adblock.service";
+      };
+    };
   };
 }

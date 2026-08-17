@@ -16,6 +16,7 @@ let
       # Every application is opt-in. Add only catalog names that this host
       # should import, build, and test during routine validation.
       enabled = [
+        "files"
         "homepage"
       ];
     };
@@ -28,6 +29,7 @@ let
       adminEmail = "admin@example.test"; # Single contact address used for both ACME and the Kanidm admin account.
       sshPublicKey = "ssh-ed25519 CHANGE_ME example-admin-key"; # Public key authorized for the local Unix administrator.
       localAdminUser = "admin"; # Local Unix SSH/sudo account for bootstrap and operations.
+      authSessionExpirySeconds = 259200; # Maximum Kanidm authentication-session lifetime in seconds (3 days).
     };
 
     network = {

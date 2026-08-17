@@ -48,8 +48,8 @@ in
       script = ''
         set -euo pipefail
 
-        install -d -m 1770 -o root -g root ${sharedAudiobooksRoot}
-        install -d -m 1770 -o root -g root ${sharedAudiobooksRoot}/_YouTube
+        install -d -m 0770 -o root -g root ${sharedAudiobooksRoot}
+        install -d -m 0770 -o root -g root ${sharedAudiobooksRoot}/_YouTube
         setfacl -m g:audiobookshelf-media:r-X ${vars.sharedRoot}
 
         setfacl -m g:audiobookshelf-media:rwx,d:g:audiobookshelf-media:rwx ${sharedAudiobooksRoot} ${sharedAudiobooksRoot}/_YouTube

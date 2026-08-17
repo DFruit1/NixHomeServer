@@ -11,7 +11,7 @@ let
     && config.services.mail-archive-ui.enable;
   seerrEnabled = moduleEnabled "seerr";
   beszelEnabled = hasModule "beszel";
-  mediaAutomationEnabled = lib.any moduleEnabled [ "sonarr" "radarr" "prowlarr" "qbittorrent" "seerr" ];
+  mediaAutomationEnabled = lib.any moduleEnabled [ "chaptarr" "sonarr" "radarr" "prowlarr" "qbittorrent" "seerr" ];
   portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
@@ -111,7 +111,7 @@ let
       "mail-archive-users" = "Grants private mail archive access.";
     }
     // lib.optionalAttrs mediaAutomationEnabled {
-      "media-automation-users" = "Grants Sonarr, Radarr, Prowlarr, qBittorrent, and request-manager access.";
+      "media-automation-users" = "Grants Chaptarr, Sonarr, Radarr, Prowlarr, qBittorrent, and request-manager access.";
     }
     // lib.optionalAttrs (hasModule "paperless") {
       "paperless-users" = "Grants Paperless document archive access.";

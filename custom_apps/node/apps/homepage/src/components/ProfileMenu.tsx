@@ -110,7 +110,7 @@ export const ProfileMenu = component$(
               <span>Click service cards to open app</span>
             </label>
           </section>
-          <a class="profile-signout" href="/oauth2/sign_out?rd=/oauth2/start" onClick$={closeMenu}>
+          <a class="profile-signout" href="/oauth2/sign_out" onClick$={closeMenu}>
             Sign out
           </a>
         </section>

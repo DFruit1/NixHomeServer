@@ -22,12 +22,13 @@ in
     script = ''
       set -euo pipefail
 
-      install -d -m 3770 -o mkvmaker -g ${lib.escapeShellArg sharedAccessGroup} \
+      install -d -m 2770 -o mkvmaker -g ${lib.escapeShellArg sharedAccessGroup} \
         ${lib.escapeShellArg cfg.paths.dvdInbox}
       install -d -m 2750 -o mkvmaker -g ${lib.escapeShellArg sharedAccessGroup} \
         ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Processed"} \
-        ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Failed"}
-      install -d -m 1770 -o root -g root \
+        ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Failed"} \
+        ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Duplicate"}
+      install -d -m 0770 -o root -g root \
         ${lib.escapeShellArg cfg.paths.moviesOutput} \
         ${lib.escapeShellArg cfg.paths.showsOutput} \
         ${lib.escapeShellArg cfg.paths.stagingRoot}
@@ -36,14 +37,17 @@ in
         ${lib.escapeShellArg vars.sharedRoot} \
         ${lib.escapeShellArg cfg.paths.sharedIsoRoot} \
         ${lib.escapeShellArg "${vars.sharedRoot}/_Videos"}; do
-        setfacl -m g:mkvmaker:r-X "$path"
+        setfacl -m g:mkvmaker:r-X,u:nobody:r-X "$path"
       done
       for path in \
         ${lib.escapeShellArg cfg.paths.dvdInbox} \
+        ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Processed"} \
+        ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Failed"} \
+        ${lib.escapeShellArg "${cfg.paths.dvdInbox}/_Duplicate"} \
         ${lib.escapeShellArg cfg.paths.moviesOutput} \
         ${lib.escapeShellArg cfg.paths.showsOutput} \
         ${lib.escapeShellArg cfg.paths.stagingRoot}; do
-        setfacl -m g:mkvmaker:rwx,d:g:mkvmaker:rwx "$path"
+        setfacl -m g:mkvmaker:rwx,d:g:mkvmaker:rwx,u:nobody:rwx,d:u:nobody:rwx "$path"
       done
     '';
   };

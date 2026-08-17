@@ -89,6 +89,7 @@ in
         PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM = "groups";
         PAPERLESS_APPS = "allauth.socialaccount.providers.openid_connect";
         PAPERLESS_URL = "https://${paperlessHost}";
+        PAPERLESS_LOGOUT_REDIRECT_URL = "https://${config.repo.authGateway.domain}/oauth2/sign_out";
         PAPERLESS_ALLOWED_HOSTS = paperlessHost;
         PAPERLESS_EXPORT_DIR = paths.export;
         PAPERLESS_OCR_LANGUAGE = "eng";

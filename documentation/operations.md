@@ -127,11 +127,31 @@ independently, and a targeted single-app topology.
 The following imported modules also have a convenient active-feature switch.
 Setting one to `false` removes its services, routes, DNS, configured identity
 surfaces, app-owned secret materialization/requirements, backup registrations,
+
+## Transfers Share Host
+
+A dedicated public share host `transfers.<domain>` on port `9443` enables
+unauthenticated visitors to open Filestash share links without OAuth2
+authentication. Share links copied from the authenticated `files.<domain>` UI are
+rewritten to use the transfers host via a deterministic string replacement in the
+shipped frontend bundle. The host is served through a Cloudflare tunnel with
+origin server name validation and is additionally reachable on the LAN and
+Netbird when the `files` module is enabled. The Caddy vhost rewrites the
+`Host` header to `files.<domain>` so that Filestash's SecureOrigin middleware and
+`general.host` configuration remain on the expected hostname.
+
+When the `files` module is disabled, the transfers host, Cloudflare ingress,
+Unbound private host records, and associated firewall rules are automatically
+removed.
+
+The exhaustive regression suite evaluates Core-only, every optional module removed
+independently, and a targeted single-app topology.
 and integrations while leaving centrally managed persistence in place:
 
 ```nix
 repo.groundwaterLogger.enable = false;
 repo.bonsai.enable = false;
+repo.chaptarr.enable = false;
 repo.kiwix.enable = false;
 repo.prowlarr.enable = false;
 repo.qbittorrent.enable = false;
@@ -150,6 +170,62 @@ deploy before switching. Kanidm automatic deletion is intentionally disabled,
 so identity objects provisioned by an earlier generation may remain inert until
 an administrator explicitly retires them; the Homepage admin guide documents
 that separate cleanup workflow.
+
+## Chaptarr Book and Audiobook Downloads
+
+Chaptarr is available at `https://chaptarr.<domain>` to members of
+`media-automation-users`. The module follows Chaptarr's supported Docker
+runtime contract, binds its web/API listener through the host network, and
+keeps the host firewall closed on port 8789. The shared authentication gateway
+is the only browser-facing route. Chaptarr is beta software, so preserve tested
+backups and review the upstream warning before trusting it with irreplaceable
+media: <https://github.com/Chaptarr/chaptarr#getting-started>.
+
+On the first visit, complete Chaptarr's local setup, then configure the policy
+for both media types:
+
+1. Create or select a quality profile and metadata profile for each media type.
+2. Add legal book and audiobook indexers in Prowlarr and verify their searches.
+
+The first-boot reconcilers create a qBittorrent `books` category, register the
+loopback qBittorrent client in Chaptarr, map qBittorrent's host-side `complete`
+directory to `/downloads/complete` inside the container, registers `/audiobooks`
+and `/ebooks` as the corresponding default root folders, and registers Chaptarr
+with Prowlarr via its Readarr-compatible API. The same reconciler pins
+Chaptarr's built-in aggregated metadata service to
+`https://api2.chaptarr.com` and runs Chaptarr's capability test; a missing or
+incompatible metadata service therefore fails the unit instead of leaving
+search silently incomplete.
+
+Completed imports land in `/audiobooks` or `/ebooks`. When Audiobookshelf and
+Kavita are enabled, those mounts derive from their declared shared library
+roots (`_Audiobooks` and `_Books/_Ebooks`) and receive inherited ACLs for both
+the destination app and Chaptarr. Quality/metadata-profile selection remains
+explicit because the correct monitoring and format policy is operator-specific.
+
+Useful checks are:
+
+```bash
+systemctl status chaptarr.service media-automation-bootstrap-chaptarr.service
+journalctl -u chaptarr.service -u media-automation-bootstrap-chaptarr.service -n 100 --no-pager
+curl --fail --silent http://127.0.0.1:8789/ping
+```
+
+The authenticated Homepage canary checks that the Chaptarr route remains
+reachable. For an incident, first determine whether the container is running,
+whether the bootstrap reconciler obtained Chaptarr's API key, and whether the
+metadata capability test passed. Then verify that the `books` qBittorrent
+category can write under `_Downloads/qbittorrent/complete/books` and that the
+`chaptarr` identity can traverse `complete` and write its `books` child.
+Container and reconciler output goes to the systemd journal; API keys and
+credentials must never be copied into logs or support messages.
+
+`/var/lib/chaptarr` remains persisted even when the app is disabled or its
+module is removed. Backup preparation takes an integrity-checked
+`chaptarr.sqlite` dump and records the audiobook and ebook payload roots. The
+OCI image itself is rebuildable and is pinned by multi-architecture digest in
+`modules/chaptarr/services.nix`; update that digest deliberately after reviewing
+upstream release notes.
 
 ## Local-Console Administrator Recovery
 
@@ -535,13 +611,21 @@ are storage only. An unchanged `.iso` is picked up after approximately one
 minute and converted serially into the shared Jellyfin `_Movies` or `_Shows`
 library with the balanced H.264/AAC-plus-original-audio profile.
 
-The converter uses the ISO label for its initial media name and performs a
-conservative TVmaze lookup for series and episode names. A uniform set of at
-least three episode-length titles is treated as TV even when TVmaze has no
-listing. If metadata is unavailable or the match is weak, conversion continues
-with safe names derived from the ISO and DVD title numbers. Name TV images
-descriptively, for example `The_Wire_S03_Disc_2.iso`, to improve automatic
-season, disc, and metadata matching.
+The converter treats a descriptive ISO filename as authoritative over the
+disc's embedded volume label and performs a conservative TVmaze lookup only
+when the filename does not already carry Jellyfin-style season, episode, year,
+or provider signals. A uniform set of at least three episode-length titles is
+treated as TV even when TVmaze has no listing. If metadata is unavailable or
+the match is weak, conversion continues with safe names derived from the ISO
+filename and DVD title numbers. Name TV images descriptively, for example
+`The_Wire_S03_Disc_2.iso` or `Rumpole_of_the_Bailey_S02E04-E06.iso`, to improve
+automatic season, disc, and metadata matching. On explicitly TV-named ISOs, a
+systematic sequence of adjacent title pairs with identical runtimes is collapsed
+so DVDs that expose every episode twice do not create duplicate Jellyfin
+episodes. An episode range also fails closed if the filtered DVD title count
+does not match the range, rather than inventing episode numbers past its end.
+Ambiguous bare trailing numbers such as `Title_2_DISC_1.iso` remain part of the
+title unless an existing series folder confirms that the number is a season.
 
 The final MKV does not retain HandBrake's encode timestamp as a media release
 date. Jellyfin can still use a year returned by its metadata providers or a
@@ -551,8 +635,21 @@ a release year instead of being labelled with the conversion year.
 If one title accounts for at least 85% of the substantial runtime, only that
 feature is converted. Otherwise every title of at least five minutes is
 converted, excluding an obvious play-all duplicate. Completed source ISOs are
-preserved in `_Shared/_ISO/_DVDs/_Processed`. After three failed attempts an ISO
-is preserved in `_Failed` beside an `.error.txt` file.
+preserved in `_Shared/_ISO/_DVDs/_Processed`. Before HandBrake starts, the
+importer size-filters and SHA-256 checks the ISO against every processed image;
+an identical upload is preserved in `_Duplicate` and never encoded. This also
+catches a repeated upload with the same filename. Duplicate detection fails
+closed: an ISO that cannot be verified is retried and eventually preserved in
+`_Failed` rather than being encoded unchecked.
+
+When durable completed-job manifests prove that the same title from the
+canonical and duplicate ISOs was previously encoded twice, the duplicate-side
+MKV is moved out of Jellyfin into `_Duplicate/_Movies` or
+`_Duplicate/_Shows`, preserving its former library-relative path. The canonical
+MKV remains in place. A sibling `.iso.duplicate.json` report identifies the
+canonical ISO and every quarantined output for manual review. Ambiguous files
+are left untouched. Other conversion failures are preserved in `_Failed`
+beside an `.error.txt` file after three attempts.
 
 While an encode runs, the partially written MKV is staged in
 `_Shared/.mkvmaker-staging` outside the Jellyfin library so the library never
@@ -573,6 +670,86 @@ sudo systemctl start mkvmaker-import.service
 The queue and detailed HandBrake job logs live under `/var/lib/mkvmaker`.
 Change `repo.mkvmaker.dominantTitleRatio`, `minimumTitleSeconds`, `audioProfile`,
 or `videoPreset` declaratively if the defaults need adjustment.
+
+#### Stateless conversion worker USB
+
+When MKVMaker is enabled, the host configuration also builds a minimal NixOS
+live image from the repository-pinned package closure. The
+`mkvmaker-worker-image-publish.service` publishes the ISO and its SHA-256
+sidecar as one immutable release, then atomically moves the `MKVMaker-Worker`
+symlink to that verified release. Find the current pair at:
+
+```text
+_ISO/_SystemOSes/MKVMaker-Worker/nixhomeserver-mkvmaker-worker-x86_64-linux.iso
+_ISO/_SystemOSes/MKVMaker-Worker/nixhomeserver-mkvmaker-worker-x86_64-linux.iso.sha256
+```
+
+The default server path is derived from `identity.adminUser`; it is currently
+`/mnt/data/users/admindsaw/_ISO/_SystemOSes`. The service resolves that Kanidm
+person's POSIX identity at runtime and fails closed rather than publishing to a
+numeric or fallback owner. Rebuild the package directly with:
+
+```bash
+nix build .#mkvmaker-worker-iso
+```
+
+NixOS implements live images through `system.build.isoImage`; the worker image
+extends the official minimal installation image and retains its USB/EFI hybrid
+boot support. See the [NixOS image-building manual](https://nixos.org/manual/nixos/stable/#sec-building-image).
+
+Write the ISO to an entire USB device with a raw-image writer, not into a
+filesystem on the stick. Selecting the wrong destination destroys that
+device's existing contents, so verify it independently before writing. Booting
+the image does not install NixOS and does not automatically mount or modify any
+internal disk.
+
+Directly writing the image is the simplest and most reliable boot method, but
+it dedicates that USB stick to the worker image. Ventoy is also supported when
+keeping several ISOs on one stick is more useful: disable Secure Boot for this
+unsigned custom image, select **GRUB2 mode**, and then select the first NixOS
+installer entry. The worker initrd restores Ventoy's renamed `vtinit=` kernel
+argument before NixOS closure discovery, so no emergency-shell commands are
+required. Ventoy Normal mode can fail earlier on some firmware with
+`shim_lock protocol not found`.
+
+After boot:
+
+1. Connect Ethernet, or run `nmtui` to configure Wi-Fi.
+2. Confirm the server is reachable at its configured LAN address.
+3. Follow the automatically started worker with
+   `journalctl -fu mkvmaker-worker.service`.
+4. Inspect its timer with `systemctl status mkvmaker-worker.timer`.
+
+The live worker mounts only the DVD inbox, movie and show outputs, staging
+directory, queue state, and a separate read-only configuration directory over
+NFSv4. It does not receive a writable export of the broader shared tree. The
+server permits those scoped exports only from
+`repo.mkvmaker.distributedWorkers.nfsClientCidr`, which defaults to the
+canonical configured LAN subnet. NFS maps every client identity to `nobody`;
+ACLs grant that identity access only to the DVD inbox, conversion outputs,
+staging, and MKVMaker queue state. No reusable server credential is embedded in
+the ISO. This is a trusted-LAN design: do not extend the NFS CIDR to an
+untrusted network or expose TCP 2049 through the router.
+
+Each importer holds an NFSv4 kernel lock for one ISO across duplicate checking,
+encoding, and archival, and releases the short-lived queue metadata lock before
+expensive hashing or HandBrake starts. Other machines can therefore claim
+different ISOs concurrently. Renewable JSON leases report worker identity and
+progress, but exclusivity does not depend on synchronized laptop clocks. If a
+laptop powers off, the kernel releases its lock and a different worker can
+retry immediately. The importer also revalidates the source file identity
+before archiving it; per-output locks and atomic no-clobber publication remain
+the final protection against duplicate writers.
+
+Useful server checks are:
+
+```bash
+systemctl status nfs-server.service mkvmaker-worker-config.service \
+  mkvmaker-worker-image-publish.service
+journalctl -u mkvmaker-worker-config.service \
+  -u mkvmaker-worker-image-publish.service -n 100 --no-pager
+sudo systemctl restart mkvmaker-worker-image-publish.service
+```
 
 ### Media Manager
 
@@ -1125,6 +1302,49 @@ curl -kI --resolve <passwords-domain>:443:<server-lan-ip> https://<passwords-dom
 
 - if the forced-resolution check succeeds while normal resolution fails, troubleshoot workstation DNS, LAN resolver reachability, or NetBird instead of changing Vaultwarden exposure
 
+## Unbound Ad-Block
+
+The resolver filters advertising, tracker, and known-malware domains from a
+periodically refreshed blocklist. It is enabled by default; disable it with:
+
+```nix
+repo.unbound.adblock.enable = false;
+```
+
+Behavior:
+
+- sources: `repo.unbound.adblock.urls` (HTTPS only), default
+  `["https://small.oisd.nl/"]`. Each source may be in hosts, Adblock-Plus, or
+  plain domain-list format; entries that are not bare domain names are ignored.
+- action: `repo.unbound.adblock.action`, default `always_nxdomain`
+  (`refuse` is the alternative). Applied as a Unbound `local-zone`.
+- allowlist: `repo.unbound.adblock.allowlist` lists bare domains that must never
+  be blocked; each entry also unblocks every subdomain beneath it.
+- refresh: `unbound-adblock-refresh.timer` runs `unbound-adblock.service` daily
+  at 03:15 UTC with up to 30 minutes of randomized delay and `Persistent=true`.
+  The service renders `/var/lib/unbound/adblock.conf` and reloads Unbound only
+  if it is already running; at boot it runs before `unbound.service`.
+- if every configured source fails, the previous blocklist is retained and a
+  `daemon.alert` event is recorded in the journal. The updater exits cleanly so
+  a transient external outage cannot fail resolver or system activation;
+  unexpected updater errors still use the standard systemd failure alert.
+  Unbound starts with the last-good (or empty) list. A partial source outage
+  uses the sources that succeeded and records warnings in the service journal.
+
+Manual refresh and health checks:
+
+```bash
+sudo systemctl start unbound-adblock.service
+sudo systemctl list-timers unbound-adblock-refresh
+sudo unbound-control status
+dig doubleclick.net @127.0.0.1 +short   # expect NXDOMAIN
+dig example.com @127.0.0.1 +short       # expect a normal answer
+```
+
+The include fragment and Unbound state live under `/var/lib/unbound` (persisted
+through impermanence), so an operator allowlist or the last-good blocklist
+survives reboots and even a full outage of all configured sources.
+
 Storage monitoring now discovers disks live at runtime from an evaluated JSON
 inventory embedded in the system generation; smartd startup does not evaluate
 Nix or read the repository checkout:
@@ -1270,9 +1490,41 @@ them.
 ## Shared Authentication Logout
 
 Proxy-protected applications use the shared `auth.<domain>` gateway and one
-domain cookie. Signing out there signs out every gateway-protected application.
-Native OIDC applications keep independent sessions because Kanidm does not
-advertise an end-session, front-channel logout, or back-channel logout endpoint.
+domain cookie. Every gateway-protected host exposes `/oauth2/sign_out`; signing
+out from Homepage, Files, Mail Archive, YouTube Downloader, or another shared
+gateway application clears that cookie for every protected app. The logout then
+continues to Kanidm's `/ui/logout`, which clears the browser's Kanidm cookies and
+revokes the parent identity session. This explicit chain is necessary because
+OAuth2 Proxy only clears its own cookie and Kanidm does not advertise an OIDC
+end-session, front-channel logout, or back-channel logout endpoint.
+
+Application-local logout behavior is:
+
+- Immich, Paperless, and Audiobookshelf clear their own application session and
+  then continue through the shared logout chain. Their supported end-session or
+  post-logout redirect settings are managed declaratively.
+- Kavita and Jellyfin clear their local sessions, but their pinned OIDC clients
+  have no supported post-local-logout fallback when discovery omits
+  `end_session_endpoint`. Use the shared logout from Homepage before switching
+  accounts; revoking the Kanidm parent session also invalidates linked OAuth
+  sessions, although an application may retain a now-invalid local cookie until
+  it next validates or refreshes it.
+- Vaultwarden has its own security boundary and client session. Its normal
+  Bitwarden/Vaultwarden logout remains required and is intentionally not
+  automated by the shared application gateway.
+- Mobile and native-client sessions are separate browser/device sessions and
+  must be logged out in that client.
+
+After shared logout the browser lands on the Kanidm login page. Seeing that
+login page, rather than being silently returned to the previous account, is the
+expected account-switching check.
+
+The implemented contracts are documented by
+[OAuth2 Proxy's sign-out endpoint](https://oauth2-proxy.github.io/oauth2-proxy/features/endpoints/),
+[Kanidm's session-logout design](https://github.com/kanidm/kanidm/blob/v1.10.3/book/src/developers/designs/session_logout.rst),
+[Immich's OAuth logout setting](https://docs.immich.app/administration/oauth/),
+[Paperless-ngx's logout redirect](https://docs.paperless-ngx.com/configuration/#PAPERLESS_LOGOUT_REDIRECT_URL),
+and [Audiobookshelf's logout API](https://api.audiobookshelf.org/#logout).
 
 ## SMART Monitoring
 

@@ -3,7 +3,17 @@ let
   inherit (flake.inputs.nixpkgs) lib;
   settings = flake.lib.nixhomeserverSettings;
   hostName = builtins.head (builtins.attrNames settings);
-  vars = settings.${hostName};
+  baseVars = settings.${hostName};
+  catalog = import ../../modules/catalog.nix;
+  allAppSettings = baseVars // {
+    applications = baseVars.applications // {
+      enabled = builtins.attrNames catalog.apps;
+    };
+  };
+  vars = allAppSettings // (import ../../lib/derive-vars.nix {
+    inherit lib;
+    settings = allAppSettings;
+  });
   pkgs = flake.inputs.nixpkgs.legacyPackages.${vars.hostPlatform};
   packageData = import ../../flake/packages.nix {
     inherit lib pkgs;

@@ -8,7 +8,7 @@ cd "$TESTS_REPO_ROOT"
 ensure_tools node
 
 CANARY_RUNNER_TEST_MODE=1 node --input-type=module <<'EOF'
-const { generateTotp, hasAuthenticationBoundary, hasNativeOidcLoginEntry, isAccessDeniedResponse, isBlankRender, nativeOidcEntryUrl } = await import('./modules/Core_Modules/homepage/canary-runner.mjs');
+const { browserErrorCode, generateTotp, hasAuthenticationBoundary, hasNativeOidcLoginEntry, isAccessDeniedResponse, isBlankRender, isRetryableBrowserError, nativeOidcEntryUrl } = await import('./modules/Core_Modules/homepage/canary-runner.mjs');
 const cases = [
   [{ textLength: 0, visibleElements: 0, richElements: 0 }, true, 'empty HTTP 200 body'],
   [{ textLength: 12, visibleElements: 3, richElements: 0 }, true, 'near-empty visible text'],
@@ -33,6 +33,19 @@ if (hasAuthenticationBoundary({ url: 'https://homepage.example.test/', title: 'H
 }
 if (!hasAuthenticationBoundary({ url: 'https://videos.example.test/', title: 'Jellyfin', text: '', loginControls: 1 })) {
   throw new Error('a visible application login control was not recognised as an authentication boundary');
+}
+const verifierChanged = {
+  title: 'videos.example.test',
+  text: 'This site can’t be reached ERR_CERT_VERIFIER_CHANGED',
+};
+if (browserErrorCode(verifierChanged) !== 'ERR_CERT_VERIFIER_CHANGED') {
+  throw new Error('Chromium certificate-verifier errors must be detected before access-boundary classification');
+}
+if (!isRetryableBrowserError(verifierChanged)) {
+  throw new Error('a transient Chromium certificate-verifier change must receive one navigation retry');
+}
+if (isRetryableBrowserError({ text: 'ERR_CERT_AUTHORITY_INVALID' })) {
+  throw new Error('a persistent certificate authority failure must not be retried as verifier churn');
 }
 if (!isAccessDeniedResponse({ responseStatus: 403 }) || isAccessDeniedResponse({ responseStatus: 200 })) {
   throw new Error('role-denied canary targets did not distinguish access denial from exposed content');

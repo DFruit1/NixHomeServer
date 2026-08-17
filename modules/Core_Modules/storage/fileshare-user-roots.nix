@@ -373,7 +373,32 @@ let
           -m d:g:${lib.escapeShellArg sharedAccessGroup}:rwx \
           '{}' +
         ${pkgs.acl}/bin/setfacl -R -m g:${lib.escapeShellArg sharedAccessGroup}:rwX ${lib.escapeShellArg vars.sharedRoot}
-        ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type d -exec ${pkgs.coreutils}/bin/chmod g+s,o-rwx '{}' +
+        # Sticky taxonomy: the shared root and structural folders keep the
+        # sticky bit so provisioned entries (including the _USB link) can never
+        # be deleted through _Shared; every other directory is non-sticky so
+        # delete_shared_files members can manage the content inside it.
+        structural_dirs=(${lib.escapeShellArgs config.repo.storage.sharedRoots.structuralSubdirs})
+        ${pkgs.coreutils}/bin/chmod 1770 ${lib.escapeShellArg vars.sharedRoot}
+        while IFS= read -r -d "" directory; do
+          name="$(${pkgs.coreutils}/bin/basename "$directory")"
+          is_structural=false
+          for structural_dir in "''${structural_dirs[@]}"; do
+            if [[ "$name" == "$structural_dir" ]]; then
+              is_structural=true
+              break
+            fi
+          done
+          if [[ "$is_structural" == true ]]; then
+            ${pkgs.coreutils}/bin/chmod 1770 "$directory"
+          else
+            ${pkgs.coreutils}/bin/chmod 0770 "$directory"
+          fi
+        done < <(${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -mindepth 1 -maxdepth 1 -type d -print0)
+        for structural_dir in "''${structural_dirs[@]}"; do
+          if [[ -d ${lib.escapeShellArg vars.sharedRoot}/"$structural_dir" ]]; then
+            ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot}/"$structural_dir" -mindepth 1 -type d -exec ${pkgs.coreutils}/bin/chmod 0770 '{}' +
+          fi
+        done
         ${pkgs.findutils}/bin/find ${lib.escapeShellArg vars.sharedRoot} -type f -exec ${pkgs.coreutils}/bin/chmod u=rw,g=rw,o= '{}' +
       fi
     }
@@ -540,7 +565,7 @@ in
   options.repo.storage.userRoots = {
     aclPolicyVersion = lib.mkOption {
       type = lib.types.ints.positive;
-      default = 1;
+      default = 2;
       description = "Version of the recursive fileshare ACL policy applied by the migration service.";
     };
 
@@ -821,7 +846,7 @@ in
           dataRootGuard
           "${prepareSharedMountTarget} ${vars.usersRoot}/%I/${sharedMountName}"
         ];
-        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx,a-t ${vars.sharedRoot} ${vars.usersRoot}/%I/${sharedMountName}";
+        ExecStart = "${pkgs.bindfs}/bin/bindfs -f -o allow_other --force-group=${toString sharedAccessGid} --perms=g+rwX,o-rwx ${vars.sharedRoot} ${vars.usersRoot}/%I/${sharedMountName}";
         ExecStop = "-${pkgs.fuse3}/bin/fusermount3 -u ${vars.usersRoot}/%I/${sharedMountName}";
         Restart = "on-failure";
         RestartSec = "10s";

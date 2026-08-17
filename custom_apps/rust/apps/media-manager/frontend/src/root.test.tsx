@@ -16,7 +16,8 @@ describe("Media Manager navigation", () => {
   it("maps native navigation URLs to dashboard sections", () => {
     expect(viewFromSearch("?view=library")).toBe("library");
     expect(viewFromSearch("?view=conversions")).toBe("conversions");
-    expect(viewFromSearch("?view=unknown")).toBe("overview");
+    expect(viewFromSearch("?view=overview")).toBe("library");
+    expect(viewFromSearch("?view=unknown")).toBe("library");
     expect(rootFromSearch("?view=library&root=shared-videos")).toBe(
       "shared-videos",
     );
@@ -45,7 +46,9 @@ describe("Media Manager navigation", () => {
                     available: true,
                   },
                 ]
-              : { available: false, progress: {} };
+              : path.includes("/items?rootId=shared-videos")
+                ? { items: [] }
+                : { available: false, progress: {} };
         return new Response(JSON.stringify(payload));
       }),
     );
@@ -54,7 +57,6 @@ describe("Media Manager navigation", () => {
     await render(<Root />);
 
     const expectedLinks = new Map([
-      ["Overview", "?view=overview"],
       ["Libraries", "?view=library"],
       ["Conversions", "?view=conversions"],
       ["Subtitles", "?view=subtitles"],
@@ -68,6 +70,7 @@ describe("Media Manager navigation", () => {
       expect(link, `${label} navigation link`).toBeDefined();
       expect(link?.getAttribute("href")).toBe(href);
     }
+    expect(screen.textContent).not.toContain("Overview");
   });
 
   it("renders a section selected by the current URL without server or mode banners", async () => {
@@ -426,6 +429,17 @@ describe("Media Manager conversions inbox", () => {
       "Copy a DVD ISO into the shared inbox at _Shared/_ISO/_DVDs.",
     );
     expect(screen.textContent).toContain("No failed conversions.");
+    expect(screen.querySelector("main")?.classList).toContain(
+      "main-content--conversions",
+    );
+    const processedRegion = screen.querySelector(
+      '[role="region"][aria-labelledby="processed-heading"]',
+    );
+    const failedRegion = screen.querySelector(
+      '[role="region"][aria-labelledby="failed-heading"]',
+    );
+    expect(processedRegion?.getAttribute("tabindex")).toBe("0");
+    expect(failedRegion?.getAttribute("tabindex")).toBe("0");
   });
 
   it("shows waiting discs as a compact queue under the active progress", async () => {
@@ -1388,7 +1402,7 @@ describe("Jellyfin TV filename parsing", () => {
 describe("Media Manager visual hierarchy", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("omits tiny section labels and the redundant overview statistics", async () => {
+  it("uses libraries as the landing page instead of rendering an overview", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -1405,8 +1419,9 @@ describe("Media Manager visual hierarchy", () => {
     );
 
     const { render, screen } = await createDOM();
-    await render(<Root initialView="overview" />);
+    await render(<Root />);
 
+    expect(screen.querySelector(".overview-carousels")).toBeUndefined();
     expect(screen.querySelector(".section-label")).toBeUndefined();
     expect(screen.querySelector(".stat-grid")).toBeUndefined();
     expect(screen.textContent).not.toContain("Available roots");

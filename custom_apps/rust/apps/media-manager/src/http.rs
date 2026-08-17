@@ -16,7 +16,7 @@ use crate::{
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,
     },
-    scanner::{media_kind as scanned_media_kind, rescan_root, scan_root_if_needed, ScanRoot},
+    scanner::{media_kind as scanned_media_kind, rescan_root, ScanRoot},
     subtitle_format::parse_srt,
     subtitles::{
         opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials, SubtitleMatch,
@@ -1892,12 +1892,10 @@ async fn items(
         category: root.category.clone(),
     };
     let catalog_handle = state.catalog.clone();
-    match tokio::task::spawn_blocking(move || scan_root_if_needed(&catalog_handle, &scan_root_spec))
-        .await
-    {
-        Ok(Ok(Some(result))) => {
+    match tokio::task::spawn_blocking(move || rescan_root(&catalog_handle, &scan_root_spec)).await {
+        Ok(Ok(result)) => {
             log_event(
-                "catalog_root_auto_scanned",
+                "catalog_root_reconciled",
                 &request_id,
                 json!({
                     "rootId": root.id,
@@ -1906,7 +1904,6 @@ async fn items(
                 }),
             );
         }
-        Ok(Ok(None)) => {}
         Ok(Err(error)) => {
             log_event(
                 "catalog_auto_scan_failed",

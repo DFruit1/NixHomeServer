@@ -75,6 +75,11 @@ let
       message = "identity app user lists must contain only strings";
     }
     {
+      valid = builtins.isInt settings.kanidmAuthSessionExpirySeconds
+        && settings.kanidmAuthSessionExpirySeconds >= 1;
+      message = "identity.authSessionExpirySeconds must be a positive integer number of seconds";
+    }
+    {
       valid = builtins.isInt settings.backupStorageGid;
       message = "backupAccess.storageGid must be an integer";
     }

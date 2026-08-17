@@ -164,6 +164,15 @@ const metrics = async (sessionId) => {
   return { ...value, blank: isBlankRender(value) };
 };
 const hostOf = (url) => { try { return new URL(url).host; } catch { return ''; } };
+export const browserErrorCode = ({ text = '', title = '' } = {}) =>
+  `${title}\n${text}`.match(/\bERR_[A-Z0-9_]+\b/)?.[0] ?? '';
+export const isRetryableBrowserError = (page = {}) =>
+  browserErrorCode(page) === 'ERR_CERT_VERIFIER_CHANGED';
+const browserErrorFailureCode = (code) => {
+  if (code.startsWith('ERR_CERT_')) return 'tls-error';
+  if (code.includes('DNS') || code.includes('NAME_NOT_RESOLVED')) return 'dns-error';
+  return 'browser-network-error';
+};
 export const nativeOidcEntryUrl = ({ url = '', oidcLoginPath = '' } = {}) => {
   if (!oidcLoginPath) return '';
   try {
@@ -429,6 +438,7 @@ const checkUnauthenticated = async (target) => {
         page = await metrics(sessionId);
         finalUrl = await currentUrl(sessionId);
         if (page.blank) return false;
+        if (browserErrorCode(page)) return true;
         return hasAuthenticationBoundary({
           url: finalUrl,
           text: page.text,
@@ -440,12 +450,25 @@ const checkUnauthenticated = async (target) => {
       }, 10_000).catch(() => undefined);
       page ??= await metrics(sessionId);
       finalUrl ??= await currentUrl(sessionId);
+      if (attempt === 0 && isRetryableBrowserError(page)) {
+        page = undefined;
+        finalUrl = undefined;
+        await reload(sessionId);
+        await sleep(2_000);
+        continue;
+      }
       if (!page.blank || attempt > 0) break;
       await reload(sessionId);
       await sleep(2_000);
     }
     page ??= await metrics(sessionId);
     finalUrl ??= await currentUrl(sessionId);
+    const navigationError = browserErrorCode(page);
+    if (navigationError) {
+      throw Object.assign(new Error(`browser navigation failed with ${navigationError}`), {
+        code: browserErrorFailureCode(navigationError), metrics: page,
+      });
+    }
     if (page.responseStatus >= 500) throw Object.assign(new Error(`HTTP ${page.responseStatus}`), { code: 'http-error', metrics: page });
     if (page.blank) {
       throw Object.assign(new Error('unauthenticated page remained visually blank after reload'), {

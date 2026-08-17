@@ -258,6 +258,42 @@ async fn viewer_first_read_populates_an_unscanned_catalog() {
 }
 
 #[tokio::test]
+async fn viewer_reads_reconcile_the_catalog_with_the_current_filesystem() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    let videos = temp.path().join("shared/_Videos");
+    let old_movie = videos.join("Old Movie.mkv");
+    std::fs::write(&old_movie, b"old movie").expect("old movie");
+
+    let first = app
+        .clone()
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .expect("first items response");
+    assert_eq!(first.status(), StatusCode::OK);
+
+    std::fs::remove_file(old_movie).expect("remove old movie");
+    std::fs::write(videos.join("New Movie.mkv"), b"new movie").expect("new movie");
+
+    let second = app
+        .oneshot(viewer_get_request("/api/v1/items?rootId=shared-videos"))
+        .await
+        .expect("second items response");
+    assert_eq!(second.status(), StatusCode::OK);
+    let body = to_bytes(second.into_body(), 64 * 1024)
+        .await
+        .expect("second items body");
+    let value: Value = serde_json::from_slice(&body).expect("second items json");
+    let paths = value["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .map(|item| item["relativePath"].as_str().expect("relative path"))
+        .collect::<Vec<_>>();
+    assert_eq!(paths, vec!["New Movie.mkv"]);
+}
+
+#[tokio::test]
 async fn editor_scan_populates_the_catalog() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let app = test_app(&temp);

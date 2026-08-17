@@ -47,7 +47,7 @@ The application catalog currently includes:
 
 - Immich, Paperless, Filestash, Mail Archive, and Vaultwarden.
 - Jellyfin, automated DVD ISO conversion, Audiobookshelf, Kavita, Kiwix, and offline media sync.
-- Sonarr, Radarr, Prowlarr, qBittorrent, Seerr, and YouTube Downloader.
+- Chaptarr, Sonarr, Radarr, Prowlarr, qBittorrent, Seerr, and YouTube Downloader.
 - Bonsai Local AI, Homepage, Groundwater Logger, and the supporting monitoring
 surfaces.
 - Attic, providing a loopback-only binary cache for custom applications built

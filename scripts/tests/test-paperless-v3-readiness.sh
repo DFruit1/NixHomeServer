@@ -18,6 +18,9 @@ current_json="$(
       cfg = (builtins.getAttr host flake.nixosConfigurations).config;
     in {
       inherit (cfg.repo.paperless.v3) enable candidateVersion;
+      candidateReady =
+        flake.inputs.nixpkgs.lib.versionAtLeast cfg.repo.paperless.v3.candidateVersion "3.0.0"
+        && flake.inputs.nixpkgs.lib.versionOlder cfg.repo.paperless.v3.candidateVersion "4.0.0";
       packageVersion = cfg.services.paperless.package.version;
       hasAi = cfg.services.paperless.settings ? PAPERLESS_AI_ENABLED;
       hasV2Polling = cfg.services.paperless.settings ? PAPERLESS_CONSUMER_POLLING;
@@ -29,7 +32,7 @@ current_json="$(
 
 jq -e '
   .enable == false
-  and .candidateVersion == "2.20.15"
+  and .candidateReady
   and .packageVersion == "2.20.15"
   and (.hasAi | not)
   and .hasV2Polling
@@ -49,18 +52,13 @@ v3_json="$(
       base = builtins.getAttr host flake.nixosConfigurations;
       evaluated = base.extendModules {
         modules = [
-          ({ pkgs, ... }: {
-            repo.paperless.v3.enable = true;
-            repo.paperless.v3.package = pkgs.paperless-ngx.overrideAttrs (_: {
-              version = "3.0.0";
-              __intentionallyOverridingVersion = true;
-            });
-          })
+          { repo.paperless.v3.enable = true; }
         ];
       };
       cfg = evaluated.config;
       settings = cfg.services.paperless.settings;
     in {
+      candidateVersion = cfg.repo.paperless.v3.candidateVersion;
       packageVersion = cfg.services.paperless.package.version;
       aiEnabled = settings.PAPERLESS_AI_ENABLED;
       aiBackend = settings.PAPERLESS_AI_LLM_BACKEND;
@@ -78,7 +76,7 @@ v3_json="$(
 )"
 
 jq -e '
-  .packageVersion == "3.0.0"
+  .packageVersion == .candidateVersion
   and .aiEnabled == "true"
   and .aiBackend == "openai-like"
   and .aiModel == "bonsai-ternary-27b"
@@ -107,15 +105,23 @@ if NIXHOMESERVER_TEST_HOST="$host" nix eval --impure --raw --expr '
     host = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
     base = builtins.getAttr host flake.nixosConfigurations;
     evaluated = base.extendModules {
-      modules = [ { repo.paperless.v3.enable = true; } ];
+      modules = [
+        ({ pkgs, ... }: {
+          repo.paperless.v3.enable = true;
+          repo.paperless.v3.package = pkgs.paperless-ngx.overrideAttrs (_: {
+            version = "4.0.0";
+            __intentionallyOverridingVersion = true;
+          });
+        })
+      ];
     };
   in evaluated.config.system.build.toplevel.drvPath
 ' >"$failure_log" 2>&1; then
-  echo "❌ The v3 switch accepted the current v2 nixpkgs unstable candidate."
+  echo "❌ The guarded switch accepted an unvalidated Paperless v4 package."
   exit 1
 fi
-if ! rg -q 'requires nixpkgs unstable to provide Paperless-ngx 3.0.0 or newer' "$failure_log"; then
-  echo "❌ The premature-v3 failure did not explain the nixpkgs version guard."
+if ! rg -q 'prepared migration path is only validated for Paperless-ngx v3' "$failure_log"; then
+  echo "❌ The unsupported-version failure did not explain the v3-only guard."
   cat "$failure_log"
   exit 1
 fi

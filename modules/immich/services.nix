@@ -24,6 +24,7 @@ in
         clientId = "immich-web";
         clientSecret._secret = config.age.secrets.immichClientSecret.path;
         issuerUrl = vars.kanidmIssuer "immich-web";
+        endSessionEndpoint = "https://${config.repo.authGateway.domain}/oauth2/sign_out";
         mobileOverrideEnabled = false;
         signingAlgorithm = "ES256";
         scope = "openid profile email immich_role";

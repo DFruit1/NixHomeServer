@@ -30,6 +30,23 @@
         import ./flake/packages.nix {
           inherit lib pkgs crane;
         };
+      mkWorkerIso = system: hostVars:
+        let
+          packageData = mkPackageData system;
+          sharedRoot = hostVars.sharedRoot;
+        in
+        import ./flake/mkvmaker-worker-iso.nix {
+          inherit lib system;
+          vars = hostVars;
+          paths = {
+            stateRoot = "/var/lib/mkvmaker";
+            dvdInbox = "${sharedRoot}/_ISO/_DVDs";
+            moviesOutput = "${sharedRoot}/_Videos/_Movies";
+            showsOutput = "${sharedRoot}/_Videos/_Shows";
+            stagingRoot = "${sharedRoot}/.mkvmaker-staging";
+          };
+          mkvmakerPackage = packageData.appPackages.mkvmaker;
+        };
       rawHostSettings = import ./hosts.nix { inherit lib; };
       nixhomeserverSettings = lib.mapAttrs
         (hostName: settings: import ./lib/validate-host-settings.nix {
@@ -38,6 +55,9 @@
         rawHostSettings;
       defaultHostName = builtins.head (builtins.attrNames nixhomeserverSettings);
       vars = nixhomeserverSettings.${defaultHostName};
+      workerIsoConfigurations = lib.mapAttrs
+        (_: hostVars: mkWorkerIso "x86_64-linux" hostVars)
+        nixhomeserverSettings;
       hosts = lib.mapAttrs
         (_: hostVars:
           let
@@ -97,7 +117,12 @@
       lib.nixhomeserverSerializableSettings = lib.mapAttrs
         (_: settings: removeAttrs settings [ "kanidmIssuer" "kanidmDiscoveryUrl" ])
         nixhomeserverSettings;
+      lib.mkvmakerWorkerConfigurations = lib.mapAttrs (_: worker: worker.config) workerIsoConfigurations;
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
+      packages = forAllSystems (system:
+        lib.optionalAttrs (system == "x86_64-linux") {
+          mkvmaker-worker-iso = (mkWorkerIso system vars).config.system.build.isoImage;
+        });
       checks = forAllSystems
         (system: mkChecks system vars.enabledApps false);
       legacyPackages = forAllSystems (system: {

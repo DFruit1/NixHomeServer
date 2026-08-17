@@ -203,7 +203,7 @@ let
         path /oauth2/sign_out
       }
       handle @logout_${matcherName name} {
-        redir * https://${authHost}/oauth2/sign_out?rd=%2Fsigned-out 302
+        redir * https://${authHost}/oauth2/sign_out 302
       }
       ${lib.optionalString app.skipAuthPreflight ''
         @preflight_${matcherName name} method OPTIONS
@@ -244,7 +244,7 @@ let
       path /oauth2/sign_out
     }
     handle @auth_logout {
-      uri query rd /signed-out
+      uri query rd https://${vars.kanidmDomain}/ui/logout
       ${authGatewayProxy}
     }
     @signed_out {

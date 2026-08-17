@@ -94,6 +94,22 @@ fi
 
 host="$(test_default_host)"
 
+invalid_auth_expiry_log="$(capture_eval_failure '
+  base = import ./vars.nix { inherit lib; };
+  invalid = base // { kanidmAuthSessionExpirySeconds = "fourteen days"; };
+in import ./lib/validate-host-settings.nix {
+  inherit lib;
+  hostName = invalid.hostname;
+  settings = invalid;
+}
+')"
+if ! rg -Fq 'identity.authSessionExpirySeconds must be a positive integer number of seconds' \
+  <<<"$invalid_auth_expiry_log"; then
+  echo "❌ A mistyped Kanidm authentication-session expiry bypassed host-settings validation."
+  printf '%s\n' "$invalid_auth_expiry_log"
+  exit 1
+fi
+
 NIXHOMESERVER_TEST_HOST="$host" eval_fails_with 'hardware-configuration.nix must not declare data-pool filesystems' '
   hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
   baseHost = builtins.getAttr hostName f.nixosConfigurations;

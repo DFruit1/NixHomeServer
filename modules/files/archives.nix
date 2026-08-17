@@ -730,6 +730,13 @@ let
                           parent_fd, view_name, args.policy, args.archive_hash
                       )
                   except (OSError, Refusal) as error:
+                      marker_path = source + args.suffix + "/" + MARKER
+                      if not os.path.lexists(marker_path):
+                          print(
+                              "Preserving unmanaged archive view: " + source + args.suffix,
+                              file=sys.stderr,
+                          )
+                          return
                       raise Refusal("refusing to alter pre-existing path " + source + args.suffix) from error
               state = load_state(args.state)
               expected = {

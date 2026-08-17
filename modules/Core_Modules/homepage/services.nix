@@ -18,6 +18,7 @@ let
   passwordsHost = "passwords.${vars.domain}";
   emailsHost = "emails.${vars.domain}";
   downloadsHost = "ytdownload.${vars.domain}";
+  chaptarrHost = "chaptarr.${vars.domain}";
   requestsHost = "requests.${vars.domain}";
   sonarrHost = "sonarr.${vars.domain}";
   radarrHost = "radarr.${vars.domain}";
@@ -125,6 +126,7 @@ let
   vaultwardenEnabled = hostEnabled passwordsHost;
   mailArchiveEnabled = hostEnabled emailsHost;
   youtubeDownloaderEnabled = hostEnabled downloadsHost;
+  chaptarrEnabled = hostEnabled chaptarrHost;
   seerrEnabled = hostEnabled requestsHost;
   sonarrEnabled = hostEnabled sonarrHost;
   radarrEnabled = hostEnabled radarrHost;
@@ -913,6 +915,19 @@ let
       appName = "jellyfin";
       uploadNotes = "Place movies under _Videos/_Movies and series under _Videos/_Shows.";
       requiredAnyGroups = [ "jellyfin-users" ];
+    }
+    {
+      id = "chaptarr";
+      name = "Book Downloads";
+      url = "https://${chaptarrHost}";
+      enabled = chaptarrEnabled;
+      category = "media";
+      description = "Audiobook and ebook monitoring, metadata, and legal download automation.";
+      loginNotes = "Requires media-automation-users through Kanidm.";
+      projectUrl = "https://github.com/Chaptarr/chaptarr";
+      appName = "chaptarr";
+      uploadNotes = "Imported audiobooks land in Audiobookshelf; ebooks land in Kavita.";
+      requiredAnyGroups = [ "media-automation-users" ];
     }
     {
       id = "requests";

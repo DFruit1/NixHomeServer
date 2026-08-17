@@ -32,10 +32,20 @@ let
   invalidSharedVideoNames = lib.filter
     (name: !storageValidation.validPathComponent name)
     config.repo.storage.sharedRoots.videoSubdirs;
+  invalidStructuralSharedNames = lib.filter
+    (name: !storageValidation.validPathComponent name)
+    config.repo.storage.sharedRoots.structuralSubdirs;
+  # Structural directories (the shared root and a small set of top-level
+  # folders that only hold provisioned subdirectories) keep the sticky bit so
+  # their provisioned entries can never be deleted through any _Shared view.
+  # Directories that hold user content are provisioned without the sticky bit
+  # so delete_shared_files members can manage that content. bindfs cannot
+  # strip the sticky bit, so the real filesystem modes are authoritative.
+  structuralSharedDirs = config.repo.storage.sharedRoots.structuralSubdirs;
   sharedContentDirs = map
     (name: {
       path = "${vars.sharedRoot}/${name}";
-      mode = "1770";
+      mode = if builtins.elem name structuralSharedDirs then "1770" else "0770";
       user = "root";
       group = "root";
     })
@@ -43,11 +53,22 @@ let
   sharedVideoDirs = map
     (name: {
       path = "${vars.sharedRoot}/_Videos/${name}";
-      mode = "1770";
+      mode = "0770";
       user = "root";
       group = "root";
     })
     config.repo.storage.sharedRoots.videoSubdirs;
+  # _Videos must exist (sticky) whenever modules declare video subdirectories,
+  # even when _Videos itself is not listed among the content subdirectories.
+  sharedVideosParentDir = lib.optionals
+    (config.repo.storage.sharedRoots.videoSubdirs != [ ]
+      && !builtins.elem "_Videos" config.repo.storage.sharedRoots.contentSubdirs)
+    [{
+      path = "${vars.sharedRoot}/_Videos";
+      mode = "1770";
+      user = "root";
+      group = "root";
+    }];
 
   mkDirCmd =
     { path
@@ -277,6 +298,17 @@ in
       description = "Top-level shared content directories contributed by enabled modules.";
     };
 
+    structuralSubdirs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "_Videos" "_Books" "_ISO" ];
+      description = ''
+        Top-level shared directories that only hold provisioned subdirectories.
+        They are created with the sticky bit (1770) so their provisioned
+        entries remain non-deletable through every _Shared view, while their
+        content subdirectories are provisioned without the sticky bit.
+      '';
+    };
+
     videoSubdirs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -310,10 +342,14 @@ in
         assertion = invalidSharedVideoNames == [ ];
         message = "repo.storage.sharedRoots.videoSubdirs must contain only safe single directory names: ${lib.concatStringsSep ", " invalidSharedVideoNames}";
       }
+      {
+        assertion = invalidStructuralSharedNames == [ ];
+        message = "repo.storage.sharedRoots.structuralSubdirs must contain only safe single directory names: ${lib.concatStringsSep ", " invalidStructuralSharedNames}";
+      }
     ];
 
     repo.storage.dataPool = {
-      directories = coreContentDirs ++ sharedContentDirs ++ sharedVideoDirs;
+      directories = coreContentDirs ++ sharedContentDirs ++ sharedVideosParentDir ++ sharedVideoDirs;
       datasets = lib.mkIf vars.enableZfsDataPool coreDatasetSpecs;
     };
 

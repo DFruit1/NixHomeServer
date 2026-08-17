@@ -1,4 +1,4 @@
-{ config, lib, oauth2Proxy, pkgs, vars, ... }:
+{ config, lib, oauth2Proxy, pkgs, unstablePkgs, vars, ... }:
 
 let
   cfg = config.repo.sonarr;
@@ -16,6 +16,7 @@ in
     {
       services.sonarr = {
         enable = true;
+        package = unstablePkgs.sonarr;
         openFirewall = false;
         dataDir = "/var/lib/sonarr/.config/NzbDrone";
         settings = {

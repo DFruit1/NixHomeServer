@@ -16,6 +16,7 @@ let
     "/var/lib/kanidm"
     "/var/lib/media-manager"
     "/var/lib/netbird-main"
+    "/var/lib/nixhomeserver-deploy"
     "/var/lib/nixos"
     "/var/lib/rclone"
     "/var/lib/syncthing"
@@ -31,6 +32,7 @@ let
     "/var/lib/atticd"
     "/var/lib/audiobookshelf"
     "/var/lib/bonsai"
+    "/var/lib/chaptarr"
     "/var/lib/filestash"
     "/var/lib/groundwater-logger"
     "/var/lib/groundwater-mosquitto"
@@ -299,6 +301,7 @@ in
 
         seed_directory /etc/nixos
         seed_directory /home/${lib.escapeShellArg vars.localAdminUser}
+        seed_directory /var/lib/nixhomeserver-deploy
         seed_directory /var/lib/postgresql
         seed_directory /var/log/caddy
         seed_file /etc/machine-id

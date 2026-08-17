@@ -132,13 +132,13 @@ in
           local collision_root
 
           [[ -d "$source" ]] || return 0
-          install -d -m 1770 -o root -g root "$destination"
+          install -d -m 0770 -o root -g root "$destination"
 
           while IFS= read -r -d "" item; do
             base="$(basename "$item")"
             if [[ -e "$destination/$base" ]]; then
               collision_root="$destination/.migrated-from-$collision_label/$timestamp"
-              install -d -m 1770 -o root -g root "$collision_root"
+              install -d -m 0770 -o root -g root "$collision_root"
               mv "$item" "$collision_root/$base"
             else
               mv "$item" "$destination/"
@@ -152,7 +152,7 @@ in
           local videos_root="$1"
           [[ -d "$videos_root" ]] || return 0
 
-          install -d -m 1770 -o root -g root "$videos_root/_Other"
+          install -d -m 0770 -o root -g root "$videos_root/_Other"
           move_children "$videos_root/_Home" "$videos_root/_Other" "_Home"
         }
 
@@ -189,9 +189,9 @@ in
         set -euo pipefail
 
         install -d -m 1770 -o root -g root ${cfg.paths.sharedVideosRoot}
-        install -d -m 1770 -o root -g root ${cfg.paths.sharedMusicRoot}
+        install -d -m 0770 -o root -g root ${cfg.paths.sharedMusicRoot}
         for path in ${lib.escapeShellArgs sharedJellyfinDirs}; do
-          install -d -m 1770 -o root -g root "$path"
+          install -d -m 0770 -o root -g root "$path"
         done
 
         grant_traverse_acl() {

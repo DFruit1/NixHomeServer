@@ -12,6 +12,7 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     io::{BufRead, BufReader, Write},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -1425,9 +1426,57 @@ fn show_commands(jobs: &[Job]) {
     }
 }
 
+const CREATE_MEDIA_DIR_MODE: u32 = 0o2770;
+
+/// Create `path` and any missing ancestors inside the media library as
+/// group-writable directories (`rwxrws---`).
+///
+/// Setting the mode explicitly is required because the worker's umask (0002)
+/// otherwise produces `0755`-style directories whose ACL mask strips the group
+/// write bit. That masks off the `jellyfin-media` writable grant on each media
+/// folder, so the Jellyfin process cannot delete the produced files. Only
+/// directories created by this call are modified; pre-existing ancestors are
+/// left untouched.
+fn create_media_dirs(path: &Path) -> std::io::Result<()> {
+    create_media_dirs_with_mode(path, CREATE_MEDIA_DIR_MODE)
+}
+
+fn create_media_dirs_with_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    let mut missing: Vec<&Path> = Vec::new();
+    let mut current = path;
+    while !current.exists() {
+        missing.push(current);
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    for directory in missing.into_iter().rev() {
+        fs::create_dir(directory).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to create media directory {}: {error}",
+                    directory.display()
+                ),
+            )
+        })?;
+        fs::set_permissions(directory, fs::Permissions::from_mode(mode)).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to set mode {mode:o} on media directory {}: {error}",
+                    directory.display()
+                ),
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn encode(job: &Job, cancelled: &AtomicBool, progress: Option<ProgressContext>) -> Result<()> {
     let manifest_path = job_state_path(&job.output, "job.json");
-    fs::create_dir_all(job.output.parent().context("output has no parent")?)?;
+    create_media_dirs(job.output.parent().context("output has no parent")?)?;
     fs::create_dir_all(manifest_path.parent().context("state path has no parent")?)?;
     let lock_path = job_state_path(&job.output, "lock");
     let lock = fs::OpenOptions::new()
@@ -1565,7 +1614,7 @@ fn publish_atomically(partial: &Path, destination: &Path) -> Result<()> {
     let parent = destination
         .parent()
         .with_context(|| format!("output has no parent: {}", destination.display()))?;
-    fs::create_dir_all(parent)?;
+    create_media_dirs(parent)?;
     match fs::hard_link(partial, destination) {
         Ok(()) => {
             fs::remove_file(partial)?;
@@ -2485,6 +2534,51 @@ Progress: {"State":"SCANDONE"}"#;
         publish_atomically(&partial, &destination).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), b"complete video");
         assert!(!partial.exists());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn media_directory_mode_is_group_writable_and_setgid() {
+        assert_eq!(CREATE_MEDIA_DIR_MODE, 0o2770);
+    }
+
+    #[test]
+    fn created_media_directories_use_the_requested_mode_without_touching_existing_parents() {
+        let directory = env::temp_dir().join(format!(
+            "disc-to-jellyfin-directory-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let existing = directory.join("library");
+        fs::create_dir_all(&existing).unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o750)).unwrap();
+        let nested = existing.join("Film (2000)/extras");
+
+        // Nix build sandboxes reject setting setgid bits. Exercise the
+        // recursive filesystem behavior with the otherwise equivalent mode;
+        // the separate assertion above pins the production mode to 02770.
+        let sandbox_compatible_mode = 0o770;
+        create_media_dirs_with_mode(&nested, sandbox_compatible_mode).unwrap();
+
+        assert_eq!(
+            fs::metadata(&existing).unwrap().permissions().mode() & 0o7777,
+            0o750
+        );
+        assert_eq!(
+            fs::metadata(existing.join("Film (2000)"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            sandbox_compatible_mode
+        );
+        assert_eq!(
+            fs::metadata(&nested).unwrap().permissions().mode() & 0o7777,
+            sandbox_compatible_mode
+        );
         fs::remove_dir_all(&directory).unwrap();
     }
 

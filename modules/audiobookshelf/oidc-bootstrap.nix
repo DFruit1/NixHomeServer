@@ -87,6 +87,7 @@ in
           --arg clientSecret "$client_secret" \
           --arg buttonText "Login with Kanidm" \
           --arg subfolder "/audiobookshelf" \
+          --arg logoutUrl "https://${config.repo.authGateway.domain}/oauth2/sign_out" \
           --argjson discovery "$discovery" \
           '
             .authActiveAuthMethods = (((.authActiveAuthMethods // []) + ["openid"]) | unique)
@@ -95,7 +96,7 @@ in
             | .authOpenIDTokenURL = $discovery.token_endpoint
             | .authOpenIDUserInfoURL = $discovery.userinfo_endpoint
             | .authOpenIDJwksURL = $discovery.jwks_uri
-            | .authOpenIDLogoutURL = ($discovery.end_session_endpoint // null)
+            | .authOpenIDLogoutURL = ($discovery.end_session_endpoint // $logoutUrl)
             | .authOpenIDClientID = $clientId
             | .authOpenIDClientSecret = $clientSecret
             | .authOpenIDTokenSigningAlgorithm = (($discovery.id_token_signing_alg_values_supported // ["ES256"]) | .[0])
