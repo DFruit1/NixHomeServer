@@ -13,14 +13,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
-    "@builder.io/qwik": "1.16.0",
-    "@builder.io/qwik-city": "1.16.0",
-    "mqtt": "5.14.1"
+    "@builder.io/qwik": "1.20.0",
+    "@builder.io/qwik-city": "1.20.0",
+    "mqtt": "5.15.2"
   },
   "devDependencies": {
-    "@types/node": "24.10.3",
-    "typescript": "5.9.3",
-    "vite": "7.3.0",
-    "vitest": "4.0.15"
+    "@types/node": "26.1.2",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
   }
 }
