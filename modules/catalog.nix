@@ -22,6 +22,7 @@ in
       "media-automation-bootstrap-chaptarr"
     ];
     files = app ./files "Files" "storage" [ ] [ ];
+    freshrss = app ./freshrss "FreshRSS" "knowledge" [ ] [ ];
     groundwater-logger = app ./groundwater-logger "Groundwater Logger" "operations" [
       "groundwaterAppMqttPassword"
       "groundwaterLoggerMqttPassword"

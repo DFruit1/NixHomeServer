@@ -15,6 +15,7 @@ let
   videosHost = "videos.${vars.domain}";
   booksHost = "books.${vars.domain}";
   wikiHost = "wiki.${vars.domain}";
+  rssHost = "rss.${vars.domain}";
   passwordsHost = "passwords.${vars.domain}";
   emailsHost = "emails.${vars.domain}";
   downloadsHost = "ytdownload.${vars.domain}";
@@ -123,6 +124,7 @@ let
   offlineMediaEnabledForHomepage = offlineMediaEnabled;
   kavitaEnabled = hostEnabled booksHost;
   kiwixEnabled = hostEnabled wikiHost;
+  freshrssEnabled = hostEnabled rssHost;
   vaultwardenEnabled = hostEnabled passwordsHost;
   mailArchiveEnabled = hostEnabled emailsHost;
   youtubeDownloaderEnabled = hostEnabled downloadsHost;
@@ -1055,6 +1057,20 @@ let
       appName = "kiwix";
       uploadNotes = "Operators upload .zim files to the configured Kiwix library root.";
       requiredAnyGroups = [ "kiwix-users" ];
+    }
+    {
+      id = "feeds";
+      name = "Feeds";
+      url = "https://${rssHost}";
+      enabled = freshrssEnabled;
+      category = "knowledge";
+      description = "Private RSS and Atom subscriptions with a separate feed library for each user.";
+      loginNotes = "Use Kanidm with freshrss-users membership; first login creates the FreshRSS account.";
+      projectUrl = "https://freshrss.org";
+      logoUrl = "/logos/freshrss.svg";
+      appName = "freshrss";
+      uploadNotes = "Add feed URLs or import an OPML subscription list from FreshRSS settings.";
+      requiredAnyGroups = [ "freshrss-users" ];
     }
     {
       id = "emails";

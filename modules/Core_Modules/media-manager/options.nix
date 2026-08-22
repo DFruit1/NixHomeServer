@@ -5,7 +5,7 @@ let
     options = {
       id = lib.mkOption { type = lib.types.str; };
       label = lib.mkOption { type = lib.types.str; };
-      category = lib.mkOption { type = lib.types.enum [ "videos" "music" "audiobooks" "books" "iso" ]; };
+      category = lib.mkOption { type = lib.types.enum [ "videos" "music" "audiobooks" "podcasts" "books" "iso" ]; };
       scope = lib.mkOption { type = lib.types.enum [ "shared" "personal" ]; };
       pathTemplate = lib.mkOption {
         type = lib.types.str;
@@ -72,10 +72,12 @@ in
         { id = "shared-videos"; label = "Shared videos"; category = "videos"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Videos"; }
         { id = "shared-music"; label = "Shared music"; category = "music"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Music"; }
         { id = "shared-audiobooks"; label = "Shared audiobooks"; category = "audiobooks"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Audiobooks"; }
+        { id = "shared-podcasts"; label = "Shared podcasts"; category = "podcasts"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Podcasts"; }
         { id = "shared-books"; label = "Shared books"; category = "books"; scope = "shared"; pathTemplate = "${vars.sharedRoot}/_Books"; }
         { id = "personal-videos"; label = "My videos"; category = "videos"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Videos"; }
         { id = "personal-music"; label = "My music"; category = "music"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Music"; }
         { id = "personal-audiobooks"; label = "My audiobooks"; category = "audiobooks"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Audiobooks"; }
+        { id = "personal-podcasts"; label = "My podcasts"; category = "podcasts"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Podcasts"; }
         { id = "personal-books"; label = "My books"; category = "books"; scope = "personal"; pathTemplate = "${vars.usersRoot}/{username}/_Books"; }
       ];
     };

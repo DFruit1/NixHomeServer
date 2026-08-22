@@ -20,6 +20,7 @@ let
         "audiobookshelf"
         "chaptarr"
         "files"
+        "freshrss"
         "immich"
         "jellyfin"
         "kavita"

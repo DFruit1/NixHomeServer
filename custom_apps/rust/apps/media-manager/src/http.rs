@@ -8,16 +8,24 @@ use crate::{
         ArtworkBody,
     },
     broker::{
-        file_fingerprint, open_directory_beneath, open_regular_file_beneath, BrokerAction,
-        InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
+        file_fingerprint, open_directory_beneath, open_regular_file_beneath,
+        opened_file_fingerprint, BrokerAction, InstallMetadataSidecarAction, InstallSubtitleAction,
+        MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
+        ReplaceMetadataSidecarAction,
     },
     catalog::{Catalog, CatalogHandle, CatalogItem, ConfirmPlanOutcome, MutationPlanDraft},
     config::{AppConfig, Identity, MutationMode, RootScope, VisibleRoot, TOMBSTONE_FOLDER},
+    metadata::{
+        application_observation, consumer_effects, filename_observation, folder_sidecar_path,
+        health_issues, initial_field_sources, inspect_embedded_metadata, inspect_sidecar,
+        item_sidecar_path, merge_managed_sidecar, modification_targets, rewrite_embedded_metadata,
+        MetadataObservation,
+    },
     naming::{
         canonical_movie_directory, canonical_music_track, canonical_tv_episode, clean_component,
     },
     scanner::{media_kind as scanned_media_kind, rescan_root, ScanRoot},
-    subtitle_format::parse_srt,
+    subtitle_format::{parse_srt, parse_subtitle, subtitle_validation},
     subtitles::{
         opensubtitles_movie_hash, OpenSubtitlesClient, OpenSubtitlesCredentials, SubtitleMatch,
     },
@@ -38,8 +46,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    io::Cursor,
+    io::{Cursor, Read},
     os::fd::AsRawFd,
+    os::unix::fs::OpenOptionsExt,
     path::Path as FilePath,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -255,6 +264,14 @@ pub fn router(state: AppState) -> Router {
             post(upload_subtitle),
         )
         .route(
+            "/api/v1/items/{item_id}/subtitles",
+            get(installed_subtitles),
+        )
+        .route(
+            "/api/v1/items/{item_id}/subtitles/installed/{subtitle_id}/content",
+            get(installed_subtitle_content),
+        )
+        .route(
             "/api/v1/items/{item_id}/subtitles/search",
             get(search_subtitles),
         )
@@ -283,6 +300,7 @@ pub fn router(state: AppState) -> Router {
             get(integration_refresh_status).post(queue_integration_refresh),
         )
         .route("/api/v1/plans", post(preview_plan))
+        .route("/api/v1/plans/{plan_id}", get(plan_status))
         .route("/api/v1/plans/{plan_id}/confirm", post(confirm_plan))
         .layer(axum::extract::DefaultBodyLimit::max(
             MAX_SUBTITLE_BYTES + 1024,
@@ -983,6 +1001,284 @@ async fn subtitle_provider_content(
     .into_response()
 }
 
+async fn installed_subtitles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let video = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) if item.media_kind == "video" => item,
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "video_item_required",
+                "Subtitle inventory requires a video item.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let owner = video.owner_username.as_deref();
+    let directory = video
+        .relative_path
+        .rsplit_once('/')
+        .map(|(directory, _)| directory)
+        .unwrap_or("");
+    let catalog_items =
+        match catalog.list_subtitles_in_directory(&video.root_id, owner, directory, 256) {
+            Ok(items) => items,
+            Err(_) => return ApiError::internal(request_id).into_response(),
+        };
+    let mut subtitles = catalog_items
+        .iter()
+        .filter(|item| item.media_kind == "subtitle" && subtitle_belongs_to_video(&video, item))
+        .map(|item| external_subtitle_inventory(&video, item))
+        .collect::<Vec<_>>();
+    let probe_cache = VideoProbeCache::open(&state.config.state_dir, &video.root_id);
+    if let Some(probe) = probe_cache.probe_for(&video.relative_path, &video.fingerprint) {
+        if probe.subtitle_streams.is_empty() {
+            for language in probe.subtitle_languages {
+                subtitles.push(json!({
+                    "source": "embedded",
+                    "language": language,
+                    "format": null,
+                    "isDefault": false,
+                    "isForced": false,
+                    "isHearingImpaired": false,
+                    "isPreviewable": false,
+                }));
+            }
+        } else {
+            for stream in probe.subtitle_streams {
+                subtitles.push(json!({
+                    "source": "embedded",
+                    "streamIndex": stream.index,
+                    "language": stream.language,
+                    "title": stream.title,
+                    "format": stream.codec,
+                    "isDefault": stream.is_default,
+                    "isForced": stream.is_forced,
+                    "isHearingImpaired": stream.is_hearing_impaired,
+                    "isPreviewable": false,
+                }));
+            }
+        }
+    }
+    Json(json!({
+        "itemId": video.id,
+        "subtitles": subtitles,
+        "consumers": [{
+            "id": "jellyfin",
+            "label": "Jellyfin",
+            "available": state.config.integrations.iter().any(|integration| integration.id == "jellyfin" && integration.available),
+            "effect": "read-after-refresh",
+            "canManageNatively": true,
+            "nativeUrl": state.config.jellyfin_public_url,
+            "message": "Jellyfin can list, upload, search, download, and remove subtitles natively. Media Manager adds portable-file inspection and validation."
+        }],
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+async fn installed_subtitle_content(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((item_id, subtitle_id)): Path<(String, String)>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let video = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) if item.media_kind == "video" => item,
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "video_item_required",
+                "Subtitle previews require a video item.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let subtitle = match visible_catalog_item(&state.config, &identity, &catalog, &subtitle_id) {
+        Ok(item) if item.media_kind == "subtitle" && subtitle_belongs_to_video(&video, &item) => {
+            item
+        }
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "subtitle_item_mismatch",
+                "The selected subtitle is not installed beside this video.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+    let root = match state.config.resolve_visible_root(&identity, &video.root_id) {
+        Some(root) => root,
+        None => return ApiError::internal(request_id).into_response(),
+    };
+    let mut file = match open_regular_file_beneath(
+        FilePath::new(&root.resolved_path),
+        &subtitle.relative_path,
+    ) {
+        Ok(file) => file,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "subtitle_file_missing",
+                "The installed subtitle is no longer available.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let mut bytes = Vec::new();
+    if file
+        .by_ref()
+        .take(MAX_SUBTITLE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.is_empty()
+        || bytes.len() > MAX_SUBTITLE_BYTES
+        || bytes.contains(&0)
+    {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "subtitle_file_invalid",
+            "The installed subtitle is empty, binary, or too large to preview.",
+            request_id,
+        )
+        .into_response();
+    }
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "subtitle_encoding_unsupported",
+                "Installed subtitle previews require UTF-8 text encoding.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let format = subtitle
+        .relative_path
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    let cues = match parse_subtitle(&format, text) {
+        Ok(cues) => cues,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "subtitle_syntax_invalid",
+                "The installed subtitle could not be parsed.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    const MAX_PREVIEW_CUES: usize = 40;
+    let validation = subtitle_validation(&cues);
+    let truncated = cues.len() > MAX_PREVIEW_CUES;
+    Json(json!({
+        "source": "installed",
+        "itemId": subtitle.id,
+        "relativePath": subtitle.relative_path,
+        "format": format,
+        "cues": cues.into_iter().take(MAX_PREVIEW_CUES).collect::<Vec<_>>(),
+        "truncated": truncated,
+        "validation": validation,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+fn subtitle_belongs_to_video(video: &CatalogItem, subtitle: &CatalogItem) -> bool {
+    let video_stem = video
+        .relative_path
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&video.relative_path);
+    let subtitle_stem = subtitle
+        .relative_path
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&subtitle.relative_path);
+    subtitle_stem == video_stem || subtitle_stem.starts_with(&format!("{video_stem}."))
+}
+
+fn external_subtitle_inventory(video: &CatalogItem, subtitle: &CatalogItem) -> Value {
+    let video_stem = video
+        .relative_path
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&video.relative_path);
+    let subtitle_stem = subtitle
+        .relative_path
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&subtitle.relative_path);
+    let suffix = subtitle_stem
+        .strip_prefix(video_stem)
+        .unwrap_or_default()
+        .trim_start_matches('.');
+    let tokens = suffix
+        .split('.')
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let language = tokens
+        .first()
+        .and_then(|language| normalized_subtitle_language(language));
+    let is_forced = tokens
+        .iter()
+        .any(|token| matches!(token.to_ascii_lowercase().as_str(), "forced" | "foreign"));
+    let is_hearing_impaired = tokens
+        .iter()
+        .any(|token| matches!(token.to_ascii_lowercase().as_str(), "sdh" | "cc" | "hi"));
+    let is_default = tokens
+        .iter()
+        .any(|token| token.eq_ignore_ascii_case("default"));
+    let format = subtitle
+        .relative_path
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    json!({
+        "source": "external",
+        "itemId": subtitle.id,
+        "relativePath": subtitle.relative_path,
+        "sizeBytes": subtitle.size_bytes,
+        "format": format,
+        "language": language,
+        "isDefault": is_default,
+        "isForced": is_forced,
+        "isHearingImpaired": is_hearing_impaired,
+        "isPreviewable": matches!(format.as_str(), "srt" | "vtt" | "ass"),
+    })
+}
+
 async fn upload_subtitle(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1120,7 +1416,7 @@ async fn preview_metadata_sidecar(
             return ApiError::new(
                 StatusCode::CONFLICT,
                 "metadata_item_unsupported",
-                "Metadata sidecars require a video, music, audiobook, or book item.",
+                "Metadata sidecars require a video, music, audiobook, or book item. Podcast tags are currently inspection-only.",
                 request_id,
             )
             .into_response()
@@ -1144,18 +1440,69 @@ async fn preview_metadata_sidecar(
         )
         .into_response();
     }
-    let (destination_relative_path, extension, contents) = metadata_sidecar(&item, &request);
-    let staged =
-        match stage_sidecar(&state.config, extension, contents.as_bytes(), &request_id).await {
-            Ok(staged) => staged,
+    if item.media_kind == "book" {
+        let extension = item
+            .relative_path
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !matches!(extension.as_str(), "epub" | "cbz") {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "embedded_book_metadata_read_only",
+                "PDF and CBR metadata are inspection-only. Portable in-app edits are limited to EPUB and CBZ containers.",
+                request_id,
+            )
+            .into_response();
+        }
+        let generated = if extension == "epub" {
+            metadata_sidecar(&item, &request).2
+        } else {
+            comicinfo_sidecar(&request)
+        };
+        let prepared = match prepare_embedded_metadata_action(
+            &state.config,
+            &identity,
+            &item,
+            &extension,
+            &generated,
+            &request_id,
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
             Err(error) => return error.into_response(),
         };
-    let staging_path = staged.path.clone();
-    let action = InstallMetadataSidecarAction {
-        staging_filename: staged.filename,
-        destination_root_id: item.root_id.clone(),
+        return match create_metadata_plan(
+            &state,
+            &identity,
+            &mut catalog,
+            &item,
+            &request,
+            prepared.action,
+            request_id.clone(),
+        ) {
+            Ok(response) => response,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(prepared.staging_path).await;
+                error.into_response()
+            }
+        };
+    }
+    let (destination_relative_path, extension, contents) = metadata_sidecar(&item, &request);
+    let prepared = match prepare_metadata_action(
+        &state.config,
+        &identity,
+        &item.root_id,
         destination_relative_path,
-        expected: staged.expected,
+        extension,
+        &contents,
+        &request_id,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => return error.into_response(),
     };
     match create_metadata_plan(
         &state,
@@ -1163,12 +1510,12 @@ async fn preview_metadata_sidecar(
         &mut catalog,
         &item,
         &request,
-        action,
+        prepared.action,
         request_id.clone(),
     ) {
         Ok(response) => response,
         Err(error) => {
-            let _ = tokio::fs::remove_file(staging_path).await;
+            let _ = tokio::fs::remove_file(prepared.staging_path).await;
             error.into_response()
         }
     }
@@ -1189,14 +1536,17 @@ async fn item_metadata(
         Err(_) => return ApiError::internal(request_id).into_response(),
     };
     let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
-        Ok(item) if ["video", "music", "audiobook", "book"].contains(&item.media_kind.as_str()) => {
+        Ok(item)
+            if ["video", "music", "audiobook", "podcast", "book"]
+                .contains(&item.media_kind.as_str()) =>
+        {
             item
         }
         Ok(_) => {
             return ApiError::new(
                 StatusCode::CONFLICT,
                 "metadata_item_unsupported",
-                "Metadata is available for video, music, audiobook, or book items.",
+                "Metadata is available for video, music, audiobook, podcast, or book items.",
                 request_id,
             )
             .into_response()
@@ -1205,11 +1555,126 @@ async fn item_metadata(
     };
 
     let mut response = filename_metadata(&item);
-    if let Some(cache_file) = &state.config.jellyfin_metadata_cache_file {
-        if let Some(entry) = cached_jellyfin_metadata(cache_file, &item).await {
-            merge_metadata(&mut response, entry);
+    let mut observations = vec![filename_observation(&response)];
+    let mut field_sources = initial_field_sources(&response, "filename");
+    let mut inspection_warnings = Vec::new();
+    if let Some(root) = state.config.resolve_visible_root(&identity, &item.root_id) {
+        let root_path = root.resolved_path;
+        let inspected_item = item.clone();
+        match tokio::task::spawn_blocking(move || {
+            inspect_embedded_metadata(FilePath::new(&root_path), &inspected_item)
+        })
+        .await
+        {
+            Ok(Ok(Some(observation))) => {
+                merge_metadata(
+                    &mut response,
+                    &observation.fields,
+                    &observation.source,
+                    &mut field_sources,
+                );
+                observations.push(observation);
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(message)) => inspection_warnings.push(message),
+            Err(_) => inspection_warnings
+                .push("Embedded metadata inspection did not complete.".to_string()),
         }
     }
+    if let Some(cache_file) = &state.config.jellyfin_metadata_cache_file {
+        if let Some(entry) = cached_application_metadata(cache_file, &item, false).await {
+            observations.push(application_observation("jellyfin", "Jellyfin", &entry));
+            merge_metadata(&mut response, &entry, "jellyfin", &mut field_sources);
+        }
+    }
+    if matches!(item.media_kind.as_str(), "audiobook" | "podcast") {
+        if let Some(cache_file) = &state.config.audiobookshelf_metadata_cache_file {
+            if let Some(entry) = cached_application_metadata(cache_file, &item, true).await {
+                observations.push(application_observation(
+                    "audiobookshelf",
+                    "Audiobookshelf",
+                    &entry,
+                ));
+                merge_metadata(&mut response, &entry, "audiobookshelf", &mut field_sources);
+            }
+        }
+    }
+    if item.media_kind == "book" {
+        if let Some(cache_file) = &state.config.kavita_metadata_cache_file {
+            if let Some(entry) = cached_application_metadata(cache_file, &item, true).await {
+                observations.push(application_observation("kavita", "Kavita", &entry));
+                merge_metadata(&mut response, &entry, "kavita", &mut field_sources);
+            }
+        }
+    }
+    let media_type = response
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .unwrap_or("movie");
+    let (sidecar_path, sidecar_format) = item_sidecar_path(&item, media_type);
+    let consumer_effective = !matches!(item.media_kind.as_str(), "book" | "podcast");
+    let root = state.config.resolve_visible_root(&identity, &item.root_id);
+    let (sidecar, sidecar_observation) = root
+        .as_ref()
+        .map(|root| {
+            inspect_sidecar(
+                FilePath::new(&root.resolved_path),
+                sidecar_path.clone(),
+                sidecar_format,
+                consumer_effective,
+            )
+        })
+        .unwrap_or_else(|| {
+            inspect_sidecar(
+                FilePath::new("/nonexistent"),
+                sidecar_path,
+                sidecar_format,
+                consumer_effective,
+            )
+        });
+    if let Some(observation) = sidecar_observation {
+        if consumer_effective {
+            merge_metadata(
+                &mut response,
+                &observation.fields,
+                "sidecar",
+                &mut field_sources,
+            );
+        }
+        observations.push(observation);
+    }
+    let sources = observations
+        .iter()
+        .map(|observation| observation.source.clone())
+        .collect::<Vec<_>>();
+    response["sources"] = json!(sources);
+    response["observations"] = json!(observations);
+    response["fieldSources"] = json!(field_sources);
+    response["sidecar"] = json!(sidecar);
+    let extension = item
+        .relative_path
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut consumers = consumer_effects(&state.config, &item.media_kind);
+    if item.media_kind == "book" && matches!(extension.as_str(), "epub" | "cbz") {
+        for consumer in &mut consumers {
+            consumer.effect = "read-after-refresh".to_string();
+            consumer.portable_write_supported = true;
+            consumer.message =
+                "Kavita reads the metadata embedded in this EPUB or CBZ after a library refresh."
+                    .to_string();
+        }
+    }
+    let application_available = consumers.iter().any(|consumer| consumer.available);
+    response["consumers"] = json!(consumers);
+    response["health"] = json!(health_issues(&item.media_kind, &response, &observations));
+    response["modificationTargets"] = json!(modification_targets(
+        &item.media_kind,
+        &extension,
+        application_available
+    ));
+    response["inspectionWarnings"] = json!(inspection_warnings);
     let mut result = Json(response).into_response();
     result.headers_mut().insert(
         CACHE_CONTROL,
@@ -1239,7 +1704,7 @@ async fn folder_metadata(
         .unwrap_or(&folder.relative_path);
     let (title, year) = strip_trailing_year(folder_name);
     let media_type = folder_media_type(&folder);
-    let mut result = Json(json!({
+    let mut response = json!({
         "mediaType": media_type,
         "title": title,
         "year": year,
@@ -1259,9 +1724,85 @@ async fn folder_metadata(
         "providerIds": {},
         "videoStreams": [],
         "audioStreams": [],
+        "subtitleStreams": [],
         "sources": ["folder"]
-    }))
-    .into_response();
+    });
+    let mut observations = vec![MetadataObservation {
+        source: "folder".to_string(),
+        label: "Folder name".to_string(),
+        observed_at: None,
+        relative_path: Some(folder.relative_path.clone()),
+        format: None,
+        app_item_id: None,
+        storage: "folder-name".to_string(),
+        consumed_by: Vec::new(),
+        survives_rescan: true,
+        writable: false,
+        locked: None,
+        fields: crate::metadata::metadata_fields(&response),
+        raw_preview: None,
+    }];
+    let mut field_sources = initial_field_sources(&response, "folder");
+    let (sidecar_path, sidecar_format) = folder_sidecar_path(&folder.relative_path, media_type);
+    let consumer_kind = match folder.category.as_str() {
+        "videos" => "video",
+        "music" => "music",
+        "audiobooks" => "audiobook",
+        "podcasts" => "podcast",
+        "books" => "book",
+        _ => "",
+    };
+    let consumer_effective = !matches!(consumer_kind, "book" | "podcast");
+    let root = state
+        .config
+        .resolve_visible_root(&identity, &folder.root_id);
+    let (sidecar, sidecar_observation) = root
+        .as_ref()
+        .map(|root| {
+            inspect_sidecar(
+                FilePath::new(&root.resolved_path),
+                sidecar_path.clone(),
+                sidecar_format,
+                consumer_effective,
+            )
+        })
+        .unwrap_or_else(|| {
+            inspect_sidecar(
+                FilePath::new("/nonexistent"),
+                sidecar_path,
+                sidecar_format,
+                consumer_effective,
+            )
+        });
+    if let Some(observation) = sidecar_observation {
+        if consumer_effective {
+            merge_metadata(
+                &mut response,
+                &observation.fields,
+                "sidecar",
+                &mut field_sources,
+            );
+        }
+        observations.push(observation);
+    }
+    response["sources"] = json!(observations
+        .iter()
+        .map(|observation| observation.source.clone())
+        .collect::<Vec<_>>());
+    response["observations"] = json!(observations);
+    response["fieldSources"] = json!(field_sources);
+    response["sidecar"] = json!(sidecar);
+    let consumers = consumer_effects(&state.config, consumer_kind);
+    let application_available = consumers.iter().any(|consumer| consumer.available);
+    response["consumers"] = json!(consumers);
+    response["health"] = json!(health_issues(consumer_kind, &response, &observations));
+    response["modificationTargets"] = json!(modification_targets(
+        consumer_kind,
+        "folder",
+        application_available
+    ));
+    response["inspectionWarnings"] = json!([]);
+    let mut result = Json(response).into_response();
     result.headers_mut().insert(
         CACHE_CONTROL,
         "private, no-store".parse().expect("cache header"),
@@ -1294,6 +1835,15 @@ async fn preview_folder_metadata_sidecar(
         )
         .into_response();
     }
+    if expected_media_type == "book" {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "embedded_book_metadata_required",
+            "Kavita ignores external OPF sidecars. Edit the metadata embedded in the EPUB, comic archive, or PDF with a compatible tool.",
+            request_id,
+        )
+        .into_response();
+    }
     if let Err(error) = validate_metadata_request(&request) {
         return error.with_request_id(request_id).into_response();
     }
@@ -1308,16 +1858,19 @@ async fn preview_folder_metadata_sidecar(
     }
     let (destination_relative_path, extension, contents) =
         folder_metadata_sidecar(&folder, &request);
-    let staged =
-        match stage_sidecar(&state.config, extension, contents.as_bytes(), &request_id).await {
-            Ok(staged) => staged,
-            Err(error) => return error.into_response(),
-        };
-    let action = InstallMetadataSidecarAction {
-        staging_filename: staged.filename,
-        destination_root_id: folder.root_id.clone(),
+    let prepared = match prepare_metadata_action(
+        &state.config,
+        &identity,
+        &folder.root_id,
         destination_relative_path,
-        expected: staged.expected,
+        extension,
+        &contents,
+        &request_id,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => return error.into_response(),
     };
     let pseudo_item = CatalogItem {
         id: format!("folder:{}:{}", folder.root_id, folder.relative_path),
@@ -1332,7 +1885,7 @@ async fn preview_folder_metadata_sidecar(
     let mut catalog = match state.catalog.open() {
         Ok(catalog) => catalog,
         Err(_) => {
-            let _ = tokio::fs::remove_file(staged.path).await;
+            let _ = tokio::fs::remove_file(prepared.staging_path).await;
             return ApiError::internal(request_id).into_response();
         }
     };
@@ -1342,12 +1895,12 @@ async fn preview_folder_metadata_sidecar(
         &mut catalog,
         &pseudo_item,
         &request,
-        action,
+        prepared.action,
         request_id.clone(),
     ) {
         Ok(response) => response,
         Err(error) => {
-            let _ = tokio::fs::remove_file(staged.path).await;
+            let _ = tokio::fs::remove_file(prepared.staging_path).await;
             error.into_response()
         }
     }
@@ -1546,6 +2099,7 @@ fn filename_metadata(item: &CatalogItem) -> Value {
     let mut media_type = match item.media_kind.as_str() {
         "music" => "music",
         "audiobook" => "audiobook",
+        "podcast" => "podcast",
         "book" => "book",
         _ => "movie",
     };
@@ -1591,7 +2145,8 @@ fn filename_metadata(item: &CatalogItem) -> Value {
         "description": null, "publisher": null, "language": null, "genres": [],
         "writers": [], "premiereDate": null, "runtimeMinutes": null,
         "officialRating": null, "communityRating": null, "providerIds": {},
-        "videoStreams": [], "audioStreams": [], "sources": ["filename"]
+        "videoStreams": [], "audioStreams": [], "subtitleStreams": [],
+        "sources": ["filename"]
     })
 }
 
@@ -1634,7 +2189,11 @@ fn strip_trailing_year(value: &str) -> (&str, Option<u16>) {
     (value.trim(), None)
 }
 
-async fn cached_jellyfin_metadata(cache_file: &FilePath, item: &CatalogItem) -> Option<Value> {
+async fn cached_application_metadata(
+    cache_file: &FilePath,
+    item: &CatalogItem,
+    allow_folder_prefix: bool,
+) -> Option<Value> {
     const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
     const MAX_CACHE_AGE_SECONDS: u64 = 2 * 60 * 60;
     let metadata = tokio::fs::symlink_metadata(cache_file).await.ok()?;
@@ -1659,17 +2218,39 @@ async fn cached_jellyfin_metadata(cache_file: &FilePath, item: &CatalogItem) -> 
         .get("entries")?
         .as_array()?
         .iter()
-        .find(|entry| {
+        .filter(|entry| {
             entry.get("rootId").and_then(Value::as_str) == Some(item.root_id.as_str())
-                && entry.get("relativePath").and_then(Value::as_str)
-                    == Some(item.relative_path.as_str())
                 && entry.get("ownerUsername").and_then(Value::as_str)
                     == item.owner_username.as_deref()
+        })
+        .filter(|entry| {
+            let Some(relative_path) = entry.get("relativePath").and_then(Value::as_str) else {
+                return false;
+            };
+            relative_path == item.relative_path
+                || (allow_folder_prefix
+                    && !relative_path.is_empty()
+                    && item
+                        .relative_path
+                        .strip_prefix(relative_path)
+                        .is_some_and(|suffix| suffix.starts_with('/')))
+        })
+        .max_by_key(|entry| {
+            entry
+                .get("relativePath")
+                .and_then(Value::as_str)
+                .map(str::len)
+                .unwrap_or_default()
         })
         .cloned()
 }
 
-fn merge_metadata(base: &mut Value, entry: Value) {
+fn merge_metadata(
+    base: &mut Value,
+    entry: &Value,
+    source: &str,
+    field_sources: &mut std::collections::BTreeMap<String, String>,
+) {
     let Some(base) = base.as_object_mut() else {
         return;
     };
@@ -1679,8 +2260,13 @@ fn merge_metadata(base: &mut Value, entry: Value) {
     const FIELDS: &[&str] = &[
         "mediaType",
         "title",
+        "subtitle",
         "year",
+        "authors",
+        "narrators",
         "series",
+        "volumeNumber",
+        "isbn",
         "season",
         "episode",
         "episodeTitle",
@@ -1694,15 +2280,29 @@ fn merge_metadata(base: &mut Value, entry: Value) {
         "officialRating",
         "communityRating",
         "providerIds",
+        "trackNumber",
+        "trackTotal",
+        "discNumber",
+        "discTotal",
+        "tags",
+        "chapters",
+        "audioFiles",
+        "ebookFile",
+        "publishedDate",
+        "explicit",
+        "ageRating",
+        "publicationStatus",
+        "fieldLocks",
         "videoStreams",
         "audioStreams",
+        "subtitleStreams",
     ];
     for field in FIELDS {
         if let Some(value) = entry.get(*field).filter(|value| !value.is_null()) {
             base.insert((*field).to_string(), value.clone());
+            field_sources.insert((*field).to_string(), source.to_string());
         }
     }
-    base.insert("sources".to_string(), json!(["filename", "jellyfin"]));
 }
 
 async fn index(State(state): State<Arc<AppState>>) -> Response {
@@ -2468,7 +3068,7 @@ async fn try_jellyfin_image_fallback(
         );
         return None;
     };
-    let Some(entry) = cached_jellyfin_metadata(cache_file, item).await else {
+    let Some(entry) = cached_application_metadata(cache_file, item, false).await else {
         log_event(
             "jellyfin_fallback_cache_miss",
             request_id,
@@ -3099,6 +3699,48 @@ async fn confirm_plan(
     }
 }
 
+async fn plan_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(plan_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if !valid_object_id(&plan_id) {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_plan_id",
+            "The mutation plan ID is invalid.",
+            request_id,
+        )
+        .into_response();
+    }
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    match catalog.mutation_plan_status_for_owner(&plan_id, &identity.username) {
+        Ok(Some(status)) => Json(json!({
+            "id": plan_id,
+            "state": status.state,
+            "error": status.error,
+            "requestId": request_id,
+        }))
+        .into_response(),
+        Ok(None) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "plan_not_found",
+            "The mutation plan does not exist for this identity.",
+            request_id,
+        )
+        .into_response(),
+        Err(_) => ApiError::internal(request_id).into_response(),
+    }
+}
+
 async fn not_found() -> Response {
     ApiError::new(
         StatusCode::NOT_FOUND,
@@ -3257,7 +3899,9 @@ fn visible_media_folder(
     }
     let root = config
         .resolve_visible_root(identity, &query.root_id)
-        .filter(|root| ["videos", "music", "audiobooks", "books"].contains(&root.category.as_str()))
+        .filter(|root| {
+            ["videos", "music", "audiobooks", "podcasts", "books"].contains(&root.category.as_str())
+        })
         .ok_or_else(|| {
             ApiError::without_request_id(
                 StatusCode::FORBIDDEN,
@@ -3342,6 +3986,7 @@ fn folder_media_type(folder: &VisibleMediaFolder) -> &'static str {
         "videos" if folder.has_direct_media => "movie",
         "music" if folder.has_direct_media => "music",
         "audiobooks" if folder.has_direct_media => "audiobook",
+        "podcasts" if folder.has_direct_media => "podcast",
         "books" if folder.has_direct_media => "book",
         _ => "collection",
     }
@@ -3894,6 +4539,39 @@ fn metadata_sidecar(
     (destination, "opf", xml)
 }
 
+fn comicinfo_sidecar(request: &MetadataSidecarRequest) -> String {
+    let mut xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ComicInfo>\n".to_string();
+    xml.push_str(&xml_element("Title", Some(&request.title)));
+    xml.push_str(&xml_element("Series", request.series.as_deref()));
+    xml.push_str(&xml_element("Number", request.volume_number.as_deref()));
+    xml.push_str(&xml_element("Summary", request.description.as_deref()));
+    if let Some(year) = request.year {
+        xml.push_str(&format!("  <Year>{year}</Year>\n"));
+    }
+    let writers = if request.writers.is_empty() {
+        &request.authors
+    } else {
+        &request.writers
+    };
+    if !writers.is_empty() {
+        xml.push_str(&xml_element("Writer", Some(&writers.join(", "))));
+    }
+    xml.push_str(&xml_element("Publisher", request.publisher.as_deref()));
+    if !request.genres.is_empty() {
+        xml.push_str(&xml_element("Genre", Some(&request.genres.join(", "))));
+    }
+    xml.push_str(&xml_element("LanguageISO", request.language.as_deref()));
+    if let Some(web) = request
+        .provider_ids
+        .get("web")
+        .or_else(|| request.provider_ids.get("comicVine"))
+    {
+        xml.push_str(&xml_element("Web", Some(web)));
+    }
+    xml.push_str("</ComicInfo>\n");
+    xml
+}
+
 fn folder_metadata_sidecar(
     folder: &VisibleMediaFolder,
     request: &MetadataSidecarRequest,
@@ -4219,17 +4897,260 @@ fn create_subtitle_plan(
         .into_response())
 }
 
+struct PreparedMetadataAction {
+    action: BrokerAction,
+    staging_path: std::path::PathBuf,
+}
+
+async fn prepare_embedded_metadata_action(
+    config: &AppConfig,
+    identity: &Identity,
+    item: &CatalogItem,
+    extension: &str,
+    generated: &str,
+    request_id: &str,
+) -> Result<PreparedMetadataAction, ApiError> {
+    const MAX_EDITABLE_CONTAINER_BYTES: u64 = 512 * 1024 * 1024;
+    let root = config
+        .resolve_visible_root(identity, &item.root_id)
+        .ok_or_else(|| ApiError::internal(request_id.to_string()))?;
+    let source = open_regular_file_beneath(FilePath::new(&root.resolved_path), &item.relative_path)
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "unsafe_embedded_metadata_source",
+                "The book container could not be opened safely.",
+                request_id.to_string(),
+            )
+        })?;
+    let metadata = source
+        .metadata()
+        .map_err(|_| ApiError::internal(request_id.to_string()))?;
+    if metadata.len() > MAX_EDITABLE_CONTAINER_BYTES {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "book_container_too_large",
+            "The book container exceeds the 512 MiB safe rewrite limit.",
+            request_id.to_string(),
+        ));
+    }
+    let expected_source =
+        opened_file_fingerprint(&source).map_err(|_| ApiError::internal(request_id.to_string()))?;
+    let staging_directory = config.state_dir.join("provider-staging");
+    tokio::fs::create_dir_all(&staging_directory)
+        .await
+        .map_err(|_| ApiError::internal(request_id.to_string()))?;
+    let staging_filename = format!("embedded-{request_id}.{extension}");
+    let staging_path = staging_directory.join(&staging_filename);
+    let output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o660)
+        .open(&staging_path)
+        .map_err(|_| ApiError::internal(request_id.to_string()))?;
+    let generated = generated.to_string();
+    let extension_owned = extension.to_string();
+    let rewrite = tokio::task::spawn_blocking(move || {
+        rewrite_embedded_metadata(source, output, &extension_owned, &generated)
+    })
+    .await;
+    if let Err(message) = rewrite
+        .map_err(|_| "embedded metadata rewrite did not complete".to_string())
+        .and_then(|result| result)
+    {
+        let _ = tokio::fs::remove_file(&staging_path).await;
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "embedded_metadata_rewrite_failed",
+            message,
+            request_id.to_string(),
+        ));
+    }
+    let source_path = FilePath::new(&root.resolved_path).join(&item.relative_path);
+    let final_source = file_fingerprint(&source_path).map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "book_container_changed",
+            "The book container changed while the preview was being prepared.",
+            request_id.to_string(),
+        )
+    })?;
+    if final_source != expected_source {
+        let _ = tokio::fs::remove_file(&staging_path).await;
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "book_container_changed",
+            "The book container changed while the preview was being prepared.",
+            request_id.to_string(),
+        ));
+    }
+    let expected_replacement =
+        file_fingerprint(&staging_path).map_err(|_| ApiError::internal(request_id.to_string()))?;
+    let (parent, filename) = item
+        .relative_path
+        .rsplit_once('/')
+        .unwrap_or(("", item.relative_path.as_str()));
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename);
+    let archived_relative_path = join_relative(
+        parent,
+        &format!("superseded/{stem}-{request_id}.{extension}"),
+    );
+    Ok(PreparedMetadataAction {
+        action: BrokerAction::ReplaceEmbeddedMetadata(ReplaceEmbeddedMetadataAction {
+            staging_filename,
+            root_id: item.root_id.clone(),
+            source_relative_path: item.relative_path.clone(),
+            archived_relative_path,
+            replacement_relative_path: item.relative_path.clone(),
+            expected_source,
+            expected_replacement,
+        }),
+        staging_path,
+    })
+}
+
+async fn prepare_metadata_action(
+    config: &AppConfig,
+    identity: &Identity,
+    root_id: &str,
+    destination_relative_path: String,
+    extension: &str,
+    generated: &str,
+    request_id: &str,
+) -> Result<PreparedMetadataAction, ApiError> {
+    const MAX_EDITABLE_SIDECAR_BYTES: u64 = 1024 * 1024;
+    let root = config
+        .resolve_visible_root(identity, root_id)
+        .ok_or_else(|| ApiError::internal(request_id.to_string()))?;
+    let destination_path = FilePath::new(&root.resolved_path).join(&destination_relative_path);
+    let existing = match std::fs::symlink_metadata(&destination_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "unsafe_metadata_destination",
+                    "The existing metadata destination is not a regular contained file.",
+                    request_id.to_string(),
+                ));
+            }
+            if metadata.len() > MAX_EDITABLE_SIDECAR_BYTES {
+                return Err(ApiError::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "metadata_sidecar_too_large",
+                    "The existing metadata sidecar is too large for a safe in-app edit.",
+                    request_id.to_string(),
+                ));
+            }
+            let mut file = open_regular_file_beneath(
+                FilePath::new(&root.resolved_path),
+                &destination_relative_path,
+            )
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::CONFLICT,
+                    "unsafe_metadata_destination",
+                    "The existing metadata sidecar could not be opened safely.",
+                    request_id.to_string(),
+                )
+            })?;
+            let initial_fingerprint = opened_file_fingerprint(&file)
+                .map_err(|_| ApiError::internal(request_id.to_string()))?;
+            let mut bytes = Vec::with_capacity(metadata.len() as usize);
+            file.by_ref()
+                .take(MAX_EDITABLE_SIDECAR_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| ApiError::internal(request_id.to_string()))?;
+            let text = String::from_utf8(bytes).map_err(|_| {
+                ApiError::new(
+                    StatusCode::CONFLICT,
+                    "metadata_sidecar_not_utf8",
+                    "The existing metadata sidecar is not UTF-8 XML and cannot be edited safely.",
+                    request_id.to_string(),
+                )
+            })?;
+            let final_fingerprint = opened_file_fingerprint(&file)
+                .map_err(|_| ApiError::internal(request_id.to_string()))?;
+            let path_fingerprint = file_fingerprint(&destination_path).map_err(|_| {
+                ApiError::new(
+                    StatusCode::CONFLICT,
+                    "metadata_sidecar_changed",
+                    "The metadata sidecar changed while the preview was being prepared. Reload it and try again.",
+                    request_id.to_string(),
+                )
+            })?;
+            if initial_fingerprint != final_fingerprint || final_fingerprint != path_fingerprint {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "metadata_sidecar_changed",
+                    "The metadata sidecar changed while the preview was being prepared. Reload it and try again.",
+                    request_id.to_string(),
+                ));
+            }
+            Some((text, final_fingerprint))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(ApiError::internal(request_id.to_string())),
+    };
+    let contents = match existing.as_ref() {
+        Some((existing, _)) => merge_managed_sidecar(existing, generated).map_err(|message| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "metadata_sidecar_merge_failed",
+                message,
+                request_id.to_string(),
+            )
+        })?,
+        None => generated.to_string(),
+    };
+    let staged = stage_sidecar(config, extension, contents.as_bytes(), request_id).await?;
+    let action = if let Some((_, expected_source)) = existing {
+        let (parent, filename) = destination_relative_path
+            .rsplit_once('/')
+            .unwrap_or(("", destination_relative_path.as_str()));
+        let stem = filename
+            .rsplit_once('.')
+            .map(|(stem, _)| stem)
+            .unwrap_or(filename);
+        let archived_relative_path = join_relative(
+            parent,
+            &format!("superseded/{stem}-{request_id}.{extension}"),
+        );
+        BrokerAction::ReplaceMetadataSidecar(ReplaceMetadataSidecarAction {
+            staging_filename: staged.filename,
+            root_id: root_id.to_string(),
+            source_relative_path: destination_relative_path.clone(),
+            archived_relative_path,
+            replacement_relative_path: destination_relative_path,
+            expected_source,
+            expected_replacement: staged.expected,
+        })
+    } else {
+        BrokerAction::InstallMetadataSidecar(InstallMetadataSidecarAction {
+            staging_filename: staged.filename,
+            destination_root_id: root_id.to_string(),
+            destination_relative_path,
+            expected: staged.expected,
+        })
+    };
+    Ok(PreparedMetadataAction {
+        action,
+        staging_path: staged.path,
+    })
+}
+
 fn create_metadata_plan(
     state: &AppState,
     identity: &Identity,
     catalog: &mut Catalog,
     item: &CatalogItem,
     request: &MetadataSidecarRequest,
-    action: InstallMetadataSidecarAction,
+    broker_action: BrokerAction,
     request_id: String,
 ) -> Result<Response, ApiError> {
     let expires_at = unix_timestamp().saturating_add(30 * 60);
-    let broker_action = BrokerAction::InstallMetadataSidecar(action.clone());
     let canonical = serde_json::to_vec(&json!({
         "actor": identity.username,
         "itemId": item.id,
@@ -4275,23 +5196,36 @@ fn create_metadata_plan(
             ApiError::internal(request_id.clone())
         })?;
 
-    let root = state
-        .config
-        .resolve_visible_root(identity, &item.root_id)
-        .ok_or_else(|| ApiError::internal(request_id.clone()))?;
-    let destination_exists = FilePath::new(&root.resolved_path)
-        .join(&action.destination_relative_path)
-        .exists();
-    let mut warnings = vec![
-        "Metadata is written as an application-compatible NFO or OPF sidecar; media streams are not re-encoded.",
-        "Existing metadata sidecars are never overwritten by this initial safe workflow.",
-    ];
-    if destination_exists {
-        warnings.push("The destination already exists, so confirmation will fail safely.");
-    }
+    let embedded = matches!(&broker_action, BrokerAction::ReplaceEmbeddedMetadata(_));
+    let replacing = matches!(&broker_action, BrokerAction::ReplaceMetadataSidecar(_));
+    let mut warnings = if embedded {
+        vec![
+            "The staged EPUB or CBZ was rebuilt and parsed before this preview was created.",
+            "The original book will be archived in its superseded subfolder before the replacement is installed.",
+            "All non-metadata ZIP entries are copied verbatim; unknown XML elements in the metadata document are retained.",
+        ]
+    } else {
+        vec![
+            "Metadata is written as an application-compatible NFO or OPF sidecar; media streams are not re-encoded.",
+            if replacing {
+                "The current sidecar will be archived in its superseded subfolder before the XML-preserving replacement is installed."
+            } else {
+                "The sidecar is installed with no-overwrite filesystem semantics."
+            },
+            "Unknown XML elements and attributes from an existing sidecar are retained in the staged replacement.",
+        ]
+    };
     if state.config.mutation_mode == MutationMode::ReadOnly {
         warnings.push("The service is in read-only mode; this plan cannot be confirmed.");
     }
+    let consumer_kind = match request.media_type.as_deref() {
+        Some("audiobook") => "audiobook",
+        Some("book") => "book",
+        Some("music") => "music",
+        Some("movie" | "episode" | "series" | "season") => "video",
+        _ => item.media_kind.as_str(),
+    };
+    let affected_consumers = consumer_effects(&state.config, consumer_kind);
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -4302,6 +5236,7 @@ fn create_metadata_plan(
             "expiresAt": expires_at,
             "mutationMode": state.config.mutation_mode,
             "warnings": warnings,
+            "affectedConsumers": affected_consumers,
             "requestId": request_id,
         })),
     )

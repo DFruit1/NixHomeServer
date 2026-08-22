@@ -136,6 +136,15 @@ interface VideoProbe {
   codec?: string;
   hasEmbeddedSubtitles: boolean;
   subtitleLanguages: string[];
+  subtitleStreams?: Array<{
+    index: number;
+    codec: string;
+    language?: string;
+    title?: string;
+    isDefault: boolean;
+    isForced: boolean;
+    isHearingImpaired: boolean;
+  }>;
 }
 
 interface CatalogItem {
@@ -261,9 +270,66 @@ interface MutationPreview {
   actions: Array<{
     kind?: string;
     sourceRelativePath?: string;
-    destinationRelativePath: string;
+    destinationRelativePath?: string;
+    replacementRelativePath?: string;
+    archivedRelativePath?: string;
   }>;
   warnings: string[];
+  affectedConsumers?: MetadataConsumer[];
+}
+
+interface MetadataObservation {
+  source: string;
+  label: string;
+  observedAt?: number;
+  relativePath?: string;
+  format?: string;
+  appItemId?: string;
+  storage?: string;
+  consumedBy?: string[];
+  survivesRescan?: boolean;
+  writable?: boolean;
+  locked?: boolean;
+  fields: Record<string, unknown>;
+  rawPreview?: string;
+}
+
+interface MetadataHealthIssue {
+  code: string;
+  severity: "info" | "warning" | "error";
+  field?: string;
+  title: string;
+  message: string;
+  sources: string[];
+}
+
+interface MetadataModificationTarget {
+  id: string;
+  label: string;
+  kind: "portable-file" | "application-local";
+  available: boolean;
+  recommended: boolean;
+  requiresRefresh: boolean;
+  message: string;
+}
+
+interface MetadataConsumer {
+  id: string;
+  label: string;
+  available: boolean;
+  effect: string;
+  canManageNatively: boolean;
+  portableWriteSupported: boolean;
+  message: string;
+  nativeUrl?: string;
+}
+
+interface MetadataSidecarInspection {
+  relativePath: string;
+  format: string;
+  exists: boolean;
+  canReplace: boolean;
+  consumerEffective: boolean;
 }
 
 const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
@@ -676,6 +742,7 @@ export default component$((props: RootProps) => {
       <main
         class={{
           "main-content": true,
+          "main-content--library": view.value === "library",
           "main-content--conversions": view.value === "conversions",
         }}
       >
@@ -733,13 +800,89 @@ export default component$((props: RootProps) => {
   );
 });
 
+interface InstalledSubtitle {
+  source: "external" | "embedded";
+  itemId?: string;
+  relativePath?: string;
+  streamIndex?: number;
+  sizeBytes?: number;
+  format?: string | null;
+  language?: string | null;
+  title?: string | null;
+  isDefault: boolean;
+  isForced: boolean;
+  isHearingImpaired: boolean;
+  isPreviewable: boolean;
+}
+
+interface InstalledSubtitleContent {
+  cues: SubtitleCue[];
+  truncated: boolean;
+  validation: {
+    cueCount: number;
+    issueCount: number;
+    issues: Array<{ cueIndex: number; kind: string; message: string }>;
+  };
+}
+
 const SubtitleCard = component$<{
   items: CatalogItem[];
   selectedItemId: string;
 }>((props) => {
+  const inspector = useStore<{
+    loading: boolean;
+    subtitles: InstalledSubtitle[];
+    consumers: MetadataConsumer[];
+    selected?: InstalledSubtitle;
+    content?: InstalledSubtitleContent;
+    error: string;
+  }>({ loading: false, subtitles: [], consumers: [], error: "" });
   const selectedItem = props.items.find(
     (item) => item.id === props.selectedItemId,
   );
+  useTask$(async ({ track }) => {
+    const selectedItemId = track(() => props.selectedItemId);
+    inspector.subtitles = [];
+    inspector.consumers = [];
+    inspector.selected = undefined;
+    inspector.content = undefined;
+    inspector.error = "";
+    if (!selectedItemId) return;
+    const item = props.items.find(
+      (candidate) => candidate.id === selectedItemId,
+    );
+    if (item?.mediaKind !== "video") return;
+    inspector.loading = true;
+    try {
+      const response = await api<{
+        subtitles?: InstalledSubtitle[];
+        consumers?: MetadataConsumer[];
+      }>(`/items/${encodeURIComponent(selectedItemId)}/subtitles`);
+      if (props.selectedItemId !== selectedItemId) return;
+      inspector.subtitles = response.subtitles ?? [];
+      inspector.consumers = response.consumers ?? [];
+    } catch (error) {
+      if (props.selectedItemId === selectedItemId)
+        inspector.error = readableError(error);
+    } finally {
+      if (props.selectedItemId === selectedItemId) inspector.loading = false;
+    }
+  });
+
+  const inspectContent = $(async (subtitle: InstalledSubtitle) => {
+    if (!subtitle.itemId || !subtitle.isPreviewable) return;
+    inspector.selected = subtitle;
+    inspector.content = undefined;
+    inspector.error = "";
+    try {
+      inspector.content = await api<InstalledSubtitleContent>(
+        `/items/${encodeURIComponent(props.selectedItemId)}/subtitles/installed/${encodeURIComponent(subtitle.itemId)}/content`,
+      );
+    } catch (error) {
+      inspector.error = readableError(error);
+    }
+  });
+
   if (!selectedItem) {
     return (
       <div class="subtitle-card-body">
@@ -760,56 +903,118 @@ const SubtitleCard = component$<{
       </div>
     );
   }
-  const selectedItemPath = selectedItem.relativePath;
-  const selectedDir = selectedItemPath.substring(
-    0,
-    selectedItemPath.lastIndexOf("/"),
-  );
-  const videoStem =
-    selectedItemPath
-      .split("/")
-      .at(-1)
-      ?.replace(/\.[^.]+$/, "") ?? "";
-  const subtitles = props.items.filter((item) => {
-    if (item.mediaKind !== "subtitle") return false;
-    if (item.rootId !== selectedItem.rootId) return false;
-    const itemDir = item.relativePath.substring(
-      0,
-      item.relativePath.lastIndexOf("/"),
-    );
-    if (itemDir !== selectedDir) return false;
-    const subtitleName = item.relativePath.split("/").at(-1) ?? "";
-    const subtitleStem = subtitleName.replace(/\.[^.]+$/, "");
-    return (
-      subtitleStem === videoStem ||
-      subtitleStem.startsWith(`${videoStem}.`) ||
-      videoStem.startsWith(`${subtitleStem}.`)
-    );
-  });
   return (
-    <div class="subtitle-card-body">
-      {subtitles.length === 0 ? (
+    <div class="subtitle-card-body installed-subtitle-inspector">
+      <div class="installed-subtitle-heading">
+        <div>
+          <h3>Installed subtitles</h3>
+          <p>
+            External files and embedded streams, including flags and validation.
+          </p>
+        </div>
+        {inspector.consumers[0]?.nativeUrl && (
+          <a
+            class="secondary-button"
+            href={inspector.consumers[0].nativeUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Manage in {inspector.consumers[0].label}
+          </a>
+        )}
+      </div>
+      {inspector.error && <p class="error-copy">{inspector.error}</p>}
+      {inspector.loading ? (
+        <div class="subtitle-empty">
+          <Icon name="refresh" size={24} />
+          <span>Inspecting subtitle streams and files…</span>
+        </div>
+      ) : inspector.subtitles.length === 0 ? (
         <div class="subtitle-empty">
           <Icon name="captions" size={24} />
           <span>No subtitles found for this file</span>
         </div>
       ) : (
         <ul class="subtitle-list">
-          {subtitles.map((sub) => {
-            const filename = sub.relativePath.split("/").at(-1) ?? "";
-            const ext = filename.split(".").at(-1)?.toUpperCase() ?? "";
-            const langMatch = filename.match(
-              /\.(?:en|es|fr|de|it|pt|ja|ko|zh|ru|ar|hi)\b/i,
-            );
-            const lang = langMatch ? langMatch[0].slice(1).toUpperCase() : ext;
+          {inspector.subtitles.map((subtitle, index) => {
+            const filename =
+              subtitle.relativePath?.split("/").at(-1) ??
+              subtitle.title ??
+              `Embedded stream ${subtitle.streamIndex ?? index}`;
             return (
-              <li class="subtitle-item" key={sub.id}>
-                <span class="subtitle-lang">{lang}</span>
-                <span class="subtitle-filename">{filename}</span>
+              <li
+                class="subtitle-item installed-subtitle-row"
+                key={
+                  subtitle.itemId ?? `stream-${subtitle.streamIndex ?? index}`
+                }
+              >
+                <span class="subtitle-lang">
+                  {(subtitle.language ?? "und").toUpperCase()}
+                </span>
+                <span class="subtitle-filename">
+                  <strong>{filename}</strong>
+                  <small>
+                    {[
+                      subtitle.source,
+                      subtitle.format?.toUpperCase(),
+                      subtitle.isDefault ? "default" : "",
+                      subtitle.isForced ? "forced" : "",
+                      subtitle.isHearingImpaired ? "SDH/CC" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </small>
+                </span>
+                {subtitle.isPreviewable && (
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    onClick$={() => inspectContent(subtitle)}
+                  >
+                    Inspect cues
+                  </button>
+                )}
               </li>
             );
           })}
         </ul>
+      )}
+      {inspector.content && (
+        <section class="installed-subtitle-content">
+          <div>
+            <strong>
+              {inspector.content.validation.cueCount} cues ·{" "}
+              {inspector.content.validation.issueCount} issues
+            </strong>
+            <button
+              class="close-button"
+              type="button"
+              aria-label="Close installed subtitle preview"
+              onClick$={() => (inspector.content = undefined)}
+            >
+              ×
+            </button>
+          </div>
+          {inspector.content.validation.issues.length > 0 && (
+            <ul class="subtitle-validation-list">
+              {inspector.content.validation.issues.map((issue) => (
+                <li key={`${issue.cueIndex}-${issue.kind}`}>
+                  Cue {issue.cueIndex}: {issue.message}
+                </li>
+              ))}
+            </ul>
+          )}
+          <ol class="subtitle-cue-list">
+            {inspector.content.cues.map((cue) => (
+              <li class="subtitle-cue" key={`${cue.index}-${cue.startMs}`}>
+                <time>
+                  {formatCueTime(cue.startMs)} → {formatCueTime(cue.endMs)}
+                </time>
+                <span>{cue.text || "—"}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
       )}
     </div>
   );
@@ -858,6 +1063,20 @@ function buildTree(items: CatalogItem[]): TreeNode[] {
         return folderDelta || left.name.localeCompare(right.name);
       });
   return sortBranch(roots);
+}
+
+function findTreeNode(nodes: TreeNode[], path: string): TreeNode | undefined {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const match = findTreeNode(node.children, path);
+    if (match) return match;
+  }
+  return undefined;
+}
+
+function itemFocusPath(item: CatalogItem): string {
+  const slash = item.relativePath.lastIndexOf("/");
+  return slash > 0 ? item.relativePath.slice(0, slash) : "";
 }
 
 function topLevelFolders(items: CatalogItem[]): string[] {
@@ -1082,6 +1301,7 @@ const CATEGORY_TABS: Array<{ id: string; label: string; icon: IconName }> = [
   { id: "videos", label: "Videos", icon: "image" },
   { id: "music", label: "Music", icon: "disc" },
   { id: "audiobooks", label: "Audiobooks", icon: "captions" },
+  { id: "podcasts", label: "Podcasts", icon: "audiobookshelf" },
   { id: "books", label: "Books", icon: "library" },
 ];
 
@@ -1095,6 +1315,7 @@ const LibraryPane = component$<{
     selectedFolder: string;
   };
   items: CatalogItem[];
+  focusPath?: string;
   selectedItemId: string;
   selectItem$: QRL<(item: CatalogItem) => void>;
   selectFolder$: QRL<(path: string) => void>;
@@ -1106,6 +1327,10 @@ const LibraryPane = component$<{
       )
     : props.items;
   const tree = buildTree(visibleItems);
+  const focusedNode = props.focusPath
+    ? findTreeNode(tree, props.focusPath)
+    : undefined;
+  const displayedTree = focusedNode ? [focusedNode] : tree;
   return (
     <section
       class={{
@@ -1127,7 +1352,7 @@ const LibraryPane = component$<{
           />
         ) : (
           <>
-            {folders.length > 1 && (
+            {!props.focusPath && folders.length > 1 && (
               <div
                 class="folder-filter"
                 role="group"
@@ -1157,7 +1382,7 @@ const LibraryPane = component$<{
               role="tree"
               aria-label={`${props.title} items`}
             >
-              {tree.map((node) => (
+              {displayedTree.map((node) => (
                 <TreeBranch
                   node={node}
                   depth={0}
@@ -1167,7 +1392,7 @@ const LibraryPane = component$<{
                   selectItem$={props.selectItem$}
                   selectFolder$={props.selectFolder$}
                   parentPath=""
-                  siblingPaths={tree
+                  siblingPaths={displayedTree
                     .filter((sibling) => !sibling.item)
                     .map((sibling) => sibling.path)}
                   key={node.path}
@@ -1180,6 +1405,63 @@ const LibraryPane = component$<{
     </section>
   );
 });
+
+const LibraryDetailPane = component$<{
+  placement: "personal" | "shared";
+  state: DashboardState;
+  selectedItem?: CatalogItem;
+  activeFolder: string;
+  activeFolderRootId?: string;
+  imageTitle: string;
+  previewRename$: QRL<() => Promise<void>>;
+  confirmRename$: QRL<() => Promise<void>>;
+  closeFolderEditor$: QRL<() => void>;
+}>((props) => (
+  <div
+    class={{
+      "library-detail-pane": true,
+      "detail-personal": props.placement === "personal",
+      "detail-shared": props.placement === "shared",
+    }}
+    aria-label={`Selected ${props.placement === "personal" ? "shared" : "personal"} library details`}
+  >
+    <div class="root-picker-image">
+      <MediaImage
+        imageId={artworkCandidateId(
+          props.state.items,
+          props.state.selectedItemId,
+          props.activeFolder,
+        )}
+        title={props.imageTitle}
+      />
+    </div>
+    {props.selectedItem &&
+      ["video", "music", "audiobook", "podcast", "book"].includes(
+        props.selectedItem.mediaKind,
+      ) && (
+        <ItemEditor
+          state={props.state}
+          previewRename$={props.previewRename$}
+          confirmRename$={props.confirmRename$}
+        />
+      )}
+    {props.selectedItem?.mediaKind === "artwork" && (
+      <ArtworkFileCard item={props.selectedItem} state={props.state} />
+    )}
+    {!props.selectedItem && props.activeFolder && props.activeFolderRootId && (
+      <ItemEditor
+        state={props.state}
+        previewRename$={props.previewRename$}
+        confirmRename$={props.confirmRename$}
+        folder={{
+          rootId: props.activeFolderRootId,
+          relativePath: props.activeFolder,
+        }}
+        close$={props.closeFolderEditor$}
+      />
+    )}
+  </div>
+));
 
 const LibraryView = component$<{
   state: DashboardState;
@@ -1227,7 +1509,17 @@ const LibraryView = component$<{
   const selectedItem = props.state.items.find(
     (item) => item.id === props.state.selectedItemId,
   );
+  const selectedItemRoot = props.state.roots.find(
+    (root) => root.id === selectedItem?.rootId,
+  );
   const activeFolder = personal.selectedFolder || shared.selectedFolder;
+  const activeScope = personal.selectedFolder
+    ? "personal"
+    : shared.selectedFolder
+      ? "shared"
+      : selectedItemRoot?.scope;
+  const activeFocusPath =
+    activeFolder || (selectedItem ? itemFocusPath(selectedItem) : "");
   const imageTitle =
     selectedItem?.relativePath.split("/").at(-1) ??
     (activeFolder
@@ -1294,59 +1586,52 @@ const LibraryView = component$<{
           );
         })}
       </div>
-      <LibraryPane
-        title="Personal"
-        subtitle="No personal media files found"
-        browser={personal}
-        items={personalItems}
-        selectedItemId={props.state.selectedItemId}
-        selectItem$={selectPersonalItem$}
-        selectFolder$={selectPersonalFolder$}
-      />
-      <LibraryPane
-        title="Shared"
-        subtitle="No shared media files found"
-        browser={shared}
-        items={sharedItems}
-        selectedItemId={props.state.selectedItemId}
-        selectItem$={selectSharedItem$}
-        selectFolder$={selectSharedFolder$}
-      />
-      {(selectedItem || activeFolder) && (
-        <div class="root-picker-image">
-          <MediaImage
-            imageId={artworkCandidateId(
-              props.state.items,
-              props.state.selectedItemId,
-              activeFolder,
-            )}
-            title={imageTitle}
-          />
-        </div>
-      )}
-      {selectedItem &&
-        ["video", "music", "audiobook", "book"].includes(
-          selectedItem.mediaKind,
-        ) && (
-          <ItemEditor
-            state={props.state}
-            previewRename$={props.previewRename$}
-            confirmRename$={props.confirmRename$}
-          />
-        )}
-      {selectedItem?.mediaKind === "artwork" && (
-        <ArtworkFileCard item={selectedItem} state={props.state} />
-      )}
-      {!selectedItem && activeFolder && activeFolderRootId && (
-        <ItemEditor
+      {activeScope === "shared" ? (
+        <LibraryDetailPane
+          placement="personal"
           state={props.state}
+          selectedItem={selectedItem}
+          activeFolder={activeFolder}
+          activeFolderRootId={activeFolderRootId}
+          imageTitle={imageTitle}
           previewRename$={props.previewRename$}
           confirmRename$={props.confirmRename$}
-          folder={{
-            rootId: activeFolderRootId,
-            relativePath: activeFolder,
-          }}
-          close$={closeFolderEditor$}
+          closeFolderEditor$={closeFolderEditor$}
+        />
+      ) : (
+        <LibraryPane
+          title="Personal"
+          subtitle="No personal media files found"
+          browser={personal}
+          items={personalItems}
+          focusPath={activeScope === "personal" ? activeFocusPath : ""}
+          selectedItemId={props.state.selectedItemId}
+          selectItem$={selectPersonalItem$}
+          selectFolder$={selectPersonalFolder$}
+        />
+      )}
+      {activeScope === "personal" ? (
+        <LibraryDetailPane
+          placement="shared"
+          state={props.state}
+          selectedItem={selectedItem}
+          activeFolder={activeFolder}
+          activeFolderRootId={activeFolderRootId}
+          imageTitle={imageTitle}
+          previewRename$={props.previewRename$}
+          confirmRename$={props.confirmRename$}
+          closeFolderEditor$={closeFolderEditor$}
+        />
+      ) : (
+        <LibraryPane
+          title="Shared"
+          subtitle="No shared media files found"
+          browser={shared}
+          items={sharedItems}
+          focusPath={activeScope === "shared" ? activeFocusPath : ""}
+          selectedItemId={props.state.selectedItemId}
+          selectItem$={selectSharedItem$}
+          selectFolder$={selectSharedFolder$}
         />
       )}
     </section>
@@ -2306,6 +2591,15 @@ const SubtitleView = component$<{
         </div>
       </section>
 
+      {subtitle.itemId && (
+        <section class="panel subtitle-installed-panel">
+          <SubtitleCard
+            items={subtitle.items}
+            selectedItemId={subtitle.itemId}
+          />
+        </section>
+      )}
+
       <div class="subtitle-workflows">
         <section class="panel provider-panel">
           <div class="panel-heading">
@@ -2642,6 +2936,142 @@ const METADATA_SECTIONS: Array<{ id: MetadataSection; label: string }> = [
   { id: "advanced", label: "Advanced" },
 ];
 
+const INSPECTED_METADATA_FIELDS = [
+  "title",
+  "subtitle",
+  "year",
+  "series",
+  "volumeNumber",
+  "authors",
+  "narrators",
+  "publisher",
+  "isbn",
+  "language",
+  "genres",
+  "tags",
+  "publishedDate",
+  "explicit",
+  "ageRating",
+  "publicationStatus",
+  "description",
+] as const;
+
+function metadataFieldLabel(field: string): string {
+  return field
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (value) => value.toUpperCase());
+}
+
+function metadataFieldValue(value: unknown): string {
+  if (Array.isArray(value)) return value.map(String).join(", ");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  if (value == null || value === "") return "—";
+  return String(value);
+}
+
+function metadataDuration(value: unknown): string {
+  const seconds = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = Math.floor(seconds % 60);
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+const ObservationStructuredDetails = component$<{
+  fields: Record<string, unknown>;
+}>((props) => {
+  const audioFiles = Array.isArray(props.fields.audioFiles)
+    ? (props.fields.audioFiles as Array<Record<string, unknown>>)
+    : [];
+  const chapters = Array.isArray(props.fields.chapters)
+    ? (props.fields.chapters as Array<Record<string, unknown>>)
+    : [];
+  const fieldLocks =
+    props.fields.fieldLocks && typeof props.fields.fieldLocks === "object"
+      ? Object.entries(props.fields.fieldLocks as Record<string, unknown>)
+          .filter(([, locked]) => locked === true)
+          .map(([field]) => metadataFieldLabel(field))
+      : [];
+  const ebook =
+    props.fields.ebookFile && typeof props.fields.ebookFile === "object"
+      ? (props.fields.ebookFile as Record<string, unknown>)
+      : undefined;
+  if (
+    audioFiles.length === 0 &&
+    chapters.length === 0 &&
+    fieldLocks.length === 0 &&
+    !ebook
+  ) {
+    return null;
+  }
+  return (
+    <div class="metadata-structured-details">
+      {audioFiles.length > 0 && (
+        <details>
+          <summary>Audio files ({audioFiles.length})</summary>
+          <div
+            class="metadata-mini-table"
+            role="table"
+            aria-label="Audio files"
+          >
+            {audioFiles.slice(0, 50).map((file, index) => (
+              <div role="row" key={`${String(file.filename)}-${index}`}>
+                <strong>{String(file.filename ?? `File ${index + 1}`)}</strong>
+                <span>
+                  {[
+                    file.discNumber ? `D${String(file.discNumber)}` : "",
+                    file.trackNumber ? `T${String(file.trackNumber)}` : "",
+                    file.codec ? String(file.codec).toUpperCase() : "",
+                    metadataDuration(file.duration),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+                {Boolean(file.error) && <em>{String(file.error)}</em>}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {chapters.length > 0 && (
+        <details>
+          <summary>Chapters ({chapters.length})</summary>
+          <div class="metadata-mini-table" role="table" aria-label="Chapters">
+            {chapters.slice(0, 50).map((chapter, index) => (
+              <div role="row" key={`${String(chapter.title)}-${index}`}>
+                <strong>
+                  {String(chapter.title ?? `Chapter ${index + 1}`)}
+                </strong>
+                <span>
+                  {metadataDuration(chapter.start)}–
+                  {metadataDuration(chapter.end)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {ebook && (
+        <p class="metadata-embedded-ebook">
+          <strong>Companion ebook</strong> {String(ebook.filename ?? "Present")}
+        </p>
+      )}
+      {fieldLocks.length > 0 && (
+        <p class="metadata-field-locks">
+          <strong>Locked fields</strong> {fieldLocks.join(", ")}
+        </p>
+      )}
+    </div>
+  );
+});
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 interface MetadataEditorState {
   itemId: string;
   mediaType: string;
@@ -2667,7 +3097,20 @@ interface MetadataEditorState {
   providerIds: Record<string, string>;
   videoStreams: Array<Record<string, unknown>>;
   audioStreams: Array<Record<string, unknown>>;
+  subtitleStreams: Array<Record<string, unknown>>;
   sources: string[];
+  observations: MetadataObservation[];
+  fieldSources: Record<string, string>;
+  consumers: MetadataConsumer[];
+  health: MetadataHealthIssue[];
+  modificationTargets: MetadataModificationTarget[];
+  inspectionWarnings: string[];
+  sidecar?: MetadataSidecarInspection;
+  isDraft: boolean;
+  reloadKey: number;
+  pendingPlanId: string;
+  pendingConsumers: MetadataConsumer[];
+  propagating: boolean;
   lookupMode: MusicLookupMode;
   lookupArtist: string;
   lookupTitle: string;
@@ -2731,7 +3174,19 @@ const ItemEditor = component$<{
     providerIds: {},
     videoStreams: [],
     audioStreams: [],
+    subtitleStreams: [],
     sources: [],
+    observations: [],
+    fieldSources: {},
+    consumers: [],
+    health: [],
+    modificationTargets: [],
+    inspectionWarnings: [],
+    isDraft: false,
+    reloadKey: 0,
+    pendingPlanId: "",
+    pendingConsumers: [],
+    propagating: false,
     lookupMode: "auto",
     lookupArtist: "",
     lookupTitle: "",
@@ -2810,7 +3265,9 @@ const ItemEditor = component$<{
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
         : props.state.selectedItemId,
     );
+    track(() => metadata.reloadKey);
     if (!selectionKey) return;
+    const selectionChanged = metadata.itemId !== selectionKey;
     tab.value = "metadata";
     section.value = "basics";
     const item = props.folder
@@ -2819,6 +3276,11 @@ const ItemEditor = component$<{
           (candidate) => candidate.id === props.state.selectedItemId,
         );
     metadata.itemId = selectionKey;
+    metadata.isDraft = false;
+    if (selectionChanged) {
+      metadata.pendingPlanId = "";
+      metadata.pendingConsumers = [];
+    }
     metadata.planning = false;
     metadata.confirming = false;
     metadata.previewSelectionKey = "";
@@ -2859,7 +3321,15 @@ const ItemEditor = component$<{
     metadata.providerIds = {};
     metadata.videoStreams = [];
     metadata.audioStreams = [];
+    metadata.subtitleStreams = [];
     metadata.sources = ["filename"];
+    metadata.observations = [];
+    metadata.fieldSources = {};
+    metadata.consumers = [];
+    metadata.health = [];
+    metadata.modificationTargets = [];
+    metadata.inspectionWarnings = [];
+    metadata.sidecar = undefined;
     metadata.lookupMode = "auto";
     metadata.lookupArtist = "";
     metadata.lookupTitle = "";
@@ -2888,6 +3358,15 @@ const ItemEditor = component$<{
       if (details.year != null && details.year !== "")
         metadata.year = String(details.year);
       if (details.series) metadata.series = String(details.series);
+      metadata.authors = Array.isArray(details.authors)
+        ? (details.authors as string[]).join(", ")
+        : metadata.authors;
+      metadata.narrators = Array.isArray(details.narrators)
+        ? (details.narrators as string[]).join(", ")
+        : metadata.narrators;
+      if (details.volumeNumber)
+        metadata.volumeNumber = String(details.volumeNumber);
+      if (details.isbn) metadata.isbn = String(details.isbn);
       if (details.season != null && details.season !== "")
         metadata.season = String(details.season);
       if (details.episode != null && details.episode !== "")
@@ -2918,7 +3397,22 @@ const ItemEditor = component$<{
         (details.videoStreams as Array<Record<string, unknown>>) ?? [];
       metadata.audioStreams =
         (details.audioStreams as Array<Record<string, unknown>>) ?? [];
+      metadata.subtitleStreams =
+        (details.subtitleStreams as Array<Record<string, unknown>>) ?? [];
       metadata.sources = (details.sources as string[]) ?? ["filename"];
+      metadata.observations =
+        (details.observations as MetadataObservation[]) ?? [];
+      metadata.fieldSources =
+        (details.fieldSources as Record<string, string>) ?? {};
+      metadata.consumers = (details.consumers as MetadataConsumer[]) ?? [];
+      metadata.health = (details.health as MetadataHealthIssue[]) ?? [];
+      metadata.modificationTargets =
+        (details.modificationTargets as MetadataModificationTarget[]) ?? [];
+      metadata.inspectionWarnings =
+        (details.inspectionWarnings as string[]) ?? [];
+      metadata.sidecar = details.sidecar as
+        | MetadataSidecarInspection
+        | undefined;
       metadata.lookupArtist = metadata.authors;
       metadata.lookupTitle = metadata.title;
     } catch (error) {
@@ -3047,7 +3541,10 @@ const ItemEditor = component$<{
       )
         return;
       props.state.notice =
-        "The metadata sidecar was added to the global mutation queue.";
+        "The portable metadata update was added to the mutation queue. Refresh the affected app after the broker finishes.";
+      metadata.pendingPlanId = preview.id;
+      metadata.pendingConsumers =
+        preview.affectedConsumers ?? metadata.consumers;
       metadata.previewSelectionKey = "";
       metadata.preview = undefined;
     } catch (error) {
@@ -3068,6 +3565,65 @@ const ItemEditor = component$<{
         visibleSelectionKey === selectionKey
       )
         metadata.confirming = false;
+    }
+  });
+
+  const refreshAndVerify = $(async () => {
+    if (!metadata.pendingPlanId || metadata.propagating) return;
+    const consumers = metadata.pendingConsumers.filter(
+      (consumer) =>
+        consumer.available && consumer.effect === "read-after-refresh",
+    );
+    if (consumers.length === 0) return;
+    metadata.propagating = true;
+    props.state.error = "";
+    props.state.notice = "Waiting for the sidecar write to finish…";
+    try {
+      let planState = "";
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const status = await api<{ state: string; error?: string }>(
+          `/plans/${encodeURIComponent(metadata.pendingPlanId)}`,
+        );
+        planState = status.state;
+        if (planState === "completed") break;
+        if (planState === "failed")
+          throw new Error(status.error || "The sidecar write failed.");
+        await wait(500);
+      }
+      if (planState !== "completed")
+        throw new Error(
+          "The sidecar write is still queued. Try Refresh and verify again shortly.",
+        );
+      for (const consumer of consumers) {
+        props.state.notice = `Refreshing ${consumer.label}…`;
+        await api(`/integrations/${encodeURIComponent(consumer.id)}/refresh`, {
+          method: "POST",
+        });
+        let refreshState = "";
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          const refresh = await api<IntegrationRefresh>(
+            `/integrations/${encodeURIComponent(consumer.id)}/refresh`,
+          );
+          refreshState = refresh.state;
+          if (refreshState === "succeeded") break;
+          if (refreshState === "failed")
+            throw new Error(
+              refresh.message || `${consumer.label} refresh failed.`,
+            );
+          await wait(1000);
+        }
+        if (refreshState !== "succeeded")
+          throw new Error(`${consumer.label} is still refreshing.`);
+      }
+      metadata.reloadKey += 1;
+      metadata.pendingPlanId = "";
+      metadata.pendingConsumers = [];
+      props.state.notice =
+        "Refresh completed. Current application metadata has been queried again for comparison.";
+    } catch (error) {
+      props.state.error = readableError(error);
+    } finally {
+      metadata.propagating = false;
     }
   });
 
@@ -3111,6 +3667,13 @@ const ItemEditor = component$<{
     props.state.error = "";
     props.state.notice = `Filled the form from “${candidate.title}”. Review the fields before previewing the metadata sidecar.`;
   });
+
+  const portableWriteAvailable =
+    metadata.modificationTargets.length === 0
+      ? !["book", "podcast"].includes(metadata.mediaType)
+      : metadata.modificationTargets.some(
+          (target) => target.kind === "portable-file" && target.available,
+        );
 
   return (
     <section class="panel editor-card">
@@ -3166,6 +3729,267 @@ const ItemEditor = component$<{
 
       {tab.value === "metadata" ? (
         <>
+          <section class="metadata-inspector" aria-label="Current metadata">
+            <div class="metadata-inspector-heading">
+              <div>
+                <span class="eyebrow">Current metadata</span>
+                <h3>Inspect before changing</h3>
+                <p>
+                  Values below are read from the filename, portable sidecar, and
+                  each connected media app. Nothing is editable until you create
+                  a draft.
+                </p>
+              </div>
+              {props.state.session?.canEdit &&
+                metadata.mediaType !== "collection" &&
+                metadata.mediaType !== "podcast" && (
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    disabled={!portableWriteAvailable}
+                    onClick$={() => (metadata.isDraft = !metadata.isDraft)}
+                  >
+                    <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
+                    {metadata.isDraft ? "Inspect current" : "Create draft"}
+                  </button>
+                )}
+            </div>
+            <div class="metadata-source-grid">
+              {metadata.observations.map((observation) => (
+                <article class="metadata-source-card" key={observation.source}>
+                  <div>
+                    <strong>{observation.label}</strong>
+                    <span class="source-kind">{observation.source}</span>
+                  </div>
+                  <div
+                    class="metadata-layer-badges"
+                    aria-label="Metadata persistence"
+                  >
+                    {observation.storage && (
+                      <span>{observation.storage.replaceAll("-", " ")}</span>
+                    )}
+                    {observation.survivesRescan && <span>Survives rescan</span>}
+                    {observation.locked === true && <span>Locked in app</span>}
+                    {observation.consumedBy?.map((consumer) => (
+                      <span key={consumer}>Read by {consumer}</span>
+                    ))}
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>Title</dt>
+                      <dd>{metadataFieldValue(observation.fields.title)}</dd>
+                    </div>
+                    {observation.relativePath && (
+                      <div>
+                        <dt>File</dt>
+                        <dd>{observation.relativePath}</dd>
+                      </div>
+                    )}
+                    {observation.appItemId && (
+                      <div>
+                        <dt>App ID</dt>
+                        <dd>{observation.appItemId}</dd>
+                      </div>
+                    )}
+                    {observation.observedAt && (
+                      <div>
+                        <dt>Observed</dt>
+                        <dd>
+                          {new Date(
+                            observation.observedAt * 1000,
+                          ).toLocaleString()}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                  <ObservationStructuredDetails fields={observation.fields} />
+                  {observation.rawPreview && (
+                    <details class="metadata-raw-source">
+                      <summary>
+                        View raw {observation.format?.toUpperCase() ?? "source"}
+                      </summary>
+                      <pre>{observation.rawPreview}</pre>
+                    </details>
+                  )}
+                </article>
+              ))}
+            </div>
+            {(metadata.health.length > 0 ||
+              metadata.inspectionWarnings.length > 0) && (
+              <section class="metadata-health" aria-label="Metadata health">
+                <div class="metadata-subheading">
+                  <div>
+                    <span class="eyebrow">Metadata health</span>
+                    <h4>Checks worth reviewing</h4>
+                  </div>
+                  <span class="pane-count">
+                    {metadata.health.length +
+                      metadata.inspectionWarnings.length}
+                  </span>
+                </div>
+                <div class="metadata-health-list">
+                  {metadata.health.map((issue, index) => (
+                    <article
+                      class={{
+                        "metadata-health-item": true,
+                        [`severity-${issue.severity}`]: true,
+                      }}
+                      key={`${issue.code}-${index}`}
+                    >
+                      <Icon
+                        name={issue.severity === "info" ? "scan" : "alert"}
+                        size={17}
+                      />
+                      <div>
+                        <strong>{issue.title}</strong>
+                        <p>{issue.message}</p>
+                        {issue.sources.length > 0 && (
+                          <span>Sources: {issue.sources.join(" · ")}</span>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                  {metadata.inspectionWarnings.map((warning, index) => (
+                    <article
+                      class="metadata-health-item severity-info"
+                      key={`${warning}-${index}`}
+                    >
+                      <Icon name="scan" size={17} />
+                      <div>
+                        <strong>Source could not be inspected</strong>
+                        <p>{warning}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+            {metadata.observations.length > 0 && (
+              <div class="metadata-comparison-scroll">
+                <table class="metadata-comparison">
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      {metadata.observations.map((observation) => (
+                        <th key={observation.source}>{observation.label}</th>
+                      ))}
+                      <th>Effective source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {INSPECTED_METADATA_FIELDS.map((field) => (
+                      <tr key={field}>
+                        <th>{metadataFieldLabel(field)}</th>
+                        {metadata.observations.map((observation) => (
+                          <td key={`${observation.source}-${field}`}>
+                            {metadataFieldValue(observation.fields[field])}
+                          </td>
+                        ))}
+                        <td>
+                          <span class="source-pill">
+                            {metadata.fieldSources[field] ?? "—"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div class="metadata-consumers">
+              {metadata.consumers.map((consumer) => (
+                <article class="metadata-consumer" key={consumer.id}>
+                  <div>
+                    <strong>{consumer.label}</strong>
+                    <span
+                      class={{ "status-badge": true, live: consumer.available }}
+                    >
+                      {consumer.available ? "Connected" : "Unavailable"}
+                    </span>
+                  </div>
+                  <p>{consumer.message}</p>
+                  <footer>
+                    <span>
+                      {consumer.effect === "read-after-refresh"
+                        ? "Refresh after applying"
+                        : "Embedded-file edit required"}
+                    </span>
+                    {consumer.nativeUrl && consumer.canManageNatively && (
+                      <a
+                        href={consumer.nativeUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open in {consumer.label}
+                      </a>
+                    )}
+                  </footer>
+                </article>
+              ))}
+            </div>
+            {metadata.modificationTargets.length > 0 && (
+              <section
+                class="metadata-targets"
+                aria-label="Modification targets"
+              >
+                <div class="metadata-subheading">
+                  <div>
+                    <span class="eyebrow">Where changes go</span>
+                    <h4>Modification targets</h4>
+                  </div>
+                </div>
+                <div class="metadata-target-list">
+                  {metadata.modificationTargets.map((target) => (
+                    <article
+                      class={{
+                        "metadata-target": true,
+                        unavailable: !target.available,
+                      }}
+                      key={target.id}
+                    >
+                      <div>
+                        <strong>{target.label}</strong>
+                        <span class="source-kind">
+                          {target.kind === "portable-file"
+                            ? "Portable"
+                            : "App only"}
+                        </span>
+                        {target.recommended && (
+                          <span class="status-badge live">Recommended</span>
+                        )}
+                      </div>
+                      <p>{target.message}</p>
+                      <footer>
+                        <span>
+                          {!target.available
+                            ? "Inspection only"
+                            : target.requiresRefresh
+                              ? "Refresh app after applying"
+                              : "Applies inside the app"}
+                        </span>
+                      </footer>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+            {metadata.mediaType === "book" && (
+              <p class="metadata-compatibility-note">
+                Kavita consumes metadata inside the book container, not a
+                neighboring OPF. EPUB package metadata and root ComicInfo.xml in
+                CBZ can be updated here with a recoverable container rebuild;
+                PDF XMP and CBR remain inspection-only.
+              </p>
+            )}
+            {metadata.mediaType === "podcast" && (
+              <p class="metadata-compatibility-note">
+                Podcasts remain a separate Audiobookshelf media type. Embedded
+                episode tags can be inspected here; feed matching and app-local
+                edits stay in Audiobookshelf until a safe portable podcast
+                writer is enabled.
+              </p>
+            )}
+          </section>
           {metadata.mediaType === "music" && !props.folder && (
             <section class="panel musicbrainz-panel">
               <div class="panel-heading">
@@ -3316,7 +4140,10 @@ const ItemEditor = component$<{
               </button>
             ))}
           </div>
-          <div class="metadata-form editor-metadata-form">
+          <fieldset
+            class="metadata-form editor-metadata-form"
+            disabled={!metadata.isDraft}
+          >
             {section.value === "basics" && (
               <>
                 <label>
@@ -3335,6 +4162,7 @@ const ItemEditor = component$<{
                     <option value="episode">TV episode</option>
                     <option value="music">Music</option>
                     <option value="audiobook">Audiobook</option>
+                    <option value="podcast">Podcast</option>
                     <option value="book">Book</option>
                   </select>
                 </label>
@@ -3541,35 +4369,64 @@ const ItemEditor = component$<{
                 </label>
               </>
             )}
-          </div>
+          </fieldset>
           <div class="metadata-actions">
             <span>
               {metadata.loadingDetails
                 ? "Reading available metadata…"
                 : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
             </span>
-            <button
-              class="primary-button"
-              type="button"
-              disabled={
-                !props.state.session?.canEdit ||
-                !metadata.itemId ||
-                metadata.mediaType === "collection" ||
-                !metadata.title.trim() ||
-                metadata.planning
-              }
-              onClick$={previewMetadata}
-            >
-              <Icon name="scan" size={18} />
-              {metadata.mediaType === "collection"
-                ? "Grouping folder"
-                : metadata.planning
-                  ? "Preparing…"
-                  : "Preview metadata sidecar"}
-            </button>
+            <div class="metadata-action-buttons">
+              {metadata.pendingPlanId &&
+                metadata.pendingConsumers.some(
+                  (consumer) =>
+                    consumer.available &&
+                    consumer.effect !== "native-podcast-metadata",
+                ) && (
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    disabled={metadata.propagating}
+                    onClick$={refreshAndVerify}
+                  >
+                    <Icon name="refresh" size={18} />
+                    {metadata.propagating
+                      ? "Refreshing and verifying…"
+                      : "Refresh and verify"}
+                  </button>
+                )}
+              <button
+                class="primary-button"
+                type="button"
+                disabled={
+                  !props.state.session?.canEdit ||
+                  !metadata.isDraft ||
+                  !metadata.itemId ||
+                  metadata.mediaType === "collection" ||
+                  !portableWriteAvailable ||
+                  !metadata.title.trim() ||
+                  metadata.planning
+                }
+                onClick$={previewMetadata}
+              >
+                <Icon name="scan" size={18} />
+                {metadata.mediaType === "collection"
+                  ? "Grouping folder"
+                  : metadata.mediaType === "book"
+                    ? metadata.planning
+                      ? "Rebuilding container…"
+                      : "Preview embedded metadata update"
+                    : metadata.planning
+                      ? "Preparing…"
+                      : metadata.sidecar?.exists
+                        ? "Preview safe sidecar update"
+                        : "Preview metadata sidecar"}
+              </button>
+            </div>
           </div>
           {(metadata.videoStreams.length > 0 ||
             metadata.audioStreams.length > 0 ||
+            metadata.subtitleStreams.length > 0 ||
             Object.keys(metadata.providerIds).length > 0) && (
             <div class="editor-facts" aria-label="Jellyfin media facts">
               <h5>Media facts</h5>
@@ -3598,6 +4455,25 @@ const ItemEditor = component$<{
                         stream.channelLayout
                           ? String(stream.channelLayout)
                           : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </dd>
+                  </div>
+                ))}
+                {metadata.subtitleStreams.map((stream, index) => (
+                  <div key={`subtitle-${index}`}>
+                    <dt>Subtitle</dt>
+                    <dd>
+                      {[
+                        stream.language
+                          ? String(stream.language)
+                          : "Unknown language",
+                        stream.codec ? String(stream.codec) : "",
+                        stream.title ? String(stream.title) : "",
+                        stream.isDefault ? "default" : "",
+                        stream.isForced ? "forced" : "",
+                        stream.isHearingImpaired ? "SDH/CC" : "",
                       ]
                         .filter(Boolean)
                         .join(" · ")}
@@ -3836,6 +4712,7 @@ const ItemEditor = component$<{
                   <small>Metadata sidecar</small>
                   <strong>
                     {metadata.preview.actions[0]?.destinationRelativePath}
+                    {metadata.preview.actions[0]?.replacementRelativePath}
                   </strong>
                 </span>
               </div>

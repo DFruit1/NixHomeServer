@@ -23,6 +23,8 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   ageSecretNames = builtins.attrNames cfg.age.secrets;
   broker = cfg.systemd.services.media-manager-broker.serviceConfig;
   brokerTimer = cfg.systemd.timers.media-manager-broker.timerConfig;
+  scanner = cfg.systemd.services.media-manager-scanner.serviceConfig;
+  scannerTimer = cfg.systemd.timers.media-manager-scanner.timerConfig;
   integrations = cfg.repo.mediaManager.integrations;
   refreshPath = cfg.systemd.paths.media-manager-refresh-requests.pathConfig;
   refreshDispatcher = cfg.systemd.services.media-manager-refresh-dispatch.serviceConfig;
@@ -30,7 +32,11 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   jellyfinMetadata = cfg.systemd.services.media-manager-jellyfin-metadata.serviceConfig;
   jellyfinMetadataTimer = cfg.systemd.timers.media-manager-jellyfin-metadata.timerConfig;
   audiobookshelfRefresh = cfg.systemd.services.media-manager-refresh-audiobookshelf.serviceConfig;
+  audiobookshelfMetadata = cfg.systemd.services.media-manager-audiobookshelf-metadata.serviceConfig;
+  audiobookshelfMetadataTimer = cfg.systemd.timers.media-manager-audiobookshelf-metadata.timerConfig;
   kavitaRefresh = cfg.systemd.services.media-manager-refresh-kavita.serviceConfig;
+  kavitaMetadata = cfg.systemd.services.media-manager-kavita-metadata.serviceConfig;
+  kavitaMetadataTimer = cfg.systemd.timers.media-manager-kavita-metadata.timerConfig;
   syncthingRefresh = cfg.systemd.services.media-manager-refresh-syncthing.serviceConfig;
   storageAccessScript = cfg.systemd.services.media-manager-storage-access.script;
   wantedBy = cfg.systemd.services.media-manager.wantedBy;
@@ -46,10 +52,12 @@ jq -e '
     "shared-videos",
     "shared-music",
     "shared-audiobooks",
+    "shared-podcasts",
     "shared-books",
     "personal-videos",
     "personal-music",
     "personal-audiobooks",
+    "personal-podcasts",
     "personal-books"
   ])
   and (.gateway.host == .app.domain)
@@ -75,9 +83,16 @@ jq -e '
   and (.serviceEnvironment.MEDIA_MANAGER_ACOUSTID_API_KEY_FILE == "/run/agenix/acoustidApiKey")
   and (.serviceEnvironment.MEDIA_MANAGER_FPCALC_PATH | test(".*chromaprint.*/bin/fpcalc"))
   and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE == "/var/cache/media-manager-jellyfin/metadata.json")
+  and (.serviceEnvironment.MEDIA_MANAGER_AUDIOBOOKSHELF_METADATA_CACHE_FILE == "/var/cache/media-manager-audiobookshelf/metadata.json")
+  and (.serviceEnvironment.MEDIA_MANAGER_KAVITA_METADATA_CACHE_FILE == "/var/cache/media-manager-kavita/metadata.json")
+  and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_PUBLIC_URL == "https://videos.sydneybasiniot.org")
+  and (.serviceEnvironment.MEDIA_MANAGER_AUDIOBOOKSHELF_PUBLIC_URL == "https://audiobooks.sydneybasiniot.org")
+  and (.serviceEnvironment.MEDIA_MANAGER_KAVITA_PUBLIC_URL == "https://books.sydneybasiniot.org")
   and (.ageSecretNames | index("openSubtitlesCredentials") != null)
   and (.ageSecretNames | index("acoustidApiKey") != null)
   and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-jellyfin") != null)
+  and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-audiobookshelf") != null)
+  and (.service.ReadOnlyPaths | index("-/var/cache/media-manager-kavita") != null)
   and (.brokerUserGroup == "media-manager")
   and (.brokerUserExtraGroups == ["media-manager-broker"])
   and (.broker.User == "media-manager-broker")
@@ -101,6 +116,14 @@ jq -e '
   and (.stateTmpfiles | index("z /var/lib/media-manager/control.sqlite3-shm 0660 media-manager media-manager -") != null)
   and (.brokerTimer.OnBootSec == "20s")
   and (.brokerTimer.OnUnitInactiveSec == "10s")
+  and (.scanner.User == "media-manager")
+  and (.scanner.Group == "media-manager")
+  and (.scanner.Type == "oneshot")
+  and (.scanner.ReadWritePaths == ["/var/lib/media-manager"])
+  and (.scanner.RestrictAddressFamilies == [])
+  and (.scannerTimer.OnBootSec == "2m")
+  and (.scannerTimer.OnUnitInactiveSec == "15m")
+  and (.scannerTimer.Unit == "media-manager-scanner.service")
   and (.integrations.jellyfin.capabilities == ["library-refresh"])
   and (.integrations.audiobookshelf.capabilities == ["library-refresh"])
   and (.integrations.kavita.capabilities == ["library-refresh"])
@@ -128,6 +151,12 @@ jq -e '
   and (.audiobookshelfRefresh.IPAddressDeny == "any")
   and (.audiobookshelfRefresh.IPAddressAllow == ["localhost"])
   and (.audiobookshelfRefresh.ProtectProc == "invisible")
+  and (.audiobookshelfMetadata.User == "root")
+  and (.audiobookshelfMetadata.Group == "media-manager")
+  and (.audiobookshelfMetadata.CacheDirectory == "media-manager-audiobookshelf")
+  and (.audiobookshelfMetadata.IPAddressDeny == "any")
+  and (.audiobookshelfMetadata.IPAddressAllow == ["localhost"])
+  and (.audiobookshelfMetadataTimer.OnUnitInactiveSec == "30m")
   and (.kavitaRefresh.IPAddressDeny == "any")
   and (.kavitaRefresh.IPAddressAllow == ["localhost"])
   and (.kavitaRefresh.ProtectProc == "invisible")
@@ -135,6 +164,12 @@ jq -e '
   and (.kavitaRefresh.Group == "kavita")
   and (.kavitaRefresh.ReadOnlyPaths == ["/var/lib/kavita/config/kavita.db", "/run/agenix/kavitaTokenKey"])
   and (.kavitaRefresh.SystemCallFilter == ["@system-service", "~@privileged", "~@resources", "fchown"])
+  and (.kavitaMetadata.User == "root")
+  and (.kavitaMetadata.Group == "media-manager")
+  and (.kavitaMetadata.CacheDirectory == "media-manager-kavita")
+  and (.kavitaMetadata.IPAddressDeny == "any")
+  and (.kavitaMetadata.IPAddressAllow == ["localhost"])
+  and (.kavitaMetadataTimer.OnUnitInactiveSec == "30m")
   and (.syncthingRefresh.IPAddressDeny == "any")
   and (.syncthingRefresh.IPAddressAllow == ["localhost"])
   and (.syncthingRefresh.ProtectProc == "invisible")
@@ -163,6 +198,12 @@ require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
   '/items/{itemId}/metadata:' \
   "The read-only item metadata contract must remain explicit."
+require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
+  '/items/{itemId}/subtitles/installed/{subtitleId}/content:' \
+  "Installed subtitle inspection must remain an explicit contained API contract."
+require_fixed documentation/decisions/0003-media-metadata-observation-and-propagation.md \
+  'Application databases are private' \
+  "Application metadata inspection must remain API-backed rather than database-coupled."
 require_fixed documentation/decisions/0001-media-manager-architecture.md \
   '/var/cache/media-manager-jellyfin' \
   "Jellyfin metadata must remain separated from web-writable state."
@@ -178,6 +219,9 @@ require_fixed modules/Core_Modules/media-manager/services.nix \
 require_fixed modules/Core_Modules/media-manager/services.nix \
   'ScheduledTasks/Running/$task_id' \
   "Jellyfin refresh must use the current scheduled-task completion API."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'subtitleStreams:((.MediaStreams // [])' \
+  "Jellyfin metadata snapshots must retain bounded subtitle stream dispositions."
 require_fixed modules/Core_Modules/media-manager/services.nix \
   '$base_url/api/tasks' \
   "Audiobookshelf refresh must follow current library-scan task results."

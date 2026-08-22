@@ -15,6 +15,7 @@ const MAX_ARTWORK_BYTES: u64 = 32 * 1024 * 1024;
 const EMBEDDED_ARTWORK_KINDS: &[&str] = &[
     "music",
     "audiobook",
+    "podcast",
     "book",
     "video",
     "movie",

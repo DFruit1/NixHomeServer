@@ -48,6 +48,22 @@ let
       ];
       persistencePaths = [ "/var/lib/chaptarr" ];
     };
+    freshrss = {
+      disable = { repo.freshrss.enable = lib.mkForce false; };
+      registryName = "freshrss";
+      services = [ "freshrss-config" "freshrss-updater" "phpfpm-freshrss" ];
+      timers = [ "freshrss-updater" ];
+      hosts = [ "rss" ];
+      gatewayApps = [ "freshrss" ];
+      oauthClients = [ ];
+      kanidmGroups = [ "freshrss-users" ];
+      users = [ "freshrss" ];
+      groups = [ "freshrss" ];
+      secrets = [ ];
+      backupApps = [ "freshrss" ];
+      guardedServices = [ ];
+      persistencePaths = [ "/var/lib/freshrss" ];
+    };
     groundwater-logger = {
       modules = [ ../../modules/groundwater-logger ];
       disable = { repo.groundwaterLogger.enable = lib.mkForce false; };

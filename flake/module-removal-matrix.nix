@@ -4,6 +4,7 @@
 , lib
 , vars
 , pkgs
+, unstablePkgs
 , appPackages
 , sourcePath
 , requestedVariants
@@ -38,7 +39,7 @@ let
       ++ integrationModules;
 
       specialArgs = {
-        inherit vars appPackages;
+        inherit vars appPackages unstablePkgs;
         inherit filestashNix;
         oauth2Proxy = import (repo + "/modules/Core_Modules/oauth2-proxy") {
           inherit lib pkgs vars;

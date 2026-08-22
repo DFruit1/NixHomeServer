@@ -16,6 +16,7 @@ validation, service checks, users, backups, Mail Archive, and maintenance.
 - [Restore and recovery](documentation/restore-and-recovery.md) — system-disk,
 ZFS mirror, local Kopia, offsite, and application-state recovery.
 - [Kanidm](documentation/kanidm.md) — identity and group administration.
+- [FreshRSS](documentation/freshrss.md) — OIDC login, access grants, feeds, and recovery.
 - [Vaultwarden](documentation/vaultwarden.md) — password-manager setup and
 recovery boundaries.
 - [Bonsai Local AI](documentation/bonsai.md) — model/runtime compatibility,
@@ -45,7 +46,7 @@ verified from `/dev/disk/by-id`.
 
 The application catalog currently includes:
 
-- Immich, Paperless, Filestash, Mail Archive, and Vaultwarden.
+- Immich, Paperless, Filestash, FreshRSS, Mail Archive, and Vaultwarden.
 - Jellyfin, automated DVD ISO conversion, Audiobookshelf, Kavita, Kiwix, and offline media sync.
 - Chaptarr, Sonarr, Radarr, Prowlarr, qBittorrent, Seerr, and YouTube Downloader.
 - Bonsai Local AI, Homepage, Groundwater Logger, and the supporting monitoring

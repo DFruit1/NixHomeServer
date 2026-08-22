@@ -31,6 +31,7 @@ let
     (mkTarget { id = "torrents"; name = "Torrents"; host = "torrents.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "qBittorrent|Torrents"; })
     (mkTarget { id = "books"; name = "Books"; host = "books.${vars.domain}"; coverageMode = "native-oidc"; expectedPattern = "Kavita|Books"; })
     (mkTarget { id = "wiki"; name = "Offline Wiki"; host = "wiki.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Kiwix|Offline Wiki"; })
+    (mkTarget { id = "feeds"; name = "Feeds"; host = "rss.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "FreshRSS|Feeds"; })
     (mkTarget { id = "emails"; name = "Mail Archive"; host = "emails.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "Mail Archive|Emails"; })
     (mkTarget { id = "downloads"; name = "YouTube Downloads"; host = "ytdownload.${vars.domain}"; coverageMode = "gateway"; expectedPattern = "YouTube|Downloads"; })
     (mkTarget { id = "passwords"; name = "Passwords"; host = "passwords.${vars.domain}"; coverageMode = "local-boundary"; expectedPattern = "Vaultwarden|Bitwarden|Passwords"; })

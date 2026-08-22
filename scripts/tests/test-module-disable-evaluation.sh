@@ -10,6 +10,7 @@ host="$(test_default_host)"
 cases=(
   bonsai
   chaptarr
+  freshrss
   groundwater-logger
   mail-archive-ui
   media-automation-all

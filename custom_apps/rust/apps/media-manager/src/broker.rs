@@ -53,12 +53,17 @@ pub struct ReplaceArtworkAction {
     pub expected_replacement: String,
 }
 
+pub type ReplaceMetadataSidecarAction = ReplaceArtworkAction;
+pub type ReplaceEmbeddedMetadataAction = ReplaceArtworkAction;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrokerAction {
     Move(MoveAction),
     InstallSubtitle(InstallSubtitleAction),
     InstallMetadataSidecar(InstallMetadataSidecarAction),
+    ReplaceMetadataSidecar(ReplaceMetadataSidecarAction),
+    ReplaceEmbeddedMetadata(ReplaceEmbeddedMetadataAction),
     ReplaceArtwork(ReplaceArtworkAction),
 }
 
@@ -106,6 +111,17 @@ impl std::error::Error for BrokerError {}
 pub fn file_fingerprint(path: &Path) -> Result<String, BrokerError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| BrokerError::new(format!("inspect source: {error}")))?;
+    metadata_fingerprint(&metadata)
+}
+
+pub fn opened_file_fingerprint(file: &File) -> Result<String, BrokerError> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| BrokerError::new(format!("inspect opened source: {error}")))?;
+    metadata_fingerprint(&metadata)
+}
+
+fn metadata_fingerprint(metadata: &fs::Metadata) -> Result<String, BrokerError> {
     if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err(BrokerError::new(
             "source must be a regular non-symlink file",
@@ -164,6 +180,13 @@ pub fn apply_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             apply_install_metadata_sidecar(config, username, action)
         }
+        BrokerAction::ReplaceMetadataSidecar(action) => {
+            apply_replace_metadata_sidecar(config, username, action)
+        }
+        BrokerAction::ReplaceEmbeddedMetadata(action) => {
+            validate_replace_embedded_metadata_action(config, username, action)?;
+            apply_replace_file(config, username, action)
+        }
         BrokerAction::ReplaceArtwork(action) => apply_replace_artwork(config, username, action),
     }
 }
@@ -182,6 +205,13 @@ pub fn recover_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             recover_installed_metadata_sidecar(config, username, action)
         }
+        BrokerAction::ReplaceMetadataSidecar(action) => {
+            recover_replaced_metadata_sidecar(config, username, action)
+        }
+        BrokerAction::ReplaceEmbeddedMetadata(action) => {
+            validate_replace_embedded_metadata_action(config, username, action)?;
+            recover_replaced_file(config, username, action)
+        }
         BrokerAction::ReplaceArtwork(action) => recover_replaced_artwork(config, username, action),
     }
 }
@@ -199,6 +229,16 @@ pub fn discard_staged_broker_action(
         BrokerAction::InstallMetadataSidecar(action) => {
             discard_staged_file(config, &action.staging_filename, &action.expected)
         }
+        BrokerAction::ReplaceMetadataSidecar(action) => discard_staged_file(
+            config,
+            &action.staging_filename,
+            &action.expected_replacement,
+        ),
+        BrokerAction::ReplaceEmbeddedMetadata(action) => discard_staged_file(
+            config,
+            &action.staging_filename,
+            &action.expected_replacement,
+        ),
         BrokerAction::ReplaceArtwork(action) => discard_staged_file(
             config,
             &action.staging_filename,
@@ -480,7 +520,26 @@ pub fn apply_replace_artwork(
     action: &ReplaceArtworkAction,
 ) -> Result<(), BrokerError> {
     validate_replace_artwork_action(config, username, action)?;
-    if recover_replaced_artwork(config, username, action)? {
+    apply_replace_file(config, username, action)
+}
+
+#[cfg(target_os = "linux")]
+pub fn apply_replace_metadata_sidecar(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceMetadataSidecarAction,
+) -> Result<(), BrokerError> {
+    validate_replace_metadata_sidecar_action(config, username, action)?;
+    apply_replace_file(config, username, action)
+}
+
+#[cfg(target_os = "linux")]
+fn apply_replace_file(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceArtworkAction,
+) -> Result<(), BrokerError> {
+    if recover_replaced_file(config, username, action)? {
         return Ok(());
     }
     let identity = Identity::try_new(username, ["users"])
@@ -525,7 +584,7 @@ pub fn apply_replace_artwork(
             }
         }
         return Err(BrokerError::new(
-            "artwork replacement inputs changed after the mutation preview",
+            "replacement inputs changed after the mutation preview",
         ));
     }
 
@@ -541,7 +600,7 @@ pub fn apply_replace_artwork(
             source_leaf,
             archive_parent_fd.as_raw_fd(),
             archive_leaf,
-            "archive current artwork",
+            "archive current file",
         ) {
             unlink_at_if_present(replacement_parent_fd.as_raw_fd(), &temporary_name);
             return Err(error);
@@ -554,7 +613,7 @@ pub fn apply_replace_artwork(
         &temporary_name,
         replacement_parent_fd.as_raw_fd(),
         replacement_leaf,
-        "install replacement artwork",
+        "install replacement file",
     ) {
         unlink_at_if_present(replacement_parent_fd.as_raw_fd(), &temporary_name);
         let rollback = rename_noreplace(
@@ -562,7 +621,7 @@ pub fn apply_replace_artwork(
             archive_leaf,
             source_parent_fd.as_raw_fd(),
             source_leaf,
-            "restore archived artwork after install failure",
+            "restore archived file after install failure",
         );
         if let Err(rollback_error) = rollback {
             return Err(BrokerError::new(format!(
@@ -585,6 +644,25 @@ fn recover_replaced_artwork(
     action: &ReplaceArtworkAction,
 ) -> Result<bool, BrokerError> {
     validate_replace_artwork_action(config, username, action)?;
+    recover_replaced_file(config, username, action)
+}
+
+#[cfg(target_os = "linux")]
+fn recover_replaced_metadata_sidecar(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceMetadataSidecarAction,
+) -> Result<bool, BrokerError> {
+    validate_replace_metadata_sidecar_action(config, username, action)?;
+    recover_replaced_file(config, username, action)
+}
+
+#[cfg(target_os = "linux")]
+fn recover_replaced_file(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceArtworkAction,
+) -> Result<bool, BrokerError> {
     let identity = Identity::try_new(username, ["users"])
         .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
     let root = config
@@ -616,12 +694,122 @@ fn recover_replaced_artwork(
         }
         Some(_) => {
             return Err(BrokerError::new(
-                "completed artwork replacement has a changed staged recovery file",
+                "completed replacement has a changed staged recovery file",
             ))
         }
         None => {}
     }
     Ok(true)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_replace_metadata_sidecar_action(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceMetadataSidecarAction,
+) -> Result<(), BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("metadata root ID is not registered"))?;
+    if !["videos", "music", "audiobooks"].contains(&root.category.as_str()) {
+        return Err(BrokerError::new(
+            "metadata sidecars may only be replaced in a supported media root",
+        ));
+    }
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let (archive_parent, archive_leaf) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    let (replacement_parent, replacement_leaf) =
+        safe_parent_and_leaf(&action.replacement_relative_path)?;
+    let mut expected_archive_parent = source_parent.clone();
+    expected_archive_parent.push("superseded");
+    if archive_parent != expected_archive_parent || replacement_parent != source_parent {
+        return Err(BrokerError::new(
+            "metadata replacement paths must remain beside the source and in its superseded child",
+        ));
+    }
+    if action.source_relative_path != action.replacement_relative_path
+        || action.source_relative_path == action.archived_relative_path
+    {
+        return Err(BrokerError::new(
+            "metadata replacement must keep the original sidecar path and use a distinct archive path",
+        ));
+    }
+    let source_extension = source_leaf.rsplit_once('.').map(|(_, extension)| extension);
+    let archive_extension = archive_leaf
+        .rsplit_once('.')
+        .map(|(_, extension)| extension);
+    let replacement_extension = replacement_leaf
+        .rsplit_once('.')
+        .map(|(_, extension)| extension);
+    if source_extension != replacement_extension
+        || source_extension != archive_extension
+        || !matches!(source_extension, Some("nfo" | "opf"))
+    {
+        return Err(BrokerError::new(
+            "metadata replacement paths must use the same .nfo or .opf extension",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_replace_embedded_metadata_action(
+    config: &AppConfig,
+    username: &str,
+    action: &ReplaceEmbeddedMetadataAction,
+) -> Result<(), BrokerError> {
+    if !safe_component(&action.staging_filename) {
+        return Err(BrokerError::new("staging filename is not a safe component"));
+    }
+    let identity = Identity::try_new(username, ["users"])
+        .map_err(|_| BrokerError::new("plan owner is not a safe identity component"))?;
+    let root = config
+        .resolve_visible_root(&identity, &action.root_id)
+        .ok_or_else(|| BrokerError::new("metadata root ID is not registered"))?;
+    if root.category != "books" {
+        return Err(BrokerError::new(
+            "embedded book metadata may only be replaced in a books root",
+        ));
+    }
+    let (source_parent, source_leaf) = safe_parent_and_leaf(&action.source_relative_path)?;
+    let (archive_parent, archive_leaf) = safe_parent_and_leaf(&action.archived_relative_path)?;
+    let (replacement_parent, replacement_leaf) =
+        safe_parent_and_leaf(&action.replacement_relative_path)?;
+    let mut expected_archive_parent = source_parent.clone();
+    expected_archive_parent.push("superseded");
+    if archive_parent != expected_archive_parent || replacement_parent != source_parent {
+        return Err(BrokerError::new(
+            "embedded metadata replacement paths must remain beside the book and in its superseded child",
+        ));
+    }
+    if action.source_relative_path != action.replacement_relative_path
+        || action.source_relative_path == action.archived_relative_path
+    {
+        return Err(BrokerError::new(
+            "embedded metadata replacement must keep the original book path and use a distinct archive path",
+        ));
+    }
+    let source_extension = source_leaf.rsplit_once('.').map(|(_, extension)| extension);
+    let archive_extension = archive_leaf
+        .rsplit_once('.')
+        .map(|(_, extension)| extension);
+    let replacement_extension = replacement_leaf
+        .rsplit_once('.')
+        .map(|(_, extension)| extension);
+    if source_extension != replacement_extension
+        || source_extension != archive_extension
+        || !matches!(source_extension, Some("epub" | "cbz"))
+    {
+        return Err(BrokerError::new(
+            "embedded metadata replacement paths must use the same .epub or .cbz extension",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -638,7 +826,7 @@ fn validate_replace_artwork_action(
     let root = config
         .resolve_visible_root(&identity, &action.root_id)
         .ok_or_else(|| BrokerError::new("artwork root ID is not registered"))?;
-    if !["videos", "music", "audiobooks", "books"].contains(&root.category.as_str()) {
+    if !["videos", "music", "audiobooks", "podcasts", "books"].contains(&root.category.as_str()) {
         return Err(BrokerError::new(
             "artwork may only be installed in a media root",
         ));

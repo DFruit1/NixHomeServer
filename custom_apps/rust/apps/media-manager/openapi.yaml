@@ -177,6 +177,40 @@ paths:
           $ref: "#/components/responses/Error"
         "413":
           $ref: "#/components/responses/Error"
+  /items/{itemId}/subtitles:
+    get:
+      operationId: getInstalledSubtitles
+      description: Lists bounded external sidecars and probed embedded subtitle streams, including language, codec, and disposition flags.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Installed subtitle inventory and the native Jellyfin management capability.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /items/{itemId}/subtitles/installed/{subtitleId}/content:
+    get:
+      operationId: previewInstalledSubtitle
+      description: Parses the first 40 cues from one contained UTF-8 SRT, WebVTT, or ASS sidecar and reports timing, overlap, and reading-speed issues.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema: { type: string }
+        - in: path
+          name: subtitleId
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Parsed cue preview and validation report. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
   /items/{itemId}/subtitles/search:
     get:
       operationId: searchOpenSubtitles
@@ -272,7 +306,7 @@ paths:
   /items/{itemId}/metadata:
     get:
       operationId: getItemMetadata
-      description: Returns filename-derived fields enriched by a fresh, root-exported Jellyfin snapshot when an exact catalog path matches.
+      description: Returns filename, sidecar, embedded EPUB/ComicInfo/PDF/audio-tag, Jellyfin, Audiobookshelf, and Kavita observations with per-field provenance, persistence, health, and modification targets. App data comes from fresh bounded API snapshots rather than direct app database reads.
       parameters:
         - in: path
           name: itemId
@@ -280,7 +314,7 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Editable descriptive metadata plus bounded container-derived stream facts.
+          description: Effective descriptive metadata, independent source observations, compatibility effects, and bounded stream facts.
           headers:
             Cache-Control:
               schema: { type: string, const: "private, no-store" }
@@ -320,7 +354,7 @@ paths:
   /items/{itemId}/metadata/sidecar:
     post:
       operationId: previewMetadataSidecar
-      description: Creates a staged Jellyfin NFO or book/audiobook OPF sidecar without rewriting media streams.
+      description: Creates a no-overwrite NFO/OPF install preview, a recoverable XML-preserving sidecar replacement, or a validated recoverable embedded EPUB/CBZ metadata rewrite. PDF, CBR, and podcast tag writes remain inspection-only.
       parameters:
         - in: path
           name: itemId
@@ -646,6 +680,20 @@ paths:
           $ref: "#/components/responses/Error"
         "503":
           $ref: "#/components/responses/Error"
+  /plans/{planId}:
+    get:
+      operationId: getMutationPlanStatus
+      description: Returns the durable state of one mutation plan owned by the authenticated identity so clients can wait before refreshing a consuming media app.
+      parameters:
+        - in: path
+          name: planId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Current previewed, queued, running, completed, failed, expired, or rejected state.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     forwardedIdentity:
@@ -727,7 +775,15 @@ components:
           providerIds,
           videoStreams,
           audioStreams,
+          subtitleStreams,
           sources,
+          observations,
+          fieldSources,
+          sidecar,
+          consumers,
+          health,
+          modificationTargets,
+          inspectionWarnings,
         ]
       properties:
         mediaType:
@@ -742,6 +798,7 @@ components:
                 episode,
                 music,
                 audiobook,
+                podcast,
                 book,
               ],
           }
@@ -763,11 +820,106 @@ components:
         providerIds: { type: object, additionalProperties: { type: string } }
         videoStreams: { type: array, items: { type: object } }
         audioStreams: { type: array, items: { type: object } }
+        subtitleStreams: { type: array, items: { type: object } }
         sources:
           {
             type: array,
-            items: { type: string, enum: [filename, folder, jellyfin] },
+            items:
+              {
+                type: string,
+                enum:
+                  [
+                    filename,
+                    folder,
+                    jellyfin,
+                    audiobookshelf,
+                    kavita,
+                    sidecar,
+                    embedded-epub,
+                    embedded-comicinfo,
+                    embedded-pdf-xmp,
+                    embedded-audio-tags,
+                  ],
+              },
           }
+        observations:
+          type: array
+          items: { $ref: "#/components/schemas/MetadataObservation" }
+        fieldSources:
+          type: object
+          additionalProperties: { type: string }
+        sidecar: { $ref: "#/components/schemas/MetadataSidecarInspection" }
+        consumers:
+          type: array
+          items: { $ref: "#/components/schemas/MetadataConsumer" }
+        health:
+          type: array
+          items: { $ref: "#/components/schemas/MetadataHealthIssue" }
+        modificationTargets:
+          type: array
+          items: { $ref: "#/components/schemas/MetadataModificationTarget" }
+        inspectionWarnings:
+          type: array
+          items: { type: string }
+    MetadataObservation:
+      type: object
+      required: [source, label, storage, consumedBy, survivesRescan, writable, fields]
+      properties:
+        source: { type: string }
+        label: { type: string }
+        observedAt: { type: integer }
+        relativePath: { type: string }
+        format: { type: string, enum: [nfo, opf, comicinfo, xmp, id3v2, mp4ilst, ape, vorbiscomments] }
+        appItemId: { type: string }
+        storage: { type: string, enum: [filename, folder-name, sidecar-file, embedded-file, application-database] }
+        consumedBy: { type: array, items: { type: string, enum: [jellyfin, audiobookshelf, kavita] } }
+        survivesRescan: { type: boolean }
+        writable: { type: boolean }
+        locked: { type: boolean }
+        fields: { type: object }
+        rawPreview: { type: string, maxLength: 65540 }
+    MetadataSidecarInspection:
+      type: object
+      required: [relativePath, format, exists, canReplace, consumerEffective]
+      properties:
+        relativePath: { type: string }
+        format: { type: string, enum: [nfo, opf] }
+        exists: { type: boolean }
+        canReplace: { type: boolean }
+        consumerEffective: { type: boolean }
+    MetadataConsumer:
+      type: object
+      required: [id, label, available, effect, canManageNatively, portableWriteSupported, message]
+      properties:
+        id: { type: string, enum: [jellyfin, audiobookshelf, kavita] }
+        label: { type: string }
+        available: { type: boolean }
+        effect: { type: string, enum: [read-after-refresh, embedded-metadata-required, native-podcast-metadata] }
+        canManageNatively: { type: boolean }
+        portableWriteSupported: { type: boolean }
+        message: { type: string }
+        nativeUrl: { type: string, format: uri }
+    MetadataHealthIssue:
+      type: object
+      required: [code, severity, title, message, sources]
+      properties:
+        code: { type: string }
+        severity: { type: string, enum: [info, warning, error] }
+        field: { type: string }
+        title: { type: string }
+        message: { type: string }
+        sources: { type: array, items: { type: string } }
+    MetadataModificationTarget:
+      type: object
+      required: [id, label, kind, available, recommended, requiresRefresh, message]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        kind: { type: string, enum: [portable-file, application-local] }
+        available: { type: boolean }
+        recommended: { type: boolean }
+        requiresRefresh: { type: boolean }
+        message: { type: string }
     MusicReleaseCandidate:
       type: object
       required: [releaseGroupId, artist, title, genres, matchMethod]

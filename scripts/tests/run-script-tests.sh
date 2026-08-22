@@ -101,6 +101,7 @@ test_scripts=(
   scripts/tests/test-first-boot-convergence.sh
   scripts/tests/test-file-access-identity-derivation.sh
   scripts/tests/test-failure-alert-delivery.sh
+  scripts/tests/test-freshrss-module.sh
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-homepage-guidance.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh

@@ -13,6 +13,7 @@ use std::{
 };
 
 const MAX_SCAN_ENTRIES: usize = 1_000_000;
+const MAX_SKIPPED_PATH_REPORT: usize = 64;
 static ROOT_SCAN_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,8 @@ pub struct ScanResult {
     pub files_seen: usize,
     pub items_indexed: usize,
     pub items_removed: usize,
+    pub entries_skipped: usize,
+    pub skipped_paths: Vec<String>,
 }
 
 pub fn scan_root_if_needed(
@@ -100,10 +103,24 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
     let mut entries_seen = 0usize;
 
     while let Some(directory) = pending.pop() {
-        let entries = fs::read_dir(&directory)
-            .map_err(|error| format!("read {}: {error}", directory.display()))?;
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                if directory == root.path {
+                    return Err(format!("read {}: {error}", directory.display()));
+                }
+                record_skip(&mut result, &directory);
+                continue;
+            }
+        };
         for entry in entries {
-            let entry = entry.map_err(|error| format!("read directory entry: {error}"))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    record_skip(&mut result, &directory);
+                    continue;
+                }
+            };
             entries_seen += 1;
             if entries_seen > MAX_SCAN_ENTRIES {
                 return Err(format!(
@@ -112,8 +129,13 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
                 ));
             }
             let path = entry.path();
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|error| format!("inspect {}: {error}", path.display()))?;
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    record_skip(&mut result, &path);
+                    continue;
+                }
+            };
             let file_type = metadata.file_type();
             if file_type.is_symlink() {
                 continue;
@@ -138,10 +160,20 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
                 Some(media_kind) => media_kind,
                 None => continue,
             };
-            let relative = path
-                .strip_prefix(&root.path)
-                .map_err(|_| "scanner path escaped its configured root".to_string())?;
-            let relative_path = normalized_relative_path(relative)?;
+            let relative = match path.strip_prefix(&root.path) {
+                Ok(relative) => relative,
+                Err(_) => {
+                    record_skip(&mut result, &path);
+                    continue;
+                }
+            };
+            let relative_path = match normalized_relative_path(relative) {
+                Ok(relative_path) => relative_path,
+                Err(_) => {
+                    record_skip(&mut result, &path);
+                    continue;
+                }
+            };
             let modified_ns = metadata
                 .modified()
                 .ok()
@@ -168,6 +200,15 @@ pub fn scan_root(catalog: &mut Catalog, root: &ScanRoot) -> Result<ScanResult, S
     Ok(result)
 }
 
+fn record_skip(result: &mut ScanResult, path: &Path) {
+    result.entries_skipped += 1;
+    if result.skipped_paths.len() < MAX_SKIPPED_PATH_REPORT {
+        result
+            .skipped_paths
+            .push(path.to_string_lossy().into_owned());
+    }
+}
+
 pub(crate) fn media_kind<'a>(category: &'a str, extension: &str) -> Option<&'a str> {
     match extension {
         "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" | "avif" | "svg"
@@ -179,6 +220,7 @@ pub(crate) fn media_kind<'a>(category: &'a str, extension: &str) -> Option<&'a s
         "mp3" | "flac" | "m4a" | "m4b" | "ogg" | "opus" if category == "audiobooks" => {
             Some("audiobook")
         }
+        "mp3" | "m4a" | "m4b" | "ogg" | "opus" if category == "podcasts" => Some("podcast"),
         "epub" | "cbz" | "cbr" | "pdf" if category == "books" => Some("book"),
         _ => None,
     }

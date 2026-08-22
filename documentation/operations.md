@@ -780,7 +780,11 @@ systemctl status media-manager-refresh-jellyfin.service
 systemctl status media-manager-refresh-audiobookshelf.service
 systemctl status media-manager-refresh-kavita.service
 systemctl status media-manager-refresh-syncthing.service
+systemctl status media-manager-jellyfin-metadata.service
+systemctl status media-manager-audiobookshelf-metadata.service
+systemctl status media-manager-kavita-metadata.service
 journalctl -u 'media-manager-refresh-*' -n 100 --no-pager
+journalctl -u 'media-manager-*-metadata.service' -n 100 --no-pager
 ```
 
 The library organizer constructs destinations from typed movie, TV, music,
@@ -790,9 +794,40 @@ original fingerprint, and is applied by a network-isolated broker with
 no-overwrite semantics. Movie and TV years remain absent when unknown; the
 current/conversion year is never substituted.
 
-Metadata is initially written as Jellyfin NFO or book/audiobook OPF sidecars;
-media streams are not rewritten. Subtitle uploads accept UTF-8 SRT, WebVTT,
-and ASS files. OpenSubtitles search is optional. It calculates the provider's
+The metadata editor opens in inspection mode. It compares filename and sidecar
+values with fresh, bounded Jellyfin, Audiobookshelf, or Kavita API snapshots
+and shows the effective source for each field. Create a draft to unlock the
+form. Each source shows its storage layer, consumer, rescan persistence, and
+lock/write state. Health checks call out missing people, ambiguous series
+sequences, source conflicts, and embedded-inspection failures. New portable
+metadata is written as Jellyfin NFO or Audiobookshelf OPF; media streams are
+not rewritten. Updating an existing sidecar preserves unknown XML and archives
+the original in the adjacent `superseded` directory.
+
+Kavita EPUB package metadata and root-level ComicInfo.xml in CBZ are inspectable
+and editable. Media Manager rebuilds a bounded container, copies non-metadata
+entries verbatim, validates the result, archives the original book, and installs
+the fingerprint-bound replacement. PDF XMP and CBR are inspection-only. After
+confirmation, use **Refresh and verify** to wait for the broker, refresh the
+affected application, refresh its observation snapshot, and query it again.
+Application-local changes use the linked Audiobookshelf, Kavita, or Jellyfin
+native editor; Media Manager does not duplicate their matching, feed, chapter,
+or provider administration.
+
+Audiobookshelf observations include tracks, chapters, ebook presence, tags,
+dates, and explicit flags. Kavita observations include contributors, genres,
+tags, language, release/publication details, external IDs, and field locks.
+Podcasts have their own shared/personal category rather than appearing under
+Audiobooks. Podcast and embedded episode metadata can be inspected, while feed
+and app-local editing remains in Audiobookshelf and portable tag writes remain
+disabled.
+
+The subtitle inspector lists external files and embedded streams with language,
+codec, default, forced, and hearing-impaired flags. UTF-8 SRT, WebVTT, and ASS
+sidecars can be opened as cues and checked for invalid durations, overlaps, and
+reading speed. Jellyfin's native interface remains the place for destructive
+subtitle management and provider identification. Subtitle uploads accept
+UTF-8 SRT, WebVTT, and ASS files. OpenSubtitles search is optional. It calculates the provider's
 movie hash locally and asks for an exact file match before falling back to a
 title search; the media file itself is not uploaded. To enable it, create an
 OpenSubtitles.com account, then create an application API key under "My
@@ -883,7 +918,9 @@ systemctl status media-manager-refresh-dispatch.service
 
 Kavita-managed book roots are aligned to the same simpler taxonomy used by
 the rest of the stack: `_Ebooks`, `_Comics`, and `_Manga`. The old `other`
-category is no longer part of the managed layout.
+category is no longer part of the managed layout. Media Manager additionally
+reserves `_Podcasts` as a distinct category; it is not folded into
+`_Audiobooks`.
 
 Current installs are expected to already use the underscore-prefixed content
 layout. The repo no longer carries automatic migration helpers for old paths

@@ -45,6 +45,12 @@ pub enum ConfirmPlanOutcome {
     StateConflict,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutationPlanStatus {
+    pub state: String,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ClaimedMutationPlan {
     pub id: String,
@@ -267,6 +273,50 @@ impl Catalog {
                     fingerprint: row.get(7)?,
                 })
             })?
+            .collect();
+        rows
+    }
+
+    pub fn list_subtitles_in_directory(
+        &self,
+        root_id: &str,
+        owner_username: Option<&str>,
+        directory: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<CatalogItem>> {
+        let prefix = if directory.is_empty() {
+            String::new()
+        } else {
+            format!("{directory}/")
+        };
+        let mut statement = self.connection.prepare(
+            "SELECT id, root_id, owner_username, relative_path, media_kind,
+                    size_bytes, modified_ns, fingerprint
+               FROM catalog_items
+              WHERE root_id = ?1
+                AND (owner_username IS ?2 OR owner_username = ?2)
+                AND media_kind = 'subtitle'
+                AND instr(relative_path, ?3) = 1
+                AND substr(relative_path, length(?3) + 1) NOT LIKE '%/%'
+              ORDER BY relative_path
+              LIMIT ?4",
+        )?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![root_id, owner_username, prefix, limit as i64],
+                |row| {
+                    Ok(CatalogItem {
+                        id: row.get(0)?,
+                        root_id: row.get(1)?,
+                        owner_username: row.get(2)?,
+                        relative_path: row.get(3)?,
+                        media_kind: row.get(4)?,
+                        size_bytes: row.get(5)?,
+                        modified_ns: row.get(6)?,
+                        fingerprint: row.get(7)?,
+                    })
+                },
+            )?
             .collect();
         rows
     }
@@ -695,6 +745,25 @@ impl Catalog {
                 "SELECT state FROM mutation_plans WHERE id = ?1",
                 [plan_id],
                 |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub fn mutation_plan_status_for_owner(
+        &self,
+        plan_id: &str,
+        owner_username: &str,
+    ) -> rusqlite::Result<Option<MutationPlanStatus>> {
+        self.connection
+            .query_row(
+                "SELECT state, error FROM mutation_plans WHERE id = ?1 AND owner_username = ?2",
+                rusqlite::params![plan_id, owner_username],
+                |row| {
+                    Ok(MutationPlanStatus {
+                        state: row.get(0)?,
+                        error: row.get(1)?,
+                    })
+                },
             )
             .optional()
     }

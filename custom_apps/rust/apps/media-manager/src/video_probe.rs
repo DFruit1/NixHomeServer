@@ -24,6 +24,22 @@ pub struct VideoProbe {
     pub has_embedded_subtitles: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subtitle_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_streams: Vec<SubtitleStreamProbe>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtitleStreamProbe {
+    pub index: usize,
+    pub codec: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub is_default: bool,
+    pub is_forced: bool,
+    pub is_hearing_impaired: bool,
 }
 
 pub fn probe_video(ffprobe: &Path, path: &Path) -> Result<VideoProbe, String> {
@@ -56,6 +72,8 @@ struct ProbeOutput {
 #[derive(Debug, Deserialize)]
 struct ProbeStream {
     #[serde(default)]
+    index: usize,
+    #[serde(default)]
     codec_type: String,
     #[serde(default)]
     codec_name: String,
@@ -67,12 +85,26 @@ struct ProbeStream {
     avg_frame_rate: String,
     #[serde(default)]
     tags: Option<ProbeTags>,
+    #[serde(default)]
+    disposition: ProbeDisposition,
 }
 
 #[derive(Debug, Deserialize)]
 struct ProbeTags {
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProbeDisposition {
+    #[serde(default, rename = "default")]
+    is_default: i64,
+    #[serde(default)]
+    forced: i64,
+    #[serde(default)]
+    hearing_impaired: i64,
 }
 
 fn parse_probe_json(bytes: &[u8]) -> Result<VideoProbe, String> {
@@ -97,6 +129,29 @@ fn parse_probe_json(bytes: &[u8]) -> Result<VideoProbe, String> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
+    let subtitle_streams = output
+        .streams
+        .iter()
+        .filter(|stream| stream.codec_type == "subtitle")
+        .map(|stream| SubtitleStreamProbe {
+            index: stream.index,
+            codec: stream.codec_name.clone(),
+            language: stream
+                .tags
+                .as_ref()
+                .and_then(|tags| tags.language.as_deref())
+                .map(|language| language.to_ascii_lowercase())
+                .filter(|language| !language.is_empty()),
+            title: stream
+                .tags
+                .as_ref()
+                .and_then(|tags| tags.title.clone())
+                .filter(|title| !title.trim().is_empty()),
+            is_default: stream.disposition.is_default != 0,
+            is_forced: stream.disposition.forced != 0,
+            is_hearing_impaired: stream.disposition.hearing_impaired != 0,
+        })
+        .collect::<Vec<_>>();
     Ok(VideoProbe {
         fps: video.and_then(|stream| parse_fps(&stream.avg_frame_rate)),
         width: video.and_then(|stream| stream.width),
@@ -109,6 +164,7 @@ fn parse_probe_json(bytes: &[u8]) -> Result<VideoProbe, String> {
             .iter()
             .any(|stream| stream.codec_type == "subtitle"),
         subtitle_languages,
+        subtitle_streams,
     })
 }
 
@@ -272,8 +328,8 @@ mod tests {
         let probe = parse_probe_json(
             br#"{"streams":[
                 {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"24000/1001","tags":{}},
-                {"codec_type":"subtitle","codec_name":"subrip","tags":{"language":"eng"}},
-                {"codec_type":"subtitle","codec_name":"ass","tags":{"language":"eng"}}
+                {"index":2,"codec_type":"subtitle","codec_name":"subrip","tags":{"language":"eng","title":"English SDH"},"disposition":{"default":1,"forced":0,"hearing_impaired":1}},
+                {"index":3,"codec_type":"subtitle","codec_name":"ass","tags":{"language":"eng"},"disposition":{"default":0,"forced":1,"hearing_impaired":0}}
             ]}"#,
         )
         .expect("probe json");
@@ -283,6 +339,16 @@ mod tests {
         assert_eq!(probe.codec.as_deref(), Some("h264"));
         assert!(probe.has_embedded_subtitles);
         assert_eq!(probe.subtitle_languages, vec!["eng".to_string()]);
+        assert_eq!(probe.subtitle_streams.len(), 2);
+        assert_eq!(probe.subtitle_streams[0].index, 2);
+        assert_eq!(probe.subtitle_streams[0].codec, "subrip");
+        assert_eq!(
+            probe.subtitle_streams[0].title.as_deref(),
+            Some("English SDH")
+        );
+        assert!(probe.subtitle_streams[0].is_default);
+        assert!(probe.subtitle_streams[0].is_hearing_impaired);
+        assert!(probe.subtitle_streams[1].is_forced);
     }
 
     #[test]

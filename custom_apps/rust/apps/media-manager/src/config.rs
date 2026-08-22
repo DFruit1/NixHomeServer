@@ -5,6 +5,19 @@ pub const DEFAULT_EDITOR_GROUP: &str = "media-manager-editors";
 
 pub const TOMBSTONE_FOLDER: &str = "_Tombstone";
 
+const MEDIA_CATEGORIES: [(&str, &str, &str, &str); 5] = [
+    ("videos", "_Videos", "Shared videos", "My videos"),
+    ("music", "_Music", "Shared music", "My music"),
+    (
+        "audiobooks",
+        "_Audiobooks",
+        "Shared audiobooks",
+        "My audiobooks",
+    ),
+    ("podcasts", "_Podcasts", "Shared podcasts", "My podcasts"),
+    ("books", "_Books", "Shared books", "My books"),
+];
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MutationMode {
@@ -31,6 +44,15 @@ pub struct VisibleRoot {
     pub available: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct RootScanSpec {
+    pub id: String,
+    pub category: String,
+    pub scope: RootScope,
+    pub path: PathBuf,
+    pub owner_username: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationCapability {
@@ -53,7 +75,12 @@ pub struct AppConfig {
     pub mkvmaker_progress_file: PathBuf,
     pub open_subtitles_credentials_file: Option<PathBuf>,
     pub jellyfin_metadata_cache_file: Option<PathBuf>,
+    pub audiobookshelf_metadata_cache_file: Option<PathBuf>,
+    pub kavita_metadata_cache_file: Option<PathBuf>,
     pub jellyfin_base_url: Option<String>,
+    pub jellyfin_public_url: Option<String>,
+    pub audiobookshelf_public_url: Option<String>,
+    pub kavita_public_url: Option<String>,
     pub jellyfin_api_key_file: Option<PathBuf>,
     pub acoustid_api_key_file: Option<PathBuf>,
     pub fpcalc_path: Option<PathBuf>,
@@ -151,7 +178,16 @@ impl AppConfig {
             .map(PathBuf::from),
             jellyfin_metadata_cache_file: env::var_os("MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE")
                 .map(PathBuf::from),
+            audiobookshelf_metadata_cache_file: env::var_os(
+                "MEDIA_MANAGER_AUDIOBOOKSHELF_METADATA_CACHE_FILE",
+            )
+            .map(PathBuf::from),
+            kavita_metadata_cache_file: env::var_os("MEDIA_MANAGER_KAVITA_METADATA_CACHE_FILE")
+                .map(PathBuf::from),
             jellyfin_base_url: optional_env("MEDIA_MANAGER_JELLYFIN_BASE_URL"),
+            jellyfin_public_url: optional_env("MEDIA_MANAGER_JELLYFIN_PUBLIC_URL"),
+            audiobookshelf_public_url: optional_env("MEDIA_MANAGER_AUDIOBOOKSHELF_PUBLIC_URL"),
+            kavita_public_url: optional_env("MEDIA_MANAGER_KAVITA_PUBLIC_URL"),
             jellyfin_api_key_file: env::var_os("MEDIA_MANAGER_JELLYFIN_API_KEY_FILE")
                 .map(PathBuf::from),
             acoustid_api_key_file: env::var_os("MEDIA_MANAGER_ACOUSTID_API_KEY_FILE")
@@ -184,7 +220,12 @@ impl AppConfig {
             mkvmaker_progress_file: PathBuf::from("progress.json"),
             open_subtitles_credentials_file: None,
             jellyfin_metadata_cache_file: None,
+            audiobookshelf_metadata_cache_file: None,
+            kavita_metadata_cache_file: None,
             jellyfin_base_url: None,
+            jellyfin_public_url: None,
+            audiobookshelf_public_url: None,
+            kavita_public_url: None,
             jellyfin_api_key_file: None,
             acoustid_api_key_file: None,
             fpcalc_path: None,
@@ -208,76 +249,76 @@ impl AppConfig {
 
     pub fn visible_roots(&self, identity: &Identity) -> Vec<VisibleRoot> {
         let personal_base = self.users_root.join(&identity.username);
-        let definitions = [
-            (
-                "shared-videos",
-                "Shared videos",
-                "videos",
-                RootScope::Shared,
-                self.shared_root.join("_Videos"),
-            ),
-            (
-                "shared-music",
-                "Shared music",
-                "music",
-                RootScope::Shared,
-                self.shared_root.join("_Music"),
-            ),
-            (
-                "shared-audiobooks",
-                "Shared audiobooks",
-                "audiobooks",
-                RootScope::Shared,
-                self.shared_root.join("_Audiobooks"),
-            ),
-            (
-                "shared-books",
-                "Shared books",
-                "books",
-                RootScope::Shared,
-                self.shared_root.join("_Books"),
-            ),
-            (
-                "personal-videos",
-                "My videos",
-                "videos",
-                RootScope::Personal,
-                personal_base.join("_Videos"),
-            ),
-            (
-                "personal-music",
-                "My music",
-                "music",
-                RootScope::Personal,
-                personal_base.join("_Music"),
-            ),
-            (
-                "personal-audiobooks",
-                "My audiobooks",
-                "audiobooks",
-                RootScope::Personal,
-                personal_base.join("_Audiobooks"),
-            ),
-            (
-                "personal-books",
-                "My books",
-                "books",
-                RootScope::Personal,
-                personal_base.join("_Books"),
-            ),
-        ];
-
-        definitions
-            .into_iter()
-            .map(|(id, label, category, scope, path)| VisibleRoot {
-                id: id.to_string(),
-                label: label.to_string(),
+        let mut roots = Vec::with_capacity(10);
+        for (category, folder, shared_label, _) in MEDIA_CATEGORIES {
+            let shared_path = self.shared_root.join(folder);
+            roots.push(VisibleRoot {
+                id: format!("shared-{category}"),
+                label: shared_label.to_string(),
                 category: category.to_string(),
-                scope,
-                available: path.is_dir(),
-                resolved_path: path.to_string_lossy().into_owned(),
+                scope: RootScope::Shared,
+                available: shared_path.is_dir(),
+                resolved_path: shared_path.to_string_lossy().into_owned(),
+            });
+        }
+        for (category, folder, _, personal_label) in MEDIA_CATEGORIES {
+            let personal_path = personal_base.join(folder);
+            roots.push(VisibleRoot {
+                id: format!("personal-{category}"),
+                label: personal_label.to_string(),
+                category: category.to_string(),
+                scope: RootScope::Personal,
+                available: personal_path.is_dir(),
+                resolved_path: personal_path.to_string_lossy().into_owned(),
+            });
+        }
+        roots
+    }
+
+    pub fn shared_scan_specs(&self) -> Vec<RootScanSpec> {
+        MEDIA_CATEGORIES
+            .iter()
+            .map(|(category, folder, _, _)| RootScanSpec {
+                id: format!("shared-{category}"),
+                category: (*category).to_string(),
+                scope: RootScope::Shared,
+                path: self.shared_root.join(*folder),
+                owner_username: None,
             })
             .collect()
+    }
+
+    pub fn personal_scan_specs(&self, username: &str) -> Vec<RootScanSpec> {
+        let base = self.users_root.join(username);
+        MEDIA_CATEGORIES
+            .iter()
+            .map(|(category, folder, _, _)| RootScanSpec {
+                id: format!("personal-{category}"),
+                category: (*category).to_string(),
+                scope: RootScope::Personal,
+                path: base.join(*folder),
+                owner_username: Some(username.to_string()),
+            })
+            .collect()
+    }
+
+    pub fn all_scan_specs(&self) -> Vec<RootScanSpec> {
+        let mut specs = self.shared_scan_specs();
+        if let Ok(entries) = std::fs::read_dir(&self.users_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let Some(username) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if is_valid_username(username) {
+                    specs.extend(self.personal_scan_specs(username));
+                }
+            }
+        }
+        specs
     }
 
     pub fn resolve_visible_root(&self, identity: &Identity, root_id: &str) -> Option<VisibleRoot> {
@@ -296,6 +337,10 @@ fn env_string(name: &str, default: &str) -> String {
 
 fn optional_env(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+pub fn is_valid_username(value: &str) -> bool {
+    valid_identity_component(value)
 }
 
 fn valid_identity_component(value: &str) -> bool {

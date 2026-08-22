@@ -6,6 +6,7 @@ let
     "${vars.sharedRoot}/_Videos"
     "${vars.sharedRoot}/_Music"
     "${vars.sharedRoot}/_Audiobooks"
+    "${vars.sharedRoot}/_Podcasts"
     "${vars.sharedRoot}/_Books"
     "${vars.sharedRoot}/_ISO/_DVDs"
   ];
@@ -17,13 +18,13 @@ in
     recursiveReadonlyGrants = [
       {
         group = "media-manager";
-        relativePaths = [ "_Videos" "_Music" "_Audiobooks" "_Books" ];
+        relativePaths = [ "_Videos" "_Music" "_Audiobooks" "_Podcasts" "_Books" ];
       }
     ];
     recursiveWritableGrants = [
       {
         group = "media-manager-broker";
-        relativePaths = [ "_Videos" "_Music" "_Audiobooks" "_Books" ];
+        relativePaths = [ "_Videos" "_Music" "_Audiobooks" "_Podcasts" "_Books" ];
       }
     ];
   };
@@ -65,12 +66,14 @@ in
       fi
       for path in ${pathArgs}; do
         [[ -d "$path" ]] || continue
-        if ! getfacl -cp "$path" | grep -q '^group:media-manager-broker:rwx$'; then
-          setfacl -P -R \
-            -m g:media-manager:r-X \
-            -m g:media-manager-broker:rwX \
-            "$path"
-        fi
+        # Re-apply access ACLs on every activation: files moved in by other
+        # applications (torrent clients, Syncthing, ...) do not inherit the
+        # default ACL applied to freshly created entries, and a one-time
+        # bootstrap misses them.
+        setfacl -P -R \
+          -m g:media-manager:r-X \
+          -m g:media-manager-broker:rwX \
+          "$path"
         find "$path" -type d -exec setfacl \
           -m d:g:media-manager:r-x \
           -m d:g:media-manager-broker:rwx \

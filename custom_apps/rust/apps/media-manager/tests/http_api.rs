@@ -9,8 +9,13 @@ use media_manager::{
     http::{router, AppState, JellyfinImageCache},
 };
 use serde_json::Value;
-use std::{os::unix::fs::PermissionsExt, sync::Arc};
+use std::{
+    io::{Read, Write},
+    os::unix::fs::PermissionsExt,
+    sync::Arc,
+};
 use tower::ServiceExt;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 fn one_pixel_png() -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -18,6 +23,31 @@ fn one_pixel_png() -> Vec<u8> {
         .write_image(&[28, 86, 42, 255], 1, 1, image::ExtendedColorType::Rgba8)
         .expect("encode test PNG");
     bytes
+}
+
+fn write_epub(path: &std::path::Path, title: &str) {
+    let mut archive = ZipWriter::new(std::fs::File::create(path).expect("EPUB file"));
+    let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+    let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    archive.start_file("mimetype", stored).expect("mimetype");
+    archive
+        .write_all(b"application/epub+zip")
+        .expect("mimetype value");
+    archive
+        .start_file("META-INF/container.xml", deflated)
+        .expect("container");
+    archive.write_all(br#"<container><rootfiles><rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#).expect("container XML");
+    archive
+        .start_file("OPS/package.opf", deflated)
+        .expect("package");
+    archive.write_all(format!(r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>{title}</dc:title><meta name="custom:keep" content="yes"/></metadata><manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>"#).as_bytes()).expect("package XML");
+    archive
+        .start_file("OPS/chapter.xhtml", deflated)
+        .expect("chapter");
+    archive
+        .write_all(b"<html><body>Keep me</body></html>")
+        .expect("chapter body");
+    archive.finish().expect("finish EPUB");
 }
 
 fn test_app(temp: &tempfile::TempDir) -> axum::Router {
@@ -65,6 +95,28 @@ async fn api_rejects_missing_forwarded_identity() {
         .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(value["error"]["code"], "identity_required");
+}
+
+#[tokio::test]
+async fn roots_reserve_podcasts_as_a_separate_media_category() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let response = test_app(&temp)
+        .oneshot(viewer_get_request("/api/v1/roots"))
+        .await
+        .expect("roots response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let roots: Value = serde_json::from_slice(&body).expect("roots JSON");
+    let podcasts = roots
+        .as_array()
+        .expect("roots")
+        .iter()
+        .filter(|root| root["category"] == "podcasts")
+        .collect::<Vec<_>>();
+    assert_eq!(podcasts.len(), 2);
+    assert!(podcasts.iter().all(|root| root["available"] == false));
 }
 
 #[tokio::test]
@@ -444,6 +496,7 @@ async fn tv_profile_builds_a_jellyfin_season_path_from_typed_fields() {
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
     let item_id = first_item_id(&app, "shared-videos").await;
     let preview = app
+        .clone()
         .oneshot(editor_post_request(
             "/api/v1/plans",
             Body::from(
@@ -484,6 +537,7 @@ async fn music_profile_builds_an_artist_album_and_disc_track_path() {
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = first_item_id(&app, "shared-music").await;
     let preview = app
+        .clone()
         .oneshot(editor_post_request(
             "/api/v1/plans",
             Body::from(
@@ -1027,6 +1081,362 @@ async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot
         metadata["sources"],
         serde_json::json!(["filename", "jellyfin"])
     );
+}
+
+#[tokio::test]
+async fn metadata_details_expose_existing_sidecar_values_and_field_provenance() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let movie_dir = temp.path().join("shared/_Videos/Movies/Arrival (2016)");
+    std::fs::create_dir_all(&movie_dir).expect("movie directory");
+    std::fs::write(movie_dir.join("Arrival (2016).mkv"), b"movie").expect("movie");
+    std::fs::write(
+        movie_dir.join("Arrival (2016).nfo"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<movie>
+  <title>Arrival</title>
+  <year>2016</year>
+  <plot>A linguist learns to understand visitors.</plot>
+  <genre>Science Fiction</genre>
+  <uniqueid type="tmdb">329865</uniqueid>
+  <customtag preserve="yes">untouched</customtag>
+</movie>
+"#,
+    )
+    .expect("NFO sidecar");
+    let app = test_app(&temp);
+    let item_id = item_id_by_kind(&app, "shared-videos", "video").await;
+
+    let response = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{item_id}/metadata"
+        )))
+        .await
+        .expect("metadata response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("metadata JSON");
+
+    assert_eq!(metadata["title"], "Arrival");
+    assert_eq!(
+        metadata["description"],
+        "A linguist learns to understand visitors."
+    );
+    assert_eq!(metadata["fieldSources"]["title"], "sidecar");
+    assert_eq!(metadata["fieldSources"]["description"], "sidecar");
+    assert_eq!(
+        metadata["sidecar"]["relativePath"],
+        "Movies/Arrival (2016)/Arrival (2016).nfo"
+    );
+    assert_eq!(metadata["sidecar"]["format"], "nfo");
+    assert_eq!(metadata["sidecar"]["canReplace"], true);
+    let sidecar = metadata["observations"]
+        .as_array()
+        .expect("observations")
+        .iter()
+        .find(|observation| observation["source"] == "sidecar")
+        .expect("sidecar observation");
+    assert_eq!(
+        sidecar["fields"]["genres"],
+        serde_json::json!(["Science Fiction"])
+    );
+    assert_eq!(sidecar["fields"]["providerIds"]["tmdb"], "329865");
+    assert!(sidecar["rawPreview"].as_str().is_some());
+    assert_eq!(metadata["consumers"][0]["id"], "jellyfin");
+    assert_eq!(metadata["consumers"][0]["effect"], "read-after-refresh");
+}
+
+#[tokio::test]
+async fn editing_existing_metadata_previews_a_recoverable_xml_preserving_replacement() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let movie_dir = temp.path().join("shared/_Videos/Movies/Arrival (2016)");
+    std::fs::create_dir_all(&movie_dir).expect("movie directory");
+    std::fs::write(movie_dir.join("Arrival (2016).mkv"), b"movie").expect("movie");
+    std::fs::write(
+        movie_dir.join("Arrival (2016).nfo"),
+        r#"<?xml version="1.0"?><movie><title>Old title</title><customtag preserve="yes">untouched</customtag></movie>"#,
+    )
+    .expect("existing NFO");
+    let (app, _) = test_app_with_mode(&temp, MutationMode::Enabled);
+    let item_id = item_id_by_kind(&app, "shared-videos", "video").await;
+
+    let preview = app
+        .clone()
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/sidecar"),
+            Body::from(r#"{"mediaType":"movie","title":"Arrival","year":2016}"#),
+        ))
+        .await
+        .expect("metadata preview");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 64 * 1024)
+        .await
+        .expect("preview body");
+    let value: Value = serde_json::from_slice(&body).expect("preview JSON");
+    assert_eq!(value["actions"][0]["kind"], "replace_metadata_sidecar");
+    assert_eq!(
+        value["actions"][0]["sourceRelativePath"],
+        "Movies/Arrival (2016)/Arrival (2016).nfo"
+    );
+    assert_eq!(
+        value["actions"][0]["replacementRelativePath"],
+        "Movies/Arrival (2016)/Arrival (2016).nfo"
+    );
+    assert!(value["actions"][0]["archivedRelativePath"]
+        .as_str()
+        .is_some_and(|path| path.contains("superseded/Arrival (2016)-")));
+    assert_eq!(value["affectedConsumers"][0]["id"], "jellyfin");
+    let plan_id = value["id"].as_str().expect("plan ID");
+    let status = app
+        .clone()
+        .oneshot(editor_get_request(&format!("/api/v1/plans/{plan_id}")))
+        .await
+        .expect("plan status");
+    assert_eq!(status.status(), StatusCode::OK);
+    let body = to_bytes(status.into_body(), 64 * 1024)
+        .await
+        .expect("status body");
+    let status: Value = serde_json::from_slice(&body).expect("status JSON");
+    assert_eq!(status["state"], "previewed");
+    let other_owner = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/plans/{plan_id}"))
+                .header("x-forwarded-user", "other-editor")
+                .header("x-forwarded-groups", "users,media-manager-editors")
+                .body(Body::empty())
+                .expect("other owner request"),
+        )
+        .await
+        .expect("other owner status");
+    assert_eq!(other_owner.status(), StatusCode::NOT_FOUND);
+    let staged = std::fs::read_dir(temp.path().join("state/provider-staging"))
+        .expect("staging")
+        .next()
+        .expect("staged entry")
+        .expect("staged file")
+        .path();
+    let nfo = std::fs::read_to_string(staged).expect("staged NFO");
+    assert!(nfo.contains("<title>Arrival</title>"));
+    assert!(nfo.contains("<customtag preserve=\"yes\">untouched</customtag>"));
+}
+
+#[tokio::test]
+async fn kavita_epubs_ignore_external_opf_but_preview_a_validated_embedded_rewrite() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let books = temp.path().join("shared/_Books/_Ebooks/Author");
+    std::fs::create_dir_all(&books).expect("books directory");
+    write_epub(&books.join("Book.epub"), "Embedded title");
+    std::fs::write(
+        books.join("Book.opf"),
+        r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>External title</dc:title></metadata></package>"#,
+    )
+    .expect("external OPF");
+    let app = test_app(&temp);
+    let item_id = item_id_by_kind(&app, "shared-books", "book").await;
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{item_id}/metadata"
+        )))
+        .await
+        .expect("metadata response");
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("metadata body");
+    let metadata: Value = serde_json::from_slice(&body).expect("metadata JSON");
+    assert_eq!(metadata["consumers"][0]["id"], "kavita");
+    assert_eq!(metadata["consumers"][0]["effect"], "read-after-refresh");
+    assert_eq!(metadata["sidecar"]["consumerEffective"], false);
+    assert!(metadata["observations"]
+        .as_array()
+        .expect("observations")
+        .iter()
+        .any(|observation| observation["source"] == "embedded-epub"));
+
+    let preview = app
+        .oneshot(editor_post_request(
+            &format!("/api/v1/items/{item_id}/metadata/sidecar"),
+            Body::from(r#"{"mediaType":"book","title":"New title"}"#),
+        ))
+        .await
+        .expect("metadata preview response");
+    assert_eq!(preview.status(), StatusCode::CREATED);
+    let body = to_bytes(preview.into_body(), 128 * 1024)
+        .await
+        .expect("embedded metadata preview body");
+    let value: Value = serde_json::from_slice(&body).expect("preview JSON");
+    assert_eq!(value["actions"][0]["kind"], "replace_embedded_metadata");
+    let staged_path = std::fs::read_dir(temp.path().join("state/provider-staging"))
+        .expect("staging directory")
+        .next()
+        .expect("staged entry")
+        .expect("staged file")
+        .path();
+    let mut archive = ZipArchive::new(std::fs::File::open(staged_path).expect("staged EPUB"))
+        .expect("valid staged EPUB");
+    let mut package = String::new();
+    archive
+        .by_name("OPS/package.opf")
+        .expect("package document")
+        .read_to_string(&mut package)
+        .expect("package XML");
+    assert!(package.contains("<dc:title>New title</dc:title>"));
+    assert!(package.contains("custom:keep"));
+    assert!(package.contains("<manifest>"));
+    let mut chapter = String::new();
+    archive
+        .by_name("OPS/chapter.xhtml")
+        .expect("chapter")
+        .read_to_string(&mut chapter)
+        .expect("chapter body");
+    assert_eq!(chapter, "<html><body>Keep me</body></html>");
+}
+
+#[tokio::test]
+async fn metadata_inspection_includes_bounded_audiobookshelf_and_kavita_snapshots() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    std::fs::create_dir_all(temp.path().join("shared/_Audiobooks/Author/Book"))
+        .expect("audiobook directory");
+    std::fs::write(
+        temp.path().join("shared/_Audiobooks/Author/Book/Book.m4b"),
+        b"audio",
+    )
+    .expect("audiobook");
+    std::fs::create_dir_all(temp.path().join("shared/_Books/Author/Novel"))
+        .expect("book directory");
+    std::fs::write(
+        temp.path().join("shared/_Books/Author/Novel/Novel.epub"),
+        b"book",
+    )
+    .expect("book");
+    let mut config = AppConfig::for_test(
+        temp.path().join("shared").to_str().expect("shared path"),
+        temp.path().join("users").to_str().expect("users path"),
+    );
+    config.state_dir = temp.path().join("state");
+    std::fs::create_dir_all(&config.state_dir).expect("state directory");
+    let abs_cache = config.state_dir.join("audiobookshelf.json");
+    let kavita_cache = config.state_dir.join("kavita.json");
+    std::fs::write(
+        &abs_cache,
+        serde_json::json!({"schemaVersion":1,"entries":[{
+            "rootId":"shared-audiobooks","ownerUsername":null,"relativePath":"Author/Book",
+            "itemId":"li_book","observedAt":1710000000,"title":"App title",
+            "authors":["App Author"],"narrators":["App Narrator"]
+        }]})
+        .to_string(),
+    )
+    .expect("Audiobookshelf cache");
+    std::fs::write(
+        &kavita_cache,
+        serde_json::json!({"schemaVersion":1,"entries":[{
+            "rootId":"shared-books","ownerUsername":null,"relativePath":"Author/Novel",
+            "itemId":"42","observedAt":1710000001,"title":"Kavita title",
+            "description":"Kavita summary","genres":["Mystery"]
+        }]})
+        .to_string(),
+    )
+    .expect("Kavita cache");
+    config.audiobookshelf_metadata_cache_file = Some(abs_cache);
+    config.kavita_metadata_cache_file = Some(kavita_cache);
+    let database = config.database_path();
+    Catalog::open(&database).expect("catalog");
+    let app = router(AppState {
+        config,
+        catalog: CatalogHandle::new(database),
+        jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+    });
+
+    let audiobook_id = item_id_by_kind(&app, "shared-audiobooks", "audiobook").await;
+    let audiobook = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{audiobook_id}/metadata"
+        )))
+        .await
+        .expect("audiobook metadata");
+    let body = to_bytes(audiobook.into_body(), 128 * 1024)
+        .await
+        .expect("audiobook body");
+    let metadata: Value = serde_json::from_slice(&body).expect("audiobook JSON");
+    assert_eq!(metadata["title"], "App title");
+    assert_eq!(metadata["fieldSources"]["title"], "audiobookshelf");
+    assert!(metadata["observations"]
+        .as_array()
+        .expect("observations")
+        .iter()
+        .any(|entry| entry["source"] == "audiobookshelf"));
+
+    let book_id = item_id_by_kind(&app, "shared-books", "book").await;
+    let book = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{book_id}/metadata"
+        )))
+        .await
+        .expect("book metadata");
+    let body = to_bytes(book.into_body(), 128 * 1024)
+        .await
+        .expect("book body");
+    let metadata: Value = serde_json::from_slice(&body).expect("book JSON");
+    assert_eq!(metadata["title"], "Kavita title");
+    assert_eq!(metadata["fieldSources"]["description"], "kavita");
+}
+
+#[tokio::test]
+async fn installed_subtitles_are_inventoryable_and_existing_srt_cues_are_previewable() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let movie_dir = temp.path().join("shared/_Videos/Movies/Arrival (2016)");
+    std::fs::create_dir_all(&movie_dir).expect("movie directory");
+    std::fs::write(movie_dir.join("Arrival (2016).mkv"), b"movie").expect("movie");
+    std::fs::write(
+        movie_dir.join("Arrival (2016).en.forced.srt"),
+        b"1\n00:00:01,000 --> 00:00:02,500\nCome with me.\n",
+    )
+    .expect("subtitle");
+    let app = test_app(&temp);
+    let video_id = item_id_by_kind(&app, "shared-videos", "video").await;
+
+    let response = app
+        .clone()
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{video_id}/subtitles"
+        )))
+        .await
+        .expect("subtitle inventory response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 128 * 1024)
+        .await
+        .expect("subtitle inventory body");
+    let inventory: Value = serde_json::from_slice(&body).expect("inventory JSON");
+    let installed = &inventory["subtitles"][0];
+    assert_eq!(installed["source"], "external");
+    assert_eq!(installed["language"], "en");
+    assert_eq!(installed["isForced"], true);
+    assert_eq!(installed["isHearingImpaired"], false);
+    assert_eq!(installed["format"], "srt");
+    assert_eq!(installed["isPreviewable"], true);
+    assert_eq!(inventory["consumers"][0]["id"], "jellyfin");
+    let subtitle_id = installed["itemId"].as_str().expect("subtitle item ID");
+
+    let content = app
+        .oneshot(viewer_get_request(&format!(
+            "/api/v1/items/{video_id}/subtitles/installed/{subtitle_id}/content"
+        )))
+        .await
+        .expect("installed subtitle content response");
+    assert_eq!(content.status(), StatusCode::OK);
+    let body = to_bytes(content.into_body(), 128 * 1024)
+        .await
+        .expect("installed subtitle content body");
+    let preview: Value = serde_json::from_slice(&body).expect("content JSON");
+    assert_eq!(preview["source"], "installed");
+    assert_eq!(preview["cues"][0]["text"], "Come with me.");
+    assert_eq!(preview["validation"]["cueCount"], 1);
+    assert_eq!(preview["validation"]["issues"], serde_json::json!([]));
 }
 
 #[tokio::test]

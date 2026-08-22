@@ -199,11 +199,18 @@ describe("Media Manager navigation", () => {
 
     const tabs = Array.from(screen.querySelectorAll(".library-tab"));
     const labels = tabs.map((tab) => tab.textContent?.trim());
-    expect(labels).toEqual(["Videos", "Music", "Audiobooks", "Books"]);
+    expect(labels).toEqual([
+      "Videos",
+      "Music",
+      "Audiobooks",
+      "Podcasts",
+      "Books",
+    ]);
     expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
     expect(tabs[1]?.getAttribute("aria-selected")).toBe("false");
     expect(tabs[2]?.classList.contains("disabled")).toBe(true);
     expect(tabs[3]?.classList.contains("disabled")).toBe(true);
+    expect(tabs[4]?.classList.contains("disabled")).toBe(true);
   });
 });
 
@@ -526,7 +533,13 @@ describe("Media Manager library browser", () => {
                 },
               ]
             : path.includes("/items?rootId=")
-              ? { items }
+              ? {
+                  items: items.filter(
+                    (item) =>
+                      (item as { rootId?: string }).rootId ===
+                      decodeURIComponent(path.split("rootId=")[1] ?? ""),
+                  ),
+                }
               : { available: false, progress: {} };
       return new Response(JSON.stringify(payload));
     });
@@ -685,12 +698,25 @@ describe("Media Manager library browser", () => {
     const showBranch = folderRow("_Shows")?.closest(".tree-branch");
     expect(movieBranch?.getAttribute("aria-expanded")).toBe("true");
 
+    await userEvent(showBranch?.querySelector(".tree-toggle") ?? null, "click");
+    expect(showBranch?.getAttribute("aria-expanded")).toBe("false");
+
+    const tree = sharedPane?.querySelector(".item-tree") as HTMLElement;
+    tree.scrollTop = 240;
+    await userEvent(showBranch?.querySelector(".tree-toggle") ?? null, "click");
+
+    expect(showBranch?.getAttribute("aria-expanded")).toBe("true");
+    expect(movieBranch?.getAttribute("aria-expanded")).toBe("false");
+    expect(folderRow("_Movies")?.classList.contains("sibling-muted")).toBe(
+      true,
+    );
+    expect(tree.scrollTop).toBe(0);
+
     await userEvent(
-      movieBranch?.querySelector(".tree-folder-name") ?? null,
+      folderRow("_Movies")?.querySelector(".tree-folder-name") ?? null,
       "click",
     );
 
-    expect(movieBranch?.getAttribute("aria-expanded")).toBe("true");
     await vi.waitFor(() =>
       expect(screen.querySelector(".editor-card")).toBeDefined(),
     );
@@ -703,18 +729,97 @@ describe("Media Manager library browser", () => {
     expect(
       screen.querySelector<HTMLImageElement>(".media-image img")?.src,
     ).toContain("/items/movie-1/image");
+  });
 
-    await userEvent(showBranch?.querySelector(".tree-toggle") ?? null, "click");
-    const tree = sharedPane?.querySelector(".item-tree") as HTMLElement;
-    tree.scrollTop = 240;
-    await userEvent(showBranch?.querySelector(".tree-toggle") ?? null, "click");
+  it("replaces the opposite library pane with details and focuses the selected folder", async () => {
+    const items = [
+      ...Array.from({ length: 5 }, (_, index) => ({
+        id: `geology-${index + 1}`,
+        rootId: "shared-videos",
+        relativePath: `_Movies/AiG Geology (2009)/AiG Geology S01E0${index + 1}.mkv`,
+        mediaKind: "video",
+        sizeBytes: 1024 * (index + 1),
+      })),
+      {
+        id: "other-movie",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Another Film (2010)/Another Film (2010).mkv",
+        mediaKind: "video",
+        sizeBytes: 8192,
+      },
+      {
+        id: "personal-video",
+        rootId: "personal-videos",
+        relativePath: "_YouTube/ThunderScott/Example.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    vi.stubGlobal("fetch", libraryFetchMock(items, true));
 
-    expect(showBranch?.getAttribute("aria-expanded")).toBe("true");
-    expect(movieBranch?.getAttribute("aria-expanded")).toBe("false");
-    expect(folderRow("_Movies")?.classList.contains("sibling-muted")).toBe(
-      true,
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+
+    const aigFolder = Array.from(
+      screen.querySelectorAll(".shared-pane .tree-folder-name"),
+    ).find((button) => button.textContent?.trim() === "AiG Geology (2009)");
+    await userEvent(aigFolder ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".library-detail-pane")).toBeDefined(),
     );
-    expect(tree.scrollTop).toBe(0);
+    expect(screen.querySelectorAll(".catalog-panel")).toHaveLength(1);
+    expect(screen.querySelector(".personal-pane")).toBeUndefined();
+    expect(screen.querySelector(".shared-pane")).toBeDefined();
+    expect(
+      screen.querySelector(".library-detail-pane.detail-personal"),
+    ).toBeDefined();
+    expect(
+      screen.querySelector('[aria-label="Selected shared library details"]'),
+    ).toBeDefined();
+    expect(
+      screen.querySelector(".library-detail-pane .root-picker-image"),
+    ).toBeDefined();
+    expect(
+      screen.querySelector(".library-detail-pane .editor-card"),
+    ).toBeDefined();
+
+    const focusedPane = screen.querySelector(".shared-pane");
+    expect(focusedPane?.textContent).toContain("AiG Geology (2009)");
+    expect(focusedPane?.querySelectorAll(".tree-row.file")).toHaveLength(5);
+    expect(focusedPane?.textContent).not.toContain("_Movies");
+    expect(focusedPane?.textContent).not.toContain("Another Film (2010)");
+
+    await userEvent(
+      screen.querySelector('[aria-label="Close item editor"]'),
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".personal-pane")).toBeDefined(),
+    );
+    const personalFolder = Array.from(
+      screen.querySelectorAll(".personal-pane .tree-folder-name"),
+    ).find((button) => button.textContent?.trim() === "ThunderScott");
+    await userEvent(personalFolder ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".library-detail-pane.detail-shared"),
+      ).toBeDefined(),
+    );
+    expect(screen.querySelector(".shared-pane")).toBeUndefined();
+    expect(screen.querySelector(".personal-pane")).toBeDefined();
+    expect(
+      screen.querySelector('[aria-label="Selected personal library details"]'),
+    ).toBeDefined();
+    expect(screen.querySelector(".personal-pane")?.textContent).not.toContain(
+      "_YouTube",
+    );
+    expect(
+      screen
+        .querySelector(".personal-pane")
+        ?.querySelectorAll(".tree-row.file"),
+    ).toHaveLength(1);
   });
 
   it("shows a benign cover-art card instead of requesting media metadata", async () => {
@@ -899,6 +1004,13 @@ describe("Media Manager library browser", () => {
         ),
       ).toBe(true),
     );
+    await userEvent(
+      screen.querySelector('[aria-label="Close item editor"]'),
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".library-detail-pane")).toBeUndefined(),
+    );
     await userEvent(folderButton("Beta") ?? null, "click");
     await vi.waitFor(() =>
       expect(
@@ -1053,7 +1165,7 @@ describe("Media Manager library browser", () => {
       screen.querySelector(".catalog-panel > .catalog-scroll-region"),
     ).toBeDefined();
     expect(
-      screen.querySelector(".library-layout > .editor-card"),
+      screen.querySelector(".library-detail-pane > .editor-card"),
     ).toBeDefined();
   });
 
@@ -1093,8 +1205,85 @@ describe("Media Manager library browser", () => {
                     language: "en",
                     genres: ["Drama"],
                     runtimeMinutes: 120,
-                    sources: ["filename", "nfo"],
+                    sources: ["filename", "sidecar"],
                     providerIds: { imdb: "tt0000000" },
+                    fieldSources: { title: "sidecar", year: "filename" },
+                    sidecar: {
+                      relativePath: "_Movies/Example Movie (2020).nfo",
+                      format: "nfo",
+                      exists: true,
+                      canReplace: true,
+                      consumerEffective: true,
+                    },
+                    consumers: [
+                      {
+                        id: "jellyfin",
+                        label: "Jellyfin",
+                        available: true,
+                        effect: "read-after-refresh",
+                        canManageNatively: true,
+                        portableWriteSupported: true,
+                        message:
+                          "Jellyfin reads correctly named local NFO files after a library refresh.",
+                        nativeUrl: "https://videos.example.test",
+                      },
+                    ],
+                    health: [
+                      {
+                        code: "conflicting-title",
+                        severity: "warning",
+                        field: "title",
+                        title: "Title differs between sources",
+                        message: "Choose the authoritative title.",
+                        sources: ["filename", "sidecar"],
+                      },
+                    ],
+                    modificationTargets: [
+                      {
+                        id: "portable-sidecar",
+                        label: "Portable file metadata",
+                        kind: "portable-file",
+                        available: true,
+                        recommended: true,
+                        requiresRefresh: true,
+                        message:
+                          "Write an NFO that survives application rebuilds.",
+                      },
+                      {
+                        id: "jellyfin-application",
+                        label: "Jellyfin app metadata",
+                        kind: "application-local",
+                        available: true,
+                        recommended: false,
+                        requiresRefresh: false,
+                        message: "Use Jellyfin's native editor.",
+                      },
+                    ],
+                    inspectionWarnings: [],
+                    observations: [
+                      {
+                        source: "filename",
+                        label: "Filename",
+                        storage: "filename",
+                        consumedBy: ["jellyfin"],
+                        survivesRescan: true,
+                        writable: false,
+                        fields: { title: "Example Movie", year: 2020 },
+                      },
+                      {
+                        source: "sidecar",
+                        label: "NFO sidecar",
+                        format: "nfo",
+                        relativePath: "_Movies/Example Movie (2020).nfo",
+                        storage: "sidecar-file",
+                        consumedBy: ["jellyfin"],
+                        survivesRescan: true,
+                        writable: true,
+                        fields: { title: "Example Movie", genres: ["Drama"] },
+                        rawPreview:
+                          "<movie><title>Example Movie</title></movie>",
+                      },
+                    ],
                   }
                 : { available: false, progress: {} };
       return new Response(JSON.stringify(payload));
@@ -1121,7 +1310,153 @@ describe("Media Manager library browser", () => {
     ).toBe("movie");
     expect(screen.textContent).toContain("IMDB");
     expect(screen.textContent).toContain("tt0000000");
-    expect(screen.textContent).toContain("Sources: filename + nfo");
+    expect(screen.textContent).toContain("Current metadata");
+    expect(screen.textContent).toContain("NFO sidecar");
+    expect(screen.textContent).toContain("Jellyfin");
+    expect(screen.textContent).toContain("Refresh after applying");
+    expect(screen.textContent).toContain("Survives rescan");
+    expect(screen.textContent).toContain("Metadata health");
+    expect(screen.textContent).toContain("Title differs between sources");
+    expect(screen.textContent).toContain("Portable file metadata");
+    expect(screen.textContent).toContain("Jellyfin app metadata");
+    expect(screen.textContent).toContain("Sources: filename + sidecar");
+    expect(
+      screen.querySelector(".editor-metadata-form")?.hasAttribute("disabled"),
+    ).toBe(true);
+    const draftButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create draft",
+    );
+    await userEvent(draftButton ?? null, "click");
+    expect(
+      screen.querySelector(".editor-metadata-form")?.hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
+  it("inspects installed external and embedded subtitles with cue validation", async () => {
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Movie.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: true }
+            : path.endsWith("/roots")
+              ? [
+                  {
+                    id: "shared-videos",
+                    label: "Shared videos",
+                    category: "videos",
+                    scope: "shared",
+                    available: true,
+                  },
+                ]
+              : path.includes("/items?rootId=shared-videos")
+                ? { items }
+                : path.endsWith("/items/movie-1/metadata")
+                  ? {
+                      mediaType: "movie",
+                      title: "Movie",
+                      sources: ["filename"],
+                    }
+                  : path.endsWith("/items/movie-1/subtitles")
+                    ? {
+                        subtitles: [
+                          {
+                            source: "external",
+                            itemId: "subtitle-1",
+                            relativePath: "_Movies/Movie.en.forced.srt",
+                            format: "srt",
+                            language: "en",
+                            isDefault: false,
+                            isForced: true,
+                            isHearingImpaired: false,
+                            isPreviewable: true,
+                          },
+                          {
+                            source: "embedded",
+                            streamIndex: 2,
+                            title: "English SDH",
+                            format: "subrip",
+                            language: "eng",
+                            isDefault: true,
+                            isForced: false,
+                            isHearingImpaired: true,
+                            isPreviewable: false,
+                          },
+                        ],
+                        consumers: [
+                          {
+                            id: "jellyfin",
+                            label: "Jellyfin",
+                            available: true,
+                            effect: "read-after-refresh",
+                            canManageNatively: true,
+                            portableWriteSupported: true,
+                            message: "Managed natively",
+                            nativeUrl: "https://videos.example.test",
+                          },
+                        ],
+                      }
+                    : path.endsWith(
+                          "/items/movie-1/subtitles/installed/subtitle-1/content",
+                        )
+                      ? {
+                          cues: [
+                            {
+                              index: 1,
+                              startMs: 1000,
+                              endMs: 2500,
+                              text: "Come with me.",
+                            },
+                          ],
+                          truncated: false,
+                          validation: {
+                            cueCount: 1,
+                            issueCount: 0,
+                            issues: [],
+                          },
+                        }
+                      : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-tabs")).toBeTruthy(),
+    );
+    const subtitlesTab = Array.from(
+      screen.querySelectorAll(".editor-tab"),
+    ).find((button) => button.textContent?.includes("Subtitles"));
+    await userEvent(subtitlesTab ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Movie.en.forced.srt"),
+    );
+    expect(screen.textContent).toContain("English SDH");
+    expect(screen.textContent).toContain("forced");
+    expect(screen.textContent).toContain("SDH/CC");
+    expect(screen.textContent).toContain("Manage in Jellyfin");
+    const inspect = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Inspect cues",
+    );
+    await userEvent(inspect ?? null, "click");
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Come with me."),
+    );
+    expect(screen.textContent).toContain("1 cues · 0 issues");
   });
 
   it("previews and queues removing an item into the library tombstone", async () => {

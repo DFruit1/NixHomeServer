@@ -80,7 +80,7 @@ let
   // lib.optionalAttrs (moduleEnabled "seerr") {
     seerr = mkApp "requests.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.seerr}" [ "media-automation-users" ];
   };
-  upstreamTransport = app: lib.optionalString (app.upstreamTimeout != null) ''
+  upstreamTransport = app: lib.optionalString (app.upstream != null && app.upstreamTimeout != null) ''
     transport http {
       response_header_timeout ${app.upstreamTimeout}
     }
@@ -111,6 +111,7 @@ let
         }
       }
     '';
+  routerApps = lib.filterAttrs (_: app: app.upstream != null) cfg.protectedApps;
   routerCaddyfile = pkgs.writeText "auth-gateway-router.Caddyfile" ''
     {
       admin off
@@ -118,7 +119,7 @@ let
     }
     http://:${toString cfg.internalPort} {
       bind ${loopback}
-      ${lib.concatStringsSep "\n" (lib.mapAttrsToList mkRouterBlock cfg.protectedApps)}
+      ${lib.concatStringsSep "\n" (lib.mapAttrsToList mkRouterBlock routerApps)}
       respond "Unknown protected application" 404
     }
   '';
@@ -170,6 +171,10 @@ let
     "X-Forwarded-Email"
     "X-Forwarded-Groups"
     "X-Forwarded-Preferred-Username"
+    "Remote-User"
+    "Remote_User"
+    "X-WebAuth-User"
+    "X_WebAuth_User"
   ];
   stripSpoofableHeaders = lib.concatMapStringsSep "\n" (header: "request_header -${header}") spoofableHeaders;
   routerProxy = ''
@@ -181,6 +186,28 @@ let
       header_up X-Forwarded-Preferred-Username {http.request.header.X-Auth-Request-Preferred-Username}
     }
   '';
+  directCaddyBackend = name: app:
+    let
+      matcher = matcherName name;
+      groups = lib.concatStringsSep "|" (map lib.escapeRegex app.allowedGroups);
+    in
+    ''
+      @denied_${matcher} not header_regexp X-Auth-Request-Groups "(?i)(^|,)[[:space:]]*(${groups})[[:space:]]*(,|$)"
+      respond @denied_${matcher} "Forbidden" 403
+      ${app.authenticatedCaddyConfig}
+    '';
+  protectedBackend = name: app:
+    if app.authenticatedCaddyConfig != null then
+      directCaddyBackend name app
+    else
+      routerProxy;
+  nativeAuthCaddyHandler = name: app:
+    lib.optionalString (app.nativeAuthCaddyConfig != null) ''
+      @native_auth_${matcherName name} path ${lib.concatStringsSep " " app.nativeAuthPaths}
+      handle @native_auth_${matcherName name} {
+        ${app.nativeAuthCaddyConfig}
+      }
+    '';
   forwardAuth = redirectUnauthorized: ''
     forward_auth http://${loopback}:${toString cfg.port} {
       uri /oauth2/auth
@@ -205,6 +232,7 @@ let
       handle @logout_${matcherName name} {
         redir * https://${authHost}/oauth2/sign_out 302
       }
+      ${nativeAuthCaddyHandler name app}
       ${lib.optionalString app.skipAuthPreflight ''
         @preflight_${matcherName name} method OPTIONS
         handle @preflight_${matcherName name} {
@@ -227,7 +255,7 @@ let
       ''}
       handle {
         ${forwardAuth true}
-        ${routerProxy}
+        ${protectedBackend name app}
       }
     }
   '';
@@ -309,7 +337,27 @@ in
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
           host = lib.mkOption { type = lib.types.str; };
-          upstream = lib.mkOption { type = lib.types.str; };
+          upstream = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "HTTP upstream reached through the authenticated internal router.";
+          };
+          authenticatedCaddyConfig = lib.mkOption {
+            type = lib.types.nullOr lib.types.lines;
+            default = null;
+            description = "Caddy directives executed directly after OIDC and group authorization instead of proxying to an HTTP upstream.";
+          };
+          nativeAuthPaths = lib.mkOption {
+            type = lib.types.listOf (lib.types.addCheck lib.types.str
+              (path: builtins.match "/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*" path != null));
+            default = [ ];
+            description = "Exact Caddy path matchers that bypass browser OIDC and rely on the application's native authentication.";
+          };
+          nativeAuthCaddyConfig = lib.mkOption {
+            type = lib.types.nullOr lib.types.lines;
+            default = null;
+            description = "Caddy directives for native-authentication paths; these receive no identity from the shared OIDC gateway.";
+          };
           allowedGroups = lib.mkOption { type = lib.types.listOf lib.types.str; };
           skipAuthPreflight = lib.mkOption { type = lib.types.bool; default = false; };
           apiUnauthenticated401 = lib.mkOption { type = lib.types.bool; default = true; };
@@ -328,6 +376,17 @@ in
     }
 
     (lib.mkIf (cfg.enable && cfg.mode == "gateway") {
+      assertions = lib.mapAttrsToList
+        (name: app: {
+          assertion = (app.upstream != null) != (app.authenticatedCaddyConfig != null)
+            && (app.authenticatedCaddyConfig == null || (!app.skipAuthPreflight && !app.apiUnauthenticated401))
+            && ((app.nativeAuthPaths != [ ]) == (app.nativeAuthCaddyConfig != null))
+            && (app.nativeAuthCaddyConfig == null || app.authenticatedCaddyConfig != null)
+            && lib.length (lib.unique app.nativeAuthPaths) == lib.length app.nativeAuthPaths;
+          message = "Authentication gateway app '${name}' must select exactly one HTTP upstream or authenticated Caddy handler; native-auth paths require a unique, direct Caddy handler and cannot receive browser-auth bypasses.";
+        })
+        cfg.protectedApps;
+
       systemd.services = (lib.genAttrs sidecarServices (_: { wantedBy = lib.mkForce [ ]; })) // {
         auth-gateway-router = {
           description = "Route authenticated gateway requests to protected applications";

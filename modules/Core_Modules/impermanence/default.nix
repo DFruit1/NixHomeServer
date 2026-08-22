@@ -34,6 +34,7 @@ let
     "/var/lib/bonsai"
     "/var/lib/chaptarr"
     "/var/lib/filestash"
+    "/var/lib/freshrss"
     "/var/lib/groundwater-logger"
     "/var/lib/groundwater-mosquitto"
     "/var/lib/homepage-canary"

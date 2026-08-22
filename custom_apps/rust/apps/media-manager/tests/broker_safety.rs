@@ -2,10 +2,12 @@
 
 use media_manager::{
     broker::{
-        apply_install_metadata_sidecar, apply_install_subtitle, apply_move, apply_replace_artwork,
-        discard_staged_broker_action, file_fingerprint, move_destination_matches,
-        open_regular_file_beneath, recover_broker_action, BrokerAction,
-        InstallMetadataSidecarAction, InstallSubtitleAction, MoveAction, ReplaceArtworkAction,
+        apply_broker_action, apply_install_metadata_sidecar, apply_install_subtitle, apply_move,
+        apply_replace_artwork, apply_replace_metadata_sidecar, discard_staged_broker_action,
+        file_fingerprint, move_destination_matches, open_regular_file_beneath,
+        recover_broker_action, BrokerAction, InstallMetadataSidecarAction, InstallSubtitleAction,
+        MoveAction, ReplaceArtworkAction, ReplaceEmbeddedMetadataAction,
+        ReplaceMetadataSidecarAction,
     },
     config::AppConfig,
 };
@@ -126,6 +128,100 @@ fn broker_installs_metadata_sidecars_without_replacing_existing_metadata() {
     };
     assert!(apply_install_metadata_sidecar(&config, "editor", &collision).is_err());
     assert!(state.join("provider-staging/metadata-2.opf").exists());
+}
+
+#[test]
+fn broker_replaces_metadata_as_a_recoverable_no_overwrite_operation() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let shared = temp.path().join("shared");
+    let users = temp.path().join("users");
+    let state = temp.path().join("state");
+    fs::create_dir_all(shared.join("_Videos/Movie/superseded")).expect("movie directory");
+    fs::create_dir_all(state.join("provider-staging")).expect("staging directory");
+    let source = shared.join("_Videos/Movie/Movie.nfo");
+    fs::write(&source, b"<movie><title>Old</title></movie>").expect("old metadata");
+    let staged = state.join("provider-staging/metadata-2.nfo");
+    fs::write(&staged, b"<movie><title>New</title></movie>").expect("new metadata");
+    let mut config = AppConfig::for_test(
+        shared.to_str().expect("shared path"),
+        users.to_str().expect("users path"),
+    );
+    config.state_dir = state;
+    let action = ReplaceMetadataSidecarAction {
+        staging_filename: "metadata-2.nfo".to_string(),
+        root_id: "shared-videos".to_string(),
+        source_relative_path: "Movie/Movie.nfo".to_string(),
+        archived_relative_path: "Movie/superseded/Movie-plan.nfo".to_string(),
+        replacement_relative_path: "Movie/Movie.nfo".to_string(),
+        expected_source: file_fingerprint(&source).expect("source fingerprint"),
+        expected_replacement: file_fingerprint(&staged).expect("staged fingerprint"),
+    };
+
+    apply_replace_metadata_sidecar(&config, "editor", &action).expect("replace metadata");
+    assert_eq!(
+        fs::read(&source).expect("installed metadata"),
+        b"<movie><title>New</title></movie>"
+    );
+    assert_eq!(
+        fs::read(shared.join("_Videos/Movie/superseded/Movie-plan.nfo"))
+            .expect("archived metadata"),
+        b"<movie><title>Old</title></movie>"
+    );
+    assert!(recover_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ReplaceMetadataSidecar(action)
+    )
+    .expect("completed replacement recovery"));
+}
+
+#[test]
+fn broker_replaces_an_epub_as_a_recoverable_no_overwrite_operation() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let shared = temp.path().join("shared");
+    let users = temp.path().join("users");
+    let state = temp.path().join("state");
+    fs::create_dir_all(shared.join("_Books/Author/superseded")).expect("book directory");
+    fs::create_dir_all(state.join("provider-staging")).expect("staging directory");
+    let source = shared.join("_Books/Author/Book.epub");
+    fs::write(&source, b"original epub").expect("original book");
+    let staged = state.join("provider-staging/embedded-plan.epub");
+    fs::write(&staged, b"rewritten epub").expect("staged book");
+    let mut config = AppConfig::for_test(
+        shared.to_str().expect("shared path"),
+        users.to_str().expect("users path"),
+    );
+    config.state_dir = state;
+    let action = ReplaceEmbeddedMetadataAction {
+        staging_filename: "embedded-plan.epub".to_string(),
+        root_id: "shared-books".to_string(),
+        source_relative_path: "Author/Book.epub".to_string(),
+        archived_relative_path: "Author/superseded/Book-plan.epub".to_string(),
+        replacement_relative_path: "Author/Book.epub".to_string(),
+        expected_source: file_fingerprint(&source).expect("source fingerprint"),
+        expected_replacement: file_fingerprint(&staged).expect("staged fingerprint"),
+    };
+
+    apply_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ReplaceEmbeddedMetadata(action.clone()),
+    )
+    .expect("replace embedded metadata");
+    assert_eq!(
+        fs::read(&source).expect("installed book"),
+        b"rewritten epub"
+    );
+    assert_eq!(
+        fs::read(shared.join("_Books/Author/superseded/Book-plan.epub")).expect("archived book"),
+        b"original epub"
+    );
+    assert!(recover_broker_action(
+        &config,
+        "editor",
+        &BrokerAction::ReplaceEmbeddedMetadata(action)
+    )
+    .expect("completed replacement recovery"));
 }
 
 #[test]
