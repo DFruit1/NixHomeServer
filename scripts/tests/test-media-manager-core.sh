@@ -164,11 +164,12 @@ jq -e '
   and (.kavitaRefresh.Group == "kavita")
   and (.kavitaRefresh.ReadOnlyPaths == ["/var/lib/kavita/config/kavita.db", "/run/agenix/kavitaTokenKey"])
   and (.kavitaRefresh.SystemCallFilter == ["@system-service", "~@privileged", "~@resources", "fchown"])
-  and (.kavitaMetadata.User == "root")
+  and (.kavitaMetadata.User == "kavita")
   and (.kavitaMetadata.Group == "media-manager")
   and (.kavitaMetadata.CacheDirectory == "media-manager-kavita")
   and (.kavitaMetadata.IPAddressDeny == "any")
   and (.kavitaMetadata.IPAddressAllow == ["localhost"])
+  and (.kavitaMetadata.SystemCallFilter == ["@system-service", "~@privileged", "~@resources", "fchown"])
   and (.kavitaMetadataTimer.OnUnitInactiveSec == "30m")
   and (.syncthingRefresh.IPAddressDeny == "any")
   and (.syncthingRefresh.IPAddressAllow == ["localhost"])
@@ -216,6 +217,12 @@ require_fixed modules/Core_Modules/media-manager/services.nix \
 require_fixed modules/Core_Modules/media-manager/services.nix \
   'result_dir=' \
   "Refresh dispatch must persist terminal results for browser polling."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'Audiobookshelf did not become ready before metadata export' \
+  "Audiobookshelf metadata export must tolerate service startup latency."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'Kavita did not become ready before metadata export' \
+  "Kavita metadata export must tolerate service startup latency."
 require_fixed modules/Core_Modules/media-manager/services.nix \
   'ScheduledTasks/Running/$task_id' \
   "Jellyfin refresh must use the current scheduled-task completion API."

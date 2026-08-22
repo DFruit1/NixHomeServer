@@ -320,6 +320,18 @@ let
       set -euo pipefail
       base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.audiobookshelf}"
       output=${lib.escapeShellArg audiobookshelfMetadataCache}
+      service_ready=0
+      for _ in $(seq 1 30); do
+        if (exec 3<>/dev/tcp/${vars.networking.loopbackIPv4}/${toString vars.networking.ports.audiobookshelf}) 2>/dev/null; then
+          service_ready=1
+          break
+        fi
+        sleep 2
+      done
+      (( service_ready == 1 )) || {
+        echo "Audiobookshelf did not become ready before metadata export" >&2
+        exit 1
+      }
       password="$(< ${config.age.secrets.absBootstrapPass.path})"
       login="$(jq -cn \
         --arg username ${lib.escapeShellArg vars.kanidmAdminUser} \
@@ -406,6 +418,18 @@ let
       set -euo pipefail
       base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.kavita}"
       output=${lib.escapeShellArg kavitaMetadataCache}
+      service_ready=0
+      for _ in $(seq 1 30); do
+        if (exec 3<>/dev/tcp/${vars.networking.loopbackIPv4}/${toString vars.networking.ports.kavita}) 2>/dev/null; then
+          service_ready=1
+          break
+        fi
+        sleep 2
+      done
+      (( service_ready == 1 )) || {
+        echo "Kavita did not become ready before metadata export" >&2
+        exit 1
+      }
       db=/var/lib/kavita/config/kavita.db
       token_key_file=${lib.escapeShellArg config.age.secrets.kavitaTokenKey.path}
       admin_username=${lib.escapeShellArg vars.kanidmAdminUser}
@@ -1038,7 +1062,7 @@ in
     wants = [ "kavita.service" ];
     serviceConfig = {
       Type = "oneshot";
-      User = "root";
+      User = "kavita";
       Group = "media-manager";
       ExecStart = lib.getExe kavitaMetadataExport;
       CacheDirectory = "media-manager-kavita";
@@ -1070,7 +1094,7 @@ in
       IPAddressDeny = "any";
       IPAddressAllow = [ "localhost" ];
       SystemCallArchitectures = "native";
-      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" "fchown" ];
     };
   };
 
