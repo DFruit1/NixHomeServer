@@ -115,7 +115,6 @@ in {
   defaultUser = cfg.services.freshrss.defaultUser;
   expectedDefaultUser = vars.kanidmAdminUser;
   expectedHost = "rss.${vars.domain}";
-  packagePath = toString cfg.services.freshrss.package;
   baseUrl = cfg.services.freshrss.baseUrl;
   apiEnabled = cfg.services.freshrss.api.enable;
   dataDir = cfg.services.freshrss.dataDir;
@@ -125,10 +124,8 @@ in {
   freshrssPortPresent = builtins.hasAttr "freshrss" vars.networking.ports;
   phpPoolSettings = cfg.services.phpfpm.pools.freshrss.settings;
   phpPoolSocket = cfg.services.phpfpm.pools.freshrss.socket;
-  phpPackage = toString cfg.services.phpfpm.phpPackage;
   configServiceScript = cfg.systemd.services.freshrss-config.script;
   configServiceUser = cfg.systemd.services.freshrss-config.serviceConfig.User;
-  caddyPackage = toString cfg.services.caddy.package;
   caddyConfig = cfg.services.caddy.virtualHosts.${rssHost}.extraConfig;
   protectedApp = cfg.repo.authGateway.protectedApps.freshrss;
   privateDnsTarget = cfg.services.unbound.privateHosts.${rssHost}.target or null;
@@ -244,7 +241,24 @@ jq -e '
   exit 1
 }
 
-freshrss_package="$(jq -er .packagePath <<<"$freshrss_json")"
+freshrss_package="$(
+  nix build --impure --no-link --print-out-paths --expr "
+    let f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+    in f.nixosConfigurations.${host}.config.services.freshrss.package
+  "
+)"
+php_package="$(
+  nix build --impure --no-link --print-out-paths --expr "
+    let f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+    in f.nixosConfigurations.${host}.config.services.phpfpm.phpPackage
+  "
+)"
+caddy_package="$(
+  nix build --impure --no-link --print-out-paths --expr "
+    let f = builtins.getFlake (builtins.getEnv \"NIXHOMESERVER_FLAKE_REF_FOR_EVAL\");
+    in f.nixosConfigurations.${host}.config.services.caddy.package
+  "
+)"
 require_fixed "$freshrss_package/config.default.php" "'http_auth_auto_register' => true" \
   "The pinned FreshRSS release must auto-create unknown HTTP-auth users on first login."
 require_fixed "$freshrss_package/config.default.php" "'http_auth_auto_register_email_field' => ''" \
@@ -265,9 +279,9 @@ printf '%s\n' '<?php return [' \
   "  'http_auth_auto_register_email_field' => 'HTTP_X_EMAIL'," \
   '];' >"$reconcile_state/config.php"
 FRESHRSS_DATA_PATH="$reconcile_state" \
-  "$(jq -er .phpPackage <<<"$freshrss_json")/bin/php" \
+  "$php_package/bin/php" \
   modules/freshrss/reconcile-http-auth.php
-"$(jq -er .phpPackage <<<"$freshrss_json")/bin/php" -r '
+"$php_package/bin/php" -r '
   $config = require $argv[1];
   if (($config["salt"] ?? null) !== "preserve-me"
       || ($config["http_auth_auto_register"] ?? null) !== true
@@ -279,7 +293,7 @@ FRESHRSS_DATA_PATH="$reconcile_state" \
   exit 1
 }
 
-caddy_bin="$(jq -er .caddyPackage <<<"$freshrss_json")/bin/caddy"
+caddy_bin="$caddy_package/bin/caddy"
 {
   printf '%s\n' 'rss.sydneybasiniot.org {'
   jq -r .caddyConfig <<<"$freshrss_json"
@@ -306,21 +320,28 @@ printf '%s\n' '<?php return [];' > "$test_state/config.php"
 sqlite3 "$test_state/users/a/db.sqlite" "CREATE TABLE feeds (id INTEGER PRIMARY KEY, title TEXT); INSERT INTO feeds(title) VALUES ('fixture');"
 
 backup_fragment="$(jq -r .backupPrepare <<<"$freshrss_json")"
-backup_fragment="$(sed "s|/var/lib/freshrss|$test_state|g" <<<"$backup_fragment")"
+backup_fragment="${backup_fragment//\/var\/lib\/freshrss/$test_state}"
 fragment_file="$test_tmp/freshrss-backup-fragment.sh"
 printf '%s\n' "$backup_fragment" > "$fragment_file"
 
 (
   set -euo pipefail
+  # Invoked by the dynamically evaluated backup fragment below.
+  # shellcheck disable=SC2329
   runuser() {
     local source
     while IFS= read -r -d '' source; do
       cp -- "$source" "$(dirname "$source")/backup.sqlite"
     done < <(find "$test_state/users" -mindepth 2 -maxdepth 2 -type f -name db.sqlite -print0)
   }
+  # Consumed by the dynamically evaluated backup fragment below.
+  # shellcheck disable=SC2034
   dumpsRoot="$work/dumps"
+  # shellcheck disable=SC2034
   metadataRoot="$work/metadata"
   : > "$work/metadata/SHA256SUMS"
+  # The evaluated Nix fragment is intentionally materialized at runtime.
+  # shellcheck source=/dev/null
   source "$fragment_file"
   [[ -f "$work/dumps/freshrss-a.sqlite" ]]
   [[ "$(sqlite3 -readonly "$work/dumps/freshrss-a.sqlite" 'PRAGMA integrity_check;')" == ok ]]
