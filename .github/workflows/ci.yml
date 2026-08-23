@@ -36,8 +36,12 @@ jobs:
       - name: Scan committed history for secrets
         run: nix run .#gitleaks -- detect --source . --redact --no-banner
 
-      - name: Evaluate flake outputs
-        run: nix flake check --no-build --show-trace
+      # Evaluate all flake outputs in parallel (nix-eval-jobs) instead of the
+      # single-threaded `nix flake check`. Errors on any evaluation failure
+      # without building. `nix-output-monitor` is available in the same shell
+      # for local `nix-eval-jobs --flake . | nom --jobs` build runs.
+      - name: Evaluate flake outputs (parallel)
+        run: nix develop .#ops -c nix-eval-jobs --flake .
 
       - name: Run repository validation
         run: scripts/validate-repo.sh

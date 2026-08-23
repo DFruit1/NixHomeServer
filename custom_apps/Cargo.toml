@@ -6,3 +6,6 @@ members = [
   "rust/apps/mail-archive-ui",
   "rust/apps/media-manager",
 ]
+
+[workspace.package]
+version = "0.1.0"

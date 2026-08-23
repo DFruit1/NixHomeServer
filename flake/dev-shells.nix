@@ -7,6 +7,7 @@
       deadnix
       gitMinimal
       jq
+      nix-eval-jobs
       nix-output-monitor
       nix-tree
       nixpkgs-fmt

@@ -28,9 +28,12 @@
         import ./flake/packages.nix {
           inherit lib pkgs crane;
         };
-      mkWorkerIso = system: hostVars:
+      # Compute package data once per system and reuse it everywhere it is
+      # needed (hosts, checks, dev shells, worker ISO) instead of re-importing
+      # the full rust/node app graph on every call site.
+      packageDataBySystem = forAllSystems (system: mkPackageData system);
+      mkWorkerIso = system: packageData: hostVars:
         let
-          packageData = mkPackageData system;
           sharedRoot = hostVars.sharedRoot;
         in
         import ./flake/mkvmaker-worker-iso.nix {
@@ -59,13 +62,13 @@
         (lib.attrValues (lib.mapAttrs (_: v: v.hostPlatform) nixhomeserverSettings));
       forAllSystems = lib.genAttrs supportedSystems;
       workerIsoConfigurations = lib.mapAttrs
-        (_: hostVars: mkWorkerIso "x86_64-linux" hostVars)
+        (_: hostVars: mkWorkerIso "x86_64-linux" (packageDataBySystem."x86_64-linux") hostVars)
         nixhomeserverSettings;
       hosts = lib.mapAttrs
         (_: hostVars:
           let
             hostSystem = hostVars.hostPlatform;
-            hostPackageData = mkPackageData hostSystem;
+            hostPackageData = packageDataBySystem.${hostSystem};
           in
           import ./flake/system.nix {
             inherit inputs lib;
@@ -103,10 +106,9 @@
         systems = mkOfflineInput inputs.agenix.inputs.systems;
         systems_2 = mkOfflineInput inputs.filestashNix.inputs.systems;
       };
-      mkChecks = system: enabledApps: testAllApps:
+      mkChecks = system: packageData: enabledApps: testAllApps:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          packageData = mkPackageData system;
         in
         import ./flake/checks.nix {
           inherit self lib pkgs offlineInputSources enabledApps testAllApps;
@@ -131,12 +133,12 @@
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
       packages = forAllSystems (system:
         lib.optionalAttrs (system == "x86_64-linux") {
-          mkvmaker-worker-iso = (mkWorkerIso system vars).config.system.build.isoImage;
+          mkvmaker-worker-iso = (mkWorkerIso system (packageDataBySystem.${system}) vars).config.system.build.isoImage;
         });
       checks = forAllSystems
-        (system: mkChecks system vars.enabledApps false);
+        (system: mkChecks system (packageDataBySystem.${system}) vars.enabledApps false);
       legacyPackages = forAllSystems (system: {
-        nixhomeserverAllChecks = mkChecks system allAppNames true;
+        nixhomeserverAllChecks = mkChecks system (packageDataBySystem.${system}) allAppNames true;
       });
       # Heavy VM-boot tests live under hydraJobs (recognized by `nix flake
       # check` but never built by it) so the lean validation gate and
@@ -150,7 +152,7 @@
         (system:
           let
             pkgs = nixpkgs.legacyPackages.${system};
-            packageData = mkPackageData system;
+            packageData = packageDataBySystem.${system};
           in
           import ./flake/dev-shells.nix {
             inherit pkgs;
