@@ -1,4 +1,4 @@
-{ pkgs, rustLib, sharedFrontendDeps, ... }:
+{ pkgs, rustLib, sharedFrontendDeps, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   frontendDist = rustLib.mkPnpmFrontend {
@@ -15,6 +15,7 @@ let
     name = "mail-archive-ui";
     binaryName = "mail-archive-ui";
     srcDir = ./.;
+    inherit workspaceSrc sharedCargoArtifacts cargoLock;
     modulePath = ../../../modules/mail-archive-ui;
     nativeBuildInputs = [ pkgs.pkg-config ];
     buildInputs = [ pkgs.sqlite ];

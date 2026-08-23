@@ -1,4 +1,4 @@
-{ pkgs, rustLib, sharedFrontendDeps, ... }:
+{ pkgs, rustLib, sharedFrontendDeps, workspaceSrc ? null, sharedCargoArtifacts ? null, cargoLock ? null, ... }:
 
 let
   frontendDist = rustLib.mkPnpmFrontend {
@@ -17,6 +17,7 @@ let
     binaryName = "media-manager";
     srcDir = ./.;
     modulePath = ../../../../modules/Core_Modules/media-manager;
+    inherit workspaceSrc sharedCargoArtifacts cargoLock;
     nativeBuildInputs = [ pkgs.pkg-config ];
     buildInputs = [ pkgs.sqlite ];
     shellEnv = {

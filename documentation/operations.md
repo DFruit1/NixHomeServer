@@ -1558,7 +1558,7 @@ expected account-switching check.
 
 The implemented contracts are documented by
 [OAuth2 Proxy's sign-out endpoint](https://oauth2-proxy.github.io/oauth2-proxy/features/endpoints/),
-[Kanidm's session-logout design](https://github.com/kanidm/kanidm/blob/v1.10.3/book/src/developers/designs/session_logout.rst),
+[Kanidm's session-logout design](https://github.com/kanidm/kanidm/blob/v1.11.1/book/src/developers/designs/session_logout.rst),
 [Immich's OAuth logout setting](https://docs.immich.app/administration/oauth/),
 [Paperless-ngx's logout redirect](https://docs.paperless-ngx.com/configuration/#PAPERLESS_LOGOUT_REDIRECT_URL),
 and [Audiobookshelf's logout API](https://api.audiobookshelf.org/#logout).

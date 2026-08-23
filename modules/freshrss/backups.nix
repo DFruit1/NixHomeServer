@@ -27,7 +27,7 @@ in
         if [[ -f "$freshrss_config" ]]; then
           echo "Preparing FreshRSS per-user SQLite backups"
           runuser -u freshrss -- env \
-            FRESHRSS_DATA_PATH=${lib.escapeShellArg cfg.stateDir} \
+            DATA_PATH=${lib.escapeShellArg cfg.stateDir} \
             ${cfg.package}/cli/db-backup.php --quiet
 
           freshrss_backup_count=0

@@ -45,9 +45,9 @@ all_apps=false
 run_flake_check=false
 skip_flake_check=false
 tests_dir="${VALIDATE_REPO_TESTS_DIR:-$repo_root/scripts/tests}"
-eval_cache_dir=""
-pending_validation_roots_dir=""
-validation_outputs_json=""
+  eval_cache_dir=""
+  pending_validation_roots_dir=""
+  validation_outputs_json="[]"
 
 cleanup_tmpdirs() {
   if [[ -n "$pending_validation_roots_dir" && -d "$pending_validation_roots_dir" ]]; then
@@ -109,26 +109,17 @@ current_system() {
   nix eval --impure --raw --expr 'builtins.currentSystem'
 }
 
-run_full_derivation_checks() {
-  local system check_attr check_name check_names root_state_dir output_path root_path
+build_derivation_attr() {
+  local attr="$1" system="$2" check_name check_names output_path root_path
   local -a check_targets=()
+  local new_outputs
 
-  if [[ "$full_mode" != true ]]; then
-    return 0
-  fi
-
-  system="$(current_system)"
-  if [[ "$all_apps" == true ]]; then
-    check_attr="legacyPackages.${system}.nixhomeserverAllChecks"
-  else
-    check_attr="checks.${system}"
-  fi
   if ! check_names="$(
-    nix eval --json ".#${check_attr}" --apply 'checks: builtins.attrNames checks' \
+    nix eval --json ".#${attr}" --apply 'checks: builtins.attrNames checks' \
       | jq -r '.[]' \
       | sort
   )" || [[ -z "$check_names" ]]; then
-    echo "❌ Could not evaluate a non-empty flake check worklist for ${system}." >&2
+    echo "❌ Could not evaluate a non-empty flake check worklist for ${attr}." >&2
     exit 1
   fi
 
@@ -139,26 +130,46 @@ run_full_derivation_checks() {
       echo "ℹ️ Skipping ${check_name} VM execution because /dev/kvm is unavailable; flake evaluation still checks the test definition."
       continue
     fi
-    check_targets+=(".#${check_attr}.${check_name}")
+    check_targets+=(".#${attr}.${check_name}")
   done <<<"$check_names"
 
   if ((${#check_targets[@]} == 0)); then
-    echo "❌ Full validation resolved no buildable derivation checks." >&2
-    exit 1
+    return 0
   fi
 
-  echo "ℹ️ Running ${#check_targets[@]} derivation checks in one Nix build…"
-  validation_outputs_json="$(
+  echo "ℹ️ Running ${#check_targets[@]} derivation checks from ${attr} in one Nix build…"
+  new_outputs="$(
     nix build "${check_targets[@]}" --no-link --print-build-logs --json
   )"
   jq -e '
     type == "array"
     and length > 0
     and all(.[]; (.outputs | type == "object") and (.outputs | length > 0))
-  ' <<<"$validation_outputs_json" >/dev/null || {
+  ' <<<"$new_outputs" >/dev/null || {
     echo "❌ Nix returned an invalid full-check output manifest." >&2
     exit 1
   }
+  validation_outputs_json="$(jq -s 'add' <<<"$validation_outputs_json $new_outputs")"
+}
+
+run_full_derivation_checks() {
+  local system check_attr vm_attr root_state_dir output_path root_path
+
+  if [[ "$full_mode" != true ]]; then
+    return 0
+  fi
+
+  system="$(current_system)"
+  if [[ "$all_apps" == true ]]; then
+    check_attr="legacyPackages.${system}.nixhomeserverAllChecks"
+    vm_attr="hydraJobs.${system}.vmTestsAll"
+  else
+    check_attr="checks.${system}"
+    vm_attr="hydraJobs.${system}.vmTests"
+  fi
+
+  build_derivation_attr "$check_attr" "$system"
+  build_derivation_attr "$vm_attr" "$system"
 
   if [[ "$all_apps" == true ]]; then
     return 0

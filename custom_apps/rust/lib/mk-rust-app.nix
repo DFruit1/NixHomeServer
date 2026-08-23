@@ -14,9 +14,16 @@
 , cargoExtraArgs ? "--locked"
 , nativeBuildInputs ? [ ]
 , buildInputs ? [ ]
+, # Optional workspace mode: build against a shared source tree and prebuilt
+  # dependency artifacts so common crates (tokio/axum/serde/…) compile once.
+  workspaceSrc ? null
+, sharedCargoArtifacts ? null
+, cargoLock ? null
 ,
 }:
 let
+  useWorkspace = workspaceSrc != null;
+
   sourcePath = srcDir;
   sourcePathString = toString sourcePath;
 
@@ -64,29 +71,42 @@ let
         );
     };
 
-  packageSrc = mkSource "${name}-package-src" packageSourceExcludePrefixes;
-  checkSrc = mkSource "${name}-check-src" [ ];
+  packageSrc = if useWorkspace then workspaceSrc else mkSource "${name}-package-src" packageSourceExcludePrefixes;
+  checkSrc = if useWorkspace then workspaceSrc else mkSource "${name}-check-src" [ ];
+
+  # In workspace mode, scope every cargo invocation to this package and reuse
+  # the shared dependency artifacts. clippy/nextest inherit cargoExtraArgs, so
+  # --package is added only here (not in the clippy/nextest extra-args).
+  workspaceCargoExtraArgs = lib.optionalString useWorkspace "--package ${name}";
+  effectiveCargoExtraArgs = lib.trim "${cargoExtraArgs} ${workspaceCargoExtraArgs}";
 
   commonArgs = {
-    inherit version cargoExtraArgs nativeBuildInputs buildInputs;
+    inherit version effectiveCargoExtraArgs nativeBuildInputs buildInputs;
     pname = name;
     strictDeps = true;
   };
 
+  cargoArtifacts = if sharedCargoArtifacts != null
+    then sharedCargoArtifacts
+    else craneLib.buildDepsOnly (commonArgs // {
+      src = packageSrc;
+    });
+
   rawChecks = mkRustChecks {
-    inherit name packageSrc checkSrc commonArgs;
+    inherit name packageSrc checkSrc commonArgs cargoLock;
+    cargoArtifacts = if sharedCargoArtifacts != null then sharedCargoArtifacts else null;
   };
 
   package = craneLib.buildPackage (commonArgs // {
-    inherit (rawChecks) cargoArtifacts;
+    inherit cargoArtifacts;
     src = packageSrc;
     doCheck = false;
     meta = meta // {
       mainProgram = binaryName;
     };
-  });
+  } // lib.optionalAttrs (cargoLock != null) { inherit cargoLock; });
 
-  checks = builtins.removeAttrs rawChecks [ "cargoArtifacts" ];
+  checks = builtins.removeAttrs rawChecks [ "cargoArtifactsFinal" ];
   devShell = mkRustShell {
     name = name;
     inherit checks shellHook;

@@ -538,6 +538,54 @@ mkdir "$activation_lock"
 printf '%s\n' "$deploy_lock_token" >"$activation_lock/owner"
 deploy_lock_dir="$activation_lock"
 activation_events="$tmpdir/activation-events.log"
+
+activation_state_calls="$tmpdir/activation-state-calls"
+: >"$activation_state_calls"
+activation_poll_attempts=5
+activation_poll_interval=0
+target_command() {
+  if [[ "$1" == *"sudo systemctl stop"* ]]; then
+    printf 'quiesce\n' >>"$activation_events"
+    return 0
+  fi
+  if [[ "$1" == *"systemctl show -P ActiveState"* ]]; then
+    printf 'call\n' >>"$activation_state_calls"
+    case "$(wc -l <"$activation_state_calls")" in
+      1|3|4|5) printf 'inactive\n' ;;
+      2) printf 'active\n' ;;
+      *) return 2 ;;
+    esac
+    return 0
+  fi
+  if [[ "$1" == *"systemctl show -P Result"* ]]; then
+    printf 'success\n'
+    return 0
+  fi
+  if [[ "$1" == *"systemctl show -P ExecMainStatus"* ]]; then
+    printf '0\n'
+    return 0
+  fi
+  if [[ "$1" == *"nixos-detached-"* && "$1" == *".service.tmp"* ]]; then
+    printf 'start\n' >>"$activation_events"
+  fi
+  return 0
+}
+if ! run_detached_activation \
+  "/nix/store/33333333333333333333333333333333-nixos-system-tested" \
+  test reexec-state-probe >"$tmpdir/activation-reexec-state.log" 2>&1; then
+  echo "❌ A detached activation could not survive a transient inactive state during systemd re-exec."
+  cat "$tmpdir/activation-reexec-state.log"
+  exit 1
+fi
+if [[ "$(wc -l <"$activation_state_calls")" != "5" ]] \
+  || [[ "$(cat "$activation_events")" != $'start\nquiesce' ]]; then
+  echo "❌ Detached activation completion was accepted before its inactive state was stable."
+  cat "$activation_events"
+  cat "$tmpdir/activation-reexec-state.log"
+  exit 1
+fi
+
+: >"$activation_events"
 activation_poll_attempts=1
 activation_poll_interval=0
 target_command() {

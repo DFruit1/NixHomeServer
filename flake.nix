@@ -21,8 +21,6 @@
       lib = nixpkgs.lib;
       catalog = import ./modules/catalog.nix;
       allAppNames = builtins.attrNames catalog.apps;
-      supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = lib.genAttrs supportedSystems;
       mkPackageData = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -55,6 +53,11 @@
         rawHostSettings;
       defaultHostName = builtins.head (builtins.attrNames nixhomeserverSettings);
       vars = nixhomeserverSettings.${defaultHostName};
+      # Only evaluate for the platforms actually declared by hosts so we don't
+      # pay aarch64 evaluation/derivation overhead when no aarch64 host exists.
+      supportedSystems = lib.unique
+        (lib.attrValues (lib.mapAttrs (_: v: v.hostPlatform) nixhomeserverSettings));
+      forAllSystems = lib.genAttrs supportedSystems;
       workerIsoConfigurations = lib.mapAttrs
         (_: hostVars: mkWorkerIso "x86_64-linux" hostVars)
         nixhomeserverSettings;
@@ -110,6 +113,13 @@
           inherit nixosConfigurations bootstrapConfigurations nixhomeserverSettings;
           inherit (packageData) rustApps nodeApps;
         };
+      mkVmTests = system: enabledApps:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        import ./flake/vm-tests.nix {
+          inherit lib pkgs enabledApps;
+        };
     in
     {
       nixosConfigurations = nixosConfigurations // bootstrapConfigurations;
@@ -127,6 +137,14 @@
         (system: mkChecks system vars.enabledApps false);
       legacyPackages = forAllSystems (system: {
         nixhomeserverAllChecks = mkChecks system allAppNames true;
+      });
+      # Heavy VM-boot tests live under hydraJobs (recognized by `nix flake
+      # check` but never built by it) so the lean validation gate and
+      # `nix flake check` (build mode) stay fast. validate-repo.sh --full still
+      # builds them explicitly.
+      hydraJobs = forAllSystems (system: {
+        vmTests = mkVmTests system vars.enabledApps;
+        vmTestsAll = mkVmTests system allAppNames;
       });
       devShells = forAllSystems
         (system:

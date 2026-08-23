@@ -65,6 +65,7 @@ transaction_complete=false
 active_activation_unit=""
 activation_poll_attempts=1200
 activation_poll_interval=2
+activation_terminal_confirmations_required=3
 
 human_bytes() {
   local bytes="$1"
@@ -574,6 +575,7 @@ run_detached_activation() {
   local mode="$2"
   local label="$3"
   local marker_guard recovery_complete_marker unit unit_content state="" result status start_command recovery_marker
+  local terminal_confirmations=0 terminal_confirmed=false
 
   deploy_validate_toplevel_path "$toplevel" || return 1
   [[ "$mode" == "test" || "$mode" == "boot" ]] || return 1
@@ -604,10 +606,20 @@ ExecStart=${toplevel}/bin/switch-to-configuration ${mode}"
     state="$(target_command "systemctl show -P ActiveState $(printf '%q' "$unit") 2>/dev/null")"
     case "$state" in
       active|activating|reloading|deactivating)
+        terminal_confirmations=0
         sleep "$activation_poll_interval"
         ;;
       inactive|failed)
-        break
+        terminal_confirmations=$((terminal_confirmations + 1))
+        if ((terminal_confirmations >= activation_terminal_confirmations_required)); then
+          terminal_confirmed=true
+          break
+        fi
+        # systemd can briefly report a runtime activation unit as inactive
+        # while switch-to-configuration re-executes the manager. Require a
+        # stable terminal state so that transient window cannot truncate the
+        # activation and be mistaken for successful completion.
+        sleep "$activation_poll_interval"
         ;;
       *)
         echo "blocked: detached ${label} activation returned unknown state '${state}'" >&2
@@ -617,7 +629,7 @@ ExecStart=${toplevel}/bin/switch-to-configuration ${mode}"
     esac
   done
 
-  if [[ "$state" == "active" || "$state" == "activating" || "$state" == "reloading" || "$state" == "deactivating" ]]; then
+  if [[ "$terminal_confirmed" != "true" ]]; then
     echo "blocked: detached ${label} activation timed out" >&2
     quiesce_active_activation || true
     return 1

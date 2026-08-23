@@ -10,7 +10,7 @@ let
   disableConsentCommands = lib.concatStringsSep "\n"
     (map
       (clientName: ''
-        ${pkgs.kanidm_1_10}/bin/kanidm system oauth2 disable-consent-prompt \
+        ${pkgs.kanidm_1_11}/bin/kanidm system oauth2 disable-consent-prompt \
           -H ${kanidmCliUrl} \
           -D idm_admin \
           ${lib.escapeShellArg clientName}
@@ -21,7 +21,7 @@ let
     runtimeInputs = with pkgs; [
       coreutils
       gnugrep
-      kanidm_1_10
+      kanidm_1_11
     ];
     text = ''
             set -euo pipefail
@@ -172,7 +172,7 @@ in
     server.enable = true;
     client.enable = true;
     client.settings.uri = vars.kanidmBaseUrl;
-    package = pkgs.kanidmWithSecretProvisioning_1_10;
+    package = pkgs.kanidmWithSecretProvisioning_1_11;
 
     server.settings = {
       origin = "https://${vars.kanidmDomain}";
@@ -222,7 +222,7 @@ in
       KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
       export KANIDM_PASSWORD
 
-      ${pkgs.kanidm_1_10}/bin/kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
+      ${pkgs.kanidm_1_11}/bin/kanidm login -H ${kanidmCliUrl} -D idm_admin >/dev/null
 
       ${disableConsentCommands}
     '';

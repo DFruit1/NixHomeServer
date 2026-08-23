@@ -15,7 +15,7 @@ let
     coreutils
     gnugrep
     jq
-    kanidm_1_10
+    kanidm_1_11
     postgresql
     util-linux
   ];

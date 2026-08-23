@@ -11,6 +11,27 @@ invalid_log="$(mktemp)"
 cleanup() { rm -f "$invalid_log"; }
 trap cleanup EXIT
 
+kanidm_package_version="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --raw --impure --expr '
+  let
+    f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");
+    hostName = builtins.getEnv "NIXHOMESERVER_TEST_HOST";
+  in (builtins.getAttr hostName f.nixosConfigurations).config.services.kanidm.package.version
+')"
+if [[ "$kanidm_package_version" != "1.11.1" ]]; then
+  echo "❌ Kanidm must use the latest stable version pinned by nixpkgs (expected 1.11.1, got ${kanidm_package_version})."
+  exit 1
+fi
+unexpected_kanidm_package_refs="$(
+  rg -n 'kanidm(_1_[0-9]+|WithSecretProvisioning_1_[0-9]+)' modules \
+    | rg -v 'kanidm(_1_11|WithSecretProvisioning_1_11)' \
+    || true
+)"
+if [[ -n "$unexpected_kanidm_package_refs" ]]; then
+  echo "❌ All Kanidm server and CLI package references must use the 1.11 release family."
+  printf '%s\n' "$unexpected_kanidm_package_refs"
+  exit 1
+fi
+
 identity_json="$(NIXHOMESERVER_TEST_HOST="$host" nix eval --json --impure --expr '
   let
     f = builtins.getFlake (builtins.getEnv "NIXHOMESERVER_FLAKE_REF_FOR_EVAL");

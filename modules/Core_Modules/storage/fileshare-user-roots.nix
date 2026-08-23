@@ -58,7 +58,7 @@ let
     findutils
     getent
     jq
-    kanidm_1_10
+    kanidm_1_11
     systemd
     util-linux
   ];
@@ -281,7 +281,7 @@ let
       local group_json members
 
       if ! group_json="$(
-        ${pkgs.kanidm_1_10}/bin/kanidm group get \
+        ${pkgs.kanidm_1_11}/bin/kanidm group get \
           "$group_name" \
           -H ${kanidmCliUrl} \
           -D idm_admin \
@@ -329,7 +329,7 @@ let
     ensure_posix_account() {
       local username="$1"
 
-      ${pkgs.kanidm_1_10}/bin/kanidm person posix set \
+      ${pkgs.kanidm_1_11}/bin/kanidm person posix set \
         "$username" \
         --shell ${lib.escapeShellArg "${pkgs.bashInteractive}/bin/bash"} \
         -H ${kanidmCliUrl} \
@@ -403,7 +403,7 @@ let
       fi
     }
 
-    ${pkgs.kanidm_1_10}/bin/kanidm login \
+    ${pkgs.kanidm_1_11}/bin/kanidm login \
         -H ${kanidmCliUrl} \
         -D idm_admin >/dev/null
 

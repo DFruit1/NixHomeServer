@@ -428,14 +428,14 @@ let
     export HOME="$identity_home"
     KANIDM_PASSWORD="$(< ${config.age.secrets.kanidmAdminPass.path})"
     export KANIDM_PASSWORD
-    ${pkgs.kanidm_1_10}/bin/kanidm login \
+    ${pkgs.kanidm_1_11}/bin/kanidm login \
       -H ${lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}"} \
       -D idm_admin >/dev/null
 
     snapshot_enrollment_group() {
       local group_name="$1"
       local group_json
-      if ! group_json="$(${pkgs.kanidm_1_10}/bin/kanidm group get \
+      if ! group_json="$(${pkgs.kanidm_1_11}/bin/kanidm group get \
         "$group_name" \
         -H ${lib.escapeShellArg "https://${vars.kanidmDomain}:${toString vars.networking.ports.kanidm}"} \
         -D idm_admin \

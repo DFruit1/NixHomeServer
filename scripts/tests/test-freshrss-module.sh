@@ -320,6 +320,11 @@ printf '%s\n' '<?php return [];' > "$test_state/config.php"
 sqlite3 "$test_state/users/a/db.sqlite" "CREATE TABLE feeds (id INTEGER PRIMARY KEY, title TEXT); INSERT INTO feeds(title) VALUES ('fixture');"
 
 backup_fragment="$(jq -r .backupPrepare <<<"$freshrss_json")"
+if [[ "$backup_fragment" != *"DATA_PATH="* ]] \
+  || [[ "$backup_fragment" == *"FRESHRSS_DATA_PATH="* ]]; then
+  echo "❌ FreshRSS's upstream backup CLI must receive its supported DATA_PATH environment variable."
+  exit 1
+fi
 backup_fragment="${backup_fragment//\/var\/lib\/freshrss/$test_state}"
 fragment_file="$test_tmp/freshrss-backup-fragment.sh"
 printf '%s\n' "$backup_fragment" > "$fragment_file"

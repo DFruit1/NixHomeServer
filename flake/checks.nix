@@ -131,10 +131,6 @@ let
   offlineInputSourcesFile = pkgs.writeText
     "nixhomeserver-offline-flake-inputs.json"
     (builtins.toJSON offlineInputSources);
-  nixosTests = import ./nixos-tests.nix { inherit lib pkgs; };
-  selectedNixosTests = lib.filterAttrs
-    (name: _: name != "jellyfin-oidc" || hasApp "jellyfin")
-    nixosTests;
 in
 {
   media-manager-package = rustApps.media-manager.package;
@@ -237,5 +233,4 @@ in
 // lib.optionalAttrs (hasApp "youtube-downloader") {
   youtube-downloader = nodeApps.youtube-downloader;
 }
-// selectedNixosTests
-  // rustChecks
+// rustChecks

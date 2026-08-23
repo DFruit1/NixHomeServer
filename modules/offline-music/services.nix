@@ -20,7 +20,7 @@ let
       curl
       findutils
       jq
-      kanidm_1_10
+      kanidm_1_11
       libxml2
       systemd
       util-linux

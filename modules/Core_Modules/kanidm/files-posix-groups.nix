@@ -16,7 +16,7 @@ let
   kanidmFilesPosixGroupsPath = with pkgs; [
     coreutils
     gnugrep
-    kanidm_1_10
+    kanidm_1_11
   ];
   retiredPosixGroups = {
     user-files = vars.fileAccessPosixGids.${vars.fileAccess.webAccessGroup};
