@@ -241,12 +241,12 @@ struct AccountPaths {
 #[derive(Clone, Debug)]
 struct AccountProgressSnapshotRecord {
     account_id: i64,
-    archived_message_count: usize,
-    indexed_message_count: usize,
-    pending_index_count: usize,
-    index_coverage_percent: usize,
-    archive_file_count: usize,
-    overlap_file_count: usize,
+    archived_message_count: i64,
+    indexed_message_count: i64,
+    pending_index_count: i64,
+    index_coverage_percent: i64,
+    archive_file_count: i64,
+    overlap_file_count: i64,
     last_computed_at: String,
     source_sync_finished_at: Option<String>,
     snapshot_status: String,
@@ -625,12 +625,12 @@ struct DashboardAccountView {
 
 #[derive(Clone, Debug, Default)]
 struct AccountProgressCounts {
-    archived_message_count: usize,
-    indexed_message_count: usize,
-    pending_index_count: usize,
-    index_coverage_percent: usize,
-    archive_file_count: usize,
-    overlap_file_count: usize,
+    archived_message_count: i64,
+    indexed_message_count: i64,
+    pending_index_count: i64,
+    index_coverage_percent: i64,
+    archive_file_count: i64,
+    overlap_file_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1115,7 +1115,7 @@ struct AttachmentPaperlessTask {
     schedule_time: String,
     schedule_mode: String,
     interval_minutes: i64,
-    max_attachments: usize,
+    max_attachments: i64,
     retry_enabled: bool,
     enabled: bool,
     last_run_date: Option<String>,
@@ -1123,9 +1123,9 @@ struct AttachmentPaperlessTask {
     last_summary: Option<String>,
     last_status: Option<String>,
     next_retry_at: Option<String>,
-    consecutive_failures: usize,
-    successful_runs: usize,
-    failed_runs: usize,
+    consecutive_failures: i64,
+    successful_runs: i64,
+    failed_runs: i64,
 }
 
 #[tokio::main]
@@ -4276,12 +4276,12 @@ fn build_dashboard_account_view(
             status_label: status_label.to_string(),
             index_label: account_index_label(index_state).to_string(),
             last_activity,
-            archived_message_count: counts.archived_message_count,
-            indexed_message_count: counts.indexed_message_count,
-            pending_index_count: counts.pending_index_count,
-            index_coverage_percent: counts.index_coverage_percent,
-            archive_file_count: counts.archive_file_count,
-            overlap_file_count: counts.overlap_file_count,
+            archived_message_count: counts.archived_message_count as usize,
+            indexed_message_count: counts.indexed_message_count as usize,
+            pending_index_count: counts.pending_index_count as usize,
+            index_coverage_percent: counts.index_coverage_percent as usize,
+            archive_file_count: counts.archive_file_count as usize,
+            overlap_file_count: counts.overlap_file_count as usize,
             progress_note,
             overlap_note,
             last_sync_error,
@@ -4409,12 +4409,12 @@ fn progress_counts(
         .checked_div(archived_message_count)
         .unwrap_or_else(|| usize::from(indexed_message_count > 0) * 100);
     AccountProgressCounts {
-        archived_message_count,
-        indexed_message_count,
-        pending_index_count,
-        index_coverage_percent,
-        archive_file_count: inventory.archive_file_count,
-        overlap_file_count: inventory.overlap_file_count,
+        archived_message_count: archived_message_count as i64,
+        indexed_message_count: indexed_message_count as i64,
+        pending_index_count: pending_index_count as i64,
+        index_coverage_percent: index_coverage_percent as i64,
+        archive_file_count: inventory.archive_file_count as i64,
+        overlap_file_count: inventory.overlap_file_count as i64,
     }
 }
 

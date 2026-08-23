@@ -1,8 +1,11 @@
-{ lib, pkgs, crane }:
+{ lib, pkgs, crane, pkgsUnstable ? pkgs }:
 
 let
-  craneLib = crane.mkLib pkgs;
-  toolchain = import ./toolchain.nix { inherit pkgs; };
+  # Use unstable Rust toolchain (1.97+) so kanidm 1.11.1 crates requiring
+  # rustc 1.96 build; system pkgs remain on nixos-26.05 for stability.
+  rustPkgs = pkgsUnstable;
+  craneLib = crane.mkLib rustPkgs;
+  toolchain = import ./toolchain.nix { pkgs = rustPkgs; };
   mkRustShell = import ./mk-rust-shell.nix {
     inherit lib craneLib toolchain;
   };

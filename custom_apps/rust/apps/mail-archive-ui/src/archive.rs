@@ -2202,16 +2202,16 @@ pub(super) fn normalize_paperless_schedule(
     }
 }
 
-pub(super) fn normalize_paperless_task_max_attachments(raw: Option<&str>) -> Result<usize, String> {
+pub(super) fn normalize_paperless_task_max_attachments(raw: Option<&str>) -> Result<i64, String> {
     let trimmed = raw.unwrap_or("").trim();
     let value = if trimmed.is_empty() {
-        DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS
+        DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS as i64
     } else {
         trimmed
-            .parse::<usize>()
+            .parse::<i64>()
             .map_err(|_| "Maximum attachments per run must be a whole number.".to_string())?
     };
-    if !(1..=MAX_PAPERLESS_TASK_ATTACHMENTS).contains(&value) {
+    if !(1..=(MAX_PAPERLESS_TASK_ATTACHMENTS as i64)).contains(&value) {
         return Err(format!(
             "Maximum attachments per run must be between 1 and {MAX_PAPERLESS_TASK_ATTACHMENTS}."
         ));
@@ -2323,7 +2323,7 @@ pub(super) fn save_attachment_paperless_task_for_user(
                 schedule_mode,
                 interval_minutes,
                 max_attachments,
-                if retry_enabled { 1 } else { 0 },
+                if retry_enabled { 1i64 } else { 0i64 },
                 now,
             ],
         )
@@ -2379,7 +2379,7 @@ pub(super) fn set_attachment_paperless_task_enabled(
             SET enabled = ?3, updated_at = ?4
             WHERE username = ?1 AND id = ?2
             "#,
-            params![username, task_id, if enabled { 1 } else { 0 }, now],
+            params![username, task_id, if enabled { 1i64 } else { 0i64 }, now],
         )
         .map_err(|error| format!("failed to update Paperless task: {error}"))?;
     if updated == 0 {

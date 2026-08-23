@@ -24,9 +24,10 @@
       mkPackageData = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          pkgsUnstable = inputs.nixpkgs-unstable.legacyPackages.${system};
         in
         import ./flake/packages.nix {
-          inherit lib pkgs crane;
+          inherit lib pkgs pkgsUnstable crane;
         };
       # Compute package data once per system and reuse it everywhere it is
       # needed (hosts, checks, dev shells, worker ISO) instead of re-importing

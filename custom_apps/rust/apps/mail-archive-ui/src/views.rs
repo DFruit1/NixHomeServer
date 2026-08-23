@@ -850,7 +850,7 @@ pub(super) fn render_preset_auto_export(
     let interval_minutes = task.map(|task| task.interval_minutes).unwrap_or(60);
     let max_attachments = task
         .map(|task| task.max_attachments)
-        .unwrap_or(DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS);
+        .unwrap_or(DEFAULT_PAPERLESS_TASK_MAX_ATTACHMENTS as i64);
     let retry_enabled = task.is_none_or(|task| task.retry_enabled);
     writeln!(
         &mut html,

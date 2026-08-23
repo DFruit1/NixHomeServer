@@ -81,9 +81,10 @@ let
   effectiveCargoExtraArgs = lib.trim "${cargoExtraArgs} ${workspaceCargoExtraArgs}";
 
   commonArgs = {
-    inherit version effectiveCargoExtraArgs nativeBuildInputs buildInputs;
+    inherit version nativeBuildInputs buildInputs;
     pname = name;
     strictDeps = true;
+    cargoExtraArgs = effectiveCargoExtraArgs;
   };
 
   cargoArtifacts = if sharedCargoArtifacts != null

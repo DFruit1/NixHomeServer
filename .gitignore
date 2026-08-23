@@ -10,6 +10,7 @@
 /result
 /rebuild.log
 /.cache/
+/custom_apps/target/
 /custom_apps/rust/apps/*/target/
 /custom_apps/rust/_archive/*/target/
 /custom_apps/rust/_archive/kanidm-admin/

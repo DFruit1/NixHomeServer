@@ -44,6 +44,8 @@ let
     filter = workspaceFilter;
   };
   cargoLock = ../../Cargo.lock;
+  # buildDepsOnly checks every workspace member in one derivation, so it must
+  # carry the union of the per-app build inputs (rusqlite links system sqlite).
   sharedCargoArtifacts = craneLib.buildDepsOnly {
     src = workspaceSrc;
     inherit cargoLock;
@@ -51,6 +53,8 @@ let
     pname = "nixhomeserver-rust-workspace-deps";
     version = "0.1.0";
     strictDeps = true;
+    nativeBuildInputs = [ pkgs.pkg-config ];
+    buildInputs = [ pkgs.sqlite ];
   };
 in
 assert builtins.readFile (mailFrontend + "/pnpm-lock.yaml")

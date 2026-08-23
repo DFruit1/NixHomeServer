@@ -78,7 +78,8 @@ pub(super) fn claim_paperless_task(config: &AppConfig, task_id: i64) -> Result<b
     Ok(updated == 1)
 }
 
-pub(super) fn paperless_retry_delay_minutes(consecutive_failures: usize) -> i64 {
+pub(super) fn paperless_retry_delay_minutes(consecutive_failures: i64) -> i64 {
+    let consecutive_failures = consecutive_failures as usize;
     let exponent = u32::try_from(consecutive_failures.saturating_sub(1).min(10)).unwrap_or(10);
     PAPERLESS_TASK_RETRY_BASE_MINUTES
         .saturating_mul(2_i64.saturating_pow(exponent))
@@ -144,7 +145,7 @@ pub(super) fn record_paperless_task_run(
                 result.status,
                 next_retry_at,
                 consecutive_failures,
-                if task.retry_enabled { 1 } else { 0 },
+                if task.retry_enabled { 1i64 } else { 0i64 },
             ],
         )
         .map_err(|error| format!("failed to record Paperless task run: {error}"))?;
@@ -163,10 +164,10 @@ pub(super) fn record_paperless_task_run(
                 started_at,
                 now,
                 result.status,
-                result.handoff.sent,
-                result.handoff.already_uploaded,
-                result.handoff.skipped,
-                result.handoff.failures.len(),
+                result.handoff.sent as i64,
+                result.handoff.already_uploaded as i64,
+                result.handoff.skipped as i64,
+                result.handoff.failures.len() as i64,
                 result.summary,
             ],
         )
@@ -201,7 +202,7 @@ pub(super) fn run_due_paperless_tasks(config: &AppConfig) -> Result<bool, String
             config,
             &task.username,
             &task.query,
-            task.max_attachments,
+            task.max_attachments as usize,
         );
         let run_result = match result {
             Ok(handoff) => {
