@@ -33,7 +33,7 @@ export const DetailedGuideOverview = component$(({ enabledServiceCount }: { enab
 
     <section>
       <h3>Profile preferences</h3>
-      <p>“Show unused apps in Services” controls inactive launcher cards. “Show unused apps in Detailed Guide” independently reveals reference topics for apps and file workflows that are not currently enabled. Both preferences are off by default and are stored only in this browser profile.</p>
+      <p>“Show inactive apps in Services” controls inactive launcher cards. “Show unused apps in Detailed Guide” independently reveals reference topics for apps and file workflows that are not currently enabled. Both preferences are off by default and are stored only in this browser profile.</p>
     </section>
 
     <section>

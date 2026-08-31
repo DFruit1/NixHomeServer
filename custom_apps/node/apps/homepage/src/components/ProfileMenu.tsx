@@ -99,7 +99,7 @@ export const ProfileMenu = component$(
             <h3>Preferences</h3>
             <label>
               <input type="checkbox" checked={showUnusedApps.value} onChange$={updateShowUnusedApps} />
-              <span>Show unused apps in Services</span>
+              <span>Show inactive apps in Services</span>
             </label>
             <label>
               <input type="checkbox" checked={showUnusedAppsInDetailedGuide.value} onChange$={updateShowUnusedAppsInDetailedGuide} />

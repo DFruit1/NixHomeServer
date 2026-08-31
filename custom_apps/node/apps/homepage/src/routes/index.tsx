@@ -8,10 +8,9 @@ export default component$(() => {
   const data = homepage.data;
   const showUnusedApps = useSignal(false);
   const clickServiceCardsToOpen = useSignal(false);
-  const allServices = data?.services ?? [];
   const services = data?.services.filter((service) => service.enabled) ?? [];
   const disabledServices = data?.services.filter((service) => !service.enabled) ?? [];
-  const servicesToShow = showUnusedApps.value ? allServices : services;
+  const servicesToShow = showUnusedApps.value ? disabledServices : services;
   const selectedServiceId = useSignal('');
   const selectedService = services.find((service) => service.id === selectedServiceId.value);
 
@@ -57,7 +56,7 @@ export default component$(() => {
         {!showUnusedApps.value && disabledServices.length > 0 && (
           <div class="disabled-list">
             <h3>Not enabled</h3>
-            <p>Open the profile menu and turn on Show unused apps in Services to see inactive app cards.</p>
+            <p>Open the profile menu and turn on Show inactive apps in Services to see inactive app cards.</p>
           </div>
         )}
       </section>

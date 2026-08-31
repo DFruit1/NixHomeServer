@@ -439,8 +439,9 @@ test('detailed guide provides a hierarchical index and independently reveals unu
   await page.getByRole('link', { name: 'Services', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Passwords is not active' })).toHaveCount(0);
   await page.locator('summary.profile-trigger').click();
-  await page.getByLabel('Show unused apps in Services').check();
+  await page.getByLabel('Show inactive apps in Services').check();
   await expect(page.getByRole('button', { name: 'Passwords is not active' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Photos service information' })).toHaveCount(0);
 });
 
 test('unused SSHFS guidance hides connection details from accounts without SSHFS access', async ({ page }) => {
