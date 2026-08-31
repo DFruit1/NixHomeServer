@@ -12,7 +12,7 @@ export default component$(() => {
   const disabledServices = data?.services.filter((service) => !service.enabled) ?? [];
   const servicesToShow = showUnusedApps.value ? disabledServices : services;
   const selectedServiceId = useSignal('');
-  const selectedService = services.find((service) => service.id === selectedServiceId.value);
+  const selectedService = servicesToShow.find((service) => service.id === selectedServiceId.value);
 
   useVisibleTask$(({ cleanup }) => {
     showUnusedApps.value = window.localStorage.getItem('homepage.showUnusedApps') === 'true';
