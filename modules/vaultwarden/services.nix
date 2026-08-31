@@ -1,4 +1,4 @@
-{ pkgs, vars, ... }:
+{ unstablePkgs, vars, ... }:
 
 let
   vaultwardenPort = vars.networking.ports.vaultwarden;
@@ -10,8 +10,8 @@ in
   config = {
     services.vaultwarden = {
       enable = true;
-      package = pkgs.vaultwarden;
-      webVaultPackage = pkgs.vaultwarden.webvault;
+      package = unstablePkgs.vaultwarden;
+      webVaultPackage = unstablePkgs.vaultwarden.webvault;
       dbBackend = "sqlite";
       environmentFile = [ environmentFile ];
       config = {
