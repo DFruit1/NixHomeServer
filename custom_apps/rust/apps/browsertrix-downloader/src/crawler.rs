@@ -18,6 +18,9 @@ pub fn build_crawl_args(
         // namespace. Keep the container's network and filesystem isolation,
         // but reuse the host PID namespace so crun does not need that mount.
         "--pid=host".into(),
+        // The service sandbox prevents changing the hostname when the UTS
+        // namespace is private, so share it with the host as well.
+        "--uts=host".into(),
         "-v".into(),
         format!("{}:/crawls", crawl_dir.display()).into(),
         "--network=slirp4netns:allow_host_loopback=false".into(),

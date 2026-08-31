@@ -42,6 +42,7 @@ fn crawler_arguments_follow_the_documented_container_contract() {
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--generateWACZ")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--cap-add=SYS_ADMIN")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--pid=host")));
+    assert!(strings.contains(&std::borrow::Cow::Borrowed("--uts=host")));
     assert!(!strings.contains(&std::borrow::Cow::Borrowed("--init")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed(
         "--network=slirp4netns:allow_host_loopback=false"
