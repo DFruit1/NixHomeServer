@@ -41,6 +41,7 @@ fn crawler_arguments_follow_the_documented_container_contract() {
     assert_eq!(value_after(&strings, "--timeLimit"), "600");
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--generateWACZ")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed("--cap-add=SYS_ADMIN")));
+    assert!(strings.contains(&std::borrow::Cow::Borrowed("--pid=host")));
     assert!(strings.contains(&std::borrow::Cow::Borrowed(
         "--network=slirp4netns:allow_host_loopback=false"
     )));

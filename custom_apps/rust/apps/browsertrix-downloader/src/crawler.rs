@@ -14,6 +14,10 @@ pub fn build_crawl_args(
         "--shm-size=1g".into(),
         "--cap-add=SYS_ADMIN".into(),
         "--security-opt=seccomp=unconfined".into(),
+        // The host kernel rejects procfs mounts from this rootless user
+        // namespace. Keep the container's network and filesystem isolation,
+        // but reuse the host PID namespace so crun does not need that mount.
+        "--pid=host".into(),
         "-v".into(),
         format!("{}:/crawls", crawl_dir.display()).into(),
         "--network=slirp4netns:allow_host_loopback=false".into(),
