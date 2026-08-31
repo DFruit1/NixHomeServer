@@ -129,7 +129,9 @@ const closeSession = (sessionId) => request(`/session/${sessionId}`, 'DELETE').c
 const reload = (sessionId) => request(sessionPath(sessionId, '/refresh'), 'POST', {});
 
 export const isBlankRender = ({ textLength = 0, visibleElements = 0, richElements = 0 } = {}) =>
-  visibleElements === 0 || (textLength < 20 && richElements === 0);
+  visibleElements === 0
+  || (textLength < 20 && richElements === 0)
+  || (textLength === 0 && richElements === 1);
 
 const pageMetricsScript = String.raw`
 const visible = (element) => {

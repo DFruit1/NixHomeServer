@@ -495,6 +495,26 @@ in
             "$@"
         }
 
+        wait_for_authenticated_library_api() {
+          local response
+
+          for _ in $(seq 1 90); do
+            if response="$(
+              curl_jellyfin \
+                --max-time 5 \
+                "$base_url/Library/VirtualFolders" \
+                2>/dev/null
+            )" && jq -e 'type == "array"' >/dev/null <<<"$response"; then
+              virtual_folders="$response"
+              return 0
+            fi
+            sleep 1
+          done
+
+          echo "Jellyfin authenticated library API is not ready yet; retrying library bootstrap." >&2
+          return 1
+        }
+
         refresh_virtual_folders() {
           virtual_folders="$(
             curl_jellyfin "$base_url/Library/VirtualFolders"
@@ -627,7 +647,7 @@ in
           refresh_virtual_folders
         }
 
-        refresh_virtual_folders
+        wait_for_authenticated_library_api
 
         while IFS=$'\t' read -r name path; do
           [[ -n "$name" && -n "$path" ]] || continue
@@ -875,6 +895,7 @@ in
         Type = "oneshot";
         Restart = "on-failure";
         RestartSec = "5s";
+        TimeoutStartSec = "4m";
       };
       unitConfig = lib.mkMerge [
         { RequiresMountsFor = [ vars.dataRoot ]; }

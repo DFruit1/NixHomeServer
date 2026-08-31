@@ -3,7 +3,7 @@
 {
   services.kanidm.provision.systems.oauth2.kopia-web = {
     displayName = "Kopia";
-    imageFile = ../kanidm/assets/portal.svg;
+    imageFile = ../kanidm/assets/apps/kopia.svg;
     originUrl = "https://${vars.kopiaDomain}/oauth2/callback";
     originLanding = "https://${vars.kopiaDomain}";
     basicSecretFile = config.age.secrets.kopiaOauth2ProxyClientSecret.path;

@@ -15,7 +15,7 @@ in
 
       systems.oauth2.kavita-web = {
         displayName = "Books";
-        imageFile = ../Core_Modules/kanidm/assets/books.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/kavita.svg;
         originUrl = [
           "https://${host}/signin-oidc"
           "https://${host}/signout-callback-oidc"

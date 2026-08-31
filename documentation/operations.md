@@ -936,6 +936,12 @@ Immich sharing flow:
 2. Create an album or photo share link
 3. Send the generated public share URL to recipients.
 
+## Browsertrix Downloader Operations
+
+The service boundary, storage paths, crawler isolation policy, image update
+procedure, and recovery behavior are documented in
+[`browsertrix-downloader.md`](browsertrix-downloader.md).
+
 ## Mail Archive Operations
 
 The mail archive UI stays private. `mail-archive-users` grants browser access to

@@ -3,7 +3,7 @@
 {
   services.kanidm.provision.systems.oauth2.monitor-web = {
     displayName = "Monitor";
-    imageFile = ../Core_Modules/kanidm/assets/portal.svg;
+    imageFile = ../Core_Modules/kanidm/assets/apps/beszel.svg;
     originUrl = "https://${vars.monitorDomain}/oauth2/callback";
     originLanding = "https://${vars.monitorDomain}";
     basicSecretFile = config.age.secrets.monitorOauth2ProxyClientSecret.path;

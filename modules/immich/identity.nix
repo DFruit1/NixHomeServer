@@ -22,7 +22,7 @@ in
 
       systems.oauth2.immich-web = {
         displayName = "Photos";
-        imageFile = ../Core_Modules/kanidm/assets/photos.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/immich.svg;
         originUrl = [
           "https://${host}/auth/login"
           "https://${host}/user-settings"

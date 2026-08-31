@@ -35,6 +35,7 @@ let
 
   hasApp = name: builtins.elem name enabledApps;
   rustAppOwners = {
+    browsertrix-downloader = "browsertrix-downloader";
     kanidm-canary-bootstrap = null;
     mail-archive-ui = "mail-archive-ui";
     media-manager = null;
@@ -230,7 +231,10 @@ in
 // lib.optionalAttrs (hasApp "mkvmaker") {
   mkvmaker-package = rustApps.mkvmaker.package;
 }
+// lib.optionalAttrs (hasApp "browsertrix-downloader") {
+  browsertrix-downloader = rustApps.browsertrix-downloader.package;
+}
 // lib.optionalAttrs (hasApp "youtube-downloader") {
   youtube-downloader = nodeApps.youtube-downloader;
 }
-// rustChecks
+  // rustChecks

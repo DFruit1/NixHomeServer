@@ -5,14 +5,12 @@ let
   kanidmCliUrl = "https://${vars.kanidmDomain}:${toString kanidmPort}";
   hasModule = name: config.nixhomeserver.modules.${name} or false;
   moduleEnabled = name: hasModule name && (config.repo.${name}.enable or true);
-  homepageEnabled = hasModule "homepage";
   mailArchiveEnabled =
     hasModule "mail-archive-ui"
     && config.services.mail-archive-ui.enable;
   seerrEnabled = moduleEnabled "seerr";
   beszelEnabled = hasModule "beszel";
   mediaAutomationEnabled = lib.any moduleEnabled [ "chaptarr" "sonarr" "radarr" "prowlarr" "qbittorrent" "seerr" ];
-  portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
   appPersonNames = lib.unique (
     vars.kanidmAppUsers
     ++ vars.kanidmAppAdminUsers
@@ -227,7 +225,7 @@ in
         displayName = "NixHomeServer";
         imageFile = ./assets/portal.svg;
         originUrl = "https://${config.repo.authGateway.domain}/oauth2/callback";
-        originLanding = "https://${portalHost}";
+        originLanding = "https://${vars.domain}";
         basicSecretFile = config.age.secrets.oauth2ProxyClientSecret.path;
         preferShortUsername = true;
         scopeMaps = lib.genAttrs authGatewayScopeGroups (_: [ "openid" "profile" "email" "groups_name" ]);

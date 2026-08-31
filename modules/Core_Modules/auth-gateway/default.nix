@@ -30,6 +30,7 @@ let
   ++ lib.optionals (moduleEnabled "radarr") [ "radarr-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "sonarr") [ "sonarr-oauth2-proxy" ]
   ++ lib.optionals (hasModule "youtube-downloader") [ "youtube-downloader-oauth2-proxy" ]
+  ++ lib.optionals (moduleEnabled "browsertrix-downloader") [ "browsertrix-downloader-oauth2-proxy" ]
   ++ lib.optionals (moduleEnabled "seerr") [ "seerr-oauth2-proxy" ];
   sidecarUnits = map (name: "${name}.service") sidecarServices;
   mkApp = host: upstream: allowedGroups: {
@@ -64,6 +65,9 @@ let
   }
   // lib.optionalAttrs (hasModule "youtube-downloader") {
     downloads = mkApp "ytdownload.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.youtubeDownloader}" [ "downloads-users" ];
+  }
+  // lib.optionalAttrs (moduleEnabled "browsertrix-downloader") {
+    browsertrix = mkApp "archives.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.browsertrixDownloader}" [ "web-archive-users" ];
   }
   // lib.optionalAttrs (moduleEnabled "sonarr") {
     sonarr = mkApp "sonarr.${vars.domain}" "http://${loopback}:${toString vars.networking.ports.sonarr}" [ "media-automation-users" ];

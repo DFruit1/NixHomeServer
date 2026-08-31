@@ -12,7 +12,7 @@ const { browserErrorCode, generateTotp, hasAuthenticationBoundary, hasNativeOidc
 const cases = [
   [{ textLength: 0, visibleElements: 0, richElements: 0 }, true, 'empty HTTP 200 body'],
   [{ textLength: 12, visibleElements: 3, richElements: 0 }, true, 'near-empty visible text'],
-  [{ textLength: 0, visibleElements: 2, richElements: 1 }, false, 'visible interactive application shell'],
+  [{ textLength: 0, visibleElements: 44, richElements: 1 }, true, 'uninitialized single-image application shell'],
   [{ textLength: 40, visibleElements: 2, richElements: 0 }, false, 'meaningful rendered text'],
 ];
 for (const [metrics, expected, label] of cases) {

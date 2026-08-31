@@ -221,6 +221,9 @@ require_fixed modules/Core_Modules/media-manager/services.nix \
   'Audiobookshelf did not become ready before metadata export' \
   "Audiobookshelf metadata export must tolerate service startup latency."
 require_fixed modules/Core_Modules/media-manager/services.nix \
+  'Jellyfin did not become ready before metadata export' \
+  "Jellyfin metadata export must tolerate service startup latency."
+require_fixed modules/Core_Modules/media-manager/services.nix \
   'Kavita did not become ready before metadata export' \
   "Kavita metadata export must tolerate service startup latency."
 require_fixed modules/Core_Modules/media-manager/services.nix \

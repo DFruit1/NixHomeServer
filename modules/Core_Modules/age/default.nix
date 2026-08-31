@@ -17,6 +17,7 @@ let
   groundwaterEnabled =
     moduleEnabled "groundwater-logger"
     && config.repo.groundwaterLogger.enable;
+  browsertrixEnabled = moduleEnabled "browsertrix-downloader";
   atticEnabled = moduleEnabled "attic";
   beszelEnabled = moduleEnabled "beszel";
   failureAlertWebhookFile = secretFile "failureAlertWebhookUrl";
@@ -89,6 +90,10 @@ in
   // lib.optionalAttrs (moduleEnabled "youtube-downloader") {
     youtubeDownloaderOauth2ProxyClientSecret = { file = secretFile "youtubeDownloaderOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
     youtubeDownloaderOauth2ProxyCookieSecret = { file = secretFile "youtubeDownloaderOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
+  }
+  // lib.optionalAttrs browsertrixEnabled {
+    browsertrixDownloaderOauth2ProxyClientSecret = { file = secretFile "browsertrixDownloaderOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };
+    browsertrixDownloaderOauth2ProxyCookieSecret = { file = secretFile "browsertrixDownloaderOauth2ProxyCookieSecret"; owner = "oauth2-proxy"; mode = "0400"; };
   }
   // lib.optionalAttrs (moduleEnabled "homepage") {
     homepageOauth2ProxyClientSecret = { file = secretFile "homepageOauth2ProxyClientSecret"; owner = "kanidm"; group = "oauth2-proxy"; mode = "0440"; };

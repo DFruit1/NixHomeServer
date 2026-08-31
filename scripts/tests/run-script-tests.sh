@@ -93,6 +93,7 @@ test_scripts=(
   scripts/tests/test-bootstrap-zfs-guid-mode.sh
   scripts/tests/test-bootstrap-secret-preflight.sh
   scripts/tests/test-bootstrap-safety.sh
+  scripts/tests/test-browsertrix-downloader-module.sh
   scripts/tests/test-core-runtime-safety.sh
   scripts/tests/test-config-input-validation.sh
   scripts/tests/test-opinionated-vars.sh
@@ -104,10 +105,12 @@ test_scripts=(
   scripts/tests/test-freshrss-module.sh
   scripts/tests/test-freshness-marker.sh
   scripts/tests/test-homepage-guidance.sh
+  scripts/tests/test-portal-landing.sh
   scripts/tests/test-identity-reconcile-fail-closed.sh
   scripts/tests/test-integration-dependencies.sh
   scripts/tests/test-install-repository-seeding.sh
   scripts/tests/test-jellyfin-oidc.sh
+  scripts/tests/test-kanidm-branding.sh
   scripts/tests/test-kanidm-provision-validation.sh
   scripts/tests/test-kiwix-disable-evaluation.sh
   scripts/tests/test-kopia-cli-wrapper.sh

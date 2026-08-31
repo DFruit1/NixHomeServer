@@ -14,7 +14,7 @@ in
 
       systems.oauth2.sonarr-web = {
         displayName = "Sonarr";
-        imageFile = ../Core_Modules/kanidm/assets/videos.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/sonarr.svg;
         originUrl = "https://${host}/oauth2/callback";
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.sonarrOauth2ProxyClientSecret.path;

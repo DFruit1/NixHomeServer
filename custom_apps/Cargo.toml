@@ -2,6 +2,7 @@
 resolver = "2"
 
 members = [
+  "rust/apps/browsertrix-downloader",
   "rust/apps/kanidm-canary-bootstrap",
   "rust/apps/mail-archive-ui",
   "rust/apps/media-manager",

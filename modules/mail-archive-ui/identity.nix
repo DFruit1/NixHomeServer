@@ -20,7 +20,7 @@ in
 
       systems.oauth2.mail-archive-web = {
         displayName = "Mail Archive";
-        imageFile = ../Core_Modules/kanidm/assets/mail.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/mail-archive-ui.svg;
         originUrl = "https://${host}/oauth2/callback";
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.mailArchiveOauth2ProxyClientSecret.path;

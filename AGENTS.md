@@ -10,6 +10,17 @@ This repository defines a reproducible NixOS home-server focused on:
 
 ---
 
+## Implementation Language
+
+* Prefer Rust for new backend implementations. Use another language only when
+  there is a strong technical reason, and document that reason alongside the
+  implementation.
+* Reuse the repository's existing Rust dependencies and pinned versions where
+  they meet the implementation's needs. Add or diverge from dependencies only
+  when the existing set is not a suitable fit.
+
+---
+
 ## Git Tracking
 
 * Ensure all new git files (except for those in .gitignore) are tracked as soon as they are created to avoid visibility issues during nix rebuilds
@@ -26,6 +37,23 @@ This repository defines a reproducible NixOS home-server focused on:
 secret `serverBootstrapSudoPassword`, which materializes at
 `/run/agenix/serverBootstrapSudoPassword` on the server. If an interactive sudo
 prompt is unavoidable, refer to that secret rather than relying on memory.
+
+---
+
+## Phone Wi-Fi Access Troubleshooting
+
+Private application hosts such as Photos and Videos are served through the
+LAN/NetBird DNS and are not public Cloudflare routes. If a phone can reach an
+application over NetBird but a host that previously worked stops responding on
+home Wi-Fi, first suspect the phone's resolver or VPN state rather than the
+NixOS service. Toggle Wi-Fi off and on; if needed, connect NetBird, confirm the
+application works, disconnect NetBird, and retry. This can force the phone to
+reinitialize its VPN/DNS state and restore the normal Wi-Fi resolver.
+
+If the reset helps, check that the phone's Wi-Fi DNS is the home router or the
+server's LAN DNS, and that the phone is not on a guest or client-isolated SSID.
+Do not publish a private application hostname or alter the Cloudflare tunnel as
+a workaround without first confirming the DNS and LAN path.
 
 ---
 

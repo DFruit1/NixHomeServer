@@ -68,6 +68,14 @@
       description = "Cookie secret for the YouTube downloader OAuth2 Proxy.";
       bytes = 32;
     };
+    browsertrixDownloaderOauth2ProxyClientSecret = {
+      description = "OIDC client secret for the Browsertrix Downloader OAuth2 Proxy.";
+      bytes = 32;
+    };
+    browsertrixDownloaderOauth2ProxyCookieSecret = {
+      description = "Cookie secret for the Browsertrix Downloader OAuth2 Proxy.";
+      bytes = 32;
+    };
     homepageOauth2ProxyClientSecret = {
       description = "OIDC client secret for the home page OAuth2 Proxy.";
       bytes = 32;

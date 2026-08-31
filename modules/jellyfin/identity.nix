@@ -12,7 +12,7 @@ in
 
   services.kanidm.provision.systems.oauth2.jellyfin-web = {
     displayName = "Videos";
-    imageFile = ../Core_Modules/kanidm/assets/videos.svg;
+    imageFile = ../Core_Modules/kanidm/assets/apps/jellyfin.svg;
     originUrl = "https://${host}/sso/OIDC/Callback/kanidm";
     originLanding = "https://${host}";
     basicSecretFile = config.age.secrets.jellyfinOidcClientSecret.path;

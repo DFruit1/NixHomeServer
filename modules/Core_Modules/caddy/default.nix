@@ -14,14 +14,40 @@ let
   mailArchiveEnabled =
     hasModule "mail-archive-ui"
     && (config.services.mail-archive-ui.enable or false);
-  portalHost = if homepageEnabled then "homepage.${vars.domain}" else vars.kanidmDomain;
+  homepageHost = "homepage.${vars.domain}";
+  homepageLandingUrl = "https://${homepageHost}";
+  fallbackLandingUrl = "https://${vars.kanidmDomain}/ui/apps";
+  rootLandingConfig =
+    if homepageEnabled then
+      ''
+        ${accessLogConfig}
+        handle_errors {
+          redir ${fallbackLandingUrl} 302
+        }
+        reverse_proxy http://${loopback}:${toString ports.homepage} {
+          method GET
+          rewrite /healthz
+          @healthy status 200
+          handle_response @healthy {
+            redir ${homepageLandingUrl}{uri} 302
+          }
+          handle_response {
+            redir ${fallbackLandingUrl} 302
+          }
+        }
+      ''
+    else
+      ''
+        ${accessLogConfig}
+        redir ${fallbackLandingUrl} 302
+      '';
   # Optional applications register their real virtual hosts in their own
   # modules. Only publish convenience aliases for applications that actually
   # contributed a runtime unit, so removing an app module cannot leave an
   # alias pointing at a non-existent virtual host.
   shortAliasLongHosts =
     [ vars.kopiaDomain ]
-    ++ lib.optionals homepageEnabled [ "homepage.${vars.domain}" ]
+    ++ lib.optionals homepageEnabled [ homepageHost ]
     ++ lib.optionals (hasModule "immich") [
       "photos.${vars.domain}"
       "sharephotos.${vars.domain}"
@@ -131,19 +157,13 @@ in
       "${vars.domain}" = {
         logFormat = null;
         useACMEHost = vars.domain;
-        extraConfig = ''
-          ${accessLogConfig}
-          redir https://${portalHost}{uri} 308
-        '';
+        extraConfig = rootLandingConfig;
       };
 
       "www.${vars.domain}" = {
         logFormat = null;
         useACMEHost = vars.domain;
-        extraConfig = ''
-          ${accessLogConfig}
-          redir https://${portalHost}{uri} 308
-        '';
+        extraConfig = rootLandingConfig;
       };
 
       "${vars.kanidmDomain}" = {

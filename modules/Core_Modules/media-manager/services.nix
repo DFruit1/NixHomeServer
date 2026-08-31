@@ -251,6 +251,19 @@ let
       base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}"
       api_key_file=/var/lib/jellyfin/data/library-sync.api-key
       output=${lib.escapeShellArg jellyfinMetadataCache}
+      service_ready=0
+      for _ in $(seq 1 30); do
+        if curl --fail --silent --show-error --max-time 5 \
+          "$base_url/System/Info/Public" >/dev/null 2>&1; then
+          service_ready=1
+          break
+        fi
+        sleep 2
+      done
+      (( service_ready == 1 )) || {
+        echo "Jellyfin did not become ready before metadata export" >&2
+        exit 1
+      }
       [[ -f "$api_key_file" && ! -L "$api_key_file" ]] || exit 1
       api_key="$(tr -d '\r\n' <"$api_key_file")"
       [[ "$api_key" =~ ^[A-Za-z0-9._~-]+$ ]] || exit 1
@@ -979,7 +992,7 @@ in
       MemoryDenyWriteExecute = true;
       MemoryMax = "256M";
       TasksMax = 32;
-      TimeoutStartSec = "2m";
+      TimeoutStartSec = "3m";
       CapabilityBoundingSet = [ ];
       AmbientCapabilities = [ ];
       ReadOnlyPaths = [ "/var/lib/jellyfin/data/library-sync.api-key" ];

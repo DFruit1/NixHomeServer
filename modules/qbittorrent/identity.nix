@@ -14,7 +14,7 @@ in
 
       systems.oauth2.qbittorrent-web = {
         displayName = "Torrents";
-        imageFile = ../Core_Modules/kanidm/assets/videos.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/qbittorrent.svg;
         originUrl = "https://${host}/oauth2/callback";
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.qbittorrentOauth2ProxyClientSecret.path;

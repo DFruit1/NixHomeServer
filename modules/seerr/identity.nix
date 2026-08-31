@@ -18,7 +18,7 @@ in
 
       systems.oauth2.seerr-web = {
         displayName = "Requests";
-        imageFile = ../Core_Modules/kanidm/assets/videos.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/seerr.svg;
         originUrl = "https://${host}/oauth2/callback";
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.seerrOauth2ProxyClientSecret.path;

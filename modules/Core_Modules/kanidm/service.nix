@@ -201,6 +201,9 @@ in
       "caddy.service"
       "acme-${vars.kanidmDomain}.service"
     ];
+    serviceConfig.BindReadOnlyPaths = [
+      "${./override.css}:${config.services.kanidm.package}/ui/hpkg/override.css"
+    ];
   };
 
   systemd.services.kanidm-disable-consent-prompt = lib.mkIf (oauth2ClientsForConsentPrompt != { }) {

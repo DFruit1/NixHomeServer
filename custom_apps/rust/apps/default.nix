@@ -25,7 +25,7 @@ let
   };
 
   # --- Shared Cargo workspace -------------------------------------------------
-  # The three rust/apps members share a single source tree and prebuilt
+  # The rust/apps members share a single source tree and prebuilt
   # dependency artifacts, so common crates (tokio/axum/serde/rusqlite/…)
   # compile only once instead of once per crate. mkvmaker keeps its own
   # standalone build (it has a separate flake and edition 2024).
@@ -61,6 +61,10 @@ assert builtins.readFile (mailFrontend + "/pnpm-lock.yaml")
   == builtins.readFile (mediaFrontend + "/pnpm-lock.yaml");
 assert comparableManifest mailManifest == comparableManifest mediaManifest;
 {
+  browsertrix-downloader = import ./browsertrix-downloader/default.nix {
+    inherit lib pkgs rustLib;
+    inherit workspaceSrc sharedCargoArtifacts cargoLock;
+  };
   kanidm-canary-bootstrap = import ./kanidm-canary-bootstrap/default.nix {
     inherit rustLib;
     inherit workspaceSrc sharedCargoArtifacts cargoLock;

@@ -109,6 +109,10 @@ let
     oauth2ProxyDownloads = 4183;
     youtubeDownloader = 8083;
   }
+  // lib.optionalAttrs (enabled "browsertrix-downloader") {
+    oauth2ProxyBrowsertrix = 4188;
+    browsertrixDownloader = 8088;
+  }
   // lib.optionalAttrs (enabled "groundwater-logger") {
     groundwaterLogger = 8091;
     groundwaterMqtt = 1883;

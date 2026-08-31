@@ -31,11 +31,9 @@ in
         -D admin \
         ${lib.escapeShellArg vars.brandName}
 
-      kanidm system domain set-image \
+      kanidm system domain remove-image \
         -H ${kanidmCliUrl} \
-        -D admin \
-        ${./assets/portal.svg} \
-        svg
+        -D admin
     '';
     serviceConfig = {
       Type = "oneshot";

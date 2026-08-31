@@ -21,7 +21,7 @@ in
 
       systems.oauth2.youtube-downloader-web = {
         displayName = "Downloads";
-        imageFile = ../Core_Modules/kanidm/assets/videos.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/youtube.svg;
         originUrl = "https://${host}/oauth2/callback";
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.youtubeDownloaderOauth2ProxyClientSecret.path;

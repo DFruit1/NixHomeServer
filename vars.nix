@@ -18,6 +18,7 @@ let
       enabled = [
         "attic"
         "audiobookshelf"
+        "browsertrix-downloader"
         "chaptarr"
         "files"
         "freshrss"

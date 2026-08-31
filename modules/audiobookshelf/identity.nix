@@ -15,7 +15,7 @@ in
 
       systems.oauth2.abs-web = {
         displayName = "Audiobooks";
-        imageFile = ../Core_Modules/kanidm/assets/audiobooks.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/audiobookshelf.svg;
         originUrl = [
           "https://${host}/audiobookshelf/auth/openid/callback"
           "https://${host}/audiobookshelf/auth/openid/mobile-redirect"

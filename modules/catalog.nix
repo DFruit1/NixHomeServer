@@ -16,6 +16,14 @@ in
       "monitorOauth2ProxyCookieSecret"
     ] [ ];
     bonsai = app ./bonsai "Bonsai AI" "automation" [ ] [ ];
+    browsertrix-downloader = app ./browsertrix-downloader "Web Archives" "knowledge" [
+      "browsertrixDownloaderOauth2ProxyClientSecret"
+      "browsertrixDownloaderOauth2ProxyCookieSecret"
+    ] [
+      "browsertrix-downloader-storage-layout-v1"
+      "browsertrix-downloader"
+      "browsertrix-downloader-worker"
+    ];
     chaptarr = app ./chaptarr "Chaptarr" "media-automation" [ ] [
       "chaptarr"
       "chaptarr-storage-layout-v1"

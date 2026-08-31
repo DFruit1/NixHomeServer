@@ -32,6 +32,7 @@ let
     "/var/lib/atticd"
     "/var/lib/audiobookshelf"
     "/var/lib/bonsai"
+    "/var/lib/browsertrix-downloader"
     "/var/lib/chaptarr"
     "/var/lib/filestash"
     "/var/lib/freshrss"

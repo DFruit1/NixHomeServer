@@ -9,7 +9,7 @@ in
 {
   services.kanidm.provision.systems.oauth2.filestash-web = {
     displayName = "Files";
-    imageFile = ../Core_Modules/kanidm/assets/files.svg;
+    imageFile = ../Core_Modules/kanidm/assets/apps/filestash.svg;
     originUrl = "https://${host}/oauth2/callback";
     originLanding = "https://${host}";
     basicSecretFile = "/run/filestash-secrets/oauth2-client-secret-kanidm";

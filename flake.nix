@@ -32,7 +32,7 @@
       # Compute package data once per system and reuse it everywhere it is
       # needed (hosts, checks, dev shells, worker ISO) instead of re-importing
       # the full rust/node app graph on every call site.
-      packageDataBySystem = forAllSystems (system: mkPackageData system);
+      packageDataBySystem = forAllSystems mkPackageData;
       mkWorkerIso = system: packageData: hostVars:
         let
           sharedRoot = hostVars.sharedRoot;
@@ -63,7 +63,7 @@
         (lib.attrValues (lib.mapAttrs (_: v: v.hostPlatform) nixhomeserverSettings));
       forAllSystems = lib.genAttrs supportedSystems;
       workerIsoConfigurations = lib.mapAttrs
-        (_: hostVars: mkWorkerIso "x86_64-linux" (packageDataBySystem."x86_64-linux") hostVars)
+        (_: hostVars: mkWorkerIso "x86_64-linux" packageDataBySystem."x86_64-linux" hostVars)
         nixhomeserverSettings;
       hosts = lib.mapAttrs
         (_: hostVars:
@@ -134,12 +134,12 @@
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
       packages = forAllSystems (system:
         lib.optionalAttrs (system == "x86_64-linux") {
-          mkvmaker-worker-iso = (mkWorkerIso system (packageDataBySystem.${system}) vars).config.system.build.isoImage;
+          mkvmaker-worker-iso = (mkWorkerIso system packageDataBySystem.${system} vars).config.system.build.isoImage;
         });
       checks = forAllSystems
-        (system: mkChecks system (packageDataBySystem.${system}) vars.enabledApps false);
+        (system: mkChecks system packageDataBySystem.${system} vars.enabledApps false);
       legacyPackages = forAllSystems (system: {
-        nixhomeserverAllChecks = mkChecks system (packageDataBySystem.${system}) allAppNames true;
+        nixhomeserverAllChecks = mkChecks system packageDataBySystem.${system} allAppNames true;
       });
       # Heavy VM-boot tests live under hydraJobs (recognized by `nix flake
       # check` but never built by it) so the lean validation gate and

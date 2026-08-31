@@ -19,7 +19,7 @@ in
 
       systems.oauth2.paperless-web = {
         displayName = "Documents";
-        imageFile = ../Core_Modules/kanidm/assets/documents.svg;
+        imageFile = ../Core_Modules/kanidm/assets/apps/paperless-ngx.svg;
         originUrl = "https://${host}/accounts/oidc/kanidm/login/callback/";
         originLanding = "https://${host}";
         basicSecretFile = config.age.secrets.paperlessClientSecret.path;

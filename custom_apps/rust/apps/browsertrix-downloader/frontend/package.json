@@ -1,0 +1,24 @@
+{
+  "name": "browsertrix-downloader-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "scripts": {
+    "build": "vite build && pnpm run stage:replay",
+    "stage:replay": "mkdir -p dist/replay && cp node_modules/replaywebpage/index.html node_modules/replaywebpage/ui.js node_modules/replaywebpage/sw.js dist/replay/",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@builder.io/qwik": "1.16.0",
+    "replaywebpage": "2.5.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.3",
+    "typescript": "5.9.3",
+    "vite": "7.3.0",
+    "vitest": "4.0.15"
+  }
+}
