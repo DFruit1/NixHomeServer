@@ -21,7 +21,6 @@ pub fn build_crawl_args(
         "-v".into(),
         format!("{}:/crawls", crawl_dir.display()).into(),
         "--network=slirp4netns:allow_host_loopback=false".into(),
-        "--init".into(),
         image.into(),
         "crawl".into(),
         "--url".into(),
