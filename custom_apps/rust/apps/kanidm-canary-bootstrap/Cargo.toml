@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 data-encoding = "2.9.0"
-hmac = "0.12.1"
+hmac = "0.13.0"
 kanidm_client = "1.10.4"
 kanidm_proto = "1.10.4"
 sha2 = "0.10.9"
