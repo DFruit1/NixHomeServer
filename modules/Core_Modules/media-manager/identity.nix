@@ -6,6 +6,7 @@ in
 {
   users.groups.media-manager = { };
   users.groups.media-manager-broker = { };
+  users.groups.media-manager-provider = { };
   users.users.media-manager = {
     isSystemUser = true;
     group = "media-manager";
@@ -16,6 +17,11 @@ in
     group = "media-manager";
     extraGroups = [ "media-manager-broker" ];
     home = cfg.stateDir;
+  };
+  users.users.media-manager-provider = {
+    isSystemUser = true;
+    group = "media-manager-provider";
+    home = cfg.providerStateDir;
   };
 
   nixhomeserver.kanidmGroupDescriptions.${cfg.editorGroup} =

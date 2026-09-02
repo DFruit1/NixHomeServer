@@ -826,35 +826,15 @@ The subtitle inspector lists external files and embedded streams with language,
 codec, default, forced, and hearing-impaired flags. UTF-8 SRT, WebVTT, and ASS
 sidecars can be opened as cues and checked for invalid durations, overlaps, and
 reading speed. Jellyfin's native interface remains the place for destructive
-subtitle management and provider identification. Subtitle uploads accept
-UTF-8 SRT, WebVTT, and ASS files. OpenSubtitles search is optional. It calculates the provider's
-movie hash locally and asks for an exact file match before falling back to a
-title search; the media file itself is not uploaded. To enable it, create an
-OpenSubtitles.com account, then create an application API key under "My
-consumers" at https://www.opensubtitles.com/consumers (select the
-"OpenSubtitles REST API" API). Prepare a mode-0600 JSON file such as:
-
-```json
-{
-  "apiKey": "application key",
-  "username": "account username",
-  "password": "account password",
-  "userAgent": "NixHomeServer Media Manager"
-}
-```
-
-Then stage and encrypt it without committing plaintext:
-
-```bash
-install -d -m 0700 secrets/unencrypted
-install -m 0600 /path/to/credentials.json secrets/unencrypted/openSubtitlesCredentials
-nix run .#generate-secrets -- \
-  --replace-external openSubtitlesCredentials \
-  --identity /path/to/current/age.key
-rm -f secrets/unencrypted/openSubtitlesCredentials
-rmdir secrets/unencrypted 2>/dev/null || true
-git add secrets/openSubtitlesCredentials.age
-```
+subtitle management and provider identification. Subtitle uploads accept UTF-8
+SRT, WebVTT, and ASS files. OpenSubtitles search is optional. It calculates the
+provider's movie hash locally and asks for an exact file match before falling
+back to a title search; the media file itself is not uploaded. Create an
+OpenSubtitles.com account and an application API key under "My consumers" at
+https://www.opensubtitles.com/consumers, then enter that user's details under
+**Accounts → OpenSubtitles**. The authenticated gateway sends those values
+directly to the dedicated provider broker. They do not pass through the main
+Media Manager web process and cannot be displayed again after saving.
 
 MusicBrainz Picard-style metadata lookup is available in the **Metadata**
 editor for cataloged music files. Search mode queries MusicBrainz directly from
@@ -863,20 +843,29 @@ fingerprints the local audio with `fpcalc` (bundled via the `chromaprint`
 package) and resolves it through AcoustID; it needs an AcoustID API key. Auto
 mode fingerprints first and falls back to search. Enabling the key makes
 fingerprint mode available, otherwise the editor shows the key's absence and
-falls back to search. To enable it, register an application API key at
-https://acoustid.org/settings, then stage and encrypt it without committing
-plaintext (the key lives in a JSON object named `acoustidApiKey`):
+falls back to search. Register an application API key at
+https://acoustid.org/settings, then enter it under **Accounts → AcoustID**.
+AcoustID validation happens during a real fingerprint lookup because a useful
+test request requires a valid local fingerprint.
 
-```bash
-install -d -m 0700 secrets/unencrypted
-printf '%s\n' '{"acoustidApiKey":"YOUR_KEY"}' > secrets/unencrypted/acoustidApiKey
-nix run .#generate-secrets -- \
-  --replace-external acoustidApiKey \
-  --identity /path/to/current/age.key
-rm -f secrets/unencrypted/acoustidApiKey
-rmdir secrets/unencrypted 2>/dev/null || true
-git add secrets/acoustidApiKey.age
-```
+The Accounts page inventories public sources that need no setup, active
+adapters, and practical sources planned for later adapters. Accounts are owned
+by the stable OIDC subject, not the mutable preferred username. One user cannot
+list, test, replace, or remove another user's account. Keep the recovery copy
+in Vaultwarden, KeePassXC, or another password manager. Media Manager does not
+ask for vault credentials or use Vaultwarden as a live credential backend.
+
+Provider account ciphertext, the runtime-generated master key, and non-secret
+test history live under `/var/lib/media-manager-provider`. The provider broker
+cannot read media roots, mutation staging, or the main control database. Its
+state is persisted and included in encrypted backups. The database and
+`master.key` must be restored together; losing the key fails closed and users
+must re-enter their accounts from their password managers.
+
+The deployed service no longer consumes the old agenix-backed OpenSubtitles or
+AcoustID inputs. TMDB, OpenSubtitles, and AcoustID lookups use the signed-in
+user's runtime broker account, so rotating a key does not require a NixOS
+rebuild and one user's quota or lockout does not affect another user.
 
 Manual refresh adapters are registered only for installed applications.
 Jellyfin, Audiobookshelf, Kavita, and Syncthing have explicit adapters. The
@@ -911,8 +900,10 @@ installs the fully decoded replacement through one recoverable, no-overwrite
 broker operation.
 
 ```bash
-systemctl status media-manager.service media-manager-broker.timer
-journalctl -u media-manager.service -u media-manager-broker.service
+systemctl status media-manager.service media-manager-broker.timer \
+  media-manager-provider-broker.service
+journalctl -u media-manager.service -u media-manager-broker.service \
+  -u media-manager-provider-broker.service
 systemctl status media-manager-refresh-dispatch.service
 ```
 

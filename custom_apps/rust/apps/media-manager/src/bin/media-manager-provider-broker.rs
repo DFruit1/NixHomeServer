@@ -42,9 +42,10 @@ async fn run() -> Result<(), String> {
         &state_dir.join("master.key"),
     )
     .map_err(|error| format!("initialize provider accounts: {error}"))?;
-    let app = provider_account_router(ProviderBrokerState {
-        store: Arc::new(store),
-    });
+    let app = provider_account_router(
+        ProviderBrokerState::new(Arc::new(store))
+            .map_err(|error| format!("initialize provider client: {error}"))?,
+    );
     let socket = std::net::SocketAddr::new(address, port);
     let listener = tokio::net::TcpListener::bind(socket)
         .await

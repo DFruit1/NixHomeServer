@@ -25,6 +25,8 @@ pub struct CreateJobRequest {
     pub scope: CrawlScope,
     pub page_limit: u32,
     pub time_limit_minutes: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

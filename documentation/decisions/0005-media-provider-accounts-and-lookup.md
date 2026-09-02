@@ -32,8 +32,8 @@ remove the need for Media Manager to protect provider secrets while using them.
 
 Add a dedicated `media-manager-provider-broker` Rust service. It listens only
 on a separate loopback port and owns `/var/lib/media-manager-provider`. The
-shared authentication gateway routes only `/api/v1/provider-accounts` and its
-subresources to this service after removing spoofable identity headers and
+shared authentication gateway routes `/api/v1/provider-accounts` and
+`/api/v1/provider-lookups` to this service after removing spoofable identity headers and
 supplying authenticated headers. Credential request bodies therefore do not
 pass through the ordinary Media Manager web process. The mutation broker
 remains a separate, networkless service and never receives provider secrets.
@@ -117,8 +117,9 @@ shown to the user.
 - The broker is network-capable by design and therefore receives tighter
   filesystem access than the ordinary web service: it cannot read media roots,
   the catalog database, or mutation staging.
-- Existing build-time credentials require an explicit migration period and are
-  removed only after runtime account flows and provider lookups are verified.
+- The deployed Media Manager service no longer receives build-time TMDB,
+  OpenSubtitles, or AcoustID credentials; its adapters resolve the caller's
+  runtime account through the broker.
 
 ## Rejected alternatives
 

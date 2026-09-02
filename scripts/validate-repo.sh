@@ -182,7 +182,7 @@ run_vm_tests() {
 }
 
 run_full_derivation_checks() {
-  local system check_attr vm_attr root_state_dir output_path root_path
+  local system check_attr root_state_dir output_path root_path
 
   if [[ "$full_mode" != true ]]; then
     return 0
@@ -191,10 +191,8 @@ run_full_derivation_checks() {
   system="$(current_system)"
   if [[ "$all_apps" == true ]]; then
     check_attr="legacyPackages.${system}.nixhomeserverAllChecks"
-    vm_attr="hydraJobs.${system}.vmTestsAll"
   else
     check_attr="checks.${system}"
-    vm_attr="hydraJobs.${system}.vmTests"
   fi
 
   build_derivation_attr "$check_attr" "$system"

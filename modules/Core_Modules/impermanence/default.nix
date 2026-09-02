@@ -15,6 +15,7 @@ let
     "/var/lib/beszel-hub"
     "/var/lib/kanidm"
     "/var/lib/media-manager"
+    "/var/lib/media-manager-provider"
     "/var/lib/netbird-main"
     "/var/lib/nixhomeserver-deploy"
     "/var/lib/nixos"

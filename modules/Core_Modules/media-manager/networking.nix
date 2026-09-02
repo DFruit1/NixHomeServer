@@ -14,6 +14,16 @@ in
   repo.authGateway.protectedApps.mediaManager = {
     host = cfg.domain;
     upstream = "http://${cfg.address}:${toString cfg.port}";
+    authenticatedRoutes = [
+      {
+        pathPrefix = "/api/v1/provider-accounts";
+        upstream = "http://${cfg.address}:${toString cfg.providerPort}";
+      }
+      {
+        pathPrefix = "/api/v1/provider-lookups";
+        upstream = "http://${cfg.address}:${toString cfg.providerPort}";
+      }
+    ];
     allowedGroups = [ "users" ];
     apiUnauthenticated401 = true;
   };

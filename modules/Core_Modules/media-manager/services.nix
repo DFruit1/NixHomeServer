@@ -21,9 +21,8 @@ let
     MEDIA_MANAGER_FRONTEND_DIR = "${cfg.package}/share/media-manager/frontend";
     MEDIA_MANAGER_FFPROBE = "${pkgs.ffmpeg}/bin/ffprobe";
     MEDIA_MANAGER_FILESTASH_BASE_URL = "https://files.${vars.domain}";
+    MEDIA_MANAGER_PROVIDER_BROKER_BASE_URL = "http://${cfg.address}:${toString cfg.providerPort}/";
   };
-  openSubtitlesConfigured = builtins.hasAttr "openSubtitlesCredentials" config.age.secrets;
-  acoustidConfigured = builtins.hasAttr "acoustidApiKey" config.age.secrets;
   jellyfinMetadataAvailable = cfg.integrations.jellyfin.available or false;
   audiobookshelfMetadataAvailable = cfg.integrations.audiobookshelf.available or false;
   kavitaMetadataAvailable = cfg.integrations.kavita.available or false;
@@ -31,12 +30,6 @@ let
   audiobookshelfMetadataCache = "/var/cache/media-manager-audiobookshelf/metadata.json";
   kavitaMetadataCache = "/var/cache/media-manager-kavita/metadata.json";
   webEnvironment = commonEnvironment
-  // lib.optionalAttrs openSubtitlesConfigured {
-    MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE = config.age.secrets.openSubtitlesCredentials.path;
-  }
-  // lib.optionalAttrs acoustidConfigured {
-    MEDIA_MANAGER_ACOUSTID_API_KEY_FILE = config.age.secrets.acoustidApiKey.path;
-  }
   // lib.optionalAttrs jellyfinMetadataAvailable {
     MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE = jellyfinMetadataCache;
     MEDIA_MANAGER_JELLYFIN_BASE_URL = "http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.jellyfin}";
@@ -53,6 +46,11 @@ let
   }
   // {
     MEDIA_MANAGER_FPCALC_PATH = "${pkgs.chromaprint}/bin/fpcalc";
+  };
+  providerEnvironment = {
+    MEDIA_MANAGER_PROVIDER_ADDRESS = cfg.address;
+    MEDIA_MANAGER_PROVIDER_PORT = toString cfg.providerPort;
+    MEDIA_MANAGER_PROVIDER_STATE_DIR = cfg.providerStateDir;
   };
   refreshAvailable = id:
     (cfg.integrations.${id}.available or false)
@@ -734,10 +732,9 @@ in
   systemd.services.media-manager = {
     description = "Catalog and coordinate safe media-library changes";
     wantedBy = [ "multi-user.target" ];
-    requires = [ "data-pool-layout.service" "media-manager-storage-access.service" ];
-    after = [ "network.target" "data-pool-layout.service" "media-manager-storage-access.service" ];
+    requires = [ "data-pool-layout.service" "media-manager-storage-access.service" "media-manager-provider-broker.service" ];
+    after = [ "network.target" "data-pool-layout.service" "media-manager-storage-access.service" "media-manager-provider-broker.service" ];
     environment = webEnvironment;
-    restartTriggers = lib.optionals openSubtitlesConfigured [ config.age.secrets.openSubtitlesCredentials.file ];
     serviceConfig = {
       Type = "simple";
       User = "media-manager";
@@ -777,6 +774,51 @@ in
         ++ lib.optionals audiobookshelfMetadataAvailable [ "-/var/cache/media-manager-audiobookshelf" ]
         ++ lib.optionals kavitaMetadataAvailable [ "-/var/cache/media-manager-kavita" ];
       ReadWritePaths = [ cfg.stateDir ];
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+    };
+  };
+
+  systemd.services.media-manager-provider-broker = {
+    description = "Store and test per-user Media Manager provider accounts";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    environment = providerEnvironment;
+    serviceConfig = {
+      Type = "simple";
+      User = "media-manager-provider";
+      Group = "media-manager-provider";
+      DynamicUser = false;
+      ExecStart = lib.getExe' cfg.package "media-manager-provider-broker";
+      Restart = "on-failure";
+      RestartSec = "5s";
+      StateDirectory = "media-manager-provider";
+      StateDirectoryMode = "0700";
+      RuntimeDirectory = "media-manager-provider";
+      RuntimeDirectoryMode = "0700";
+      UMask = "0077";
+      NoNewPrivileges = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectKernelLogs = true;
+      ProtectControlGroups = true;
+      ProtectProc = "invisible";
+      ProcSubset = "pid";
+      ProtectClock = true;
+      ProtectHostname = true;
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      RestrictSUIDSGID = true;
+      LockPersonality = true;
+      MemoryDenyWriteExecute = true;
+      CapabilityBoundingSet = [ ];
+      AmbientCapabilities = [ ];
+      ReadWritePaths = [ cfg.providerStateDir ];
       SystemCallArchitectures = "native";
       SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
     };

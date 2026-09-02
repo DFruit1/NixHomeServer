@@ -71,6 +71,7 @@ fn test_app_with_mode(
             config,
             catalog: CatalogHandle::new(database.clone()),
             jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+            tmdb_client: None,
         }),
         database,
     )
@@ -95,6 +96,50 @@ async fn api_rejects_missing_forwarded_identity() {
         .expect("body");
     let value: Value = serde_json::from_slice(&body).expect("json");
     assert_eq!(value["error"]["code"], "identity_required");
+}
+
+#[tokio::test]
+async fn batch_subtitle_route_is_registered_and_validates_an_empty_selection() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let response = test_app(&temp)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/subtitles/batch-search")
+                .header("content-type", "application/json")
+                .header("x-forwarded-user", "editor-subject")
+                .header("x-forwarded-preferred-username", "editor")
+                .header("x-forwarded-groups", "users,media-manager-editors")
+                .body(Body::from(r#"{"itemIds":[],"languages":"en"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(value["error"]["code"], "no_items");
+}
+
+#[tokio::test]
+async fn preferred_username_without_a_stable_forwarded_subject_is_rejected() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let response = test_app(&temp)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/session")
+                .header("x-forwarded-preferred-username", "dsaw")
+                .header("x-forwarded-groups", "users")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -401,6 +446,7 @@ async fn frontend_assets_are_served_only_from_the_packaged_asset_directory() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
 
     let asset = app
@@ -877,6 +923,7 @@ async fn items_report_unprobeable_videos_as_null_probes() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-videos"}"#).await;
 
@@ -1037,6 +1084,7 @@ async fn metadata_details_merge_filename_fields_with_a_bounded_jellyfin_snapshot
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
     let items = app
         .clone()
@@ -1349,6 +1397,7 @@ async fn metadata_inspection_includes_bounded_audiobookshelf_and_kavita_snapshot
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
 
     let audiobook_id = item_id_by_kind(&app, "shared-audiobooks", "audiobook").await;
@@ -1459,6 +1508,7 @@ async fn authenticated_viewer_can_queue_and_follow_a_registered_refresh() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
     let response = app
         .clone()
@@ -1508,6 +1558,7 @@ async fn authenticated_viewer_can_queue_a_registered_kavita_refresh() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
 
     let response = app
@@ -1562,6 +1613,7 @@ async fn refresh_status_returns_the_durable_terminal_result() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
 
     let response = app
@@ -2539,6 +2591,7 @@ async fn musicbrainz_search_lookup_returns_release_group_candidates() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -2625,6 +2678,7 @@ async fn musicbrainz_fingerprint_lookup_runs_fpcalc_and_uses_acoustid() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -2667,6 +2721,7 @@ async fn musicbrainz_auto_mode_falls_back_to_search_without_an_api_key() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;
@@ -2703,6 +2758,7 @@ async fn musicbrainz_fingerprint_without_a_key_is_rejected_as_unconfigured() {
         config,
         catalog: CatalogHandle::new(database),
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client: None,
     });
     editor_json_request(&app, "/api/v1/scans", r#"{"rootId":"shared-music"}"#).await;
     let item_id = item_id_by_kind(&app, "shared-music", "music").await;

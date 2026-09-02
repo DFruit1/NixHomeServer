@@ -94,24 +94,47 @@ let
     let
       matcher = matcherName name;
       groups = lib.concatStringsSep "|" (map lib.escapeRegex app.allowedGroups);
+      authenticatedRouteBlocks = lib.concatStringsSep "\n" (lib.imap0
+        (index: route: ''
+          @route_${matcher}_${toString index} path ${route.pathPrefix} ${route.pathPrefix}/*
+          handle @route_${matcher}_${toString index} {
+            reverse_proxy ${route.upstream} {
+              ${upstreamTransport app}
+              header_up -X-Auth-Request-User
+              header_up -X-Auth-Request-Email
+              header_up -X-Auth-Request-Groups
+              header_up -X-Auth-Request-Preferred-Username
+              header_up X-Forwarded-Proto https
+              header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
+              header_up X-Forwarded-User {http.request.header.X-Forwarded-User}
+              header_up X-Forwarded-Email {http.request.header.X-Forwarded-Email}
+              header_up X-Forwarded-Groups {http.request.header.X-Forwarded-Groups}
+              header_up X-Forwarded-Preferred-Username {http.request.header.X-Forwarded-Preferred-Username}
+            }
+          }
+        '')
+        app.authenticatedRoutes);
     in
     ''
       @host_${matcher} header X-Forwarded-Host ${app.host}
       handle @host_${matcher} {
         @denied_${matcher} not header_regexp X-Forwarded-Groups "(?i)(^|,)[[:space:]]*(${groups})[[:space:]]*(,|$)"
         respond @denied_${matcher} "Forbidden" 403
-        reverse_proxy ${app.upstream} {
-          ${upstreamTransport app}
-          header_up -X-Auth-Request-User
-          header_up -X-Auth-Request-Email
-          header_up -X-Auth-Request-Groups
-          header_up -X-Auth-Request-Preferred-Username
-          header_up X-Forwarded-Proto https
-          header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
-          header_up X-Forwarded-User {http.request.header.X-Forwarded-User}
-          header_up X-Forwarded-Email {http.request.header.X-Forwarded-Email}
-          header_up X-Forwarded-Groups {http.request.header.X-Forwarded-Groups}
-          header_up X-Forwarded-Preferred-Username {http.request.header.X-Forwarded-Preferred-Username}
+        ${authenticatedRouteBlocks}
+        handle {
+          reverse_proxy ${app.upstream} {
+            ${upstreamTransport app}
+            header_up -X-Auth-Request-User
+            header_up -X-Auth-Request-Email
+            header_up -X-Auth-Request-Groups
+            header_up -X-Auth-Request-Preferred-Username
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
+            header_up X-Forwarded-User {http.request.header.X-Forwarded-User}
+            header_up X-Forwarded-Email {http.request.header.X-Forwarded-Email}
+            header_up X-Forwarded-Groups {http.request.header.X-Forwarded-Groups}
+            header_up X-Forwarded-Preferred-Username {http.request.header.X-Forwarded-Preferred-Username}
+          }
         }
       }
     '';
@@ -346,6 +369,19 @@ in
             default = null;
             description = "HTTP upstream reached through the authenticated internal router.";
           };
+          authenticatedRoutes = lib.mkOption {
+            type = lib.types.listOf (lib.types.submodule {
+              options = {
+                pathPrefix = lib.mkOption {
+                  type = lib.types.addCheck lib.types.str
+                    (path: builtins.match "/[A-Za-z0-9._~!$&'()*+,;=:@%-]+(/[A-Za-z0-9._~!$&'()*+,;=:@%-]+)*" path != null);
+                  description = "Authenticated path prefix routed to a secondary loopback service.";
+                };
+                upstream = lib.mkOption { type = lib.types.str; };
+              };
+            });
+            default = [ ];
+          };
           authenticatedCaddyConfig = lib.mkOption {
             type = lib.types.nullOr lib.types.lines;
             default = null;
@@ -386,7 +422,9 @@ in
             && (app.authenticatedCaddyConfig == null || (!app.skipAuthPreflight && !app.apiUnauthenticated401))
             && ((app.nativeAuthPaths != [ ]) == (app.nativeAuthCaddyConfig != null))
             && (app.nativeAuthCaddyConfig == null || app.authenticatedCaddyConfig != null)
-            && lib.length (lib.unique app.nativeAuthPaths) == lib.length app.nativeAuthPaths;
+            && lib.length (lib.unique app.nativeAuthPaths) == lib.length app.nativeAuthPaths
+            && lib.length (lib.unique (map (route: route.pathPrefix) app.authenticatedRoutes)) == lib.length app.authenticatedRoutes
+            && (app.authenticatedRoutes == [ ] || app.upstream != null);
           message = "Authentication gateway app '${name}' must select exactly one HTTP upstream or authenticated Caddy handler; native-auth paths require a unique, direct Caddy handler and cannot receive browser-auth bypasses.";
         })
         cfg.protectedApps;

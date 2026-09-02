@@ -8,6 +8,8 @@ pub fn build_crawl_args(
     crawl_dir: &Path,
     image: &str,
 ) -> Vec<OsString> {
+    // Use custom collection name if provided, otherwise fall back to the provided collection (job ID)
+    let collection_name = request.collection.as_deref().unwrap_or(collection);
     [
         "run".into(),
         "--rm".into(),
@@ -29,7 +31,7 @@ pub fn build_crawl_args(
         "--url".into(),
         request.url.clone().into(),
         "--collection".into(),
-        collection.into(),
+        collection_name.into(),
         "--cwd".into(),
         "/crawls".into(),
         "--scopeType".into(),

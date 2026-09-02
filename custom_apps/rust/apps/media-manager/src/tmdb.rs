@@ -1,19 +1,17 @@
 use reqwest::{header, Client, StatusCode, Url};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fmt,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{
-    sync::Mutex,
-    time::sleep,
-};
+use tokio::{sync::Mutex, time::sleep};
+use zeroize::Zeroize;
 
 pub const TMDB_API_BASE: &str = "https://api.themoviedb.org/3/";
 const MAX_CANDIDATES: usize = 10;
-const DEFAULT_REQUEST_GAP: Duration = Duration::from_millis(250);
+const MAX_PROVIDER_JSON_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -118,10 +116,8 @@ impl TmdbClient {
             .await
             .map_err(|error| ProviderError::new(format!("search request failed: {error}")))?;
         let response = require_success(response, "TMDB movie search").await?;
-        let payload = response
-            .json::<TmdbSearchResponse<TmdbMovie>>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode search response: {error}")))?;
+        let payload =
+            decode_json::<TmdbSearchResponse<TmdbMovie>>(response, "search response").await?;
         let mut candidates = Vec::new();
         for movie in payload.results.into_iter().take(MAX_CANDIDATES) {
             if movie.id == 0 {
@@ -159,10 +155,8 @@ impl TmdbClient {
             .await
             .map_err(|error| ProviderError::new(format!("search request failed: {error}")))?;
         let response = require_success(response, "TMDB TV search").await?;
-        let payload = response
-            .json::<TmdbSearchResponse<TmdbTvShow>>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode search response: {error}")))?;
+        let payload =
+            decode_json::<TmdbSearchResponse<TmdbTvShow>>(response, "search response").await?;
         let mut candidates = Vec::new();
         for show in payload.results.into_iter().take(MAX_CANDIDATES) {
             if show.id == 0 {
@@ -173,7 +167,10 @@ impl TmdbClient {
         Ok(candidates)
     }
 
-    pub async fn get_movie_details(&self, movie_id: u32) -> Result<TmdbMovieDetails, ProviderError> {
+    pub async fn get_movie_details(
+        &self,
+        movie_id: u32,
+    ) -> Result<TmdbMovieDetails, ProviderError> {
         self.throttle().await;
         let url = self
             .tmdb_api_base
@@ -187,15 +184,17 @@ impl TmdbClient {
             ])
             .send()
             .await
-            .map_err(|error| ProviderError::new(format!("movie details request failed: {error}")))?;
+            .map_err(|error| {
+                ProviderError::new(format!("movie details request failed: {error}"))
+            })?;
         let response = require_success(response, "TMDB movie details").await?;
-        response
-            .json::<TmdbMovieDetails>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode movie details: {error}")))
+        decode_json::<TmdbMovieDetails>(response, "movie details").await
     }
 
-    pub async fn get_tv_show_details(&self, tv_id: u32) -> Result<TmdbTvShowDetails, ProviderError> {
+    pub async fn get_tv_show_details(
+        &self,
+        tv_id: u32,
+    ) -> Result<TmdbTvShowDetails, ProviderError> {
         self.throttle().await;
         let url = self
             .tmdb_api_base
@@ -209,12 +208,11 @@ impl TmdbClient {
             ])
             .send()
             .await
-            .map_err(|error| ProviderError::new(format!("TV show details request failed: {error}")))?;
+            .map_err(|error| {
+                ProviderError::new(format!("TV show details request failed: {error}"))
+            })?;
         let response = require_success(response, "TMDB TV show details").await?;
-        response
-            .json::<TmdbTvShowDetails>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode TV show details: {error}")))
+        decode_json::<TmdbTvShowDetails>(response, "TV show details").await
     }
 
     async fn throttle(&self) {
@@ -236,6 +234,50 @@ impl TmdbClient {
             request = request.bearer_auth(key);
         }
         request
+    }
+}
+
+async fn decode_json<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    operation: &str,
+) -> Result<T, ProviderError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_JSON_BYTES as u64)
+    {
+        return Err(ProviderError::new(format!(
+            "{operation} exceeded the provider response limit"
+        )));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| ProviderError::new(format!("read {operation}: {error}")))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_JSON_BYTES {
+            return Err(ProviderError::new(format!(
+                "{operation} exceeded the provider response limit"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ProviderError::new(format!("decode {operation}: {error}")))
+}
+
+impl Drop for TmdbClient {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+    }
+}
+
+impl Drop for TmdbCredentials {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+        if let Some(user_agent) = &mut self.user_agent {
+            user_agent.zeroize();
+        }
     }
 }
 
@@ -460,11 +502,6 @@ pub struct TmdbExternalIds {
 struct TmdbSearchResponse<T> {
     #[serde(default)]
     results: Vec<T>,
-    page: u32,
-    #[serde(rename = "total_pages")]
-    total_pages: u32,
-    #[serde(rename = "total_results")]
-    total_results: u32,
 }
 
 fn parse_api_base(value: &str, label: &str) -> Result<Url, ProviderError> {
@@ -479,10 +516,7 @@ fn parse_api_base(value: &str, label: &str) -> Result<Url, ProviderError> {
 }
 
 fn provider_hosts(tmdb: &Url) -> Vec<String> {
-    tmdb.host_str()
-        .map(str::to_string)
-        .into_iter()
-        .collect()
+    tmdb.host_str().map(str::to_string).into_iter().collect()
 }
 
 fn is_trusted_origin(url: &Url) -> bool {
@@ -511,9 +545,7 @@ async fn require_success(
     }
     let status = response.status();
     let category = match status {
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-            "provider credentials were rejected"
-        }
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "provider credentials were rejected",
         StatusCode::TOO_MANY_REQUESTS => "provider quota or rate limit was reached",
         _ if status.is_server_error() => "provider service is unavailable",
         _ => "provider rejected the request",

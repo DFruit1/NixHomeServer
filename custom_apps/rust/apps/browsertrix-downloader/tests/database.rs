@@ -9,6 +9,7 @@ fn request() -> CreateJobRequest {
         scope: CrawlScope::Page,
         page_limit: 5,
         time_limit_minutes: 2,
+        collection: None,
     }
 }
 

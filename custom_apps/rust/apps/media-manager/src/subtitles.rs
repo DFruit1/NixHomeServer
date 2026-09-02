@@ -1,14 +1,16 @@
 use reqwest::{header, Client, StatusCode, Url};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fmt,
     io::{self, Read, Seek, SeekFrom},
     path::Path,
     time::Duration,
 };
+use zeroize::Zeroize;
 
 const API_BASE_URL: &str = "https://api.opensubtitles.com/api/v1/";
 const MAX_DOWNLOAD_BYTES: usize = 10 * 1024 * 1024;
+const MAX_PROVIDER_JSON_BYTES: usize = 2 * 1024 * 1024;
 const MOVIE_HASH_CHUNK_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,15 +94,22 @@ pub struct OpenSubtitlesClient {
 
 impl OpenSubtitlesClient {
     pub fn new(credentials: OpenSubtitlesCredentials) -> Result<Self, ProviderError> {
+        Self::new_with_api_base(credentials, API_BASE_URL)
+    }
+
+    pub(crate) fn new_with_api_base(
+        credentials: OpenSubtitlesCredentials,
+        api_base: &str,
+    ) -> Result<Self, ProviderError> {
+        let api_base = trusted_api_base(api_base)?;
+        let allowed_api_origin = api_base.clone();
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
                 if attempt.previous().len() >= 3 {
                     attempt.stop()
-                } else if is_opensubtitles_host(attempt.url().host_str())
-                    && attempt.url().scheme() == "https"
-                {
+                } else if is_trusted_api_target(attempt.url(), &allowed_api_origin) {
                     attempt.follow()
                 } else {
                     attempt.stop()
@@ -111,8 +120,7 @@ impl OpenSubtitlesClient {
         Ok(Self {
             credentials,
             client,
-            api_base: Url::parse(API_BASE_URL)
-                .map_err(|error| ProviderError::new(format!("parse API URL: {error}")))?,
+            api_base,
         })
     }
 
@@ -154,10 +162,7 @@ impl OpenSubtitlesClient {
             .await
             .map_err(|error| ProviderError::new(format!("search request failed: {error}")))?;
         let response = require_success(response, "subtitle search").await?;
-        let payload = response
-            .json::<SearchResponse>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode search response: {error}")))?;
+        let payload = decode_json::<SearchResponse>(response, "search response").await?;
         Ok(flatten_search_response(payload))
     }
 
@@ -179,10 +184,7 @@ impl OpenSubtitlesClient {
             .await
             .map_err(|error| ProviderError::new(format!("login request failed: {error}")))?;
         let response = require_success(response, "provider login").await?;
-        let login = response
-            .json::<LoginResponse>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode login response: {error}")))?;
+        let login = decode_json::<LoginResponse>(response, "login response").await?;
         if login.token.trim().is_empty() {
             return Err(ProviderError::new("provider login returned no token"));
         }
@@ -201,10 +203,7 @@ impl OpenSubtitlesClient {
             .await
             .map_err(|error| ProviderError::new(format!("download request failed: {error}")))?;
         let response = require_success(response, "subtitle download allocation").await?;
-        let allocation = response
-            .json::<DownloadResponse>()
-            .await
-            .map_err(|error| ProviderError::new(format!("decode download response: {error}")))?;
+        let allocation = decode_json::<DownloadResponse>(response, "download response").await?;
         let link = validated_download_url(&allocation.link)?;
         let response = self
             .client
@@ -242,7 +241,36 @@ impl OpenSubtitlesClient {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+async fn decode_json<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    operation: &str,
+) -> Result<T, ProviderError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_JSON_BYTES as u64)
+    {
+        return Err(ProviderError::new(format!(
+            "{operation} exceeded the provider response limit"
+        )));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| ProviderError::new(format!("read {operation}: {error}")))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_JSON_BYTES {
+            return Err(ProviderError::new(format!(
+                "{operation} exceeded the provider response limit"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ProviderError::new(format!("decode {operation}: {error}")))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleMatch {
     pub provider_id: String,
@@ -409,6 +437,37 @@ fn validated_download_url(value: &str) -> Result<Url, ProviderError> {
 
 fn is_opensubtitles_host(host: Option<&str>) -> bool {
     host.is_some_and(|host| host == "opensubtitles.com" || host.ends_with(".opensubtitles.com"))
+}
+
+fn trusted_api_base(value: &str) -> Result<Url, ProviderError> {
+    let url =
+        Url::parse(value).map_err(|error| ProviderError::new(format!("parse API URL: {error}")))?;
+    let trusted = (url.scheme() == "https" && is_opensubtitles_host(url.host_str()))
+        || (url.scheme() == "http"
+            && url
+                .host_str()
+                .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1")));
+    if !trusted || !url.path().ends_with('/') {
+        return Err(ProviderError::new(
+            "OpenSubtitles API base must be its HTTPS origin or a loopback test mirror ending in a slash",
+        ));
+    }
+    Ok(url)
+}
+
+fn is_trusted_api_target(target: &Url, base: &Url) -> bool {
+    target.scheme() == base.scheme()
+        && target.host_str() == base.host_str()
+        && target.port_or_known_default() == base.port_or_known_default()
+}
+
+impl Drop for OpenSubtitlesCredentials {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+        self.username.zeroize();
+        self.password.zeroize();
+        self.user_agent.zeroize();
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

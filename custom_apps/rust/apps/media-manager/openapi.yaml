@@ -33,6 +33,192 @@ paths:
                 $ref: "#/components/schemas/Session"
         "401":
           $ref: "#/components/responses/Error"
+  /provider-accounts:
+    get:
+      operationId: listProviderAccounts
+      description: >-
+        Lists the provider catalog and only the caller's non-secret account
+        state. Saved credential values are never returned.
+      responses:
+        "200":
+          description: Public, configurable, active, and planned provider sources.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "no-store, max-age=0" }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCatalogResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+  /provider-accounts/{providerId}:
+    parameters:
+      - in: path
+        name: providerId
+        required: true
+        schema: { type: string, pattern: "^[a-z0-9-]{1,64}$" }
+    put:
+      operationId: saveProviderAccount
+      description: >-
+        Replaces the caller's complete credential document. The submitted
+        values are encrypted by the provider broker and are not echoed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveProviderAccountRequest"
+      responses:
+        "200":
+          description: Non-secret provider setup state after replacement.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [provider, requestId]
+                properties:
+                  provider: { $ref: "#/components/schemas/ProviderDefinition" }
+                  requestId: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteProviderAccount
+      description: Idempotently removes only the caller's account for this provider.
+      responses:
+        "204": { description: Account absent after the request. }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /provider-accounts/{providerId}/test:
+    post:
+      operationId: testProviderAccount
+      description: >-
+        Performs a bounded live provider request using the caller's encrypted
+        account and stores only a normalized result. Credential values and
+        provider response bodies are never returned or logged.
+      parameters:
+        - in: path
+          name: providerId
+          required: true
+          schema: { type: string, pattern: "^[a-z0-9-]{1,64}$" }
+      responses:
+        "200":
+          description: Normalized live connection result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderTestResult"
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /provider-lookups/tmdb/search:
+    post:
+      operationId: searchTmdbWithRuntimeAccount
+      description: Searches TMDB using only the authenticated caller's encrypted runtime account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query]
+              properties:
+                query: { type: string, minLength: 1, maxLength: 500 }
+                year: { type: integer, minimum: 1801, maximum: 2100 }
+                mediaType: { type: string, enum: [movie, tv, auto], default: auto }
+      responses:
+        "200": { description: Ranked, non-writing movie and television candidates. }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/tmdb/details:
+    post:
+      operationId: getTmdbDetailsWithRuntimeAccount
+      description: Fetches a normalized candidate for filling a reviewable metadata draft.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [tmdbId, mediaType]
+              properties:
+                tmdbId: { type: integer, minimum: 1 }
+                mediaType: { type: string, enum: [movie, tv] }
+      responses:
+        "200": { description: Normalized details with provider and external IDs. }
+        "401": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/opensubtitles/search:
+    post:
+      operationId: searchOpenSubtitlesWithRuntimeAccount
+      description: Uses the caller's runtime account and a locally calculated movie hash; media contents are not sent to the provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query, languages]
+              properties:
+                movieHash: { type: string, pattern: "^[0-9a-fA-F]{16}$" }
+                movieByteSize: { type: integer, minimum: 131072 }
+                query: { type: string, minLength: 1, maxLength: 200 }
+                languages: { type: string }
+      responses:
+        "200": { description: Exact hash matches or title-fallback candidates. }
+        "401": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/opensubtitles/download:
+    post:
+      operationId: downloadOpenSubtitlesWithRuntimeAccount
+      description: Allocates and streams one bounded SRT using the caller's account; no provider token is returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [fileId]
+              properties:
+                fileId: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Bounded SRT bytes.
+          content:
+            application/x-subrip:
+              schema: { type: string, format: binary, maxLength: 10485760 }
+        "401": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /provider-lookups/acoustid/lookup:
+    post:
+      operationId: lookupAcoustidWithRuntimeAccount
+      description: Resolves a locally calculated Chromaprint fingerprint using the caller's AcoustID key; audio contents are never uploaded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [fingerprint, duration]
+              properties:
+                fingerprint: { type: string, minLength: 4, maxLength: 16384 }
+                duration: { type: integer, minimum: 1, maximum: 86400 }
+      responses:
+        "200": { description: Deduplicated MusicBrainz release-group IDs. }
+        "401": { $ref: "#/components/responses/Error" }
+        "428": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
   /roots:
     get:
       operationId: listRoots
@@ -731,6 +917,84 @@ components:
         username: { type: string }
         groups: { type: array, items: { type: string } }
         canEdit: { type: boolean }
+    ProviderCatalogResponse:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, providers, recoveryAdvice, requestId]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        providers:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderDefinition" }
+        recoveryAdvice: { type: string }
+        requestId: { type: string }
+    ProviderDefinition:
+      type: object
+      additionalProperties: false
+      required:
+        [id, name, mediaDomains, setupKind, implementationStatus, capabilities,
+         credentialFields, setupUrl, documentationUrl, notes, account]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        mediaDomains: { type: array, items: { type: string } }
+        setupKind: { type: string, enum: [public, apiKey, account] }
+        implementationStatus: { type: string, enum: [active, planned] }
+        capabilities: { type: array, items: { type: string } }
+        credentialFields:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderCredentialField" }
+        setupUrl: { type: string, format: uri }
+        documentationUrl: { type: string, format: uri }
+        notes: { type: string }
+        account: { $ref: "#/components/schemas/ProviderAccountState" }
+    ProviderCredentialField:
+      type: object
+      additionalProperties: false
+      required: [id, label, inputType, isRequired, help]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        inputType: { type: string, const: password }
+        isRequired: { type: boolean }
+        help: { type: string }
+    ProviderAccountState:
+      type: object
+      required: [state]
+      properties:
+        state: { type: string, enum: [notRequired, notConfigured, configured] }
+        configuredAt: { type: integer }
+        updatedAt: { type: integer }
+        lastTestedAt: { type: integer, nullable: true }
+        lastTestStatus:
+          type: string
+          nullable: true
+          enum: [ready, rejected, rateLimited, unavailable, null]
+        lastTestMessage: { type: string, nullable: true }
+    SaveProviderAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [credentials]
+      properties:
+        credentials:
+          type: object
+          minProperties: 1
+          maxProperties: 8
+          additionalProperties: { type: string, maxLength: 8192 }
+          description: >-
+            Complete provider-specific credential document. Values are
+            write-only and never appear in any response.
+    ProviderTestResult:
+      type: object
+      additionalProperties: false
+      required: [providerId, status, message, requestId]
+      properties:
+        providerId: { type: string }
+        status:
+          type: string
+          enum: [ready, rejected, rateLimited, unavailable]
+        message: { type: string }
+        requestId: { type: string }
     Root:
       type: object
       required: [id, label, category, scope]

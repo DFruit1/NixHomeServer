@@ -52,6 +52,7 @@ printf '%s\n' '{"stats":{"done":1,"queued":0,"failed":0}}'
                 scope: CrawlScope::Page,
                 page_limit: 5,
                 time_limit_minutes: 2,
+                collection: None,
             },
         )
         .expect("job");

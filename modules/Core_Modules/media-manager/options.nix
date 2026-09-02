@@ -50,10 +50,22 @@ in
       default = vars.networking.ports.mediaManager;
       readOnly = true;
     };
+    providerPort = lib.mkOption {
+      type = lib.types.port;
+      default = vars.networking.ports.mediaManagerProvider;
+      readOnly = true;
+      description = "Loopback-only runtime provider account broker port.";
+    };
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/media-manager";
       readOnly = true;
+    };
+    providerStateDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/media-manager-provider";
+      readOnly = true;
+      description = "Broker-only encrypted provider account state.";
     };
     editorGroup = lib.mkOption {
       type = lib.types.str;

@@ -48,6 +48,7 @@ async fn completed_archives_stream_with_defensive_byte_ranges() {
         scope: CrawlScope::Page,
         page_limit: 5,
         time_limit_minutes: 2,
+        collection: None,
     };
     database
         .create_job("wacz-job", "alice", &crawl)

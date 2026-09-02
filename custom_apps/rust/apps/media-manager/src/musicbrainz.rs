@@ -121,6 +121,24 @@ impl MusicBrainzClient {
         self.acoustid_api_key.is_some()
     }
 
+    pub async fn fingerprint_file(&self, path: &Path) -> Result<(String, u32), ProviderError> {
+        self.fingerprint(path).await
+    }
+
+    pub async fn release_groups_from_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<MusicRelease>, ProviderError> {
+        let mut candidates = Vec::new();
+        for id in ids.iter().filter(|id| valid_mbid(id)).take(MAX_CANDIDATES) {
+            match self.release_group_lookup(id).await {
+                Ok(group) => candidates.push(normalize_release_group(group, "fingerprint")),
+                Err(_) => continue,
+            }
+        }
+        Ok(candidates)
+    }
+
     pub async fn lookup_music(
         &self,
         path: &Path,

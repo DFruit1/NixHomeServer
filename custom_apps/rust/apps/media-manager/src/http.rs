@@ -2,6 +2,7 @@ use crate::musicbrainz::{
     AcoustidCredentials, LookupMode, MusicBrainzClient, MusicBrainzClientConfig, ACOUSTID_API_BASE,
     MUSICBRAINZ_API_BASE,
 };
+use crate::tmdb::TmdbClient;
 use crate::{
     artwork::{
         is_embedded_artwork_capable, preferred_artwork, read_artwork_file, read_embedded_artwork,
@@ -45,7 +46,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io::{Cursor, Read},
     os::fd::AsRawFd,
     os::unix::fs::OpenOptionsExt,
@@ -123,6 +124,7 @@ pub struct AppState {
     pub config: AppConfig,
     pub catalog: CatalogHandle,
     pub jellyfin_image_cache: Arc<JellyfinImageCache>,
+    pub tmdb_client: Option<Arc<TmdbClient>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,6 +194,24 @@ struct ProviderSubtitleRequest {
     hearing_impaired: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AdjustSubtitleRequest {
+    file_id: i64,
+    source_fps: f64,
+    target_fps: f64,
+    language: String,
+    #[serde(default)]
+    hearing_impaired: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BatchSubtitleSearchRequest {
+    item_ids: Vec<String>,
+    languages: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MetadataSidecarRequest {
@@ -230,6 +250,21 @@ struct MusicLookupRequest {
     mode: Option<String>,
     artist: Option<String>,
     title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TmdbSearchRequest {
+    query: String,
+    year: Option<u16>,
+    media_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TmdbDetailsRequest {
+    tmdb_id: u32,
+    media_type: String,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -284,6 +319,14 @@ pub fn router(state: AppState) -> Router {
             get(subtitle_provider_content),
         )
         .route(
+            "/api/v1/items/{item_id}/subtitles/adjust",
+            post(adjust_subtitle_timing),
+        )
+        .route(
+            "/api/v1/subtitles/batch-search",
+            post(batch_search_subtitles),
+        )
+        .route(
             "/api/v1/items/{item_id}/metadata/sidecar",
             post(preview_metadata_sidecar),
         )
@@ -295,6 +338,8 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/items/{item_id}/metadata/lookup",
             post(lookup_music_metadata),
         )
+        .route("/api/v1/metadata/tmdb/search", post(search_tmdb_metadata))
+        .route("/api/v1/metadata/tmdb/details", post(get_tmdb_details))
         .route(
             "/api/v1/integrations/{integration_id}/refresh",
             get(integration_refresh_status).post(queue_integration_refresh),
@@ -583,7 +628,7 @@ async fn search_subtitles(
         )
         .into_response();
     }
-    let client = match open_subtitles_client(&state.config, &request_id) {
+    let client = match open_subtitles_client(&state.config, &identity, &request_id) {
         Ok(client) => client,
         Err(error) => return error.into_response(),
     };
@@ -666,6 +711,154 @@ async fn search_subtitles(
     }
 }
 
+async fn batch_search_subtitles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<BatchSubtitleSearchRequest>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let languages = match normalized_subtitle_languages(&request.languages) {
+        Some(languages) => languages,
+        None => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_subtitle_languages",
+                "Supply one to five comma-separated subtitle language codes.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    if request.item_ids.is_empty() {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "no_items",
+            "At least one item ID must be provided.",
+            request_id,
+        )
+        .into_response();
+    }
+    if request.item_ids.len() > 50 {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "too_many_items",
+            "Maximum 50 items per batch search.",
+            request_id,
+        )
+        .into_response();
+    }
+    let catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            log_event(
+                "catalog_open_failed",
+                &request_id,
+                json!({ "error": error.to_string() }),
+            );
+            return ApiError::internal(request_id).into_response();
+        }
+    };
+    let client = match open_subtitles_client(&state.config, &identity, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+
+    let mut batch_results = Vec::new();
+    for item_id in request.item_ids {
+        let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+            Ok(item) if item.media_kind == "video" => item,
+            Ok(_) => continue,
+            Err(_) => continue,
+        };
+        let root = match state.config.resolve_visible_root(&identity, &item.root_id) {
+            Some(root) => root,
+            None => continue,
+        };
+        let relative_path = item.relative_path.clone();
+        let video_probe =
+            probe_for_video(&state, &root, &item, format!("{request_id}-{item_id}")).await;
+        let root_path = root.resolved_path.clone();
+        let movie_hash = match tokio::task::spawn_blocking(move || {
+            let mut file = open_regular_file_beneath(FilePath::new(&root_path), &relative_path)
+                .map_err(|error| error.to_string())?;
+            match opensubtitles_movie_hash(&mut file) {
+                Ok(hash) => Ok(Some(hash)),
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Ok(None),
+                Err(error) => Err(format!("calculate movie hash: {error}")),
+            }
+        })
+        .await
+        {
+            Ok(Ok(movie_hash)) => movie_hash,
+            _ => None,
+        };
+
+        let search_query = video_search_title(&item.relative_path);
+        let exact_results = match movie_hash.as_ref() {
+            Some(movie_hash) => match client.search_by_hash(movie_hash, &languages).await {
+                Ok(results) => results
+                    .into_iter()
+                    .filter(|result| result.hash_matched)
+                    .collect::<Vec<_>>(),
+                Err(_) => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+
+        let has_exact_results = !exact_results.is_empty();
+
+        let results = if has_exact_results {
+            exact_results
+        } else {
+            client
+                .search_by_query(search_query, &languages)
+                .await
+                .unwrap_or_default()
+        };
+
+        let video_fps = video_probe.as_ref().and_then(|probe| probe.fps);
+        let video_codec = video_probe.as_ref().and_then(|probe| probe.codec.clone());
+        let video_width = video_probe.as_ref().and_then(|probe| probe.width);
+        let video_height = video_probe.as_ref().and_then(|probe| probe.height);
+
+        let results_with_compat = results
+            .into_iter()
+            .map(|result| {
+                let fps_compatible = subtitle_fps_compatible(result.fps, video_fps);
+                let mut value = serde_json::to_value(&result).unwrap_or_else(|_| json!({}));
+                value["fpsCompatible"] = match fps_compatible {
+                    Some(compatible) => json!(compatible),
+                    None => Value::Null,
+                };
+                value
+            })
+            .collect::<Vec<_>>();
+
+        batch_results.push(json!({
+            "itemId": item.id,
+            "relativePath": item.relative_path,
+            "videoSummary": {
+                "codec": video_codec,
+                "width": video_width,
+                "height": video_height,
+                "fps": video_fps,
+            },
+            "results": results_with_compat,
+            "matchMethod": if has_exact_results { "movie-hash" } else { "title-fallback" },
+        }));
+    }
+
+    Json(json!({
+        "batchResults": batch_results,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
 fn subtitle_result_payload(
     search_query: &str,
     languages: &str,
@@ -675,6 +868,9 @@ fn subtitle_result_payload(
     request_id: &str,
 ) -> Response {
     let video_fps = video_probe.as_ref().and_then(|probe| probe.fps);
+    let video_codec = video_probe.as_ref().and_then(|probe| probe.codec.clone());
+    let video_width = video_probe.as_ref().and_then(|probe| probe.width);
+    let video_height = video_probe.as_ref().and_then(|probe| probe.height);
     let results = results
         .into_iter()
         .map(|result| {
@@ -694,6 +890,12 @@ fn subtitle_result_payload(
         "matchMethod": match_method,
         "results": results,
         "video": video_probe,
+        "videoSummary": {
+            "codec": video_codec,
+            "width": video_width,
+            "height": video_height,
+            "fps": video_fps,
+        },
         "requestId": request_id,
     }))
     .into_response()
@@ -828,7 +1030,7 @@ async fn install_provider_subtitle(
         }
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
-    let client = match open_subtitles_client(&state.config, &request_id) {
+    let client = match open_subtitles_client(&state.config, &identity, &request_id) {
         Ok(client) => client,
         Err(error) => return error.into_response(),
     };
@@ -934,7 +1136,7 @@ async fn subtitle_provider_content(
         }
         Err(error) => return error.with_request_id(request_id).into_response(),
     };
-    let client = match open_subtitles_client(&state.config, &request_id) {
+    let client = match open_subtitles_client(&state.config, &identity, &request_id) {
         Ok(client) => client,
         Err(error) => return error.into_response(),
     };
@@ -999,6 +1201,180 @@ async fn subtitle_provider_content(
         "requestId": request_id,
     }))
     .into_response()
+}
+
+async fn adjust_subtitle_timing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(item_id): Path<String>,
+    Json(request): Json<AdjustSubtitleRequest>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    if request.file_id <= 0
+        || !request.source_fps.is_finite()
+        || !request.target_fps.is_finite()
+        || request.source_fps <= 0.0
+        || request.target_fps <= 0.0
+        || request.source_fps > 240.0
+        || request.target_fps > 240.0
+    {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_fps",
+            "Source and target frame rates must be positive numbers.",
+            request_id,
+        )
+        .into_response();
+    }
+    let language = match normalized_subtitle_language(&request.language) {
+        Some(language) => language,
+        None => return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_subtitle_language",
+            "Use a two or three letter subtitle language code, optionally followed by a region.",
+            request_id,
+        )
+        .into_response(),
+    };
+    let mut catalog = match state.catalog.open() {
+        Ok(catalog) => catalog,
+        Err(_) => return ApiError::internal(request_id).into_response(),
+    };
+    let item = match visible_catalog_item(&state.config, &identity, &catalog, &item_id) {
+        Ok(item) if item.media_kind == "video" => item,
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::CONFLICT,
+                "video_item_required",
+                "Subtitle adjustment requires a cataloged video file.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return error.with_request_id(request_id).into_response(),
+    };
+
+    let client = match open_subtitles_client(&state.config, &identity, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+    let bytes = match client.download(request.file_id).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            log_event(
+                "subtitle_provider_download_failed",
+                &request_id,
+                json!({ "error": error, "fileId": request.file_id }),
+            );
+            return ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "subtitle_provider_failed",
+                "OpenSubtitles could not supply the selected subtitle.",
+                request_id,
+            )
+            .into_response();
+        }
+    };
+    if let Err(error) = validate_subtitle_bytes("srt", &bytes) {
+        return error.with_request_id(request_id).into_response();
+    }
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "subtitle_encoding_unsupported",
+                "Timing adjustment requires a UTF-8 SRT subtitle.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let ratio = request.target_fps / request.source_fps;
+    let adjusted = adjust_srt_timing(text, ratio).into_bytes();
+    if let Err(error) = validate_subtitle_bytes("srt", &adjusted) {
+        return error.with_request_id(request_id).into_response();
+    }
+    let destination_relative_path = subtitle_sidecar_path(
+        &item.relative_path,
+        &language,
+        request.hearing_impaired,
+        "srt",
+    );
+    let staged = match stage_sidecar(&state.config, "srt", &adjusted, &request_id).await {
+        Ok(staged) => staged,
+        Err(error) => return error.into_response(),
+    };
+    let action = InstallSubtitleAction {
+        staging_filename: staged.filename,
+        destination_root_id: item.root_id.clone(),
+        destination_relative_path,
+        expected: staged.expected,
+    };
+    let staging_path = staged.path;
+    match create_subtitle_plan(
+        &state,
+        &identity,
+        &mut catalog,
+        &item,
+        action,
+        "opensubtitles-fps-adjusted",
+        request_id,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&staging_path).await;
+            error.into_response()
+        }
+    }
+}
+
+fn adjust_srt_timing(text: &str, ratio: f64) -> String {
+    let mut result = String::new();
+    for line in text.lines() {
+        if line.contains("-->") {
+            let parts: Vec<&str> = line.split("-->").collect();
+            if parts.len() == 2 {
+                let start = adjust_timestamp(parts[0].trim(), ratio);
+                let end = adjust_timestamp(parts[1].trim(), ratio);
+                result.push_str(&format!("{} --> {}\n", start, end));
+            } else {
+                result.push_str(line);
+                result.push('\n');
+            }
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
+}
+
+fn adjust_timestamp(timestamp: &str, ratio: f64) -> String {
+    let (time_part, frac_part) = timestamp.split_once([',', '.']).unwrap_or((timestamp, "0"));
+    let parts: Vec<u64> = time_part
+        .split(':')
+        .map(|p| p.parse::<u64>().unwrap_or(0))
+        .collect();
+    if parts.len() != 3 {
+        return timestamp.to_string();
+    }
+    let total_ms = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000
+        + frac_part.parse::<u64>().unwrap_or(0) * 10_u64.pow(3 - frac_part.len().min(3) as u32);
+    let adjusted_ms = ((total_ms as f64) / ratio).round() as u64;
+    let hours = adjusted_ms / 3_600_000;
+    let minutes = (adjusted_ms % 3_600_000) / 60_000;
+    let seconds = (adjusted_ms % 60_000) / 1_000;
+    let millis = adjusted_ms % 1_000;
+    if timestamp.contains(',') {
+        format!("{:02}:{:02}:{:02},{:03}", hours, minutes, seconds, millis)
+    } else {
+        format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    }
 }
 
 async fn installed_subtitles(
@@ -1988,11 +2364,13 @@ async fn lookup_music_metadata(
         Ok(client) => client,
         Err(error) => return error.into_response(),
     };
-    if mode == LookupMode::Fingerprint && !client.has_fingerprint() {
+    let runtime_acoustid = state.config.provider_broker_base_url.is_some()
+        && provider_account_configured(&state.config, &identity, "acoustid").await;
+    if mode == LookupMode::Fingerprint && !client.has_fingerprint() && !runtime_acoustid {
         return ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "musicbrainz_lookup_unconfigured",
-            "Fingerprint lookup needs an AcoustID API key configured on this server.",
+            "Configure your AcoustID account from Accounts to use fingerprint lookup.",
             request_id,
         )
         .into_response();
@@ -2044,10 +2422,57 @@ async fn lookup_music_metadata(
             return ApiError::internal(request_id).into_response();
         }
     };
-    let candidates = match client
-        .lookup_music(&file_path, artist.as_deref(), title.as_deref(), mode)
-        .await
-    {
+    let lookup = if runtime_acoustid && mode != LookupMode::Search {
+        match client.fingerprint_file(&file_path).await {
+            Ok((fingerprint, duration)) => {
+                match broker_acoustid_lookup(&state.config, &identity, &fingerprint, duration).await
+                {
+                    Ok(ids) if !ids.is_empty() => client.release_groups_from_ids(&ids).await,
+                    Ok(_) if mode == LookupMode::Auto => {
+                        client
+                            .lookup_music(
+                                &file_path,
+                                artist.as_deref(),
+                                title.as_deref(),
+                                LookupMode::Search,
+                            )
+                            .await
+                    }
+                    Ok(_) => Ok(Vec::new()),
+                    Err(_) if mode == LookupMode::Auto => {
+                        client
+                            .lookup_music(
+                                &file_path,
+                                artist.as_deref(),
+                                title.as_deref(),
+                                LookupMode::Search,
+                            )
+                            .await
+                    }
+                    Err(error) => {
+                        log_event(
+                            "acoustid_broker_lookup_failed",
+                            &request_id,
+                            json!({ "error": error, "itemId": item.id }),
+                        );
+                        return ApiError::new(
+                            StatusCode::BAD_GATEWAY,
+                            "acoustid_lookup_failed",
+                            "AcoustID could not complete the fingerprint lookup.",
+                            request_id,
+                        )
+                        .into_response();
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        }
+    } else {
+        client
+            .lookup_music(&file_path, artist.as_deref(), title.as_deref(), mode)
+            .await
+    };
+    let candidates = match lookup {
         Ok(candidates) => candidates,
         Err(error) => {
             log_event(
@@ -2066,6 +2491,293 @@ async fn lookup_music_metadata(
     };
     Json(json!({
         "candidates": candidates,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+async fn search_tmdb_metadata(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<TmdbSearchRequest>,
+) -> Response {
+    let request_id = request_id();
+    let _identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+
+    if request.query.trim().is_empty() {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "tmdb_query_empty",
+            "TMDB search requires a non-empty query.",
+            request_id,
+        )
+        .into_response();
+    }
+
+    if request.query.len() > 500 {
+        return ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "tmdb_query_too_long",
+            "Query must be 500 characters or less.",
+            request_id,
+        )
+        .into_response();
+    }
+
+    let tmdb_client = match &state.tmdb_client {
+        Some(client) => client,
+        None => {
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tmdb_unconfigured",
+                "TMDB API key is not configured on this server. Set MEDIA_MANAGER_TMDB_API_KEY_FILE to enable TMDB search.",
+                request_id,
+            )
+            .into_response();
+        }
+    };
+
+    let media_type = request.media_type.as_deref().unwrap_or("auto");
+    let year = request.year.filter(|y| *y > 1800 && *y <= 2100);
+
+    let mut all_results = Vec::new();
+
+    match media_type {
+        "movie" | "auto" => match tmdb_client.search_movies(&request.query, year).await {
+            Ok(movies) => {
+                for movie in movies {
+                    let release_year = movie
+                        .release_date
+                        .as_ref()
+                        .and_then(|d| d.get(0..4))
+                        .and_then(|y| y.parse::<u16>().ok());
+                    let item = json!({
+                        "mediaType": "movie",
+                        "title": movie.title,
+                        "year": release_year,
+                        "overview": movie.overview,
+                        "posterPath": movie.poster_path,
+                        "backdropPath": movie.backdrop_path,
+                        "voteAverage": movie.vote_average,
+                        "voteCount": movie.vote_count,
+                        "genres": movie.genre_ids,
+                        "tmdbId": movie.id,
+                    });
+                    all_results.push(item);
+                }
+            }
+            Err(error) => {
+                log_event(
+                    "tmdb_movie_search_failed",
+                    &request_id,
+                    json!({ "error": error.to_string(), "query": request.query }),
+                );
+            }
+        },
+        "tv" => {}
+        _ => {}
+    }
+
+    if media_type == "tv" || media_type == "auto" {
+        match tmdb_client.search_tv_shows(&request.query, year).await {
+            Ok(shows) => {
+                for show in shows {
+                    let first_air_year = show
+                        .first_air_date
+                        .as_ref()
+                        .and_then(|d| d.get(0..4))
+                        .and_then(|y| y.parse::<u16>().ok());
+                    let item = json!({
+                        "mediaType": "tv",
+                        "title": show.name,
+                        "year": first_air_year,
+                        "overview": show.overview,
+                        "posterPath": show.poster_path,
+                        "backdropPath": show.backdrop_path,
+                        "voteAverage": show.vote_average,
+                        "voteCount": show.vote_count,
+                        "genres": show.genre_ids,
+                        "originCountry": show.origin_country,
+                        "tmdbId": show.id,
+                    });
+                    all_results.push(item);
+                }
+            }
+            Err(error) => {
+                log_event(
+                    "tmdb_tv_search_failed",
+                    &request_id,
+                    json!({ "error": error.to_string(), "query": request.query }),
+                );
+            }
+        }
+    }
+
+    all_results.sort_by(|a, b| {
+        let a_pop = a.get("voteCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        let b_pop = b.get("voteCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        b_pop.cmp(&a_pop)
+    });
+
+    Json(json!({
+        "results": all_results,
+        "query": request.query,
+        "year": year,
+        "mediaType": media_type,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+async fn get_tmdb_details(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<TmdbDetailsRequest>,
+) -> Response {
+    let request_id = request_id();
+    let _identity = match editor_identity(&state.config, &headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+
+    let tmdb_client = match &state.tmdb_client {
+        Some(client) => client,
+        None => {
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "tmdb_unconfigured",
+                "TMDB API key is not configured on this server. Set MEDIA_MANAGER_TMDB_API_KEY_FILE to enable TMDB search.",
+                request_id,
+            )
+            .into_response();
+        }
+    };
+
+    let result = match request.media_type.as_str() {
+        "movie" => match tmdb_client.get_movie_details(request.tmdb_id).await {
+            Ok(details) => json!({
+                "mediaType": "movie",
+                "tmdbId": details.id,
+                "title": details.title,
+                "originalTitle": details.original_title,
+                "overview": details.overview,
+                "releaseDate": details.release_date,
+                "year": details.release_date.as_ref().and_then(|d| d.get(0..4)).and_then(|y| y.parse::<u16>().ok()),
+                "runtimeMinutes": details.runtime,
+                "voteAverage": details.vote_average,
+                "voteCount": details.vote_count,
+                "posterPath": details.poster_path,
+                "backdropPath": details.backdrop_path,
+                "genres": details.genres.iter().map(|g| g.name.clone()).collect::<Vec<_>>(),
+                "productionCompanies": details.production_companies.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                "productionCountries": details.production_countries.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                "spokenLanguages": details.spoken_languages.iter().map(|l| l.english_name.clone()).collect::<Vec<_>>(),
+                "status": details.status,
+                "tagline": details.tagline,
+                "cast": details.credits.as_ref().map(|c| c.cast.iter().map(|m| json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "character": m.character,
+                })).collect::<Vec<_>>()).unwrap_or_default(),
+                "crew": details.credits.as_ref().map(|c| c.crew.iter().map(|m| json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "job": m.job,
+                    "department": m.department,
+                })).collect::<Vec<_>>()).unwrap_or_default(),
+                "keywords": details.keywords.as_ref().map(|k| k.keywords.iter().map(|kw| kw.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+                "externalIds": details.external_ids.as_ref().map(|e| json!({
+                    "imdbId": e.imdb_id,
+                    "wikidataId": e.wikidata_id,
+                })).unwrap_or_default(),
+            }),
+            Err(error) => {
+                log_event(
+                    "tmdb_movie_details_failed",
+                    &request_id,
+                    json!({ "error": error.to_string(), "tmdbId": request.tmdb_id }),
+                );
+                return ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "tmdb_details_failed",
+                    "TMDB could not fetch movie details.",
+                    request_id,
+                )
+                .into_response();
+            }
+        },
+        "tv" => match tmdb_client.get_tv_show_details(request.tmdb_id).await {
+            Ok(details) => json!({
+                "mediaType": "tv",
+                "tmdbId": details.id,
+                "title": details.name,
+                "originalTitle": details.original_name,
+                "overview": details.overview,
+                "firstAirDate": details.first_air_date,
+                "lastAirDate": details.last_air_date,
+                "year": details.first_air_date.as_ref().and_then(|d| d.get(0..4)).and_then(|y| y.parse::<u16>().ok()),
+                "numberOfSeasons": details.number_of_seasons,
+                "numberOfEpisodes": details.number_of_episodes,
+                "voteAverage": details.vote_average,
+                "voteCount": details.vote_count,
+                "posterPath": details.poster_path,
+                "backdropPath": details.backdrop_path,
+                "genres": details.genres.iter().map(|g| g.name.clone()).collect::<Vec<_>>(),
+                "productionCompanies": details.production_companies.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                "productionCountries": details.production_countries.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                "spokenLanguages": details.spoken_languages.iter().map(|l| l.english_name.clone()).collect::<Vec<_>>(),
+                "status": details.status,
+                "type": details.show_type,
+                "inProduction": details.in_production,
+                "episodeRunTime": details.episode_run_time,
+                "cast": details.credits.as_ref().map(|c| c.cast.iter().map(|m| json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "character": m.character,
+                })).collect::<Vec<_>>()).unwrap_or_default(),
+                "crew": details.credits.as_ref().map(|c| c.crew.iter().map(|m| json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "job": m.job,
+                    "department": m.department,
+                })).collect::<Vec<_>>()).unwrap_or_default(),
+                "keywords": details.keywords.as_ref().map(|k| k.keywords.iter().map(|kw| kw.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+                "externalIds": details.external_ids.as_ref().map(|e| json!({
+                    "imdbId": e.imdb_id,
+                    "wikidataId": e.wikidata_id,
+                })).unwrap_or_default(),
+            }),
+            Err(error) => {
+                log_event(
+                    "tmdb_tv_details_failed",
+                    &request_id,
+                    json!({ "error": error.to_string(), "tmdbId": request.tmdb_id }),
+                );
+                return ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "tmdb_details_failed",
+                    "TMDB could not fetch TV show details.",
+                    request_id,
+                )
+                .into_response();
+            }
+        },
+        _ => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "tmdb_media_type_invalid",
+                "mediaType must be 'movie' or 'tv'.",
+                request_id,
+            )
+            .into_response();
+        }
+    };
+
+    Json(json!({
+        "details": result,
         "requestId": request_id,
     }))
     .into_response()
@@ -2390,36 +3102,49 @@ async fn frontend_asset(
 
 async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let request_id = request_id();
-    if let Err(error) = identity_from_headers(&headers, &request_id) {
-        return error.into_response();
-    }
+    let identity = match identity_from_headers(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
     let mut integrations = state.config.integrations.clone();
+    let runtime_accounts = if state.config.provider_broker_base_url.is_some() {
+        configured_provider_accounts(&state.config, &identity).await
+    } else {
+        BTreeSet::new()
+    };
     integrations.push(crate::config::IntegrationCapability {
         id: "mkvmaker".to_string(),
         label: "DVD ISO converter".to_string(),
         available: state.config.mkvmaker_progress_file.is_file(),
         capabilities: vec!["conversion-progress".to_string()],
     });
-    integrations.push(crate::config::IntegrationCapability {
-        id: "opensubtitles".to_string(),
-        label: "OpenSubtitles".to_string(),
-        available: state
+    let opensubtitles_available = match state.config.provider_broker_base_url.as_deref() {
+        Some(_) => runtime_accounts.contains("opensubtitles"),
+        None => state
             .config
             .open_subtitles_credentials_file
             .as_ref()
             .is_some_and(|path| path.is_file()),
+    };
+    integrations.push(crate::config::IntegrationCapability {
+        id: "opensubtitles".to_string(),
+        label: "OpenSubtitles".to_string(),
+        available: opensubtitles_available,
         capabilities: vec![
             "subtitle-search".to_string(),
             "subtitle-download".to_string(),
         ],
     });
     let mut musicbrainz_capabilities = vec!["musicbrainz-lookup".to_string()];
-    if state
-        .config
-        .acoustid_api_key_file
-        .as_ref()
-        .is_some_and(|path| path.is_file())
-    {
+    let acoustid_available = match state.config.provider_broker_base_url.as_deref() {
+        Some(_) => runtime_accounts.contains("acoustid"),
+        None => state
+            .config
+            .acoustid_api_key_file
+            .as_ref()
+            .is_some_and(|path| path.is_file()),
+    };
+    if acoustid_available {
         musicbrainz_capabilities.push("musicbrainz-fingerprint".to_string());
     }
     integrations.push(crate::config::IntegrationCapability {
@@ -2436,6 +3161,87 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
         "requestId": request_id,
     }))
     .into_response()
+}
+
+async fn provider_account_configured(
+    config: &AppConfig,
+    identity: &Identity,
+    provider_id: &str,
+) -> bool {
+    configured_provider_accounts(config, identity)
+        .await
+        .contains(provider_id)
+}
+
+async fn configured_provider_accounts(config: &AppConfig, identity: &Identity) -> BTreeSet<String> {
+    let Some(base) = config.provider_broker_base_url.as_deref() else {
+        return BTreeSet::new();
+    };
+    let Ok(mut url) = reqwest::Url::parse(base) else {
+        return BTreeSet::new();
+    };
+    if url.scheme() != "http"
+        || !url
+            .host_str()
+            .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"))
+    {
+        return BTreeSet::new();
+    }
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    let Ok(url) = url.join("api/v1/provider-accounts") else {
+        return BTreeSet::new();
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return BTreeSet::new();
+    };
+    let Ok(response) = client
+        .get(url)
+        .header("x-forwarded-user", &identity.subject)
+        .header("x-forwarded-preferred-username", &identity.username)
+        .header("x-forwarded-groups", identity.groups.join(","))
+        .send()
+        .await
+    else {
+        return BTreeSet::new();
+    };
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|length| length > 1024 * 1024)
+    {
+        return BTreeSet::new();
+    }
+    let Ok(bytes) = response.bytes().await else {
+        return BTreeSet::new();
+    };
+    if bytes.len() > 1024 * 1024 {
+        return BTreeSet::new();
+    }
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|payload| payload.get("providers").and_then(Value::as_array).cloned())
+        .map(|providers| {
+            providers
+                .into_iter()
+                .filter(|provider| {
+                    provider.pointer("/account/state").and_then(Value::as_str) == Some("configured")
+                })
+                .filter_map(|provider| {
+                    provider
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -3752,34 +4558,7 @@ async fn not_found() -> Response {
 }
 
 fn identity_from_headers(headers: &HeaderMap, request_id: &str) -> Result<Identity, ApiError> {
-    let preferred_username = match headers.get("x-forwarded-preferred-username") {
-        Some(value) => Some(value.to_str().map_err(|_| {
-            ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "identity_required",
-                "A valid authenticated identity is required.",
-                request_id.to_string(),
-            )
-        })?),
-        None => None,
-    };
-    let username = preferred_username
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            headers
-                .get("x-forwarded-user")
-                .and_then(|value| value.to_str().ok())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        })
-        .unwrap_or_default();
-    let groups = headers
-        .get("x-forwarded-groups")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .split(',');
-    Identity::try_new(username, groups).map_err(|_| {
+    Identity::try_from_forwarded_headers(headers).map_err(|_| {
         ApiError::new(
             StatusCode::UNAUTHORIZED,
             "identity_required",
@@ -4049,10 +4828,283 @@ fn video_search_title(relative_path: &str) -> &str {
         .unwrap_or(filename)
 }
 
+enum SubtitleProviderClient {
+    Broker {
+        base: reqwest::Url,
+        client: reqwest::Client,
+        identity: Identity,
+    },
+    Legacy(OpenSubtitlesClient),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrokerSubtitleSearchResponse {
+    match_method: String,
+    results: Vec<SubtitleMatch>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrokerAcoustidResponse {
+    release_group_ids: Vec<String>,
+}
+
+impl SubtitleProviderClient {
+    async fn search_by_query(
+        &self,
+        query: &str,
+        languages: &str,
+    ) -> Result<Vec<SubtitleMatch>, String> {
+        match self {
+            Self::Legacy(client) => client
+                .search_by_query(query, languages)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Broker {
+                base,
+                client,
+                identity,
+            } => {
+                let response = broker_provider_request(
+                    base,
+                    client,
+                    identity,
+                    "opensubtitles/search",
+                    json!({ "query": query, "languages": languages }),
+                )
+                .await?;
+                let payload = bounded_broker_json(response).await?;
+                Ok(payload.results)
+            }
+        }
+    }
+
+    async fn search_by_hash(
+        &self,
+        movie_hash: &crate::subtitles::MovieHash,
+        languages: &str,
+    ) -> Result<Vec<SubtitleMatch>, String> {
+        match self {
+            Self::Legacy(client) => client
+                .search_by_hash(movie_hash, languages)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Broker {
+                base,
+                client,
+                identity,
+            } => {
+                let response = broker_provider_request(
+                    base,
+                    client,
+                    identity,
+                    "opensubtitles/search",
+                    json!({
+                        "movieHash": movie_hash.value,
+                        "movieByteSize": movie_hash.byte_size,
+                        "query": "local movie hash",
+                        "languages": languages,
+                    }),
+                )
+                .await?;
+                let payload = bounded_broker_json(response).await?;
+                if payload.match_method != "movie-hash" {
+                    return Ok(Vec::new());
+                }
+                Ok(payload.results)
+            }
+        }
+    }
+
+    async fn download(&self, file_id: i64) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Legacy(client) => client
+                .download(file_id)
+                .await
+                .map_err(|error| error.to_string()),
+            Self::Broker {
+                base,
+                client,
+                identity,
+            } => {
+                let mut response = broker_provider_request(
+                    base,
+                    client,
+                    identity,
+                    "opensubtitles/download",
+                    json!({ "fileId": file_id }),
+                )
+                .await?;
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > MAX_SUBTITLE_BYTES as u64)
+                {
+                    return Err("provider subtitle exceeded the size limit".to_string());
+                }
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response
+                    .chunk()
+                    .await
+                    .map_err(|_| "provider broker response could not be read safely".to_string())?
+                {
+                    if bytes.len().saturating_add(chunk.len()) > MAX_SUBTITLE_BYTES {
+                        return Err("provider subtitle exceeded the size limit".to_string());
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(bytes)
+            }
+        }
+    }
+}
+
+async fn broker_provider_request(
+    base: &reqwest::Url,
+    client: &reqwest::Client,
+    identity: &Identity,
+    operation: &str,
+    body: Value,
+) -> Result<reqwest::Response, String> {
+    let url = base
+        .join(&format!("api/v1/provider-lookups/{operation}"))
+        .map_err(|_| "provider broker URL is invalid".to_string())?;
+    let response = client
+        .post(url)
+        .header("x-forwarded-user", &identity.subject)
+        .header("x-forwarded-preferred-username", &identity.username)
+        .header("x-forwarded-groups", identity.groups.join(","))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "provider broker is unavailable".to_string())?;
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let message = match response.status() {
+        reqwest::StatusCode::PRECONDITION_REQUIRED => "configure this provider from Accounts",
+        reqwest::StatusCode::TOO_MANY_REQUESTS => "provider rate limit reached",
+        _ => "provider broker rejected the operation",
+    };
+    Err(message.to_string())
+}
+
+async fn broker_acoustid_lookup(
+    config: &AppConfig,
+    identity: &Identity,
+    fingerprint: &str,
+    duration: u32,
+) -> Result<Vec<String>, String> {
+    let base = config
+        .provider_broker_base_url
+        .as_deref()
+        .ok_or_else(|| "provider broker is unavailable".to_string())?;
+    let mut base =
+        reqwest::Url::parse(base).map_err(|_| "provider broker address is invalid".to_string())?;
+    if base.scheme() != "http"
+        || !base
+            .host_str()
+            .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"))
+    {
+        return Err("provider broker address is not loopback".to_string());
+    }
+    if !base.path().ends_with('/') {
+        base.set_path(&format!("{}/", base.path()));
+    }
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(35))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "provider broker client could not be created".to_string())?;
+    let response = broker_provider_request(
+        &base,
+        &client,
+        identity,
+        "acoustid/lookup",
+        json!({ "fingerprint": fingerprint, "duration": duration }),
+    )
+    .await?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > 256 * 1024)
+    {
+        return Err("provider broker response exceeded the size limit".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "provider broker response could not be read".to_string())?;
+    if bytes.len() > 256 * 1024 {
+        return Err("provider broker response exceeded the size limit".to_string());
+    }
+    let payload = serde_json::from_slice::<BrokerAcoustidResponse>(&bytes)
+        .map_err(|_| "provider broker returned an invalid response".to_string())?;
+    Ok(payload.release_group_ids)
+}
+
+async fn bounded_broker_json(
+    response: reqwest::Response,
+) -> Result<BrokerSubtitleSearchResponse, String> {
+    const MAX_BROKER_JSON_BYTES: usize = 2 * 1024 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_BROKER_JSON_BYTES as u64)
+    {
+        return Err("provider broker response exceeded the size limit".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "provider broker response could not be read".to_string())?;
+    if bytes.len() > MAX_BROKER_JSON_BYTES {
+        return Err("provider broker response exceeded the size limit".to_string());
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| "provider broker returned an invalid response".to_string())
+}
+
 fn open_subtitles_client(
     config: &AppConfig,
+    identity: &Identity,
     request_id: &str,
-) -> Result<OpenSubtitlesClient, ApiError> {
+) -> Result<SubtitleProviderClient, ApiError> {
+    if let Some(base) = config.provider_broker_base_url.as_deref() {
+        let mut base = reqwest::Url::parse(base).map_err(|_| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider_broker_unavailable",
+                "The provider broker address is invalid.",
+                request_id.to_string(),
+            )
+        })?;
+        let trusted_loopback = base.scheme() == "http"
+            && base
+                .host_str()
+                .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+        if !trusted_loopback {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider_broker_unavailable",
+                "The provider broker must use a loopback HTTP address.",
+                request_id.to_string(),
+            ));
+        }
+        if !base.path().ends_with('/') {
+            base.set_path(&format!("{}/", base.path()));
+        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(35))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| ApiError::internal(request_id.to_string()))?;
+        return Ok(SubtitleProviderClient::Broker {
+            base,
+            client,
+            identity: identity.clone(),
+        });
+    }
     let path = config
         .open_subtitles_credentials_file
         .as_deref()
@@ -4078,14 +5130,16 @@ fn open_subtitles_client(
             request_id.to_string(),
         )
     })?;
-    OpenSubtitlesClient::new(credentials).map_err(|error| {
-        log_event(
-            "subtitle_provider_client_failed",
-            request_id,
-            json!({ "error": error.to_string() }),
-        );
-        ApiError::internal(request_id.to_string())
-    })
+    OpenSubtitlesClient::new(credentials)
+        .map(SubtitleProviderClient::Legacy)
+        .map_err(|error| {
+            log_event(
+                "subtitle_provider_client_failed",
+                request_id,
+                json!({ "error": error.to_string() }),
+            );
+            ApiError::internal(request_id.to_string())
+        })
 }
 
 fn musicbrainz_client(config: &AppConfig, request_id: &str) -> Result<MusicBrainzClient, ApiError> {

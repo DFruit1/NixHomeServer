@@ -264,10 +264,12 @@ async fn finish_archive(
     job: &Job,
     crawl_dir: &Path,
 ) -> Result<(), String> {
+    // Use custom collection name if provided, otherwise fall back to job ID
+    let collection_name = job.request.collection.as_deref().unwrap_or(&job.id);
     let source = crawl_dir
         .join("collections")
-        .join(&job.id)
-        .join(format!("{}.wacz", job.id));
+        .join(collection_name)
+        .join(format!("{}.wacz", collection_name));
     let source_metadata = tokio::fs::metadata(&source)
         .await
         .map_err(|_| "crawl finished but no WACZ archive was produced".to_owned())?;
@@ -279,6 +281,7 @@ async fn finish_archive(
         scope: Some(job.request.scope),
         page_limit: Some(job.request.page_limit),
         time_limit_minutes: Some(job.request.time_limit_minutes),
+        collection: job.request.collection.clone(),
     })
     .map_err(|error| format!("read archived hostname: {error}"))?;
     tokio::fs::create_dir_all(&config.archive_root)

@@ -11,6 +11,17 @@ fn request(scope: CrawlScope) -> CreateJobRequest {
         scope,
         page_limit: 25,
         time_limit_minutes: 10,
+        collection: None,
+    }
+}
+
+fn request_with_collection(scope: CrawlScope, collection: &str) -> CreateJobRequest {
+    CreateJobRequest {
+        url: "https://example.com/docs/".to_owned(),
+        scope,
+        page_limit: 25,
+        time_limit_minutes: 10,
+        collection: Some(collection.to_owned()),
     }
 }
 
@@ -60,6 +71,21 @@ fn crawler_arguments_follow_the_documented_container_contract() {
         .map(|value| value.to_string_lossy())
         .collect::<Vec<_>>();
     assert_eq!(value_after(&page, "--depth"), "0");
+}
+
+#[test]
+fn crawler_uses_custom_collection_name_when_provided() {
+    let args = build_crawl_args(
+        &request_with_collection(CrawlScope::Prefix, "my-collection"),
+        "jobid",
+        std::path::Path::new("/var/lib/browsertrix-downloader/crawls/jobid"),
+        "docker.io/webrecorder/browsertrix-crawler:1.14.3",
+    );
+    let strings = args
+        .iter()
+        .map(|value| value.to_string_lossy())
+        .collect::<Vec<_>>();
+    assert_eq!(value_after(&strings, "--collection"), "my-collection");
 }
 
 #[test]

@@ -26,6 +26,28 @@ fn unsafe_forwarded_usernames_are_rejected_before_path_resolution() {
 }
 
 #[test]
+fn stable_subject_is_distinct_from_the_mutable_path_username() {
+    let identity = Identity::try_new_with_subject(
+        "kanidm:4689a2b2-62ba-4131-bc32-4cca2ca7859c",
+        "sydney",
+        ["users"],
+    )
+    .expect("authenticated identity");
+
+    assert_eq!(
+        identity.subject,
+        "kanidm:4689a2b2-62ba-4131-bc32-4cca2ca7859c"
+    );
+    assert_eq!(identity.username, "sydney");
+}
+
+#[test]
+fn empty_or_control_character_subjects_are_rejected() {
+    assert!(Identity::try_new_with_subject("", "sydney", ["users"]).is_err());
+    assert!(Identity::try_new_with_subject("subject\nother", "sydney", ["users"]).is_err());
+}
+
+#[test]
 fn editor_permission_requires_the_dedicated_group() {
     assert!(!Identity::new("viewer", ["users"]).can_edit("media-manager-editors"));
     assert!(Identity::new("editor", ["users", "media-manager-editors"])

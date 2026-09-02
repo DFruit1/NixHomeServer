@@ -9,11 +9,13 @@ import {
   useVisibleTask$,
 } from "@builder.io/qwik";
 import { api, ApiError } from "./api";
+import tmdbLogo from "./tmdb-logo.svg";
 
 export type View =
   | "library"
   | "conversions"
   | "subtitles"
+  | "accounts"
   | "refresh"
   | "player";
 
@@ -21,6 +23,7 @@ const VIEWS = new Set<View>([
   "library",
   "conversions",
   "subtitles",
+  "accounts",
   "refresh",
   "player",
 ]);
@@ -119,6 +122,44 @@ interface Session {
   username: string;
   groups: string[];
   canEdit: boolean;
+}
+
+interface ProviderCredentialField {
+  id: string;
+  label: string;
+  inputType: "password";
+  isRequired: boolean;
+  help: string;
+}
+
+interface ProviderAccountState {
+  state: "notRequired" | "notConfigured" | "configured";
+  configuredAt?: number;
+  updatedAt?: number;
+  lastTestedAt?: number | null;
+  lastTestStatus?: "ready" | "rejected" | "rateLimited" | "unavailable" | null;
+  lastTestMessage?: string | null;
+}
+
+interface ProviderDefinition {
+  id: string;
+  name: string;
+  mediaDomains: string[];
+  setupKind: "public" | "apiKey" | "account";
+  implementationStatus: "active" | "planned";
+  capabilities: string[];
+  credentialFields: ProviderCredentialField[];
+  setupUrl: string;
+  documentationUrl: string;
+  notes: string;
+  account: ProviderAccountState;
+}
+
+interface ProviderCatalogResponse {
+  schemaVersion: number;
+  providers: ProviderDefinition[];
+  recoveryAdvice: string;
+  requestId: string;
 }
 
 interface MediaRoot {
@@ -337,6 +378,7 @@ const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "conversions", label: "Conversions", icon: "disc" },
   { id: "subtitles", label: "Subtitles", icon: "captions" },
   { id: "player", label: "Player", icon: "play" },
+  { id: "accounts", label: "Accounts", icon: "shield" },
   { id: "refresh", label: "App refresh", icon: "refresh" },
 ];
 
@@ -792,11 +834,393 @@ export default component$((props: RootProps) => {
           />
         ) : view.value === "player" ? (
           <PlayerView state={state} />
+        ) : view.value === "accounts" ? (
+          <ProviderAccountsView />
         ) : (
           <RefreshView integrations={state.status?.integrations ?? []} />
         )}
       </main>
     </div>
+  );
+});
+
+const ProviderAccountsView = component$(() => {
+  const accounts = useStore<{
+    providers: ProviderDefinition[];
+    recoveryAdvice: string;
+    selectedProviderId: string;
+    credentialValues: Record<string, string>;
+    query: string;
+    loading: boolean;
+    saving: boolean;
+    busyProviderId: string;
+    error: string;
+    notice: string;
+  }>({
+    providers: [],
+    recoveryAdvice:
+      "Saved credentials cannot be viewed again. Keep the recovery copy in Vaultwarden, KeePassXC, or another password manager.",
+    selectedProviderId: "",
+    credentialValues: {},
+    query: "",
+    loading: true,
+    saving: false,
+    busyProviderId: "",
+    error: "",
+    notice: "",
+  });
+
+  const loadAccounts = $(async () => {
+    const response = await api<ProviderCatalogResponse>("/provider-accounts");
+    accounts.providers = response.providers;
+    accounts.recoveryAdvice = response.recoveryAdvice;
+  });
+
+  useTask$(async () => {
+    try {
+      await loadAccounts();
+    } catch (error) {
+      accounts.error = readableError(error);
+    } finally {
+      accounts.loading = false;
+    }
+  });
+
+  const closeProvider = $(() => {
+    Object.keys(accounts.credentialValues).forEach(
+      (key) => (accounts.credentialValues[key] = ""),
+    );
+    accounts.credentialValues = {};
+    accounts.selectedProviderId = "";
+  });
+
+  const openProvider = $((provider: ProviderDefinition) => {
+    accounts.selectedProviderId = provider.id;
+    accounts.credentialValues = Object.fromEntries(
+      provider.credentialFields.map((field) => [field.id, ""]),
+    );
+    accounts.error = "";
+    accounts.notice = "";
+  });
+
+  const saveProvider = $(async () => {
+    const provider = accounts.providers.find(
+      (candidate) => candidate.id === accounts.selectedProviderId,
+    );
+    if (!provider || accounts.saving) return;
+    const credentials = Object.fromEntries(
+      Object.entries(accounts.credentialValues).filter(
+        ([, value]) => value.trim() !== "",
+      ),
+    );
+    accounts.saving = true;
+    accounts.error = "";
+    try {
+      const response = await api<{ provider: ProviderDefinition }>(
+        `/provider-accounts/${encodeURIComponent(provider.id)}`,
+        { method: "PUT", body: JSON.stringify({ credentials }) },
+      );
+      const index = accounts.providers.findIndex(
+        (candidate) => candidate.id === provider.id,
+      );
+      if (index >= 0) accounts.providers[index] = response.provider;
+      accounts.notice = `${provider.name} was encrypted and saved. Its values cannot be viewed from Media Manager.`;
+      await closeProvider();
+    } catch (error) {
+      accounts.error = readableError(error);
+    } finally {
+      Object.keys(credentials).forEach((key) => (credentials[key] = ""));
+      accounts.saving = false;
+    }
+  });
+
+  const testProvider = $(async (provider: ProviderDefinition) => {
+    if (accounts.busyProviderId) return;
+    accounts.busyProviderId = provider.id;
+    accounts.error = "";
+    try {
+      const response = await api<{ message: string }>(
+        `/provider-accounts/${encodeURIComponent(provider.id)}/test`,
+        { method: "POST" },
+      );
+      accounts.notice = `${provider.name}: ${response.message}`;
+      await loadAccounts();
+    } catch (error) {
+      accounts.error = readableError(error);
+    } finally {
+      accounts.busyProviderId = "";
+    }
+  });
+
+  const deleteProvider = $(async (provider: ProviderDefinition) => {
+    if (accounts.busyProviderId) return;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        `Remove ${provider.name}? You will need your password-manager copy to set it up again.`,
+      )
+    )
+      return;
+    accounts.busyProviderId = provider.id;
+    accounts.error = "";
+    try {
+      await api(`/provider-accounts/${encodeURIComponent(provider.id)}`, {
+        method: "DELETE",
+      });
+      accounts.notice = `${provider.name} was removed.`;
+      await loadAccounts();
+    } catch (error) {
+      accounts.error = readableError(error);
+    } finally {
+      accounts.busyProviderId = "";
+    }
+  });
+
+  const selectedProvider = accounts.providers.find(
+    (provider) => provider.id === accounts.selectedProviderId,
+  );
+  const query = accounts.query.trim().toLowerCase();
+  const providers = query
+    ? accounts.providers.filter((provider) =>
+        [provider.name, ...provider.mediaDomains, ...provider.capabilities]
+          .join(" ")
+          .toLowerCase()
+          .includes(query),
+      )
+    : accounts.providers;
+  const configuredCount = accounts.providers.filter(
+    (provider) => provider.account.state === "configured",
+  ).length;
+
+  return (
+    <section class="provider-accounts-page">
+      <section class="provider-account-intro panel">
+        <div>
+          <span class="eyebrow">Runtime configuration</span>
+          <h2>Provider accounts</h2>
+          <p>
+            Connect your own metadata and subtitle sources. Accounts belong to
+            your signed-in identity, so another user's quota or lockout does not
+            affect yours.
+          </p>
+        </div>
+        <div class="provider-account-summary">
+          <strong>{configuredCount}</strong>
+          <span>configured</span>
+          <strong>{accounts.providers.length}</strong>
+          <span>available sources</span>
+        </div>
+      </section>
+
+      <aside class="credential-guidance" role="note">
+        <Icon name="shield" size={22} />
+        <div>
+          <strong>Keep the recovery copy in a password manager</strong>
+          <p>{accounts.recoveryAdvice}</p>
+          <p>
+            Vaultwarden and KeePassXC are good choices. Media Manager stores an
+            encrypted runtime copy, but never connects to or unlocks your vault.
+          </p>
+        </div>
+      </aside>
+
+      {accounts.error && (
+        <div class="message error" role="alert">
+          <Icon name="alert" size={18} />
+          <span>{accounts.error}</span>
+        </div>
+      )}
+      {accounts.notice && (
+        <div class="message success" role="status">
+          <Icon name="check" size={18} />
+          <span>{accounts.notice}</span>
+        </div>
+      )}
+
+      <div class="provider-account-toolbar">
+        <label>
+          <span>Find a source</span>
+          <input
+            type="search"
+            value={accounts.query}
+            placeholder="Movies, subtitles, MusicBrainz…"
+            onInput$={(_, input) => (accounts.query = input.value)}
+          />
+        </label>
+        <span>{providers.length} shown</span>
+      </div>
+
+      {accounts.loading ? (
+        <LoadingState />
+      ) : (
+        <div class="provider-account-grid">
+          {providers.map((provider) => {
+            const configured = provider.account.state === "configured";
+            const publicSource = provider.account.state === "notRequired";
+            const connected = provider.account.lastTestStatus === "ready";
+            const testable = ["tmdb", "opensubtitles"].includes(provider.id);
+            return (
+              <article class="provider-account-card" key={provider.id}>
+                <div class="provider-account-card-heading">
+                  <div>
+                    <h3>{provider.name}</h3>
+                    <span>{provider.mediaDomains.join(" · ")}</span>
+                  </div>
+                  <span
+                    class={{
+                      "provider-state": true,
+                      ready: publicSource || connected,
+                      planned: provider.implementationStatus === "planned",
+                    }}
+                  >
+                    {publicSource
+                      ? "Public"
+                      : provider.implementationStatus === "planned"
+                        ? configured
+                          ? "Saved · adapter planned"
+                          : "Adapter planned"
+                        : connected
+                          ? "Connected"
+                          : configured
+                            ? "Configured"
+                            : "Not configured"}
+                  </span>
+                </div>
+                <p>{provider.notes}</p>
+                <ul class="provider-capabilities">
+                  {provider.capabilities.slice(0, 5).map((capability) => (
+                    <li key={capability}>{capability.replaceAll("-", " ")}</li>
+                  ))}
+                </ul>
+                {provider.account.lastTestMessage && (
+                  <p class="provider-last-test">
+                    <strong>Last test:</strong>{" "}
+                    {provider.account.lastTestMessage}
+                  </p>
+                )}
+                <div class="provider-account-actions">
+                  {provider.credentialFields.length > 0 && (
+                    <button
+                      class="primary-button"
+                      type="button"
+                      onClick$={() => openProvider(provider)}
+                    >
+                      {configured ? "Replace credentials" : "Set up"}
+                    </button>
+                  )}
+                  {configured &&
+                    provider.implementationStatus === "active" &&
+                    testable && (
+                      <button
+                        class="secondary-button"
+                        type="button"
+                        disabled={accounts.busyProviderId === provider.id}
+                        onClick$={() => testProvider(provider)}
+                      >
+                        {accounts.busyProviderId === provider.id
+                          ? "Testing…"
+                          : "Test connection"}
+                      </button>
+                    )}
+                  <a
+                    href={provider.documentationUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Documentation
+                  </a>
+                  {configured && (
+                    <button
+                      class="text-button danger"
+                      type="button"
+                      onClick$={() => deleteProvider(provider)}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {selectedProvider && (
+        <section class="provider-credential-editor panel">
+          <div class="panel-heading">
+            <div>
+              <span class="eyebrow">Write-only credentials</span>
+              <h3>{selectedProvider.name}</h3>
+              <p>
+                Existing values are never loaded into this form. Saving replaces
+                the complete set.
+              </p>
+            </div>
+            <button
+              class="close-button"
+              type="button"
+              aria-label="Close credential editor"
+              onClick$={closeProvider}
+            >
+              ×
+            </button>
+          </div>
+          <form
+            preventdefault:submit
+            onSubmit$={saveProvider}
+            autocomplete="off"
+          >
+            <div class="credential-field-grid">
+              {selectedProvider.credentialFields.map((field) => (
+                <label key={field.id}>
+                  <span>
+                    {field.label}
+                    {field.isRequired ? " *" : ""}
+                  </span>
+                  <input
+                    type="password"
+                    name={`provider-${selectedProvider.id}-${field.id}`}
+                    value={accounts.credentialValues[field.id] ?? ""}
+                    required={field.isRequired}
+                    autocomplete="new-password"
+                    spellcheck={false}
+                    onInput$={(_, input) =>
+                      (accounts.credentialValues[field.id] = input.value)
+                    }
+                  />
+                  <small>{field.help}</small>
+                </label>
+              ))}
+            </div>
+            <div class="provider-credential-footer">
+              <a
+                href={selectedProvider.setupUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open provider setup
+              </a>
+              <div>
+                <button
+                  class="secondary-button"
+                  type="button"
+                  onClick$={closeProvider}
+                >
+                  Cancel
+                </button>
+                <button
+                  class="primary-button"
+                  type="submit"
+                  disabled={accounts.saving}
+                >
+                  {accounts.saving ? "Encrypting…" : "Encrypt and save"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      )}
+    </section>
   );
 });
 
@@ -2198,6 +2622,24 @@ interface SubtitleMatch {
   fpsCompatible?: boolean | null;
 }
 
+interface VideoSummary {
+  codec?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+}
+
+interface SubtitleSearchResponse {
+  provider: string;
+  query: string;
+  languages: string;
+  matchMethod: "movie-hash" | "title-fallback";
+  results: SubtitleMatch[];
+  video?: VideoProbe | null;
+  videoSummary?: VideoSummary;
+  requestId: string;
+}
+
 interface SubtitleCue {
   index: number;
   startMs: number;
@@ -2227,6 +2669,34 @@ interface MusicCandidate {
   matchMethod: "fingerprint" | "search";
 }
 
+interface TmdbCandidate {
+  mediaType: "movie" | "tv";
+  tmdbId: number;
+  title: string;
+  year?: number;
+  overview?: string;
+  voteAverage?: number;
+  voteCount?: number;
+  posterPath?: string;
+}
+
+interface TmdbDetails extends TmdbCandidate {
+  runtimeMinutes?: number;
+  genres?: string[];
+  releaseDate?: string;
+  firstAirDate?: string;
+  crew?: Array<{ name: string; job: string; department?: string }>;
+  externalIds?: { imdbId?: string; wikidataId?: string };
+}
+
+interface BatchSubtitleResult {
+  itemId: string;
+  relativePath: string;
+  videoSummary: VideoSummary;
+  results: SubtitleMatch[];
+  matchMethod: string;
+}
+
 interface SubtitleState {
   rootId: string;
   items: CatalogItem[];
@@ -2243,11 +2713,15 @@ interface SubtitleState {
   loadingContent: boolean;
   results: SubtitleMatch[];
   video?: VideoProbe | null;
+  videoSummary?: VideoSummary;
   content?: SubtitleContent;
   contentError: string;
   preview?: MutationPreview;
   error: string;
   notice: string;
+  browseMode: boolean;
+  browseFilter: "all" | "none" | "sidecar" | "embedded" | "both";
+  batchResults: BatchSubtitleResult[];
 }
 
 type SubtitleStatus = "none" | "sidecar" | "embedded" | "both";
@@ -2295,6 +2769,233 @@ function subtitleStatusLabel(status: SubtitleStatus | undefined): string {
   }
 }
 
+interface BrowseViewProps {
+  items: CatalogItem[];
+  subtitleStatus: Record<string, SubtitleStatus>;
+  browseFilter: "all" | "none" | "sidecar" | "embedded" | "both";
+  onFilterChange: (
+    filter: "all" | "none" | "sidecar" | "embedded" | "both",
+  ) => void;
+  onVideoSelect: (itemId: string) => void;
+  language: string;
+  hearingImpaired: boolean;
+  providerAvailable: boolean;
+  session?: Session;
+  status?: Status;
+  loadVideos: (rootId: string) => Promise<void>;
+  videoRoots: MediaRoot[];
+  search: () => Promise<void>;
+  selectProviderSubtitle: (match: SubtitleMatch) => Promise<void>;
+  viewContent: (match: SubtitleMatch) => Promise<void>;
+  adjustSubtitleTiming: (
+    match: SubtitleMatch,
+    videoFps: number,
+  ) => Promise<void>;
+  batchSearchSubtitles: (itemIds: string[]) => Promise<void>;
+  batchResults: BatchSubtitleResult[];
+  onBatchResultSelect: (result: BatchSubtitleResult) => void;
+}
+
+const BrowseView = component$<BrowseViewProps>((props) => {
+  const videoItems = props.items.filter((item) => item.mediaKind === "video");
+  const filteredItems = videoItems.filter((item) => {
+    const status = props.subtitleStatus[item.relativePath] ?? "none";
+    if (props.browseFilter === "all") return true;
+    return status === props.browseFilter;
+  });
+
+  const counts = {
+    all: videoItems.length,
+    none: videoItems.filter(
+      (i) => (props.subtitleStatus[i.relativePath] ?? "none") === "none",
+    ).length,
+    sidecar: videoItems.filter(
+      (i) => (props.subtitleStatus[i.relativePath] ?? "none") === "sidecar",
+    ).length,
+    embedded: videoItems.filter(
+      (i) => (props.subtitleStatus[i.relativePath] ?? "none") === "embedded",
+    ).length,
+    both: videoItems.filter(
+      (i) => (props.subtitleStatus[i.relativePath] ?? "none") === "both",
+    ).length,
+  };
+
+  return (
+    <div class="browse-view">
+      <div class="browse-toolbar">
+        <div class="browse-filters"></div>
+        <div class="browse-actions">
+          {props.providerAvailable &&
+            props.session?.canEdit &&
+            filteredItems.length > 0 && (
+              <button
+                class="primary-button"
+                type="button"
+                onClick$={() =>
+                  props.batchSearchSubtitles(filteredItems.map((i) => i.id))
+                }
+              >
+                <Icon name="scan" size={16} /> Batch search subtitles (
+                {filteredItems.length})
+              </button>
+            )}
+          <button
+            class={`filter-button ${props.browseFilter === "all" ? "active" : ""}`}
+            type="button"
+            onClick$={() => props.onFilterChange("all")}
+          >
+            All ({counts.all})
+          </button>
+          <button
+            class={`filter-button ${props.browseFilter === "none" ? "active" : ""}`}
+            type="button"
+            onClick$={() => props.onFilterChange("none")}
+          >
+            No subtitles ({counts.none})
+          </button>
+          <button
+            class={`filter-button ${props.browseFilter === "sidecar" ? "active" : ""}`}
+            type="button"
+            onClick$={() => props.onFilterChange("sidecar")}
+          >
+            External subtitles ({counts.sidecar})
+          </button>
+          <button
+            class={`filter-button ${props.browseFilter === "embedded" ? "active" : ""}`}
+            type="button"
+            onClick$={() => props.onFilterChange("embedded")}
+          >
+            Embedded subtitles ({counts.embedded})
+          </button>
+          <button
+            class={`filter-button ${props.browseFilter === "both" ? "active" : ""}`}
+            type="button"
+            onClick$={() => props.onFilterChange("both")}
+          >
+            Both ({counts.both})
+          </button>
+        </div>
+      </div>
+
+      <div class="browse-table-container">
+        <table class="browse-table" role="grid">
+          <thead>
+            <tr>
+              <th>Video</th>
+              <th>Resolution</th>
+              <th>Codec</th>
+              <th>FPS</th>
+              <th>Subtitle Status</th>
+              <th>Embedded Streams</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredItems.map((item) => {
+              const status = props.subtitleStatus[item.relativePath] ?? "none";
+              const probe = item.videoProbe;
+              return (
+                <tr key={item.id} class={`browse-row status-${status}`}>
+                  <td class="video-name">
+                    <span class="filename">
+                      {item.relativePath.split("/").pop()}
+                    </span>
+                    <span class="path">
+                      {item.relativePath.replace(/\/[^/]+$/, "")}
+                    </span>
+                  </td>
+                  <td>
+                    {probe?.width && probe?.height
+                      ? `${probe.width}×${probe.height}`
+                      : "—"}
+                  </td>
+                  <td>{probe?.codec ?? "—"}</td>
+                  <td>{probe?.fps ? `${probe.fps.toFixed(3)}` : "—"}</td>
+                  <td>
+                    <span class={`status-badge status-${status}`}>
+                      {status === "none" && "None"}
+                      {status === "sidecar" && "External"}
+                      {status === "embedded" && "Embedded"}
+                      {status === "both" && "Both"}
+                    </span>
+                  </td>
+                  <td>
+                    {probe?.hasEmbeddedSubtitles
+                      ? probe.subtitleLanguages?.length > 0
+                        ? probe.subtitleLanguages.join(", ")
+                        : "Yes"
+                      : "None"}
+                  </td>
+                  <td>
+                    <div class="browse-actions">
+                      {props.providerAvailable && props.session?.canEdit && (
+                        <button
+                          class="secondary-button small"
+                          type="button"
+                          onClick$={() => props.onVideoSelect(item.id)}
+                        >
+                          <Icon name="scan" size={14} /> Search subtitles
+                        </button>
+                      )}
+                      {!props.providerAvailable && (
+                        <span class="quiet-copy">
+                          Configure OpenSubtitles to search
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filteredItems.length === 0 && (
+          <div class="browse-empty">
+            <Icon name="captions" size={32} />
+            <p>No videos match the current filter.</p>
+          </div>
+        )}
+      </div>
+      {props.batchResults.length > 0 && (
+        <section
+          class="batch-subtitle-results"
+          aria-label="Batch search results"
+        >
+          <div class="panel-heading">
+            <div>
+              <h4>Batch candidates</h4>
+              <p class="quiet-copy">
+                Review one video at a time. Exact hash matches are identified;
+                no result is installed without its own preview and confirmation.
+              </p>
+            </div>
+          </div>
+          <div class="subtitle-results">
+            {props.batchResults.map((result) => (
+              <article class="subtitle-result" key={result.itemId}>
+                <div>
+                  <strong>{result.relativePath.split("/").pop()}</strong>
+                  <span>
+                    {result.results.length} candidates · {result.matchMethod}
+                  </span>
+                </div>
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={result.results.length === 0}
+                  onClick$={() => props.onBatchResultSelect(result)}
+                >
+                  Review candidates
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+});
+
 function formatCueTime(milliseconds: number): string {
   const total = Math.max(0, Math.floor(milliseconds));
   const hours = Math.floor(total / 3_600_000);
@@ -2336,6 +3037,9 @@ const SubtitleView = component$<{
     contentError: "",
     error: "",
     notice: "",
+    browseMode: false,
+    browseFilter: "none",
+    batchResults: [],
   });
 
   const loadVideos = $(async (rootId: string) => {
@@ -2344,6 +3048,7 @@ const SubtitleView = component$<{
     subtitle.itemId = "";
     subtitle.results = [];
     subtitle.video = undefined;
+    subtitle.videoSummary = undefined;
     subtitle.content = undefined;
     subtitle.error = "";
     try {
@@ -2386,18 +3091,16 @@ const SubtitleView = component$<{
     subtitle.preview = undefined;
     subtitle.content = undefined;
     subtitle.video = undefined;
+    subtitle.videoSummary = undefined;
     try {
       const parameters = new URLSearchParams({ languages: subtitle.language });
       if (subtitle.query.trim()) parameters.set("query", subtitle.query.trim());
-      const response = await api<{
-        matchMethod: "movie-hash" | "title-fallback";
-        results: SubtitleMatch[];
-        video?: VideoProbe | null;
-      }>(
+      const response = await api<SubtitleSearchResponse>(
         `/items/${encodeURIComponent(subtitle.itemId)}/subtitles/search?${parameters}`,
       );
       subtitle.results = response.results;
       subtitle.video = response.video ?? null;
+      subtitle.videoSummary = response.videoSummary;
       if (response.results.length === 0) {
         subtitle.notice =
           "OpenSubtitles returned no matches for this title and language.";
@@ -2473,6 +3176,60 @@ const SubtitleView = component$<{
     }
   });
 
+  const adjustSubtitleTiming = $(
+    async (match: SubtitleMatch, videoFps: number) => {
+      if (!subtitle.itemId || !match.fps) return;
+      subtitle.loadingContent = true;
+      subtitle.contentError = "";
+      try {
+        subtitle.preview = await api<MutationPreview>(
+          `/items/${encodeURIComponent(subtitle.itemId)}/subtitles/adjust`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              fileId: match.fileId,
+              sourceFps: match.fps,
+              targetFps: videoFps,
+              language: match.language || subtitle.language,
+              hearingImpaired:
+                subtitle.hearingImpaired || match.hearingImpaired,
+            }),
+          },
+        );
+        subtitle.notice = `Prepared a complete adjusted SRT from ${match.fps.toFixed(3)} fps to ${videoFps.toFixed(3)} fps. Review the destination, then confirm the staged sidecar.`;
+      } catch (error) {
+        subtitle.contentError = readableError(error);
+      } finally {
+        subtitle.loadingContent = false;
+      }
+    },
+  );
+
+  const batchSearchSubtitles = $(async (itemIds: string[]) => {
+    if (itemIds.length === 0) return;
+    subtitle.searching = true;
+    subtitle.error = "";
+    subtitle.notice = "";
+    try {
+      const response = await api<{
+        batchResults: BatchSubtitleResult[];
+        requestId: string;
+      }>("/subtitles/batch-search", {
+        method: "POST",
+        body: JSON.stringify({
+          itemIds,
+          languages: subtitle.language,
+        }),
+      });
+      subtitle.notice = `Batch search completed for ${response.batchResults.length} videos. Review each candidate set before staging an install.`;
+      subtitle.batchResults = response.batchResults;
+    } catch (error) {
+      subtitle.error = readableError(error);
+    } finally {
+      subtitle.searching = false;
+    }
+  });
+
   const videoItems = subtitle.items.filter(
     (item) => item.mediaKind === "video",
   );
@@ -2509,86 +3266,138 @@ const SubtitleView = component$<{
             {props.session?.canEdit ? "Editor" : "Viewer"}
           </span>
         </div>
-        <div class="subtitle-fields">
-          <label>
-            <span>Video library</span>
-            <select
-              value={subtitle.rootId}
-              onChange$={(_, select) => loadVideos(select.value)}
-            >
-              {videoRoots.map((root) => (
-                <option value={root.id} key={root.id}>
-                  {`${root.label}${root.available ? "" : " (unavailable)"}`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label class="video-select">
-            <span>Cataloged video</span>
-            <select
-              value={subtitle.itemId}
-              disabled={subtitle.loadingItems || videoItems.length === 0}
-              onChange$={(_, select) => {
-                subtitle.itemId = select.value;
-                subtitle.results = [];
-                subtitle.video = undefined;
-                subtitle.preview = undefined;
-                subtitle.content = undefined;
-              }}
-            >
-              <option value="">
-                {subtitle.loadingItems
-                  ? "Loading videos…"
-                  : videoItems.length === 0
-                    ? "No supported videos found in this library"
-                    : selectableVideos.length === 0
-                      ? "No videos without subtitles in this library"
-                      : "Choose a video…"}
-              </option>
-              {selectableVideos.map((item) => (
-                <option value={item.id} key={item.id}>
-                  {`${item.relativePath}${subtitleStatusLabel(
-                    subtitle.subtitleStatus[item.relativePath],
-                  )}`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label class="language-field">
-            <span>Language</span>
-            <input
-              value={subtitle.language}
-              maxLength={15}
-              placeholder="en"
-              onInput$={(_, input) =>
-                (subtitle.language = input.value
-                  .toLowerCase()
-                  .replace(/[^a-z0-9-]/g, "")
-                  .slice(0, 15))
-              }
-            />
-          </label>
-          <label class="checkbox-field">
+        <div class="subtitle-mode-toggle">
+          <label class="mode-toggle">
             <input
               type="checkbox"
-              checked={subtitle.hearingImpaired}
-              onChange$={(_, input) =>
-                (subtitle.hearingImpaired = input.checked)
-              }
+              checked={subtitle.browseMode}
+              onChange$={(_, input) => (subtitle.browseMode = input.checked)}
             />
-            <span>Prefer SDH / hearing-impaired naming</span>
-          </label>
-          <label class="checkbox-field">
-            <input
-              type="checkbox"
-              checked={subtitle.showWithSubtitles}
-              onChange$={(_, input) =>
-                (subtitle.showWithSubtitles = input.checked)
-              }
-            />
-            <span>Show files that already have subtitles</span>
+            <span>
+              {subtitle.browseMode ? "Browse all videos" : "Single video mode"}
+            </span>
           </label>
         </div>
+        {subtitle.browseMode ? (
+          <BrowseView
+            items={subtitle.items}
+            subtitleStatus={subtitle.subtitleStatus}
+            browseFilter={subtitle.browseFilter}
+            onFilterChange={(filter) => (subtitle.browseFilter = filter)}
+            onVideoSelect={(itemId) => {
+              subtitle.browseMode = false;
+              subtitle.itemId = itemId;
+              subtitle.results = [];
+              subtitle.video = undefined;
+              subtitle.videoSummary = undefined;
+              subtitle.preview = undefined;
+              subtitle.content = undefined;
+            }}
+            language={subtitle.language}
+            hearingImpaired={subtitle.hearingImpaired}
+            providerAvailable={providerAvailable}
+            session={props.session}
+            status={props.status}
+            loadVideos={loadVideos}
+            videoRoots={videoRoots}
+            search={search}
+            selectProviderSubtitle={selectProviderSubtitle}
+            viewContent={viewContent}
+            adjustSubtitleTiming={adjustSubtitleTiming}
+            batchSearchSubtitles={batchSearchSubtitles}
+            batchResults={subtitle.batchResults}
+            onBatchResultSelect={(result) => {
+              subtitle.browseMode = false;
+              subtitle.itemId = result.itemId;
+              subtitle.results = result.results;
+              subtitle.videoSummary = result.videoSummary;
+              subtitle.preview = undefined;
+              subtitle.content = undefined;
+              subtitle.notice = `${result.results.length} candidates loaded for review; choose one to preview or install.`;
+            }}
+          />
+        ) : (
+          <div class="subtitle-fields">
+            <label>
+              <span>Video library</span>
+              <select
+                value={subtitle.rootId}
+                onChange$={(_, select) => loadVideos(select.value)}
+              >
+                {videoRoots.map((root) => (
+                  <option value={root.id} key={root.id}>
+                    {`${root.label}${root.available ? "" : " (unavailable)"}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label class="video-select">
+              <span>Cataloged video</span>
+              <select
+                value={subtitle.itemId}
+                disabled={subtitle.loadingItems || videoItems.length === 0}
+                onChange$={(_, select) => {
+                  subtitle.itemId = select.value;
+                  subtitle.results = [];
+                  subtitle.video = undefined;
+                  subtitle.preview = undefined;
+                  subtitle.content = undefined;
+                }}
+              >
+                <option value="">
+                  {subtitle.loadingItems
+                    ? "Loading videos…"
+                    : videoItems.length === 0
+                      ? "No supported videos found in this library"
+                      : selectableVideos.length === 0
+                        ? "No videos without subtitles in this library"
+                        : "Choose a video…"}
+                </option>
+                {selectableVideos.map((item) => (
+                  <option value={item.id} key={item.id}>
+                    {`${item.relativePath}${subtitleStatusLabel(
+                      subtitle.subtitleStatus[item.relativePath],
+                    )}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label class="language-field">
+              <span>Language</span>
+              <input
+                value={subtitle.language}
+                maxLength={15}
+                placeholder="en"
+                onInput$={(_, input) =>
+                  (subtitle.language = input.value
+                    .toLowerCase()
+                    .replace(/[^a-z0-9-]/g, "")
+                    .slice(0, 15))
+                }
+              />
+            </label>
+            <label class="checkbox-field">
+              <input
+                type="checkbox"
+                checked={subtitle.hearingImpaired}
+                onChange$={(_, input) =>
+                  (subtitle.hearingImpaired = input.checked)
+                }
+              />
+              <span>Prefer SDH / hearing-impaired naming</span>
+            </label>
+            <label class="checkbox-field">
+              <input
+                type="checkbox"
+                checked={subtitle.showWithSubtitles}
+                onChange$={(_, input) =>
+                  (subtitle.showWithSubtitles = input.checked)
+                }
+              />
+              <span>Show files that already have subtitles</span>
+            </label>
+          </div>
+        )}
       </section>
 
       {subtitle.itemId && (
@@ -2620,8 +3429,8 @@ const SubtitleView = component$<{
             ) : (
               <>
                 <p class="setup-missing">
-                  Online search is not set up on this server. Subtitle uploads
-                  on the right work without it. To enable search:
+                  Your OpenSubtitles account is not set up. Subtitle uploads on
+                  the right work without it. To enable search:
                 </p>
                 <ol class="setup-steps">
                   <li>
@@ -2650,12 +3459,14 @@ const SubtitleView = component$<{
                     your account username and password.
                   </li>
                   <li>
-                    Add those credentials to the server's encrypted
-                    openSubtitlesCredentials secret.
+                    Open <strong>Accounts</strong>, choose OpenSubtitles, and
+                    paste the values at runtime. Saved values cannot be viewed
+                    again, so retain the recovery copy in Vaultwarden,
+                    KeePassXC, or another password manager.
                   </li>
                   <li>
-                    Rebuild the server. The "Configured" indicator appears here
-                    once search is live.
+                    Return here after saving. No NixOS rebuild or shared server
+                    credential is required.
                   </li>
                 </ol>
               </>
@@ -2691,51 +3502,105 @@ const SubtitleView = component$<{
           </div>
           <div class="subtitle-results">
             {subtitle.video && (
-              <p class="video-summary">
-                <strong>Video:</strong>{" "}
-                {subtitle.video.codec ?? "unknown codec"}
-                {subtitle.video.width && subtitle.video.height
-                  ? ` · ${subtitle.video.width}×${subtitle.video.height}`
-                  : ""}
-                {subtitle.video.fps
-                  ? ` · ${subtitle.video.fps.toFixed(3)} fps`
-                  : ""}
-                {subtitle.video.hasEmbeddedSubtitles
-                  ? ` · ${
-                      subtitle.video.subtitleLanguages?.length > 0
-                        ? subtitle.video.subtitleLanguages.join(", ")
-                        : "embedded"
-                    } subtitle stream`
-                  : ""}
-              </p>
+              <div class="video-summary-card">
+                <h4>Video Information</h4>
+                <div class="video-summary-grid">
+                  <div class="video-summary-item">
+                    <span class="label">Codec</span>
+                    <span class="value">
+                      {subtitle.video.codec ?? "unknown"}
+                    </span>
+                  </div>
+                  <div class="video-summary-item">
+                    <span class="label">Resolution</span>
+                    <span class="value">
+                      {subtitle.video.width && subtitle.video.height
+                        ? `${subtitle.video.width}×${subtitle.video.height}`
+                        : "unknown"}
+                    </span>
+                  </div>
+                  <div class="video-summary-item">
+                    <span class="label">Frame Rate</span>
+                    <span class="value">
+                      {subtitle.video.fps
+                        ? `${subtitle.video.fps.toFixed(3)} fps`
+                        : "unknown"}
+                    </span>
+                  </div>
+                  <div class="video-summary-item">
+                    <span class="label">Embedded Subtitles</span>
+                    <span class="value">
+                      {subtitle.video.hasEmbeddedSubtitles
+                        ? subtitle.video.subtitleLanguages?.length > 0
+                          ? subtitle.video.subtitleLanguages.join(", ")
+                          : "Yes (embedded)"
+                        : "None"}
+                    </span>
+                  </div>
+                </div>
+              </div>
             )}
             {subtitle.results.map((match) => (
               <article
-                class="subtitle-result"
+                class={`subtitle-result ${match.fpsCompatible === false ? "fps-mismatch" : ""} ${match.fpsCompatible === true ? "fps-match" : ""}`}
                 key={`${match.providerId}-${match.fileId}`}
               >
-                <div>
+                <div class="subtitle-result-header">
                   <strong>{match.release || match.fileName}</strong>
-                  <span>
-                    {match.language} · {match.downloadCount.toLocaleString()}{" "}
-                    downloads
-                    {match.fps ? ` · ${match.fps.toFixed(3)} fps` : ""}
-                    {match.fpsCompatible === false
-                      ? " · fps mismatch"
-                      : match.fpsCompatible === true
-                        ? " · fps matches video"
-                        : ""}
-                    {match.subFormat ? ` · ${match.subFormat}` : ""}
-                    {match.hashMatched ? " · exact file match" : ""}
-                    {match.hearingImpaired ? " · SDH" : ""}
-                    {match.machineTranslated || match.aiTranslated
-                      ? " · machine translated"
-                      : ""}
-                    {match.votes ? ` · ${match.votes} votes` : ""}
-                    {match.uploadDate
-                      ? ` · ${new Date(match.uploadDate).toLocaleDateString()}`
-                      : ""}
-                  </span>
+                  <div class="subtitle-badges">
+                    {match.fpsCompatible === false && (
+                      <span
+                        class="badge warning"
+                        title="Frame rate mismatch - subtitle timing may drift"
+                      >
+                        <Icon name="alert" size={12} /> fps mismatch
+                      </span>
+                    )}
+                    {match.fpsCompatible === true && (
+                      <span
+                        class="badge success"
+                        title="Frame rate matches video"
+                      >
+                        <Icon name="check" size={12} /> fps match
+                      </span>
+                    )}
+                    {match.hashMatched && (
+                      <span class="badge info" title="Exact file hash match">
+                        <Icon name="shield" size={12} /> exact match
+                      </span>
+                    )}
+                    {match.hearingImpaired && (
+                      <span class="badge info" title="SDH / Hearing impaired">
+                        <Icon name="captions" size={12} /> SDH
+                      </span>
+                    )}
+                    {match.machineTranslated ||
+                      (match.aiTranslated && (
+                        <span class="badge warning" title="Machine translated">
+                          <Icon name="alert" size={12} /> auto-translated
+                        </span>
+                      ))}
+                  </div>
+                </div>
+                <div class="subtitle-meta">
+                  <span>{match.language.toUpperCase()}</span>
+                  {match.fps && <span> · {match.fps.toFixed(3)} fps</span>}
+                  {match.subFormat && (
+                    <span> · {match.subFormat.toUpperCase()}</span>
+                  )}
+                  {match.downloadCount && (
+                    <span>
+                      {" "}
+                      · {match.downloadCount.toLocaleString()} downloads
+                    </span>
+                  )}
+                  {match.votes && <span> · {match.votes} votes</span>}
+                  {match.uploadDate && (
+                    <span>
+                      {" "}
+                      · {new Date(match.uploadDate).toLocaleDateString()}
+                    </span>
+                  )}
                 </div>
                 <div class="subtitle-result-actions">
                   <button
@@ -2754,6 +3619,17 @@ const SubtitleView = component$<{
                   >
                     {subtitle.loadingContent ? "Loading…" : "View content"}
                   </button>
+                  {match.fpsCompatible === false && subtitle.video?.fps && (
+                    <button
+                      class="secondary-button"
+                      type="button"
+                      onClick$={() =>
+                        adjustSubtitleTiming(match, subtitle.video!.fps!)
+                      }
+                    >
+                      <Icon name="timer" size={16} /> Adjust timing
+                    </button>
+                  )}
                 </div>
               </article>
             ))}
@@ -3117,6 +3993,11 @@ interface MetadataEditorState {
   candidates: MusicCandidate[];
   lookupLoading: boolean;
   lookupError: string;
+  tmdbQuery: string;
+  tmdbMediaType: "movie" | "tv" | "auto";
+  tmdbCandidates: TmdbCandidate[];
+  tmdbLoading: boolean;
+  tmdbError: string;
   loadingDetails: boolean;
   planning: boolean;
   confirming: boolean;
@@ -3193,6 +4074,11 @@ const ItemEditor = component$<{
     candidates: [],
     lookupLoading: false,
     lookupError: "",
+    tmdbQuery: "",
+    tmdbMediaType: "auto",
+    tmdbCandidates: [],
+    tmdbLoading: false,
+    tmdbError: "",
     loadingDetails: false,
     planning: false,
     confirming: false,
@@ -3336,6 +4222,11 @@ const ItemEditor = component$<{
     metadata.candidates = [];
     metadata.lookupLoading = false;
     metadata.lookupError = "";
+    metadata.tmdbQuery = metadata.title;
+    metadata.tmdbMediaType = metadata.mediaType === "movie" ? "movie" : "auto";
+    metadata.tmdbCandidates = [];
+    metadata.tmdbLoading = false;
+    metadata.tmdbError = "";
     props.state.error = "";
     try {
       const metadataPath = props.folder
@@ -3668,6 +4559,93 @@ const ItemEditor = component$<{
     props.state.notice = `Filled the form from “${candidate.title}”. Review the fields before previewing the metadata sidecar.`;
   });
 
+  const lookupTmdb = $(async () => {
+    const query = metadata.tmdbQuery.trim() || metadata.title.trim();
+    if (!query || metadata.tmdbLoading) return;
+    metadata.tmdbLoading = true;
+    metadata.tmdbError = "";
+    props.state.error = "";
+    props.state.notice = "";
+    try {
+      const result = await api<{
+        provider: "tmdb";
+        results: TmdbCandidate[];
+      }>("/provider-lookups/tmdb/search", {
+        method: "POST",
+        body: JSON.stringify({
+          query,
+          mediaType: metadata.tmdbMediaType,
+          year: metadata.year ? Number.parseInt(metadata.year, 10) : undefined,
+        }),
+      });
+      metadata.tmdbCandidates = result.results;
+      if (result.results.length === 0)
+        props.state.notice =
+          "TMDB found no candidates. Try removing the year or simplifying the title.";
+    } catch (error) {
+      metadata.tmdbError = readableError(error);
+    } finally {
+      metadata.tmdbLoading = false;
+    }
+  });
+
+  const fillTmdbCandidate = $(async (candidate: TmdbCandidate) => {
+    if (metadata.tmdbLoading) return;
+    metadata.tmdbLoading = true;
+    metadata.tmdbError = "";
+    props.state.error = "";
+    try {
+      const response = await api<{ provider: "tmdb"; details: TmdbDetails }>(
+        "/provider-lookups/tmdb/details",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            tmdbId: candidate.tmdbId,
+            mediaType: candidate.mediaType,
+          }),
+        },
+      );
+      const details = response.details;
+      metadata.isDraft = true;
+      metadata.mediaType = details.mediaType === "tv" ? "series" : "movie";
+      metadata.title = details.title;
+      if (details.year) metadata.year = String(details.year);
+      if (details.overview) metadata.description = details.overview;
+      if (details.runtimeMinutes)
+        metadata.runtimeMinutes = String(details.runtimeMinutes);
+      if (details.voteAverage != null)
+        metadata.communityRating = String(details.voteAverage);
+      if (details.genres?.length) metadata.genres = details.genres.join(", ");
+      const writers = (details.crew ?? [])
+        .filter((member) =>
+          ["Writer", "Screenplay", "Teleplay", "Story"].includes(member.job),
+        )
+        .map((member) => member.name)
+        .filter((name, index, names) => names.indexOf(name) === index);
+      if (writers.length > 0) metadata.writers = writers.join(", ");
+      metadata.premiereDate =
+        details.releaseDate?.slice(0, 10) ??
+        details.firstAirDate?.slice(0, 10) ??
+        metadata.premiereDate;
+      metadata.providerIds = {
+        ...metadata.providerIds,
+        tmdb: String(details.tmdbId),
+        ...(details.externalIds?.imdbId
+          ? { imdb: details.externalIds.imdbId }
+          : {}),
+        ...(details.externalIds?.wikidataId
+          ? { wikidata: details.externalIds.wikidataId }
+          : {}),
+      };
+      props.state.notice =
+        "Filled the draft from TMDB. Review every field and preview the portable metadata change before applying it.";
+    } catch (error) {
+      metadata.tmdbError = readableError(error);
+    } finally {
+      metadata.tmdbLoading = false;
+    }
+  });
+
   const portableWriteAvailable =
     metadata.modificationTargets.length === 0
       ? !["book", "podcast"].includes(metadata.mediaType)
@@ -3990,6 +4968,119 @@ const ItemEditor = component$<{
               </p>
             )}
           </section>
+          {["movie", "series", "episode"].includes(metadata.mediaType) && (
+            <section class="panel musicbrainz-panel tmdb-panel">
+              <div class="panel-heading">
+                <div>
+                  <h3>TMDB lookup</h3>
+                </div>
+                <span class="status-badge live">Per-user account</span>
+              </div>
+              <p class="quiet-copy">
+                Search with your runtime TMDB account, inspect likely matches,
+                then fill a draft. Lookup results never write metadata by
+                themselves. Configure or replace the account from Accounts.
+              </p>
+              <div class="metadata-form">
+                <label class="tmdb-query-input">
+                  <span>Title</span>
+                  <input
+                    value={metadata.tmdbQuery || metadata.title}
+                    maxLength={500}
+                    placeholder="e.g. Arrival"
+                    onInput$={(_, input) => (metadata.tmdbQuery = input.value)}
+                  />
+                </label>
+                <label>
+                  <span>Kind</span>
+                  <select
+                    value={metadata.tmdbMediaType}
+                    onChange$={(_, select) =>
+                      (metadata.tmdbMediaType = select.value as
+                        | "movie"
+                        | "tv"
+                        | "auto")
+                    }
+                  >
+                    <option value="auto">Movies and television</option>
+                    <option value="movie">Movies</option>
+                    <option value="tv">Television</option>
+                  </select>
+                </label>
+                <div class="metadata-actions">
+                  <button
+                    class="primary-button"
+                    type="button"
+                    disabled={
+                      !props.state.session?.canEdit ||
+                      metadata.tmdbLoading ||
+                      !(metadata.tmdbQuery.trim() || metadata.title.trim())
+                    }
+                    onClick$={lookupTmdb}
+                  >
+                    <Icon name="scan" size={18} />
+                    {metadata.tmdbLoading ? "Looking up…" : "Find matches"}
+                  </button>
+                </div>
+              </div>
+              {metadata.tmdbError && (
+                <p class="error-copy">{metadata.tmdbError}</p>
+              )}
+              <div class="subtitle-results">
+                {metadata.tmdbCandidates.map((candidate) => (
+                  <article
+                    class="subtitle-result"
+                    key={`${candidate.mediaType}-${candidate.tmdbId}`}
+                  >
+                    <div>
+                      <strong>
+                        {candidate.title}
+                        {candidate.year ? ` (${candidate.year})` : ""}
+                      </strong>
+                      <span>
+                        {candidate.mediaType === "tv" ? "Television" : "Movie"}
+                        {candidate.voteCount != null
+                          ? ` · ${candidate.voteCount.toLocaleString()} votes`
+                          : ""}
+                        {candidate.voteAverage != null
+                          ? ` · ${candidate.voteAverage.toFixed(1)}/10`
+                          : ""}
+                      </span>
+                      {candidate.overview && <p>{candidate.overview}</p>}
+                    </div>
+                    <button
+                      class="secondary-button"
+                      type="button"
+                      disabled={metadata.tmdbLoading}
+                      onClick$={() => fillTmdbCandidate(candidate)}
+                    >
+                      Fill draft
+                    </button>
+                  </article>
+                ))}
+                {metadata.tmdbCandidates.length === 0 && (
+                  <p class="quiet-copy">
+                    Candidate titles will appear here with year, popularity, and
+                    summary so you can disambiguate before filling fields.
+                  </p>
+                )}
+              </div>
+              <div class="tmdb-attribution metadata-compatibility-note">
+                <a
+                  href="https://www.themoviedb.org"
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Visit The Movie Database"
+                >
+                  <img src={tmdbLogo} alt="TMDB" />
+                </a>
+                <p>
+                  This product uses the TMDB API but is not endorsed or
+                  certified by TMDB.
+                </p>
+              </div>
+            </section>
+          )}
           {metadata.mediaType === "music" && !props.folder && (
             <section class="panel musicbrainz-panel">
               <div class="panel-heading">
@@ -4009,7 +5100,7 @@ const ItemEditor = component$<{
               <p class="quiet-copy">
                 Match the album release on MusicBrainz and fill this form from
                 it before previewing the sidecar. Fingerprint lookup matches the
-                audio itself but needs an AcoustID API key on the server.
+                audio itself but needs your AcoustID API key saved in Accounts.
               </p>
               <div class="metadata-form">
                 <label>
@@ -4482,7 +5573,7 @@ const ItemEditor = component$<{
                 ))}
                 {Object.entries(metadata.providerIds).map(([provider, id]) => (
                   <div key={provider}>
-                    <dt>{provider.toUpperCase()}</dt>
+                    <dt>{provider.toUpperCase()} ID</dt>
                     <dd>{id}</dd>
                   </div>
                 ))}

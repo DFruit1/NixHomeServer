@@ -1,17 +1,18 @@
 use crate::{
     config::Identity,
     provider_accounts::{ProviderAccountError, ProviderAccountStore, ProviderAccountSummary},
+    subtitles::{MovieHash, OpenSubtitlesClient, OpenSubtitlesCredentials},
+    tmdb::{TmdbClient, TmdbClientConfig},
 };
 use axum::{
-    body::Body,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -30,9 +31,60 @@ const MAX_CREDENTIAL_VALUE_BYTES: usize = 8192;
 #[derive(Clone)]
 pub struct ProviderBrokerState {
     pub store: Arc<ProviderAccountStore>,
+    client: reqwest::Client,
+    endpoints: ProviderTestEndpoints,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Debug)]
+pub struct ProviderTestEndpoints {
+    pub tmdb_api_base: String,
+    pub opensubtitles_api_base: String,
+    pub acoustid_api_base: String,
+}
+
+impl Default for ProviderTestEndpoints {
+    fn default() -> Self {
+        Self {
+            tmdb_api_base: "https://api.themoviedb.org/3/".to_string(),
+            opensubtitles_api_base: "https://api.opensubtitles.com/api/v1/".to_string(),
+            acoustid_api_base: "https://api.acoustid.org/v2/".to_string(),
+        }
+    }
+}
+
+impl ProviderBrokerState {
+    pub fn new(store: Arc<ProviderAccountStore>) -> Result<Self, String> {
+        Self::with_test_endpoints(store, ProviderTestEndpoints::default())
+    }
+
+    pub fn with_test_endpoints(
+        store: Arc<ProviderAccountStore>,
+        endpoints: ProviderTestEndpoints,
+    ) -> Result<Self, String> {
+        for (label, endpoint) in [
+            ("TMDB", endpoints.tmdb_api_base.as_str()),
+            ("OpenSubtitles", endpoints.opensubtitles_api_base.as_str()),
+            ("AcoustID", endpoints.acoustid_api_base.as_str()),
+        ] {
+            trusted_provider_base(endpoint)
+                .map_err(|error| format!("invalid {label} test endpoint: {error}"))?;
+        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("NixHomeServer Media Manager/0.1.0")
+            .build()
+            .map_err(|error| format!("build provider test client: {error}"))?;
+        Ok(Self {
+            store,
+            client,
+            endpoints,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum SetupKind {
     Public,
@@ -40,7 +92,7 @@ enum SetupKind {
     Account,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum ImplementationStatus {
     Active,
@@ -77,6 +129,14 @@ const API_KEY_FIELD: [CredentialFieldDefinition; 1] = [CredentialFieldDefinition
     input_type: "password",
     is_required: true,
     help: "Paste the key from the provider's developer or account settings.",
+}];
+
+const TMDB_TOKEN_FIELD: [CredentialFieldDefinition; 1] = [CredentialFieldDefinition {
+    id: "apiKey",
+    label: "API Read Access Token",
+    input_type: "password",
+    is_required: true,
+    help: "Paste the v4 API Read Access Token from TMDB API settings; it is used as a bearer token for v3 and v4 requests.",
 }];
 
 const OPENSUBTITLES_FIELDS: [CredentialFieldDefinition; 4] = [
@@ -152,7 +212,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
         capabilities: &["search", "details", "people", "images", "external-ids"],
-        credential_fields: &API_KEY_FIELD,
+        credential_fields: &TMDB_TOKEN_FIELD,
         setup_url: "https://www.themoviedb.org/settings/api",
         documentation_url: "https://developer.themoviedb.org/docs/getting-started",
         notes: "Rich movie and television matching. TMDB attribution is required when its data is displayed.",
@@ -369,19 +429,711 @@ struct SaveProviderAccountRequest {
     credentials: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TmdbSearchRequest {
+    query: String,
+    year: Option<u16>,
+    media_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TmdbDetailsRequest {
+    tmdb_id: u32,
+    media_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenSubtitlesSearchRequest {
+    movie_hash: Option<String>,
+    movie_byte_size: Option<u64>,
+    query: String,
+    languages: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenSubtitlesDownloadRequest {
+    file_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcoustidLookupRequest {
+    fingerprint: String,
+    duration: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcoustidLookupResponse {
+    status: String,
+    #[serde(default)]
+    results: Vec<AcoustidResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcoustidResult {
+    #[serde(default)]
+    recordings: Vec<AcoustidRecording>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcoustidRecording {
+    #[serde(default)]
+    releasegroups: Vec<AcoustidReleaseGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AcoustidReleaseGroup {
+    id: String,
+}
+
 pub fn provider_account_router(state: ProviderBrokerState) -> Router {
     Router::new()
-        .route(
-            "/api/v1/provider-accounts",
-            get(list_provider_accounts),
-        )
+        .route("/api/v1/provider-accounts", get(list_provider_accounts))
         .route(
             "/api/v1/provider-accounts/{provider_id}",
             axum::routing::put(save_provider_account).delete(delete_provider_account),
         )
+        .route(
+            "/api/v1/provider-accounts/{provider_id}/test",
+            axum::routing::post(test_provider_account),
+        )
+        .route(
+            "/api/v1/provider-lookups/tmdb/search",
+            axum::routing::post(search_tmdb),
+        )
+        .route(
+            "/api/v1/provider-lookups/tmdb/details",
+            axum::routing::post(tmdb_details),
+        )
+        .route(
+            "/api/v1/provider-lookups/opensubtitles/search",
+            axum::routing::post(search_opensubtitles),
+        )
+        .route(
+            "/api/v1/provider-lookups/opensubtitles/download",
+            axum::routing::post(download_opensubtitles),
+        )
+        .route(
+            "/api/v1/provider-lookups/acoustid/lookup",
+            axum::routing::post(lookup_acoustid),
+        )
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn(no_store_responses))
         .with_state(state)
+}
+
+async fn lookup_acoustid(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    payload: Result<Json<AcoustidLookupRequest>, JsonRejection>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match authenticated_identity(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => return invalid_json(&request_id).into_response(),
+    };
+    if request.duration == 0
+        || request.duration > 24 * 60 * 60
+        || request.fingerprint.len() < 4
+        || request.fingerprint.len() > 16 * 1024
+        || !request
+            .fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "acoustid_fingerprint_invalid",
+            "Supply a valid local Chromaprint fingerprint and duration.",
+            request_id,
+        )
+        .into_response();
+    }
+    let mut credentials = match state.store.load_credentials(&identity, "acoustid") {
+        Ok(Some(credentials)) => credentials,
+        Ok(None) => {
+            return ApiError::new(
+                StatusCode::PRECONDITION_REQUIRED,
+                "provider_account_required",
+                "Configure your AcoustID account before using fingerprint lookup.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return storage_failure(error, &request_id).into_response(),
+    };
+    let Some(api_key) = credentials.get("apiKey") else {
+        zeroize_credentials(&mut credentials);
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "provider_account_invalid",
+            "Replace the saved AcoustID account before using fingerprint lookup.",
+            request_id,
+        )
+        .into_response();
+    };
+    let url = match provider_test_url(&state.endpoints.acoustid_api_base, "lookup") {
+        Ok(url) => url,
+        Err(_) => {
+            zeroize_credentials(&mut credentials);
+            return ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider_adapter_unavailable",
+                "The AcoustID adapter could not be initialized.",
+                request_id,
+            )
+            .into_response();
+        }
+    };
+    let duration = request.duration.to_string();
+    let response = state
+        .client
+        .get(url)
+        .query(&[
+            ("client", api_key.as_str()),
+            ("fingerprint", request.fingerprint.as_str()),
+            ("duration", duration.as_str()),
+            ("meta", "recordingids+releasegroups"),
+        ])
+        .send()
+        .await;
+    zeroize_credentials(&mut credentials);
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        _ => return provider_lookup_failed("AcoustID fingerprint lookup", request_id),
+    };
+    let payload = match bounded_provider_json::<AcoustidLookupResponse>(response).await {
+        Ok(payload) if payload.status == "ok" => payload,
+        _ => return provider_lookup_failed("AcoustID fingerprint lookup", request_id),
+    };
+    let release_group_ids = payload
+        .results
+        .into_iter()
+        .flat_map(|result| result.recordings)
+        .flat_map(|recording| recording.releasegroups)
+        .map(|group| group.id)
+        .filter(|id| valid_mbid(id))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(12)
+        .collect::<Vec<_>>();
+    Json(json!({
+        "provider": "acoustid",
+        "releaseGroupIds": release_group_ids,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+async fn bounded_provider_json<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+) -> Result<T, String> {
+    const MAX_PROVIDER_JSON_BYTES: usize = 2 * 1024 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_JSON_BYTES as u64)
+    {
+        return Err("provider response exceeded the size limit".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "provider response could not be read safely".to_string())?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_JSON_BYTES {
+            return Err("provider response exceeded the size limit".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "provider returned invalid JSON".to_string())
+}
+
+fn valid_mbid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+async fn search_opensubtitles(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    payload: Result<Json<OpenSubtitlesSearchRequest>, JsonRejection>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match authenticated_identity(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => return invalid_json(&request_id).into_response(),
+    };
+    let query = request.query.trim();
+    if query.is_empty() || query.len() > 200 || query.contains('\0') {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "subtitle_query_invalid",
+            "Subtitle search requires a query between 1 and 200 characters.",
+            request_id,
+        )
+        .into_response();
+    }
+    let Some(languages) = normalized_languages(&request.languages) else {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "subtitle_languages_invalid",
+            "Supply one to five comma-separated language codes.",
+            request_id,
+        )
+        .into_response();
+    };
+    let movie_hash = match (request.movie_hash.as_deref(), request.movie_byte_size) {
+        (None, None) => None,
+        (Some(value), Some(byte_size))
+            if value.len() == 16
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && byte_size >= 128 * 1024 =>
+        {
+            Some(MovieHash {
+                value: value.to_ascii_lowercase(),
+                byte_size,
+            })
+        }
+        _ => {
+            return ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "subtitle_hash_invalid",
+                "movieHash and movieByteSize must be a valid local OpenSubtitles hash pair.",
+                request_id,
+            )
+            .into_response()
+        }
+    };
+    let client = match opensubtitles_client_for(&state, &identity, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+    if let Some(movie_hash) = movie_hash.as_ref() {
+        match client.search_by_hash(movie_hash, &languages).await {
+            Ok(results) => {
+                let exact = results
+                    .into_iter()
+                    .filter(|result| result.hash_matched)
+                    .collect::<Vec<_>>();
+                if !exact.is_empty() {
+                    return Json(json!({
+                        "provider": "opensubtitles",
+                        "matchMethod": "movie-hash",
+                        "results": exact,
+                        "requestId": request_id,
+                    }))
+                    .into_response();
+                }
+            }
+            Err(_) => return provider_lookup_failed("OpenSubtitles hash search", request_id),
+        }
+    }
+    match client.search_by_query(query, &languages).await {
+        Ok(results) => Json(json!({
+            "provider": "opensubtitles",
+            "matchMethod": "title-fallback",
+            "results": results,
+            "requestId": request_id,
+        }))
+        .into_response(),
+        Err(_) => provider_lookup_failed("OpenSubtitles title search", request_id),
+    }
+}
+
+async fn download_opensubtitles(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    payload: Result<Json<OpenSubtitlesDownloadRequest>, JsonRejection>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match authenticated_identity(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let request = match payload {
+        Ok(Json(request)) if request.file_id > 0 => request,
+        Ok(_) => {
+            return ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "subtitle_file_id_invalid",
+                "Supply a positive OpenSubtitles file ID.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(_) => return invalid_json(&request_id).into_response(),
+    };
+    let client = match opensubtitles_client_for(&state, &identity, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+    match client.download(request.file_id).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "application/x-subrip")], bytes).into_response(),
+        Err(_) => provider_lookup_failed("OpenSubtitles download", request_id),
+    }
+}
+
+fn opensubtitles_client_for(
+    state: &ProviderBrokerState,
+    identity: &Identity,
+    request_id: &str,
+) -> Result<OpenSubtitlesClient, ApiError> {
+    let mut saved = state
+        .store
+        .load_credentials(identity, "opensubtitles")
+        .map_err(|error| storage_failure(error, request_id))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::PRECONDITION_REQUIRED,
+                "provider_account_required",
+                "Configure your OpenSubtitles account before using this lookup.",
+                request_id.to_string(),
+            )
+        })?;
+    let credentials = match (
+        saved.get("apiKey"),
+        saved.get("username"),
+        saved.get("password"),
+    ) {
+        (Some(api_key), Some(username), Some(password)) => OpenSubtitlesCredentials {
+            api_key: api_key.clone(),
+            username: username.clone(),
+            password: password.clone(),
+            user_agent: saved
+                .get("userAgent")
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| "NixHomeServer Media Manager v0.1".to_string()),
+        },
+        _ => {
+            zeroize_credentials(&mut saved);
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "provider_account_invalid",
+                "Replace the saved OpenSubtitles account before using this lookup.",
+                request_id.to_string(),
+            ));
+        }
+    };
+    let client = OpenSubtitlesClient::new_with_api_base(
+        credentials,
+        &state.endpoints.opensubtitles_api_base,
+    )
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider_adapter_unavailable",
+            "The OpenSubtitles adapter could not be initialized.",
+            request_id.to_string(),
+        )
+    });
+    zeroize_credentials(&mut saved);
+    client
+}
+
+fn normalized_languages(value: &str) -> Option<String> {
+    let mut languages = value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if languages.is_empty()
+        || languages.len() > 5
+        || languages.iter().any(|value| {
+            value.len() > 8
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return None;
+    }
+    languages.sort();
+    languages.dedup();
+    Some(languages.join(","))
+}
+
+async fn search_tmdb(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    payload: Result<Json<TmdbSearchRequest>, JsonRejection>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match authenticated_identity(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => return invalid_json(&request_id).into_response(),
+    };
+    let query = request.query.trim();
+    if query.is_empty() || query.len() > 500 || query.contains('\0') {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "tmdb_query_invalid",
+            "TMDB search requires a query between 1 and 500 characters.",
+            request_id,
+        )
+        .into_response();
+    }
+    let media_type = request.media_type.as_deref().unwrap_or("auto");
+    if !matches!(media_type, "movie" | "tv" | "auto") {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "tmdb_media_type_invalid",
+            "mediaType must be movie, tv, or auto.",
+            request_id,
+        )
+        .into_response();
+    }
+    let year = request.year.filter(|year| (1801..=2100).contains(year));
+    let client = match tmdb_client_for(&state, &identity, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+    let mut results = Vec::new();
+    if matches!(media_type, "movie" | "auto") {
+        match client.search_movies(query, year).await {
+            Ok(movies) => results.extend(movies.into_iter().map(|movie| {
+                let release_year = movie
+                    .release_date
+                    .as_deref()
+                    .and_then(|date| date.get(0..4))
+                    .and_then(|value| value.parse::<u16>().ok());
+                json!({
+                    "mediaType": "movie",
+                    "title": movie.title,
+                    "year": release_year,
+                    "overview": movie.overview,
+                    "posterPath": movie.poster_path,
+                    "backdropPath": movie.backdrop_path,
+                    "voteAverage": movie.vote_average,
+                    "voteCount": movie.vote_count,
+                    "genres": movie.genre_ids,
+                    "tmdbId": movie.id,
+                })
+            })),
+            Err(_) => return provider_lookup_failed("TMDB movie search", request_id),
+        }
+    }
+    if matches!(media_type, "tv" | "auto") {
+        match client.search_tv_shows(query, year).await {
+            Ok(shows) => results.extend(shows.into_iter().map(|show| {
+                let first_air_year = show
+                    .first_air_date
+                    .as_deref()
+                    .and_then(|date| date.get(0..4))
+                    .and_then(|value| value.parse::<u16>().ok());
+                json!({
+                    "mediaType": "tv",
+                    "title": show.name,
+                    "year": first_air_year,
+                    "overview": show.overview,
+                    "posterPath": show.poster_path,
+                    "backdropPath": show.backdrop_path,
+                    "voteAverage": show.vote_average,
+                    "voteCount": show.vote_count,
+                    "genres": show.genre_ids,
+                    "originCountry": show.origin_country,
+                    "tmdbId": show.id,
+                })
+            })),
+            Err(_) => return provider_lookup_failed("TMDB television search", request_id),
+        }
+    }
+    results.sort_by(|left, right| {
+        let left_votes = left.get("voteCount").and_then(Value::as_u64).unwrap_or(0);
+        let right_votes = right.get("voteCount").and_then(Value::as_u64).unwrap_or(0);
+        right_votes.cmp(&left_votes)
+    });
+    Json(json!({
+        "provider": "tmdb",
+        "results": results,
+        "query": query,
+        "year": year,
+        "mediaType": media_type,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+async fn tmdb_details(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    payload: Result<Json<TmdbDetailsRequest>, JsonRejection>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match authenticated_identity(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => return invalid_json(&request_id).into_response(),
+    };
+    if request.tmdb_id == 0 || !matches!(request.media_type.as_str(), "movie" | "tv") {
+        return ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "tmdb_details_invalid",
+            "Supply a positive tmdbId and a mediaType of movie or tv.",
+            request_id,
+        )
+        .into_response();
+    }
+    let client = match tmdb_client_for(&state, &identity, &request_id) {
+        Ok(client) => client,
+        Err(error) => return error.into_response(),
+    };
+    let details = match request.media_type.as_str() {
+        "movie" => match client.get_movie_details(request.tmdb_id).await {
+            Ok(details) => json!({
+                "mediaType": "movie",
+                "tmdbId": details.id,
+                "title": details.title,
+                "originalTitle": details.original_title,
+                "overview": details.overview,
+                "releaseDate": details.release_date,
+                "year": details.release_date.as_deref().and_then(|date| date.get(0..4)).and_then(|value| value.parse::<u16>().ok()),
+                "runtimeMinutes": details.runtime,
+                "voteAverage": details.vote_average,
+                "voteCount": details.vote_count,
+                "posterPath": details.poster_path,
+                "backdropPath": details.backdrop_path,
+                "genres": details.genres.iter().map(|genre| genre.name.clone()).collect::<Vec<_>>(),
+                "productionCompanies": details.production_companies.iter().map(|company| company.name.clone()).collect::<Vec<_>>(),
+                "productionCountries": details.production_countries.iter().map(|country| country.name.clone()).collect::<Vec<_>>(),
+                "spokenLanguages": details.spoken_languages.iter().map(|language| language.english_name.clone()).collect::<Vec<_>>(),
+                "status": details.status,
+                "tagline": details.tagline,
+                "cast": details.credits.as_ref().map(|credits| credits.cast.iter().map(|member| json!({ "id": member.id, "name": member.name, "character": member.character })).collect::<Vec<_>>()).unwrap_or_default(),
+                "crew": details.credits.as_ref().map(|credits| credits.crew.iter().map(|member| json!({ "id": member.id, "name": member.name, "job": member.job, "department": member.department })).collect::<Vec<_>>()).unwrap_or_default(),
+                "keywords": details.keywords.as_ref().map(|keywords| keywords.keywords.iter().map(|keyword| keyword.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+                "externalIds": details.external_ids.as_ref().map(|ids| json!({ "imdbId": ids.imdb_id, "wikidataId": ids.wikidata_id })).unwrap_or_default(),
+            }),
+            Err(_) => return provider_lookup_failed("TMDB movie details", request_id),
+        },
+        "tv" => match client.get_tv_show_details(request.tmdb_id).await {
+            Ok(details) => json!({
+                "mediaType": "tv",
+                "tmdbId": details.id,
+                "title": details.name,
+                "originalTitle": details.original_name,
+                "overview": details.overview,
+                "firstAirDate": details.first_air_date,
+                "lastAirDate": details.last_air_date,
+                "year": details.first_air_date.as_deref().and_then(|date| date.get(0..4)).and_then(|value| value.parse::<u16>().ok()),
+                "numberOfSeasons": details.number_of_seasons,
+                "numberOfEpisodes": details.number_of_episodes,
+                "voteAverage": details.vote_average,
+                "voteCount": details.vote_count,
+                "posterPath": details.poster_path,
+                "backdropPath": details.backdrop_path,
+                "genres": details.genres.iter().map(|genre| genre.name.clone()).collect::<Vec<_>>(),
+                "productionCompanies": details.production_companies.iter().map(|company| company.name.clone()).collect::<Vec<_>>(),
+                "productionCountries": details.production_countries.iter().map(|country| country.name.clone()).collect::<Vec<_>>(),
+                "spokenLanguages": details.spoken_languages.iter().map(|language| language.english_name.clone()).collect::<Vec<_>>(),
+                "status": details.status,
+                "type": details.show_type,
+                "inProduction": details.in_production,
+                "episodeRunTime": details.episode_run_time,
+                "cast": details.credits.as_ref().map(|credits| credits.cast.iter().map(|member| json!({ "id": member.id, "name": member.name, "character": member.character })).collect::<Vec<_>>()).unwrap_or_default(),
+                "crew": details.credits.as_ref().map(|credits| credits.crew.iter().map(|member| json!({ "id": member.id, "name": member.name, "job": member.job, "department": member.department })).collect::<Vec<_>>()).unwrap_or_default(),
+                "keywords": details.keywords.as_ref().map(|keywords| keywords.keywords.iter().map(|keyword| keyword.name.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+                "externalIds": details.external_ids.as_ref().map(|ids| json!({ "imdbId": ids.imdb_id, "wikidataId": ids.wikidata_id })).unwrap_or_default(),
+            }),
+            Err(_) => return provider_lookup_failed("TMDB television details", request_id),
+        },
+        _ => unreachable!(),
+    };
+    Json(json!({
+        "provider": "tmdb",
+        "details": details,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+fn tmdb_client_for(
+    state: &ProviderBrokerState,
+    identity: &Identity,
+    request_id: &str,
+) -> Result<TmdbClient, ApiError> {
+    let mut credentials = state
+        .store
+        .load_credentials(identity, "tmdb")
+        .map_err(|error| storage_failure(error, request_id))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::PRECONDITION_REQUIRED,
+                "provider_account_required",
+                "Configure your TMDB account before using this lookup.",
+                request_id.to_string(),
+            )
+        })?;
+    let api_key = credentials.get("apiKey").cloned().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "provider_account_invalid",
+            "Replace the saved TMDB account before using this lookup.",
+            request_id.to_string(),
+        )
+    })?;
+    let client = TmdbClient::new(TmdbClientConfig {
+        api_key: Some(api_key),
+        tmdb_api_base: state.endpoints.tmdb_api_base.clone(),
+        request_gap: std::time::Duration::from_millis(250),
+        user_agent: "NixHomeServer Media Manager/0.1.0".to_string(),
+    })
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider_adapter_unavailable",
+            "The TMDB adapter could not be initialized.",
+            request_id.to_string(),
+        )
+    });
+    zeroize_credentials(&mut credentials);
+    client
+}
+
+fn provider_lookup_failed(operation: &str, request_id: String) -> Response {
+    ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "provider_lookup_failed",
+        format!("{operation} could not be completed. Check the account status and try again."),
+        request_id,
+    )
+    .into_response()
+}
+
+fn invalid_json(request_id: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "invalid_json",
+        "Supply a valid request document.",
+        request_id.to_string(),
+    )
 }
 
 async fn list_provider_accounts(
@@ -410,12 +1162,24 @@ async fn save_provider_account(
     State(state): State<ProviderBrokerState>,
     headers: HeaderMap,
     Path(provider_id): Path<String>,
-    Json(mut request): Json<SaveProviderAccountRequest>,
+    payload: Result<Json<SaveProviderAccountRequest>, JsonRejection>,
 ) -> Response {
     let request_id = request_id();
     let identity = match authenticated_identity(&headers, &request_id) {
         Ok(identity) => identity,
         Err(error) => return error.into_response(),
+    };
+    let mut request = match payload {
+        Ok(Json(request)) => request,
+        Err(_) => {
+            return ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+                "Supply a valid provider credential document.",
+                request_id,
+            )
+            .into_response()
+        }
     };
     let Some(definition) = provider_definition(&provider_id) else {
         zeroize_credentials(&mut request.credentials);
@@ -447,9 +1211,12 @@ async fn save_provider_account(
         )
         .into_response();
     }
-    let result = state
-        .store
-        .save(&identity, definition.id, &request.credentials, unix_timestamp());
+    let result = state.store.save(
+        &identity,
+        definition.id,
+        &request.credentials,
+        unix_timestamp(),
+    );
     zeroize_credentials(&mut request.credentials);
     if let Err(error) = result {
         return storage_failure(error, &request_id).into_response();
@@ -489,6 +1256,180 @@ async fn delete_provider_account(
     match state.store.delete(&identity, &provider_id) {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => storage_failure(error, &request_id).into_response(),
+    }
+}
+
+async fn test_provider_account(
+    State(state): State<ProviderBrokerState>,
+    headers: HeaderMap,
+    Path(provider_id): Path<String>,
+) -> Response {
+    let request_id = request_id();
+    let identity = match authenticated_identity(&headers, &request_id) {
+        Ok(identity) => identity,
+        Err(error) => return error.into_response(),
+    };
+    let Some(definition) = provider_definition(&provider_id) else {
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            "provider_not_found",
+            "The requested metadata provider is not in the provider catalog.",
+            request_id,
+        )
+        .into_response();
+    };
+    if definition.credential_fields.is_empty() {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "provider_test_not_required",
+            "This public provider does not have a saved account to test.",
+            request_id,
+        )
+        .into_response();
+    }
+    if definition.implementation_status != ImplementationStatus::Active
+        || !matches!(definition.id, "tmdb" | "opensubtitles")
+    {
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "provider_test_unavailable",
+            "A live connection test will be enabled with this provider's lookup adapter.",
+            request_id,
+        )
+        .into_response();
+    }
+    let mut credentials = match state.store.load_credentials(&identity, definition.id) {
+        Ok(Some(credentials)) => credentials,
+        Ok(None) => {
+            return ApiError::new(
+                StatusCode::NOT_FOUND,
+                "provider_account_not_found",
+                "No configured provider account exists for this identity.",
+                request_id,
+            )
+            .into_response()
+        }
+        Err(error) => return storage_failure(error, &request_id).into_response(),
+    };
+    let outcome = test_live_provider(&state, definition.id, &credentials).await;
+    zeroize_credentials(&mut credentials);
+    if let Err(error) = state.store.record_test_result(
+        &identity,
+        definition.id,
+        outcome.status,
+        outcome.message,
+        unix_timestamp(),
+    ) {
+        return storage_failure(error, &request_id).into_response();
+    }
+    Json(json!({
+        "providerId": definition.id,
+        "status": outcome.status,
+        "message": outcome.message,
+        "requestId": request_id,
+    }))
+    .into_response()
+}
+
+struct ProviderTestOutcome {
+    status: &'static str,
+    message: &'static str,
+}
+
+async fn test_live_provider(
+    state: &ProviderBrokerState,
+    provider_id: &str,
+    credentials: &BTreeMap<String, String>,
+) -> ProviderTestOutcome {
+    let response = match provider_id {
+        "tmdb" => {
+            let url = provider_test_url(&state.endpoints.tmdb_api_base, "authentication");
+            match (url, credentials.get("apiKey")) {
+                (Ok(url), Some(api_key)) => state.client.get(url).bearer_auth(api_key).send().await,
+                _ => return invalid_saved_credentials(),
+            }
+        }
+        "opensubtitles" => {
+            let url = provider_test_url(&state.endpoints.opensubtitles_api_base, "login");
+            match (
+                url,
+                credentials.get("apiKey"),
+                credentials.get("username"),
+                credentials.get("password"),
+            ) {
+                (Ok(url), Some(api_key), Some(username), Some(password)) => {
+                    let user_agent = credentials
+                        .get("userAgent")
+                        .map(String::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("NixHomeServer Media Manager");
+                    state
+                        .client
+                        .post(url)
+                        .header("api-key", api_key)
+                        .header(reqwest::header::USER_AGENT, user_agent)
+                        .json(&json!({ "username": username, "password": password }))
+                        .send()
+                        .await
+                }
+                _ => return invalid_saved_credentials(),
+            }
+        }
+        _ => return invalid_saved_credentials(),
+    };
+    match response {
+        Ok(response) if response.status().is_success() => ProviderTestOutcome {
+            status: "ready",
+            message: "The provider accepted this account.",
+        },
+        Ok(response)
+            if matches!(
+                response.status(),
+                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+            ) =>
+        {
+            ProviderTestOutcome {
+                status: "rejected",
+                message: "The provider rejected the saved account.",
+            }
+        }
+        Ok(response) if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            ProviderTestOutcome {
+                status: "rateLimited",
+                message: "The provider rate limit was reached; try again later.",
+            }
+        }
+        Ok(_) | Err(_) => ProviderTestOutcome {
+            status: "unavailable",
+            message: "The provider could not be reached or did not accept the test request.",
+        },
+    }
+}
+
+fn invalid_saved_credentials() -> ProviderTestOutcome {
+    ProviderTestOutcome {
+        status: "rejected",
+        message: "The saved credential document is incomplete.",
+    }
+}
+
+fn provider_test_url(base: &str, path: &str) -> Result<reqwest::Url, String> {
+    trusted_provider_base(base)?
+        .join(path)
+        .map_err(|error| error.to_string())
+}
+
+fn trusted_provider_base(base: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(base).map_err(|error| error.to_string())?;
+    let trusted = url.scheme() == "https"
+        || (url.scheme() == "http"
+            && url
+                .host_str()
+                .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1")));
+    if trusted {
+        Ok(url)
+    } else {
+        Err("provider endpoints must use HTTPS or a loopback test mirror".to_string())
     }
 }
 
@@ -554,7 +1495,10 @@ fn validate_credentials(
         .iter()
         .map(|field| field.id)
         .collect::<BTreeSet<_>>();
-    if credentials.keys().any(|key| !allowed.contains(key.as_str())) {
+    if credentials
+        .keys()
+        .any(|key| !allowed.contains(key.as_str()))
+    {
         return Err("The credential document contains an unexpected field.".to_string());
     }
     for field in definition.credential_fields {
@@ -566,7 +1510,10 @@ fn validate_credentials(
             return Err(format!("{} is too long.", field.label));
         }
         if value.is_some_and(|value| value.chars().any(char::is_control)) {
-            return Err(format!("{} contains unsupported control characters.", field.label));
+            return Err(format!(
+                "{} contains unsupported control characters.",
+                field.label
+            ));
         }
     }
     Ok(())
@@ -679,6 +1626,3 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
-
-#[allow(dead_code)]
-fn _body_type_boundary(_: Body) {}

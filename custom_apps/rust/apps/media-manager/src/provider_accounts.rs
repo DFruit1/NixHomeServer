@@ -9,9 +9,10 @@ use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{ErrorKind, Read, Write},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
+use zeroize::{Zeroize, Zeroizing};
 
 const SCHEMA_VERSION: i64 = 1;
 const MASTER_KEY_BYTES: usize = 32;
@@ -37,7 +38,10 @@ pub struct ProviderAccountStore {
 }
 
 impl ProviderAccountStore {
-    pub fn open(database_path: &Path, master_key_path: &Path) -> Result<Self, ProviderAccountError> {
+    pub fn open(
+        database_path: &Path,
+        master_key_path: &Path,
+    ) -> Result<Self, ProviderAccountError> {
         let master_key = load_or_create_master_key(master_key_path)?;
         let store = Self {
             database_path: database_path.to_path_buf(),
@@ -55,9 +59,13 @@ impl ProviderAccountStore {
         now: i64,
     ) -> Result<(), ProviderAccountError> {
         validate_provider_id(provider_id)?;
-        let plaintext = serde_json::to_vec(credentials)
-            .map_err(|error| ProviderAccountError::Storage(error.to_string()))?;
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(credentials)
+                .map_err(|error| ProviderAccountError::Storage(error.to_string()))?,
+        );
         let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.master_key));
+        // RustCrypto documents XChaCha's 192-bit nonce and random generation:
+        // https://docs.rs/chacha20poly1305/0.10.1/chacha20poly1305/#xchacha20poly1305
         let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
         let aad = associated_data(&identity.subject, provider_id);
         let ciphertext = cipher
@@ -121,15 +129,17 @@ impl ProviderAccountStore {
         }
         let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.master_key));
         let aad = associated_data(&identity.subject, provider_id);
-        let plaintext = cipher
-            .decrypt(
-                XNonce::from_slice(&nonce),
-                Payload {
-                    msg: &ciphertext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| ProviderAccountError::Decrypt)?;
+        let plaintext = Zeroizing::new(
+            cipher
+                .decrypt(
+                    XNonce::from_slice(&nonce),
+                    Payload {
+                        msg: &ciphertext,
+                        aad: &aad,
+                    },
+                )
+                .map_err(|_| ProviderAccountError::Decrypt)?,
+        );
         serde_json::from_slice(&plaintext)
             .map(Some)
             .map_err(|_| ProviderAccountError::Decrypt)
@@ -245,6 +255,12 @@ impl ProviderAccountStore {
     }
 }
 
+impl Drop for ProviderAccountStore {
+    fn drop(&mut self) {
+        self.master_key.zeroize();
+    }
+}
+
 fn load_or_create_master_key(path: &Path) -> Result<[u8; MASTER_KEY_BYTES], ProviderAccountError> {
     match open_master_key(path) {
         Ok(file) => read_master_key(file),
@@ -283,7 +299,12 @@ fn open_master_key(path: &Path) -> std::io::Result<File> {
 
 fn read_master_key(mut file: File) -> Result<[u8; MASTER_KEY_BYTES], ProviderAccountError> {
     let metadata = file.metadata().map_err(io_error)?;
-    if !metadata.is_file() || metadata.len() != MASTER_KEY_BYTES as u64 {
+    if !metadata.is_file()
+        || metadata.len() != MASTER_KEY_BYTES as u64
+        || metadata.permissions().mode() & 0o077 != 0
+        // SAFETY: geteuid has no preconditions and does not dereference memory.
+        || metadata.uid() != unsafe { libc::geteuid() }
+    {
         return Err(ProviderAccountError::InvalidMasterKey);
     }
     let mut key = [0_u8; MASTER_KEY_BYTES];

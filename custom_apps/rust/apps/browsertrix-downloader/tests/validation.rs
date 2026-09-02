@@ -53,6 +53,7 @@ fn create_request_is_normalized_defaulted_and_clamped() {
         scope: None,
         page_limit: None,
         time_limit_minutes: None,
+        collection: None,
     })
     .expect("valid request");
     assert_eq!(parsed.hostname, "example.com");
@@ -69,6 +70,7 @@ fn create_request_is_normalized_defaulted_and_clamped() {
         scope: Some(CrawlScope::Host),
         page_limit: Some(u32::MAX),
         time_limit_minutes: Some(u32::MAX),
+        collection: None,
     })
     .expect("clamped request");
     assert_eq!(clamped.request.page_limit, MAX_PAGE_LIMIT);
@@ -91,6 +93,7 @@ fn unsafe_or_non_http_urls_are_rejected() {
                 scope: None,
                 page_limit: None,
                 time_limit_minutes: None,
+                collection: None,
             })
             .is_err(),
             "{url} should be rejected"

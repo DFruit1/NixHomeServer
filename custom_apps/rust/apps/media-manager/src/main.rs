@@ -2,9 +2,11 @@ use media_manager::{
     catalog::{Catalog, CatalogHandle},
     config::AppConfig,
     http::{router, AppState, JellyfinImageCache},
+    tmdb::{TmdbClient, TmdbClientConfig, TmdbCredentials, TMDB_API_BASE},
 };
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -29,10 +31,27 @@ async fn run() -> Result<(), String> {
     Catalog::open(&config.database_path())
         .map_err(|error| format!("initialize catalog: {error}"))?;
     let address = std::net::SocketAddr::new(config.address, config.port);
+    let tmdb_client = config.tmdb_api_key_file.as_ref().and_then(|path| {
+        TmdbCredentials::from_file(path)
+            .ok()
+            .map(|credentials| TmdbClientConfig {
+                api_key: Some(credentials.api_key.clone()),
+                tmdb_api_base: TMDB_API_BASE.to_string(),
+                request_gap: Duration::from_millis(config.tmdb_request_gap_ms),
+                user_agent: credentials
+                    .user_agent
+                    .clone()
+                    .unwrap_or_else(|| "media-manager/0.1.0".to_string()),
+            })
+            .and_then(|config| TmdbClient::new(config).ok())
+            .map(Arc::new)
+    });
+
     let state = AppState {
         catalog: CatalogHandle::new(config.database_path()),
         config,
         jellyfin_image_cache: Arc::new(JellyfinImageCache::new()),
+        tmdb_client,
     };
     let listener = tokio::net::TcpListener::bind(address)
         .await

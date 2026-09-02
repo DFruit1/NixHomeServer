@@ -74,6 +74,7 @@ pub struct AppConfig {
     pub mutation_mode: MutationMode,
     pub mkvmaker_progress_file: PathBuf,
     pub open_subtitles_credentials_file: Option<PathBuf>,
+    pub provider_broker_base_url: Option<String>,
     pub jellyfin_metadata_cache_file: Option<PathBuf>,
     pub audiobookshelf_metadata_cache_file: Option<PathBuf>,
     pub kavita_metadata_cache_file: Option<PathBuf>,
@@ -82,12 +83,15 @@ pub struct AppConfig {
     pub audiobookshelf_public_url: Option<String>,
     pub kavita_public_url: Option<String>,
     pub jellyfin_api_key_file: Option<PathBuf>,
+    pub tmdb_api_key_file: Option<PathBuf>,
     pub acoustid_api_key_file: Option<PathBuf>,
     pub fpcalc_path: Option<PathBuf>,
     pub ffprobe_path: Option<PathBuf>,
     pub musicbrainz_api_base: Option<String>,
+    pub tmdb_api_base: Option<String>,
     pub acoustid_api_base: Option<String>,
     pub musicbrainz_request_gap_ms: u64,
+    pub tmdb_request_gap_ms: u64,
     pub frontend_dir: Option<PathBuf>,
     pub files_base_url: Option<String>,
     pub integrations: Vec<IntegrationCapability>,
@@ -96,16 +100,60 @@ pub struct AppConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
+    pub subject: String,
     pub username: String,
     pub groups: Vec<String>,
 }
 
 impl Identity {
+    pub fn try_from_forwarded_headers(headers: &axum::http::HeaderMap) -> Result<Self, String> {
+        let subject = headers
+            .get("x-forwarded-user")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default();
+        let preferred_username = match headers.get("x-forwarded-preferred-username") {
+            Some(value) => Some(
+                value
+                    .to_str()
+                    .map_err(|_| "forwarded preferred username is not valid text")?,
+            ),
+            None => None,
+        };
+        let username = preferred_username
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| (!subject.is_empty()).then_some(subject))
+            .unwrap_or_default();
+        let groups = headers
+            .get("x-forwarded-groups")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .split(',');
+        Self::try_new_with_subject(subject, username, groups)
+    }
+
     pub fn try_new<I, S>(username: &str, groups: I) -> Result<Self, String>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        Self::try_new_with_subject(username, username, groups)
+    }
+
+    pub fn try_new_with_subject<I, S>(
+        subject: &str,
+        username: &str,
+        groups: I,
+    ) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        if !valid_identity_subject(subject) {
+            return Err("forwarded subject is not a valid stable identity".to_string());
+        }
         if !valid_identity_component(username) {
             return Err("forwarded username is not a safe identity component".to_string());
         }
@@ -117,6 +165,7 @@ impl Identity {
         groups.sort();
         groups.dedup();
         Ok(Self {
+            subject: subject.to_string(),
             username: username.to_string(),
             groups,
         })
@@ -176,6 +225,7 @@ impl AppConfig {
                 "MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE",
             )
             .map(PathBuf::from),
+            provider_broker_base_url: optional_env("MEDIA_MANAGER_PROVIDER_BROKER_BASE_URL"),
             jellyfin_metadata_cache_file: env::var_os("MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE")
                 .map(PathBuf::from),
             audiobookshelf_metadata_cache_file: env::var_os(
@@ -190,11 +240,13 @@ impl AppConfig {
             kavita_public_url: optional_env("MEDIA_MANAGER_KAVITA_PUBLIC_URL"),
             jellyfin_api_key_file: env::var_os("MEDIA_MANAGER_JELLYFIN_API_KEY_FILE")
                 .map(PathBuf::from),
+            tmdb_api_key_file: env::var_os("MEDIA_MANAGER_TMDB_API_KEY_FILE").map(PathBuf::from),
             acoustid_api_key_file: env::var_os("MEDIA_MANAGER_ACOUSTID_API_KEY_FILE")
                 .map(PathBuf::from),
             fpcalc_path: env::var_os("MEDIA_MANAGER_FPCALC_PATH").map(PathBuf::from),
             ffprobe_path: env::var_os("MEDIA_MANAGER_FFPROBE").map(PathBuf::from),
             musicbrainz_api_base: optional_env("MEDIA_MANAGER_MUSICBRAINZ_API_BASE"),
+            tmdb_api_base: optional_env("MEDIA_MANAGER_TMDB_API_BASE"),
             acoustid_api_base: optional_env("MEDIA_MANAGER_ACOUSTID_API_BASE"),
             musicbrainz_request_gap_ms: env_string(
                 "MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS",
@@ -202,6 +254,9 @@ impl AppConfig {
             )
             .parse::<u64>()
             .map_err(|error| format!("invalid MEDIA_MANAGER_MUSICBRAINZ_RATE_LIMIT_MS: {error}"))?,
+            tmdb_request_gap_ms: env_string("MEDIA_MANAGER_TMDB_RATE_LIMIT_MS", "250")
+                .parse::<u64>()
+                .map_err(|error| format!("invalid MEDIA_MANAGER_TMDB_RATE_LIMIT_MS: {error}"))?,
             frontend_dir: env::var_os("MEDIA_MANAGER_FRONTEND_DIR").map(PathBuf::from),
             files_base_url: optional_env("MEDIA_MANAGER_FILESTASH_BASE_URL"),
             integrations,
@@ -219,6 +274,7 @@ impl AppConfig {
             mutation_mode: MutationMode::ReadOnly,
             mkvmaker_progress_file: PathBuf::from("progress.json"),
             open_subtitles_credentials_file: None,
+            provider_broker_base_url: None,
             jellyfin_metadata_cache_file: None,
             audiobookshelf_metadata_cache_file: None,
             kavita_metadata_cache_file: None,
@@ -227,12 +283,15 @@ impl AppConfig {
             audiobookshelf_public_url: None,
             kavita_public_url: None,
             jellyfin_api_key_file: None,
+            tmdb_api_key_file: None,
             acoustid_api_key_file: None,
             fpcalc_path: None,
             ffprobe_path: None,
             musicbrainz_api_base: None,
+            tmdb_api_base: None,
             acoustid_api_base: None,
             musicbrainz_request_gap_ms: 0,
+            tmdb_request_gap_ms: 0,
             frontend_dir: None,
             files_base_url: None,
             integrations: Vec::new(),
@@ -351,6 +410,13 @@ fn valid_identity_component(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_identity_subject(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value.trim() == value
+        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
 }
 
 fn valid_root_id(value: &str) -> bool {

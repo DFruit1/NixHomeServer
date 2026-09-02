@@ -90,6 +90,7 @@ let
     kopia = 51515;
     homepage = 8084;
     mediaManager = 8087;
+    mediaManagerProvider = 8089;
   }
   // lib.optionalAttrs (enabled "files") {
     oauth2ProxyFilestash = 4184;

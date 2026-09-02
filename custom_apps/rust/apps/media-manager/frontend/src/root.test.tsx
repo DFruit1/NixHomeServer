@@ -16,6 +16,7 @@ describe("Media Manager navigation", () => {
   it("maps native navigation URLs to dashboard sections", () => {
     expect(viewFromSearch("?view=library")).toBe("library");
     expect(viewFromSearch("?view=conversions")).toBe("conversions");
+    expect(viewFromSearch("?view=accounts")).toBe("accounts");
     expect(viewFromSearch("?view=overview")).toBe("library");
     expect(viewFromSearch("?view=unknown")).toBe("library");
     expect(rootFromSearch("?view=library&root=shared-videos")).toBe(
@@ -60,6 +61,7 @@ describe("Media Manager navigation", () => {
       ["Libraries", "?view=library"],
       ["Conversions", "?view=conversions"],
       ["Subtitles", "?view=subtitles"],
+      ["Accounts", "?view=accounts"],
       ["App refresh", "?view=refresh"],
     ]);
 
@@ -81,6 +83,68 @@ describe("Media Manager navigation", () => {
     expect(screen.textContent).not.toContain("Sydney Basiniot Media Server");
     expect(screen.textContent).not.toContain("Staged changes enabled");
     expect(screen.querySelector(".mode-pill")).toBeUndefined();
+  });
+
+  it("renders runtime provider accounts without attempting to reveal saved values", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      const payload = path.endsWith("/status")
+        ? { mutationMode: "enabled", integrations: [] }
+        : path.endsWith("/session")
+          ? { username: "dsaw", groups: ["users"], canEdit: false }
+          : path.endsWith("/roots")
+            ? []
+            : path.endsWith("/provider-accounts")
+              ? {
+                  schemaVersion: 1,
+                  recoveryAdvice:
+                    "Saved credentials cannot be viewed again. Keep the recovery copy in Vaultwarden, KeePassXC, or another password manager.",
+                  providers: [
+                    {
+                      id: "tmdb",
+                      name: "The Movie Database (TMDB)",
+                      mediaDomains: ["movies", "television"],
+                      setupKind: "apiKey",
+                      implementationStatus: "active",
+                      capabilities: ["search", "details"],
+                      credentialFields: [
+                        {
+                          id: "apiKey",
+                          label: "API key",
+                          inputType: "password",
+                          isRequired: true,
+                          help: "Paste the key.",
+                        },
+                      ],
+                      setupUrl: "https://www.themoviedb.org/settings/api",
+                      documentationUrl:
+                        "https://developer.themoviedb.org/docs/getting-started",
+                      notes: "Movie and television matching.",
+                      account: {
+                        state: "configured",
+                        updatedAt: 100,
+                        lastTestStatus: "ready",
+                      },
+                    },
+                  ],
+                }
+              : { available: false, progress: {} };
+      return new Response(JSON.stringify(payload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen } = await createDOM();
+    await render(<Root initialView="accounts" />);
+
+    expect(screen.textContent).toContain("Provider accounts");
+    expect(screen.textContent).toContain("Vaultwarden");
+    expect(screen.textContent).toContain("The Movie Database (TMDB)");
+    expect(screen.textContent).toContain("Connected");
+    expect(screen.textContent).not.toContain("saved-value");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/provider-accounts",
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
   });
 
   it("loads a media root selected by a native root-row URL", async () => {
@@ -1703,6 +1767,136 @@ describe("Media Manager library browser", () => {
           String(callInit?.body).includes('"mode":"auto"'),
       ),
     ).toBe(true);
+  });
+
+  it("looks up a movie with the signed-in user's TMDB account and fills a reviewable draft", async () => {
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Arrival.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path.endsWith("/status"))
+          return new Response(
+            JSON.stringify({ mutationMode: "enabled", integrations: [] }),
+          );
+        if (path.endsWith("/session"))
+          return new Response(
+            JSON.stringify({
+              username: "dsaw",
+              groups: ["users"],
+              canEdit: true,
+            }),
+          );
+        if (path.endsWith("/roots"))
+          return new Response(
+            JSON.stringify([
+              {
+                id: "shared-videos",
+                label: "Shared videos",
+                category: "videos",
+                scope: "shared",
+                available: true,
+              },
+            ]),
+          );
+        if (path.includes("/items?rootId=shared-videos"))
+          return new Response(JSON.stringify({ items }));
+        if (path.endsWith("/items/movie-1/metadata"))
+          return new Response(
+            JSON.stringify({
+              mediaType: "movie",
+              title: "Arrival",
+              language: "en",
+              sources: ["filename"],
+            }),
+          );
+        if (
+          path.endsWith("/provider-lookups/tmdb/search") &&
+          init?.method === "POST"
+        )
+          return new Response(
+            JSON.stringify({
+              provider: "tmdb",
+              results: [
+                {
+                  mediaType: "movie",
+                  tmdbId: 329865,
+                  title: "Arrival",
+                  year: 2016,
+                  overview: "A linguist works with the military.",
+                  voteAverage: 7.6,
+                  voteCount: 18000,
+                },
+              ],
+            }),
+          );
+        if (
+          path.endsWith("/provider-lookups/tmdb/details") &&
+          init?.method === "POST"
+        )
+          return new Response(
+            JSON.stringify({
+              provider: "tmdb",
+              details: {
+                mediaType: "movie",
+                tmdbId: 329865,
+                title: "Arrival",
+                overview: "A linguist works with the military.",
+                year: 2016,
+                runtimeMinutes: 116,
+                voteAverage: 7.6,
+                genres: ["Drama", "Science Fiction"],
+                crew: [{ name: "Eric Heisserer", job: "Screenplay" }],
+                externalIds: { imdbId: "tt2543164" },
+              },
+            }),
+          );
+        return new Response(JSON.stringify({ available: false, progress: {} }));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".tmdb-panel")).toBeDefined(),
+    );
+    expect(screen.textContent).toContain("TMDB lookup");
+
+    await userEvent(
+      screen.querySelector(".tmdb-panel .primary-button"),
+      "click",
+    );
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("18,000 votes"),
+    );
+    const fillButton = Array.from(
+      screen.querySelectorAll(".tmdb-panel button"),
+    ).find((button) => button.textContent?.trim() === "Fill draft");
+    await userEvent(fillButton ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain(
+        "Filled the draft from TMDB. Review every field",
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(screen.querySelector(".editor-facts")?.textContent).toContain(
+        "TMDB ID",
+      ),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/provider-lookups/tmdb/details"),
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });
 

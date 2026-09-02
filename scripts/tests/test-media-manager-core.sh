@@ -17,6 +17,10 @@ surface_json="$(nix eval --json '.#nixosConfigurations.server.config' --apply 'c
   sqliteSources = map (dump: dump.source) cfg.repo.backups.sqliteDumps;
   service = cfg.systemd.services.media-manager.serviceConfig;
   serviceEnvironment = cfg.systemd.services.media-manager.environment;
+  providerService = cfg.systemd.services.media-manager-provider-broker.serviceConfig;
+  providerEnvironment = cfg.systemd.services.media-manager-provider-broker.environment;
+  providerUserGroup = cfg.users.users.media-manager-provider.group;
+  providerUserHome = cfg.users.users.media-manager-provider.home;
   brokerUserGroup = cfg.users.users.media-manager-broker.group;
   brokerUserExtraGroups = cfg.users.users.media-manager-broker.extraGroups;
   stateTmpfiles = cfg.systemd.tmpfiles.rules;
@@ -46,6 +50,8 @@ jq -e '
   (.app.enable == true)
   and (.app.domain == "media.sydneybasiniot.org")
   and (.app.stateDir == "/var/lib/media-manager")
+  and (.app.providerStateDir == "/var/lib/media-manager-provider")
+  and (.app.providerPort == 8089)
   and (.app.mutationMode == "enabled")
   and (.app.editorGroup == "media-manager-editors")
   and (.app.roots | map(.id) == [
@@ -62,14 +68,26 @@ jq -e '
   ])
   and (.gateway.host == .app.domain)
   and (.gateway.upstream == "http://127.0.0.1:8087")
+  and (.gateway.authenticatedRoutes == [
+    {
+      "pathPrefix": "/api/v1/provider-accounts",
+      "upstream": "http://127.0.0.1:8089"
+    },
+    {
+      "pathPrefix": "/api/v1/provider-lookups",
+      "upstream": "http://127.0.0.1:8089"
+    }
+  ])
   and (.gateway.allowedGroups == ["users"])
   and (.privateDns.target == "private")
   and (.group.overwriteMembers == false)
   and (.group.members | length == 1)
   and (.scopes | index("groups_name") != null)
   and (.persistence | index("/var/lib/media-manager") != null)
+  and (.persistence | index("/var/lib/media-manager-provider") != null)
   and (.backupApps | index("media-manager") != null)
   and (.sqliteSources | index("/var/lib/media-manager/control.sqlite3") != null)
+  and (.sqliteSources | index("/var/lib/media-manager-provider/provider-accounts.sqlite3") != null)
   and (.wantedBy | index("multi-user.target") != null)
   and (.service.User == "media-manager")
   and (.service.Group == "media-manager")
@@ -79,8 +97,27 @@ jq -e '
   and (.service.PrivateTmp == true)
   and ((.service.RestrictSUIDSGID // false) == false)
   and (.service.ReadWritePaths == ["/var/lib/media-manager"])
-  and (.serviceEnvironment.MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE == "/run/agenix/openSubtitlesCredentials")
-  and (.serviceEnvironment.MEDIA_MANAGER_ACOUSTID_API_KEY_FILE == "/run/agenix/acoustidApiKey")
+  and (.providerUserGroup == "media-manager-provider")
+  and (.providerUserHome == "/var/lib/media-manager-provider")
+  and (.providerService.User == "media-manager-provider")
+  and (.providerService.Group == "media-manager-provider")
+  and (.providerService.StateDirectory == "media-manager-provider")
+  and (.providerService.StateDirectoryMode == "0700")
+  and (.providerService.UMask == "0077")
+  and (.providerService.NoNewPrivileges == true)
+  and (.providerService.ProtectSystem == "strict")
+  and (.providerService.ProtectHome == true)
+  and (.providerService.PrivateDevices == true)
+  and (.providerService.CapabilityBoundingSet == [])
+  and (.providerService.AmbientCapabilities == [])
+  and (.providerService.RestrictAddressFamilies == ["AF_INET", "AF_INET6"])
+  and (.providerService.ReadWritePaths == ["/var/lib/media-manager-provider"])
+  and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_ADDRESS == "127.0.0.1")
+  and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_PORT == "8089")
+  and (.providerEnvironment.MEDIA_MANAGER_PROVIDER_STATE_DIR == "/var/lib/media-manager-provider")
+  and (.serviceEnvironment.MEDIA_MANAGER_PROVIDER_BROKER_BASE_URL == "http://127.0.0.1:8089/")
+  and ((.serviceEnvironment | has("MEDIA_MANAGER_OPENSUBTITLES_CREDENTIALS_FILE")) | not)
+  and ((.serviceEnvironment | has("MEDIA_MANAGER_ACOUSTID_API_KEY_FILE")) | not)
   and (.serviceEnvironment.MEDIA_MANAGER_FPCALC_PATH | test(".*chromaprint.*/bin/fpcalc"))
   and (.serviceEnvironment.MEDIA_MANAGER_JELLYFIN_METADATA_CACHE_FILE == "/var/cache/media-manager-jellyfin/metadata.json")
   and (.serviceEnvironment.MEDIA_MANAGER_AUDIOBOOKSHELF_METADATA_CACHE_FILE == "/var/cache/media-manager-audiobookshelf/metadata.json")
@@ -187,9 +224,25 @@ jq -e '
 require_fixed documentation/decisions/0001-media-manager-architecture.md \
   'The browser never supplies an arbitrary filesystem path' \
   "The Media Manager trust-boundary decision must remain documented."
+require_fixed documentation/decisions/0005-media-provider-accounts-and-lookup.md \
+  'Vaultwarden is not a live credential backend' \
+  "Runtime provider credentials must remain separate from the password-manager backend."
+require_fixed custom_apps/rust/apps/media-manager/src/provider_accounts.rs \
+  'XChaCha20Poly1305' \
+  'associated_data(&identity.subject, provider_id)' \
+  "Provider credentials must remain AEAD-bound to the stable subject and provider."
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
   '/plans/{planId}/confirm:' \
   "The staged mutation confirmation contract must remain explicit."
+require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
+  '/provider-accounts/{providerId}/test:' \
+  'Saved credential values are never returned.' \
+  "Runtime provider accounts and write-only credential behavior must remain explicit."
+require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
+  '/provider-lookups/tmdb/search:' \
+  '/provider-lookups/opensubtitles/search:' \
+  '/provider-lookups/acoustid/lookup:' \
+  "Runtime lookup adapters must remain behind the per-user credential broker."
 require_fixed custom_apps/rust/apps/media-manager/openapi.yaml \
   'If-Match' \
   "Mutation confirmation must bind to the previewed plan digest."

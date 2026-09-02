@@ -17,6 +17,8 @@ pub struct CreateJobInput {
     pub page_limit: Option<u32>,
     #[serde(default)]
     pub time_limit_minutes: Option<u32>,
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,6 +77,7 @@ pub fn parse_create_job(input: CreateJobInput) -> Result<ParsedCreateJob, Valida
             scope: input.scope.unwrap_or(CrawlScope::Page),
             page_limit,
             time_limit_minutes,
+            collection: input.collection,
         },
         hostname,
     })

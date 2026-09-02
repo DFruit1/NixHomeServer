@@ -20,6 +20,7 @@ fn input(url: &str) -> CreateJobInput {
         scope: Some(CrawlScope::Page),
         page_limit: Some(5),
         time_limit_minutes: Some(2),
+        collection: None,
     }
 }
 
