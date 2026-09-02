@@ -78,13 +78,7 @@ if ! rg -Fq 'fails its manifest validator' "$tmpdir/invalid-encrypted-external.l
 fi
 cp -f "$tmpdir/valid-cfHomeCreds.age" "$test_repo/secrets/cfHomeCreds.age"
 
-mapfile -t manifest_names < <(
-  nix eval --json --file "$test_repo/secrets/manifest.nix" \
-    | jq -r '(.generatedSecrets + (.externalSecrets | with_entries(select(.value.required != false)))) | keys[]'
-)
-for name in "${manifest_names[@]}"; do
-  age --decrypt --identity "$old_identity" "$test_repo/secrets/${name}.age" >/dev/null
-done
+# Fresh generation validation (structure validation is in test-secret-structure.sh)
 [[ -s "$test_repo/secrets/serverBootstrapSudoPassword.age" ]] || {
   echo "❌ Fresh generation omitted serverBootstrapSudoPassword."
   exit 1
@@ -105,6 +99,12 @@ fi
   echo "❌ Fresh generation created a disabled optional MEGA credential."
   exit 1
 }
+
+# Collect manifest names for rekey tests (no validation - done in structure test)
+mapfile -t manifest_names < <(
+  nix eval --json --file "$test_repo/secrets/manifest.nix" \
+    | jq -r '(.generatedSecrets + (.externalSecrets | with_entries(select(.value.required != false)))) | keys[]'
+)
 
 rm -rf "$test_repo/secrets/unencrypted"
 before_rekey="$tmpdir/before-rekey"

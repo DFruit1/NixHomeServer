@@ -8,20 +8,28 @@ cd "$TESTS_REPO_ROOT"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/tests/run-script-tests.sh [--all-apps]
+Usage: scripts/tests/run-script-tests.sh [--all-apps] [--full]
 
-Run the lean repository checks used by routine rebuild validation.
+Run the repository checks used by routine rebuild validation.
 
 By default, repository-wide optional-app tests are skipped. Use --all-apps to
 test the complete application catalog, including apps not selected by the host.
+
+Use --full to include heavy evaluation tests (runtime reliability, deploy
+transaction, first-boot convergence, secret generation, kopia wrapper).
 EOF
 }
 
 all_apps=false
+full_mode=false
 while (($# > 0)); do
   case "$1" in
     --all-apps)
       all_apps=true
+      shift
+      ;;
+    --full)
+      full_mode=true
       shift
       ;;
     -h|--help)
@@ -46,18 +54,32 @@ fi
 
 all_app_only_test() {
   case "${1##*/}" in
-    test-app-module-structure.sh | \
+    test-module-structure.sh | \
     test-application-hardening.sh | \
     test-authorization-group-validation.sh | \
     test-beszel-module.sh | \
     test-chaptarr-module.sh | \
     test-kiwix-disable-evaluation.sh | \
-    test-module-boundaries.sh | \
-    test-module-disable-evaluation.sh | \
     test-module-removal-evaluation.sh | \
     test-paperless-v3-readiness.sh | \
-    test-secret-definitions.sh | \
-    test-secret-generation-flow.sh)
+    test-secret-structure.sh | \
+    test-secret-generation.sh)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+lean_skip_test() {
+  case "${1##*/}" in
+    test-runtime-reliability.sh | \
+    test-deploy-transaction-runtime.sh | \
+    test-first-boot-convergence.sh | \
+    test-secret-generation.sh | \
+    test-kopia-cli-wrapper.sh | \
+    test-module-disable-evaluation.sh)
       return 0
       ;;
     *)
@@ -67,10 +89,9 @@ all_app_only_test() {
 }
 
 test_scripts=(
-  scripts/tests/test-app-module-structure.sh
+  scripts/tests/test-module-structure.sh
   scripts/tests/test-attic-cache.sh
   scripts/tests/test-kanidm-group-owned-access.sh
-  scripts/tests/test-module-boundaries.sh
   scripts/tests/test-module-removal-evaluation.sh
   scripts/tests/test-module-disable-evaluation.sh
   scripts/tests/test-netbird-login-convergence.sh
@@ -129,10 +150,11 @@ test_scripts=(
   scripts/tests/test-smart-sweep-runtime.sh
   scripts/tests/test-storage-path-validation.sh
   scripts/tests/test-unbound-adblock.sh
+  scripts/tests/test-vaultwarden-version.sh
   scripts/tests/test-zfs-pool-identity.sh
   scripts/tests/test-zfs-snapshot-freshness.sh
-  scripts/tests/test-secret-definitions.sh
-  scripts/tests/test-secret-generation-flow.sh
+  scripts/tests/test-secret-structure.sh
+  scripts/tests/test-secret-generation.sh
 )
 
 active=0
@@ -151,6 +173,11 @@ wait_for_one_test() {
 for test_script in "${test_scripts[@]}"; do
   if [[ "$all_apps" != true ]] && all_app_only_test "$test_script"; then
     printf '==> %s (skipped: use --all-apps)\n' "$test_script"
+    continue
+  fi
+
+  if [[ "$full_mode" != true ]] && lean_skip_test "$test_script"; then
+    printf '==> %s (skipped: use --full)\n' "$test_script"
     continue
   fi
 

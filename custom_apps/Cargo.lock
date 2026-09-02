@@ -2897,9 +2897,11 @@ name = "media-manager"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chacha20poly1305",
  "image",
  "libc",
  "lofty",
+ "rand 0.8.7",
  "reqwest 0.12.28",
  "roxmltree",
  "rusqlite",
@@ -2909,6 +2911,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "zeroize",
  "zip",
 ]
 

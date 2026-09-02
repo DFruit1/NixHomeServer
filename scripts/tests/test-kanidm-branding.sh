@@ -33,9 +33,11 @@ branding_json="$(flake_eval_json '
   host = builtins.getEnv "NIXHOMESERVER_DEFAULT_HOST";
   resolvedHost = if host != "" then host else (import ./vars.nix { inherit lib; }).hostname;
   cfg = (builtins.getAttr resolvedHost f.nixosConfigurations).config;
+  kanidmHost = lib.removePrefix "https://" cfg.services.kanidm.server.settings.origin;
 in {
   bindReadOnlyPaths = cfg.systemd.services.kanidm.serviceConfig.BindReadOnlyPaths or [ ];
   brandingScript = cfg.systemd.services.kanidm-branding.script;
+  caddyConfig = cfg.services.caddy.virtualHosts.${kanidmHost}.extraConfig;
 }
 ')"
 
@@ -43,8 +45,10 @@ if ! jq -e '
   (.bindReadOnlyPaths | any(contains("-override.css:") and endswith("/ui/hpkg/override.css")))
   and (.brandingScript | contains("kanidm system domain remove-image"))
   and (.brandingScript | contains("kanidm system domain set-image") | not)
+  and (.caddyConfig | contains("@kanidm_override_css path /pkg/override.css"))
+  and (.caddyConfig | contains("Cache-Control \"no-store, max-age=0\""))
 ' <<<"$branding_json" >/dev/null; then
-  echo "❌ Kanidm must mount the managed CSS override and retain its built-in domain logo." >&2
+  echo "❌ Kanidm must mount and revalidate the managed CSS override while retaining its built-in domain logo." >&2
   jq . <<<"$branding_json" >&2
   exit 1
 fi

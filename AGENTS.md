@@ -88,3 +88,27 @@ These are large, generated, or low-signal. Target reads instead:
 * `openapi.yaml`/generated schemas unless the API boundary is the task.
 
 If a broad search is needed, prefer `rg`/`glob` (they skip gitignored files) over full-directory reads.
+
+---
+
+## Test Tiers
+
+### Lean (default: `validate-repo.sh`)
+Quick validation targeting newly added modules or large structural changes to the config.
+Runs in 2-3 min against enabled applications only. Includes: module structure, removal
+evaluation, hardening, config validation, bootstrap safety, secret structure, and
+app-specific module tests for enabled apps.
+
+Use `--all-apps` to test the complete application catalog.
+
+### Full (`validate-repo.sh --full`)
+Complete validation including heavy Nix evaluation, deploy transaction tests,
+first-boot convergence, secret generation flows, Kopia wrapper validation, and
+Playwright e2e. Runs in 10-15 min. Run before merging significant changes or when
+diagnosing persistent integration issues.
+
+### VM (`validate-repo.sh --run-vm-tests`)
+Integration tests requiring VM boot (failure-alert, jellyfin-oidc).
+Requires `/dev/kvm`. Runs in 5-15 min. **Only run when diagnosing persistent bugs
+where integration test coverage would be severely hampered without VM validation,
+or with explicit user permission.**

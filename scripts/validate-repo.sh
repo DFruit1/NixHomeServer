@@ -10,22 +10,29 @@ ensure_default_nix_config
 
 usage() {
   cat <<'EOF'
-Usage: scripts/validate-repo.sh [--full] [--all-apps] [--run-flake-check] [--skip-flake-check]
+Usage: scripts/validate-repo.sh [--full] [--all-apps] [--run-flake-check] [--skip-flake-check] [--run-vm-tests]
 
 Run the local repository validation gate.
 
-Default mode:
+Default mode (lean):
   - runs the lean script suite through scripts/tests/run-script-tests.sh
   - does not run the flake check by default
   - does not build lint or Rust check derivations
+  - tests only enabled applications for the current host
 
   Use --run-flake-check to include `nix flake check --no-build`.
 
-Full mode:
+Full mode (--full):
   - runs `nix flake check --no-build` unless --skip-flake-check is used
-  - runs the lean script suite through scripts/tests/run-script-tests.sh
+  - runs the full script suite through scripts/tests/run-script-tests.sh --full
   - builds flake check derivations except repo-policy, which is run directly
   - runs the pinned Homepage Playwright end-to-end suite
+
+VM tests (--run-vm-tests):
+  - runs integration tests requiring VM boot (failure-alert, jellyfin-oidc)
+  - requires /dev/kvm
+  - only run when diagnosing persistent bugs where integration test coverage
+    would be severely hampered without VM validation, or with explicit permission
 
 Application scope:
   - defaults to applications.enabled for the current host
@@ -37,6 +44,8 @@ Examples:
   scripts/validate-repo.sh --full
   scripts/validate-repo.sh --full --all-apps
   scripts/validate-repo.sh --full --skip-flake-check
+  scripts/validate-repo.sh --run-vm-tests
+  scripts/validate-repo.sh --run-vm-tests --all-apps
 EOF
 }
 
@@ -44,6 +53,7 @@ full_mode=false
 all_apps=false
 run_flake_check=false
 skip_flake_check=false
+run_vm_tests=false
 tests_dir="${VALIDATE_REPO_TESTS_DIR:-$repo_root/scripts/tests}"
   eval_cache_dir=""
   pending_validation_roots_dir=""
@@ -76,6 +86,10 @@ while (($# > 0)); do
       ;;
     --skip-flake-check)
       skip_flake_check=true
+      shift
+      ;;
+    --run-vm-tests)
+      run_vm_tests=true
       shift
       ;;
     -h|--help)
@@ -152,6 +166,21 @@ build_derivation_attr() {
   validation_outputs_json="$(jq -s 'add' <<<"$validation_outputs_json $new_outputs")"
 }
 
+run_vm_tests() {
+  if [[ "$run_vm_tests" != true ]]; then
+    return 0
+  fi
+
+  echo "ℹ️ Running VM integration tests…"
+  local system
+  system="$(current_system)"
+  if [[ "$all_apps" == true ]]; then
+    nix build ".#hydraJobs.${system}.vmTestsAll" --no-link --print-build-logs
+  else
+    nix build ".#hydraJobs.${system}.vmTests" --no-link --print-build-logs
+  fi
+}
+
 run_full_derivation_checks() {
   local system check_attr vm_attr root_state_dir output_path root_path
 
@@ -169,7 +198,8 @@ run_full_derivation_checks() {
   fi
 
   build_derivation_attr "$check_attr" "$system"
-  build_derivation_attr "$vm_attr" "$system"
+  # VM tests are run separately via --run-vm-tests flag
+  # build_derivation_attr "$vm_attr" "$system"
 
   if [[ "$all_apps" == true ]]; then
     return 0
@@ -228,10 +258,18 @@ commit_validation_roots() {
 
 run_shell_tests() {
   echo "ℹ️ Running repository policy tests…"
-  if [[ "$all_apps" == true ]]; then
-    "${tests_dir}/run-script-tests.sh" --all-apps
+  if [[ "$full_mode" == true ]]; then
+    if [[ "$all_apps" == true ]]; then
+      "${tests_dir}/run-script-tests.sh" --all-apps --full
+    else
+      "${tests_dir}/run-script-tests.sh" --full
+    fi
   else
-    "${tests_dir}/run-script-tests.sh"
+    if [[ "$all_apps" == true ]]; then
+      "${tests_dir}/run-script-tests.sh" --all-apps
+    else
+      "${tests_dir}/run-script-tests.sh"
+    fi
   fi
 }
 
@@ -253,6 +291,7 @@ fi
 
 run_full_derivation_checks
 run_shell_tests
+run_vm_tests
 run_full_e2e_checks
 commit_validation_roots
 

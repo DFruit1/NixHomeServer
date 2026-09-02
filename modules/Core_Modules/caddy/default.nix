@@ -173,6 +173,12 @@ in
           ${accessLogConfig}
           @edge_http header X-Forwarded-Proto http
           redir @edge_http https://{host}{uri} 308
+          @kanidm_override_css path /pkg/override.css
+          header @kanidm_override_css {
+            Cache-Control "no-store, max-age=0"
+            Pragma "no-cache"
+            Expires "0"
+          }
           reverse_proxy https://${loopback}:${toString ports.kanidm} {
             transport http {
               tls_server_name ${vars.kanidmDomain}
