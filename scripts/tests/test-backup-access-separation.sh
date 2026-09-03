@@ -6,6 +6,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-common.sh"
 cd "$TESTS_REPO_ROOT"
 ensure_tools jq nix rg
 
+require_fixed modules/Core_Modules/auth-gateway/default.nix \
+  'handle @denied_${matcher} {' \
+  "The internal auth router must make the per-app group denial a terminal handle before catch-all proxy handles"
+
 model_json="$(flake_eval_json '
   derive = import ./lib/backup-access.nix;
   malformed = derive {

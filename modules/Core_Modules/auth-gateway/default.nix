@@ -119,7 +119,9 @@ let
       @host_${matcher} header X-Forwarded-Host ${app.host}
       handle @host_${matcher} {
         @denied_${matcher} not header_regexp X-Forwarded-Groups "(?i)(^|,)[[:space:]]*(${groups})[[:space:]]*(,|$)"
-        respond @denied_${matcher} "Forbidden" 403
+        handle @denied_${matcher} {
+          respond "Forbidden" 403
+        }
         ${authenticatedRouteBlocks}
         handle {
           reverse_proxy ${app.upstream} {
