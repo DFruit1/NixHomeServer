@@ -1,8 +1,18 @@
-{ vars, config, ... }:
+{ vars, config, lib, pkgs, ... }:
 
 let
   immichPort = vars.networking.ports.immich;
   shareHost = "sharephotos.${vars.domain}";
+  v3MigrationMarker = "/var/lib/immich/.nixhomeserver-v3-schema-migration-started";
+  preV3RollbackGuard = pkgs.writeShellScript "immich-pre-v3-rollback-guard" ''
+    set -eu
+    ${lib.optionalString (lib.versionOlder config.services.immich.package.version "3.0.0") ''
+      if [[ -e ${lib.escapeShellArg v3MigrationMarker} ]]; then
+        echo "Refusing to start pre-v3 Immich after the v3 schema migration marker was created" >&2
+        exit 1
+      fi
+    ''}
+  '';
 in
 {
   imports = [
@@ -45,6 +55,7 @@ in
     systemd.services.immich-server = {
       after = [ "data-pool-layout.service" ];
       wants = [ "data-pool-layout.service" ];
+      serviceConfig.ExecStartPre = [ preV3RollbackGuard ];
     };
   };
 }

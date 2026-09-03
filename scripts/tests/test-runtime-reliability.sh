@@ -72,6 +72,9 @@ in {
     fullMaintenanceScript = cfg.systemd.services.kopia-full-maintenance.script;
     megaSyncCalendar = cfg.systemd.timers.rclone-mega-kopia-sync.timerConfig.OnCalendar;
   };
+  immich = {
+    serverExecStartPre = toString cfg.systemd.services.immich-server.serviceConfig.ExecStartPre;
+  };
   offlineMedia = {
     reconcileRequires = cfg.systemd.services.offline-media-reconcile.requires;
     reconcileAfter = cfg.systemd.services.offline-media-reconcile.after;
@@ -139,6 +142,7 @@ jq -e '
   and (.backupSchedule.fullMaintenanceScript | contains("kopia maintenance run --full --no-progress"))
   and (.backupSchedule.fullMaintenanceScript | contains("--safety=none") | not)
   and (.backupSchedule.megaSyncCalendar == "*-*-* 04,16:30:00")
+  and (.immich.serverExecStartPre | contains("immich-pre-v3-rollback-guard"))
   and (.offlineMedia.reconcileRequires | index("syncthing.service") != null)
   and (.offlineMedia.reconcileAfter | index("data-pool-layout.service") != null)
   and (.offlineMedia.reconcileExecStart | contains("offline-media-reconcile"))
