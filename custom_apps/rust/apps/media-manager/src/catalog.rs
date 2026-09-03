@@ -1,5 +1,5 @@
 use crate::broker::BrokerAction;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -398,7 +398,13 @@ impl Catalog {
         owner_username: Option<&str>,
         items: &[ScannedItem],
     ) -> rusqlite::Result<usize> {
-        let transaction = self.connection.transaction()?;
+        // Acquire the write reservation before reading the existing rows. A
+        // deferred transaction can read alongside another writer in WAL mode,
+        // then fail immediately with SQLITE_BUSY when it tries to upgrade;
+        // BEGIN IMMEDIATE lets the configured busy timeout wait at the start.
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing_ids = {
             let mut statement = transaction.prepare(
                 "SELECT id FROM catalog_items

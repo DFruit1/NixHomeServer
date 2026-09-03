@@ -7,6 +7,7 @@ import {
   useStore,
   useTask$,
   useVisibleTask$,
+  useOnWindow,
 } from "@builder.io/qwik";
 import { api, ApiError } from "./api";
 import tmdbLogo from "./tmdb-logo.svg";
@@ -127,7 +128,7 @@ interface Session {
 interface ProviderCredentialField {
   id: string;
   label: string;
-  inputType: "password";
+  inputType: "password" | "text";
   isRequired: boolean;
   help: string;
 }
@@ -147,6 +148,8 @@ interface ProviderDefinition {
   mediaDomains: string[];
   setupKind: "public" | "apiKey" | "account";
   implementationStatus: "active" | "planned";
+  canConfigure: boolean;
+  canTest: boolean;
   capabilities: string[];
   credentialFields: ProviderCredentialField[];
   setupUrl: string;
@@ -289,6 +292,8 @@ interface DashboardState {
   confirming: boolean;
   previewSelectionKey: string;
   preview?: MutationPreview;
+  metadataDraftDirty: boolean;
+  metadataDraftRevision: number;
 }
 
 export interface RootProps {
@@ -378,7 +383,7 @@ const NAV_ITEMS: Array<{ id: View; label: string; icon: IconName }> = [
   { id: "conversions", label: "Conversions", icon: "disc" },
   { id: "subtitles", label: "Subtitles", icon: "captions" },
   { id: "player", label: "Player", icon: "play" },
-  { id: "accounts", label: "Accounts", icon: "shield" },
+  { id: "accounts", label: "Metadata sources", icon: "shield" },
   { id: "refresh", label: "App refresh", icon: "refresh" },
 ];
 
@@ -538,6 +543,8 @@ export default component$((props: RootProps) => {
     planning: false,
     confirming: false,
     previewSelectionKey: "",
+    metadataDraftDirty: false,
+    metadataDraftRevision: 0,
   });
 
   // eslint-disable-next-line qwik/no-use-visible-task -- sidebar preference is client-only
@@ -566,7 +573,23 @@ export default component$((props: RootProps) => {
     }),
   );
 
+  useOnWindow(
+    "beforeunload",
+    $((event: BeforeUnloadEvent) => {
+      if (!state.metadataDraftDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }),
+  );
+
   const loadCategoryItems = $(async (category: string) => {
+    const changingCategory = category !== state.selectedCategory;
+    if (
+      changingCategory &&
+      !allowMetadataDraftDiscard(state.metadataDraftDirty)
+    )
+      return;
+    if (changingCategory) state.metadataDraftDirty = false;
     const categoryRoots = state.roots.filter(
       (root) => root.category === category,
     );
@@ -615,6 +638,10 @@ export default component$((props: RootProps) => {
   });
 
   const selectItem = $((item: CatalogItem) => {
+    const changingItem = item.id !== state.selectedItemId;
+    if (changingItem && !allowMetadataDraftDiscard(state.metadataDraftDirty))
+      return;
+    if (changingItem) state.metadataDraftDirty = false;
     state.selectedItemId = item.id;
     const category = state.roots.find(
       (root) => root.id === item.rootId,
@@ -687,6 +714,9 @@ export default component$((props: RootProps) => {
 
   const confirmRename = $(async () => {
     if (!state.preview || state.confirming) return;
+    if (!allowMetadataDraftDiscard(state.metadataDraftDirty)) return;
+    const selectedItemId = state.selectedItemId;
+    const metadataDraftRevision = state.metadataDraftRevision;
     state.confirming = true;
     state.error = "";
     try {
@@ -694,8 +724,17 @@ export default component$((props: RootProps) => {
         method: "POST",
         headers: { "if-match": `"${state.preview.digest}"` },
       });
-      state.notice = "The rename was added to the global mutation queue.";
       state.preview = undefined;
+      if (
+        state.selectedItemId !== selectedItemId ||
+        state.metadataDraftRevision !== metadataDraftRevision
+      ) {
+        state.notice =
+          "The rename was added to the mutation queue. Newer draft edits remain unsaved, or a newer selection was left in place.";
+        return;
+      }
+      state.notice = "The rename was added to the global mutation queue.";
+      state.metadataDraftDirty = false;
       state.selectedItemId = "";
     } catch (error) {
       state.error = readableError(error);
@@ -851,6 +890,8 @@ const ProviderAccountsView = component$(() => {
     selectedProviderId: string;
     credentialValues: Record<string, string>;
     query: string;
+    filter: "available" | "configured" | "planned" | "all";
+    testAfterSave: boolean;
     loading: boolean;
     saving: boolean;
     busyProviderId: string;
@@ -863,6 +904,8 @@ const ProviderAccountsView = component$(() => {
     selectedProviderId: "",
     credentialValues: {},
     query: "",
+    filter: "available",
+    testAfterSave: true,
     loading: true,
     saving: false,
     busyProviderId: "",
@@ -895,7 +938,9 @@ const ProviderAccountsView = component$(() => {
   });
 
   const openProvider = $((provider: ProviderDefinition) => {
+    if (!provider.canConfigure || accounts.saving) return;
     accounts.selectedProviderId = provider.id;
+    accounts.testAfterSave = provider.canTest;
     accounts.credentialValues = Object.fromEntries(
       provider.credentialFields.map((field) => [field.id, ""]),
     );
@@ -908,6 +953,7 @@ const ProviderAccountsView = component$(() => {
       (candidate) => candidate.id === accounts.selectedProviderId,
     );
     if (!provider || accounts.saving) return;
+    const testAfterSave = provider.canTest && accounts.testAfterSave;
     const credentials = Object.fromEntries(
       Object.entries(accounts.credentialValues).filter(
         ([, value]) => value.trim() !== "",
@@ -924,8 +970,30 @@ const ProviderAccountsView = component$(() => {
         (candidate) => candidate.id === provider.id,
       );
       if (index >= 0) accounts.providers[index] = response.provider;
+      if (accounts.selectedProviderId === provider.id) await closeProvider();
       accounts.notice = `${provider.name} was encrypted and saved. Its values cannot be viewed from Media Manager.`;
-      await closeProvider();
+      if (testAfterSave) {
+        try {
+          const test = await api<{
+            status: "ready" | "rejected" | "rateLimited" | "unavailable";
+            message: string;
+          }>(`/provider-accounts/${encodeURIComponent(provider.id)}/test`, {
+            method: "POST",
+          });
+          accounts.notice =
+            test.status === "ready"
+              ? `${provider.name} was saved and connected. ${test.message}`
+              : `${provider.name} was saved, but its connection needs attention: ${test.message}`;
+        } catch (error) {
+          accounts.notice = `${provider.name} was encrypted and saved.`;
+          accounts.error = `The saved credentials could not be tested: ${readableError(error)}`;
+        }
+        try {
+          await loadAccounts();
+        } catch (error) {
+          accounts.error = `The credentials were saved, but the source status could not be refreshed: ${readableError(error)}`;
+        }
+      }
     } catch (error) {
       accounts.error = readableError(error);
     } finally {
@@ -935,7 +1003,7 @@ const ProviderAccountsView = component$(() => {
   });
 
   const testProvider = $(async (provider: ProviderDefinition) => {
-    if (accounts.busyProviderId) return;
+    if (accounts.saving || accounts.busyProviderId) return;
     accounts.busyProviderId = provider.id;
     accounts.error = "";
     try {
@@ -953,7 +1021,7 @@ const ProviderAccountsView = component$(() => {
   });
 
   const deleteProvider = $(async (provider: ProviderDefinition) => {
-    if (accounts.busyProviderId) return;
+    if (accounts.saving || accounts.busyProviderId) return;
     if (
       typeof window !== "undefined" &&
       !window.confirm(
@@ -980,7 +1048,7 @@ const ProviderAccountsView = component$(() => {
     (provider) => provider.id === accounts.selectedProviderId,
   );
   const query = accounts.query.trim().toLowerCase();
-  const providers = query
+  const matchingProviders = query
     ? accounts.providers.filter((provider) =>
         [provider.name, ...provider.mediaDomains, ...provider.capabilities]
           .join(" ")
@@ -988,8 +1056,31 @@ const ProviderAccountsView = component$(() => {
           .includes(query),
       )
     : accounts.providers;
+  const providers = matchingProviders.filter((provider) => {
+    switch (accounts.filter) {
+      case "configured":
+        return provider.account.state === "configured";
+      case "planned":
+        return provider.implementationStatus === "planned";
+      case "all":
+        return true;
+      default:
+        return provider.implementationStatus === "active";
+    }
+  });
   const configuredCount = accounts.providers.filter(
-    (provider) => provider.account.state === "configured",
+    (provider) =>
+      provider.implementationStatus === "active" &&
+      provider.account.state === "configured",
+  ).length;
+  const readyCount = accounts.providers.filter(
+    (provider) =>
+      provider.implementationStatus === "active" &&
+      (provider.account.state === "notRequired" ||
+        (provider.account.state === "configured" &&
+          !["rejected", "rateLimited", "unavailable"].includes(
+            provider.account.lastTestStatus ?? "",
+          ))),
   ).length;
 
   return (
@@ -1007,8 +1098,8 @@ const ProviderAccountsView = component$(() => {
         <div class="provider-account-summary">
           <strong>{configuredCount}</strong>
           <span>configured</span>
-          <strong>{accounts.providers.length}</strong>
-          <span>available sources</span>
+          <strong>{readyCount}</strong>
+          <span>ready sources</span>
         </div>
       </section>
 
@@ -1050,6 +1141,34 @@ const ProviderAccountsView = component$(() => {
         <span>{providers.length} shown</span>
       </div>
 
+      <div
+        class="provider-filter-tabs"
+        role="group"
+        aria-label="Filter metadata sources"
+      >
+        {(
+          [
+            ["available", "Available now"],
+            ["configured", "Configured"],
+            ["planned", "Coming soon"],
+            ["all", "All sources"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            class={{
+              "provider-filter-tab": true,
+              active: accounts.filter === id,
+            }}
+            type="button"
+            aria-pressed={accounts.filter === id}
+            key={id}
+            onClick$={() => (accounts.filter = id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {accounts.loading ? (
         <LoadingState />
       ) : (
@@ -1058,7 +1177,7 @@ const ProviderAccountsView = component$(() => {
             const configured = provider.account.state === "configured";
             const publicSource = provider.account.state === "notRequired";
             const connected = provider.account.lastTestStatus === "ready";
-            const testable = ["tmdb", "opensubtitles"].includes(provider.id);
+            const planned = provider.implementationStatus === "planned";
             return (
               <article class="provider-account-card" key={provider.id}>
                 <div class="provider-account-card-heading">
@@ -1069,16 +1188,16 @@ const ProviderAccountsView = component$(() => {
                   <span
                     class={{
                       "provider-state": true,
-                      ready: publicSource || connected,
-                      planned: provider.implementationStatus === "planned",
+                      ready: !planned && (publicSource || connected),
+                      planned,
                     }}
                   >
-                    {publicSource
-                      ? "Public"
-                      : provider.implementationStatus === "planned"
-                        ? configured
-                          ? "Saved · adapter planned"
-                          : "Adapter planned"
+                    {planned
+                      ? configured
+                        ? "Saved · adapter planned"
+                        : "Adapter planned"
+                      : publicSource
+                        ? "Public"
                         : connected
                           ? "Connected"
                           : configured
@@ -1099,22 +1218,27 @@ const ProviderAccountsView = component$(() => {
                   </p>
                 )}
                 <div class="provider-account-actions">
-                  {provider.credentialFields.length > 0 && (
-                    <button
-                      class="primary-button"
-                      type="button"
-                      onClick$={() => openProvider(provider)}
-                    >
-                      {configured ? "Replace credentials" : "Set up"}
-                    </button>
-                  )}
+                  {provider.canConfigure &&
+                    provider.credentialFields.length > 0 && (
+                      <button
+                        class="primary-button"
+                        type="button"
+                        disabled={accounts.saving}
+                        onClick$={() => openProvider(provider)}
+                      >
+                        {configured ? "Replace credentials" : "Set up"}
+                      </button>
+                    )}
                   {configured &&
                     provider.implementationStatus === "active" &&
-                    testable && (
+                    provider.canTest && (
                       <button
                         class="secondary-button"
                         type="button"
-                        disabled={accounts.busyProviderId === provider.id}
+                        disabled={
+                          accounts.saving ||
+                          accounts.busyProviderId === provider.id
+                        }
                         onClick$={() => testProvider(provider)}
                       >
                         {accounts.busyProviderId === provider.id
@@ -1133,6 +1257,10 @@ const ProviderAccountsView = component$(() => {
                     <button
                       class="text-button danger"
                       type="button"
+                      disabled={
+                        accounts.saving ||
+                        accounts.busyProviderId === provider.id
+                      }
                       onClick$={() => deleteProvider(provider)}
                     >
                       Remove
@@ -1160,11 +1288,56 @@ const ProviderAccountsView = component$(() => {
               class="close-button"
               type="button"
               aria-label="Close credential editor"
+              disabled={accounts.saving}
               onClick$={closeProvider}
             >
               ×
             </button>
           </div>
+          <ol class="provider-setup-steps" aria-label="Provider setup steps">
+            <li>
+              <span>1</span>
+              <div>
+                <strong>Get access</strong>
+                <p>
+                  Open the provider's account page and create the requested
+                  credentials.
+                </p>
+                <a
+                  href={selectedProvider.setupUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open provider setup
+                </a>
+              </div>
+            </li>
+            <li>
+              <span>2</span>
+              <div>
+                <strong>Enter credentials</strong>
+                <p>
+                  Paste the complete set below. Existing values cannot be
+                  recovered.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span>3</span>
+              <div>
+                <strong>
+                  {selectedProvider.canTest && accounts.testAfterSave
+                    ? "Save and test"
+                    : "Save securely"}
+                </strong>
+                <p>
+                  {selectedProvider.canTest && accounts.testAfterSave
+                    ? "Encrypt the values, then verify that the provider accepts them."
+                    : "Encrypt the values for this signed-in identity."}
+                </p>
+              </div>
+            </li>
+          </ol>
           <form
             preventdefault:submit
             onSubmit$={saveProvider}
@@ -1178,11 +1351,14 @@ const ProviderAccountsView = component$(() => {
                     {field.isRequired ? " *" : ""}
                   </span>
                   <input
-                    type="password"
+                    type={field.inputType}
                     name={`provider-${selectedProvider.id}-${field.id}`}
                     value={accounts.credentialValues[field.id] ?? ""}
                     required={field.isRequired}
-                    autocomplete="new-password"
+                    disabled={accounts.saving}
+                    autocomplete={
+                      field.inputType === "password" ? "new-password" : "off"
+                    }
                     spellcheck={false}
                     onInput$={(_, input) =>
                       (accounts.credentialValues[field.id] = input.value)
@@ -1192,18 +1368,26 @@ const ProviderAccountsView = component$(() => {
                 </label>
               ))}
             </div>
+            {selectedProvider.canTest && (
+              <label class="provider-test-choice">
+                <input
+                  type="checkbox"
+                  checked={accounts.testAfterSave}
+                  disabled={accounts.saving}
+                  onChange$={(_, input) =>
+                    (accounts.testAfterSave = input.checked)
+                  }
+                />
+                <span>Test the connection after saving</span>
+              </label>
+            )}
             <div class="provider-credential-footer">
-              <a
-                href={selectedProvider.setupUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open provider setup
-              </a>
+              <span>Credentials are encrypted before storage.</span>
               <div>
                 <button
                   class="secondary-button"
                   type="button"
+                  disabled={accounts.saving}
                   onClick$={closeProvider}
                 >
                   Cancel
@@ -1213,7 +1397,11 @@ const ProviderAccountsView = component$(() => {
                   type="submit"
                   disabled={accounts.saving}
                 >
-                  {accounts.saving ? "Encrypting…" : "Encrypt and save"}
+                  {accounts.saving
+                    ? "Encrypting…"
+                    : selectedProvider.canTest && accounts.testAfterSave
+                      ? "Save and test"
+                      : "Encrypt and save"}
                 </button>
               </div>
             </div>
@@ -1956,28 +2144,70 @@ const LibraryView = component$<{
     item.relativePath.startsWith(`${activeFolder}/`),
   )?.rootId;
   const selectPersonalFolder$ = $((path: string) => {
+    const changingSelection =
+      personal.selectedFolder !== path ||
+      shared.selectedFolder !== "" ||
+      props.state.selectedItemId !== "";
+    if (
+      changingSelection &&
+      !allowMetadataDraftDiscard(props.state.metadataDraftDirty)
+    )
+      return;
+    if (changingSelection) props.state.metadataDraftDirty = false;
     personal.selectedFolder = path;
     shared.selectedFolder = "";
     props.state.selectedItemId = "";
     props.state.preview = undefined;
   });
   const selectSharedFolder$ = $((path: string) => {
+    const changingSelection =
+      shared.selectedFolder !== path ||
+      personal.selectedFolder !== "" ||
+      props.state.selectedItemId !== "";
+    if (
+      changingSelection &&
+      !allowMetadataDraftDiscard(props.state.metadataDraftDirty)
+    )
+      return;
+    if (changingSelection) props.state.metadataDraftDirty = false;
     shared.selectedFolder = path;
     personal.selectedFolder = "";
     props.state.selectedItemId = "";
     props.state.preview = undefined;
   });
   const selectPersonalItem$ = $((item: CatalogItem) => {
+    const changingSelection =
+      item.id !== props.state.selectedItemId ||
+      personal.selectedFolder !== "" ||
+      shared.selectedFolder !== "";
+    if (
+      changingSelection &&
+      !allowMetadataDraftDiscard(props.state.metadataDraftDirty)
+    )
+      return;
+    if (changingSelection) props.state.metadataDraftDirty = false;
     personal.selectedFolder = "";
     shared.selectedFolder = "";
     props.selectItem$(item);
   });
   const selectSharedItem$ = $((item: CatalogItem) => {
+    const changingSelection =
+      item.id !== props.state.selectedItemId ||
+      personal.selectedFolder !== "" ||
+      shared.selectedFolder !== "";
+    if (
+      changingSelection &&
+      !allowMetadataDraftDiscard(props.state.metadataDraftDirty)
+    )
+      return;
+    if (changingSelection) props.state.metadataDraftDirty = false;
     personal.selectedFolder = "";
     shared.selectedFolder = "";
     props.selectItem$(item);
   });
   const closeFolderEditor$ = $(() => {
+    if (!allowMetadataDraftDiscard(props.state.metadataDraftDirty)) return;
+    props.state.metadataDraftDirty = false;
     personal.selectedFolder = "";
     shared.selectedFolder = "";
     props.state.preview = undefined;
@@ -2336,6 +2566,9 @@ const ConversionsView = component$<{ initial?: ConversionEnvelope }>(
         }
       };
       void load();
+      // Polling is a browser lifecycle concern. Starting an interval during SSR
+      // (or a DOM-less component test) leaves work alive after the render ends.
+      if (typeof window === "undefined") return;
       const timer = setInterval(load, 5000);
       cleanup(() => {
         stopped = true;
@@ -2938,9 +3171,12 @@ const BrowseView = component$<BrowseViewProps>((props) => {
                         </button>
                       )}
                       {!props.providerAvailable && (
-                        <span class="quiet-copy">
-                          Configure OpenSubtitles to search
-                        </span>
+                        <a
+                          class="metadata-source-setup-link"
+                          href="?view=accounts"
+                        >
+                          Set up OpenSubtitles
+                        </a>
                       )}
                     </div>
                   </td>
@@ -3459,10 +3695,10 @@ const SubtitleView = component$<{
                     your account username and password.
                   </li>
                   <li>
-                    Open <strong>Accounts</strong>, choose OpenSubtitles, and
-                    paste the values at runtime. Saved values cannot be viewed
-                    again, so retain the recovery copy in Vaultwarden,
-                    KeePassXC, or another password manager.
+                    Open <a href="?view=accounts">Metadata sources</a>, choose
+                    OpenSubtitles, and paste the values at runtime. Saved values
+                    cannot be viewed again, so retain the recovery copy in
+                    Vaultwarden, KeePassXC, or another password manager.
                   </li>
                   <li>
                     Return here after saving. No NixOS rebuild or shared server
@@ -3832,6 +4068,226 @@ const INSPECTED_METADATA_FIELDS = [
   "description",
 ] as const;
 
+const EDITABLE_METADATA_FIELDS = [
+  ["mediaType", "Media type"],
+  ["title", "Title"],
+  ["year", "Year"],
+  ["season", "Season"],
+  ["episode", "Episode"],
+  ["episodeTitle", "Episode title"],
+  ["language", "Language code"],
+  ["genres", "Genres"],
+  ["authors", "Authors / artists"],
+  ["narrators", "Narrators"],
+  ["writers", "Writers"],
+  ["series", "Series"],
+  ["volumeNumber", "Volume"],
+  ["publisher", "Publisher / studio"],
+  ["premiereDate", "Premiere date"],
+  ["runtimeMinutes", "Runtime"],
+  ["officialRating", "Official rating"],
+  ["communityRating", "Community rating"],
+  ["isbn", "ISBN"],
+  ["description", "Description"],
+] as const;
+
+const REVIEWED_METADATA_FIELDS = [
+  ...EDITABLE_METADATA_FIELDS,
+  ["providerIds", "Provider IDs"],
+] as const;
+
+const SOURCE_SELECTABLE_METADATA_FIELDS = EDITABLE_METADATA_FIELDS.filter(
+  ([field]) => field !== "mediaType",
+);
+
+const LIST_METADATA_FIELDS = new Set([
+  "authors",
+  "narrators",
+  "genres",
+  "writers",
+]);
+
+const NUMERIC_METADATA_FIELDS = new Set([
+  "year",
+  "season",
+  "episode",
+  "runtimeMinutes",
+  "communityRating",
+]);
+
+export interface MetadataFieldChange {
+  field: string;
+  label: string;
+  before: string;
+  after: string;
+}
+
+export interface MetadataSourceChoice {
+  field: EditableMetadataField;
+  label: string;
+  options: Array<{ source: string; label: string; value: string }>;
+}
+
+function metadataSourceEditorValue(
+  field: EditableMetadataField,
+  value: unknown,
+): string | undefined {
+  let normalized: string;
+  if (LIST_METADATA_FIELDS.has(field)) {
+    const maximumEntries = ["authors", "narrators"].includes(field) ? 32 : 64;
+    if (
+      Array.isArray(value) &&
+      value.some((entry) => typeof entry !== "string")
+    )
+      return undefined;
+    if (!Array.isArray(value) && typeof value !== "string") return undefined;
+    const entries = (Array.isArray(value) ? value : commaSeparated(value))
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (
+      entries.length > maximumEntries ||
+      entries.some(
+        (entry) =>
+          entry.length > 500 ||
+          [...entry].some(
+            (character) =>
+              character < " " && !["\n", "\r", "\t"].includes(character),
+          ),
+      )
+    )
+      return undefined;
+    normalized = entries.join(", ");
+  } else if (typeof value === "string") {
+    normalized = value.trim();
+  } else if (typeof value === "number" && NUMERIC_METADATA_FIELDS.has(field)) {
+    normalized = Number.isFinite(value) ? String(value) : "";
+  } else {
+    return undefined;
+  }
+  if (NUMERIC_METADATA_FIELDS.has(field)) {
+    const numeric = Number(normalized);
+    const valid =
+      Number.isFinite(numeric) &&
+      (field === "communityRating"
+        ? numeric >= 0 && numeric <= 10
+        : Number.isInteger(numeric) &&
+          (field === "year"
+            ? numeric >= 1 && numeric <= 2100
+            : field === "season"
+              ? numeric >= 0 && numeric <= 10_000
+              : numeric >= 1 && numeric <= 100_000));
+    if (!valid) return undefined;
+    normalized = String(numeric);
+  }
+  if (field === "language") {
+    normalized = normalized.toLowerCase();
+    if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(normalized)) return undefined;
+  }
+  if (field === "premiereDate") {
+    const date = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!date) return undefined;
+    const year = Number(date[1]);
+    const month = Number(date[2]);
+    const day = Number(date[3]);
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [
+      31,
+      leapYear ? 29 : 28,
+      31,
+      30,
+      31,
+      30,
+      31,
+      31,
+      30,
+      31,
+      30,
+      31,
+    ];
+    if (
+      year < 1 ||
+      month < 1 ||
+      month > 12 ||
+      day < 1 ||
+      day > daysInMonth[month - 1]
+    )
+      return undefined;
+  }
+  const maximum =
+    field === "description"
+      ? 20_000
+      : LIST_METADATA_FIELDS.has(field)
+        ? 32_000
+        : field === "volumeNumber"
+          ? 32
+          : ["isbn", "officialRating"].includes(field)
+            ? 64
+            : field === "language"
+              ? 15
+              : field === "premiereDate"
+                ? 10
+                : 500;
+  if (
+    !normalized ||
+    normalized.length > maximum ||
+    [...normalized].some(
+      (character) => character < " " && !["\n", "\r", "\t"].includes(character),
+    )
+  )
+    return undefined;
+  return normalized;
+}
+
+export function metadataSourceChoices(
+  observations: Array<Pick<MetadataObservation, "source" | "label" | "fields">>,
+  currentValues: Readonly<Record<string, string>>,
+): MetadataSourceChoice[] {
+  return SOURCE_SELECTABLE_METADATA_FIELDS.flatMap(([field, label]) => {
+    const options = observations.flatMap((observation) => {
+      const value = metadataSourceEditorValue(field, observation.fields[field]);
+      return value
+        ? [
+            {
+              source: observation.source,
+              label: observation.label,
+              value,
+            },
+          ]
+        : [];
+    });
+    if (!options.some((option) => option.value !== currentValues[field]))
+      return [];
+    return [{ field, label, options }];
+  });
+}
+
+export function metadataFieldChanges(
+  before: Readonly<Record<string, string>>,
+  after: Readonly<Record<string, string>>,
+): MetadataFieldChange[] {
+  return REVIEWED_METADATA_FIELDS.flatMap(([field, label]) => {
+    const previous = before[field] ?? "";
+    const next = after[field] ?? "";
+    if (previous === next) return [];
+    return [
+      {
+        field,
+        label,
+        before: previous || "Not set",
+        after: next || "Not set",
+      },
+    ];
+  });
+}
+
+function allowMetadataDraftDiscard(isDirty: boolean): boolean {
+  if (!isDirty) return true;
+  if (typeof globalThis.confirm !== "function") return false;
+  return globalThis.confirm(
+    "Discard the unsaved metadata draft? This cannot be undone.",
+  );
+}
+
 function metadataFieldLabel(field: string): string {
   return field
     .replace(/([A-Z])/g, " $1")
@@ -4003,6 +4459,88 @@ interface MetadataEditorState {
   confirming: boolean;
   previewSelectionKey: string;
   preview?: MutationPreview;
+  baseline: Record<string, string>;
+  previewChanges: MetadataFieldChange[];
+  isDirty: boolean;
+  draftRevision: number;
+  draftSessionRevision: number;
+}
+
+type EditableMetadataField = (typeof EDITABLE_METADATA_FIELDS)[number][0];
+
+function editableMetadataValues(
+  metadata: MetadataEditorState,
+): Record<string, string> {
+  const values = Object.fromEntries(
+    EDITABLE_METADATA_FIELDS.map(([field]) => [field, metadata[field]]),
+  );
+  values.providerIds = Object.entries(metadata.providerIds)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([provider, id]) => `${provider}: ${id}`)
+    .join(", ");
+  return values;
+}
+
+function normalizedMetadataValues(
+  metadata: MetadataEditorState,
+): Record<string, string> {
+  const values = editableMetadataValues(metadata);
+  for (const field of [
+    "title",
+    "series",
+    "volumeNumber",
+    "publisher",
+    "isbn",
+    "language",
+    "description",
+    "episodeTitle",
+    "premiereDate",
+    "officialRating",
+  ] as const) {
+    values[field] = metadata[field].trim();
+  }
+  for (const field of ["authors", "narrators", "genres", "writers"] as const) {
+    values[field] = commaSeparated(metadata[field]).join(", ");
+  }
+  for (const field of [
+    "year",
+    "season",
+    "episode",
+    "runtimeMinutes",
+  ] as const) {
+    values[field] = metadata[field].trim()
+      ? String(Number.parseInt(metadata[field], 10))
+      : "";
+  }
+  values.communityRating = metadata.communityRating.trim()
+    ? String(Number.parseFloat(metadata.communityRating))
+    : "";
+  return values;
+}
+
+function markMetadataDraftDirty(
+  metadata: MetadataEditorState,
+  dashboard: DashboardState,
+): void {
+  metadata.draftRevision += 1;
+  dashboard.metadataDraftRevision += 1;
+  metadata.preview = undefined;
+  metadata.previewSelectionKey = "";
+  metadata.previewChanges = [];
+  metadata.isDirty =
+    metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata))
+      .length > 0;
+  dashboard.metadataDraftDirty = metadata.isDirty;
+}
+
+function updateMetadataDraftField(
+  metadata: MetadataEditorState,
+  dashboard: DashboardState,
+  field: EditableMetadataField,
+  value: string,
+): void {
+  metadata[field] = value;
+  markMetadataDraftDirty(metadata, dashboard);
 }
 
 const ItemEditor = component$<{
@@ -4083,6 +4621,11 @@ const ItemEditor = component$<{
     planning: false,
     confirming: false,
     previewSelectionKey: "",
+    baseline: {},
+    previewChanges: [],
+    isDirty: false,
+    draftRevision: 0,
+    draftSessionRevision: 0,
   });
 
   const removeAction = useStore<{
@@ -4114,6 +4657,9 @@ const ItemEditor = component$<{
 
   const confirmRemove = $(async () => {
     if (!removeAction.preview || removeAction.confirming) return;
+    if (!allowMetadataDraftDiscard(props.state.metadataDraftDirty)) return;
+    const selectionKey = metadata.itemId;
+    const draftRevision = metadata.draftRevision;
     removeAction.confirming = true;
     props.state.error = "";
     try {
@@ -4124,9 +4670,18 @@ const ItemEditor = component$<{
           headers: { "if-match": `"${removeAction.preview.digest}"` },
         },
       );
+      removeAction.preview = undefined;
+      if (
+        metadata.itemId !== selectionKey ||
+        metadata.draftRevision !== draftRevision
+      ) {
+        props.state.notice =
+          "The file was queued for the library tombstone. Newer draft edits remain unsaved, or a newer selection was left in place.";
+        return;
+      }
       props.state.notice =
         "The file was moved to the library tombstone; it will leave the library after the next refresh.";
-      removeAction.preview = undefined;
+      props.state.metadataDraftDirty = false;
       props.state.selectedItemId = "";
     } catch (error) {
       props.state.error = readableError(error);
@@ -4136,6 +4691,8 @@ const ItemEditor = component$<{
   });
 
   const closeEditor = $(() => {
+    if (!allowMetadataDraftDiscard(props.state.metadataDraftDirty)) return;
+    props.state.metadataDraftDirty = false;
     if (props.folder) {
       props.close$?.();
       return;
@@ -4154,6 +4711,10 @@ const ItemEditor = component$<{
     track(() => metadata.reloadKey);
     if (!selectionKey) return;
     const selectionChanged = metadata.itemId !== selectionKey;
+    metadata.draftRevision += 1;
+    metadata.draftSessionRevision += 1;
+    props.state.metadataDraftRevision += 1;
+    const loadRevision = metadata.draftRevision;
     tab.value = "metadata";
     section.value = "basics";
     const item = props.folder
@@ -4171,6 +4732,9 @@ const ItemEditor = component$<{
     metadata.confirming = false;
     metadata.previewSelectionKey = "";
     metadata.preview = undefined;
+    metadata.previewChanges = [];
+    metadata.isDirty = false;
+    props.state.metadataDraftDirty = false;
     removeAction.planning = false;
     removeAction.confirming = false;
     removeAction.preview = undefined;
@@ -4227,6 +4791,7 @@ const ItemEditor = component$<{
     metadata.tmdbCandidates = [];
     metadata.tmdbLoading = false;
     metadata.tmdbError = "";
+    metadata.baseline = normalizedMetadataValues(metadata);
     props.state.error = "";
     try {
       const metadataPath = props.folder
@@ -4241,7 +4806,8 @@ const ItemEditor = component$<{
         : props.state.selectedItemId;
       if (
         metadata.itemId !== selectionKey ||
-        visibleSelectionKey !== selectionKey
+        visibleSelectionKey !== selectionKey ||
+        metadata.draftRevision !== loadRevision
       )
         return;
       if (details.mediaType) metadata.mediaType = String(details.mediaType);
@@ -4306,6 +4872,7 @@ const ItemEditor = component$<{
         | undefined;
       metadata.lookupArtist = metadata.authors;
       metadata.lookupTitle = metadata.title;
+      metadata.baseline = normalizedMetadataValues(metadata);
     } catch (error) {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
@@ -4327,44 +4894,81 @@ const ItemEditor = component$<{
     }
   });
 
+  const toggleMetadataDraft = $(() => {
+    if (metadata.confirming) return;
+    if (!metadata.isDraft) {
+      metadata.isDraft = true;
+      metadata.draftSessionRevision += 1;
+      props.state.metadataDraftRevision += 1;
+      return;
+    }
+    if (!allowMetadataDraftDiscard(metadata.isDirty)) return;
+    metadata.isDraft = false;
+    metadata.draftRevision += 1;
+    metadata.draftSessionRevision += 1;
+    props.state.metadataDraftRevision += 1;
+    metadata.isDirty = false;
+    props.state.metadataDraftDirty = false;
+    metadata.preview = undefined;
+    metadata.previewChanges = [];
+    metadata.reloadKey += 1;
+  });
+
+  const discardMetadataDraft = $(() => {
+    if (metadata.confirming) return;
+    if (!allowMetadataDraftDiscard(metadata.isDirty)) return;
+    metadata.isDraft = false;
+    metadata.draftRevision += 1;
+    metadata.draftSessionRevision += 1;
+    props.state.metadataDraftRevision += 1;
+    metadata.isDirty = false;
+    props.state.metadataDraftDirty = false;
+    metadata.preview = undefined;
+    metadata.previewChanges = [];
+    metadata.reloadKey += 1;
+  });
+
   const previewMetadata = $(async () => {
     if (!metadata.itemId || !metadata.title.trim() || metadata.planning) return;
     const selectionKey = metadata.itemId;
+    const draftRevision = metadata.draftRevision;
     metadata.planning = true;
     props.state.error = "";
     props.state.notice = "";
+    const normalized = normalizedMetadataValues(metadata);
     const fields: Record<string, unknown> = {
-      mediaType: metadata.mediaType,
-      title: metadata.title.trim(),
-      authors: commaSeparated(metadata.authors),
-      narrators: commaSeparated(metadata.narrators),
-      genres: commaSeparated(metadata.genres),
-      writers: commaSeparated(metadata.writers),
+      mediaType: normalized.mediaType,
+      title: normalized.title,
+      authors: commaSeparated(normalized.authors),
+      narrators: commaSeparated(normalized.narrators),
+      genres: commaSeparated(normalized.genres),
+      writers: commaSeparated(normalized.writers),
       providerIds: metadata.providerIds,
     };
     const optional: Array<[string, string]> = [
-      ["series", metadata.series],
-      ["volumeNumber", metadata.volumeNumber],
-      ["publisher", metadata.publisher],
-      ["isbn", metadata.isbn],
-      ["language", metadata.language],
-      ["description", metadata.description],
-      ["episodeTitle", metadata.episodeTitle],
-      ["premiereDate", metadata.premiereDate],
-      ["officialRating", metadata.officialRating],
+      ["series", normalized.series],
+      ["volumeNumber", normalized.volumeNumber],
+      ["publisher", normalized.publisher],
+      ["isbn", normalized.isbn],
+      ["language", normalized.language],
+      ["description", normalized.description],
+      ["episodeTitle", normalized.episodeTitle],
+      ["premiereDate", normalized.premiereDate],
+      ["officialRating", normalized.officialRating],
     ];
     for (const [key, value] of optional) {
       if (value.trim()) fields[key] = value.trim();
     }
-    if (metadata.year.trim()) fields.year = Number.parseInt(metadata.year, 10);
-    if (metadata.season.trim())
-      fields.season = Number.parseInt(metadata.season, 10);
-    if (metadata.episode.trim())
-      fields.episode = Number.parseInt(metadata.episode, 10);
-    if (metadata.runtimeMinutes.trim())
-      fields.runtimeMinutes = Number.parseInt(metadata.runtimeMinutes, 10);
-    if (metadata.communityRating.trim())
-      fields.communityRating = Number.parseFloat(metadata.communityRating);
+    if (normalized.year) fields.year = Number.parseInt(normalized.year, 10);
+    if (normalized.season)
+      fields.season = Number.parseInt(normalized.season, 10);
+    if (normalized.episode)
+      fields.episode = Number.parseInt(normalized.episode, 10);
+    if (normalized.runtimeMinutes)
+      fields.runtimeMinutes = Number.parseInt(normalized.runtimeMinutes, 10);
+    if (normalized.communityRating)
+      fields.communityRating = Number.parseFloat(normalized.communityRating);
+    const changes = metadataFieldChanges(metadata.baseline, normalized);
     try {
       const sidecarPath = props.folder
         ? `/folders/metadata/sidecar?${new URLSearchParams({
@@ -4381,10 +4985,12 @@ const ItemEditor = component$<{
         : props.state.selectedItemId;
       if (
         metadata.itemId === selectionKey &&
-        visibleSelectionKey === selectionKey
+        visibleSelectionKey === selectionKey &&
+        metadata.draftRevision === draftRevision
       ) {
         metadata.previewSelectionKey = selectionKey;
         metadata.preview = preview;
+        metadata.previewChanges = changes;
       }
     } catch (error) {
       const visibleSelectionKey = props.folder
@@ -4416,6 +5022,8 @@ const ItemEditor = component$<{
       return;
     const selectionKey = metadata.itemId;
     const preview = metadata.preview;
+    const draftSessionRevision = metadata.draftSessionRevision;
+    const confirmedValues = normalizedMetadataValues(metadata);
     metadata.confirming = true;
     props.state.error = "";
     try {
@@ -4431,20 +5039,35 @@ const ItemEditor = component$<{
         visibleSelectionKey !== selectionKey
       )
         return;
-      props.state.notice =
-        "The portable metadata update was added to the mutation queue. Refresh the affected app after the broker finishes.";
+      if (metadata.draftSessionRevision !== draftSessionRevision) {
+        props.state.notice =
+          "An earlier metadata preview was added to the mutation queue. The current draft or inspection was left unchanged.";
+        return;
+      }
       metadata.pendingPlanId = preview.id;
       metadata.pendingConsumers =
         preview.affectedConsumers ?? metadata.consumers;
+      metadata.baseline = confirmedValues;
+      metadata.isDirty =
+        metadataFieldChanges(
+          confirmedValues,
+          normalizedMetadataValues(metadata),
+        ).length > 0;
+      props.state.metadataDraftDirty = metadata.isDirty;
+      props.state.notice = metadata.isDirty
+        ? "The previewed metadata update was added to the mutation queue. Newer draft edits remain unsaved."
+        : "The portable metadata update was added to the mutation queue. Refresh the affected app after the broker finishes.";
       metadata.previewSelectionKey = "";
       metadata.preview = undefined;
+      metadata.previewChanges = [];
     } catch (error) {
       const visibleSelectionKey = props.folder
         ? `folder:${props.folder.rootId}:${props.folder.relativePath}`
         : props.state.selectedItemId;
       if (
         metadata.itemId === selectionKey &&
-        visibleSelectionKey === selectionKey
+        visibleSelectionKey === selectionKey &&
+        metadata.draftSessionRevision === draftSessionRevision
       )
         props.state.error = readableError(error);
     } finally {
@@ -4453,7 +5076,8 @@ const ItemEditor = component$<{
         : props.state.selectedItemId;
       if (
         metadata.itemId === selectionKey &&
-        visibleSelectionKey === selectionKey
+        visibleSelectionKey === selectionKey &&
+        metadata.draftSessionRevision === draftSessionRevision
       )
         metadata.confirming = false;
     }
@@ -4549,12 +5173,14 @@ const ItemEditor = component$<{
   });
 
   const fillMusicCandidate = $((candidate: MusicCandidate) => {
+    metadata.isDraft = true;
     metadata.title = candidate.title;
     metadata.authors = candidate.artist;
     if (candidate.year) metadata.year = String(candidate.year);
     if (candidate.genres.length > 0)
       metadata.genres = candidate.genres.join(", ");
     if (candidate.label) metadata.publisher = candidate.label;
+    markMetadataDraftDirty(metadata, props.state);
     props.state.error = "";
     props.state.notice = `Filled the form from “${candidate.title}”. Review the fields before previewing the metadata sidecar.`;
   });
@@ -4637,6 +5263,7 @@ const ItemEditor = component$<{
           ? { wikidata: details.externalIds.wikidataId }
           : {}),
       };
+      markMetadataDraftDirty(metadata, props.state);
       props.state.notice =
         "Filled the draft from TMDB. Review every field and preview the portable metadata change before applying it.";
     } catch (error) {
@@ -4652,6 +5279,10 @@ const ItemEditor = component$<{
       : metadata.modificationTargets.some(
           (target) => target.kind === "portable-file" && target.available,
         );
+  const normalizedDraftValues = normalizedMetadataValues(metadata);
+  const sourceChoices = metadata.isDraft
+    ? metadataSourceChoices(metadata.observations, normalizedDraftValues)
+    : [];
 
   return (
     <section class="panel editor-card">
@@ -4695,43 +5326,54 @@ const ItemEditor = component$<{
             </>
           )}
         </div>
-        <button
-          class="close-button"
-          type="button"
-          aria-label="Close item editor"
-          onClick$={closeEditor}
-        >
-          ×
-        </button>
+        <div class="editor-heading-actions">
+          {tab.value === "metadata" &&
+            props.state.session?.canEdit &&
+            metadata.mediaType !== "collection" &&
+            metadata.mediaType !== "podcast" && (
+              <button
+                class="secondary-button"
+                type="button"
+                disabled={
+                  !portableWriteAvailable ||
+                  metadata.loadingDetails ||
+                  metadata.confirming
+                }
+                onClick$={toggleMetadataDraft}
+              >
+                <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
+                {metadata.isDraft
+                  ? metadata.isDirty
+                    ? "Discard draft"
+                    : "Inspect current"
+                  : "Create draft"}
+              </button>
+            )}
+          <button
+            class="close-button"
+            type="button"
+            aria-label="Close item editor"
+            onClick$={closeEditor}
+          >
+            ×
+          </button>
+        </div>
       </div>
 
       {tab.value === "metadata" ? (
         <>
-          <section class="metadata-inspector" aria-label="Current metadata">
-            <div class="metadata-inspector-heading">
+          <details class="metadata-inspector">
+            <summary class="metadata-inspector-heading">
               <div>
                 <span class="eyebrow">Current metadata</span>
-                <h3>Inspect before changing</h3>
+                <h3>Sources, differences, and write targets</h3>
                 <p>
-                  Values below are read from the filename, portable sidecar, and
-                  each connected media app. Nothing is editable until you create
-                  a draft.
+                  Compare the filename, portable metadata, and connected media
+                  apps when you need more context.
                 </p>
               </div>
-              {props.state.session?.canEdit &&
-                metadata.mediaType !== "collection" &&
-                metadata.mediaType !== "podcast" && (
-                  <button
-                    class="secondary-button"
-                    type="button"
-                    disabled={!portableWriteAvailable}
-                    onClick$={() => (metadata.isDraft = !metadata.isDraft)}
-                  >
-                    <Icon name={metadata.isDraft ? "check" : "tag"} size={17} />
-                    {metadata.isDraft ? "Inspect current" : "Create draft"}
-                  </button>
-                )}
-            </div>
+              <span class="metadata-inspector-toggle" />
+            </summary>
             <div class="metadata-source-grid">
               {metadata.observations.map((observation) => (
                 <article class="metadata-source-card" key={observation.source}>
@@ -4967,7 +5609,7 @@ const ItemEditor = component$<{
                 writer is enabled.
               </p>
             )}
-          </section>
+          </details>
           {["movie", "series", "episode"].includes(metadata.mediaType) && (
             <section class="panel musicbrainz-panel tmdb-panel">
               <div class="panel-heading">
@@ -4979,7 +5621,11 @@ const ItemEditor = component$<{
               <p class="quiet-copy">
                 Search with your runtime TMDB account, inspect likely matches,
                 then fill a draft. Lookup results never write metadata by
-                themselves. Configure or replace the account from Accounts.
+                themselves. Configure or replace it in{" "}
+                <a class="metadata-source-setup-link" href="?view=accounts">
+                  Metadata sources
+                </a>
+                .
               </p>
               <div class="metadata-form">
                 <label class="tmdb-query-input">
@@ -5100,7 +5746,11 @@ const ItemEditor = component$<{
               <p class="quiet-copy">
                 Match the album release on MusicBrainz and fill this form from
                 it before previewing the sidecar. Fingerprint lookup matches the
-                audio itself but needs your AcoustID API key saved in Accounts.
+                audio itself but needs an AcoustID API key in{" "}
+                <a class="metadata-source-setup-link" href="?view=accounts">
+                  Metadata sources
+                </a>
+                .
               </p>
               <div class="metadata-form">
                 <label>
@@ -5210,6 +5860,76 @@ const ItemEditor = component$<{
               </div>
             </section>
           )}
+          {metadata.isDraft && sourceChoices.length > 0 && (
+            <section
+              class="metadata-source-choices"
+              aria-labelledby="metadata-source-choices-title"
+            >
+              <div class="metadata-source-choices-heading">
+                <div>
+                  <span class="eyebrow">Compare and merge</span>
+                  <h3 id="metadata-source-choices-title">
+                    Choose source values
+                  </h3>
+                  <p>
+                    Review each field independently. Nothing is written until
+                    you preview and confirm the metadata sidecar.
+                  </p>
+                </div>
+                <span class="pane-count">{sourceChoices.length}</span>
+              </div>
+              <div class="metadata-source-choice-list">
+                {sourceChoices.map((choice) => (
+                  <article key={choice.field}>
+                    <strong>{choice.label}</strong>
+                    <div
+                      class="metadata-source-choice-options"
+                      role="group"
+                      aria-label={`${choice.label} source values`}
+                    >
+                      {choice.options.map((option) => {
+                        const isCurrent =
+                          normalizedDraftValues[choice.field] === option.value;
+                        return (
+                          <button
+                            key={`${choice.field}-${option.source}`}
+                            type="button"
+                            class={{
+                              "metadata-source-choice": true,
+                              current: isCurrent,
+                            }}
+                            disabled={isCurrent}
+                            aria-pressed={isCurrent}
+                            onClick$={() =>
+                              updateMetadataDraftField(
+                                metadata,
+                                props.state,
+                                choice.field,
+                                option.value,
+                              )
+                            }
+                          >
+                            <span class="metadata-source-choice-label">
+                              {option.label}
+                            </span>
+                            <span
+                              class="metadata-source-choice-value"
+                              title={option.value}
+                            >
+                              {option.value}
+                            </span>
+                            <span class="metadata-source-choice-action">
+                              {isCurrent ? "In draft" : "Use value"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
           <div
             class="metadata-section-tabs"
             role="tablist"
@@ -5243,7 +5963,12 @@ const ItemEditor = component$<{
                     value={metadata.mediaType}
                     disabled={Boolean(props.folder)}
                     onChange$={(_, select) =>
-                      (metadata.mediaType = select.value)
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "mediaType",
+                        select.value,
+                      )
                     }
                   >
                     <option value="movie">Movie</option>
@@ -5262,7 +5987,14 @@ const ItemEditor = component$<{
                   <input
                     value={metadata.title}
                     maxLength={500}
-                    onInput$={(_, input) => (metadata.title = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "title",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
                 <label>
@@ -5275,9 +6007,12 @@ const ItemEditor = component$<{
                     maxLength={4}
                     placeholder="Unknown"
                     onInput$={(_, input) =>
-                      (metadata.year = input.value
-                        .replace(/\D/g, "")
-                        .slice(0, 4))
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "year",
+                        input.value.replace(/\D/g, "").slice(0, 4),
+                      )
                     }
                   />
                 </label>
@@ -5289,7 +6024,12 @@ const ItemEditor = component$<{
                         value={metadata.season}
                         inputMode="numeric"
                         onInput$={(_, input) =>
-                          (metadata.season = numericValue(input.value, 4))
+                          updateMetadataDraftField(
+                            metadata,
+                            props.state,
+                            "season",
+                            numericValue(input.value, 4),
+                          )
                         }
                       />
                     </label>
@@ -5299,7 +6039,12 @@ const ItemEditor = component$<{
                         value={metadata.episode}
                         inputMode="numeric"
                         onInput$={(_, input) =>
-                          (metadata.episode = numericValue(input.value, 5))
+                          updateMetadataDraftField(
+                            metadata,
+                            props.state,
+                            "episode",
+                            numericValue(input.value, 5),
+                          )
                         }
                       />
                     </label>
@@ -5309,7 +6054,12 @@ const ItemEditor = component$<{
                         value={metadata.episodeTitle}
                         maxLength={500}
                         onInput$={(_, input) =>
-                          (metadata.episodeTitle = input.value)
+                          updateMetadataDraftField(
+                            metadata,
+                            props.state,
+                            "episodeTitle",
+                            input.value,
+                          )
                         }
                       />
                     </label>
@@ -5321,9 +6071,12 @@ const ItemEditor = component$<{
                     value={metadata.language}
                     maxLength={15}
                     onInput$={(_, input) =>
-                      (metadata.language = input.value
-                        .toLowerCase()
-                        .replace(/[^a-z0-9-]/g, ""))
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "language",
+                        input.value.toLowerCase().replace(/[^a-z0-9-]/g, ""),
+                      )
                     }
                   />
                 </label>
@@ -5333,7 +6086,14 @@ const ItemEditor = component$<{
                   </span>
                   <input
                     value={metadata.genres}
-                    onInput$={(_, input) => (metadata.genres = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "genres",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
               </>
@@ -5346,7 +6106,14 @@ const ItemEditor = component$<{
                   </span>
                   <input
                     value={metadata.authors}
-                    onInput$={(_, input) => (metadata.authors = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "authors",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
                 <label>
@@ -5355,7 +6122,14 @@ const ItemEditor = component$<{
                   </span>
                   <input
                     value={metadata.narrators}
-                    onInput$={(_, input) => (metadata.narrators = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "narrators",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
                 <label class="title-input">
@@ -5364,14 +6138,28 @@ const ItemEditor = component$<{
                   </span>
                   <input
                     value={metadata.writers}
-                    onInput$={(_, input) => (metadata.writers = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "writers",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
                 <label>
                   <span>Series</span>
                   <input
                     value={metadata.series}
-                    onInput$={(_, input) => (metadata.series = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "series",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
                 <label>
@@ -5379,7 +6167,12 @@ const ItemEditor = component$<{
                   <input
                     value={metadata.volumeNumber}
                     onInput$={(_, input) =>
-                      (metadata.volumeNumber = input.value)
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "volumeNumber",
+                        input.value,
+                      )
                     }
                   />
                 </label>
@@ -5391,7 +6184,14 @@ const ItemEditor = component$<{
                   <span>Publisher / studio</span>
                   <input
                     value={metadata.publisher}
-                    onInput$={(_, input) => (metadata.publisher = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "publisher",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
                 <label>
@@ -5400,7 +6200,12 @@ const ItemEditor = component$<{
                     type="date"
                     value={metadata.premiereDate}
                     onInput$={(_, input) =>
-                      (metadata.premiereDate = input.value)
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "premiereDate",
+                        input.value,
+                      )
                     }
                   />
                 </label>
@@ -5412,7 +6217,12 @@ const ItemEditor = component$<{
                     value={metadata.runtimeMinutes}
                     inputMode="numeric"
                     onInput$={(_, input) =>
-                      (metadata.runtimeMinutes = numericValue(input.value, 6))
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "runtimeMinutes",
+                        numericValue(input.value, 6),
+                      )
                     }
                   />
                 </label>
@@ -5422,7 +6232,12 @@ const ItemEditor = component$<{
                     value={metadata.officialRating}
                     maxLength={64}
                     onInput$={(_, input) =>
-                      (metadata.officialRating = input.value)
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "officialRating",
+                        input.value,
+                      )
                     }
                   />
                 </label>
@@ -5434,9 +6249,12 @@ const ItemEditor = component$<{
                     value={metadata.communityRating}
                     inputMode="decimal"
                     onInput$={(_, input) =>
-                      (metadata.communityRating = input.value
-                        .replace(/[^0-9.]/g, "")
-                        .slice(0, 5))
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "communityRating",
+                        input.value.replace(/[^0-9.]/g, "").slice(0, 5),
+                      )
                     }
                   />
                 </label>
@@ -5444,7 +6262,14 @@ const ItemEditor = component$<{
                   <span>ISBN</span>
                   <input
                     value={metadata.isbn}
-                    onInput$={(_, input) => (metadata.isbn = input.value)}
+                    onInput$={(_, input) =>
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "isbn",
+                        input.value,
+                      )
+                    }
                   />
                 </label>
                 <label class="description-input">
@@ -5454,7 +6279,12 @@ const ItemEditor = component$<{
                     maxLength={20000}
                     rows={5}
                     onInput$={(_, input) =>
-                      (metadata.description = input.value)
+                      updateMetadataDraftField(
+                        metadata,
+                        props.state,
+                        "description",
+                        input.value,
+                      )
                     }
                   />
                 </label>
@@ -5465,9 +6295,21 @@ const ItemEditor = component$<{
             <span>
               {metadata.loadingDetails
                 ? "Reading available metadata…"
-                : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
+                : metadata.isDirty
+                  ? `${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length} unsaved field change${metadataFieldChanges(metadata.baseline, normalizedMetadataValues(metadata)).length === 1 ? "" : "s"}.`
+                  : `Sources: ${metadata.sources.join(" + ") || "select an item"}. NFO is used for video/music; OPF is used for books and audiobooks.`}
             </span>
             <div class="metadata-action-buttons">
+              {metadata.isDirty && (
+                <button
+                  class="text-button"
+                  type="button"
+                  disabled={metadata.confirming}
+                  onClick$={discardMetadataDraft}
+                >
+                  Discard changes
+                </button>
+              )}
               {metadata.pendingPlanId &&
                 metadata.pendingConsumers.some(
                   (consumer) =>
@@ -5807,6 +6649,34 @@ const ItemEditor = component$<{
                   </strong>
                 </span>
               </div>
+              <section
+                class="metadata-change-review"
+                aria-label="Metadata field changes"
+              >
+                <div class="metadata-change-review-heading">
+                  <strong>Review field changes</strong>
+                  <span>{metadata.previewChanges.length} changed</span>
+                </div>
+                {metadata.previewChanges.length > 0 ? (
+                  <dl>
+                    {metadata.previewChanges.map((change) => (
+                      <div key={change.field}>
+                        <dt>{change.label}</dt>
+                        <dd>
+                          <span>{change.before}</span>
+                          <Icon name="arrow" size={15} />
+                          <strong>{change.after}</strong>
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : (
+                  <p>
+                    No field values differ. This creates a portable metadata
+                    copy from the currently inspected values.
+                  </p>
+                )}
+              </section>
               {metadata.preview.warnings.map((warning) => (
                 <p class="plan-warning" key={warning}>
                   <Icon name="shield" size={16} /> {warning}

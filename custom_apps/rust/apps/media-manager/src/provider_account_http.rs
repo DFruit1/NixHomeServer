@@ -99,6 +99,12 @@ enum ImplementationStatus {
     Planned,
 }
 
+#[derive(Clone, Copy)]
+enum ConnectionTestAdapter {
+    Tmdb,
+    OpenSubtitles,
+}
+
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CredentialFieldDefinition {
@@ -116,11 +122,23 @@ struct ProviderDefinition {
     media_domains: &'static [&'static str],
     setup_kind: SetupKind,
     implementation_status: ImplementationStatus,
+    connection_test: Option<ConnectionTestAdapter>,
     capabilities: &'static [&'static str],
     credential_fields: &'static [CredentialFieldDefinition],
     setup_url: &'static str,
     documentation_url: &'static str,
     notes: &'static str,
+}
+
+impl ProviderDefinition {
+    fn can_configure(self) -> bool {
+        self.implementation_status == ImplementationStatus::Active
+            && !self.credential_fields.is_empty()
+    }
+
+    fn can_test(self) -> bool {
+        self.can_configure() && self.connection_test.is_some()
+    }
 }
 
 const API_KEY_FIELD: [CredentialFieldDefinition; 1] = [CredentialFieldDefinition {
@@ -150,7 +168,7 @@ const OPENSUBTITLES_FIELDS: [CredentialFieldDefinition; 4] = [
     CredentialFieldDefinition {
         id: "username",
         label: "Account username",
-        input_type: "password",
+        input_type: "text",
         is_required: true,
         help: "Your OpenSubtitles.com account username.",
     },
@@ -164,7 +182,7 @@ const OPENSUBTITLES_FIELDS: [CredentialFieldDefinition; 4] = [
     CredentialFieldDefinition {
         id: "userAgent",
         label: "Application user agent",
-        input_type: "password",
+        input_type: "text",
         is_required: false,
         help: "Optional registered application name; Media Manager supplies a safe default.",
     },
@@ -211,6 +229,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["movies", "television"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::Tmdb),
         capabilities: &["search", "details", "people", "images", "external-ids"],
         credential_fields: &TMDB_TOKEN_FIELD,
         setup_url: "https://www.themoviedb.org/settings/api",
@@ -223,6 +242,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["subtitles"],
         setup_kind: SetupKind::Account,
         implementation_status: ImplementationStatus::Active,
+        connection_test: Some(ConnectionTestAdapter::OpenSubtitles),
         capabilities: &["subtitle-search", "movie-hash-match", "subtitle-download"],
         credential_fields: &OPENSUBTITLES_FIELDS,
         setup_url: "https://www.opensubtitles.com/consumers",
@@ -235,6 +255,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Active,
+        connection_test: None,
         capabilities: &["audio-fingerprint", "musicbrainz-id"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://acoustid.org/settings",
@@ -247,6 +268,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["music"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Active,
+        connection_test: None,
         capabilities: &["search", "release-groups", "recordings", "stable-ids"],
         credential_fields: &[],
         setup_url: "https://musicbrainz.org/",
@@ -259,6 +281,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["music"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["cover-art"],
         credential_fields: &[],
         setup_url: "https://coverartarchive.org/",
@@ -271,6 +294,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["books", "audiobooks"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["search", "isbn", "editions", "covers"],
         credential_fields: &[],
         setup_url: "https://openlibrary.org/",
@@ -283,6 +307,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["movies", "television", "music", "books", "people"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["external-ids", "cross-provider-links"],
         credential_fields: &[],
         setup_url: "https://www.wikidata.org/",
@@ -295,6 +320,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["audiobooks"],
         setup_kind: SetupKind::Public,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["audiobook-search", "authors", "narrators", "series"],
         credential_fields: &[],
         setup_url: "https://audnex.us/",
@@ -307,6 +333,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["television", "movies"],
         setup_kind: SetupKind::Account,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["search", "episodes", "artwork", "translations"],
         credential_fields: &TVDB_FIELDS,
         setup_url: "https://thetvdb.com/api-information",
@@ -319,6 +346,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["movies", "television"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["imdb-lookup", "ratings", "search"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://www.omdbapi.com/apikey.aspx",
@@ -331,6 +359,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["movies", "television", "music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["artwork", "logos", "backgrounds"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://fanart.tv/get-an-api-key/",
@@ -343,6 +372,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["release-search", "labels", "catalog-numbers", "artwork"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://www.discogs.com/settings/developers",
@@ -355,6 +385,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["music"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["artist-details", "album-details", "artwork"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://www.theaudiodb.com/api_apply.php",
@@ -367,6 +398,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["books"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["search", "isbn", "descriptions", "covers"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://console.cloud.google.com/apis/library/books.googleapis.com",
@@ -379,6 +411,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["comics", "manga"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["issues", "volumes", "people", "covers"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://comicvine.gamespot.com/api/",
@@ -391,6 +424,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["books", "audiobooks"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["isbn", "editions", "publishers"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://isbndb.com/isbn-database",
@@ -403,6 +437,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["podcasts"],
         setup_kind: SetupKind::Account,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["podcast-search", "feeds", "episodes", "podcast-namespace"],
         credential_fields: &PODCAST_INDEX_FIELDS,
         setup_url: "https://api.podcastindex.org/",
@@ -415,6 +450,7 @@ const PROVIDERS: &[ProviderDefinition] = &[
         media_domains: &["subtitles"],
         setup_kind: SetupKind::ApiKey,
         implementation_status: ImplementationStatus::Planned,
+        connection_test: None,
         capabilities: &["subtitle-search", "subtitle-download"],
         credential_fields: &API_KEY_FIELD,
         setup_url: "https://subdl.com/panel/api",
@@ -1191,6 +1227,16 @@ async fn save_provider_account(
         )
         .into_response();
     };
+    if definition.implementation_status != ImplementationStatus::Active {
+        zeroize_credentials(&mut request.credentials);
+        return ApiError::new(
+            StatusCode::CONFLICT,
+            "provider_adapter_unavailable",
+            "Credentials cannot be saved until this provider's lookup adapter is available.",
+            request_id,
+        )
+        .into_response();
+    }
     if definition.credential_fields.is_empty() {
         zeroize_credentials(&mut request.credentials);
         return ApiError::new(
@@ -1287,9 +1333,7 @@ async fn test_provider_account(
         )
         .into_response();
     }
-    if definition.implementation_status != ImplementationStatus::Active
-        || !matches!(definition.id, "tmdb" | "opensubtitles")
-    {
+    let Some(connection_test) = definition.connection_test.filter(|_| definition.can_test()) else {
         return ApiError::new(
             StatusCode::CONFLICT,
             "provider_test_unavailable",
@@ -1297,7 +1341,7 @@ async fn test_provider_account(
             request_id,
         )
         .into_response();
-    }
+    };
     let mut credentials = match state.store.load_credentials(&identity, definition.id) {
         Ok(Some(credentials)) => credentials,
         Ok(None) => {
@@ -1311,7 +1355,7 @@ async fn test_provider_account(
         }
         Err(error) => return storage_failure(error, &request_id).into_response(),
     };
-    let outcome = test_live_provider(&state, definition.id, &credentials).await;
+    let outcome = test_live_provider(&state, connection_test, &credentials).await;
     zeroize_credentials(&mut credentials);
     if let Err(error) = state.store.record_test_result(
         &identity,
@@ -1338,18 +1382,18 @@ struct ProviderTestOutcome {
 
 async fn test_live_provider(
     state: &ProviderBrokerState,
-    provider_id: &str,
+    adapter: ConnectionTestAdapter,
     credentials: &BTreeMap<String, String>,
 ) -> ProviderTestOutcome {
-    let response = match provider_id {
-        "tmdb" => {
+    let response = match adapter {
+        ConnectionTestAdapter::Tmdb => {
             let url = provider_test_url(&state.endpoints.tmdb_api_base, "authentication");
             match (url, credentials.get("apiKey")) {
                 (Ok(url), Some(api_key)) => state.client.get(url).bearer_auth(api_key).send().await,
                 _ => return invalid_saved_credentials(),
             }
         }
-        "opensubtitles" => {
+        ConnectionTestAdapter::OpenSubtitles => {
             let url = provider_test_url(&state.endpoints.opensubtitles_api_base, "login");
             match (
                 url,
@@ -1375,7 +1419,6 @@ async fn test_live_provider(
                 _ => return invalid_saved_credentials(),
             }
         }
-        _ => return invalid_saved_credentials(),
     };
     match response {
         Ok(response) if response.status().is_success() => ProviderTestOutcome {
@@ -1468,6 +1511,8 @@ fn provider_view(
         "mediaDomains": definition.media_domains,
         "setupKind": definition.setup_kind,
         "implementationStatus": definition.implementation_status,
+        "canConfigure": definition.can_configure(),
+        "canTest": definition.can_test(),
         "capabilities": definition.capabilities,
         "credentialFields": definition.credential_fields,
         "setupUrl": definition.setup_url,

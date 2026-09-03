@@ -4,6 +4,8 @@ import { createDOM } from "@builder.io/qwik/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Root, {
   initialRouteFromSearch,
+  metadataFieldChanges,
+  metadataSourceChoices,
   parseTvEpisodeFilename,
   refreshPresentation,
   rootFromSearch,
@@ -61,7 +63,7 @@ describe("Media Manager navigation", () => {
       ["Libraries", "?view=library"],
       ["Conversions", "?view=conversions"],
       ["Subtitles", "?view=subtitles"],
-      ["Accounts", "?view=accounts"],
+      ["Metadata sources", "?view=accounts"],
       ["App refresh", "?view=refresh"],
     ]);
 
@@ -86,54 +88,96 @@ describe("Media Manager navigation", () => {
   });
 
   it("renders runtime provider accounts without attempting to reveal saved values", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const path = String(input);
-      const payload = path.endsWith("/status")
-        ? { mutationMode: "enabled", integrations: [] }
-        : path.endsWith("/session")
-          ? { username: "dsaw", groups: ["users"], canEdit: false }
-          : path.endsWith("/roots")
-            ? []
-            : path.endsWith("/provider-accounts")
-              ? {
-                  schemaVersion: 1,
-                  recoveryAdvice:
-                    "Saved credentials cannot be viewed again. Keep the recovery copy in Vaultwarden, KeePassXC, or another password manager.",
-                  providers: [
-                    {
-                      id: "tmdb",
-                      name: "The Movie Database (TMDB)",
-                      mediaDomains: ["movies", "television"],
-                      setupKind: "apiKey",
-                      implementationStatus: "active",
-                      capabilities: ["search", "details"],
-                      credentialFields: [
-                        {
-                          id: "apiKey",
-                          label: "API key",
-                          inputType: "password",
-                          isRequired: true,
-                          help: "Paste the key.",
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (
+          path.endsWith("/provider-accounts/tmdb") &&
+          init?.method === "PUT"
+        ) {
+          return new Response(
+            JSON.stringify({
+              provider: {
+                id: "tmdb",
+                name: "The Movie Database (TMDB)",
+                mediaDomains: ["movies", "television"],
+                setupKind: "apiKey",
+                implementationStatus: "active",
+                canConfigure: true,
+                canTest: true,
+                capabilities: ["search", "details"],
+                credentialFields: [],
+                setupUrl: "https://www.themoviedb.org/settings/api",
+                documentationUrl:
+                  "https://developer.themoviedb.org/docs/getting-started",
+                notes: "Movie and television matching.",
+                account: { state: "configured" },
+              },
+            }),
+          );
+        }
+        if (
+          path.endsWith("/provider-accounts/tmdb/test") &&
+          init?.method === "POST"
+        ) {
+          return new Response(
+            JSON.stringify({
+              providerId: "tmdb",
+              status: "ready",
+              message: "The provider accepted this account.",
+              requestId: "test-1",
+            }),
+          );
+        }
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: false }
+            : path.endsWith("/roots")
+              ? []
+              : path.endsWith("/provider-accounts")
+                ? {
+                    schemaVersion: 1,
+                    recoveryAdvice:
+                      "Saved credentials cannot be viewed again. Keep the recovery copy in Vaultwarden, KeePassXC, or another password manager.",
+                    providers: [
+                      {
+                        id: "tmdb",
+                        name: "The Movie Database (TMDB)",
+                        mediaDomains: ["movies", "television"],
+                        setupKind: "apiKey",
+                        implementationStatus: "active",
+                        canConfigure: true,
+                        canTest: true,
+                        capabilities: ["search", "details"],
+                        credentialFields: [
+                          {
+                            id: "apiKey",
+                            label: "API key",
+                            inputType: "password",
+                            isRequired: true,
+                            help: "Paste the key.",
+                          },
+                        ],
+                        setupUrl: "https://www.themoviedb.org/settings/api",
+                        documentationUrl:
+                          "https://developer.themoviedb.org/docs/getting-started",
+                        notes: "Movie and television matching.",
+                        account: {
+                          state: "configured",
+                          updatedAt: 100,
+                          lastTestStatus: "ready",
                         },
-                      ],
-                      setupUrl: "https://www.themoviedb.org/settings/api",
-                      documentationUrl:
-                        "https://developer.themoviedb.org/docs/getting-started",
-                      notes: "Movie and television matching.",
-                      account: {
-                        state: "configured",
-                        updatedAt: 100,
-                        lastTestStatus: "ready",
                       },
-                    },
-                  ],
-                }
-              : { available: false, progress: {} };
-      return new Response(JSON.stringify(payload));
-    });
+                    ],
+                  }
+                : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      },
+    );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { render, screen } = await createDOM();
+    const { render, screen, userEvent } = await createDOM();
     await render(<Root initialView="accounts" />);
 
     expect(screen.textContent).toContain("Provider accounts");
@@ -145,6 +189,201 @@ describe("Media Manager navigation", () => {
       "/api/v1/provider-accounts",
       expect.objectContaining({ credentials: "same-origin" }),
     );
+    const replace = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Replace credentials",
+    );
+    await userEvent(replace ?? null, "click");
+    expect(
+      screen.querySelector(".provider-setup-steps")?.textContent,
+    ).toContain("Get access");
+    expect(
+      screen.querySelector(".provider-setup-steps")?.textContent,
+    ).toContain("Enter credentials");
+    expect(
+      screen.querySelector(".provider-setup-steps")?.textContent,
+    ).toContain("Save and test");
+    expect(
+      screen.querySelector(".provider-credential-footer button[type=submit]")
+        ?.textContent,
+    ).toContain("Save and test");
+    expect(
+      screen.querySelector<HTMLInputElement>(".provider-test-choice input")
+        ?.checked,
+    ).toBe(true);
+    const apiKey = screen.querySelector<HTMLInputElement>(
+      ".credential-field-grid input",
+    );
+    if (!apiKey) throw new Error("API key input missing");
+    apiKey.value = "new-runtime-key";
+    await userEvent(apiKey, "input");
+    await userEvent(
+      screen.querySelector(".provider-credential-editor form"),
+      "submit",
+    );
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("saved and connected"),
+    );
+    expect(screen.querySelector(".provider-credential-editor")).toBeUndefined();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, request]) =>
+          String(input).endsWith("/provider-accounts/tmdb/test") &&
+          request?.method === "POST",
+      ),
+    ).toBe(true);
+
+    const refreshedReplace = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Replace credentials",
+    );
+    await userEvent(refreshedReplace ?? null, "click");
+    const testAfterSave = screen.querySelector<HTMLInputElement>(
+      ".provider-test-choice input",
+    );
+    if (!testAfterSave) throw new Error("test-after-save choice missing");
+    testAfterSave.checked = false;
+    await userEvent(testAfterSave, "change");
+    expect(
+      screen.querySelector(".provider-credential-footer button[type=submit]")
+        ?.textContent,
+    ).toContain("Encrypt and save");
+    const replacementKey = screen.querySelector<HTMLInputElement>(
+      ".credential-field-grid input",
+    );
+    if (!replacementKey) throw new Error("replacement API key input missing");
+    replacementKey.value = "save-without-test-key";
+    await userEvent(replacementKey, "input");
+    await userEvent(
+      screen.querySelector(".provider-credential-editor form"),
+      "submit",
+    );
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".provider-credential-editor"),
+      ).toBeUndefined(),
+    );
+    expect(
+      fetchMock.mock.calls.filter(
+        ([input, request]) =>
+          String(input).endsWith("/provider-accounts/tmdb/test") &&
+          request?.method === "POST",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("separates usable sources from planned adapters and never offers planned setup", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: true }
+            : path.endsWith("/roots")
+              ? []
+              : path.endsWith("/provider-accounts")
+                ? {
+                    schemaVersion: 1,
+                    recoveryAdvice: "Keep a recovery copy.",
+                    providers: [
+                      {
+                        id: "tmdb",
+                        name: "The Movie Database (TMDB)",
+                        mediaDomains: ["movies", "television"],
+                        setupKind: "apiKey",
+                        implementationStatus: "active",
+                        canConfigure: true,
+                        canTest: true,
+                        capabilities: ["search", "details"],
+                        credentialFields: [
+                          {
+                            id: "apiKey",
+                            label: "API key",
+                            inputType: "password",
+                            isRequired: true,
+                            help: "Paste the key.",
+                          },
+                        ],
+                        setupUrl: "https://www.themoviedb.org/settings/api",
+                        documentationUrl:
+                          "https://developer.themoviedb.org/docs/getting-started",
+                        notes: "Movie and television matching.",
+                        account: {
+                          state: "configured",
+                          lastTestStatus: "rejected",
+                        },
+                      },
+                      {
+                        id: "tvdb",
+                        name: "TheTVDB",
+                        mediaDomains: ["television"],
+                        setupKind: "account",
+                        implementationStatus: "planned",
+                        canConfigure: false,
+                        canTest: false,
+                        capabilities: ["search", "episodes"],
+                        credentialFields: [
+                          {
+                            id: "apiKey",
+                            label: "API key",
+                            inputType: "password",
+                            isRequired: true,
+                            help: "Paste the key.",
+                          },
+                        ],
+                        setupUrl: "https://thetvdb.com/api-information",
+                        documentationUrl: "https://github.com/thetvdb/v4-api",
+                        notes: "Alternate episode ordering.",
+                        account: { state: "notConfigured" },
+                      },
+                      {
+                        id: "open-library",
+                        name: "Open Library",
+                        mediaDomains: ["books", "audiobooks"],
+                        setupKind: "public",
+                        implementationStatus: "planned",
+                        canConfigure: false,
+                        canTest: false,
+                        capabilities: ["search", "isbn"],
+                        credentialFields: [],
+                        setupUrl: "https://openlibrary.org/",
+                        documentationUrl:
+                          "https://openlibrary.org/developers/api",
+                        notes: "Public bibliographic records.",
+                        account: { state: "notRequired" },
+                      },
+                    ],
+                  }
+                : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="accounts" />);
+    await vi.waitFor(() => expect(screen.textContent).toContain("TMDB"));
+
+    expect(screen.textContent).not.toContain("TheTVDB");
+    expect(
+      screen.querySelector(".provider-account-summary")?.textContent,
+    ).toContain("0ready sources");
+    const comingSoon = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Coming soon",
+    );
+    await userEvent(comingSoon ?? null, "click");
+    await vi.waitFor(() => expect(screen.textContent).toContain("TheTVDB"));
+    const plannedCard = Array.from(
+      screen.querySelectorAll(".provider-account-card"),
+    ).find((card) => card.textContent?.includes("TheTVDB"));
+    expect(plannedCard?.textContent).toContain("Adapter planned");
+    expect(plannedCard?.textContent).not.toContain("Set up");
+    const plannedPublicCard = Array.from(
+      screen.querySelectorAll(".provider-account-card"),
+    ).find((card) => card.textContent?.includes("Open Library"));
+    const plannedPublicState =
+      plannedPublicCard?.querySelector(".provider-state");
+    expect(plannedPublicState?.textContent?.trim()).toBe("Adapter planned");
+    expect(plannedPublicState?.classList.contains("ready")).toBe(false);
   });
 
   it("loads a media root selected by a native root-row URL", async () => {
@@ -1269,7 +1508,7 @@ describe("Media Manager library browser", () => {
                     language: "en",
                     genres: ["Drama"],
                     runtimeMinutes: 120,
-                    sources: ["filename", "sidecar"],
+                    sources: ["filename", "sidecar", "jellyfin"],
                     providerIds: { imdb: "tt0000000" },
                     fieldSources: { title: "sidecar", year: "filename" },
                     sidecar: {
@@ -1347,6 +1586,18 @@ describe("Media Manager library browser", () => {
                         rawPreview:
                           "<movie><title>Example Movie</title></movie>",
                       },
+                      {
+                        source: "jellyfin",
+                        label: "Jellyfin",
+                        storage: "application-database",
+                        consumedBy: ["jellyfin"],
+                        survivesRescan: false,
+                        writable: false,
+                        fields: {
+                          title: "Example Movie: Restored",
+                          genres: ["Drama", "Mystery"],
+                        },
+                      },
                     ],
                   }
                 : { available: false, progress: {} };
@@ -1384,6 +1635,12 @@ describe("Media Manager library browser", () => {
     expect(screen.textContent).toContain("Portable file metadata");
     expect(screen.textContent).toContain("Jellyfin app metadata");
     expect(screen.textContent).toContain("Sources: filename + sidecar");
+    expect(screen.querySelector(".metadata-inspector")?.tagName).toBe(
+      "DETAILS",
+    );
+    expect(
+      screen.querySelector(".metadata-inspector")?.hasAttribute("open"),
+    ).toBe(false);
     expect(
       screen.querySelector(".editor-metadata-form")?.hasAttribute("disabled"),
     ).toBe(true);
@@ -1394,6 +1651,303 @@ describe("Media Manager library browser", () => {
     expect(
       screen.querySelector(".editor-metadata-form")?.hasAttribute("disabled"),
     ).toBe(false);
+    expect(
+      screen.querySelector(".metadata-source-choices")?.textContent,
+    ).toContain("Choose source values");
+    const jellyfinChoice = Array.from(
+      screen.querySelectorAll<HTMLButtonElement>(".metadata-source-choice"),
+    ).find(
+      (button) =>
+        button.textContent?.includes("Jellyfin") &&
+        button.textContent.includes("Example Movie: Restored"),
+    );
+    expect(jellyfinChoice?.getAttribute("aria-label")).toBeNull();
+    await userEvent(jellyfinChoice ?? null, "click");
+    expect(
+      screen.querySelector<HTMLInputElement>(
+        ".editor-metadata-form .title-input input",
+      )?.value,
+    ).toBe("Example Movie: Restored");
+  });
+
+  it("keeps an unsaved metadata draft when switching items is cancelled", async () => {
+    const items = [
+      {
+        id: "movie-a",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Arrival.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+      {
+        id: "movie-b",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Contact.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => false),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input);
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: true }
+            : path.endsWith("/roots")
+              ? [
+                  {
+                    id: "shared-videos",
+                    label: "Shared videos",
+                    category: "videos",
+                    scope: "shared",
+                    available: true,
+                  },
+                  {
+                    id: "shared-music",
+                    label: "Shared music",
+                    category: "music",
+                    scope: "shared",
+                    available: true,
+                  },
+                ]
+              : path.includes("/items?rootId=shared-videos")
+                ? { items }
+                : path.includes("/items?rootId=shared-music")
+                  ? { items: [] }
+                  : path.endsWith("/items/movie-a/metadata")
+                    ? {
+                        mediaType: "movie",
+                        title: "Arrival",
+                        language: "en",
+                        sources: ["filename"],
+                      }
+                    : path.endsWith("/items/movie-b/metadata")
+                      ? {
+                          mediaType: "movie",
+                          title: "Contact",
+                          language: "en",
+                          sources: ["filename"],
+                        }
+                      : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    const fileButton = (name: string) =>
+      Array.from(
+        screen.querySelectorAll<HTMLButtonElement>(".tree-row.file"),
+      ).find((button) => button.textContent?.includes(name));
+    await userEvent(fileButton("Arrival.mkv") ?? null, "click");
+    await vi.waitFor(() =>
+      expect(
+        screen
+          .querySelector<HTMLInputElement>(
+            ".editor-metadata-form .title-input input",
+          )
+          ?.getAttribute("value"),
+      ).toBe("Arrival"),
+    );
+    const draftButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create draft",
+    );
+    await userEvent(draftButton ?? null, "click");
+    const title = screen.querySelector<HTMLInputElement>(
+      ".editor-metadata-form .title-input input",
+    );
+    if (!title) throw new Error("metadata title input missing");
+    title.value = "Arrival — Director's Cut";
+    await userEvent(title, "input");
+    title.value = " Arrival ";
+    await userEvent(title, "input");
+    expect(screen.textContent).not.toContain("Discard changes");
+    const inspectButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Inspect current",
+    );
+    await userEvent(inspectButton ?? null, "click");
+    await vi.waitFor(() => expect(title.value).toBe("Arrival"));
+    const nextDraftButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create draft",
+    );
+    await userEvent(nextDraftButton ?? null, "click");
+    title.value = "Arrival — Director's Cut";
+    await userEvent(title, "input");
+    await userEvent(fileButton("Arrival.mkv") ?? null, "click");
+    const activeCategory = Array.from(
+      screen.querySelectorAll<HTMLButtonElement>(".library-tab"),
+    ).find((button) => button.textContent?.trim() === "Videos");
+    await userEvent(activeCategory ?? null, "click");
+
+    await userEvent(
+      screen.querySelector(".shared-pane .tree-folder-name"),
+      "click",
+    );
+    const musicCategory = Array.from(
+      screen.querySelectorAll<HTMLButtonElement>(".library-tab"),
+    ).find((button) => button.textContent?.trim() === "Music");
+    await userEvent(musicCategory ?? null, "click");
+    await userEvent(fileButton("Contact.mkv") ?? null, "click");
+
+    expect(globalThis.confirm).toHaveBeenCalledTimes(3);
+    expect(
+      screen
+        .querySelector<HTMLInputElement>(
+          ".editor-metadata-form .title-input input",
+        )
+        ?.getAttribute("value"),
+    ).toBe("Arrival — Director's Cut");
+    expect(fileButton("Arrival.mkv")?.classList.contains("selected")).toBe(
+      true,
+    );
+  });
+
+  it("shows field-level metadata changes in the confirmation preview", async () => {
+    const items = [
+      {
+        id: "movie-1",
+        rootId: "shared-videos",
+        relativePath: "_Movies/Arrival.mkv",
+        mediaKind: "video",
+        sizeBytes: 4096,
+      },
+    ];
+    let sidecarRequests = 0;
+    let confirmRequests = 0;
+    let resolveStalePreview!: (response: Response) => void;
+    const stalePreview = new Promise<Response>((resolve) => {
+      resolveStalePreview = resolve;
+    });
+    let resolveConfirmation!: (response: Response) => void;
+    const confirmation = new Promise<Response>((resolve) => {
+      resolveConfirmation = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (
+          path.endsWith("/items/movie-1/metadata/sidecar") &&
+          init?.method === "POST"
+        ) {
+          sidecarRequests += 1;
+          if (sidecarRequests === 2) return stalePreview;
+          return new Response(
+            JSON.stringify({
+              id: "metadata-plan",
+              digest: "a".repeat(64),
+              expiresAt: Date.now() + 1_800_000,
+              actions: [{ destinationRelativePath: "_Movies/Arrival.nfo" }],
+              warnings: [],
+            }),
+          );
+        }
+        if (
+          path.endsWith("/plans/metadata-plan/confirm") &&
+          init?.method === "POST"
+        ) {
+          confirmRequests += 1;
+          return confirmation;
+        }
+        const payload = path.endsWith("/status")
+          ? { mutationMode: "enabled", integrations: [] }
+          : path.endsWith("/session")
+            ? { username: "dsaw", groups: ["users"], canEdit: true }
+            : path.endsWith("/roots")
+              ? [
+                  {
+                    id: "shared-videos",
+                    label: "Shared videos",
+                    category: "videos",
+                    scope: "shared",
+                    available: true,
+                  },
+                ]
+              : path.includes("/items?rootId=shared-videos")
+                ? { items }
+                : path.endsWith("/items/movie-1/metadata")
+                  ? {
+                      mediaType: "movie",
+                      title: "Arrival",
+                      year: 2016,
+                      language: "en",
+                      genres: ["Drama"],
+                      sources: ["filename"],
+                    }
+                  : { available: false, progress: {} };
+        return new Response(JSON.stringify(payload));
+      }),
+    );
+
+    const { render, screen, userEvent } = await createDOM();
+    await render(<Root initialView="library" initialRootId="shared-videos" />);
+    await userEvent(screen.querySelector(".tree-row.file"), "click");
+    await vi.waitFor(() =>
+      expect(screen.textContent).toContain("Create draft"),
+    );
+    const draftButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create draft",
+    );
+    await userEvent(draftButton ?? null, "click");
+    const title = screen.querySelector<HTMLInputElement>(
+      ".editor-metadata-form .title-input input",
+    );
+    if (!title) throw new Error("metadata title input missing");
+    title.value = "Arrival — Director's Cut";
+    await userEvent(title, "input");
+    const previewButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Preview metadata sidecar",
+    );
+    await userEvent(previewButton ?? null, "click");
+
+    await vi.waitFor(() =>
+      expect(
+        screen.querySelector(".metadata-change-review")?.textContent,
+      ).toContain("Arrival — Director's Cut"),
+    );
+    expect(
+      screen.querySelector(".metadata-change-review")?.textContent,
+    ).toContain("Arrival");
+
+    const confirmButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Confirm metadata",
+    );
+    const confirmClick = userEvent(confirmButton ?? null, "click");
+    await vi.waitFor(() => expect(confirmRequests).toBe(1));
+    title.value = "Arrival — Edited During Confirmation";
+    await userEvent(title, "input");
+    resolveConfirmation(new Response("{}", { status: 202 }));
+    await confirmClick;
+    expect(title.value).toBe("Arrival — Edited During Confirmation");
+    expect(screen.textContent).toContain("Discard changes");
+
+    title.value = "Arrival — Pending Preview";
+    await userEvent(title, "input");
+    const stalePreviewClick = userEvent(previewButton ?? null, "click");
+    await vi.waitFor(() => expect(sidecarRequests).toBe(2));
+    title.value = "Arrival — Latest Draft";
+    await userEvent(title, "input");
+    resolveStalePreview(
+      new Response(
+        JSON.stringify({
+          id: "stale-metadata-plan",
+          digest: "b".repeat(64),
+          expiresAt: Date.now() + 1_800_000,
+          actions: [{ destinationRelativePath: "_Movies/Arrival.nfo" }],
+          warnings: [],
+        }),
+      ),
+    );
+    await stalePreviewClick;
+
+    expect(screen.querySelector(".metadata-change-review")).toBeUndefined();
+    expect(title.value).toBe("Arrival — Latest Draft");
   });
 
   it("inspects installed external and embedded subtitles with cue validation", async () => {
@@ -1535,6 +2089,12 @@ describe("Media Manager library browser", () => {
     ];
     let previewRequests = 0;
     let confirmRequests = 0;
+    let resolveRemoval!: (response: Response) => void;
+    const removalConfirmation = new Promise<Response>((resolve) => {
+      resolveRemoval = resolve;
+    });
+    const confirmDiscard = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirmDiscard);
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const path = String(input);
@@ -1554,7 +2114,14 @@ describe("Media Manager library browser", () => {
                 ]
               : path.includes("/items?rootId=")
                 ? { items }
-                : undefined;
+                : path.endsWith("/items/movie-1/metadata")
+                  ? {
+                      mediaType: "movie",
+                      title: "Example Movie",
+                      year: 2020,
+                      sources: ["filename"],
+                    }
+                  : undefined;
         if (payload !== undefined) {
           return new Response(JSON.stringify(payload));
         }
@@ -1580,7 +2147,7 @@ describe("Media Manager library browser", () => {
         }
         if (/\/plans\/[^/]+\/confirm$/.test(path) && init?.method === "POST") {
           confirmRequests += 1;
-          return new Response("{}", { status: 202 });
+          return removalConfirmation;
         }
         return new Response(JSON.stringify({ available: false, progress: {} }));
       },
@@ -1595,6 +2162,16 @@ describe("Media Manager library browser", () => {
       expect(screen.querySelector(".editor-tab")).toBeDefined(),
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
+    const draftButton = Array.from(screen.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create draft",
+    );
+    await userEvent(draftButton ?? null, "click");
+    const title = screen.querySelector<HTMLInputElement>(
+      ".editor-metadata-form .title-input input",
+    );
+    if (!title) throw new Error("metadata title input missing");
+    title.value = "Example Movie — Unsaved";
+    await userEvent(title, "input");
 
     const removeButton = Array.from(screen.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Remove from library",
@@ -1614,8 +2191,21 @@ describe("Media Manager library browser", () => {
     );
     await userEvent(confirmButton ?? null, "click");
 
+    expect(confirmDiscard).toHaveBeenCalledTimes(1);
+    expect(confirmRequests).toBe(0);
+    expect(screen.textContent).toContain("Discard changes");
+
+    confirmDiscard.mockReturnValue(true);
+    const confirmationClick = userEvent(confirmButton ?? null, "click");
+
     await vi.waitFor(() => expect(confirmRequests).toBe(1));
-    expect(screen.textContent).toContain("library tombstone");
+    title.value = "Example Movie — Newer Unsaved Edit";
+    await userEvent(title, "input");
+    resolveRemoval(new Response("{}", { status: 202 }));
+    await confirmationClick;
+    expect(title.value).toBe("Example Movie — Newer Unsaved Edit");
+    expect(screen.textContent).toContain("Discard changes");
+    expect(screen.textContent).toContain("Newer draft edits remain unsaved");
   });
 
   it("looks up a music release on MusicBrainz and fills the form from it", async () => {
@@ -1870,6 +2460,11 @@ describe("Media Manager library browser", () => {
       expect(screen.querySelector(".tmdb-panel")).toBeDefined(),
     );
     expect(screen.textContent).toContain("TMDB lookup");
+    expect(
+      screen
+        .querySelector(".tmdb-panel .metadata-source-setup-link")
+        ?.getAttribute("href"),
+    ).toBe("?view=accounts");
 
     await userEvent(
       screen.querySelector(".tmdb-panel .primary-button"),
@@ -1925,6 +2520,109 @@ describe("Jellyfin TV filename parsing", () => {
       episode: "003",
       episodeTitle: "A New Beginning",
     });
+  });
+});
+
+describe("metadata change review", () => {
+  it("offers safe alternative values from observed metadata sources", () => {
+    expect(
+      metadataSourceChoices(
+        [
+          {
+            source: "filename",
+            label: "Filename",
+            fields: { title: "Current title", year: 2020 },
+          },
+          {
+            source: "sidecar",
+            label: "NFO sidecar",
+            fields: {
+              title: "Restored title",
+              year: 2020,
+              genres: ["Drama", "Mystery"],
+              description: { unsafe: "not selectable" },
+            },
+          },
+          {
+            source: "invalid-app-snapshot",
+            label: "Invalid app snapshot",
+            fields: {
+              authors: Array.from(
+                { length: 33 },
+                (_, index) => `Author ${index + 1}`,
+              ).join(", "),
+              genres: `Drama, ${"x".repeat(501)}`,
+              premiereDate: "2026-99-99",
+            },
+          },
+        ],
+        { title: "Current title", year: "2020", genres: "Drama" },
+      ),
+    ).toEqual([
+      {
+        field: "title",
+        label: "Title",
+        options: [
+          { source: "filename", label: "Filename", value: "Current title" },
+          {
+            source: "sidecar",
+            label: "NFO sidecar",
+            value: "Restored title",
+          },
+        ],
+      },
+      {
+        field: "genres",
+        label: "Genres",
+        options: [
+          {
+            source: "sidecar",
+            label: "NFO sidecar",
+            value: "Drama, Mystery",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("reports only changed editable fields with readable before and after values", () => {
+    expect(
+      metadataFieldChanges(
+        {
+          title: "Arrival",
+          year: "2016",
+          genres: "Drama, Science Fiction",
+          description: "A linguist investigates an arrival.",
+          providerIds: "",
+        },
+        {
+          title: "Arrival",
+          year: "2016",
+          genres: "Drama, Mystery",
+          description: "",
+          providerIds: "tmdb: 329865",
+        },
+      ),
+    ).toEqual([
+      {
+        field: "genres",
+        label: "Genres",
+        before: "Drama, Science Fiction",
+        after: "Drama, Mystery",
+      },
+      {
+        field: "description",
+        label: "Description",
+        before: "A linguist investigates an arrival.",
+        after: "Not set",
+      },
+      {
+        field: "providerIds",
+        label: "Provider IDs",
+        before: "Not set",
+        after: "tmdb: 329865",
+      },
+    ]);
   });
 });
 

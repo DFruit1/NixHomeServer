@@ -90,6 +90,8 @@ async fn provider_catalog_shows_public_configurable_and_planned_sources() {
         .expect("TMDB");
     assert_eq!(tmdb["setupKind"], "apiKey");
     assert_eq!(tmdb["implementationStatus"], "active");
+    assert_eq!(tmdb["canConfigure"], true);
+    assert_eq!(tmdb["canTest"], true);
     assert_eq!(tmdb["account"]["state"], "notConfigured");
     assert!(tmdb["credentialFields"]
         .as_array()
@@ -97,6 +99,63 @@ async fn provider_catalog_shows_public_configurable_and_planned_sources() {
     assert!(providers
         .iter()
         .any(|provider| provider["implementationStatus"] == "planned"));
+    let tvdb = providers
+        .iter()
+        .find(|provider| provider["id"] == "tvdb")
+        .expect("TheTVDB");
+    assert_eq!(tvdb["canConfigure"], false);
+    assert_eq!(tvdb["canTest"], false);
+
+    let opensubtitles = providers
+        .iter()
+        .find(|provider| provider["id"] == "opensubtitles")
+        .expect("OpenSubtitles");
+    let username = opensubtitles["credentialFields"]
+        .as_array()
+        .expect("credential fields")
+        .iter()
+        .find(|field| field["id"] == "username")
+        .expect("username field");
+    assert_eq!(username["inputType"], "text");
+}
+
+#[tokio::test]
+async fn planned_provider_credentials_are_rejected_without_being_saved() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let app = test_app(&temp);
+    let response = app
+        .clone()
+        .oneshot(account_request(
+            "PUT",
+            "/api/v1/provider-accounts/tvdb",
+            "subject-1",
+            Body::from(r#"{"credentials":{"apiKey":"must-not-be-stored"}}"#),
+        ))
+        .await
+        .expect("save response");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response_json(response).await;
+    assert_eq!(body["error"]["code"], "provider_adapter_unavailable");
+    assert!(!body.to_string().contains("must-not-be-stored"));
+
+    let listed = app
+        .oneshot(account_request(
+            "GET",
+            "/api/v1/provider-accounts",
+            "subject-1",
+            Body::empty(),
+        ))
+        .await
+        .expect("list response");
+    let listed = response_json(listed).await;
+    let tvdb = listed["providers"]
+        .as_array()
+        .expect("providers")
+        .iter()
+        .find(|provider| provider["id"] == "tvdb")
+        .expect("TheTVDB");
+    assert_eq!(tvdb["account"]["state"], "notConfigured");
 }
 
 #[tokio::test]

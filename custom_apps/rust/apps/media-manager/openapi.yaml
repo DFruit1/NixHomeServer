@@ -932,7 +932,7 @@ components:
       type: object
       additionalProperties: false
       required:
-        [id, name, mediaDomains, setupKind, implementationStatus, capabilities,
+        [id, name, mediaDomains, setupKind, implementationStatus, canConfigure, canTest, capabilities,
          credentialFields, setupUrl, documentationUrl, notes, account]
       properties:
         id: { type: string }
@@ -940,6 +940,12 @@ components:
         mediaDomains: { type: array, items: { type: string } }
         setupKind: { type: string, enum: [public, apiKey, account] }
         implementationStatus: { type: string, enum: [active, planned] }
+        canConfigure:
+          type: boolean
+          description: Whether this deployed adapter accepts runtime credentials.
+        canTest:
+          type: boolean
+          description: Whether a configured account supports a live connection test.
         capabilities: { type: array, items: { type: string } }
         credentialFields:
           type: array
@@ -955,7 +961,7 @@ components:
       properties:
         id: { type: string }
         label: { type: string }
-        inputType: { type: string, const: password }
+        inputType: { type: string, enum: [password, text] }
         isRequired: { type: boolean }
         help: { type: string }
     ProviderAccountState:

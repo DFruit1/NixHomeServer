@@ -307,3 +307,42 @@ fn concurrent_initial_scans_reconcile_a_root_only_once() {
     assert_eq!(outcomes.iter().filter(|result| result.is_some()).count(), 1);
     assert_eq!(outcomes.iter().filter(|result| result.is_none()).count(), 1);
 }
+
+#[test]
+fn scanner_waits_for_a_concurrent_catalog_writer() {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let library = dir.path().join("library");
+    std::fs::create_dir_all(&library).expect("library");
+    std::fs::write(library.join("Book.epub"), b"book").expect("book");
+    let database = dir.path().join("control.sqlite3");
+    let mut catalog = Catalog::open(&database).expect("catalog");
+
+    let (writer_ready_tx, writer_ready_rx) = mpsc::channel();
+    let writer_database = database.clone();
+    let writer = thread::spawn(move || {
+        let connection = rusqlite::Connection::open(writer_database).expect("writer connection");
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("reserve catalog writer");
+        writer_ready_tx.send(()).expect("signal writer readiness");
+        thread::sleep(Duration::from_millis(200));
+        connection.execute_batch("COMMIT").expect("release writer");
+    });
+    writer_ready_rx.recv().expect("wait for catalog writer");
+
+    let result = scan_root(
+        &mut catalog,
+        &ScanRoot {
+            id: "shared-books-writer-contention".to_string(),
+            owner_username: None,
+            path: library,
+            category: "books".to_string(),
+        },
+    );
+    writer.join().expect("catalog writer thread");
+
+    let result = result.expect("scan waits for the concurrent writer");
+    assert_eq!(result.items_indexed, 1);
+}

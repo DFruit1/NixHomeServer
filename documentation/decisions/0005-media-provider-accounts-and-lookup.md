@@ -70,10 +70,12 @@ The account API is additive and resource-oriented:
 
 Provider definitions declare media domains, credential field descriptions,
 whether an account or key is required, setup/documentation URLs, capabilities,
-and implementation state. Public sources appear as ready without accepting a
-credential. Sources whose lookup adapter has not shipped remain visibly
-`available-to-configure` or `planned`, rather than implying that saving a key
-already affects matching.
+implementation state, and the optional adapter used for a live connection
+test. The API derives `canConfigure` and `canTest` from those declarations so
+the setup interface does not infer support from provider IDs. Public sources
+appear as ready without accepting a credential. Sources whose lookup adapter
+has not shipped remain visibly `planned`, rather than implying that saving a
+key already affects matching.
 
 Provider calls use a broker-owned adapter registry with strict response bounds,
 HTTPS-only origins except explicit loopback test mirrors, per-user/provider

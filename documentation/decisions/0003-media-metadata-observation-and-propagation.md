@@ -41,9 +41,14 @@ database remains read-only only in the existing refresh adapter where its API
 does not expose scan completion.
 
 The editor opens in inspection mode. Creating a draft explicitly unlocks the
-form. Existing NFO and OPF sidecars are parsed before editing; a replacement
-updates Media Manager's owned fields while preserving unknown elements,
-attributes, comments, and package content. Confirmation archives the original
+form. While a draft is open, the editor presents validated values from each
+observation per field, so a user can selectively merge (for example) a title
+from a filename and genres from an application snapshot. Choosing a value only
+updates the draft; it does not bypass the existing preview, digest, and
+confirmation boundary. Existing NFO and OPF sidecars are parsed before
+editing; a replacement updates Media Manager's owned fields while preserving
+unknown elements, attributes, comments, and package content. Confirmation
+archives the original
 under the adjacent `superseded` directory and installs the fingerprint-bound
 replacement with no-overwrite broker operations. EPUB and CBZ edits rebuild a
 bounded ZIP container, copy every non-metadata entry verbatim, preserve unknown
