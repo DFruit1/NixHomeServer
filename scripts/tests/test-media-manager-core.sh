@@ -227,6 +227,14 @@ require_fixed documentation/decisions/0001-media-manager-architecture.md \
 require_fixed documentation/decisions/0005-media-provider-accounts-and-lookup.md \
   'Vaultwarden is not a live credential backend' \
   "Runtime provider credentials must remain separate from the password-manager backend."
+forbid_match modules/Core_Modules/media-manager/services.nix \
+  'compgen -G "\$work/results/\*[.]json"' \
+  "Kavita metadata export must not depend on Bash completion builtins unavailable at runtime."
+require_fixed modules/Core_Modules/media-manager/services.nix \
+  'shopt -s nullglob' \
+  'result_files=("$work"/results/*.json)' \
+  'jq -s '\''.'\'' "${result_files[@]}"' \
+  "Kavita metadata export must collect result files with runtime-safe Bash builtins."
 require_fixed custom_apps/rust/apps/media-manager/src/provider_accounts.rs \
   'XChaCha20Poly1305' \
   'associated_data(&identity.subject, provider_id)' \

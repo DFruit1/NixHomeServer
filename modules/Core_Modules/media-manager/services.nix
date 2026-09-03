@@ -427,6 +427,7 @@ let
     runtimeInputs = [ pkgs.bash pkgs.coreutils pkgs.curl pkgs.findutils pkgs.jq pkgs.python3 pkgs.sqlite ];
     text = ''
       set -euo pipefail
+      shopt -s nullglob
       base_url="http://${vars.networking.loopbackIPv4}:${toString vars.networking.ports.kavita}"
       output=${lib.escapeShellArg kavitaMetadataCache}
       service_ready=0
@@ -485,8 +486,9 @@ PY
               | jq -ce --argjson seriesId "$series_id" ". + {seriesId:\$seriesId}" \
                 >"$work/results/$series_id.json"
           ' _ "$base_url" "$work"
-      if compgen -G "$work/results/*.json" >/dev/null; then
-        jq -s '.' "$work"/results/*.json >"$work/metadata.json"
+      result_files=("$work"/results/*.json)
+      if (( ''${#result_files[@]} > 0 )); then
+        jq -s '.' "''${result_files[@]}" >"$work/metadata.json"
       else
         printf '[]\n' >"$work/metadata.json"
       fi
