@@ -31,7 +31,7 @@ in
       user = "immich";
       group = "immich";
       settings.server.externalDomain = "https://${shareHost}";
-      settings.job.smartSearch.concurrency = 4;
+      settings.job.smartSearch.concurrency = 2;
       settings.machineLearning.clip.modelName = clipModel;
       settings.oauth = {
         enabled = true;
@@ -57,6 +57,7 @@ in
         enable = true;
         environment = {
           GUNICORN_CMD_ARGS = "--no-control-socket";
+          MACHINE_LEARNING_MODEL_INTRA_OP_THREADS = "4";
           MACHINE_LEARNING_PRELOAD__CLIP__TEXTUAL = clipModel;
           PYTHONUTF8 = "1";
         };
