@@ -352,7 +352,7 @@ test('top-level pages and profile menu render without full reloads', async ({ pa
 
   await page.locator('summary.profile-trigger').click();
   await expect(page.getByRole('heading', { name: 'dsaw' })).toBeVisible();
-  await expect(page.getByLabel('Show unused apps in Services')).not.toBeChecked();
+  await expect(page.getByLabel('Show inactive apps in Services')).not.toBeChecked();
   await expect(page.getByLabel('Show unused apps in Detailed Guide')).not.toBeChecked();
   await expect(page.getByRole('link', { name: 'Sign out' })).toBeVisible();
 });
