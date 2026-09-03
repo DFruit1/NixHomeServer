@@ -31,6 +31,7 @@ in
       user = "immich";
       group = "immich";
       settings.server.externalDomain = "https://${shareHost}";
+      settings.job.smartSearch.concurrency = 4;
       settings.machineLearning.clip.modelName = clipModel;
       settings.oauth = {
         enabled = true;
