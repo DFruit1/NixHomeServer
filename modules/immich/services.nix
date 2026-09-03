@@ -70,8 +70,8 @@ in
     };
 
     systemd.services.immich-machine-learning.serviceConfig = {
-      MemoryHigh = lib.mkForce "10G";
-      MemoryMax = lib.mkForce "12G";
+      MemoryHigh = lib.mkForce "16G";
+      MemoryMax = lib.mkForce "20G";
     };
   };
 }
