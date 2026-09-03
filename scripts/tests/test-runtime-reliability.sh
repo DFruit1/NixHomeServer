@@ -76,6 +76,7 @@ in {
     packageVersion = cfg.services.immich.package.version;
     machineLearningExecStart = toString cfg.systemd.services.immich-machine-learning.serviceConfig.ExecStart;
     clipModel = cfg.services.immich.settings.machineLearning.clip.modelName or null;
+    gunicornArgs = cfg.services.immich.machine-learning.environment.GUNICORN_CMD_ARGS or null;
     textualPreload = cfg.services.immich.machine-learning.environment.MACHINE_LEARNING_PRELOAD__CLIP__TEXTUAL or null;
     pythonUtf8 = cfg.services.immich.machine-learning.environment.PYTHONUTF8 or null;
     memoryHigh = cfg.systemd.services.immich-machine-learning.serviceConfig.MemoryHigh or null;
@@ -152,6 +153,7 @@ jq -e '
   and (.immich.packageVersion == "3.1.0")
   and (.immich.machineLearningExecStart | contains("-immich-machine-learning-3.1.0/bin/machine-learning"))
   and (.immich.clipModel == "ViT-SO400M-16-SigLIP2-384__webli")
+  and (.immich.gunicornArgs == "--no-control-socket")
   and (.immich.textualPreload == "ViT-SO400M-16-SigLIP2-384__webli")
   and (.immich.pythonUtf8 == "1")
   and (.immich.memoryHigh == "6G")

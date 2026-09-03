@@ -55,6 +55,7 @@ in
       machine-learning = {
         enable = true;
         environment = {
+          GUNICORN_CMD_ARGS = "--no-control-socket";
           MACHINE_LEARNING_PRELOAD__CLIP__TEXTUAL = clipModel;
           PYTHONUTF8 = "1";
         };
