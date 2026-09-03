@@ -73,6 +73,13 @@ in {
     megaSyncCalendar = cfg.systemd.timers.rclone-mega-kopia-sync.timerConfig.OnCalendar;
   };
   immich = {
+    packageVersion = cfg.services.immich.package.version;
+    machineLearningExecStart = toString cfg.systemd.services.immich-machine-learning.serviceConfig.ExecStart;
+    clipModel = cfg.services.immich.settings.machineLearning.clip.modelName or null;
+    textualPreload = cfg.services.immich.machine-learning.environment.MACHINE_LEARNING_PRELOAD__CLIP__TEXTUAL or null;
+    pythonUtf8 = cfg.services.immich.machine-learning.environment.PYTHONUTF8 or null;
+    memoryHigh = cfg.systemd.services.immich-machine-learning.serviceConfig.MemoryHigh or null;
+    memoryMax = cfg.systemd.services.immich-machine-learning.serviceConfig.MemoryMax or null;
     serverExecStartPre = toString cfg.systemd.services.immich-server.serviceConfig.ExecStartPre;
   };
   offlineMedia = {
@@ -142,6 +149,13 @@ jq -e '
   and (.backupSchedule.fullMaintenanceScript | contains("kopia maintenance run --full --no-progress"))
   and (.backupSchedule.fullMaintenanceScript | contains("--safety=none") | not)
   and (.backupSchedule.megaSyncCalendar == "*-*-* 04,16:30:00")
+  and (.immich.packageVersion == "3.1.0")
+  and (.immich.machineLearningExecStart | contains("-immich-machine-learning-3.1.0/bin/machine-learning"))
+  and (.immich.clipModel == "ViT-SO400M-16-SigLIP2-384__webli")
+  and (.immich.textualPreload == "ViT-SO400M-16-SigLIP2-384__webli")
+  and (.immich.pythonUtf8 == "1")
+  and (.immich.memoryHigh == "6G")
+  and (.immich.memoryMax == "8G")
   and (.immich.serverExecStartPre | contains("immich-pre-v3-rollback-guard"))
   and (.offlineMedia.reconcileRequires | index("syncthing.service") != null)
   and (.offlineMedia.reconcileAfter | index("data-pool-layout.service") != null)
