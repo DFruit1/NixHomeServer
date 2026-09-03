@@ -176,6 +176,11 @@ tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
 
+# Never let rendered runtime-unit cleanup fixtures touch the target's real
+# root-owned deploy transaction directory when this test runs on the server.
+deploy_state_dir="$tmpdir/deploy-state"
+runtime_unit_script_dir="$deploy_state_dir/transactions/.unit-scripts"
+
 uninstallable_trap_log="$tmpdir/uninstallable-trap.log"
 if env --ignore-signal=HUP bash -c '
   set -euo pipefail
